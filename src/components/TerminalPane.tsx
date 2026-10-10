@@ -160,7 +160,19 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
 
     const stop = watchTermSession(() => {
       const session = termSession();
-      if (session) draw(session);
+      if (session) {
+        draw(session);
+        return;
+      }
+      // 一条会话都不剩了（把最后一个页签关掉了）：把画面清干净，别留着上一条的残字。
+      // 关掉的不是最后一条时 `termSession()` 会给回邻居，走上面那支重放，到不了这里。
+      if (lastId !== null) {
+        lastId = null;
+        written = 0;
+        sessionRef.current = null;
+        term.reset();
+        scrollRef.current?.sync();
+      }
     });
     const attach = async () => {
       const fresh = freshRef.current;

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { modelUri, monaco } from "../lib/monacoEditor";
 import { monoFont } from "../lib/monacoEnv";
-import { samePath } from "../lib/format";
+import { basenameOf, samePath } from "../lib/format";
 import { gutterTargets } from "../lib/runMarkers";
+import { scriptKindOf } from "../lib/scriptRun";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
@@ -17,6 +18,13 @@ interface RunGutterPin {
   top: number;
   left: number;
   configs: RunConfiguration[];
+  tip: string;
+}
+
+/** 脚本文件第 1 行那颗 ▶：它不来自运行配置，点了是把脚本发到终端里跑。 */
+interface ScriptGutterPin {
+  top: number;
+  left: number;
   tip: string;
 }
 
@@ -35,6 +43,8 @@ interface CodeEditorProps {
   projectRoot: string;
   /** 点了装订线那颗 ▶：一条就直接跑，几条就交出去让他挑。 */
   onRunConfig: (configs: RunConfiguration[]) => void;
+  /** 点了脚本文件第 1 行那颗 ▶：把这份脚本发到对应终端里执行。 */
+  onRunScript: (path: string) => void;
 }
 
 export default function CodeEditor({
@@ -46,6 +56,7 @@ export default function CodeEditor({
   runConfigs,
   projectRoot,
   onRunConfig,
+  onRunScript,
 }: CodeEditorProps) {
   const { t } = useI18n();
   const { settings } = useSettings();
@@ -239,8 +250,14 @@ export default function CodeEditor({
 
   /** 一颗 ▶：这一行的落点，以及点了要交出哪几条配置。 */
   const [pins, setPins] = useState<RunGutterPin[]>([]);
+  /** 脚本文件第 1 行那颗 ▶：点了把脚本发到终端。非脚本文件时为 null。 */
+  const [scriptPin, setScriptPin] = useState<ScriptGutterPin | null>(null);
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
+  /** 当前文档是不是脚本文件；装订线那颗 ▶ 与「运行配置」那套互不相干。 */
+  const scriptPath = document && scriptKindOf(document.path) ? document.path : null;
+  const scriptPathRef = useRef(scriptPath);
+  scriptPathRef.current = scriptPath;
   const translateRef = useRef(t);
   translateRef.current = t;
 
@@ -276,13 +293,28 @@ export default function CodeEditor({
       });
     }
     setPins(next);
+
+    // 脚本那颗落在第 1 行；文件没打开、或不是脚本时收掉。
+    const path = scriptPathRef.current;
+    const head = path
+      ? editor.getScrolledVisiblePosition({ lineNumber: 1, column: 1 })
+      : null;
+    setScriptPin(
+      path && head
+        ? {
+            top: head.top,
+            left,
+            tip: translateRef.current("run.gutter.runInTerminal", { name: basenameOf(path) }),
+          }
+        : null
+    );
   }, []);
   const measureRef = useRef(measure);
   measureRef.current = measure;
 
   useEffect(() => {
     measure();
-  }, [measure, targets, t]);
+  }, [measure, targets, t, scriptPath]);
 
   /**
    * 把搜索命中落成编辑器里的光标与选区。
@@ -327,6 +359,16 @@ export default function CodeEditor({
             onClick={() => onRunConfig(pin.configs)}
           />
         ))}
+        {scriptPin && scriptPath ? (
+          <button
+            type="button"
+            className="run-gutter-run"
+            style={{ top: scriptPin.top, left: scriptPin.left }}
+            data-tip={scriptPin.tip}
+            aria-label={scriptPin.tip}
+            onClick={() => onRunScript(scriptPath)}
+          />
+        ) : null}
       </div>
     </div>
   );

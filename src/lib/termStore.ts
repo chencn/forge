@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { termClose, termOpen } from "./term";
+import { termClose, termOpen, termWrite } from "./term";
 import type { TermChunk, TermExit, TermSessionId } from "./term";
 
 /**
@@ -127,6 +127,38 @@ export async function openTerm(
   rows: number
 ): Promise<TermSession> {
   return open(cwd, shell, cols, rows);
+}
+
+/** 起终端的初始尺寸；面板挂上来之后会自己 fit 成真实尺寸。 */
+const DEFAULT_COLS = 80;
+const DEFAULT_ROWS = 24;
+
+/**
+ * 在终端里跑一条命令：找一条同 shell、同起始目录且还活着的会话复用它，没有就新开一条。
+ *
+ * 不复用 `needTermSession`：那个只看 `cwd`，会把一个 cmd 会话错当成能跑 `.ps1` 的去用，
+ * 于是命令落进了不对的 shell。命令末尾补 `\r`——PTY 的行编辑由 shell 自己做，回车得自己带。
+ *
+ * `onOpened` 在会话进表、成为激活之后、写命令之前调用：调用方借此把终端面板拉起，
+ * 面板挂载时 `needTermSession` 才认得出「已经有一条了」而不另开一条空的。
+ */
+export async function runInTerminal(
+  shell: string,
+  cwd: string | null,
+  command: string,
+  onOpened?: () => void
+): Promise<void> {
+  const reused = sessions.find(
+    (item) => !item.exited && item.cwd === cwd && item.shell === shell
+  );
+  const session = reused ?? (await open(cwd, shell, DEFAULT_COLS, DEFAULT_ROWS));
+  setActiveTerm(session.id);
+  onOpened?.();
+  if (!reused) {
+    // 新启动的终端子进程（特别是 Windows PowerShell/ConPTY）需要等待环境初始化，避免过早写入导致字符被丢弃
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  await termWrite(session.id, `${command}\r`);
 }
 
 /** 关掉一条会话：摘订阅、收 PTY、从列表里去掉；关的是激活那条就把激活位挪给邻居。 */

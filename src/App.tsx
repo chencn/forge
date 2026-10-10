@@ -98,7 +98,15 @@ import {
 } from "./lib/fs";
 import { codedError, describeError } from "./lib/errors";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
-import { dropTermSession } from "./lib/termStore";
+import { dropTermSession, runInTerminal } from "./lib/termStore";
+import { shellProbe } from "./lib/term";
+import type { ShellInfo } from "./lib/term";
+import {
+  buildScriptCommand,
+  findShellForScript,
+  scriptKindOf,
+  scriptTerminalLabel,
+} from "./lib/scriptRun";
 import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, parentPath, resolvePath, samePath } from "./lib/format";
 import { appExit, setTrayLabels } from "./lib/window";
@@ -620,6 +628,64 @@ export default function App() {
     });
   }, []);
 
+  /**
+   * 把一块面板弄到眼前：收着的拉起到底部，挪进页签栏的就切到它那一页。
+   *
+   * 比 `revealPane` 多管页签栏那一档。运行脚本这类「你点了一定想看结果」的动作走这条：
+   * 终端若被用户挪成了页签，`revealPane` 是空操作，命令在后台跑他却什么都没看见。
+   */
+  const focusPane = useCallback(
+    (key: BottomPane) => {
+      if (places[key] === "tabbed") setActiveTab(`pane|${key}`);
+      else revealPane(key);
+    },
+    [places, revealPane]
+  );
+
+  /**
+   * 本机扫出来的 shell，给脚本 ▶ 挑终端用。
+   *
+   * 只拉一次：装了新终端要重启应用才认得出，这跟终端页签那边同一个口径。
+   */
+  const shellsRef = useRef<ShellInfo[]>([]);
+  useEffect(() => {
+    void shellProbe()
+      .then((list) => {
+        shellsRef.current = list;
+      })
+      .catch(() => {
+        shellsRef.current = [];
+      });
+  }, []);
+
+  /**
+   * 脚本文件装订线那颗 ▶：按脚本类型挑终端，把脚本发进去跑。
+   *
+   * 本机没有对应终端就直接拦下弹通知，不打开终端也不发命令——发过去也只会报一句看不懂的错。
+   */
+  const runScript = useCallback(
+    (path: string) => {
+      const kind = scriptKindOf(path);
+      if (!kind) return;
+      const shell = findShellForScript(shellsRef.current, kind);
+      if (!shell) {
+        reportError(codedError("NO_TERMINAL", scriptTerminalLabel(kind)));
+        return;
+      }
+      // 终端起始目录用工程根：TerminalPane 挂载时按 cwd 复用会话，传脚本目录会让它再开一条空的。
+      // 脚本真正的工作目录由命令里的 cd 落地。
+      const dir = parentPath(path) ?? workspaceRoot ?? "";
+      void runInTerminal(
+        shell.path,
+        workspaceRoot,
+        buildScriptCommand(kind, path, dir),
+        // 会话进表之后再把它弄到眼前：否则面板先挂载，needTermSession 找不到会话会另开一条空的。
+        () => focusPane("terminal")
+      ).catch((cause: unknown) => reportError(errorText(cause)));
+    },
+    [focusPane, reportError, workspaceRoot]
+  );
+
   /** 挪进页签栏：好几块能同时开着，切换着看。 */
   const tabPane = useCallback((key: BottomPane) => {
     lastPlace.current[key] = "tabbed";
@@ -791,7 +857,7 @@ export default function App() {
           return;
         }
         run.start(picked);
-        revealPane("run");
+        focusPane("run");
         return;
       }
       if (ctrl && !event.altKey && !event.shiftKey && event.key === "F5") {
@@ -805,7 +871,7 @@ export default function App() {
           if (running.length === 0) run.start(picked);
           else for (const session of running) run.restartSession(session.id);
         }
-        revealPane("run");
+        focusPane("run");
         return;
       }
       if (ctrl && !event.altKey && !event.shiftKey && event.key === "F2") {
@@ -823,7 +889,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [configs, dialog, dockPane, everywhere, hidePane, menu, places.run, resolveOpen, revealPane, run]);
+  }, [configs, dialog, dockPane, everywhere, focusPane, hidePane, menu, places.run, resolveOpen, run]);
 
   const openFolder = useCallback(async () => {
     // 换工程前把上一处的 shell 收掉：留着它，跑的是别的地方的命令。
@@ -2418,7 +2484,7 @@ export default function App() {
             run={run}
             enabled={workspaceRoot !== null}
             chooserSignal={runChooser}
-            onStarted={() => revealPane("run")}
+            onStarted={() => focusPane("run")}
             onEditConfigs={openRunConfigsTab}
           />
         }
@@ -2461,10 +2527,16 @@ export default function App() {
                   aria-label={t(RAIL_LABEL[key])}
                   data-tip={t(RAIL_LABEL[key])}
                   onClick={() => {
-                    if (panel === key) setSidebarOpen((open) => !open);
-                    else {
+                    if (panel === key) {
+                      setSidebarOpen((open) => !open);
+                      // 已经在这一栏、只是被收起来了：展开时也刷一次，等于「看它一眼就取最新」。
+                      if (!sidebarOpen && key === "git") void git.refresh();
+                    } else {
                       setPanel(key);
                       setSidebarOpen(true);
+                      // 切到提交面板就顺手取一次：工作区在别处（终端、外部工具）改过时，
+                      // 光切过来看到的是上一次的快照，得让人主动按刷新才对得上。
+                      if (key === "git") void git.refresh();
                     }
                   }}
                 >
@@ -2819,8 +2891,9 @@ export default function App() {
                       return;
                     }
                     run.start(picked[0]);
-                    revealPane("run");
+                    focusPane("run");
                   }}
+                  onRunScript={runScript}
                 />
               ) : (
                 <WelcomeScreen

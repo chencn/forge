@@ -70,6 +70,8 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   DETACHED_PUSH: (_p, t) => t("error.detachedPush"),
   NO_REMOTE: (_p, t) => t("error.noRemote"),
   NO_COMMAND: (_p, t) => t("error.noCommand"),
+  // 脚本要在终端里跑，但本机没有它要的那种终端：直接拦下，不给终端发一条必挂的命令。
+  NO_TERMINAL: (p, t) => t("error.noTerminal", { terminal: p[0] ?? "" }),
   // 识别出来的配置本机跑不了：缺构建工具 / 缺 JDK / JDK 太老，理由都写在这一条上。
   NO_TOOL: (p, t) => t("error.noTool", { program: p[0] ?? "" }),
   NO_JDK: (_p, t) => t("error.noJdk"),

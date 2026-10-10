@@ -29,6 +29,8 @@ interface DocPaneProps {
   projectRoot: string;
   /** 点了装订线那颗 ▶：一条就直接跑，几条就开选择器让他挑。 */
   onRunConfig: (configs: RunConfiguration[]) => void;
+  /** 点了脚本文件装订线那颗 ▶：把脚本发到对应终端里执行。 */
+  onRunScript: (path: string) => void;
 }
 
 /**
@@ -62,6 +64,7 @@ export default function DocPane({
   runConfigs,
   projectRoot,
   onRunConfig,
+  onRunScript,
 }: DocPaneProps) {
   const { t } = useI18n();
   const sourceCapable = doc.kind !== "image" && doc.kind !== "binary";
@@ -91,6 +94,7 @@ export default function DocPane({
               runConfigs={runConfigs}
               projectRoot={projectRoot}
               onRunConfig={onRunConfig}
+              onRunScript={onRunScript}
             />
           </div>
         ) : null}

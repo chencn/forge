@@ -90,6 +90,8 @@ export const zh = {
   "error.detachedPush": "当前处于游离 HEAD 状态，请先切换到分支再推送",
   "error.noRemote": "该仓库尚未配置远端",
   "error.noCommand": "没有需要运行的命令",
+  // 脚本要在对应终端里跑，本机没装那种终端时直接拦下，不往终端发命令。
+  "error.noTerminal": "这台机器上没有 {terminal}，无法运行该脚本",
   // 运行配置认不出本机工具：条目照样列出来，但要点亮了得说为什么点不亮。
   "error.noTool": "这台机器上没有 {program}，这条现在跑不了",
   "error.noJdk": "这台机器上没有 java，这条现在跑不了",
@@ -170,6 +172,7 @@ export const zh = {
   "run.start": "运行",
   "run.gutter.run": "运行「{name}」",
   "run.gutter.many": "运行「{name}」等 {count} 条",
+  "run.gutter.runInTerminal": "在终端中运行「{name}」",
   "run.stop": "停止",
   "run.rerun": "重新运行",
   "run.clearAll": "清空全部",
