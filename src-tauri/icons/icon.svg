@@ -1,0 +1,18 @@
+<!-- Forge 应用标记：蓝色渐变圆角方块 + 白色大写 F。骨架数值与 scripts/make-icons.mjs 同源。 -->
+<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="forgeMarkBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="rgb(37, 99, 235)" />
+      <stop offset="1" stop-color="rgb(49, 123, 215)" />
+    </linearGradient>
+    <radialGradient id="forgeMarkGlass" cx="0.3" cy="0.24" r="0.95">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.11" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect x="0.96" y="0.96" width="22.08" height="22.08" rx="4.8" fill="url(#forgeMarkBg)" />
+  <rect x="0.96" y="0.96" width="22.08" height="22.08" rx="4.8" fill="url(#forgeMarkGlass)" />
+  <rect x="6" y="3.6" width="3.12" height="16.8" fill="#ffffff" />
+  <rect x="6" y="3.6" width="12" height="3.12" fill="#ffffff" />
+  <rect x="6" y="10.08" width="10.08" height="3.12" fill="#ffffff" />
+</svg>

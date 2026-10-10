@@ -1,0 +1,38 @@
+[package]
+name = "forge"
+version = "0.1.0"
+description = "Forge - Tauri desktop app"
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+name = "forge_lib"
+# 桌面端只由 main.rs 静态链接这个 rlib；开 cdylib 会让 GNU ld 的 PE 导出表超限。
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# protocol-asset：本地图片要经 asset 协议喂给 webview，直接走 file:// 会被 CSP 挡掉。
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "0.9.0"
+base64 = "0.23.1"
+notify = "8"
+# 全文搜索：正则走 regex，遍历目录走 walkdir（两者都已锁在依赖树里，不额外下载）。
+regex = "1"
+walkdir = "2"
+
+# 关掉 WebView2 自带的右键菜单（刷新 / 另存为 / 打印）：桌面应用里不该出现，
+# 应用自己的菜单在前端摆。两者都是 tauri 已经锁在依赖树里的版本，不额外下载。
+[target."cfg(windows)".dependencies]
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

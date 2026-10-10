@@ -1,0 +1,129 @@
+/* ===== Design Tokens ===== */
+:root {
+  color-scheme: light;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
+  --bg-hover: #f3f4f6;
+  --bg-active: #e5e7eb;
+  --chrome-bg: #f8fafc;
+  --app-bg: #eef2f7;
+  --surface-island: rgba(255, 255, 255, 0.78);
+  --surface-island-strong: rgba(255, 255, 255, 1);
+  --surface-island-muted: rgba(248, 250, 252, 0.72);
+  --island-shadow:
+    0 14px 34px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --border-color: #e5e7eb;
+  --border-light: #d1d2d4;
+  --border-subtle: #d1d5db;
+  --text-primary: #111827;
+  --text-secondary: #374151;
+  --text-tertiary: #6b7280;
+  --text-muted: #9ca3af;
+  --accent-green: #22c55e;
+  --accent-green-bg: #dcfce7;
+  --accent-green-text: #166534;
+  /* 运行/停止按钮，取 IDEA 新 UI 主题 expUI_light_with_light_header 的 RunWidget：
+     runningBackground=Green5、stopBackground=Red5、runIconColor=Green5。 */
+  --run-icon: #369650;
+  --run-solid: #369650;
+  --stop-solid: #e55765;
+  /* 会话状态点取 IDEA 的 IconBadge：跑着绿、出错红；结束不再画点。 */
+  --run-badge-running: #55a76a;
+  --run-badge-error: #e55765;
+  --accent-red: #ef4444;
+  --accent-red-bg: #fee2e2;
+  --accent-red-text: #991b1b;
+  --accent-blue: #3b82f6;
+  --accent-blue-bg: #dbeafe;
+  --accent-blue-text: #1d4ed8;
+  /* 实心主按钮那档蓝，深浅两套都用白字；和上面那档用于选中态的蓝不是一回事。 */
+  --button-solid: #3574f0;
+  --button-solid-text: #ffffff;
+  --accent-color: var(--text-primary);
+  --accent-amber-bg: #fef3c7;
+  --accent-amber-text: #92400e;
+  /* 运行配置类型图标还差两档色：Go / Wails 那族用青，.NET 用紫。 */
+  --accent-cyan-text: #0e7490;
+  --accent-violet-text: #6d28d9;
+  /* 分支标记用的实心黄：就是上面那档 amber 的本名，浅色下文字档太暗。 */
+  --accent-yellow: #f59e0b;
+  /* 被 .gitignore 忽略的文件在树里的文字色，取 IDEA 的 FILESTATUS_IDEA_FILESTATUS_IGNORED。 */
+  --vcs-ignored: #8c4f00;
+  --focus-ring: rgba(17, 24, 39, 0.06);
+  --scrollbar-thumb: rgba(148, 163, 184, 0.58);
+  --scrollbar-thumb-hover: rgba(100, 116, 139, 0.78);
+  --scrollbar-thumb-active: rgba(71, 85, 105, 0.9);
+  --selection-bg: rgba(59, 130, 246, 0.2);
+  --on-solid: #ffffff;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+  --sidebar-width: 248px;
+  --sidebar-collapsed-width: 0px;
+  --right-panel-width: 380px;
+  --header-height: 52px;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono:
+    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
+    monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #111111;
+  --bg-tertiary: #1a1a1a;
+  --bg-hover: #1f1f1f;
+  --bg-active: #2a2a2a;
+  --chrome-bg: #141414;
+  --app-bg: #050505;
+  --surface-island: rgba(17, 17, 17, 0.78);
+  --surface-island-strong: rgba(24, 24, 24, 1);
+  --surface-island-muted: rgba(20, 20, 20, 0.68);
+  --island-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --border-color: #2b2b2b;
+  --border-light: #202020;
+  --border-subtle: #3a3a3a;
+  --text-primary: #f5f5f5;
+  --text-secondary: #d4d4d4;
+  --text-tertiary: #a3a3a3;
+  --text-muted: #737373;
+  --accent-green: #4ade80;
+  --accent-green-bg: rgba(34, 197, 94, 0.18);
+  --accent-green-text: #86efac;
+  /* 深色档取 IDEA 新 UI 深色主题的 RunWidget：toolbar-run-bg=green-80、toolbar-stop-bg=red-80。 */
+  --run-icon: #338555;
+  --run-solid: #338555;
+  --stop-solid: #c54e58;
+  /* IconBadge 深色档：successBackground=#5FAD65、errorBackground=#DB5C5C。 */
+  --run-badge-running: #5fad65;
+  --run-badge-error: #db5c5c;
+  --accent-red: #f87171;
+  --accent-red-bg: rgba(239, 68, 68, 0.18);
+  --accent-red-text: #fca5a5;
+  --accent-blue: #58a6ff;
+  --accent-blue-bg: rgba(59, 130, 246, 0.18);
+  --accent-blue-text: #93c5fd;
+  --button-solid: #548af7;
+  --button-solid-text: #ffffff;
+  --accent-color: var(--text-primary);
+  --accent-amber-bg: rgba(245, 158, 11, 0.18);
+  --accent-amber-text: #fcd34d;
+  --accent-cyan-text: #67e8f9;
+  --accent-violet-text: #c4b5fd;
+  --accent-yellow: #fcd34d;
+  /* 被 .gitignore 忽略的文件在树里的文字色（深色档，取 IDEA 的 D69A6B）。 */
+  --vcs-ignored: #d69a6b;
+  --focus-ring: rgba(212, 212, 212, 0.14);
+  --scrollbar-thumb: rgba(113, 113, 122, 0.68);
+  --scrollbar-thumb-hover: rgba(161, 161, 170, 0.82);
+  --scrollbar-thumb-active: rgba(212, 212, 216, 0.9);
+  --selection-bg: rgba(88, 166, 255, 0.28);
+  --on-solid: #0a0a0a;
+}
