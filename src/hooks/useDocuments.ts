@@ -115,7 +115,7 @@ export function useDocuments(reportError: (message: string) => void) {
   const upsert = useCallback(
     (doc: OpenDocument) => {
       const current = listRef.current;
-      const index = current.findIndex((item) => item.path === doc.path);
+      const index = current.findIndex((item) => samePath(item.path, doc.path));
       if (index < 0) write([...current, doc]);
       else {
         const next = [...current];
@@ -152,7 +152,7 @@ export function useDocuments(reportError: (message: string) => void) {
        */
       const existing = current.find((item) => samePath(item.path, path));
       if (existing && existing.error === null) return;
-      if (!current.some((item) => item.path === path)) write([...current, placeholder(path)]);
+      if (!current.some((item) => samePath(item.path, path))) write([...current, placeholder(path)]);
       const kind = docKindOf(path);
       try {
         // 已知的二进制格式：读不出文本也没有预览，打开前就说明，别等 readFile 报错。
@@ -215,7 +215,7 @@ export function useDocuments(reportError: (message: string) => void) {
   const setView = useCallback(
     (path: string, view: DocView) => {
       write(
-        listRef.current.map((item) => (item.path === path ? { ...item, view } : item))
+        listRef.current.map((item) => (samePath(item.path, path) ? { ...item, view } : item))
       );
     },
     [write]
@@ -252,7 +252,7 @@ export function useDocuments(reportError: (message: string) => void) {
   const update = useCallback(
     (path: string, contents: string) => {
       write(
-        listRef.current.map((item) => (item.path === path ? { ...item, contents } : item))
+        listRef.current.map((item) => (samePath(item.path, path) ? { ...item, contents } : item))
       );
     },
     [write]
@@ -298,7 +298,7 @@ export function useDocuments(reportError: (message: string) => void) {
 
   const save = useCallback(
     async (path: string) => {
-      const doc = listRef.current.find((item) => item.path === path);
+      const doc = listRef.current.find((item) => samePath(item.path, path));
       if (!doc || doc.readOnly) return false;
       try {
         const written = await writeFile(path, doc.contents, doc.lineEnding, doc.hasBom);
@@ -397,10 +397,10 @@ export function useDocuments(reportError: (message: string) => void) {
   const close = useCallback(
     (path: string) => {
       const current = listRef.current;
-      const index = current.findIndex((item) => item.path === path);
-      const next = current.filter((item) => item.path !== path);
+      const index = current.findIndex((item) => samePath(item.path, path));
+      const next = current.filter((item) => !samePath(item.path, path));
       write(next);
-      if (activeRef.current === path) {
+      if (activeRef.current !== null && samePath(activeRef.current, path)) {
         activate((next[Math.min(index, next.length - 1)] ?? null)?.path ?? null);
       }
     },
@@ -410,11 +410,10 @@ export function useDocuments(reportError: (message: string) => void) {
   /** 一次关掉一批：逐个调 close 会让每次的旧快照互相覆盖，结果只剩最后一个生效。 */
   const closeMany = useCallback(
     (paths: string[]) => {
-      const doomed = new Set(paths);
-      const survivors = listRef.current.filter((item) => !doomed.has(item.path));
+      const survivors = listRef.current.filter((item) => !paths.some((p) => samePath(p, item.path)));
       write(survivors);
       const active = activeRef.current;
-      if (active !== null && doomed.has(active)) {
+      if (active !== null && paths.some((p) => samePath(p, active))) {
         activate(survivors[survivors.length - 1]?.path ?? null);
       }
     },
@@ -430,7 +429,7 @@ export function useDocuments(reportError: (message: string) => void) {
 
   const dirty = useCallback(
     (path: string) => {
-      const doc = documents.find((item) => item.path === path);
+      const doc = documents.find((item) => samePath(item.path, path));
       return Boolean(doc && doc.contents !== doc.baseline);
     },
     [documents]

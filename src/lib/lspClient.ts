@@ -391,16 +391,17 @@ function handleMessage(server: RunningServer, body: string): void {
     return;
   }
   const message = parsed as {
-    id?: number;
+    id?: number | string;
     method?: string;
     params?: unknown;
     result?: unknown;
     error?: unknown;
   };
-  if (typeof message.id === "number" && message.method === undefined) {
-    const resolve = inflight.get(message.id);
+  if (message.id !== undefined && message.method === undefined) {
+    const numericId = typeof message.id === "number" ? message.id : Number(message.id);
+    const resolve = Number.isFinite(numericId) ? inflight.get(numericId) : undefined;
     if (resolve) {
-      inflight.delete(message.id);
+      inflight.delete(numericId);
       resolve(message.result ?? null);
     }
     return;
@@ -409,11 +410,18 @@ function handleMessage(server: RunningServer, body: string): void {
     applyDiagnostics(message.params as { uri: string; diagnostics: LspDiagnostic[] });
     return;
   }
-  // 少数 server 会发请求回来（`window/workDoneProgress/create` 之类），统一回空结果免得它等。
-  if (typeof message.id === "number" && message.method) {
+  // 少数 server 会发请求回来（`window/workDoneProgress/create`、`workspace/configuration` 等），按协议回复。
+  // 允许数字与字符串类型的 id。
+  if (message.id !== undefined && message.method) {
+    let result: unknown = null;
+    if (message.method === "workspace/configuration") {
+      // 规范要求返回与请求项长度一致的配置数组，返回 null 会导致 TypeScript / ESLint 等服务端抛 TypeError 崩溃
+      const items = (message.params as { items?: unknown[] })?.items;
+      result = Array.isArray(items) ? items.map(() => ({})) : [{}];
+    }
     void lspWrite(
       server.id,
-      JSON.stringify({ jsonrpc: "2.0", id: message.id, result: null })
+      JSON.stringify({ jsonrpc: "2.0", id: message.id, result })
     ).catch(() => {});
   }
 }
@@ -597,7 +605,11 @@ function completionsFromLsp(
       insertText,
       filterText: node.filterText,
       sortText: node.sortText,
-      range: node.textEdit?.range ? rangeFromLsp(node.textEdit.range) : fallbackRange,
+      range: node.textEdit?.range
+        ? rangeFromLsp(node.textEdit.range)
+        : (node.textEdit as { insert?: LspRange })?.insert
+          ? rangeFromLsp((node.textEdit as { insert: LspRange }).insert)
+          : fallbackRange,
     });
   }
   return { suggestions };

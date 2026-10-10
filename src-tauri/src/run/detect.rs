@@ -354,7 +354,7 @@ fn strip_first(text: &str, pattern: &str) -> String {
 
 /// 从 `java -version` 那一行（或一个版本号写法）里取大版本号。
 ///
-/// `1.8.0_202` 里前面那个 1 不是版本号，要往后取一段；认不出来回 0，调用方据此判「不知道」。
+/// `1.8.0_202` 里前面那个 1 不是版本号，要往后取一段；支持 `21-ea`、`21+35` 等早发/构建版本写法；认不出来回 0，调用方据此判「不知道」。
 fn parse_feature(text: &str) -> u16 {
     let token = capture(text, "\"([^\"]+)\"").unwrap_or_else(|| {
         text.trim()
@@ -363,12 +363,17 @@ fn parse_feature(text: &str) -> u16 {
             .unwrap_or_default()
             .to_string()
     });
+    // 兼容 1.8.0、17.0.2、21-ea、21+35 等写法：剥除后缀的非数字字符
+    let parse_num = |s: &str| -> u16 {
+        let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().unwrap_or(0)
+    };
     let parts: Vec<&str> = token.split('.').collect();
-    let first: u16 = parts[0].parse().unwrap_or(0);
+    let first = parts.first().map(|s| parse_num(s)).unwrap_or(0);
     if first > 1 {
         return first;
     }
-    parts.get(1).and_then(|second| second.parse().ok()).unwrap_or(0)
+    parts.get(1).map(|s| parse_num(s)).unwrap_or(0)
 }
 
 /// 这个源文件里有没有可当入口的 main。Java 认 `void main(...)`（含实例 main），Kotlin 认 `fun main`。
@@ -2275,8 +2280,11 @@ mod tests {
         assert_eq!(parse_feature("17.0.2"), 17);
         assert_eq!(parse_feature("1.8"), 8);
         assert_eq!(parse_feature("21"), 21);
+        assert_eq!(parse_feature("21-ea"), 21);
+        assert_eq!(parse_feature("21+35"), 21);
         assert_eq!(parse_feature(r#"openjdk version "1.8.0_202" 2019-01-15"#), 8);
         assert_eq!(parse_feature(r#"openjdk version "17.0.2" 2022-01-18 LTS"#), 17);
+        assert_eq!(parse_feature(r#"openjdk version "21-ea" 2023-09-19"#), 21);
         assert_eq!(parse_feature("none"), 0);
         assert_eq!(parse_feature(""), 0);
     }
