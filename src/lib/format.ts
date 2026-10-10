@@ -113,6 +113,17 @@ export function samePath(a: string, b: string): boolean {
 }
 
 /**
+ * 会话身份用的稳定路径写法：统一分隔符、Windows 盘符小写、去掉末尾斜杠。
+ *
+ * 语言服务的会话键是「server + 根」拼出来的字符串。同一个目录若因来源不同拿到
+ * `D:/app/x` 与 `D:\app\x` 两种写法，会被当成两个工程根各起一条会话——同目录重复起进程、
+ * 诊断与补全各算一遍。这里把两种写法归一到一处。
+ */
+export function canonicalPath(path: string): string {
+  return normPath(path);
+}
+
+/**
  * `path` 是否落在 `ancestor` 这个目录里（或者就是它）。
  * 语言服务按工程根分会话，一份文档归哪条会话管问的是这个。
  */

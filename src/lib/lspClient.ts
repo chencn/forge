@@ -4,7 +4,7 @@ import { lspFailed, lspResolveRoot, lspStart, lspStop, lspWrite } from "./lsp";
 import type { LspExit, LspLog, LspMessage } from "./lsp";
 import { programOf, serverEntries, serverForLanguage } from "./lspConfig";
 import type { LspConfig, LspServerEntry } from "./lspConfig";
-import { parentPath, pathWithin, samePath } from "./format";
+import { canonicalPath, parentPath, pathWithin, samePath } from "./format";
 import { windowLabel } from "./window";
 import { monaco } from "./monacoEditor";
 
@@ -109,9 +109,14 @@ function toUri(path: string): string {
   return monaco.Uri.file(path).toString();
 }
 
-/** 会话键：同一份配置在同一个根上只有一条会话。 */
+/**
+ * 会话键：同一份配置在同一个根上只有一条会话。
+ *
+ * 根先归一化：`D:/app/x` 与 `D:\app\x` 指同一个目录，不归一就会各起一条会话——
+ * 同目录重复进程、诊断与补全各算一遍、状态条上出现两个同名的语言服务。
+ */
 function sessionKey(entry: LspServerEntry, root: string): string {
-  return `${entry.id}${KEY_SEP}${root}`;
+  return `${entry.id}${KEY_SEP}${canonicalPath(root)}`;
 }
 
 /** 根解析的备忘有效时长，与后端那层缓存同长：新加一个 `go.mod` 一分钟内要能认出来。 */
@@ -134,7 +139,9 @@ async function resolveRoot(
   if (held && Date.now() - held.at < ROOTS_TTL) return held.root;
   if (!workspaceRoot) return null;
   const hit = await lspResolveRoot(entry.id, workspaceRoot, file).catch(() => null);
-  const root = hit?.root ?? null;
+  // 后端按原样路径回根，同一目录可能给出 `D:/x` 或 `D:\x` 两种写法；归一化后再当会话身份，
+  // 否则同目录会被当成两个工程根，各起一条会话（状态条上出现两个同名语言服务）。
+  const root = hit?.root ? canonicalPath(hit.root) : null;
   roots.set(memo, { root, at: Date.now() });
   return root;
 }
@@ -814,6 +821,14 @@ function disableBuiltin(language: string): void {
     documentHighlights: false,
     codeActions: false,
   });
+  // 清除 Monaco 已存在于该语言所有模型上的内置 markers，
+  // 否则 setModeConfiguration 仅关闭后续 worker 诊断，已存在的 TS2792 等旧错误会一直残留在界面上
+  const owner = language === "typescript" ? "typescript" : "javascript";
+  for (const model of monaco.editor.getModels()) {
+    if (model.getLanguageId() === language) {
+      monaco.editor.setModelMarkers(model, owner, []);
+    }
+  }
 }
 
 /** 把内置语义恢复到默认（全开）。切回 builtin / off 时用。 */
@@ -837,6 +852,12 @@ function enableBuiltin(language: string): void {
     documentHighlights: true,
     codeActions: true,
   });
+  // 切回内置语义时，清空该语言模型上由外部 LSP 遗留的诊断标记
+  for (const model of monaco.editor.getModels()) {
+    if (model.getLanguageId() === language) {
+      monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, []);
+    }
+  }
 }
 
 /** 每种语言当前的内置语义开关状态，避免每次 reconcile 都白改一遍（改会触发语言服务重算）。 */
@@ -844,12 +865,12 @@ const builtinState = new Map<string, "on" | "off">();
 
 /**
  * 按配置同步内置语义的开关。每种语言算一遍：
- * `lsp` 档关内置，`builtin` / `off` 档恢复内置。
+ * 只有 `builtin` 档启用内置，`lsp` 外部服务或 `off` 全关档均关闭内置。
  * 只有 ts / js 有内置语义可切，别的语言这一步是空转。状态没变就不动。
  */
 function configureBuiltin(config: LspConfig): void {
   for (const entry of serverEntries(config)) {
-    const wanted = entry.mode === "lsp" ? "off" : "on";
+    const wanted = entry.mode === "builtin" ? "on" : "off";
     for (const language of entry.languages) {
       if (builtinState.get(language) === wanted) continue;
       builtinState.set(language, wanted);
@@ -960,6 +981,24 @@ async function reconcileOnce(
   }
 }
 
+/**
+ * 将 Monaco 内部语言 id 规范化为标准 LSP 协议的 languageId。
+ * .tsx 必须传 "typescriptreact"、.jsx 必须传 "javascriptreact"，
+ * 否则外部 tsserver 会以纯 ts/js 语法解析，将 JSX 解析为大量语法错误。
+ */
+function lspLanguageId(filePath: string, language: string): string {
+  const lower = filePath.toLowerCase();
+  if (language === "typescript") {
+    if (lower.endsWith(".tsx")) return "typescriptreact";
+    return "typescript";
+  }
+  if (language === "javascript") {
+    if (lower.endsWith(".jsx")) return "javascriptreact";
+    return "javascript";
+  }
+  return language;
+}
+
 /** 一条会话的文档增删改。调用方已经把落在它那个根里的那批传进来，这里不再筛。 */
 function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
   // 键一律用规范化 URI 串，跟请求侧（`serverRequest` 用 model 的 uri）对得上。
@@ -984,7 +1023,12 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
     if (sentText === undefined) {
       const version = ++server.version;
       notify(server, "textDocument/didOpen", {
-        textDocument: { uri, languageId: document.language, version, text: document.text },
+        textDocument: {
+          uri,
+          languageId: lspLanguageId(document.path, document.language),
+          version,
+          text: document.text,
+        },
       });
       server.opened.set(uri, version);
       server.sent.set(uri, document.text);
@@ -1044,10 +1088,12 @@ export async function wakeLsp(
     return { state: "no-root", root: workspaceRoot, markers: entry.rootMarkers, detail };
   }
   if ("error" in hit) return { state: "failed", detail: hit.error, root: workspaceRoot };
-  const failure = await startServer(entry, hit.root);
-  if (failure) return { state: "failed", detail: failure, root: hit.root };
+  // 同 resolveRoot：后端回的根要归一化，否则和文档路径那条算出的根不是同一个会话键。
+  const root = canonicalPath(hit.root);
+  const failure = await startServer(entry, root);
+  if (failure) return { state: "failed", detail: failure, root };
   await reconcileLsp(workspaceRoot, config, documents);
-  return { state: "started", root: hit.root };
+  return { state: "started", root };
 }
 
 /** 收掉所有会话：换工作区、退出时调。 */

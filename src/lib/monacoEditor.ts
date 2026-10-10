@@ -12,7 +12,13 @@ import jsonWorker from "monaco-editor/language/json/json.worker.js?worker";
 import cssWorker from "monaco-editor/language/css/css.worker.js?worker";
 import htmlWorker from "monaco-editor/language/html/html.worker.js?worker";
 import tsWorker from "monaco-editor/language/typescript/ts.worker.js?worker";
-import { attachMonacoBridge, keymapScheme, onKeymapScheme, themeToken } from "./monacoEnv";
+import {
+  attachMonacoBridge,
+  keymapScheme,
+  onKeymapScheme,
+  openTargetInEditor,
+  themeToken,
+} from "./monacoEnv";
 import { applyKeymap } from "./keymap";
 
 // 走本地 worker，不依赖 CDN：桌面应用离线也要能补全和高亮。
@@ -38,6 +44,53 @@ import { applyKeymap } from "./keymap";
     }
   },
 };
+
+// 配置 Monaco 内置 TypeScript / JavaScript 编译器选项：
+// 避免默认空配置导致 moduleResolution 退回 Classic 从而产生 TS2792 报错，以及开启 React JSX 支持。
+if (monaco.typescript) {
+  const compilerOptions: monaco.typescript.CompilerOptions = {
+    target: monaco.typescript.ScriptTarget.ESNext,
+    module: monaco.typescript.ModuleKind.ESNext,
+    moduleResolution: monaco.typescript.ModuleResolutionKind.NodeJs,
+    jsx: monaco.typescript.JsxEmit.ReactJSX,
+    allowSyntheticDefaultImports: true,
+    esModuleInterop: true,
+    allowNonTsExtensions: true,
+    noEmit: true,
+  };
+  monaco.typescript.typescriptDefaults.setCompilerOptions(compilerOptions);
+  monaco.typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
+
+  // 通配模块声明：内置 Worker 无磁盘 node_modules 访问能力，提供后备声明避免第三方包导入误报 TS2792/TS2307
+  const fallbackDts = "declare module '*';\ndeclare module '*.css';\ndeclare module '*.svg';\n";
+  monaco.typescript.typescriptDefaults.addExtraLib(fallbackDts, "ts:fallback-modules.d.ts");
+  monaco.typescript.javascriptDefaults.addExtraLib(fallbackDts, "ts:fallback-modules.d.ts");
+}
+
+/**
+ * 跳到别的文件时的打开处理。
+ *
+ * Monaco 默认只认「当前 model」，语言服务返回的定义落在别的文件时什么都不做，
+ * 跨文件跳转就成了点了没反应。这里把目标交给 App 那层（读文件、开标签、定位）。
+ * 目标就是当前文件时必须返回 false 交回 Monaco：它自己会把光标挪过去，
+ * 拦下来转交 App 反而绕一圈、还落不到点上。
+ */
+monaco.editor.registerEditorOpener({
+  openCodeEditor(source, resource, selectionOrPosition) {
+    if (resource.scheme !== "file") return false;
+    const current = source.getModel()?.uri;
+    if (current && current.toString() === resource.toString()) return false;
+    const line =
+      selectionOrPosition && "startLineNumber" in selectionOrPosition
+        ? selectionOrPosition.startLineNumber
+        : (selectionOrPosition?.lineNumber ?? 1);
+    const column =
+      selectionOrPosition && "startColumn" in selectionOrPosition
+        ? selectionOrPosition.startColumn
+        : (selectionOrPosition?.column ?? 1);
+    return openTargetInEditor(resource.fsPath, line, column);
+  },
+});
 
 /** 文件 URI，让同一份文件在 Monaco 里只对应一个 model（保留撤销栈）。 */
 export function modelUri(path: string): monaco.Uri {

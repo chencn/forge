@@ -172,6 +172,25 @@ export function attachMonacoBridge(next: MonacoBridge): void {
   bridge = next;
 }
 
+/**
+ * 跳到别的文件时的落点处理，由 App 注入。
+ *
+ * 语言服务的「跳转到定义」要打开的是另一份文件，Monaco 默认对非当前 model 什么都不做，
+ * 所以必须在编辑器模块里注册 opener；而真正把文件读进来、开标签、定位是文档那一层的事，
+ * 编辑器模块拿不到，只能留一个门面让 App 接上。
+ */
+type OpenTargetHandler = (path: string, line: number, column: number) => boolean;
+let openTarget: OpenTargetHandler | null = null;
+
+export function setOpenTargetHandler(handler: OpenTargetHandler | null): void {
+  openTarget = handler;
+}
+
+/** 由编辑器模块的 opener 调用；没接上处理者时返回 false，让 Monaco 走它自己的兜底。 */
+export function openTargetInEditor(path: string, line: number, column: number): boolean {
+  return openTarget ? openTarget(path, line, column) : false;
+}
+
 /** 关闭标签时释放 model，否则切回来还是旧内容。编辑器没加载过时无事可做。 */
 export function disposeModel(path: string): void {
   bridge?.disposeModel(path);

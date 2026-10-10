@@ -72,6 +72,7 @@ import {
   languageLabel,
   selectedText,
   setKeymapScheme,
+  setOpenTargetHandler,
 } from "./lib/monacoEnv";
 import { EMPTY_TREE_HASH, gitCommitDetail, gitCommitFile, gitDiffText, gitIndexShow, gitShow } from "./lib/git";
 import type {
@@ -338,6 +339,22 @@ export default function App() {
   docsRef.current = docs;
   const gitRef = useRef(git);
   gitRef.current = git;
+
+  /**
+   * 语言服务「跳转到定义」落到别的文件时，由这里把那份文件开出来并定位。
+   *
+   * 处理者挂一次就够，内部读 ref 取最新的 openHit，所以依赖是空的：
+   * 进依赖会让每次渲染都重挂一遍 opener。
+   */
+  useEffect(() => {
+    setOpenTargetHandler((path, line, column) => {
+      void docsRef.current.openHit(path, line, column).catch((cause: unknown) => {
+        reportError(errorText(cause));
+      });
+      return true;
+    });
+    return () => setOpenTargetHandler(null);
+  }, [reportError]);
 
   /**
    * 把打开的文档对到语言服务上。
