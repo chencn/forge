@@ -35,11 +35,13 @@ export interface DialogRequest {
   revision?: string;
   /** 删除引用的确认：删的是本地分支、远端分支还是标签，决定用哪句告警。 */
   refKind?: "local" | "remote" | "tag";
+  /** 填的是落盘位置那几类，画一句「落点：…」，省得写相对名时不知道会落到哪个目录。 */
+  hint?: string;
 }
 
 interface PromptDialogProps {
   request: DialogRequest;
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string, extra: string) => void;
   onCancel: () => void;
 }
 
@@ -80,13 +82,25 @@ const PATH_KINDS: Partial<Record<DialogKind, TranslationKey>> = {
   patch: "git.patchPathPlaceholder",
 };
 
+/** 这一类在落盘位置之外还收一个可选名字：填了先开一个新分支再签出，留空直接签出所选那条。 */
+const SECOND_FIELD: Partial<Record<DialogKind, { label: TranslationKey; placeholder: TranslationKey }>> =
+  {
+    worktree: {
+      label: "git.worktreeBranchField",
+      placeholder: "git.worktreeBranchPlaceholder",
+    },
+  };
+
 export default function PromptDialog({ request, onSubmit, onCancel }: PromptDialogProps) {
   const { t } = useI18n();
   const [value, setValue] = useState(request.name);
+  const [extra, setExtra] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const withInput = INPUT_KINDS.includes(request.kind);
   /** 非空说明这一类填的是落盘位置，字段标题和提示语跟着换。 */
   const pathPlaceholder = PATH_KINDS[request.kind];
+  /** 非空说明这一类在落盘位置之外还收一个可选名字。 */
+  const secondField = SECOND_FIELD[request.kind];
   const danger =
     request.kind === "delete" ||
     request.kind === "deleteRef" ||
@@ -127,7 +141,7 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
   const submit = () => {
     const next = value.trim();
     if (withInput && !next) return;
-    onSubmit(next || request.name);
+    onSubmit(next || request.name, extra.trim());
   };
 
   return (
@@ -182,6 +196,31 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
           </label>
         )}
 
+        {withInput && secondField ? (
+          <label className="dialog-field">
+            <span>{t(secondField.label)}</span>
+            <input
+              className="text-input"
+              value={extra}
+              placeholder={t(secondField.placeholder)}
+              spellCheck={false}
+              onChange={(event) => setExtra(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submit();
+                }
+              }}
+            />
+          </label>
+        ) : null}
+
+        {withInput && request.hint ? (
+          <p className="dialog-note" title={request.hint}>
+            {t("git.dialogTarget", { dir: request.hint })}
+          </p>
+        ) : null}
+
         <div className="dialog-actions">
           <button type="button" className="button" onClick={onCancel}>
             {t("dialog.cancel")}
@@ -190,6 +229,8 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
             type="button"
             className={`button ${danger ? "is-danger" : "is-primary"}`}
             onClick={submit}
+            // 空名点确认本来就会被 submit 挡掉，摆一颗点不动的按钮不如直接置灰。
+            disabled={withInput && value.trim() === ""}
             autoFocus={!withInput}
           >
             {request.kind === "delete" ||
@@ -205,7 +246,9 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
                     ? t("dialog.confirm")
                     : request.kind === "checkoutRev"
                       ? t("git.checkoutShort")
-                      : t("dialog.create")}
+                      : request.kind === "renameBranch"
+                        ? t("dialog.rename")
+                        : t("dialog.create")}
           </button>
         </div>
       </div>

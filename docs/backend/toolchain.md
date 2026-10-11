@@ -70,7 +70,7 @@ cargo check --tests --all-targets   # 在 src-tauri/ 下，或 npm run check:rs
 
 ## npm 脚本的展开
 
-`package.json` 的九条：
+`package.json` 的十条：
 
 | 脚本 | 展开 | 说明 |
 | --- | --- | --- |
@@ -78,6 +78,7 @@ cargo check --tests --all-targets   # 在 src-tauri/ 下，或 npm run check:rs
 | `build` | `tsc --noEmit && vite build` | 先类型检查再打包到 `dist/` |
 | `preview` | `vite preview` | 静态预览 `dist/`，同样没有后端 |
 | `check:ts` | `tsc --noEmit` | 只做类型检查，不出产物 |
+| `test:front` | `vitest run` | 前端纯逻辑测试，集中在 `tests/` 镜像 `src/lib` 布局 |
 | `test:rs` | `node scripts/run-rust.mjs test --lib` | 见上一节，要带 `FORGE_TEST_MANIFEST` 才编得出清单 |
 | `check:rs` | `node scripts/run-rust.mjs check` | 日常验证用的就是它 |
 | `tauri` | `tauri` | CLI 直通 |
@@ -87,9 +88,10 @@ cargo check --tests --all-targets   # 在 src-tauri/ 下，或 npm run check:rs
 ## release 配置与依赖面
 
 `[profile.release]`：`codegen-units = 1`、`lto = "thin"`、`strip = "symbols"`。`edition = "2021"`，
-`rust-version = "1.80"`。依赖 9 条：`tauri`（带 `tray-icon` 与 `protocol-asset` 两个特性，后者是本地图片进
+`rust-version = "1.80"`。依赖 10 条：`tauri`（带 `tray-icon` 与 `protocol-asset` 两个特性，后者是本地图片进
 webview 的前提，见 [README.md](./README.md) 的 asset 一节）、`tauri-plugin-dialog`、`serde`、`serde_json`、
-`portable-pty 0.9.0`、`base64 0.23.1`、`notify 8`、`regex 1`、`walkdir 2`。后两条给工作区搜索用，
+`portable-pty 0.9.0`、`base64 0.23.1`、`notify 8`、`regex 1`、`walkdir 2`，unix 目标下另有 `libc 0.2`
+（`proc` / `lsp` 停会话按进程组整树收子进程用，Windows 构建不编译它）。后两条给工作区搜索用，
 `Cargo.toml` 的注释写明它们已经在依赖树里，不额外下载。
 
 没有 `windows` / `winapi` crate，所有 Win32 调用都是 `extern "system"` 裸声明：

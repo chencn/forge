@@ -87,6 +87,8 @@ interface GitPanelProps {
   repoName: string;
   /** 文件行菜单里那几项要动编辑器 / 对话框 / 日志的，落给 App。 */
   onFileAction: (action: CommitFileAction, change: GitChange, staged: boolean) => void;
+  /** 已忽略那一行的「从忽略列表移除」：动的是盖住它的那条规则，落给 App。 */
+  onUnignore: (relative: string) => void;
   /** 修正那一节里的文件：点开看的是那次提交里这一份的差异，不是工作区比对。 */
   onOpenCommitFile: (revision: string, file: GitCommitFile) => void;
 }
@@ -223,6 +225,7 @@ export default function GitPanel({
   onOpenResolve,
   repoName,
   onFileAction,
+  onUnignore,
   onOpenCommitFile,
 }: GitPanelProps) {
   const { t, locale } = useI18n();
@@ -766,11 +769,12 @@ export default function GitPanel({
   const collapseAll = () => {
     setOpenDirs(new Set());
     setCollapsedGroups(
-      new Set([["s|"], ["w|"], ["u|"], ["ig|"]].map(([prefix]) => groupKey(prefix)))
+      new Set([["c|"], ["s|"], ["w|"], ["u|"], ["ig|"]].map(([prefix]) => groupKey(prefix)))
     );
   };
   const expandAll = () => {
-    setOpenDirs(new Set(allDirKeys([["s|", staged], ["w|", unstaged], ["u|", untracked]])));
+    // 未合并那一组也算在内：合并撞冲突时只展开三组会让人看不到要解决的那几个文件。
+    setOpenDirs(new Set(allDirKeys([["c|", conflicts], ["s|", staged], ["w|", unstaged], ["u|", untracked]])));
     setCollapsedGroups(new Set());
   };
   const refreshAll = () => void git.refresh();
@@ -933,7 +937,23 @@ export default function GitPanel({
           <section className="change-group">
             {groupHead("ig|", t("git.ignored"), ignored.length)}
             {collapsedGroups.has(groupKey("ig|")) ? null : ignored.map((relative) => (
-              <div key={`ig|${relative}`} className="change-row is-ignored">
+              <div
+                key={`ig|${relative}`}
+                className="change-row is-ignored"
+                onContextMenu={(event) =>
+                  openMenu(event, [
+                    {
+                      label: t("git.unignoreFile"),
+                      icon: CircleSlash,
+                      onSelect: () => onUnignore(relative),
+                    },
+                    {
+                      label: t("menu.copyPath"),
+                      onSelect: () => void navigator.clipboard.writeText(absolute(relative)),
+                    },
+                  ])
+                }
+              >
                 <button
                   type="button"
                   className="change-main"
@@ -1168,7 +1188,8 @@ export default function GitPanel({
               >
                 {t("git.commitAndPush")}
               </button>
-              {staged.length === 0 && !amend ? (
+              {/* 「提交全部」开着时暂存区空也能提交，这句提示就不该再挡在那儿。 */}
+              {staged.length === 0 && !amend && !commitAll ? (
                 <p className="commit-hint">{t("git.nothingStaged")}</p>
               ) : null}
             </div>

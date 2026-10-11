@@ -243,10 +243,12 @@ fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOut
     if let Some(input) = stdin {
         // 先写完再关管道（drop），git 读完才会退出，不会死锁。
         use std::io::Write;
+        // 上面 match 的 Some 分支已把 stdin 置 piped，take() 必有值；真碎了会 panic，
+        // 由 block() 折成 GIT_SPAWN 回前端，这里不编后端文案。
         child
             .stdin
             .take()
-            .ok_or_else(|| err("GIT_SPAWN", "stdin 未接通"))?
+            .expect("git stdin piped")
             .write_all(input.as_bytes())
             .map_err(|error| err("GIT_SPAWN", error))?;
     }
@@ -1262,21 +1264,69 @@ fn git_init_impl(root: String) -> Result<String, String> {
 }
 
 /// 新建工作树：把 `branch` 签出到 `path` 那个目录里。
+/// `new_branch` 非空时先在那条引用上开一个新分支再签出——手上这条分支已经在
+/// 这个工作树里被占着，直接 `worktree add <路径> <当前分支>` 一定被 git 拒。
 #[tauri::command]
-pub async fn git_worktree_add(root: String, path: String, branch: String) -> Result<String, String> {
-    block(move || git_worktree_add_impl(root, path, branch)).await
+pub async fn git_worktree_add(
+    root: String,
+    path: String,
+    branch: String,
+    new_branch: String,
+) -> Result<String, String> {
+    block(move || git_worktree_add_impl(root, path, branch, new_branch)).await
 }
 
-fn git_worktree_add_impl(root: String, path: String, branch: String) -> Result<String, String> {
+fn git_worktree_add_impl(
+    root: String,
+    path: String,
+    branch: String,
+    new_branch: String,
+) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&branch) {
         return Err(err("BAD_REV", &branch));
     }
+    if !new_branch.is_empty() && !valid_branch_name(&new_branch) {
+        return Err(err("BAD_BRANCH", &new_branch));
+    }
     if path.trim().is_empty() {
         return Err(err("BAD_PATH", &path));
     }
-    let output = run_git(&root, &["worktree", "add", path.as_str(), branch.as_str()])?;
+    let args: Vec<&str> = if new_branch.is_empty() {
+        vec!["worktree", "add", path.as_str(), branch.as_str()]
+    } else {
+        vec![
+            "worktree",
+            "add",
+            "-b",
+            new_branch.as_str(),
+            path.as_str(),
+            branch.as_str(),
+        ]
+    };
+    let output = run_git(&root, &args)?;
     if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(trim_line(&output.stdout))
+}
+
+/// 查是哪一条忽略规则盖住了这个路径，回 `check-ignore -v` 的原样一行
+/// （`来源文件:行号:模式<TAB>路径`）。没被任何规则盖住时 git 退 1 且不写东西，这里回空串。
+#[tauri::command]
+pub async fn git_ignore_rule(root: String, path: String) -> Result<String, String> {
+    block(move || git_ignore_rule_impl(root, path)).await
+}
+
+fn git_ignore_rule_impl(root: String, path: String) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    let relative = relative_path(&root, &path)?;
+    // --no-index：已跟踪的文件也要能问出它是被哪条规则盖住的，否则 git 一律不回话。
+    let output = run_git(&root, &["check-ignore", "-v", "--no-index", relative.as_str()])?;
+    if !output.ok {
+        if output.stdout.trim().is_empty() && output.stderr.trim().is_empty() {
+            return Ok(String::new());
+        }
         return Err(fail(&output));
     }
     Ok(trim_line(&output.stdout))
@@ -1312,53 +1362,6 @@ fn git_restore_file_impl(root: String, revision: String, path: String) -> Result
     };
     if !output.ok {
         return Err(fail(&output));
-    }
-    Ok(relative)
-}
-
-/// 针对历史某次提交中的单个文件应用反向补丁（撤销该提交对该文件的改动）。
-#[tauri::command]
-pub async fn git_revert_file(
-    root: String,
-    commit: String,
-    path: String,
-) -> Result<String, String> {
-    block(move || git_revert_file_impl(root, commit, path)).await
-}
-
-fn git_revert_file_impl(root: String, commit: String, path: String) -> Result<String, String> {
-    let root = ensure_root(&root)?;
-    if !valid_rev(&commit) {
-        return Err(err("BAD_REV", &commit));
-    }
-    let relative = relative_path(&root, &path)?;
-    let parent = format!("{commit}~1");
-    // 计算反向 diff：抵消该次 commit 引入的改动
-    let diff = run_git(
-        &root,
-        &[
-            "diff",
-            "-R",
-            parent.as_str(),
-            commit.as_str(),
-            "--",
-            relative.as_str(),
-        ],
-    )?;
-    if !diff.ok {
-        return Err(fail(&diff));
-    }
-    if diff.stdout.trim().is_empty() {
-        return Ok(relative);
-    }
-    // 将反向 diff 安全应用到当前工作区，启用 3-way fallback
-    let applied = run_git_stdin(
-        &root,
-        &["apply", "-3", "--whitespace=nowarn"],
-        &diff.stdout,
-    )?;
-    if !applied.ok {
-        return Err(fail(&applied));
     }
     Ok(relative)
 }
@@ -2149,8 +2152,9 @@ fn git_commit_file_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        git_authors_impl, git_commit_detail_impl, git_log_impl, git_status_impl,
-        merge_file_lists, parse_log, parse_refs, parse_status, valid_range, valid_rev, GitLogQuery,
+        git_authors_impl, git_commit_detail_impl, git_log_impl, git_restore_file_impl,
+        git_status_impl, merge_file_lists, parse_log, parse_refs, parse_status, valid_range,
+        valid_rev, GitLogQuery,
     };
     // relative_path 的用例直接拿 &Path 当根，这里补上类型导入。
     use std::path::Path;
@@ -2496,6 +2500,86 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// 起一个真实 git 仓库的测试沙盒：init、身份、关掉换行转换（补丁应用对行尾敏感，
+    /// 测试机各自的 autocrlf 不该影响断言）。返回目录与一条跑 git 的闭包。
+    fn git_sandbox(name: &str) -> (std::path::PathBuf, impl Fn(&[&str])) {
+        let dir = std::env::temp_dir().join(format!("forge-git-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = {
+            let dir = dir.clone();
+            move |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&dir)
+                    .args(args)
+                    .output()
+                    .expect("起 git 进程失败（测试机需要装 git）");
+                assert!(
+                    output.status.success(),
+                    "git {args:?} 失败：{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@forge.local"]);
+        run(&["config", "user.name", "forge"]);
+        run(&["config", "core.autocrlf", "false"]);
+        (dir, run)
+    }
+
+    /// 在沙盒里跑一条有输出的 git 命令并取 stdout（取哈希用）。
+    fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("起 git 进程失败（测试机需要装 git）");
+        assert!(
+            out.status.success(),
+            "git {args:?} 失败：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn restore_file_empty_revision_restores_from_index_not_head() {
+        // 已暂存「two」、工作区又改「three」：空 revision 的回滚丢的只是未暂存那层，
+        // 索引内容原样；非空 revision 仍从指定版本取。
+        let (dir, git) = git_sandbox("restore-index");
+        std::fs::write(dir.join("f.txt"), "one").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(dir.join("f.txt"), "two").unwrap();
+        git(&["add", "f.txt"]);
+        std::fs::write(dir.join("f.txt"), "three").unwrap();
+
+        let root = dir.to_string_lossy().into_owned();
+        let path = dir.join("f.txt").to_string_lossy().into_owned();
+        git_restore_file_impl(root.clone(), String::new(), path.clone()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "two",
+            "空 revision 从索引恢复，只丢未暂存那层"
+        );
+        // 索引那层没被碰：暂存的「two」对 HEAD 仍是已暂存修改，工作区这层已并平。
+        let porcelain = git_stdout(&dir, &["status", "--porcelain"]);
+        assert!(
+            porcelain.contains("M  f.txt"),
+            "restore 不碰 index，暂存内容要还在：{porcelain:?}"
+        );
+        git_restore_file_impl(root, "HEAD".to_string(), path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "one",
+            "非空 revision 仍从指定版本取"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

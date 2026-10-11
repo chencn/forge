@@ -1,6 +1,6 @@
 # 命令契约
 
-逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，共 95 条。出处列给命令自己的行号。
+逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，共 96 条。出处列给命令自己的行号。
 参数一律写前端传的 camelCase 名（映射规则见 [README.md](./README.md)）。
 发事件的命令只有四条：`fs_watch_start` 起的那条转发线程发 `fs://change`，`term_open` 的 reader 线程发
 `term://output` / `term://exit`，`proc_start` 的转发与轮询线程发 `proc://output` / `proc://exit`，
@@ -32,16 +32,16 @@
 | `open_external` | `url` | `()` | `ShellExecuteW`，不经 cmd。入参先过白名单：协议只认 `http` / `https` / `mailto` / `tel`，其余写法（`file:` / `ms-msdt:` / `javascript:` …）与盘上不存在的路径、可执行后缀（`.exe` / `.lnk` / `.ps1` …）一律 `EXTERNAL_BLOCKED`。markdown 里的链接是外部输入，不能让它决定执行什么 | `fs/mod.rs:381` |
 | `find_files` | `root, query, limit?, filter?{showHidden,ignored[]}` | `FileHits{query,items[],truncated}` | 按名字找文件与目录。名字打分四档：全等 4 > 前缀 3 > 包含 2 > 逐字顺次出现 1；排序按档位降序、路径短的在前、再字典序。剪掉 `.git` / `node_modules` / `target` / `dist` / `build` / `out`，不跟软链，深 24 层、访问 200_000 条目封顶，匹配攒到 2000 条即停，触闸置 `truncated`。`filter` 是可见性闸门（`ScanFilter`）：`showHidden` 为假时剪掉隐藏项，`ignored` 里那些绝对前缀之下的路径整棵剪掉，两者都在扫描层生效、不占条目与命中预算。`limit` 传 0 或缺省走 100 条那档，钳到 1..5000；词全空白回空表不报错；`root` 不是目录给 `NOT_DIR` | `fs/search.rs:253` |
 | `search_text` | `root, query, options{caseSensitive,wholeWords,regex,fileMask,limit}, filter?{showHidden,ignored[]}` | `TextPage{query,hits[],files,truncated,skipped}` | 逐文件扫正文。每条命中带 `line`（1 起）、`snippet`、`snippetFrom`（片段首字符在原行里的列号）和这一行的 `ranges{column,length}`（1 起、按字符数）；片段最长 240 字符，整行超过它就以首处命中为中心截。单文件 20 MiB 封顶，开头 4096 字节里见 NUL 当二进制跳过；太大、二进制、非 UTF-8、读不到四类合并计入 `skipped`。`filter` 同 `find_files`，剪掉的项不计入 `skipped`。`fileMask` 逗号或分号分隔、只认 `*`、空表示不限；`wholeWords` 只在非正则下生效；`regex` 为真时词编不成正则给 `BAD_REGEX`；`limit` 同 `find_files` 那两档；`root` 不是目录给 `NOT_DIR` | `fs/search.rs:596` |
-| `fs_watch_start` | `root` | `()` | 递归监听；已有监听先停；去抖 150ms 后发 `fs://change{paths}` | `watch.rs:48` |
-| `fs_watch_stop` | — | `()` | 丢句柄，转发线程随之退出 | `watch.rs:77` |
+| `fs_watch_start` | `root, generation` | `()` | 递归监听；已有监听先停；`generation` 是前端每次换根递增的代号令牌，锁内比对，慢到的旧请求直接放弃；去抖 150ms 后发 `fs://change{paths}` | `watch.rs:83` |
+| `fs_watch_stop` | `root, generation` | `()` | 令牌与 root 都对上槽里那轮才清槽，过期请求什么都不动；丢句柄后转发线程随之退出。没有可失败的分支，签名不带 `Result` | `watch.rs:153` |
 
-## Git（47）
+## Git（48）
 
 `root` 是仓库根绝对路径，只有 `git_probe` 收 `path`（可以是子目录，它往里找）、`git_init` 收的那个
 目录还谈不上是仓库（就是打开的那个文件夹）。带 `revision` / `branch` / `name` 的都先过字符集校验。
 
 非 `async` 的 `#[tauri::command]` 在主线程执行，一次 `git status` 就把窗口冻住。git 这一节现在
-**四十七条全部是 `async`**，命令体一律经 `git::block`（`spawn_blocking`）跑在阻塞线程池上；
+**四十八条全部是 `async`**，命令体一律经 `git::block`（`spawn_blocking`）跑在阻塞线程池上；
 新加的那条也要照这个写法，别再留同步的。
 每条 git 命令都过 `hide_console`：主程序是 windows 子系统，没有控制台可继承，不设这个标志的话每个 `git.exe`
 都要自己新建一个控制台。
@@ -73,8 +73,9 @@
 | `git_delete_tag` | `root, name` | `String` | `tag -d` | `:813` |
 | `git_push_ref` | `root, name` | `String` | `push <远端> <name>`；远端从引用名前缀或上游推出来 | `:854` |
 | `git_delete_remote_branch` | `root, name` | `String` | `push <remote> --delete <branch>`，`name` 形如 `origin/x` | `:865` |
-| `git_worktree_add` | `root, path, branch` | `String` | `worktree add <path> <branch>`；branch 必须非空，空串是 `BAD_REV` | `:879` |
-| `git_restore_file` | `root, revision, path` | `String`（仓库相对路径） | `restore --source <rev> --worktree --`，不动索引 | `:896` |
+| `git_worktree_add` | `root, path, branch, new_branch` | `String` | `worktree add <path> <branch>`；`new_branch` 非空时先 `-b <new_branch>` 在那条引用上开新分支再签出（当前分支已被本工作树占着，直接签出必被拒）；branch 必须非空，空串是 `BAD_REV` | `:1270` |
+| `git_ignore_rule` | `root, path` | `String` | `check-ignore -v` 的原样一行（`来源文件:行号:模式<TAB>路径`）；没被任何规则盖住时 git 退 1，这里回空串 | `:1317` |
+| `git_restore_file` | `root, revision, path` | `String`（仓库相对路径） | revision 空时 `restore --worktree --`（从暂存区索引恢复，不碰索引），否则 `restore --source <rev> --worktree --` | `:1337` |
 | `git_diff_text` | `root, left, right, path` | `String` | `diff --no-color --no-ext-diff`；`right` 空即工作树，`path` 空即整条提交 | `:921` |
 | `git_diff_names` | `root, revision` | `GitNameStatus[]` | `diff --name-status -z <revision>`，即该引用对工作树；R/C 带旧路径 | `:966` |
 | `git_rebase_continue` | `root` | `String` | `-c core.editor=true rebase --continue` | `:998` |
@@ -173,7 +174,7 @@
 | `src-tauri/src/history.rs` | `History` `:25-33`、`migrate_from_settings` `:38-63`、`load_in` `:71-81`、`save_in` `:84-89`、`read` `:92-97`、`history_load` / `history_save` `:101-117`、单测 4 条 `:119` 起 |
 | `src-tauri/src/tray.rs` | `tray_labels` `:68-76`、`app_exit` `:122-126` |
 | `src-tauri/src/sys.rs` | `hide_console` 的 `CREATE_NO_WINDOW` `:5-11`、`write_atomic` 的 tmp+rename `:25-33`、`which_program` 的 Windows 扩展名候选 `:65-76`、`capture_text`（stdout 空了取 stderr）`:80-101`、`group` 的 ppid 走树与按程序归并 `:154-212`、`win::private_set_of` `:305-316`、`win::snapshot` `:319-341`、`sys_memory` `:369-376`、单测 4 条 `:378` 起 |
-| `src-tauri/src/watch.rs` | `fs_watch_start` `:47-73`、`fs_watch_stop` `:76-79`、`SETTLE` / `BATCH_CAP` `:19-22` |
+| `src-tauri/src/watch.rs` | `fs_watch_start` `:83-144`、`fs_watch_stop` `:146-169`、`SETTLE` / `BATCH_CAP` `:19-22` |
 | `src/lib/fs.ts` | `findFiles` / `searchText` `:226-233`、搜索结果的 TS 镜像 `:147-223` |
 | `src/lib/lsp.ts` | 会话状态、探测报告、安装结果、根命中的 TS 镜像 `:26-68`、十二条命令的封装 `:71-132`（`lspStart` 收 `window` / `server` / `root` / `program` / `args` `:71`） |
 | `src/lib/lspConfig.ts` | `LspMode` 与两份结构的镜像 `:12-46`、`modesFor` `:49`、`programOf` 的 path 优先 `:54`、`serverEntries` / `serverForLanguage` `:59-70`、读写两条封装 `:72-83` |

@@ -5,6 +5,7 @@ import type { LspExit, LspLog, LspMessage } from "./lsp";
 import { programOf, serverEntries, serverForLanguage } from "./lspConfig";
 import type { LspConfig, LspServerEntry } from "./lspConfig";
 import { canonicalPath, parentPath, pathWithin, samePath } from "./format";
+import { translate } from "../i18n";
 import { windowLabel } from "./window";
 import { monaco } from "./monacoEditor";
 
@@ -337,12 +338,18 @@ function ensureSubscriptions(): void {
   });
   void listen<LspLog>("lsp://log", (event) => {
     // 后端必须有人把这条管道读干净，否则缓冲满了 server 会卡住；内容留在 `logs` 里给界面看与复制。
-    appendLog(event.payload.id, event.payload.text);
+    appendLog(event.payload.id, lspLogLine(event.payload));
     const serverId = ownerOf(event.payload.id);
     if (serverId) console.debug(`[lsp:${serverId}]`, event.payload.text);
   }).then((off) => {
     detachLog = off;
   });
+}
+
+/** 后端状态行（kind 为 protocol）的 text 是稳定标记，在此翻成当前语言；server 输出原样保留。 */
+function lspLogLine(log: LspLog): string {
+  if (log.kind !== "protocol") return log.text;
+  return log.text === "read_limit_hit" ? translate("lsp.log.readLimit") : log.text;
 }
 
 /** 会话 id → server id：进程退出之后日志还要留在卡片上，所以这份映射不跟着会话删。 */

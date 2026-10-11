@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basenameOf, isWindowsPath, joinPath, nativeSeparators, parentPath, resolveRelative, samePath, separator } from "../../src/lib/format";
+import { basenameOf, isWindowsPath, joinPath, nativeSeparators, parentPath, patchStem, resolveRelative, samePath, separator } from "../../src/lib/format";
 
 describe("isWindowsPath / separator", () => {
   it("盘符与 UNC 算 Windows 形状，反斜杠正斜杠都认", () => {
@@ -66,5 +66,20 @@ describe("basenameOf / resolveRelative", () => {
     expect(resolveRelative("D:\\doc", "../shared/x.md")).toBe("D:\\shared\\x.md");
     // 根的上一级没有：停在根，不越出去。
     expect(resolveRelative("D:\\", "../x")).toBe("D:\\x");
+  });
+});
+
+describe("patchStem 补丁主名", () => {
+  it("普通文件去掉最后一段扩展名", () => {
+    expect(patchStem("src/format.js")).toBe("format");
+    expect(patchStem("CHANGELOG.md")).toBe("CHANGELOG");
+    expect(patchStem("a.tar.gz")).toBe("a.tar");
+  });
+
+  it("点开头没有主名的文件退回整个名字，不写出以连字符开头的补丁名", () => {
+    // 「.gitignore-worktree.patch」才对；退化成「-worktree.patch」等于把文件名整个吃掉。
+    expect(patchStem(".gitignore")).toBe(".gitignore");
+    expect(patchStem(".env")).toBe(".env");
+    expect(patchStem("Dockerfile")).toBe("Dockerfile");
   });
 });

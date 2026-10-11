@@ -421,7 +421,9 @@ export default function GitLogPane({
     return () => {
       stale = true;
     };
-  }, [root, settledText, regex, author, reference, pathFilter, since, signal, reportError]);
+    // HEAD 一动就得重查：引用留空那一档查的就是「当前分支」，签出别的分支或提交完
+    // HEAD 前移，列表停在旧结果会让人拿别的分支的历史做重置、优选。
+  }, [root, settledText, regex, author, reference, pathFilter, since, signal, reportError, git.lastCommit?.hash, git.status?.branch]);
 
   useEffect(() => {
     if (!root || !selectedHash) {
@@ -658,8 +660,13 @@ export default function GitLogPane({
           onRefAction("rename", pickedRef);
         }
       } else if (event.key === "Delete") {
-        event.preventDefault();
-        onRefAction("delete", pickedRef);
+        // 只认分支树里焦点落过的那一下：资源管理器侧也绑了 Delete，两边都接手会先弹出
+        // 「永久删除文件」的确认框，删掉的是盘上的东西，不是这条引用。
+        if (target?.closest(".log-refs")) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          onRefAction("delete", pickedRef);
+        }
       } else if (event.key === "Enter") {
         // 这条只管分支树里有焦点的那一下：回车把日志收到选中的那条引用上。
         if (target?.closest(".log-refs")) {
@@ -998,6 +1005,7 @@ export default function GitLogPane({
       t,
       current: git.status?.branch ?? "",
       upstream: upstreamOf(git.branches, target),
+      detached: git.status?.detached ?? false,
       onAction: onRefAction,
       onCompareWith: (held) => setReference(`${git.status?.branch ?? ""}..${held.name}`),
       onDiffWithWorktree: (held) => setCompareRef(held.name),
@@ -1591,7 +1599,12 @@ export default function GitLogPane({
           <button
             type="button"
             className="icon-button is-tiny"
-            onClick={() => setSignal((value) => value + 1)}
+            onClick={() => {
+              setSignal((value) => value + 1);
+              // 这一句的标题是「刷新状态」：提交行菜单按 HEAD 与上游判定的那几项读的是仓库状态那一份，
+              // 只重查日志会让它们停在旧结论上。
+              void git.refresh();
+            }}
             title={t("git.refresh")}
           >
             <RefreshCw size={12} className={logLoading ? "is-spinning" : undefined} />

@@ -297,6 +297,7 @@ export default function BranchPicker({
           t,
           current: git.status?.branch ?? "",
           upstream: upstreamOf(git.branches, target),
+          detached: git.status?.detached ?? false,
           onAction: (action, held) => take(() => onRefAction(action, held)),
           onCompareWith: (held) => take(() => onRefInspect(held, "compare")),
           onDiffWithWorktree: (held) => take(() => onRefInspect(held, "worktree")),

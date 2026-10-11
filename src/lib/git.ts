@@ -309,19 +309,30 @@ export function gitDeleteRemoteBranch(root: string, name: string): Promise<strin
   return invoke<string>("git_delete_remote_branch", { root, name });
 }
 
-/** 新建工作树：把 branch 签出到 path 目录里。 */
-export function gitWorktreeAdd(root: string, path: string, branch: string): Promise<string> {
-  return invoke<string>("git_worktree_add", { root, path, branch });
+/**
+ * 新建工作树：把 branch 签出到 path 目录里。
+ * newBranch 非空时先在那条引用上开一个新分支再签出，留空就是直接签出所选那条。
+ */
+export function gitWorktreeAdd(
+  root: string,
+  path: string,
+  branch: string,
+  newBranch: string
+): Promise<string> {
+  return invoke<string>("git_worktree_add", { root, path, branch, newBranch });
+}
+
+/**
+ * 查是哪一条忽略规则盖住了这个路径，回 `check-ignore -v` 那一行原文：
+ * `来源文件:行号:模式<TAB>路径`。没被盖住时回空串。
+ */
+export function gitIgnoreRule(root: string, path: string): Promise<string> {
+  return invoke<string>("git_ignore_rule", { root, path });
 }
 
 /** 把某个版本下的文件内容写回工作区，不动索引；revision 为空时从暂存区恢复。 */
 export function gitRestoreFile(root: string, revision: string, path: string): Promise<string> {
   return invoke<string>("git_restore_file", { root, revision, path });
-}
-
-/** 针对历史某次提交中的单个文件应用反向差异（撤销该提交对该文件的改动）。 */
-export function gitRevertFile(root: string, commit: string, path: string): Promise<string> {
-  return invoke<string>("git_revert_file", { root, commit, path });
 }
 
 /** 两侧版本之间某个文件的统一差异；right 空串表示工作区那一侧。 */

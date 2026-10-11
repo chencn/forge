@@ -4,7 +4,7 @@
 //! 事件粒度太细会让前端各处都要判类型，而它真正要做的只是「重新读一遍」。
 
 use crate::error::{err, err_parts};
-use crate::offload::block;
+use crate::offload::{block, block_value};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -148,12 +148,17 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
 /// root 与代号合起来是令牌：两者都对得上槽里那轮才真的清槽。stop 走阻塞线程池，
 /// 可能比用户随手换目录后那次新 start 晚到——不看令牌就无条件清，会把刚装好的
 /// 新监听掐死；对不上说明这条 stop 已经过期，什么都不动。
+/// 没有可失败的分支（过期即忽略），签名不带 `Result`（error-model 的无失败分支清单）。
 #[tauri::command]
-pub async fn fs_watch_stop(app: AppHandle, root: String, generation: u64) -> Result<(), String> {
-    block(move || fs_watch_stop_impl(app, root, generation)).await
+pub async fn fs_watch_stop(app: AppHandle, root: String, generation: u64) {
+    block_value(
+        move || fs_watch_stop_impl(app, root, generation),
+        || (),
+    )
+    .await
 }
 
-fn fs_watch_stop_impl(app: AppHandle, root: String, generation: u64) -> Result<(), String> {
+fn fs_watch_stop_impl(app: AppHandle, root: String, generation: u64) {
     let slot = app.state::<WatchSlot>();
     let mut guard = slot.inner.lock().expect("监听槽位锁");
     let matches = guard.as_ref().is_some_and(|active| {
@@ -162,7 +167,6 @@ fn fs_watch_stop_impl(app: AppHandle, root: String, generation: u64) -> Result<(
     if matches {
         *guard = None;
     }
-    Ok(())
 }
 
 /// 攒批并发的转发线程。收到第一条后继续等静默期，把这段时间内的都并进来再发。

@@ -74,7 +74,7 @@ import {
   setKeymapScheme,
   setOpenTargetHandler,
 } from "./lib/monacoEnv";
-import { EMPTY_TREE_HASH, gitCommitDetail, gitCommitFile, gitDiffText, gitIndexShow, gitShow } from "./lib/git";
+import { EMPTY_TREE_HASH, gitCommitDetail, gitCommitFile, gitDiffText, gitIgnoreRule, gitIndexShow, gitShow } from "./lib/git";
 import type {
   GitChange,
   GitCommit as GitCommitInfo,
@@ -110,7 +110,7 @@ import {
   scriptTerminalLabel,
 } from "./lib/scriptRun";
 import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
-import { basenameOf, joinPath, parentPath, resolvePath, samePath } from "./lib/format";
+import { basenameOf, joinPath, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
 import { appExit, setTrayLabels } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
@@ -1306,13 +1306,9 @@ export default function App() {
           break;
         }
         case "revert":
-          if (parent) {
-            void git.revertFile(commit.hash, absolute).then((done) => {
-              if (!done) return;
-              refreshTree();
-              void docs.noteExternalChange([absolute]);
-            });
-          }
+          // 撤销那次改动＝把这条提交的父版写回工作区；只动工作区，索引留着不动，
+          // 人还能用「全部取消暂存」那条路退回去。
+          if (parent) void writeBack(parent, absolute);
           break;
         case "getFromRevision":
           void writeBack(commit.hash, absolute);
@@ -1320,11 +1316,12 @@ export default function App() {
         case "patch":
           setDialog({
             kind: "patch",
-            name: `${basenameOf(file.path).replace(/\.[^.]+$/, "")}-${commit.short}.patch`,
+            name: `${patchStem(file.path)}-${commit.short}.patch`,
             path: file.path,
             revision: commit.hash,
             from: parent || EMPTY_TREE_HASH,
             dir: workspaceRoot,
+            hint: workspaceRoot ?? undefined,
             entry: null,
           });
           break;
@@ -1395,6 +1392,40 @@ export default function App() {
       }
     },
     [git.root, refreshTree, reportError]
+  );
+
+  /**
+   * 从忽略列表移除，去掉的是**盖住这一条的那条规则**：`logs/run.log` 是被 `*.log` 盖住的，
+   * 照它的路径写一条反向规则动不到那条通配。规则也不一定写在 `.gitignore` 里——可能在
+   * `.git/info/exclude`，也可能在用户的全局忽略文件里；仓库外那份只报在哪个文件，不动它。
+   */
+  const removeFromGitignore = useCallback(
+    async (relative: string) => {
+      if (!git.root) return;
+      const rule = await gitIgnoreRule(git.root, relative);
+      const hit = /^(.*?):(\d+):/.exec(rule);
+      if (!hit) {
+        reportError(t("git.ignoreRuleMissing", { path: relative }));
+        return;
+      }
+      const source = resolvePath(git.root, hit[1] ?? "");
+      if (!pathWithin(git.root, source)) {
+        reportError(t("git.ignoreRuleOutside", { file: source }));
+        return;
+      }
+      const line = Number(hit[2]);
+      try {
+        const body = (await readFile(source)).contents;
+        const lines = body.split(/\r?\n/);
+        lines.splice(line - 1, 1);
+        await writeFile(source, lines.join("\n"), "lf", false);
+        refreshTree();
+        await git.refresh();
+      } catch (cause) {
+        reportError(errorText(cause));
+      }
+    },
+    [git, refreshTree, reportError, t]
   );
 
   /** 剪切 / 复制攒下这一批，连同它是挪走还是留下。 */
@@ -1590,11 +1621,12 @@ export default function App() {
         case "patch":
           setDialog({
             kind: "patch",
-            name: `${basenameOf(change.path).replace(/\.[^.]+$/, "")}-worktree.patch`,
+            name: `${patchStem(change.path)}-worktree.patch`,
             path: change.path,
             revision: "",
             from: "HEAD",
             dir: workspaceRoot,
+            hint: workspaceRoot ?? undefined,
             entry: null,
           });
           break;
@@ -1641,6 +1673,12 @@ export default function App() {
       const has = selection.length > 0;
 
       // IDEA 在树里给的是整个 Git 子菜单（Git.ContextMenu），这里只摆后端撑得住的三条。
+      // 未跟踪那一条还没有来路可查：历史记录查的是这条路径在提交里的经过，一次都没提交过就是空的。
+      const untrackedSole =
+        sole !== null &&
+        (git.status?.changes ?? []).some(
+          (change) => change.untracked && change.path === repoRelative(sole.path)
+        );
       const gitGroup: MenuItem[] =
         !git.root || files.length === 0
           ? []
@@ -1652,7 +1690,7 @@ export default function App() {
                     label: t("git.stage"),
                     onSelect: () => void git.stage(files.map((entry) => entry.path)),
                   },
-                  ...(sole
+                  ...(sole && !untrackedSole
                     ? [
                         {
                           label: t("git.history"),
@@ -1817,6 +1855,9 @@ export default function App() {
       ) {
         return;
       }
+      // 日志的引用树自己绑了 Delete（删的是那条引用，不是盘上的东西）：焦点在它身上时
+      // 这一侧要整句让开，否则两个确认框叠着弹，先出来的那个把后一个顶掉。
+      if (focus?.closest(".log-refs")) return;
       const key = event.key.toLowerCase();
       // 主修饰键按平台认：macOS 上 Cmd+C/V，其余平台 Ctrl+C/V（对齐 Monaco 的 CtrlCmd 语义）。
       const mod = event.ctrlKey || event.metaKey;
@@ -1893,7 +1934,7 @@ export default function App() {
   );
 
   const submitDialog = useCallback(
-    async (name: string) => {
+    async (name: string, extra: string) => {
       if (!dialog) return;
       const { kind, entry, dir, path, name: currentName, revision, refKind } = dialog;
       setDialog(null);
@@ -1923,7 +1964,8 @@ export default function App() {
         }
         if (kind === "worktree") {
           const base = dir ?? workspaceRoot;
-          if (base) await git.worktreeAdd(resolvePath(base, name), dialog.from ?? "");
+          // extra 是可选的新分支名：签的是手上这条分支时，只有先开新分支才落得下去。
+          if (base) await git.worktreeAdd(resolvePath(base, name), dialog.from ?? "", extra);
         }
         /* 补丁：from 是左、revision 是右；右端给空串就是拿工作区，提交树那侧走这条。
            path 为空表示整条提交的差异，只有提交行那侧会这么给。 */
@@ -1934,6 +1976,11 @@ export default function App() {
             revision,
             path ? git.absoluteOf(path) : ""
           );
+          // 未跟踪文件相对 HEAD 本来就没有差异，写一份空文件过去会被读成「补丁做好了」。
+          if (text.trim() === "") {
+            reportError(t("git.patchNoDiff"), t("git.patchSkipped"));
+            return;
+          }
           await writeFile(resolvePath(dir ?? workspaceRoot ?? git.root, name), text, "lf", false);
         }
         if (kind === "deleteRef") {
@@ -2298,6 +2345,9 @@ export default function App() {
           });
           break;
         case "checkoutRebase": {
+          // 菜单那边已按游离置灰，这里再兜一道：游离时 `branch` 是 "HEAD"，
+          // 第二步会把刚签出的分支变基到那个字面量上。
+          if (git.status?.detached) return;
           // IDEA 那项是「切到这条，再把它变基到刚才那条上」，两步都要成才走第二步。
           const onto = git.status?.branch ?? "";
           void checkoutBranch(branchName).then((done) => {
@@ -2308,16 +2358,19 @@ export default function App() {
         case "newBranch":
           setDialog({ kind: "newBranch", name: "", from: target.name, dir: null, entry: null });
           break;
-        case "worktree":
+        case "worktree": {
+          // 默认落在仓库旁边：往仓库里塞一份工作树，git 自己会当成未跟踪内容。
+          const base = parentPath(git.root ?? workspaceRoot ?? "");
           setDialog({
             kind: "worktree",
             name: "",
             from: target.name,
-            // 默认落在仓库旁边：往仓库里塞一份工作树，git 自己会当成未跟踪内容。
-            dir: parentPath(git.root ?? workspaceRoot ?? ""),
+            dir: base,
+            hint: base ?? undefined,
             entry: null,
           });
           break;
+        }
         case "rename":
           setDialog({ kind: "renameBranch", name: target.name, dir: null, entry: null });
           break;
@@ -2325,7 +2378,8 @@ export default function App() {
           void git.merge(target.name);
           break;
         case "rebase":
-          void git.rebase(target.name);
+          // 变基的对象是「当前分支」，游离 HEAD 时没有这条分支。
+          if (!git.status?.detached) void git.rebase(target.name);
           break;
         case "update":
           // 当前分支直接 pull；非当前分支先检出再 pull，避免误更新当前分支
@@ -2432,6 +2486,7 @@ export default function App() {
           revision: commit.hash,
           from: detail.parents[0] ?? EMPTY_TREE_HASH,
           dir: workspaceRoot,
+          hint: workspaceRoot ?? undefined,
           entry: null,
         });
       } catch (cause) {
@@ -2837,6 +2892,7 @@ export default function App() {
                       }
                       repoName={basenameOf(git.root ?? workspaceRoot)}
                       onFileAction={commitFileAction}
+                      onUnignore={(relative) => void removeFromGitignore(relative)}
                       onOpenCommitFile={(revision, file) => {
                         if (!git.root) return;
                         void gitCommitDetail(git.root, revision)
@@ -3086,7 +3142,7 @@ export default function App() {
       {dialog ? (
         <PromptDialog
           request={dialog}
-          onSubmit={(name) => void submitDialog(name)}
+          onSubmit={(name, extra) => void submitDialog(name, extra)}
           onCancel={() => setDialog(null)}
         />
       ) : null}

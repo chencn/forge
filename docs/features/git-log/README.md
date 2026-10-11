@@ -63,7 +63,10 @@
 - 引用可写 `a..b` 比较两段，两段各自过 `valid_branch_name` 校验。
 - 路径过滤放在 `--` 之后，否则带斜杠的名字会被 git 当成引用。
 - 查询失败清空列表和选中集。留着上一次的结果会被读成过滤生效。
-- 筛选条尾部是刷新按钮，`logLoading` 时转。只在有筛选条件时多出清除全部按钮，清掉文本 / 作者 / 引用 / 日期 /
+- 引用那一档留空＝查当前分支，所以 HEAD 一动（签出别的分支、提交、重置）就要重查：这一条 effect 的依赖里带着 `lastCommit.hash` 与 `status.branch`，少了它们，列表会停在旧分支的历史上，人却拿它做重置和优选的目标。
+- 筛选条尾部是刷新按钮，`logLoading` 时转。它除了重查日志，还顺带 `git.refresh()` 一次：提交行菜单里撤销提交与编辑提交
+  消息那两项按 `lastCommit.hash` 判是不是 HEAD，只重查日志会让它们停在旧结论上——在命令行里动过 HEAD 之后点刷新，列表
+  换到了新提交，那两项却还是灰的。只在有筛选条件时多出清除全部按钮，清掉文本 / 作者 / 引用 / 日期 /
   路径五项，不动正则那一档。
 
 ## 中列：多选与提交行菜单
@@ -127,7 +130,7 @@
 - 优选、提取到单独提交、删除所选三项永久置灰。它们对应提交窗口那一侧对着工作区才执行的动作，日志里对着一次提交
   没有落点，照 IDEA 保留但不可点。缺口见 `../../plans/change-selection-actions/`。
 - 根提交那行的「将之前版本与本地比较 / 还原所选更改 / 显示对父项的更改」同样不可点，条件是 `hasParent`。
-- 还原所选更改把父提交的那份写回工作区（`restore --source <父> --worktree -- <路径>`），等于撤销那次改动。
+- 还原所选更改把父提交的那份写回工作区（`restore --source <父> --worktree -- <路径>`），等于撤销那次改动。只动工作区，索引不跟着走：这条和提交面板的「回滚」共用 `git_restore_file`，落进暂存区会让人以为改动已经备好可提交。
 - 从修订中获取把这条提交的那份写回工作区。
 - 打开仓库版本开的是只读虚拟文档，不在磁盘上，键是 `路径@短哈希`。二进制文件开不出文本，同一个键下落的是
   一条打不开的告示。
@@ -143,13 +146,15 @@
 
 ## 代码
 
+下面每格里的 `:NNN` 是该地标的**起始行**，不给区间：区间两头都要跟着函数体长缩，改一次就得重算一整片，起始行只认一处，`grep` 得到。
+
 | 文件 | 内容 |
 | --- | --- |
-| `src/components/GitLogPane.tsx` | 主体。默认权重 `:271-275`、分隔条 `:479-515`；`SINCE_MS` `:129-134`、250ms 落定 `:332-337`、作者候选 500 `:347`、`limit 200` `:362-370`、失败清空 `:380-386`；`filtering` 与 `clearFilters` `:530-538`；窗口级键位 `:540-648`；`pickCommit` `:659-677`、选中集与详情栏 `:304-309`；`commitMenu` `:679-884`（就地算 `picked` `:687-691`、`gotoItem` `:703-729`）；`leafBadge` `:890-902`、`localLeaf` / `remoteLeaf` `:904-924`、单击与双击 `:926-946`、`refMenu` `:950-958`；`fileMenu` `:961-996`；`groupHead` `:998-1008`、同层排序 `:1033-1058`、`renderLeaves` `:1060-1064`、`remoteNode` `:1066-1088`；第三栏数据源 `:1090-1106`、比对模式行行为 `:1108-1173`、目录行计数 `:1175-1204`；`everyGroupKey` `:1229-1239`、分组次序 `:1246-1284`；竖工具条 `:1286-1390`、齿轮弹层 `:1391-1419`；引用树结构 `:1429-1457`；筛选条 chip `:1482-1505`、刷新与清除 `:1530-1542`；树那条栏 `:1573-1616`、模块行计数 `:1644-1650`、预览 `:1663-1667`、详情 `:1673-1725`、视图弹层 `:1727-1741` |
-| `src/App.tsx` | `Ctrl+Alt+P` / `Ctrl+Alt+M` 的归属 `:517-534`；底部 dock 高度 `:583`；`openCommitFile` 自增后缀 `:1053-1087`；`fileAction` `:1135-1221`（`diffParentLocal` `:1157-1167`、`diffParent` `:1168-1171`、`openRepoVersion` `:1172-1191`、`revert` 与 `getFromRevision` `:1192-1197`、`patch` `:1198-1208`）；日志三处筛选状态提在 App `:420-427`；`commitAction` `:2218-2301`（`uncommit` `:2258-2263`、`reword` `:2264-2270`、`pushUpTo` `:2271-2278`）；`compareCommits` `:2304-2317`；`onRefInspect` 与 `compareRef` `:2390-2396` |
-| `src-tauri/src/git/mod.rs` | `git_log` 拼参 `:1205-1261`（`a..b` 校验 `:1208-1216`、`clamp 1..500` `:1218-1219`、`--extended-regexp` / `--fixed-strings` `:1226-1230`、`--all-match` `:1231-1238`、`--since=@` `:1239-1241` 与 `:1197-1203`、reference 空串 `:1242-1244`、路径在 `--` 之后 `:1245-1249`）；`git_authors` `:1349-1368`；`git_commit_detail` `:1370-1438`；`git_diff_names` `:965-994`；`git_diff_text` `:919-951`；`git_commit_file` `:1514-1536`；`git_reset` `:1118-1136`；`git_push_up_to` `:1138-1149`；`valid_branch_name` `:702-711`、`valid_rev` `:1339-1347`；`parse_refs` 的默认分支处理 `:567-606` |
-| `src/lib/git.ts` | `EMPTY_TREE_HASH` `:3-4` |
-| `src/lib/settings.ts` | `branches` 默认值（`onSingleClick: "none"`）`:106-113` |
-| `src/styles.css` | `.log-refs[hidden]` `:2385-2388`；`.ref-badge` `:2429-2433`；`.dir-count` `:2250-2255` |
-| `src/components/GitPanel.tsx` | `rewordSignal` 接住「编辑提交消息」`:275-281` |
+| `src/components/GitLogPane.tsx` | 主体。默认权重 `:302`、分隔条 `:513`；`SINCE_MS` `:132`、250ms 落定 `:366`、作者候选 500 `:378`、`limit 200` `:400`、失败清空 `:414`；`filtering` 与 `clearFilters` `:574`；窗口级键位 `:586`；`pickCommit` `:711`、选中集 `:339`；`commitMenu` `:737`（就地算 `picked` `:740`、`gotoItem` `:758`）；`leafBadge` `:944`、`localLeaf` `:958` / `remoteLeaf` `:969`、`refRow` 的单击与双击 `:979`、`refMenu` `:1003`；`fileMenu` `:1015`；`groupHead` `:1052`、同层排序 `:1110`、`renderLeaves` `:1115`、`remoteNode` `:1121`；第三栏数据源 `:1150`、比对模式行行为 `:1171`、目录行计数 `:1243`；`everyGroupKey` `:1298`、分组次序 `:1316`；竖工具条 `:1356`、齿轮弹层 `:1461`；引用树结构 `:1498`；筛选条 chip `:1554`、刷新与清除 `:1599`；详情栏那条 `:1647`、模块行计数 `:1707`、预览 `:1738`、提交信息 `:1751`、视图弹层 `:1801` |
+| `src/App.tsx` | `Ctrl+Alt+P` / `Ctrl+Alt+M` 的归属 `:568`；底部 dock 高度 `:449`；`openCommitFile` 自增后缀 `:1174`；`fileAction` `:1265`（`diffParentLocal` `:1281`、`diffParent` `:1284`、`openRepoVersion` `:1288`、`revert` `:1308` 与 `getFromRevision` `:1313`、`patch` `:1316`）；日志三处筛选状态提在 App `:467`；`commitAction` `:2413`（`uncommit` `:2453`、`reword` `:2459`、`pushUpTo` `:2466`）；`compareCommits` `:2500`；`compareRef` 落点 `:2245` 与 `onRefInspect` `:2593` |
+| `src-tauri/src/git/mod.rs` | `git_log` 拼参 `:1759`（`a..b` 校验 `:1761`、`clamp 1..500` `:1765`、`--extended-regexp` `:1774` / `--fixed-strings` `:1776`、`--all-match` `:1784`、`--since=@` `:1787`、reference 空串 `:1789`、路径在 `--` 之后 `:1794`）；`git_authors` `:1902`；`git_commit_detail` `:1930`；`git_diff_names` `:1423`；`git_diff_text` `:1369`；`git_commit_file` `:2120`；`git_reset` `:1621`；`git_push_up_to` `:1646`；`valid_branch_name` `:1030`、`valid_rev` `:1891`；`parse_refs` 的默认分支处理 `:883` |
+| `src/lib/git.ts` | `EMPTY_TREE_HASH` `:4` |
+| `src/lib/settings.ts` | `branches` 默认值（`onSingleClick: "none"`）`:118` |
+| `src/styles.css` | `.log-refs[hidden]` `:3861`；`.ref-badge` `:3905`；`.dir-count` `:3388` |
+| `src/components/GitPanel.tsx` | `rewordSignal` 接住「编辑提交消息」`:298` |
 | `src/lib/refMenu.ts` | 引用右键菜单本体，见 `../git-branches/` |

@@ -1,6 +1,6 @@
 # 后端总览
 
-Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表，95 条命令。事件 9 条。
+Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表，96 条命令。事件 9 条。
 命令数只按这张表算，写了 `#[tauri::command]` 但没进表的不算契约。
 命令契约逐条对着代码核过，见 [commands.md](./commands.md)；错误模型见 [error-model.md](./error-model.md)；
 构建与工具链约束见 [toolchain.md](./toolchain.md)；辅助脚本见 [scripts.md](./scripts.md)。
@@ -21,7 +21,7 @@ Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注�
 | `src-tauri/src/fs/search.rs` | 798 | 按名字找文件、逐文件扫正文；深度、条目数、单文件大小、返回条数四道上限定在这一层 | 2 |
 | `src-tauri/src/fs/windows.rs` | 103 | kernel32 / shell32 直接 FFI：属性位、`explorer /select`、`ShellExecuteW` | — |
 | `src-tauri/src/fs/unix.rs` | 59 | 同三个入口的 unix 实现：点开头当隐藏、`open -R` / `xdg-open` | — |
-| `src-tauri/src/git/mod.rs` | 1777 | 以参数数组 spawn 系统 git，解析 porcelain / numstat / for-each-ref / log | 46 |
+| `src-tauri/src/git/mod.rs` | 1777 | 以参数数组 spawn 系统 git，解析 porcelain / numstat / for-each-ref / log | 48 |
 | `src-tauri/src/term.rs` | 269 | portable-pty 的 shell 会话，输出 base64 走事件；`shell_probe` 扫本机 shell | 6 |
 | `src-tauri/src/proc.rs` | 182 | 跑一行命令并转发两路输出，停止时整棵进程树一起杀；`env` 那组变量逐条叠在继承来的父环境上 | 2 |
 | `src-tauri/src/run/mod.rs` | 82 | 运行配置的数据模型：类型、命令行、工作目录、环境变量、缺工具的原因、起跑前要落盘的辅助文件 | — |
@@ -120,7 +120,7 @@ spawn。语言服务另有一张失败记录表：启动失败记录一次，下
 | `src-tauri/src/fs/unix.rs` | 点开头算隐藏 `:17`、Linux 打开父目录 `:32-38` |
 | `src-tauri/src/git/mod.rs` | `run_git` 与三条前缀参数 `:152-166`、`valid_branch_name` `:702-711`、`valid_rev` `:1340-1347`、`valid_relative` `:1506-1512` |
 | `src-tauri/src/proc.rs` | `shell_command` 的 `%COMSPEC% /D /C` 与 `/bin/sh -c` `:71-78` |
-| `src-tauri/src/watch.rs` | `SETTLE` 150ms `:19`、`BATCH_CAP` 256 `:22`、`WatchSlot` `:33-36`、`fs_watch_start` `:47-73`、攒批转发线程 `:82-120` |
+| `src-tauri/src/watch.rs` | `SETTLE` 150ms `:19`、`BATCH_CAP` 256 `:22`、`WatchSlot` `:33-36`、`fs_watch_start` `:83-144`、攒批转发线程 `:173` |
 | `src-tauri/src/term.rs` | 会话表 `:23-26`、锁中毒处理 `:29-31`、base64 载荷的理由 `:33-39`、reader 线程发两个事件 `:220-248`、`term_reap` `:293-299` |
 | `src-tauri/src/tray.rs` | `FLUSHING` `:23`、`FLUSH_TIMEOUT` 5 秒 `:26`、`TrayMenu` `:29-32`、托盘建起来并 `manage` `:35-65`、`request_flush` 与看门狗 `:106-119` |
 | `src-tauri/src/settings.rs` | `Settings` 结构与默认值 `:120-164`、`settings_path` `:166-172`、读写命令 `:185-200`（`lsp` 段已搬到 `lsp.json`，旧文件里那一节读到时忽略） |

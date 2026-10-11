@@ -13,6 +13,11 @@ export interface LspMessage {
 /** server 写到 stderr 的一段日志。 */
 export interface LspLog {
   id: LspSessionId;
+  /**
+   * `server` 是服务进程自己的输出，原样展示；`protocol` 是后端状态行，
+   * text 是稳定标记（如 read_limit_hit），展示时翻成当前语言。
+   */
+  kind: "server" | "protocol";
   text: string;
 }
 

@@ -16,6 +16,24 @@ export function resolveLang(stored: string | null): Lang {
 
 type TranslateVars = Record<string, string | number>;
 
+function translateIn(lang: Lang, key: TranslationKey, vars?: TranslateVars): string {
+  const template = DICTIONARIES[lang][key] ?? key;
+  if (!vars) return template;
+  return template.replace(/\{(\w+)\}/g, (match, token: string) =>
+    token in vars ? String(vars[token]) : match
+  );
+}
+
+/**
+ * React 之外的调用点（事件监听、lib 单例）取当前语言的译文。
+ * 语言镜像由 I18nProvider 在每次渲染时同步，挂在 Provider 之下的界面先于它更新。
+ */
+let activeLang: Lang = resolveLang(null);
+
+export function translate(key: TranslationKey, vars?: TranslateVars): string {
+  return translateIn(activeLang, key, vars);
+}
+
 interface I18nValue {
   /** 当前界面语言。 */
   lang: Lang;
@@ -41,14 +59,11 @@ export function I18nProvider({ lang, onLangChange, children }: I18nProviderProps
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
 
+  // 维护 React 之外那份语言镜像：translate() 依赖它跟上当前界面语言。
+  activeLang = lang;
+
   const t = useCallback(
-    (key: TranslationKey, vars?: TranslateVars) => {
-      const template = DICTIONARIES[lang][key] ?? key;
-      if (!vars) return template;
-      return template.replace(/\{(\w+)\}/g, (match, token: string) =>
-        token in vars ? String(vars[token]) : match
-      );
-    },
+    (key: TranslationKey, vars?: TranslateVars) => translateIn(lang, key, vars),
     [lang]
   );
 

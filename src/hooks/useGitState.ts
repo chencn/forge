@@ -33,7 +33,6 @@ import {
   gitReset,
   gitResolveConflict,
   gitRestoreFile,
-  gitRevertFile,
   gitRevert,
   gitRevertAbort,
   gitRevertContinue,
@@ -252,6 +251,9 @@ export function useGitState(
         return true;
       } catch (cause) {
         reportError(errorText(cause));
+        // 失败不等于仓库没动：合并 / 变基 / 优选 / 还原撞冲突时正是停在了中间，
+        // 不重探一遍就得等人手点刷新才看得到那条横幅。
+        await refresh();
         return false;
       }
     },
@@ -340,8 +342,8 @@ export function useGitState(
     [root, run]
   );
   const worktreeAdd = useCallback(
-    (path: string, branch: string) =>
-      root ? run(() => gitWorktreeAdd(root, path, branch)) : Promise.resolve(false),
+    (path: string, branch: string, newBranch: string) =>
+      root ? run(() => gitWorktreeAdd(root, path, branch, newBranch)) : Promise.resolve(false),
     [root, run]
   );
   /** 把某个版本的文件内容写回工作区；revision 为空时从暂存区恢复。只影响工作区状态，走轻量刷新。 */
@@ -350,13 +352,6 @@ export function useGitState(
       root ? runIndex(() => gitRestoreFile(root, revision, path)) : Promise.resolve(false),
     [root, runIndex]
   );
-  /** 针对历史某次提交中的单个文件应用反向差异（撤销该提交对该文件的改动）。走轻量刷新，无需重新扫分支与历史日志。 */
-  const revertFile = useCallback(
-    (commit: string, path: string) =>
-      root ? runIndex(() => gitRevertFile(root, commit, path)) : Promise.resolve(false),
-    [root, runIndex]
-  );
-
   /** 按一边了结一个冲突文件：取完内容顺手 add，让这一项从未合并那一组里消失。仅变更索引与状态。 */
   const resolveConflict = useCallback(
     (path: string, side: "ours" | "theirs") =>
@@ -541,7 +536,6 @@ export function useGitState(
       deleteRemoteBranch,
       worktreeAdd,
       restoreFile,
-      revertFile,
       resolveConflict,
       rebaseContinue,
       rebaseAbort,
@@ -596,7 +590,6 @@ export function useGitState(
       deleteRemoteBranch,
       worktreeAdd,
       restoreFile,
-      revertFile,
       resolveConflict,
       rebaseContinue,
       rebaseAbort,

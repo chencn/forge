@@ -99,11 +99,22 @@ pub struct LspMessage {
     pub body: String,
 }
 
+/// 日志行的来源。`server` 是服务进程写到 stderr 的原样输出，前端照搬不翻；
+/// `protocol` 是后端自己的状态行，`text` 是稳定标记（现在只有 `read_limit_hit`），
+/// 前端翻成当前语言的文案——后端不写界面文案。
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LspLogKind {
+    Server,
+    Protocol,
+}
+
 /// server 写到 stderr 的一段文字（日志、报错），按行转发，给界面一个能看的地方。
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LspLog {
     pub id: String,
+    pub kind: LspLogKind,
     pub text: String,
 }
 
@@ -463,11 +474,13 @@ fn read_loop(mut reader: impl Read, stop_rx: mpsc::Receiver<()>, app: AppHandle,
                 // 一条合法帧都取不走还一直涌：多半是配错了 program，server 在吐别的输出。
                 // 涨到上限就止损，下面的退出记账会摘会话、记失败、发退出事件。
                 if buffer.len() > MAX_READ_BUFFER {
+                    // 不写后端文案：发稳定标记，前端按当前语言翻（lsp.log.readLimit）。
                     let _ = app.emit(
                         "lsp://log",
                         LspLog {
                             id: id.clone(),
-                            text: "stdout 连续 16 MiB 无法解析成 LSP 帧，已停止该会话".to_string(),
+                            kind: LspLogKind::Protocol,
+                            text: "read_limit_hit".to_string(),
                         },
                     );
                     break;
@@ -506,7 +519,10 @@ fn stderr_loop(mut reader: impl Read, app: AppHandle, id: String) {
                     let line: Vec<u8> = buffer.drain(..=index).collect();
                     let text = String::from_utf8_lossy(&line).trim_end().to_string();
                     if !text.is_empty() {
-                        let _ = app.emit("lsp://log", LspLog { id: id.clone(), text });
+                        let _ = app.emit(
+                            "lsp://log",
+                            LspLog { id: id.clone(), kind: LspLogKind::Server, text },
+                        );
                     }
                 }
             }

@@ -41,6 +41,8 @@ export interface RefMenuDeps {
   current: string;
   /** 这条引用跟踪的上游短名（`origin/x`），没有上游时是空串。 */
   upstream: string;
+  /** HEAD 是否游离。游离时没有「当前分支」可改变基目标，那两条变基项置灰给原因。 */
+  detached: boolean;
   onAction: (action: RefAction, target: RefTarget) => void;
   /** 「与当前比较」：把日志中列筛成 current..target。 */
   onCompareWith: (target: RefTarget) => void;
@@ -54,7 +56,7 @@ export interface RefMenuDeps {
  * （见 docs/features/git-branches/ref-action-matrix.md）。空组不留下悬空的分隔线。
  */
 export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
-  const { t, current, upstream, onAction, onCompareWith, onDiffWithWorktree } = deps;
+  const { t, current, upstream, detached, onAction, onCompareWith, onDiffWithWorktree } = deps;
   const isBranch = target.kind !== "tag";
   const isCurrent = target.kind === "local" && target.name === current;
   const go =
@@ -87,6 +89,9 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refCheckoutRebase", { name: current }),
               icon: CornerUpRight,
+              // 第二步是把「刚才那条分支」变基过去，游离时没有这条分支。
+              disabled: detached,
+              hint: detached ? t("git.detachedRebase") : undefined,
               onSelect: go("checkoutRebase"),
             },
           ]
@@ -125,6 +130,9 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refRebaseOnto", { name: target.name, current }),
               icon: Undo2,
+              // IDEA 在游离 HEAD 时把这条置灰：变基的对象是「当前分支」，游离时没有。
+              disabled: detached,
+              hint: detached ? t("git.detachedRebase") : undefined,
               onSelect: go("rebase"),
             },
           ]

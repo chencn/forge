@@ -59,17 +59,17 @@ forge 侧的菜单顺序与分组在 `src/lib/refMenu.ts`，同一份菜单被�
 - 本地分支：Checkout and Update 改成「本地、非当前才出现；没有上游才置灰」，不再常置灰。Update 同样只在没有上游时置灰。
 - Compare with Current 与 Rebase Current onto Selected：条件都是 `isBranch && !isCurrent`，对应矩阵那两行的
   「本地可点 / 远端可点 / 标签隐藏 / 当前隐藏」。
+- 游离 HEAD：`buildRefMenu` 读 `status.detached`，把 Rebase Current onto Selected 与 Checkout and Rebase onto
+  Current 一起置灰并给一句原因（矩阵那行的括注）。`refAction` 那侧对这两个动作也各拦一道，不再拿 `branch`
+  字面量 `HEAD` 当变基目标。
 - 空组不留悬空分隔线，隐藏一串项之后菜单不会剩两条挨着的横线。
 
 ## 与矩阵仍不一致的
 
-以下五条都在可见性之外，`docs/plans/` 里还没有对应条目。
+以下四条都在可见性之外，`docs/plans/` 里还没有对应条目。
 
 - Update 落错了对象。矩阵说的是更新所选那条分支，forge 现在落 `git pull --ff-only`，作用在当前分支上：选中一条
   不在手的本地分支点更新，动的是当前检出的这条。
-- 游离 HEAD 时 Rebase Current onto Selected 该置灰（矩阵那行的括注），forge 没读 `status.detached`。游离时
-  `branch` 是 `HEAD`，`isCurrent` 永远不成立，于是菜单给出「将 'HEAD' 变基到 …」并真去跑。同一处漏判让
-  「签出并变基」那两步里的 `onto` 也取成 `HEAD`。
 - Update 少一条置灰前提。矩阵那行还要求「正在抓取时置灰」，forge 只判上游。
 - Delete 对受保护分支。IDEA 是置灰且不提示，forge 摆出来让 git 自己拒，差别只在失败前多一次确认框。
 - Push 少了那层对话框。菜单文案写「推送...」带省略号，落点是不问一句直接 `push <推出来的远端> <引用>`。

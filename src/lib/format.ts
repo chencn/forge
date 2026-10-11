@@ -98,6 +98,16 @@ export function basenameOf(path: string): string {
   return crumbs.length > 0 ? crumbs[crumbs.length - 1].name : path;
 }
 
+/**
+ * 补丁文件用的主名：去掉最后一段扩展名。`.gitignore` 这类只有扩展名写法、没有主名的
+ * 名字要整个退回，否则拼出来的是「-worktree.patch」，等于把文件名吃掉。
+ */
+export function patchStem(path: string): string {
+  const name = basenameOf(path);
+  const stem = name.replace(/\.[^.]+$/, "");
+  return stem === "" ? name : stem;
+}
+
 /** 统一分隔符与末尾斜杠；Windows 形状的路径再忽略大小写。 */
 function normPath(p: string): string {
   const flat = p.replace(/\\/g, "/").replace(/\/+$/, "");
