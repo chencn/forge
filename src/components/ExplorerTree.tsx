@@ -65,7 +65,11 @@ function touched(key: string, changed: string) {
 const IGNORE_DEBOUNCE_MS = 800;
 
 /** 展开过的目录；折叠时保留记录，再展开不用重新读盘。 */
-function useLazyChildren(refresh: { paths: string[] | null; seq: number }, onError: (message: string) => void) {
+function useLazyChildren(
+  root: string | null,
+  refresh: { paths: string[] | null; seq: number },
+  onError: (message: string) => void
+) {
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map());
   const [failed, setFailed] = useState<Map<string, string>>(new Map());
 
@@ -98,7 +102,29 @@ function useLazyChildren(refresh: { paths: string[] | null; seq: number }, onErr
     setFailed(drop);
   }, [refresh]);
 
+  // 换工程：目录缓存键是绝对路径，跨工程复用会端出过期树（A 会话里发生的磁盘
+  // 变化不在这棵树上作废）；列目录失败过的目录也会被 failed 永久挡住，一并清。
+  useEffect(() => {
+    setChildren(new Map());
+    setFailed(new Map());
+  }, [root]);
+
   return { children, failed, load };
+}
+
+/**
+ * 判定路径清单中是否包含可能影响 git 忽略规则的文件（.gitignore 或 .git/info/exclude）。
+ * 只有此类文件变动才需要重新拉取全盘忽略项，普通业务源码写入直接跳过。
+ */
+function affectsIgnoreRules(paths: string[]): boolean {
+  return paths.some((p) => {
+    const norm = p.replaceAll("\\", "/").toLowerCase();
+    return (
+      norm.endsWith("/.gitignore") ||
+      norm === ".gitignore" ||
+      norm.includes("/.git/info/exclude")
+    );
+  });
 }
 
 /**
@@ -108,27 +134,43 @@ function useLazyChildren(refresh: { paths: string[] | null; seq: number }, onErr
  * 不含它下面的每个文件；所以判定不能只比相等，得看这一行是不是落在某个忽略项之下。
  * 目录与文件用同一套判定：忽略目录下的所有内容都算忽略。
  *
- * 这一条要起一个走完整棵工作树的 git 进程，所以不跟着每批磁盘事件即时发：
- * 事件停手之后再补一次，读到的是最终状态，构建全程不会一直在扫。
+ * 性能优化：只有在初始挂载、全量刷新、或变更路径包含 .gitignore 时才重新触发扫描，
+ * 避免普通文件编辑在后台反复拉起耗时的全树忽略检查进程。
  */
 function useIgnoredPaths(
   repoRoot: string | null,
-  refreshSignal: number,
+  refresh: { paths: string[] | null; seq: number },
   /** 只有真要把忽略项藏起来时才需要这一份；「显示忽略项」开着的时候不用问。 */
   needed: boolean
 ) {
   const [patterns, setPatterns] = useState<string[]>([]);
+  const hasLoadedRef = useRef(false);
+
+  // 仓库切换时重置模式列表与加载状态
+  useEffect(() => {
+    hasLoadedRef.current = false;
+    setPatterns([]);
+  }, [repoRoot]);
 
   useEffect(() => {
     if (!repoRoot || !needed) {
       setPatterns([]);
       return;
     }
+
+    // 路径门禁：如果已经加载过规则，且本批变动不是全量刷新，且变动路径中没有任何忽略规则文件，跳过扫描
+    if (hasLoadedRef.current && refresh.paths !== null && !affectsIgnoreRules(refresh.paths)) {
+      return;
+    }
+
     let stale = false;
     const timer = window.setTimeout(() => {
       void gitIgnored(repoRoot)
         .then((list) => {
-          if (!stale) setPatterns(list);
+          if (!stale) {
+            setPatterns(list);
+            hasLoadedRef.current = true;
+          }
         })
         .catch(() => {
           // 纯浏览器预览时没有这条命令，忽略项就都按没忽略画。
@@ -138,7 +180,7 @@ function useIgnoredPaths(
       stale = true;
       window.clearTimeout(timer);
     };
-  }, [repoRoot, refreshSignal, needed]);
+  }, [repoRoot, refresh, needed]);
 
   return useMemo(() => {
     if (!repoRoot || patterns.length === 0) return () => false;
@@ -177,13 +219,13 @@ export default function ExplorerTree({
   const [error, setError] = useState<string | null>(null);
   const onError = useCallback((message: string) => setError(message), []);
   const { t } = useI18n();
-  const { children, failed, load } = useLazyChildren(refresh, onError);
+  const { children, failed, load } = useLazyChildren(root, refresh, onError);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const treeRef = useRef<HTMLDivElement>(null);
   /** 正在往哪儿定位；目标行没露出来之前一直挂着。 */
   const [revealTo, setRevealTo] = useState<string | null>(null);
   /** 被 .gitignore 忽略的路径判定；命中的行文字变橙棕色（对齐 IDEA）。 */
-  const isIgnored = useIgnoredPaths(repoRoot, refresh.seq, !showIgnored);
+  const isIgnored = useIgnoredPaths(repoRoot, refresh, !showIgnored);
 
   useEffect(() => {
     setExpanded(new Set());

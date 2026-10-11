@@ -123,7 +123,6 @@ fn run_state_save_impl(
         .map_err(|error| err_parts("ENCODE", &[error.to_string()]))?;
     write_atomic(&path, &text)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,3 +199,4 @@ mod tests {
         assert!(legacy.pinned.is_empty());
     }
 }
+

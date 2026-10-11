@@ -106,6 +106,15 @@ pub fn which_program(base: &str) -> String {
     found
 }
 
+/// 非 Windows 上按进程组杀整棵树：给负 pid 发 SIGKILL，组里所有进程一起收。
+/// 组不存在（进程已退）或调用失败回 false，调用方据此回退到杀直接子进程。
+/// 只对 spawn 时用 `process_group(0)` 自建的组发信号，不触碰别的进程。
+#[cfg(not(windows))]
+pub fn kill_process_group(pid: u32) -> bool {
+    let pid = i32::try_from(pid).unwrap_or(0);
+    pid > 0 && unsafe { libc::kill(-pid, libc::SIGKILL) == 0 }
+}
+
 fn search_program(base: &str) -> String {
     if !cfg!(windows) {
         return which(base);
@@ -434,7 +443,6 @@ pub async fn sys_memory() -> Memory {
     )
     .await
 }
-
 #[cfg(test)]
 mod tests {
     use super::{group, ProcInfo, MB};
@@ -518,3 +526,4 @@ mod tests {
         );
     }
 }
+

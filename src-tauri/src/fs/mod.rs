@@ -1,6 +1,7 @@
 use crate::error::{err, err_parts};
 use serde::Serialize;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::UNIX_EPOCH;
@@ -336,7 +337,7 @@ fn write_file_impl(
         bytes.extend_from_slice(&UTF8_BOM);
     }
     bytes.extend_from_slice(body.as_bytes());
-    fs::write(target, &bytes).map_err(|e| io_err(&path, e))?;
+    write_bytes_atomic(target, &bytes)?;
 
     let written_ms = fs::metadata(target).map(|meta| modified_ms(&meta)).unwrap_or(0);
     Ok(FileContent {
@@ -347,6 +348,49 @@ fn write_file_impl(
         has_bom: keep_bom,
         modified_ms: written_ms,
     })
+}
+
+/// 落盘走「同目录临时文件 + 改名」：原地 `fs::write` 是截断重写，写一半崩溃或断电就
+/// 留半截文件；同目录 rename 在 Windows 和类 unix 上都是原子替换。临时文件带自己的
+/// 标记，写坏也只伤它一个，正文不受牵连。调用方已持 `fs_write_lock`，同一目标不会
+/// 并发写，固定临时名不会互相踩。
+///
+/// 临时文件必须 `create_new`：固定临时名是可预知的路径，`File::create` 会跟随已存在的
+/// 符号链接——恶意仓库预置 `.foo.txt.forge-tmp → ~/.ssh/id_rsa` 一类的链接，保存就把
+/// 用户文件写了进去。类 unix 上还把原文件的权限位抄给临时文件，rename 替换后
+/// 可执行位（`deploy.sh`、带 shebang 的脚本）不静默丢失。
+fn write_bytes_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = target.with_file_name(format!(".{name}.forge-tmp"));
+    #[cfg(unix)]
+    let prior_mode = target.metadata().ok().map(|meta| {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode()
+    });
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            // flush + sync_all 把字节真正压到盘上，改名之后元数据才不会指着一块空数据。
+            file.flush()?;
+            file.sync_all()?;
+            drop(file);
+            #[cfg(unix)]
+            if let Some(mode) = prior_mode {
+                let _ = fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode));
+            }
+            fs::rename(&temp, target)
+        });
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 尽力清掉临时文件再报原始错误；清不掉就算了，不能把真正的失败盖住。
+            let _ = fs::remove_file(&temp);
+            Err(io_err(&lossy(target), e))
+        }
+    }
 }
 
 #[tauri::command]
@@ -373,8 +417,14 @@ pub async fn create_file(path: String) -> Result<FsEntry, String> {
 }
 
 fn create_file_impl(path: String) -> Result<FsEntry, String> {
-    fs::File::create(&path).map_err(|e| io_err(&path, e))?;
-    entry_at(Path::new(&path))
+    // create_new = O_CREAT | O_EXCL：已存在直接失败。不能用 File::create——那是
+    // create+truncate，撞上已有文件会把人家的内容整个清空，等于一次静默数据丢失。
+    match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(_) => entry_at(Path::new(&path)),
+        // 已存在按 rename_entry 的口径报 TARGET_EXISTS，让前端走同一套「换名重试」。
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(err("TARGET_EXISTS", &path)),
+        Err(e) => Err(io_err(&path, e)),
+    }
 }
 
 #[tauri::command]
@@ -615,7 +665,6 @@ fn external_allowed(raw: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,6 +750,51 @@ mod tests {
     }
 
     #[test]
+    fn create_file_refuses_to_truncate_an_existing_one() {
+        let dir = sandbox("create-existing");
+        let note = touch(&dir, "note.txt", b"precious");
+        // File::create 是截断语义，已存在的文件会被静默清零；新建必须 create_new，
+        // 撞上同名报错，由前端弹「是否覆盖」再走显式写入。
+        let again = create_file_impl(lossy(&note));
+        assert!(
+            matches!(&again, Err(message) if message.contains("TARGET_EXISTS")),
+            "第二次新建要报 TARGET_EXISTS：{:?}",
+            again.as_ref().err()
+        );
+        assert_eq!(fs::read(&note).unwrap(), b"precious", "原内容一个字节都不能少");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_file_lands_atomically_without_temp_leftover() {
+        let dir = sandbox("atomic");
+        let note = touch(&dir, "note.txt", b"old body");
+
+        let written = write_file_impl(
+            lossy(&note),
+            "new body".to_string(),
+            Some("lf".to_string()),
+            Some(false),
+        )
+        .unwrap();
+        assert_eq!(written.contents, "new body");
+        assert_eq!(fs::read(&note).unwrap(), b"new body");
+
+        // 落盘走「临时文件 + 改名」：写完目录里不能残留 forge-tmp，否则下次
+        // create_new 会被残留名绊住。
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("forge-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "不该有临时文件残留：{:?}", leftovers);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn listing_a_file_is_an_error() {
         let dir = sandbox("notdir");
         let file = touch(&dir, "a.txt", b"x");
@@ -742,8 +836,8 @@ mod tests {
             "不含 NUL 的非 UTF-8 按「别的编码的文本」报"
         );
 
-        // 带 NUL 的字节流是二进制，前端据此说「二进制，打不开」而不是「不是 UTF-8 文本」。
-        let binary = touch(&dir, "blob.bin", &[0x7F, b'E', b'L', b'F', 0x00, 0x01]);
+        // 解不成 UTF-8 的字节流里带 NUL 才算二进制，前端据此说「二进制，打不开」。
+        let binary = touch(&dir, "blob.bin", &[0xFF, b'E', b'L', b'F', 0x00, 0x01]);
         assert!(
             matches!(read_file_impl(lossy(&binary)), Err(message) if message.starts_with("BINARY")),
             "带 NUL 的非 UTF-8 要报 BINARY"
@@ -792,3 +886,4 @@ mod tests {
         assert!(external_allowed("   ").is_err());
     }
 }
+

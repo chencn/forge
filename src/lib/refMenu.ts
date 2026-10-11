@@ -147,7 +147,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
       },
     ],
     [
-      ...(target.kind === "local"
+      ...(target.kind === "local" && isCurrent
         ? [
             {
               label: t("git.refUpdate"),
@@ -156,6 +156,10 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
               hint: upstream === "" ? t("git.noUpstream") : undefined,
               onSelect: go("update"),
             },
+          ]
+        : []),
+      ...(target.kind === "local"
+        ? [
             {
               label: t("git.refPush"),
               icon: ArrowUpToLine,

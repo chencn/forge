@@ -334,3 +334,11 @@ fn reap_impl() {
         close_one(&id);
     }
 }
+
+/// 应用退出前把还开着的终端 shell 全关掉。
+///
+/// 必须是同步函数——退出路径上没有 async runtime 来服务 `term_reap`。
+/// 会话从表里摘掉后 ConPTY 随之关闭，shell 不留孤儿。
+pub fn reap_all_for_exit() {
+    reap_impl();
+}

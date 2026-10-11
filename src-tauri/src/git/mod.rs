@@ -202,6 +202,15 @@ fn git_write_lock() -> MutexGuard<'static, ()> {
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<GitOutput, String> {
+    run_git_raw(root, args, None)
+}
+
+/// 需要把大清单从标准输入递过去的命令用（`--pathspec-from-file=-`）。
+fn run_git_stdin(root: &Path, args: &[&str], input: &str) -> Result<GitOutput, String> {
+    run_git_raw(root, args, Some(input))
+}
+
+fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOutput, String> {
     // 读的一律放行，写的排队，免得两条同时落进 `.git` 撞锁。
     let _queued = mutates_repo(args).then(git_write_lock);
     let mut command = Command::new("git");
@@ -210,16 +219,39 @@ fn run_git(root: &Path, args: &[&str]) -> Result<GitOutput, String> {
         .arg(root)
         // 禁止终端交互式询问（账号密码、SSH 主机密钥确认等），缺失凭据时直接报错而不是挂起死锁
         .env("GIT_TERMINAL_PROMPT", "0")
-        // 标准输入置空，避免任何内部读取操作挂起
-        .stdin(std::process::Stdio::null())
+        .stdin(match stdin {
+            // 标准输入置空，避免任何内部读取操作挂起；要喂数据的命令才接管道。
+            Some(_) => std::process::Stdio::piped(),
+            None => std::process::Stdio::null(),
+        })
+        // spawn + wait_with_output 不会自动接管管道（.output() 才会）：不显式
+        // piped 的话子进程的输出直接漏进宿主终端，wait_with_output 读到的是
+        // 空串，整块 git 面板就都「不是仓库」了。
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        // 用户 shell 里残留的这几个变量会把子进程指到别的仓库，一律摘掉。
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         // 中文文件名保持原样输出，不要八进制转义。
         .args(["-c", "core.quotepath=false", "--no-optional-locks"])
         .args(args);
     // 主程序是 windows 子系统、没有控制台可继承：不设这个标志的话每个 git.exe
     // 都要自己新建一个控制台，启动那十几个进程就是十几个一闪而过的黑框。
     hide_console(&mut command);
-    let output = command
-        .output()
+    let mut child = command.spawn().map_err(|error| err("GIT_SPAWN", error))?;
+    if let Some(input) = stdin {
+        // 先写完再关管道（drop），git 读完才会退出，不会死锁。
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| err("GIT_SPAWN", "stdin 未接通"))?
+            .write_all(input.as_bytes())
+            .map_err(|error| err("GIT_SPAWN", error))?;
+    }
+    let output = child
+        .wait_with_output()
         .map_err(|error| err("GIT_SPAWN", error))?;
     Ok(GitOutput {
         ok: output.status.success(),
@@ -303,9 +335,12 @@ pub async fn git_probe(path: String) -> GitProbe {
 fn git_probe_cached(path: String) -> GitProbe {
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, GitProbe)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    // Windows 下 D:\repo、d:\repo、D:/repo 是同一个目录，不归一的话每种写法
+    // 各占一个缓存条目，TTL 内照样反复起 rev-parse。
+    let key = probe_cache_key(&path);
     let base = {
         let hit = lock(cache)
-            .get(&path)
+            .get(&key)
             .filter(|(at, _)| at.elapsed() < PROBE_TTL)
             .map(|(_, probe)| probe.clone());
         match hit {
@@ -315,7 +350,7 @@ fn git_probe_cached(path: String) -> GitProbe {
                 // 只缓存认出库子的那份：git 临时不在 PATH、目录刚建好、杀毒软件拦一下这类
                 // 瞬时失败要是记进表，内置终端里 `git init` 完界面还得挂着「不是仓库」10 秒。
                 if probe.available && probe.repo_root.is_some() {
-                    lock(cache).insert(path, (Instant::now(), probe.clone()));
+                    lock(cache).insert(key, (Instant::now(), probe.clone()));
                 }
                 probe
             }
@@ -345,6 +380,18 @@ impl GitProbe {
             mid_revert: false,
             remotes: Vec::new(),
         }
+    }
+}
+
+/// probe 缓存的键：Windows 上做斜杠与大小写归一，其余平台原样。
+fn probe_cache_key(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.replace('/', "\\").to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string()
     }
 }
 
@@ -430,7 +477,12 @@ fn git_probe_impl(path: &str) -> GitProbe {
     }
 }
 
-/// 解析 `git status --porcelain=v1 --branch` 的完整输出。
+/// 解析 `git status --porcelain=v1 -z --branch` 的完整输出。
+///
+/// -z 下条目以 NUL 结尾，路径不做任何引号转义——含空格的文件名是原样字节而不是
+/// C 字符串写法，porcelain v1 的非 z 模式从 git 2.29 起会给这类名字整段加引号，
+/// 解析出带引号的路径回传 `git add` 就直接 pathspec 不匹配。重命名是
+/// `R 新路径\0旧路径\0`：新路径跟在状态码后面，旧路径是下一个 NUL token。
 fn parse_status(stdout: &str) -> GitStatus {
     let mut branch = String::from("(未知)");
     let mut detached = false;
@@ -439,15 +491,11 @@ fn parse_status(stdout: &str) -> GitStatus {
     let mut behind = 0i64;
     let mut changes: Vec<GitChange> = Vec::new();
 
-    for line in stdout.lines() {
-        if line.is_empty() {
-            continue;
-        }
-
-        // 分支头的写法：`## master`、`## master...origin/main`、
-        // `## master...origin/main [ahead 1, behind 2]`、`## HEAD (no branch)`、
-        // `## No commits yet on master`。上游用 "..." 接在分支名后面，不是空格。
-        if let Some(header) = line.strip_prefix("## ") {
+    let mut tokens = stdout.split('\0').filter(|token| !token.is_empty());
+    while let Some(token) = tokens.next() {
+        // 分支头是一条 NUL token：`## master`、`## master...origin/main [ahead 1]`、
+        // `## HEAD (no branch)`、`## No commits yet on master`。上游用 "..." 接在分支名后。
+        if let Some(header) = token.strip_prefix("## ") {
             // 只领先或只落后时 git 只写那一项，所以按「词 数字」成对读，不假定顺序。
             if let Some((_, marks)) = header.split_once('[') {
                 for part in marks.trim_end_matches(']').split(',') {
@@ -485,13 +533,20 @@ fn parse_status(stdout: &str) -> GitStatus {
             continue;
         }
 
-        // porcelain v1：两字状态 + 空格 + 路径；重命名形如 `R  old -> new`。
-        let codes = line.get(..2).unwrap_or("  ");
-        let payload = line.get(3..).unwrap_or("");
-        let conflicted = matches!(
-            codes,
-            "UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD" | "AX" | "XA" | "UY" | "YU"
-        );
+        // porcelain v1 条目：两字状态 + 空格 + 路径。
+        let codes = token.get(..2).unwrap_or("  ");
+        let payload = token.get(3..).unwrap_or("");
+        let conflicted = matches!(codes, "UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD");
+
+        let (path, old_path) = if codes.starts_with('R') || codes.starts_with('C') {
+            // 重命名/复制：旧路径在下一个 NUL token 里，取不到就当普通条目。
+            match tokens.next() {
+                Some(old) => (payload, Some(old)),
+                None => (payload, None),
+            }
+        } else {
+            (payload, None)
+        };
 
         if codes == "??" {
             changes.push(GitChange {
@@ -505,13 +560,9 @@ fn parse_status(stdout: &str) -> GitStatus {
             continue;
         }
 
-        let (path, old_path) = match payload.split_once(" -> ") {
-            Some((from, to)) => (to.to_string(), Some(from.to_string())),
-            None => (payload.to_string(), None),
-        };
         changes.push(GitChange {
-            path,
-            old_path,
+            path: path.to_string(),
+            old_path: old_path.map(str::to_string),
             index_status: codes.chars().next().unwrap_or(' ').to_string(),
             work_status: codes.chars().nth(1).unwrap_or(' ').to_string(),
             untracked: false,
@@ -540,7 +591,14 @@ fn git_status_impl(root: String) -> Result<GitStatus, String> {
     let root = ensure_root(&root)?;
     let output = run_git(
         &root,
-        &["status", "--porcelain", "--branch", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            // -z：条目按 NUL 分隔且路径不做引号转义，含空格的文件名才不会变成带引号的字面量。
+            "-z",
+            "--branch",
+            "--untracked-files=all",
+        ],
     )?;
     if !output.ok {
         return Err(fail(&output));
@@ -563,11 +621,15 @@ fn git_show_impl(root: String, revision: String, path: String) -> Result<String,
     let spec = format!("{revision}:{relative}");
     let output = run_git(&root, &["show", "--textconv", spec.as_str()])?;
     if !output.ok {
-        let missing = output.stderr.contains("does not exist")
-            || output.stderr.contains("exists on disk")
-            || output.stderr.contains("but not in");
-        // 新增文件在基线里本就不存在，给空内容而不是报错。
-        if missing {
+        // 新增文件在基线里本就不存在，给空内容而不是报错。git 的报错文案随 locale
+        // 翻译，不能嗅探「does not exist」；用退出码区分「rev 无效」与「rev 有效但文件不在」。
+        let rev_alive = run_git(&root, &["cat-file", "-e", revision.as_str()])
+            .map(|probe| probe.ok)
+            .unwrap_or(false);
+        let spec_missing = !run_git(&root, &["cat-file", "-e", spec.as_str()])
+            .map(|probe| probe.ok)
+            .unwrap_or(true);
+        if rev_alive && spec_missing {
             return Ok(String::new());
         }
         return Err(fail(&output));
@@ -587,16 +649,21 @@ fn git_index_show_impl(root: String, path: String) -> Result<String, String> {
     let spec = format!(":{relative}");
     let output = run_git(&root, &["show", spec.as_str()])?;
     if !output.ok {
-        let missing = output.stderr.contains("does not exist")
-            || output.stderr.contains("exists on disk")
-            || output.stderr.contains("but not in");
-        if missing {
+        // 报错文案随 locale 翻译不能嗅探；索引里没有这个文件时 cat-file 的退出码就是答案。
+        let spec_missing = !run_git(&root, &["cat-file", "-e", spec.as_str()])
+            .map(|probe| probe.ok)
+            .unwrap_or(true);
+        if spec_missing {
             return Ok(String::new());
         }
         return Err(fail(&output));
     }
     Ok(output.stdout)
 }
+
+/// 超过这个条数就不再把路径拼进命令行：Windows 的 CreateProcess 有 32K 字符上限，
+/// 「暂存全部」遇上几千个未跟踪文件会直接 spawn 失败。
+const PATHSPEC_ARGV_LIMIT: usize = 100;
 
 fn stage_paths(root: String, paths: &[String], unstage: bool) -> Result<(), String> {
     let root = ensure_root(&root)?;
@@ -608,11 +675,29 @@ fn stage_paths(root: String, paths: &[String], unstage: bool) -> Result<(), Stri
         .map(|path| relative_path(&root, path))
         .collect::<Result<_, _>>()?;
     // 未跟踪文件也要能暂存，所以用 add 而不是 add -u。
-    let mut args: Vec<&str> = if unstage {
-        vec!["restore", "--staged", "--"]
+    let verb: &[&str] = if unstage {
+        &["restore", "--staged"]
     } else {
-        vec!["add", "--"]
+        &["add"]
     };
+    // 大清单走 stdin 的 pathspec 文件（NUL 分隔），git 2.26 起支持，路径原样传递。
+    if relatives.len() > PATHSPEC_ARGV_LIMIT {
+        let mut args: Vec<&str> = verb.to_vec();
+        args.push("--pathspec-from-file=-");
+        args.push("--pathspec-file-nul");
+        let mut payload = String::new();
+        for relative in &relatives {
+            payload.push_str(relative);
+            payload.push('\0');
+        }
+        let output = run_git_stdin(&root, &args, &payload)?;
+        if !output.ok {
+            return Err(fail(&output));
+        }
+        return Ok(());
+    }
+    let mut args: Vec<&str> = verb.to_vec();
+    args.push("--");
     args.extend(relatives.iter().map(String::as_str));
     let output = run_git(&root, &args)?;
     if !output.ok {
@@ -699,7 +784,17 @@ pub async fn git_pull(root: String) -> Result<String, String> {
 
 fn git_pull_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    remote_op(&root, &["pull", "--ff-only"])
+    // 拆成 fetch + merge 两段：fetch 不在 MUTATING 名单里、不占本地写锁，
+    // 网络再慢也只是它自己在等；整条 `pull` 占着写锁的话，一次凭据弹窗
+    // 能把全应用的暂存 / 提交 / 切分支全部堵在队列里。语义与 pull --ff-only 一致。
+    let fetched = remote_op(&root, &["fetch", "--all", "--prune", "--progress"])?;
+    let merged = remote_op(&root, &["merge", "--ff-only"])?;
+    let mut parts: Vec<&str> = vec![fetched.trim(), merged.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.dedup();
+    Ok(parts.join("\n"))
 }
 
 /// 推送。当前分支没有上游时退回 `push <远端> HEAD`，远端取第一个。
@@ -711,6 +806,11 @@ pub async fn git_push(root: String, set_upstream: bool) -> Result<String, String
 fn git_push_impl(root: String, set_upstream: bool) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let head = run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    // 空仓库（还没有提交）这条 rev-parse 会失败：报 git 的原文，而不是把
+    // 空的 stdout 误判成游离 HEAD。
+    if !head.ok {
+        return Err(fail(&head));
+    }
     let branch = trim_line(&head.stdout);
     if branch.is_empty() || branch == "HEAD" {
         return Err(err("DETACHED_PUSH", ""));
@@ -913,22 +1013,24 @@ pub async fn git_ignored(root: String) -> Result<Vec<String>, String> {
 
 fn git_ignored_impl(root: String) -> Result<Vec<String>, String> {
     let root = ensure_root(&root)?;
-    let output = run_git(&root, &["status", "--porcelain", "--ignored=matching"])?;
+    // -z：与 git_status 同理，含空格的忽略路径不做引号转义。
+    let output = run_git(&root, &["status", "--porcelain=v1", "-z", "--ignored=matching"])?;
     if !output.ok {
         return Err(fail(&output));
     }
     Ok(output
         .stdout
-        .lines()
-        .filter(|line| line.starts_with("!! "))
-        .map(|line| line[3..].to_string())
+        .split('\0')
+        .filter(|token| token.len() > 3 && token.starts_with("!! "))
+        .map(|token| token[3..].to_string())
         .collect())
 }
 
-/// 分支名字符集校验：只放常见写法，且不能以 - 开头被当成选项。
+/// 分支名字符集校验：只放常见写法，且不能以 - 或 . 开头被当成选项或非法 ref。
 fn valid_branch_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
+        && !name.starts_with('.')
         && !name.contains("..")
         && !name.ends_with('/')
         && name
@@ -943,7 +1045,8 @@ pub async fn git_checkout(root: String, branch: String) -> Result<String, String
 
 fn git_checkout_impl(root: String, branch: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    if !valid_branch_name(&branch) {
+    // 分支名或版本引用（commit hash / 标签 / 相对引用）均可检出
+    if !valid_branch_name(&branch) && !valid_rev(&branch) {
         return Err(err("BAD_BRANCH", &branch));
     }
     let output = run_git(&root, &["checkout", branch.as_str()])?;
@@ -974,7 +1077,7 @@ fn git_create_branch_impl(
     if !valid_branch_name(&name) {
         return Err(err("BAD_BRANCH", &name));
     }
-    if !from.is_empty() && !valid_branch_name(&from) {
+    if !from.is_empty() && !valid_rev(&from) {
         return Err(err("BAD_REV", &from));
     }
     let start = if from.is_empty() { None } else { Some(from.as_str()) };
@@ -1116,7 +1219,8 @@ pub async fn git_push_ref(root: String, name: String) -> Result<String, String> 
 
 fn git_push_ref_impl(root: String, name: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    if !valid_branch_name(&name) {
+    // 分支名或标签版本引用均可推送到远端
+    if !valid_branch_name(&name) && !valid_rev(&name) {
         return Err(err("BAD_REV", &name));
     }
     let remote = push_target(&root, &name)?;
@@ -1178,7 +1282,7 @@ fn git_worktree_add_impl(root: String, path: String, branch: String) -> Result<S
     Ok(trim_line(&output.stdout))
 }
 
-/// 把某个版本下的文件内容写回工作区，不动索引；版本取父提交就是撤销那次改动。
+/// 把某个版本下的文件内容写回工作区，不动索引；revision 为空时从暂存区恢复。
 #[tauri::command]
 pub async fn git_restore_file(root: String, revision: String, path: String) -> Result<String, String> {
     block(move || git_restore_file_impl(root, revision, path)).await
@@ -1186,23 +1290,75 @@ pub async fn git_restore_file(root: String, revision: String, path: String) -> R
 
 fn git_restore_file_impl(root: String, revision: String, path: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    if !valid_rev(&revision) {
-        return Err(err("BAD_REV", &revision));
+    let relative = relative_path(&root, &path)?;
+    let output = if revision.is_empty() {
+        // revision 为空时直接从暂存区恢复工作区内容，不碰 index
+        run_git(&root, &["restore", "--worktree", "--", relative.as_str()])?
+    } else {
+        if !valid_rev(&revision) {
+            return Err(err("BAD_REV", &revision));
+        }
+        run_git(
+            &root,
+            &[
+                "restore",
+                "--source",
+                revision.as_str(),
+                "--worktree",
+                "--",
+                relative.as_str(),
+            ],
+        )?
+    };
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(relative)
+}
+
+/// 针对历史某次提交中的单个文件应用反向补丁（撤销该提交对该文件的改动）。
+#[tauri::command]
+pub async fn git_revert_file(
+    root: String,
+    commit: String,
+    path: String,
+) -> Result<String, String> {
+    block(move || git_revert_file_impl(root, commit, path)).await
+}
+
+fn git_revert_file_impl(root: String, commit: String, path: String) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    if !valid_rev(&commit) {
+        return Err(err("BAD_REV", &commit));
     }
     let relative = relative_path(&root, &path)?;
-    let output = run_git(
+    let parent = format!("{commit}~1");
+    // 计算反向 diff：抵消该次 commit 引入的改动
+    let diff = run_git(
         &root,
         &[
-            "restore",
-            "--source",
-            revision.as_str(),
-            "--worktree",
+            "diff",
+            "-R",
+            parent.as_str(),
+            commit.as_str(),
             "--",
             relative.as_str(),
         ],
     )?;
-    if !output.ok {
-        return Err(fail(&output));
+    if !diff.ok {
+        return Err(fail(&diff));
+    }
+    if diff.stdout.trim().is_empty() {
+        return Ok(relative);
+    }
+    // 将反向 diff 安全应用到当前工作区，启用 3-way fallback
+    let applied = run_git_stdin(
+        &root,
+        &["apply", "-3", "--whitespace=nowarn"],
+        &diff.stdout,
+    )?;
+    if !applied.ok {
+        return Err(fail(&applied));
     }
     Ok(relative)
 }
@@ -1500,31 +1656,45 @@ fn git_push_up_to_impl(root: String, branch: String, revision: String) -> Result
     remote_op(&root, &["push", remote.as_str(), spec.as_str()])
 }
 
-/// 按一边了结一个冲突文件：取 stage 2（本地）或 stage 3（对方）覆盖工作区，再 add 记为已解决。
-/// 删除/修改这类冲突有一边根本不存在，checkout 会失败，原样把 git 的报错回给界面。
+/// 按一边了结一个冲突文件：取 stage 2（本地）或 stage 3（对方）覆盖工作区并暂存；
+/// 若该 side 已将文件删除（修改/删除冲突），则执行 `git rm -f` 标记解决并删除。
 #[tauri::command]
 pub async fn git_resolve_conflict(root: String, path: String, side: String) -> Result<String, String> {
     block(move || git_resolve_conflict_impl(root, path, side)).await
 }
 
 fn git_resolve_conflict_impl(root: String, path: String, side: String) -> Result<String, String> {
-    let flag = match side.as_str() {
-        "ours" => "--ours",
-        "theirs" => "--theirs",
+    let (flag, stage) = match side.as_str() {
+        "ours" => ("--ours", "2"),
+        "theirs" => ("--theirs", "3"),
         _ => return Err(err("BAD_SIDE", &side)),
     };
     let root = ensure_root(&root)?;
     let relative = relative_path(&root, &path)?;
-    let picked = run_git(
-        &root,
-        &["checkout", flag, "--", relative.as_str()],
-    )?;
-    if !picked.ok {
-        return Err(fail(&picked));
-    }
-    let marked = run_git(&root, &["add", "--", relative.as_str()])?;
-    if !marked.ok {
-        return Err(fail(&marked));
+    let stage_spec = format!(":{stage}:{relative}");
+    // 探测目标 side 在索引中是否存在（修改/删除冲突时被删除方没有对应 stage）
+    let stage_exists = run_git(&root, &["cat-file", "-e", stage_spec.as_str()])
+        .map(|probe| probe.ok)
+        .unwrap_or(false);
+
+    if stage_exists {
+        let picked = run_git(
+            &root,
+            &["checkout", flag, "--", relative.as_str()],
+        )?;
+        if !picked.ok {
+            return Err(fail(&picked));
+        }
+        let marked = run_git(&root, &["add", "--", relative.as_str()])?;
+        if !marked.ok {
+            return Err(fail(&marked));
+        }
+    } else {
+        // 目标侧已删除此文件：执行 rm -f 同步从工作区与暂存区移除，完成冲突解决
+        let removed = run_git(&root, &["rm", "-f", "--", relative.as_str()])?;
+        if !removed.ok {
+            return Err(fail(&removed));
+        }
     }
     Ok(relative)
 }
@@ -1558,6 +1728,28 @@ fn bound(ms: i64) -> Option<String> {
     Some(format!("@{}", ms / 1000))
 }
 
+/// 空仓库（还没有任何提交）的判定：报错文案随 locale 翻译不能嗅探，
+/// 用 `rev-parse --verify HEAD` 的退出码认。
+fn head_alive(root: &Path) -> bool {
+    run_git(root, &["rev-parse", "--verify", "-q", "HEAD"])
+        .map(|probe| probe.ok)
+        .unwrap_or(false)
+}
+
+/// 「与某分支比较」可能是 `a..b`（两点）或 `a...b`（三点对称差），空段合法
+/// （`..b` 表示从 HEAD 到 b）。直接 `split("..")` 会把三点拆出 `.b` 这种
+/// 以点开头的非法 ref 片段，按完整区间语法拆一遍再逐段校验。
+fn valid_range(reference: &str) -> bool {
+    let (left, right) = match reference.split_once("...") {
+        Some((l, r)) => (l, r),
+        None => match reference.split_once("..") {
+            Some((l, r)) => (l, r),
+            None => (reference, ""),
+        },
+    };
+    (left.is_empty() || valid_branch_name(left)) && (right.is_empty() || valid_branch_name(right))
+}
+
 #[tauri::command]
 pub async fn git_log(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>, String> {
     block(move || git_log_impl(root, query)).await
@@ -1565,13 +1757,7 @@ pub async fn git_log(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>,
 
 fn git_log_impl(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>, String> {
     let root = ensure_root(&root)?;
-    // 「与某分支比较」传的是区间写法（`master..feature`），两段各自都得是合法引用。
-    if !query.reference.is_empty()
-        && !query
-            .reference
-            .split("..")
-            .all(|part| valid_branch_name(part))
-    {
+    if !query.reference.is_empty() && !valid_range(&query.reference) {
         return Err(err("BAD_REV", &query.reference));
     }
 
@@ -1611,7 +1797,7 @@ fn git_log_impl(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>, Stri
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = run_git(&root, &args)?;
     if !output.ok {
-        if output.stderr.contains("does not have any commits") {
+        if !head_alive(&root) {
             return Ok(Vec::new());
         }
         return Err(fail(&output));
@@ -1721,7 +1907,7 @@ fn git_authors_impl(root: String, limit: u32) -> Result<Vec<String>, String> {
     let count = limit.clamp(1, 2000);
     let output = run_git(&root, &["log", &format!("-n{count}"), "--format=%an"])?;
     if !output.ok {
-        if output.stderr.contains("does not have any commits") {
+        if !head_alive(&root) {
             return Ok(Vec::new());
         }
         return Err(fail(&output));
@@ -1749,19 +1935,37 @@ fn git_commit_detail_impl(root: String, revision: String) -> Result<GitCommitDet
         return Err(err("BAD_REV", &revision));
     }
     let root = ensure_root(&root)?;
-    let head = run_git(
+    // 头部信息与行数清单并成一条 show：format 段以 %x1e 收尾，之后全是 numstat
+    // 的 NUL token 流（-z 下 format 的终止符 \0\n 也落在那段开头，解析前剥掉）。
+    // 少一次进程 spawn（Windows 上每次几十毫秒）；合并提交按第一父取差异
+    // （diff-tree 默认不给 merge 出差异，`git show` 默认的 combined diff 在
+    // 干净合并时是空的——右栏会整片空白），与 IDEA 一致。
+    // 参数顺序有讲究：--no-patch 会取消它前面出现的 diff 输出选项，--numstat
+    // 必须排在 --no-patch 之后才出清单，两条谁都不许挪。
+    let combined = run_git(
         &root,
         &[
             "show",
             "--no-patch",
-            r"--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b%x1f%D%x1f%P%x1f%cn%x1f%ce%x1f%ct",
+            r"--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%b%x1f%D%x1f%P%x1f%cn%x1f%ce%x1f%ct%x1e",
+            "--numstat",
+            "--find-renames",
+            "-z",
+            "-m",
+            "--first-parent",
             revision.as_str(),
         ],
     )?;
-    if !head.ok {
-        return Err(fail(&head));
+    if !combined.ok {
+        return Err(fail(&combined));
     }
-    let fields: Vec<String> = head.stdout.split('\u{1f}').map(trim_line).collect();
+    let (head_str, numstat) = combined
+        .stdout
+        .split_once('\u{1e}')
+        .unwrap_or((combined.stdout.as_str(), ""));
+    // -z 下 format 的终止符（\0\n）跟在 %x1e 后面，属于格式残留不是数据。
+    let numstat = numstat.trim_start_matches(['\0', '\n', '\r']);
+    let fields: Vec<String> = head_str.split('\u{1f}').map(trim_line).collect();
     let at = |index: usize| fields.get(index).cloned().unwrap_or_default();
     let detail = GitCommitDetail {
         hash: at(0),
@@ -1782,49 +1986,60 @@ fn git_commit_detail_impl(root: String, revision: String) -> Result<GitCommitDet
         files: Vec::new(),
     };
 
-    let numstat = run_git(
+    let name_status = run_git(
         &root,
         &[
             "show",
             "--format=",
-            "--find-renames",
-            "--numstat",
-            revision.as_str(),
-        ],
-    )?;
-    let name_status = run_git(
-        &root,
-        &[
-            "diff-tree",
-            "--no-commit-id",
             "--name-status",
-            "-r",
-            "-M",
+            "--find-renames",
+            "-z",
+            "-m",
+            "--first-parent",
             revision.as_str(),
         ],
     )?;
     Ok(GitCommitDetail {
         files: merge_file_lists(
-            numstat.ok.then_some(numstat.stdout.as_str()),
+            Some(numstat),
             name_status.ok.then_some(name_status.stdout.as_str()),
         ),
         ..detail
     })
 }
 
-/// numstat 给行数、name-status 给字母，两边按路径对齐。
+/// numstat 与 name-status 在 `-z` 下都是 NUL token 流（实测于 git 2.x）：
+///
+/// - numstat 非改名条目是一个 token：`added\tremoved\tpath`；改名条目的
+///   第一个 token 以 `\t` 收尾（第三个字段是空串），旧路径、新路径各占一个 token。
+/// - name-status 的非改名条目是 `code` + `path` 两个 token；改名/复制是
+///   `code` + `旧路径` + `新路径` 三个 token。
+///
+/// 两条清单按路径对齐：numstat 给行数，name-status 给字母。
+/// 之前 numstat 走文本行，部分目录段变化的重命名在文本模式下是
+/// `dir/{old => new}/rest` 括号写法，朴素按 ` => ` 切分会产出两个不存在的路径。
 fn merge_file_lists(numstat: Option<&str>, name_status: Option<&str>) -> Vec<GitCommitFile> {
     let mut files: Vec<GitCommitFile> = Vec::new();
-    // 路径 → 行号。逐行 `iter().find` 比的是整条路径串：一动一千个文件的提交就是
+    // 路径 → 行号。逐条 `iter().find` 比的是整条路径串：一动一千个文件的提交就是
     // 五十万次字符串比较。键借的是入参那两段文本，所以表可以边填 `files` 边查。
     let mut index: HashMap<&str, usize> = HashMap::new();
-    for line in numstat.unwrap_or("").lines() {
-        let mut columns = line.split('\t');
-        let (Some(added), Some(removed), Some(path)) = (columns.next(), columns.next(), columns.next())
-        else {
+
+    let mut numstat_tokens = numstat.unwrap_or("").split('\0').filter(|t| !t.is_empty());
+    while let Some(columns) = numstat_tokens.next() {
+        let mut fields = columns.split('\t');
+        let (Some(added), Some(removed)) = (fields.next(), fields.next()) else {
             continue;
         };
-        let (old_path, new_path) = split_rename(path);
+        // 第三个字段是路径；改名条目这里是空串，旧新路径在随后的两个 token 里。
+        let maybe_path = fields.next().unwrap_or("");
+        let (old_path, new_path) = if maybe_path.is_empty() {
+            let (Some(old), Some(new)) = (numstat_tokens.next(), numstat_tokens.next()) else {
+                break;
+            };
+            (old, new)
+        } else {
+            ("", maybe_path)
+        };
         index.insert(new_path, files.len());
         if !old_path.is_empty() {
             index.insert(old_path, files.len());
@@ -1837,17 +2052,20 @@ fn merge_file_lists(numstat: Option<&str>, name_status: Option<&str>) -> Vec<Git
             removed: removed.parse::<i64>().unwrap_or(0),
         });
     }
-    for line in name_status.unwrap_or("").lines() {
-        let mut columns = line.split('\t');
-        let (Some(code), Some(first)) = (columns.next(), columns.next()) else {
-            continue;
-        };
-        // 重命名/复制时 git 把两侧路径分成两列，其余情况只有一列。
-        let (old_path, new_path) = match columns.next() {
-            Some(second) => (first, second),
-            None => split_rename(first),
-        };
+
+    let mut status_tokens = name_status.unwrap_or("").split('\0').filter(|t| !t.is_empty());
+    while let Some(code) = status_tokens.next() {
         let letter = code.chars().next().unwrap_or(' ').to_string();
+        // 重命名/复制带两条路径，旧路径在前；其余情况只有一条。
+        let (old_path, new_path) = if letter == "R" || letter == "C" {
+            let (Some(old), Some(new)) = (status_tokens.next(), status_tokens.next()) else {
+                break;
+            };
+            (old, new)
+        } else {
+            let Some(path) = status_tokens.next() else { break };
+            ("", path)
+        };
         let at = index
             .get(new_path)
             .or_else(|| {
@@ -1876,15 +2094,6 @@ fn merge_file_lists(numstat: Option<&str>, name_status: Option<&str>) -> Vec<Git
         }
     }
     files
-}
-
-/// rename 写法：numstat 用 `old => new`，name-status 用 `old\0new` 之外的
-/// `old => new` 变体；两种都取箭头两侧。
-fn split_rename(path: &str) -> (&str, &str) {
-    match path.split_once(" => ") {
-        Some((from, to)) => (from, to),
-        None => ("", path),
-    }
 }
 
 /// 提交里某个文件的两侧内容，日志右栏的 diff 用。
@@ -1937,12 +2146,14 @@ fn git_commit_file_impl(
         modified: blob(format!("{revision}:{path}")),
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_file_lists, parse_log, parse_refs, parse_status, split_rename, valid_rev,
+        git_authors_impl, git_commit_detail_impl, git_log_impl, git_status_impl,
+        merge_file_lists, parse_log, parse_refs, parse_status, valid_range, valid_rev, GitLogQuery,
     };
+    // relative_path 的用例直接拿 &Path 当根，这里补上类型导入。
+    use std::path::Path;
 
     #[test]
     fn remote_head_symref_is_not_listed_as_a_branch() {
@@ -2009,7 +2220,7 @@ mod tests {
 
     #[test]
     fn branch_header_splits_local_name_from_upstream() {
-        let status = parse_status("## main...origin/main [ahead 2, behind 5]\n");
+        let status = parse_status("## main...origin/main [ahead 2, behind 5]\0");
         assert_eq!(status.branch, "main");
         assert_eq!(status.upstream.as_deref(), Some("origin/main"));
         assert_eq!(status.ahead, 2);
@@ -2019,16 +2230,16 @@ mod tests {
 
     #[test]
     fn branch_header_says_only_the_side_that_diverged() {
-        let behind = parse_status("## master...origin/master [behind 1]\n");
+        let behind = parse_status("## master...origin/master [behind 1]\0");
         assert_eq!((behind.ahead, behind.behind), (0, 1));
 
-        let ahead = parse_status("## master...origin/master [ahead 3]\n");
+        let ahead = parse_status("## master...origin/master [ahead 3]\0");
         assert_eq!((ahead.ahead, ahead.behind), (3, 0));
     }
 
     #[test]
     fn branch_header_without_upstream() {
-        let status = parse_status("## feature/x\n");
+        let status = parse_status("## feature/x\0");
         assert_eq!(status.branch, "feature/x");
         assert_eq!(status.upstream, None);
         assert_eq!(status.ahead, 0);
@@ -2036,18 +2247,19 @@ mod tests {
 
     #[test]
     fn detached_and_unborn_headers_are_recognised() {
-        let detached = parse_status("## HEAD (no branch)\n");
+        let detached = parse_status("## HEAD (no branch)\0");
         assert!(detached.detached);
         assert_eq!(detached.branch, "HEAD");
 
-        let unborn = parse_status("## No commits yet on master\n");
+        let unborn = parse_status("## No commits yet on master\0");
         assert_eq!(unborn.branch, "master");
     }
 
     #[test]
     fn change_lines_map_codes_and_paths() {
+        // -z 的实测格式：条目 `XY<空格>路径\0`，重命名是 `R  新\0旧\0`（新路径在前）。
         let status = parse_status(
-            "## main\n M src/App.tsx\nA  added.txt\nR  old.rs -> new.rs\n?? notes.txt\nUU conflict.rs\n",
+            "## main\0 M src/App.tsx\0A  added.txt\0R  new.rs\0old.rs\0?? notes.txt\0UU conflict.rs\0",
         );
         let find = |want: &str| {
             status
@@ -2074,22 +2286,39 @@ mod tests {
     }
 
     #[test]
+    fn status_z_keeps_spacey_filenames_verbatim() {
+        // porcelain v1 的非 z 模式给含空格的名字整段加 C 字符串引号（git 2.29 起），
+        // -z 模式原样输出；解析出的路径若带引号，回传 git add 就 pathspec 不匹配。
+        let status = parse_status("## master\0 M my file.txt\0?? new file with space.txt\0");
+        let find = |want: &str| {
+            status
+                .changes
+                .iter()
+                .find(|change| change.path == want)
+                .unwrap_or_else(|| panic!("输出里应有 {want}"))
+        };
+        assert_eq!(find("my file.txt").path, "my file.txt");
+        assert_eq!(find("new file with space.txt").path, "new file with space.txt");
+    }
+
+    #[test]
     fn changes_come_back_sorted_by_path() {
-        let status = parse_status("## main\n M z.txt\n M a.txt\n?? m.txt\n");
+        let status = parse_status("## main\0 M z.txt\0 M a.txt\0?? m.txt\0");
         let names: Vec<&str> = status.changes.iter().map(|change| change.path.as_str()).collect();
         assert_eq!(names, vec!["a.txt", "m.txt", "z.txt"]);
     }
 
     #[test]
     fn file_lists_join_numstat_and_status_letters() {
-        let files = merge_file_lists(
-            Some("1\t0\tsrc/new.ts\n5\t2\told.rs => new.rs\n"),
-            Some("A\tsrc/new.ts\nR100\told.rs\tnew.rs\n"),
-        );
+        // -z 实测格式：numstat 非改名是 `added\tremoved\tpath\0`，改名是
+        // `added\tremoved\t\0旧\0新\0`（第三个字段为空，旧路径在前）；
+        // name-status 是 `code\0路径\0`，改名是 `code\0旧\0新\0`。
+        let numstat = "1\t0\tsrc/new.ts\05\t2\t\0old.rs\0new.rs\0";
+        let name_status = "A\0src/new.ts\0R100\0old.rs\0new.rs\0";
+        let files = merge_file_lists(Some(numstat), Some(name_status));
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].status, "A");
         assert_eq!(files[0].path, "src/new.ts");
-        // 两侧路径都要留下，箭头写法在 numstat 里，两列写法在 name-status 里。
         assert_eq!(files[1].path, "new.rs");
         assert_eq!(files[1].old_path, "old.rs");
         assert_eq!(files[1].status, "R");
@@ -2098,7 +2327,7 @@ mod tests {
 
     #[test]
     fn file_lists_keep_entries_only_one_side_reported() {
-        let files = merge_file_lists(Some(""), Some("M\tsolo.txt\n"));
+        let files = merge_file_lists(Some(""), Some("M\0solo.txt\0"));
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "solo.txt");
         assert_eq!(files[0].status, "M");
@@ -2106,9 +2335,38 @@ mod tests {
     }
 
     #[test]
-    fn split_rename_separates_both_sides() {
-        assert_eq!(split_rename("a/{x => y}/b.txt"), ("a/{x", "y}/b.txt"));
-        assert_eq!(split_rename("plain.txt"), ("", "plain.txt"));
+    fn partial_directory_renames_come_back_as_full_paths() {
+        // 部分目录段变化的重命名在文本 numstat 里是 `dir/{old => new}/rest` 括号写法，
+        // 朴素按 ` => ` 切分会产出两个不存在的路径；-z 下 git 直接给完整路径。
+        let files = merge_file_lists(
+            Some("0\t0\t\0lib/a/b/deep.txt\0lib/c/deep.txt\0"),
+            Some("R100\0lib/a/b/deep.txt\0lib/c/deep.txt\0"),
+        );
+        assert_eq!(files.len(), 1, "同一文件不该因为括号写法拆成两条");
+        assert_eq!(files[0].path, "lib/c/deep.txt");
+        assert_eq!(files[0].old_path, "lib/a/b/deep.txt");
+        assert_eq!(files[0].status, "R");
+    }
+
+    #[test]
+    fn binary_numstat_counts_fall_back_to_zero() {
+        // 二进制文件的行数位是 "-"，落不到整数上就按 0 记。
+        let files = merge_file_lists(Some("-\t-\tlogo.png\0"), Some("M\0logo.png\0"));
+        assert_eq!(files[0].added, 0);
+        assert_eq!(files[0].removed, 0);
+    }
+
+    #[test]
+    fn log_ranges_split_on_two_or_three_dots() {
+        // 三点是对称差语法：直接 split("..") 会拆出 ".b" 这种以点开头的非法片段。
+        assert!(valid_range("master..feature"));
+        assert!(valid_range("master...feature"));
+        assert!(valid_range("..feature"));
+        assert!(valid_range("master.."));
+        assert!(valid_range("main"));
+        assert!(!valid_range("master..fe ature"));
+        assert!(!valid_range("ma ster...feature"));
+        assert!(!valid_range("master...-flag"));
     }
 
     #[test]
@@ -2152,4 +2410,92 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp);
     }
+
+    /// 真跑 git 进程的端到端冒烟。上面的解析器测试喂的是手写字符串，真实输出里
+    /// `-z` 的 NUL 位置、format 终止符这些字节格式只有真 git 能兜底——porcelain
+    /// 引号、numstat 排版这类协议级回归，手写字符串永远抓不住。
+    #[test]
+    fn end_to_end_against_a_real_repo() {
+        let dir = std::env::temp_dir().join(format!("forge-git-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |repo: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .output()
+                .expect("起 git 进程失败（测试机需要装 git）");
+            assert!(
+                output.status.success(),
+                "git {:?} 失败：{}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "t@forge.local"]);
+        git(&dir, &["config", "user.name", "forge"]);
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        std::fs::write(dir.join("with space.txt"), "two").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "init"]);
+
+        // 工作区改动 + 未跟踪：status 的 -z 解析要认出含空格的路径且不带引号。
+        std::fs::write(dir.join("a.txt"), "one two").unwrap();
+        std::fs::write(dir.join("new file.txt"), "three").unwrap();
+        let status = git_status_impl(dir.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(status.branch, "main");
+        let find = |want: &str| {
+            status
+                .changes
+                .iter()
+                .find(|change| change.path == want)
+                .unwrap_or_else(|| {
+                    let listed: Vec<&str> = status.changes.iter().map(|c| c.path.as_str()).collect();
+                    panic!("变更清单里应有 {want}，实际只有 {:?}", listed)
+                })
+        };
+        assert_eq!(find("a.txt").work_status, "M");
+        assert!(find("new file.txt").untracked);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "second"]);
+
+        // 提交详情走「format + numstat 合并成一条 show」的命令组合，-z 解析要出齐清单。
+        let detail = git_commit_detail_impl(dir.to_string_lossy().into_owned(), "HEAD".to_string()).unwrap();
+        assert_eq!(detail.subject, "second");
+        let paths: Vec<&str> = detail.files.iter().map(|file| file.path.as_str()).collect();
+        assert!(paths.contains(&"a.txt"), "清单里应有 a.txt：{:?}", paths);
+        // 「new file.txt」带空格：-z 输出不做引号转义，解析出的路径要原样。
+        assert!(
+            paths.contains(&"new file.txt"),
+            "含空格的文件名要原样出现：{:?}",
+            paths
+        );
+        assert!(
+            !paths.contains(&"with space.txt"),
+            "这次提交没动它的文件不该混进清单：{:?}",
+            paths
+        );
+        assert_eq!(
+            detail.files.iter().find(|file| file.path == "a.txt").map(|file| file.added),
+            Some(1)
+        );
+
+        // 空仓库：log / authors 在还没有提交的仓库上要回空列表而不是报错。
+        let empty = std::env::temp_dir().join(format!("forge-git-e2e-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty);
+        std::fs::create_dir_all(&empty).unwrap();
+        git(&empty, &["init", "-q", "-b", "main"]);
+        git(&empty, &["config", "user.email", "t@forge.local"]);
+        git(&empty, &["config", "user.name", "forge"]);
+        let log = git_log_impl(empty.to_string_lossy().into_owned(), GitLogQuery::default()).unwrap();
+        assert!(log.is_empty(), "空仓库的日志是空列表，不是报错");
+        let authors = git_authors_impl(empty.to_string_lossy().into_owned(), 10).unwrap();
+        assert!(authors.is_empty(), "空仓库的作者名单是空列表，不是报错");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
 }
+

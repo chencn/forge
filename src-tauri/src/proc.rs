@@ -139,6 +139,13 @@ fn proc_start_impl(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Unix 上给独立进程组：`sh -c` 起的命令本体与壳同组，停止时才能按组整树收掉，
+    // 不然只杀得到壳，孙进程留在后台继续占着输出管道（见 `kill_tree`）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     for item in &env {
         if !item.name.trim().is_empty() {
             command.env(&item.name, &item.value);
@@ -222,6 +229,30 @@ fn wait_and_finish(
     let _ = app.emit("proc://exit", ProcExit { id, code });
 }
 
+/// 把一条还活着的进程连树杀掉。杀树与表锁分开：`taskkill` 收一棵树要几百毫秒，
+/// 握着表锁杀会把别的会话的起停、状态查询一起堵住（调用方先把条目从表里摘掉或克隆出来）。
+fn kill_tree(running: &Running) {
+    let pid = lock(&running.child).id();
+    #[cfg(windows)]
+    {
+        // cmd /C 只是壳，杀它会把真正的子进程留在后台继续占着输出管道；
+        // taskkill /F /T 连树收，收干净后再对壳补一刀不亏（进程已死时只是报个错）。
+        let mut killer = Command::new("taskkill");
+        killer.args(["/F", "/T", "/PID", pid.to_string().as_str()]);
+        hide_console(&mut killer);
+        let _ = killer.output();
+        let _ = lock(&running.child).kill();
+    }
+    #[cfg(not(windows))]
+    {
+        // spawn 时建了独立进程组，按组发 SIGKILL 才收得到孙子进程；组没了（已整体退出
+        // 或建组失败）再兜底杀壳。
+        if !crate::sys::kill_process_group(pid) {
+            let _ = lock(&running.child).kill();
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn proc_kill(id: String) -> Result<(), String> {
     block(move || {
@@ -229,21 +260,25 @@ pub async fn proc_kill(id: String) -> Result<(), String> {
             return Ok(());
         };
         let _ = running.stop.send(());
-        let pid = lock(&running.child).id().to_string();
-        // cmd /C 只是壳，杀它会把真正的子进程留在后台继续占着输出管道。
-        #[cfg(windows)]
-        {
-            let mut killer = Command::new("taskkill");
-            killer.args(["/F", "/T", "/PID", pid.as_str()]);
-            hide_console(&mut killer);
-            let _ = killer.output();
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = pid;
-        }
-        let _ = lock(&running.child).kill();
+        kill_tree(&running);
         Ok(())
     })
     .await
+}
+
+/// 应用退出前的最后一步：把还活着的构建 / 运行进程整树杀掉，一个不留。
+///
+/// 必须是同步函数——退出路径上没有 async runtime 来服务 `proc_kill`。
+/// 退出时留着它们就是一堆孤儿进程，等这几百毫秒是值得的。
+pub fn reap_all_for_exit() {
+    let all: Vec<Arc<Running>> = {
+        let mut table = lock(table());
+        let all: Vec<Arc<Running>> = table.values().cloned().collect();
+        table.clear();
+        all
+    };
+    for running in all {
+        let _ = running.stop.send(());
+        kill_tree(&running);
+    }
 }

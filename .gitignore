@@ -30,6 +30,7 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+.mimosa/
 
 # TypeScript 缓存
 *.tsbuildinfo

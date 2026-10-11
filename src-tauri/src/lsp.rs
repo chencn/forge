@@ -21,6 +21,10 @@ use tauri::{AppHandle, Emitter};
 /// 一次从 server stdout 取多少字节。索引期的诊断会成坨来，缓冲区大一点才分得出「还在涌」。
 const READ_BYTES: usize = 64 * 1024;
 
+/// 读缓冲上限：16 MiB。配错 program 时那路 stdout 会持续吐无帧垃圾，一条也取不走，
+/// 缓冲只涨不落；到顶就停会话走退出记账，别把内存吃穿。正常的 LSP 单条消息远到不了这个量级。
+const MAX_READ_BUFFER: usize = 16 * 1024 * 1024;
+
 /// 一个活着的语言服务会话。stdout 由读线程单独持有，stdin 留在这里给 `lsp_write` 写。
 ///
 /// 会话身份就是表里的键：`窗口::server::工程根`。同一个键第二次请求不会重复起进程。
@@ -184,6 +188,14 @@ fn build_command(resolved: &str, args: &[String]) -> Command {
     } else {
         let mut command = Command::new(resolved);
         command.args(args);
+        // Unix 上给独立进程组：停止时按组整树收（见 `stop_one`），语言服务带的子进程
+        // （rust-analyzer 起 rustc、gopls 起编译器）不留孤儿。Windows 那路是 cmd /C 垫片，
+        // 整树靠 taskkill /T，不吃这套。
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         command
     }
 }
@@ -220,9 +232,9 @@ fn begin_starting(id: &str) -> bool {
 
 fn end_starting(id: &str) {
     let (guard, condvar) = &*starting();
-    if let Some(mut map) = guard.lock().ok() {
-        map.remove(id);
-    }
+    // 必须用带中毒恢复的 lock 帮手：占位线程 panic 后锁中毒，`.lock().ok()` 会静默跳过
+    // remove，键永远钉在表里，后续同键请求全部卡在 wait_for_starting 里白等 30 秒。
+    lock(guard).remove(id);
     condvar.notify_all();
 }
 
@@ -423,6 +435,9 @@ fn spawn_session(
 }
 
 /// 按 `Content-Length` 分帧读 stdout。每凑齐一条完整消息就发一条事件。
+///
+/// 配错 program 时这路 stdout 可能持续吐非 LSP 的输出（报错横幅、别的协议），
+/// 一条完整帧都取不走，缓冲只涨不落；超过 `MAX_READ_BUFFER` 就停会话止损。
 fn read_loop(mut reader: impl Read, stop_rx: mpsc::Receiver<()>, app: AppHandle, id: String) {
     let mut buffer: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; READ_BYTES];
@@ -444,6 +459,18 @@ fn read_loop(mut reader: impl Read, stop_rx: mpsc::Receiver<()>, app: AppHandle,
                 if consumed > 0 {
                     buffer.drain(..consumed);
                     consumed = 0;
+                }
+                // 一条合法帧都取不走还一直涌：多半是配错了 program，server 在吐别的输出。
+                // 涨到上限就止损，下面的退出记账会摘会话、记失败、发退出事件。
+                if buffer.len() > MAX_READ_BUFFER {
+                    let _ = app.emit(
+                        "lsp://log",
+                        LspLog {
+                            id: id.clone(),
+                            text: "stdout 连续 16 MiB 无法解析成 LSP 帧，已停止该会话".to_string(),
+                        },
+                    );
+                    break;
                 }
             }
         }
@@ -565,20 +592,24 @@ pub async fn lsp_stop(id: String) -> Result<(), String> {
 fn stop_one(id: &str) {
     if let Some(session) = lock(sessions()).remove(id) {
         let _ = session.stop.send(());
-        let pid = lock(&session.child).id().to_string();
+        let pid = lock(&session.child).id();
         // 语言服务常带子进程（rust-analyzer 起 rustc、gopls 起编译器），杀壳不管用，要杀整棵树。
         #[cfg(windows)]
         {
             let mut killer = Command::new("taskkill");
-            killer.args(["/F", "/T", "/PID", pid.as_str()]);
+            killer.args(["/F", "/T", "/PID", pid.to_string().as_str()]);
             hide_console(&mut killer);
             let _ = killer.output();
+            let _ = lock(&session.child).kill();
         }
         #[cfg(not(windows))]
         {
-            let _ = pid;
+            // spawn 时建了独立进程组，按组发 SIGKILL 才收得到子进程；
+            // 组没了（已整体退出或建组失败）再兜底杀直接子进程。
+            if !crate::sys::kill_process_group(pid) {
+                let _ = lock(&session.child).kill();
+            }
         }
-        let _ = lock(&session.child).kill();
     }
 }
 
@@ -596,6 +627,14 @@ fn reap_impl() {
             scope.spawn(move || stop_one(id));
         }
     });
+}
+
+/// 应用退出前把还挂着的语言服务整树杀光。
+///
+/// 必须是同步函数——退出路径上没有 async runtime 来服务 `lsp_reap`。
+/// 语言服务整树几百毫秒，比留下一堆孤儿 rust-analyzer / gopls 强。
+pub fn reap_all_for_exit() {
+    reap_impl();
 }
 
 /// 会话状态快照。只读表和非阻塞 `try_wait`，不起进程也不收进程，界面轮询它就够。
@@ -746,7 +785,6 @@ fn merge_detail(first: Option<&str>, second: &str) -> String {
         _ => second.to_string(),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{find, parse_args, take_message};
@@ -868,3 +906,4 @@ mod tests {
         assert_eq!(consumed, buffer.len());
     }
 }
+

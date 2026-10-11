@@ -331,6 +331,30 @@ fn is_identifier(name: &str) -> bool {
     chars.all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
 }
 
+/// 仓库文件里读来的名字能不能原样拼进一行 shell 命令。
+///
+/// 识别结果整行交给 `cmd /C` 或 `sh -c` 跑，`&`、`|`、`$()`、引号这些一拼进去就是命令注入；
+/// 这些名字（npm 脚本键、cargo 包名、go 包路径……）全部来自仓库文件，恶意仓库想借运行入口
+/// 执行任意命令只隔这一层。白名单外的名字宁可少给一条运行配置，也不开这条通道：
+/// 放行 Unicode 字母数字与 `_ - . / @`（`@scope/pkg`、`cmd/api` 这类带分隔的名字要能通过），
+/// 拒绝空白、shell 元字符、引号、`$` 与反引号，以及任何一段 `..`（不得逃出工程目录）。
+fn safe_component(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let allowed = s
+        .chars()
+        .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '@'));
+    // 单独的 `.` 与 `..` 也不是可跑的目标；`..` 夹在相对路径中间同样要拒。
+    // 前导 `-` 也不能放：`npm run -o` 会被 npm 当成自家旗标解析，这是参数注入
+    // 而不是命令注入，但拒绝的成本就一个字符的判断。
+    allowed
+        && !s.starts_with('-')
+        && s != "."
+        && s != ".."
+        && !s.split('/').any(|seg| seg == "..")
+}
+
 /// 抓第一个捕获组。构建文件的形状千奇百怪，抓不到回 None，由调用方决定退路。
 fn capture(text: &str, pattern: &str) -> Option<String> {
     regex(pattern)?
@@ -429,8 +453,12 @@ fn is_python_entry(text: &str) -> bool {
 
 /// 非 JVM 那几族一律靠本机 PATH 上那个命令行工具起跑：命令里写裸程序名，
 /// 本机没有就标 `NO_TOOL`，和 npm 客户端同一个口径（构建工具不在，条目读得出但跑不动）。
+///
+/// program 可能带参数（如 Windows 的 `py -3`）：探测只认首个词，整段拿去
+/// `which` 的话磁盘上永远不存在叫 `py -3` 的文件，装了启动器反而被标成缺工具。
 fn program_missing(program: &str) -> Option<Unavailable> {
-    if sys::which_program(program).is_empty() {
+    let head = program.split_whitespace().next().unwrap_or(program);
+    if sys::which_program(head).is_empty() {
         return Some(Unavailable {
             code: "NO_TOOL".to_string(),
             detail: program.to_string(),
@@ -439,14 +467,36 @@ fn program_missing(program: &str) -> Option<Unavailable> {
     None
 }
 
-/// Python 解释器喊哪个名字：Windows 上一般是 `python`，类 UNIX 常只有 `python3`。
-fn python_program() -> &'static str {
+/// Python 解释器喊哪个名字。返回一整段可执行文本（可能带参数）。
+///
+/// Windows 上优先官方启动器 `py -3`：`-3` 钉住大版本，装了多套 Python 时不会被老版本抢走。
+/// 商店装出来的 `WindowsApps\python.exe` 是 0 字节存根，`which` 拿得到、跑起来只会弹商店，
+/// 认出来就跳过。类 UNIX 常只有 `python3`，候选顺序保持原样。
+fn python_program() -> String {
+    if cfg!(windows) {
+        if !sys::which_program("py").is_empty() {
+            return "py -3".to_string();
+        }
+        for name in ["python", "python3"] {
+            let found = sys::which_program(name);
+            if !found.is_empty() && !is_windows_store_stub(&found) {
+                return name.to_string();
+            }
+        }
+        return "python".to_string();
+    }
     for name in ["python", "python3"] {
         if !sys::which_program(name).is_empty() {
-            return name;
+            return name.to_string();
         }
     }
-    "python"
+    "python".to_string()
+}
+
+/// Microsoft 商店的 python 存根：`WindowsApps` 目录下的占位文件，不是真解释器。
+/// 两种分隔符都认——`which` 回系统原样写法，构造测试时也可能给正斜杠写法。
+fn is_windows_store_stub(path: &str) -> bool {
+    path.contains("Microsoft\\WindowsApps") || path.contains("Microsoft/WindowsApps")
 }
 
 /// 极简 TOML 读取：只认 `[表]` / `[[表]]` 头和其下的单行 `键 = 值`。
@@ -709,6 +759,10 @@ impl Detector {
             None
         };
         for (name, _) in scripts {
+            // 脚本键是 package.json 里的任意 JSON 字符串，先过白名单再拼命令行。
+            if !safe_component(name) {
+                continue;
+            }
             let markers = match lines.get(name) {
                 Some(line) => vec![RunMarker { file: file.clone(), line: *line }],
                 None => Vec::new(),
@@ -1103,9 +1157,14 @@ impl Detector {
         let missing = program_missing("go");
         for (pkg, markers) in self.go_main_packages(dir) {
             // 目标一律写成模块根往下数的相对包路径，工程挪盘子不用改配置。
+            // `.` 是模块根的字面量（代码自己给的，不是文件里来的），不在校验列；
+            // 其余包路径来自目录名，先过白名单再拼 `./{pkg}`。
             let (name, target) = if pkg == "." {
                 (base.clone(), ".".to_string())
             } else {
+                if !safe_component(&pkg) {
+                    continue;
+                }
                 (pkg.clone(), format!("./{pkg}"))
             };
             self.push(RunConfiguration {
@@ -1218,6 +1277,10 @@ impl Detector {
         let Some(package) = toml_value(&tables, "package", "name") else {
             return;
         };
+        // 包名要拼进这个 crate 的每一条 `cargo run -p`，不合法的整个 crate 都不给。
+        if !safe_component(&package) {
+            return;
+        }
         let mut bins = toml_values(&tables, "bin", "name");
         if bins.is_empty() {
             if dir.join("src").join("main.rs").is_file() {
@@ -1265,6 +1328,10 @@ impl Detector {
         let missing = program_missing("cargo");
         let workdir = self.workdir(dir);
         for bin in bins {
+            // bin 名来自 `[[bin]]` 或 src/bin 的文件名，同为仓库里来的标识符，一起过白名单。
+            if !safe_component(&bin) {
+                continue;
+            }
             let flag = if multiple && bin != package {
                 format!(" --bin {bin}")
             } else {
@@ -1311,7 +1378,7 @@ impl Detector {
             }
         }
         let program = python_program();
-        let missing = program_missing(program);
+        let missing = program_missing(&program);
         let workdir = self.workdir(dir);
         let base = dir_name(dir);
 
@@ -1351,7 +1418,7 @@ impl Detector {
         };
         // 没有可认的框架时：能 `python -m <包>` 就喊包名，再不行就挑第一个带入口守卫的脚本。
         let entry = entry
-            .or_else(|| self.python_package_entry(dir, program))
+            .or_else(|| self.python_package_entry(dir, &program))
             .or_else(|| {
                 self.source_where(dir, "py", is_python_entry)
                     .map(|file| (file.clone(), format!("{program} {file}"), file))
@@ -1734,6 +1801,10 @@ impl Detector {
         let workdir = self.workdir(dir);
         let missing = program_missing("deno");
         for name in tasks.keys() {
+            // 任务名是 deno.json 里的任意 JSON 键，先过白名单再拼命令行。
+            if !safe_component(name) {
+                continue;
+            }
             self.push(RunConfiguration {
                 id: format!("deno:{workdir}:{name}"),
                 name: name.clone(),
@@ -1847,6 +1918,10 @@ impl Detector {
         let count = targets.len();
         self.owned.push(dir.to_path_buf());
         for target in targets {
+            // target 名是 Package.swift 引号里的任意串，先过白名单再拼命令行。
+            if !safe_component(&target) {
+                continue;
+            }
             // 只有一个可执行目标时 `swift run` 不用点名，多了必须点。
             let command = if count == 1 {
                 "swift run".to_string()
@@ -2095,6 +2170,60 @@ mod tests {
             outcome.problems
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn safe_component_passes_names_and_rejects_shell_payloads() {
+        // 放行：普通名、npm 的 scope 包名、go 的相对包路径、带下划线/连字符/点的名字、Unicode。
+        assert!(safe_component("dev"));
+        assert!(safe_component("@scope/pkg"));
+        assert!(safe_component("cmd/api"));
+        assert!(safe_component("my-pkg_2.0"));
+        assert!(safe_component("构建脚本"));
+        // 拒：空串、点目录、往上跳的路径段、空白、shell 元字符、命令替换、引号与反引号。
+        assert!(!safe_component(""));
+        assert!(!safe_component("."));
+        assert!(!safe_component(".."));
+        assert!(!safe_component("a/../b"));
+        assert!(!safe_component("a & calc"));
+        assert!(!safe_component("a|b"));
+        assert!(!safe_component("a;b"));
+        assert!(!safe_component("$(calc)"));
+        assert!(!safe_component("`calc`"));
+        assert!(!safe_component("a\"b"));
+        assert!(!safe_component("a\nb"));
+        // 前导 `-` 是参数注入面：拼成 `npm run -o` 会被 npm 当自家旗标解析。
+        assert!(!safe_component("-o"));
+        assert!(!safe_component("--prefix=x"));
+    }
+
+    #[test]
+    fn hostile_npm_script_names_are_skipped() {
+        // 反向验证：脚本键来自 package.json 的任意 JSON 键，带 shell 元字符的一条都不生成。
+        let dir = temp_project("npmhostile");
+        write(
+            &dir,
+            "package.json",
+            r#"{"scripts":{"dev":"vite","a & calc":"evil","$(pwn)":"evil"}}"#,
+        );
+        let outcome = run_detect_impl(dir.to_string_lossy().into_owned()).unwrap();
+        assert!(outcome.configs.iter().any(|c| c.name == "dev"));
+        assert_eq!(
+            outcome.configs.len(),
+            1,
+            "不合法的脚本键一条都不给：{:?}",
+            names(&outcome)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn windows_store_python_stubs_are_filtered() {
+        assert!(is_windows_store_stub(
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\python.exe"
+        ));
+        assert!(!is_windows_store_stub(r"C:\Python312\python.exe"));
+        assert!(!is_windows_store_stub("/usr/bin/python3"));
     }
 
     #[test]

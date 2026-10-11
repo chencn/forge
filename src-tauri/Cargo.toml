@@ -32,6 +32,11 @@ walkdir = "2"
 webview2-com = "0.39"
 windows = { version = "0.62", features = ["Win32_Foundation"] }
 
+# proc.rs / lsp.rs 停会话时按进程组整树收（libc::kill 给负 pid 发 SIGKILL）；
+# tauri 树里已锁这一份，显式声明不额外下载。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

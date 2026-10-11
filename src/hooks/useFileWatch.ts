@@ -17,13 +17,18 @@ interface FsChangePayload {
 export function useFileWatch(root: string | null, onChange: (paths: string[]) => void) {
   const handler = useRef(onChange);
   handler.current = onChange;
+  /** 本轮监听的代号：每次换根递增，start/stop 都带着它，后端只认不落伍的请求。 */
+  const generation = useRef(0);
 
   useEffect(() => {
     if (!root) {
-      void stopWorkspaceWatch();
+      // 上一个 effect 的 cleanup 已经带着当时的 root 与代号发过 stop 了，这里没事可做。
       return;
     }
-    void watchWorkspace(root);
+    // 代号先递增再随请求发出：后端命令在阻塞线程池里执行顺序没有保证，
+    // 两条 start 乱序到达时，代号落后的那次会被后端拒掉，槽里永远是最新那轮。
+    const gen = ++generation.current;
+    void watchWorkspace(root, gen);
 
     let batch: string[] = [];
     let timer: number | undefined;
@@ -49,8 +54,10 @@ export function useFileWatch(root: string | null, onChange: (paths: string[]) =>
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
       if (detach) detach();
-      // 这里不碰 fs_watch_stop：换目录时后端起新的会顺手把旧的丢掉，
-      // 而自己发一次「停」反而可能比新的一次「起」晚到，把刚装好的监听掐死。
+      // 带着本次闭包里的 root 与代号发 stop：两者都对得上后端才清槽。
+      // 就算这条 stop 比换目录后那次新 start 晚到，也对不上号，掐不死新监听；
+      // 卸载时由此真正停掉监听，不再依赖「下次 start 顺手覆盖」。
+      void stopWorkspaceWatch(root, gen);
     };
   }, [root]);
 }

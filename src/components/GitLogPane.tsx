@@ -56,6 +56,7 @@ import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import Select from "./Select";
 import { collapsePackageDirs, isUnderJvmSourceRoot } from "../lib/jvm";
+import { MOD_LABEL } from "../lib/sys";
 import type { GitState } from "../hooks/useGitState";
 import type { BranchSettings } from "../lib/settings";
 import { withFavoriteToggled } from "../lib/settings";
@@ -593,12 +594,14 @@ export default function GitLogPane({
       const key = event.key.toLowerCase();
       /** 只选中一条时的那行；菜单上好几项和左右箭头都只作用在「恰好一条」上。 */
       const sole = picked.length === 1 ? (commits.find((row) => row.hash === picked[0]) ?? null) : null;
+      // 主修饰键按平台认：macOS 上是 Cmd（与 App 侧提交分组的同一对键位保持一致）。
+      const mod = event.ctrlKey || event.metaKey;
       if (event.ctrlKey && event.altKey && event.shiftKey && !event.metaKey && key === "c") {
         event.preventDefault();
         void navigator.clipboard.writeText(picked.join("\n"));
         return;
       }
-      if (event.ctrlKey && event.altKey && !event.shiftKey && !event.metaKey) {
+      if (mod && event.altKey && !event.shiftKey) {
         if (key === "p") {
           event.preventDefault();
           setGroupDir((value) => !value);
@@ -781,7 +784,7 @@ export default function GitLogPane({
       {
         label: t("log.copyRevisionNumber"),
         icon: ClipboardCopy,
-        shortcut: "Ctrl+Alt+Shift+C",
+        shortcut: `${MOD_LABEL}+Alt+Shift+C`,
         onSelect: () => void navigator.clipboard.writeText(current.join("\n")),
       },
       {
@@ -896,7 +899,7 @@ export default function GitLogPane({
       {
         label: t("git.newBranch"),
         icon: GitBranch,
-        shortcut: "Ctrl+Alt+N",
+        shortcut: `${MOD_LABEL}+Alt+N`,
         disabled: needOne !== undefined,
         hint: needOne,
         onSelect: () => onCommitAction("newBranch", commit),
@@ -1788,8 +1791,8 @@ export default function GitLogPane({
           minWidth={230}
         >
           <p className="popover-label">{t("git.groupBy")}</p>
-          {optionRow(t("git.groupDir"), groupDir, "Ctrl+Alt+P", () => setGroupDir((v) => !v))}
-          {optionRow(t("git.groupModule"), groupModule, "Ctrl+Alt+M", () =>
+          {optionRow(t("git.groupDir"), groupDir, `${MOD_LABEL}+Alt+P`, () => setGroupDir((v) => !v))}
+          {optionRow(t("git.groupModule"), groupModule, `${MOD_LABEL}+Alt+M`, () =>
             setGroupModule((v) => !v)
           )}
           <div className="popover-sep" />

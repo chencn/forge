@@ -40,6 +40,8 @@ interface RunningServer {
   opened: Map<string, number>;
   /** 每个文档最后一次发出去的文本内容，用来判断要不要 didChange。 */
   sent: Map<string, string>;
+  /** 防抖中的 didChange：URI → 计时器与待发文本。窗口内连续击键只在尾部发一次。 */
+  pendingChanges: Map<string, { timer: ReturnType<typeof setTimeout>; text: string }>;
   /** 下一个要用的文档版本号，LSP 只要求它单调递增。 */
   version: number;
 }
@@ -78,6 +80,13 @@ let nextId = 1;
 const inflight = new Map<number, (result: unknown) => void>();
 /** 已注册过 provider 的语言，避免重复注册。 */
 const providersRegistered = new Set<string>();
+/**
+ * 普通请求的超时。initialize 有自己的握手超时（更短，先落地），这里管其余请求：
+ * server 半死（活着但不回话）时 hover / 补全 / 跳定义不能永远挂着不落。
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+/** didChange 的防抖窗口：把每次击键触发的 reconcile 合并成窗口尾部的一次发送。 */
+const CHANGE_DEBOUNCE_MS = 150;
 
 /** 语言服务状态变化的通知，界面据此显示「正在启动 / 未找到」。 */
 export type LspStatus = "starting" | "ready" | "missing";
@@ -161,9 +170,20 @@ function notify(server: RunningServer, method: string, params: unknown): void {
 function request(server: RunningServer, method: string, params: unknown): Promise<unknown> {
   const id = nextId++;
   const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
-  return new Promise((resolve) => {
-    inflight.set(id, resolve);
+  return new Promise((resolve, reject) => {
+    // 到点不落就从 inflight 摘掉并报超时：不然 server 半死时每个 hover / 补全都挂满 60 秒
+    // 之后也没人清理，inflight 只涨不落。迟到的响应会因条目已删被 handleMessage 丢弃。
+    const timer = setTimeout(() => {
+      inflight.delete(id);
+      reject(new Error(`${method} 超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒无响应）`));
+    }, REQUEST_TIMEOUT_MS);
+    inflight.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
     void lspWrite(server.id, body).catch(() => {
+      // 写不进去说明会话已经没了：不等超时，立刻按「没有结果」落地，调用方各自兜底。
+      clearTimeout(timer);
       inflight.delete(id);
       resolve(null);
     });
@@ -196,7 +216,11 @@ async function initialize(server: RunningServer): Promise<void> {
         workspace: { workspaceFolders: false },
       },
       workspaceFolders: null,
-    }).then((result) => ({ result, timedOut: false })),
+    })
+      .then((result) => ({ result, timedOut: false }))
+      // 握手时限先落地后，这条迟到 60s 的超时 reject 没人听了——不加 catch 就是
+      // 一个 unhandled rejection（server 半死时每次启动都刷一条）。
+      .catch(() => ({ result: null, timedOut: true })),
     new Promise<{ result: unknown; timedOut: boolean }>((resolve) => {
       setTimeout(() => resolve({ result: null, timedOut: true }), timeout);
     }),
@@ -264,6 +288,7 @@ async function launchSession(
     root,
     opened: new Map(),
     sent: new Map(),
+    pendingChanges: new Map(),
     version: 0,
   };
   running.set(key, server);
@@ -445,6 +470,7 @@ function handleExit(payload: LspExit): void {
   appendLog(payload.id, detail);
   if (!server) return;
   running.delete(server.key);
+  cancelAllChanges(server);
   emitStatus(server.entry.id, "missing", detail);
 }
 
@@ -959,6 +985,7 @@ async function reconcileOnce(
   for (const [key, server] of [...running]) {
     if (!groups.has(key)) {
       running.delete(key);
+      cancelAllChanges(server);
       await lspStop(server.id).catch(() => {});
     }
   }
@@ -999,6 +1026,46 @@ function lspLanguageId(filePath: string, language: string): string {
   return language;
 }
 
+/**
+ * 把一次文档改动排进防抖窗口：窗口内每次 reconcile 只刷新待发文本并重置计时，
+ * 到期才用最新的文本发一条 didChange。
+ *
+ * 每次击键都会触发 reconcile，若每次都把全文发给 server，长文档下 IPC 与 server 的
+ * 重解析开销全花在中间态上，诊断反而更慢。防抖只压本地改动的推送频率；
+ * didOpen 仍立即发全文，请求类消息（hover / 补全）不经过这里。
+ * 版本号在真正发送时才分配，发出的序列保持连续递增。
+ */
+function scheduleChange(server: RunningServer, uri: string, text: string): void {
+  const held = server.pendingChanges.get(uri);
+  if (held) clearTimeout(held.timer);
+  const timer = setTimeout(() => {
+    const pending = server.pendingChanges.get(uri);
+    if (!pending) return;
+    server.pendingChanges.delete(uri);
+    const version = ++server.version;
+    notify(server, "textDocument/didChange", {
+      textDocument: { uri, version },
+      contentChanges: [{ text: pending.text }],
+    });
+    server.opened.set(uri, version);
+    server.sent.set(uri, pending.text);
+  }, CHANGE_DEBOUNCE_MS);
+  server.pendingChanges.set(uri, { timer, text });
+}
+
+/** 取消一份文档排定中的 didChange（文档关闭时用，关了再发的改动会被 server 拒收）。 */
+function cancelChange(server: RunningServer, uri: string): void {
+  const held = server.pendingChanges.get(uri);
+  if (!held) return;
+  clearTimeout(held.timer);
+  server.pendingChanges.delete(uri);
+}
+
+/** 清掉一条会话全部排定中的 didChange（会话停止时用）。 */
+function cancelAllChanges(server: RunningServer): void {
+  for (const uri of [...server.pendingChanges.keys()]) cancelChange(server, uri);
+}
+
 /** 一条会话的文档增删改。调用方已经把落在它那个根里的那批传进来，这里不再筛。 */
 function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
   // 键一律用规范化 URI 串，跟请求侧（`serverRequest` 用 model 的 uri）对得上。
@@ -1009,6 +1076,8 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
   // 关掉已开但这次不在的。
   for (const uri of [...server.opened.keys()]) {
     if (live.has(uri)) continue;
+    // 先把排定中的改动取消掉：文档已经关了，到期再发 didChange 会被 server 拒收。
+    cancelChange(server, uri);
     notify(server, "textDocument/didClose", { textDocument: { uri } });
     server.opened.delete(uri);
     server.sent.delete(uri);
@@ -1035,13 +1104,12 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
       continue;
     }
     if (sentText !== document.text) {
-      const version = ++server.version;
-      notify(server, "textDocument/didChange", {
-        textDocument: { uri, version },
-        contentChanges: [{ text: document.text }],
-      });
-      server.opened.set(uri, version);
-      server.sent.set(uri, document.text);
+      // 不立即发：排进防抖窗口，窗口内反复击键只在尾部发一次最新全文。
+      scheduleChange(server, uri, document.text);
+    } else {
+      // 文本与已发的一致（典型是 undo 回去了）：排定中的 didChange 要取消掉，
+      // 不然到点仍会把中间态发出去，server 端文本与模型分叉到下一次编辑才对上。
+      cancelChange(server, uri);
     }
   }
 }
@@ -1099,6 +1167,8 @@ export async function wakeLsp(
 /** 收掉所有会话：换工作区、退出时调。 */
 export async function shutdownLsp(): Promise<void> {
   const all = [...running.values()];
+  // 先把各会话排定中的 didChange 计时器撤掉，再清表：留着它们到点会在空会话上白发消息。
+  for (const server of all) cancelAllChanges(server);
   running.clear();
   skipped.clear();
   roots.clear();

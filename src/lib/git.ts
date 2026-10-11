@@ -314,9 +314,14 @@ export function gitWorktreeAdd(root: string, path: string, branch: string): Prom
   return invoke<string>("git_worktree_add", { root, path, branch });
 }
 
-/** 把某个版本下的文件内容写回工作区，不动索引。 */
+/** 把某个版本下的文件内容写回工作区，不动索引；revision 为空时从暂存区恢复。 */
 export function gitRestoreFile(root: string, revision: string, path: string): Promise<string> {
   return invoke<string>("git_restore_file", { root, revision, path });
+}
+
+/** 针对历史某次提交中的单个文件应用反向差异（撤销该提交对该文件的改动）。 */
+export function gitRevertFile(root: string, commit: string, path: string): Promise<string> {
+  return invoke<string>("git_revert_file", { root, commit, path });
 }
 
 /** 两侧版本之间某个文件的统一差异；right 空串表示工作区那一侧。 */
@@ -475,10 +480,4 @@ export function folderMarks(changes: GitChange[]): Map<string, string> {
   const out = new Map<string, string>();
   for (const [dir, entry] of acc) out.set(dir, entry.hasM ? "M" : entry.last);
   return out;
-}
-
-/** 变更发生在索引还是工作区，决定 stage 还是 unstage。 */
-export function isStaged(change: GitChange): boolean {
-  if (change.untracked) return false;
-  return change.indexStatus.trim() !== "";
 }

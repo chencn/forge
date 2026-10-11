@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 const port = 1420;
@@ -19,4 +19,8 @@ export default defineConfig(({ command }) => ({
     sourcemap: command === "serve",
   },
   envPrefix: ["VITE_", "TAURI_ENV_"],
+  // 测试集中在 tests/，目录与 src 镜像；钉死 include 免得默认 glob 把 src 内散落的也扫进来。
+  test: {
+    include: ["tests/**/*.test.ts"],
+  },
 }));

@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/** macOS 的主修饰键是 Cmd 不是 Ctrl：窗口级快捷键与菜单文案都按平台取。 */
+export const IS_MAC =
+  typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.userAgent);
+
+/** 快捷键文案里的主修饰键（Ctrl / Cmd）。 */
+export const MOD_LABEL = IS_MAC ? "Cmd" : "Ctrl";
+
 /** 一组同归属的进程，来自 Rust `MemoryPart`。 */
 export interface MemoryPart {
   /** host 是宿主自身，webview 是 WebView2 的渲染进程，child 是本应用派生的其它进程。 */

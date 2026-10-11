@@ -98,6 +98,7 @@ import {
   writeFile,
 } from "./lib/fs";
 import { codedError, describeError } from "./lib/errors";
+import { MOD_LABEL } from "./lib/sys";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
 import { dropTermSession, runInTerminal } from "./lib/termStore";
 import { shellProbe } from "./lib/term";
@@ -339,6 +340,8 @@ export default function App() {
   docsRef.current = docs;
   const gitRef = useRef(git);
   gitRef.current = git;
+  /** 磁盘事件触发的 git 刷新防抖计时器；只留最后一趟，风暴期间不起中间的子进程。 */
+  const gitDebounce = useRef<number | null>(null);
 
   /**
    * 语言服务「跳转到定义」落到别的文件时，由这里把那份文件开出来并定位。
@@ -556,7 +559,8 @@ export default function App() {
   // 齿轮弹层里那两条分组依据带着快捷键，菜单项画了就必须真能用。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || !event.altKey || event.shiftKey || event.metaKey) return;
+      // 主修饰键按平台认（macOS 是 Cmd+Alt），Shift 一律排除。
+      if (!(event.ctrlKey || event.metaKey) || !event.altKey || event.shiftKey) return;
       if (!sidebarOpen || panel !== "git") return;
       // 日志窗口开着时这两个键归它自己：那边分的是一次提交里的文件，不是变更清单。
       if (places.log !== "hidden") return;
@@ -602,7 +606,15 @@ export default function App() {
   const onDiskChange = useCallback(
     (paths: string[]) => {
       refreshPaths(paths);
-      void gitRef.current.refreshChanges();
+      // 构建期间每 150-300ms 就来一批事件，每批都起一个 git status 子进程的话
+      // 就是持续失血：抖 500ms，风暴停下来才问一次最终状态。目录树那边是
+      // 即时精确作废的，不跟着等。
+      const gitTimer = gitDebounce.current;
+      if (gitTimer) window.clearTimeout(gitTimer);
+      gitDebounce.current = window.setTimeout(() => {
+        gitDebounce.current = null;
+        void gitRef.current.refreshChanges();
+      }, 500);
       void docsRef.current.noteExternalChange(paths);
     },
     [refreshPaths]
@@ -909,21 +921,30 @@ export default function App() {
   }, [configs, dialog, dockPane, everywhere, focusPane, hidePane, menu, places.run, resolveOpen, run]);
 
   const openFolder = useCallback(async () => {
-    // 换工程前把上一处的 shell 收掉：留着它，跑的是别的地方的命令。
-    void dropTermSession();
     const picked = await open({
       directory: true,
       multiple: false,
       title: t("workspace.openFolder"),
       defaultPath: workspaceRoot ?? undefined,
     });
+    // 确认选了新目录才收上一处的 shell：先收再弹框的话，用户点个取消
+    // 也会把还在跑的终端任务一起带走。
     if (typeof picked !== "string" || picked.length === 0) return;
+    void dropTermSession();
     disposeAllModels();
     docs.closeAll();
     setDiffs([]);
     setExplorerPick([]);
     setClipboard(null);
     setActiveToasts([]);
+    // 旧工程的比对链与查找结果里攥着旧工程绝对路径，留着只会泄漏内存，
+    // 命中行点击还会开到旧工程的文件去。
+    diffChains.current.clear();
+    setFind({
+      query: "",
+      options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
+      page: null,
+    });
     setWorkspaceRoot(picked);
     remember("recentFolders", picked);
     setPanel("explorer");
@@ -937,6 +958,13 @@ export default function App() {
     setDiffs([]);
     setExplorerPick([]);
     setClipboard(null);
+    // 关闭工程同样清掉旧工程的比对链与查找结果，别把它们滞留到下一次 openFolder。
+    diffChains.current.clear();
+    setFind({
+      query: "",
+      options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
+      page: null,
+    });
     setWorkspaceRoot(null);
   }, [docs]);
 
@@ -1066,16 +1094,15 @@ export default function App() {
             ? await gitShow(root, "HEAD", baseAbsolute)
             : await gitIndexShow(root, baseAbsolute).catch(() => "");
           const openDoc = docs.documents.find((doc) => doc.path === absolute);
-          // 右边那一侧谁新用谁：编辑器里没存的改动优先，其次才是索引或磁盘。
-          const modified =
-            openDoc && docs.dirty(absolute)
+          // 已暂存对比右侧是索引内容；未暂存对比右侧是工作区，编辑器未保存改动优先。
+          const modified = staged
+            ? await gitIndexShow(root, absolute)
+            : openDoc && docs.dirty(absolute)
               ? openDoc.contents
-              : staged
-                ? await gitIndexShow(root, absolute)
-                : change.workStatus === "D"
-                  ? // 工作区已经没有这个文件，读盘会报错，右侧本来就该是空的。
-                    ""
-                  : (await readFile(absolute)).contents;
+              : change.workStatus === "D"
+                ? // 工作区已经没有这个文件，读盘会报错，右侧本来就该是空的。
+                  ""
+                : (await readFile(absolute)).contents;
           return { original, modified };
         }
       );
@@ -1279,7 +1306,13 @@ export default function App() {
           break;
         }
         case "revert":
-          if (parent) void writeBack(parent, absolute);
+          if (parent) {
+            void git.revertFile(commit.hash, absolute).then((done) => {
+              if (!done) return;
+              refreshTree();
+              void docs.noteExternalChange([absolute]);
+            });
+          }
           break;
         case "getFromRevision":
           void writeBack(commit.hash, absolute);
@@ -1298,11 +1331,13 @@ export default function App() {
       }
     },
     [
+      docs.noteExternalChange,
       docs.openVirtual,
       git,
       openAgainstWorktree,
       openBetweenRevisions,
       openCommitFile,
+      refreshTree,
       reportError,
       workspaceRoot,
       writeBack,
@@ -1657,13 +1692,13 @@ export default function App() {
           [
             {
               label: t("menu.cut"),
-              shortcut: "Ctrl+X",
+              shortcut: `${MOD_LABEL}+X`,
               disabled: !has,
               onSelect: () => copyPicked(selection, true),
             },
             {
               label: t("action.copy"),
-              shortcut: "Ctrl+C",
+              shortcut: `${MOD_LABEL}+C`,
               disabled: !has,
               onSelect: () => copyPicked(selection, false),
             },
@@ -1671,7 +1706,7 @@ export default function App() {
               ? [
                   {
                     label: t("action.paste"),
-                    shortcut: "Ctrl+V",
+                    shortcut: `${MOD_LABEL}+V`,
                     onSelect: () => void pasteInto(dir),
                   },
                 ]
@@ -1783,12 +1818,14 @@ export default function App() {
         return;
       }
       const key = event.key.toLowerCase();
-      if (event.ctrlKey && !event.altKey && !event.metaKey && (key === "c" || key === "x")) {
+      // 主修饰键按平台认：macOS 上 Cmd+C/V，其余平台 Ctrl+C/V（对齐 Monaco 的 CtrlCmd 语义）。
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && !event.altKey && (key === "c" || key === "x")) {
         event.preventDefault();
         copyPicked(explorerPick, key === "x");
         return;
       }
-      if (event.ctrlKey && !event.altKey && !event.metaKey && key === "v") {
+      if (mod && !event.altKey && key === "v") {
         event.preventDefault();
         void pasteInto(targetDirOf(explorerPick));
         return;
@@ -2291,7 +2328,14 @@ export default function App() {
           void git.rebase(target.name);
           break;
         case "update":
-          void git.pull();
+          // 当前分支直接 pull；非当前分支先检出再 pull，避免误更新当前分支
+          if (target.kind === "local" && git.status?.branch === target.name) {
+            void git.pull();
+          } else {
+            void checkoutBranch(target.name).then((ok) => {
+              if (ok) void git.pull();
+            });
+          }
           break;
         case "push":
           void git.pushRef(target.name);
@@ -2466,6 +2510,13 @@ export default function App() {
               setDiffs([]);
               setExplorerPick([]);
               setClipboard(null);
+              // 与 openFolder 同一套清理：旧工程的比对链与查找结果不能带过去。
+              diffChains.current.clear();
+              setFind({
+                query: "",
+                options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
+                page: null,
+              });
               setWorkspaceRoot(path);
               remember("recentFolders", path);
               setPanel("explorer");

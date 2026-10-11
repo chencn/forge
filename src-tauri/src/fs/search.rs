@@ -743,7 +743,6 @@ pub async fn search_text(
     })
     .await
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -935,6 +934,10 @@ mod tests {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src").join("app.ts"), "needle").unwrap();
         fs::write(dir.join(".env"), "needle").unwrap();
+        // 隐藏闸门认的是平台隐藏位（Windows 属性 / 类 unix 点前缀），
+        // 文件名带不带点在 Windows 上说了不算，得像 hidden_gate_uses_platform_attribute
+        // 那样显式置一次。
+        super::super::platform::mark_hidden(&dir.join(".env"));
         fs::create_dir_all(dir.join("build-cache")).unwrap();
         fs::write(dir.join("build-cache").join("out.ts"), "needle").unwrap();
 
@@ -1049,3 +1052,4 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+

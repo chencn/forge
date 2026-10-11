@@ -221,7 +221,6 @@ pub async fn lsp_resolve_root(
     )
     .await
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,3 +325,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+

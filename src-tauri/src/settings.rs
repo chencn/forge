@@ -194,7 +194,6 @@ fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let text = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     write_atomic(&path, &text)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,3 +223,4 @@ mod tests {
         }
     }
 }
+

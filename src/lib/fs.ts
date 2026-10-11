@@ -67,14 +67,22 @@ export function writeFile(
   return invoke<FileContent>("write_file", { path, contents, lineEnding, hasBom });
 }
 
-/** 开始监听工作区；换目录直接再调一次，后端自己停掉上一个。 */
-export function watchWorkspace(root: string): Promise<void> {
-  return invoke<void>("fs_watch_start", { root }).catch(() => {});
+/**
+ * 开始监听工作区；换目录直接再调一次，后端自己停掉上一个。
+ *
+ * `generation` 是这次监听的代号：后端命令在阻塞线程池里跑，两次 start 的执行
+ * 顺序没有保证，代号落后的那次不能覆盖新监听（槽里留着旧根，事件就全静默了）。
+ */
+export function watchWorkspace(root: string, generation: number): Promise<void> {
+  return invoke<void>("fs_watch_start", { root, generation }).catch(() => {});
 }
 
-/** 关闭工作区时停监听。 */
-export function stopWorkspaceWatch(): Promise<void> {
-  return invoke<void>("fs_watch_stop").catch(() => {});
+/**
+ * 关闭工作区时停监听。root 与 generation 合起来是令牌：后端只清代号与根都对得上的槽位，
+ * 就算这条 stop 比换目录后那次新 start 晚到，也掐不死新监听。
+ */
+export function stopWorkspaceWatch(root: string, generation: number): Promise<void> {
+  return invoke<void>("fs_watch_stop", { root, generation }).catch(() => {});
 }
 
 /** 列目录：后端已按「目录优先 + 名称升序」排好，隐藏项照实返回。 */

@@ -88,6 +88,10 @@ export function setActiveTerm(id: TermSessionId): void {
   notifyAll();
 }
 
+/** 已关闭会话的登记簿。listen 要一次 IPC 往返才 resolve，登记（关闭）可能赶在
+ * 订阅返回之前——resolve 时查这张表，命中的监听当场解绑，不留成收不走的孤儿。 */
+const closed = new Set<TermSessionId>();
+
 /** 起一条新会话，返回它。起完自动切成激活。 */
 async function open(cwd: string | null, shell: string, cols: number, rows: number): Promise<TermSession> {
   const id = await termOpen(cwd, shell, cols, rows);
@@ -95,6 +99,14 @@ async function open(cwd: string | null, shell: string, cols: number, rows: numbe
   sessions = [...sessions, created];
   activeId = id;
   const offs: UnlistenFn[] = [];
+  const adopt = (off: UnlistenFn) => {
+    if (closed.has(id)) {
+      // 往返期间会话已被关掉：监听器当场解绑，不能推进没人认领的数组。
+      off();
+      return;
+    }
+    offs.push(off);
+  };
   void listen<TermChunk>("term://output", (event) => {
     if (event.payload.id !== id) return;
     const target = sessions.find((item) => item.id === id);
@@ -106,14 +118,14 @@ async function open(cwd: string | null, shell: string, cols: number, rows: numbe
     target.chunks.push(event.payload.data);
     // 只通知终端屏幕渲染，不触发页签栏等纯结构组件
     notifySession();
-  }).then((off) => offs.push(off));
+  }).then(adopt);
   void listen<TermExit>("term://exit", (event) => {
     if (event.payload.id !== id) return;
     const target = sessions.find((item) => item.id === id);
     if (!target) return;
     target.exited = true;
     notifyAll();
-  }).then((off) => offs.push(off));
+  }).then(adopt);
   unlisten.set(id, offs);
   notifyAll();
   return created;
@@ -167,6 +179,8 @@ export async function closeTerm(id: TermSessionId): Promise<void> {
   if (!target) return;
   const index = sessions.indexOf(target);
   sessions = sessions.filter((item) => item.id !== id);
+  // 先登记再解绑：还挂在 IPC 往返上的订阅 resolve 时会查到这张表。
+  closed.add(id);
   for (const off of unlisten.get(id) ?? []) off();
   unlisten.delete(id);
   if (activeId === id) {
@@ -182,6 +196,7 @@ export async function dropTermSession(): Promise<void> {
   const all = sessions;
   sessions = [];
   activeId = null;
+  for (const item of all) closed.add(item.id);
   for (const [, offs] of unlisten) for (const off of offs) off();
   unlisten.clear();
   notifyAll();

@@ -32,6 +32,10 @@ export type AppendListener = (id: ProcSessionId, chunk: Uint8Array) => void;
 
 const ENCODER = new TextEncoder();
 
+/** 每个会话的输出块上限：dev server 挂几小时的话，无上限的 push 会把 WebView 撑爆。
+ * 与 termStore 的 MAX_SESSION_CHUNKS 同一套取舍——留最新的，老的淘汰。 */
+const MAX_SESSION_CHUNKS = 500;
+
 /**
  * 运行会话的全部状态。控件在主工具栏、输出在底部工具窗口，两边都要拿到同一份，
  * 所以状态挂在 App 上，面板收起也不影响进程继续跑。
@@ -58,8 +62,15 @@ export function useRunSessions(configs: RunConfigController) {
 
   const append = useCallback((id: ProcSessionId, chunk: Uint8Array) => {
     const buffer = buffersRef.current.get(id);
-    if (buffer) buffer.push(chunk);
-    else buffersRef.current.set(id, [chunk]);
+    if (buffer) {
+      buffer.push(chunk);
+      // 上限淘汰最老的块：切会话时重放的是"最近一段"而不是全部历史。
+      if (buffer.length > MAX_SESSION_CHUNKS) {
+        buffer.splice(0, buffer.length - MAX_SESSION_CHUNKS);
+      }
+    } else {
+      buffersRef.current.set(id, [chunk]);
+    }
     for (const listener of listenersRef.current) listener(id, chunk);
   }, []);
 

@@ -37,6 +37,7 @@ import type { GitState } from "../hooks/useGitState";
 import { basenameOf } from "../lib/format";
 import { collapsePackageDirs, isUnderJvmSourceRoot } from "../lib/jvm";
 import { RECOVERY_MESSAGE } from "../lib/recovery";
+import { MOD_LABEL } from "../lib/sys";
 import { useI18n } from "../i18n";
 
 /** 提交树里要交给 App 落地的动作：开文件、写补丁、删文件、加忽略、看历史。 */
@@ -400,7 +401,8 @@ export default function GitPanel({
               {
                 label: t("git.rollback"),
                 icon: Undo2,
-                onSelect: () => void git.restoreFile("HEAD", absolute(change.path)),
+                // 回滚未暂存的修改到暂存区索引，空 revision 表示恢复至 index
+                onSelect: () => void git.restoreFile("", absolute(change.path)),
               },
             ]),
         ...(change.untracked
@@ -805,11 +807,11 @@ export default function GitPanel({
     >
       <p className="popover-label">{t("git.groupBy")}</p>
       {[
-        { key: "dir", label: t("git.groupDir"), accel: "Ctrl+Alt+P", on: groupByDir, flip: onToggleByDir },
+        { key: "dir", label: t("git.groupDir"), accel: `${MOD_LABEL}+Alt+P`, on: groupByDir, flip: onToggleByDir },
         {
           key: "module",
           label: t("git.groupModule"),
-          accel: "Ctrl+Alt+M",
+          accel: `${MOD_LABEL}+Alt+M`,
           on: groupByModule,
           flip: onToggleByModule,
         },

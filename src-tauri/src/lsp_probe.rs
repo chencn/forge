@@ -334,7 +334,6 @@ fn probe_and_reconcile(app: &tauri::AppHandle) -> crate::lsp_config::LspProbeRep
     }
     crate::lsp_config::LspProbeReport { config, servers }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,3 +399,4 @@ mod tests {
         assert!(!augmented_path().is_empty());
     }
 }
+

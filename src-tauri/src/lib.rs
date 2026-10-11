@@ -18,7 +18,8 @@ mod watch;
 use tauri::Manager;
 
 pub fn run() {
-    tauri::Builder::default()
+    // build + run 拆开是为了在事件循环上挂 RunEvent::Exit 的退出清理（见下面的 app.run）。
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(watch::WatchSlot::default())
         .setup(|app| {
@@ -81,6 +82,7 @@ pub fn run() {
             git::git_delete_remote_branch,
             git::git_worktree_add,
             git::git_restore_file,
+            git::git_revert_file,
             git::git_diff_text,
             git::git_diff_names,
             git::git_rebase_continue,
@@ -129,8 +131,20 @@ pub fn run() {
             tray::app_exit,
             sys::sys_memory,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
+    // 退出清理选 RunEvent::Exit：它在事件循环真正退出前发出，任何退出路径
+    // （关窗、托盘退出、app.exit）都必经且不可拦截；ExitRequested 会被
+    // api.prevent_exit() 拦下，在那儿清理会错杀本该活着的会话。
+    // 这三张表里的子进程（构建命令、语言服务、终端 shell）裸持着 Child，
+    // 不在这儿杀掉，应用一退它们就全成孤儿。
+    app.run(|_app, event| {
+        if let tauri::RunEvent::Exit = event {
+            lsp::reap_all_for_exit();
+            proc::reap_all_for_exit();
+            term::reap_all_for_exit();
+        }
+    });
 }
 
 /// 关掉 WebView2 自带的右键菜单（返回 / 刷新 / 另存为 / 打印 / 检查）。

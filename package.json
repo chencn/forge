@@ -13,7 +13,8 @@
     "check:rs": "node scripts/run-rust.mjs check",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "test:front": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
@@ -35,6 +36,7 @@
     "@vitejs/plugin-react": "^6.1.2",
     "material-icon-theme": "^5.39.0",
     "typescript": "^5.9.2",
-    "vite": "^8.3.3"
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
   }
 }

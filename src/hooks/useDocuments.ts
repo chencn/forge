@@ -302,10 +302,16 @@ export function useDocuments(reportError: (message: string) => void) {
       if (!doc || doc.readOnly) return false;
       try {
         const written = await writeFile(path, doc.contents, doc.lineEnding, doc.hasBom);
+        // 写盘要跨一次 IPC，期间用户可能已经在敲下一个字：回写前重读当前条目，
+        // 有新编辑就保留手里那份正文，只认领磁盘基线——否则刚敲的内容会被
+        // 保存前的快照整段抹掉（还不进撤销栈）。
+        const fresh = listRef.current.find((item) => samePath(item.path, path));
+        if (!fresh) return false;
+        const editedDuringSave = fresh.contents !== doc.contents;
         upsert({
-          ...doc,
+          ...fresh,
           baseline: written.contents,
-          contents: written.contents,
+          contents: editedDuringSave ? fresh.contents : written.contents,
           diskMs: written.modifiedMs,
         });
         return true;
@@ -350,40 +356,50 @@ export function useDocuments(reportError: (message: string) => void) {
           // 位图没有正文可重载，只需要换一下缓存失效串，让 <img> 重取。
           if (!hasTextContent(doc.kind)) {
             const stamp = await fileStamp(doc.path);
+            // await 之后文件可能已经关掉，重找一次，找不到就不动。
+            const fresh = listRef.current.find((item) => samePath(item.path, doc.path));
+            if (!fresh) continue;
             const token = stamp.modifiedMs || stamp.size;
-            if (token === doc.stamp) continue;
-            upsert({ ...doc, stamp: token, diskMs: stamp.modifiedMs, error: null });
+            if (token === fresh.stamp) continue;
+            upsert({ ...fresh, stamp: token, diskMs: stamp.modifiedMs, error: null });
             continue;
           }
           const content = await readFile(doc.path);
+          // 读盘要跨一次 IPC，期间用户可能已经开始编辑：重读当前条目，
+          // 不再干净（contents 与 baseline 有出入）就跳过重载，磁盘版本
+          // 不能盖掉用户手里那份——快照时干净不代表此刻还干净。
+          const fresh = listRef.current.find((item) => samePath(item.path, doc.path));
+          if (!fresh || fresh.contents !== fresh.baseline) continue;
           // svg 的图片视图也读磁盘，指纹得跟着换，否则 <img> 还拿旧缓存。
-          const stamp = previewsFromDisk(doc.kind)
-            ? await fileStamp(doc.path).catch(() => null)
+          const stamp = previewsFromDisk(fresh.kind)
+            ? await fileStamp(fresh.path).catch(() => null)
             : null;
           // 只是被 touch 了一下（构建工具常这么干）就别重载，免得光标白重置一次。
-          if (content.contents === doc.baseline && content.modifiedMs === doc.diskMs) {
+          if (content.contents === fresh.baseline && content.modifiedMs === fresh.diskMs) {
             // 正文没变也要认指纹：内容换了但 mtime 撞上的话，图片这边得重取。
-            if (stamp && (stamp.modifiedMs || stamp.size) !== doc.stamp) {
-              upsert({ ...doc, stamp: stamp.modifiedMs || stamp.size });
+            if (stamp && (stamp.modifiedMs || stamp.size) !== fresh.stamp) {
+              upsert({ ...fresh, stamp: stamp.modifiedMs || stamp.size });
             }
             continue;
           }
           upsert({
-            ...doc,
+            ...fresh,
             contents: content.contents,
             baseline: content.contents,
             lineEnding: content.lineEnding,
             hasBom: content.hasBom,
             diskMs: content.modifiedMs,
-            stamp: stamp ? stamp.modifiedMs || stamp.size : doc.stamp,
+            stamp: stamp ? stamp.modifiedMs || stamp.size : fresh.stamp,
             error: null,
             loading: false,
             readOnly: false,
           });
         } catch (cause) {
           // 读不回来多半是文件被删了：留着这份文本，把原因写在正文区。
+          const fresh = listRef.current.find((item) => samePath(item.path, doc.path));
+          if (!fresh) continue;
           upsert({
-            ...doc,
+            ...fresh,
             readOnly: true,
             loading: false,
             error: errorText(cause),
