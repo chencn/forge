@@ -36,10 +36,16 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi", "appimage", "deb", "app", "dmg"],
+    "targets": ["nsis", "appimage", "deb", "app", "dmg"],
     "createUpdaterArtifacts": true,
     "category": "Utility",
-    "icon": ["icons/icon.ico", "icons/icon.png"]
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese", "TradChinese", "English"],
+        "displayLanguageSelector": true
+      }
+    }
   },
   "plugins": {
     "updater": {

@@ -37,15 +37,12 @@ jobs:
         include:
           # bundles 用 CLI 参数分平台指定（tauri.conf.json 的 targets 只认单值或列表，
           # 不认分平台 map）；产物对应关系见文件头注释。
-          - os: windows-latest # NSIS 安装器 + MSI，统一按 -setup.[ext] 命名，去掉 WiX 默认硬编码的 _en-US 后缀
-            args: --bundles nsis,msi
-            release_asset_name_pattern: "[name]_[version]_[arch]-setup.[ext]"
+          - os: windows-latest # NSIS 通用多语言安装器（Forge_x.y.z_x64-setup.exe）
+            args: --bundles nsis
           - os: ubuntu-22.04 # deb + AppImage；用 22.04 保证老发行版的 glibc 兼容
             args: --bundles deb,appimage
-            release_asset_name_pattern: ""
           - os: macos-latest # universal：一次构建同时含 x64 与 arm64
             args: --target universal-apple-darwin --bundles app,dmg
-            release_asset_name_pattern: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -113,4 +110,3 @@ jobs:
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: ${{ matrix.release_asset_name_pattern }}

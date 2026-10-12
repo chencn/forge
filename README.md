@@ -74,7 +74,7 @@ npm run tauri:build    # 打包，安装包在 src-tauri/target/release/bundle/
 
 | 平台 | Release 里的产物 |
 | --- | --- |
-| Windows | `Forge_x.y.z_x64-setup.exe`（NSIS 安装器）、`Forge_x.y.z_x64-setup.msi` |
+| Windows | `Forge_x.y.z_x64-setup.exe`（NSIS 多语言安装器，内置简/繁/英，自适应系统语言） |
 | Linux | `Forge_x.y.z_amd64.deb`、`Forge_x.y.z_amd64.AppImage` |
 | macOS | `Forge_x.y.z_universal.dmg`（x64 与 arm64 双架构一份包） |
 
@@ -84,7 +84,7 @@ npm run tauri:build    # 打包，安装包在 src-tauri/target/release/bundle/
 
 - **自动下载更新**（默认关）：启动后检查到新版本就后台下载。配套「**下载完成后询问安装**」（默认开）：开着会在下载完弹窗让你选是或否——选「是」立即安装，选「取消」下次启动时自动安装；关掉则下载完直接静默安装。
 - 关掉自动下载就只走手动检查，但**已经下载过还没装的更新，下次启动时会自动安装**。
-- Windows 按当前安装方式自动选包。MSI 装的下载 MSI，安装器装的下载 `-setup.exe`。拉起安装器时应用退出，装完由安装器重启；macOS / Linux 原地替换应用文件，装完重启应用生效。
+- Windows 统一自动下载 `-setup.exe` 安装包。拉起安装器时应用退出，装完由安装器重启；macOS / Linux 原地替换应用文件，装完重启应用生效。
 
 应用默认只向 GitHub Releases 请求一个地址（端点与验签公钥都钉死在 `src-tauri/tauri.conf.json` 的 `plugins.updater`）；设置中亦提供可选的更新镜像加速前缀（默认 `https://gh-proxy.com/`，默认关闭），即便走代理下载依然由客户端本地钉死的公钥执行 minisign 签名校验。
 

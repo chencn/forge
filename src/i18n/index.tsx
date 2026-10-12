@@ -2,16 +2,22 @@ import { createContext, useCallback, useContext, useEffect, useMemo } from "reac
 import type { ReactNode } from "react";
 import { en } from "./lang/en";
 import { zh } from "./lang/zh";
+import { zhTW } from "./lang/zh-TW";
 import type { TranslationKey } from "./lang/zh";
 
-export type Lang = "zh" | "en";
+export type Lang = "zh" | "en" | "zh-TW";
 
-const DICTIONARIES: Record<Lang, Record<TranslationKey, string>> = { zh, en };
+const DICTIONARIES: Record<Lang, Record<TranslationKey, string>> = { zh, en, "zh-TW": zhTW };
 
-/** 设置里没写语言时按浏览器语言定，其它值原样采纳。 */
+/** 设置里没写语言时按浏览器语言定，其它值原样采纳。繁体中文系统自动优先配给 zh-TW。 */
 export function resolveLang(stored: string | null): Lang {
-  if (stored === "zh" || stored === "en") return stored;
-  return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+  if (stored === "zh" || stored === "en" || stored === "zh-TW") return stored;
+  const nav = (typeof navigator !== "undefined" ? navigator.language : "").toLowerCase();
+  if (nav === "zh-tw" || nav === "zh-hk" || nav === "zh-mo" || nav.includes("hant")) {
+    return "zh-TW";
+  }
+  if (nav.startsWith("zh")) return "zh";
+  return "en";
 }
 
 type TranslateVars = Record<string, string | number>;
@@ -56,7 +62,7 @@ interface I18nProviderProps {
 
 export function I18nProvider({ lang, onLangChange, children }: I18nProviderProps) {
   useEffect(() => {
-    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : lang === "zh-TW" ? "zh-TW" : "en";
   }, [lang]);
 
   // 维护 React 之外那份语言镜像：translate() 依赖它跟上当前界面语言。
@@ -68,7 +74,12 @@ export function I18nProvider({ lang, onLangChange, children }: I18nProviderProps
   );
 
   const value = useMemo<I18nValue>(
-    () => ({ lang, locale: lang === "zh" ? "zh-CN" : "en-US", setLang: onLangChange, t }),
+    () => ({
+      lang,
+      locale: lang === "zh" ? "zh-CN" : lang === "zh-TW" ? "zh-TW" : "en-US",
+      setLang: onLangChange,
+      t,
+    }),
     [lang, onLangChange, t]
   );
 

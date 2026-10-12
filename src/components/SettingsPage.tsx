@@ -82,6 +82,7 @@ const NOTIFICATION_POSITION_LABEL: Record<NotificationPosition, TranslationKey> 
 };
 const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: "zh", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
   { value: "en", label: "English" },
 ];
 const TAB_SIZES = [2, 4, 8];

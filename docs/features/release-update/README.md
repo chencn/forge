@@ -20,7 +20,7 @@ Release 里的安装包给人下载，`latest.json` 给 updater。实现落在�
 
 | 平台 | 产物 | 应用内更新用什么 |
 | --- | --- | --- |
-| Windows | NSIS 安装器（`-setup.exe`）+ MSI | 按当前安装方式自动选包 |
+| Windows | NSIS 多语言安装器（`-setup.exe`，内置简/繁/英，自适应系统语言） | `-setup.exe` 安装包 |
 | Linux | deb + AppImage | AppImage 原地替换；deb 走系统包管理器 |
 | macOS | universal dmg（x64 + arm64 一份包） | `app.tar.gz` 原地替换 |
 
@@ -31,17 +31,12 @@ tauri-bundler 产出带 `.sig` 的更新工件。macOS 走 `--target universal-a
 
 Linux runner 用 ubuntu-22.04 不用最新：glibc 与 webkit 版本越老，AppImage 能跑的发行版越多。
 
-## 更新包怎么选：Windows 双包
+## Windows 多语言安装器（NSIS）
 
-latest.json 里 Windows 有两条（tauri-action 都会写）：`windows-x86_64-nsis` 与
-`windows-x86_64-msi`。updater 插件在运行时探测当前应用是哪种安装方式装的
-（`bundle_type()`），先按 `{os}-{arch}-{installer}` 找条目，找到就用对应安装包：
-MSI 装的下载 MSI，安装器装的下载 `-setup.exe`。这就是「原来是 MSI 更新也是 MSI」的实现，
-没有自己写的分发逻辑。
-
-Windows 上安装器拉起时当前应用直接退出（`installMode: "passive"`，安装器自己带进度条），
-装完由安装器重启应用；`downloadAndInstall` 的 promise 可能到不了 resolve，
-所以界面在 Windows 上看到的最后一帧是下载进度，macOS/Linux 才会用得上「重启应用」按钮。
+Windows 仅发布 NSIS 安装器（`Forge_x.y.z_x64-setup.exe`），彻底移除带单语言代码页限制的 WiX MSI 安装包。
+- **多语言支持**：安装器内嵌 `SimpChinese`、`TradChinese`、`English`，根据用户系统语言自动选择，且开启 `displayLanguageSelector` 允许用户在安装起始手动切换语言。
+- **体积与效率**：安装包仅 7.39 MiB，CI 构建时间减半，无任何多余的语言后缀命名。
+- **更新流程**：latest.json 里 Windows 统一对应 `windows-x86_64-nsis`。安装器拉起时当前应用直接退出（`installMode: "passive"`，安装器自带进度条），装完由安装器重启应用。
 
 ## 签名、端点与镜像加速
 
