@@ -7,6 +7,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::UNIX_EPOCH;
 use tauri::Manager;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// 改动文件系统的命令共用的排队锁。
 ///
 /// 这些命令转 `async` 之前都排在主线程上一条接一条，天然串行；转完之后「保存」和「重命名」
@@ -363,10 +366,7 @@ fn write_bytes_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let temp = target.with_file_name(format!(".{name}.forge-tmp"));
     #[cfg(unix)]
-    let prior_mode = target.metadata().ok().map(|meta| {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode()
-    });
+    let prior_mode = target.metadata().ok().map(|meta| meta.permissions().mode());
     let result = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

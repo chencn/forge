@@ -74,7 +74,7 @@ npm run tauri:build    # 打包，安装包在 src-tauri/target/release/bundle/
 
 | 平台 | Release 里的产物 |
 | --- | --- |
-| Windows | `Forge_x.y.z_x64-setup.exe`（NSIS 安装器）、`Forge_x.y.z_x64_en-US.msi` |
+| Windows | `Forge_x.y.z_x64-setup.exe`（NSIS 安装器）、`Forge_x.y.z_x64-setup.msi` |
 | Linux | `Forge_x.y.z_amd64.deb`、`Forge_x.y.z_amd64.AppImage` |
 | macOS | `Forge_x.y.z_universal.dmg`（x64 与 arm64 双架构一份包） |
 
