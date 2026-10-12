@@ -11,9 +11,9 @@
     "check:ts": "tsc --noEmit",
     "test:rs": "node scripts/run-rust.mjs test --lib",
     "check:rs": "node scripts/run-rust.mjs check",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js",
+    "tauri:dev": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js dev",
+    "tauri:build": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js build",
     "test:front": "vitest run"
   },
   "dependencies": {

@@ -1,11 +1,14 @@
 import { useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ReactNode } from "react";
-import { X } from "lucide-react";
+import { Save, X } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
+
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const SAVE_SHORTCUT = IS_MAC ? "⌘S" : "Ctrl+S";
 
 /** 标签的种类：文档、比对、底部工具窗口、设置页。 */
 export type TabKind = "doc" | "diff" | "pane" | "settings";
@@ -39,6 +42,7 @@ interface EditorTabsProps {
   /** 拖到另一颗标签上：把 from 落到 to 现在的位子。 */
   onReorder: (from: string, to: string) => void;
   onSave: (path: string) => void;
+  onSaveAll?: () => void;
   isDirty: (path: string) => boolean;
 }
 
@@ -59,6 +63,7 @@ export default function EditorTabs({
   onCloseAll,
   onReorder,
   onSave,
+  onSaveAll,
   isDirty,
 }: EditorTabsProps) {
   const { t } = useI18n();
@@ -66,6 +71,26 @@ export default function EditorTabs({
   /** 正在拖的那颗标签；dragover 落到别的标签上就换序。 */
   const dragId = useRef<string | null>(null);
   if (tabs.length === 0) return null;
+
+  const docTabs = tabs.filter((tab) => tab.kind === "doc");
+  const activeDocTab = docTabs.find((tab) => tab.id === activeId) ?? null;
+  const dirtyDocTabs = docTabs.filter((tab) => tab.dirty);
+  const canSave = dirtyDocTabs.length > 0;
+
+  /** 点击页签栏右侧保存按钮：当前标签是脏文档则存当前这篇，否则存所有未保存文档。 */
+  const handleSaveButton = () => {
+    if (activeDocTab && activeDocTab.dirty) {
+      onSave(activeDocTab.id.slice(4));
+      return;
+    }
+    if (onSaveAll) {
+      onSaveAll();
+      return;
+    }
+    for (const tab of dirtyDocTabs) {
+      onSave(tab.id.slice(4));
+    }
+  };
 
   const openMenu = (event: ReactMouseEvent, items: MenuItem[]) => {
     event.preventDefault();
@@ -148,6 +173,21 @@ export default function EditorTabs({
             </div>
           );
         })}
+        {docTabs.length > 0 ? (
+          <div className="editor-tabs-actions">
+            <button
+              type="button"
+              className={`editor-save-button${canSave ? " is-dirty" : ""}`}
+              disabled={!canSave}
+              onClick={handleSaveButton}
+              title={`${t("editor.save")} (${SAVE_SHORTCUT})`}
+              aria-label={t("editor.save")}
+            >
+              <Save size={13} aria-hidden="true" />
+              <span>{t("editor.save")}</span>
+            </button>
+          </div>
+        ) : null}
       </div>
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
     </>

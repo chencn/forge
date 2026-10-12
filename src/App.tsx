@@ -19,6 +19,7 @@ import {
   PanelLeftClose,
   Play,
   RefreshCw,
+  Save,
   Settings,
   SquareTerminal,
 } from "lucide-react";
@@ -113,7 +114,7 @@ import {
 } from "./lib/scriptRun";
 import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
-import { appExit, setTrayLabels } from "./lib/window";
+import { appExit, onWindowBlur, setTrayLabels } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
 import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
@@ -367,13 +368,19 @@ export default function App() {
 
   const docs = useDocuments(reportError);
   const git = useGitState(workspaceRoot, reportError);
+  /** 全量存盘并同步刷新 Git 变更列表，供失焦自动保存、退出前保存与保存按钮共用。 */
+  const flushDirtyDocs = useCallback(async () => {
+    const saved = await docs.saveAll();
+    if (saved > 0) void git.refreshChanges();
+    return saved;
+  }, [docs, git]);
   /**
    * 挂载期注册的监听要读最新的那份，但绝不能把它写进依赖。
    * 这两个对象每次渲染都是新的（依赖 documents / status），进依赖就等于每次渲染
    * 摘挂一次监听——`listen` 那对还要走两趟 IPC。
    */
-  const saveAllRef = useRef(docs.saveAll);
-  saveAllRef.current = docs.saveAll;
+  const saveAllRef = useRef(flushDirtyDocs);
+  saveAllRef.current = flushDirtyDocs;
   const docsRef = useRef(docs);
   docsRef.current = docs;
   const gitRef = useRef(git);
@@ -576,13 +583,28 @@ export default function App() {
     void setTrayLabels(t("tray.show"), t("tray.quit"));
   }, [t]);
 
-  // 失焦自动保存：窗口一失去焦点，把手上改过的都写回磁盘。
+  // 失焦自动保存：窗口失去焦点、页面切入后台或原生窗口失焦时，把手上改过的都写回磁盘。
   useEffect(() => {
     if (settings.editor.savePolicy !== "blur") return;
-    const onBlur = () => void saveAllRef.current();
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
+    const flush = () => void saveAllRef.current();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("blur", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    const offNativeBlur = onWindowBlur(flush);
+    return () => {
+      window.removeEventListener("blur", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      offNativeBlur();
+    };
   }, [settings.editor.savePolicy]);
+
+  // 切标签页等同于离开上一篇文档：开启失焦自动保存时，切走即落盘。
+  useEffect(() => {
+    if (settings.editor.savePolicy !== "blur") return;
+    void saveAllRef.current();
+  }, [activeTab, settings.editor.savePolicy]);
 
   // 退出前强制保存：后端拦下关闭发出这条事件，这边存完再让它真退。
   // 后端那条 5 秒看门狗兜住「前端没回音」，所以这里只管存，不用回话确认。
@@ -1023,13 +1045,36 @@ export default function App() {
     [docs]
   );
 
+  const saveDoc = useCallback(
+    async (path: string) => {
+      const saved = await docs.save(path);
+      // 存盘只动工作区内容，取一份变更清单就够；分支/标签/日志那几条留给显式刷新。
+      if (saved) void git.refreshChanges();
+    },
+    [docs, git]
+  );
+
   const saveActive = useCallback(async () => {
     const path = docs.activePath;
-    if (!path) return;
-    const saved = await docs.save(path);
-    // 存盘只动工作区内容，取一份变更清单就够；分支/标签/日志那几条留给显式刷新。
-    if (saved) void git.refreshChanges();
-  }, [docs, git]);
+    if (path && docs.dirty(path)) {
+      await saveDoc(path);
+      return;
+    }
+    await flushDirtyDocs();
+  }, [docs, flushDirtyDocs, saveDoc]);
+
+  // 窗口级 Ctrl+S / Cmd+S：焦点不在 Monaco 内（例如正看预览或点在侧栏/页签栏）时也能保存。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (dialog || menu || resolveOpen || everywhere) return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void saveActive();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dialog, everywhere, menu, resolveOpen, saveActive]);
 
   const closeDocTab = useCallback(
     (path: string) => {
@@ -3003,7 +3048,8 @@ export default function App() {
                 onClose={closeTab}
                 onCloseOthers={closeOtherTabs}
                 onCloseAll={closeAllTabs}
-                onSave={(path) => void docs.save(path)}
+                onSave={(path) => void saveDoc(path)}
+                onSaveAll={() => void flushDirtyDocs()}
                 isDirty={docs.dirty}
               />
             ) : null}
@@ -3042,6 +3088,9 @@ export default function App() {
                   document={activeDoc}
                   onChange={docs.update}
                   onSave={() => void saveActive()}
+                  onBlur={() => {
+                    if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+                  }}
                   onView={docs.setView}
                   onOpenLocal={openLocalFile}
                   reveal={docs.reveal}
@@ -3132,7 +3181,15 @@ export default function App() {
               <span>{activeDoc.lineEnding.toUpperCase()}</span>
             )}
             {docs.dirty(activeDoc.path) ? (
-              <span className="status-dirty">{t("editor.dirty")}</span>
+              <button
+                type="button"
+                className="status-note status-dirty"
+                onClick={() => void saveDoc(activeDoc.path)}
+                title={`${t("editor.save")} (${MOD_LABEL}+S)`}
+              >
+                <Save size={12} aria-hidden="true" />
+                {t("editor.dirty")}
+              </button>
             ) : null}
             {activeDoc.readOnly ? <span>{t("editor.readOnly")}</span> : null}
           </>

@@ -2553,6 +2553,49 @@ span.entry-icon > svg {
   background: var(--accent-blue);
 }
 
+/* 页签栏最右侧常驻操作区：粘性贴右，标签过多横向滚动时也不被滚出视口。 */
+.editor-tabs-actions {
+  position: sticky;
+  right: 0;
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  z-index: 2;
+}
+
+.editor-save-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: transparent;
+  transition: background 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
+}
+
+.editor-save-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.editor-save-button.is-dirty {
+  color: var(--accent-blue-text);
+  background: var(--accent-blue-bg);
+  font-weight: 500;
+}
+
+.editor-save-button.is-dirty:hover {
+  background: var(--button-solid);
+  color: var(--on-solid);
+}
+
 .code-host {
   flex: 1;
   min-height: 0;

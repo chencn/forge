@@ -17,6 +17,8 @@ interface DocPaneProps {
   document: OpenDocument;
   onChange: (path: string, contents: string) => void;
   onSave: () => void;
+  /** 编辑器失去焦点或从源码切向预览时触发（用于失焦自动保存）。 */
+  onBlur?: () => void;
   onView: (path: string, view: DocView) => void;
   /** 点预览里的本地链接时打开它。 */
   onOpenLocal: (absolute: string) => void;
@@ -57,6 +59,7 @@ export default function DocPane({
   document: doc,
   onChange,
   onSave,
+  onBlur,
   onView,
   onOpenLocal,
   reveal,
@@ -89,6 +92,7 @@ export default function DocPane({
               document={doc}
               onChange={onChange}
               onSave={onSave}
+              onBlur={onBlur}
               reveal={reveal}
               onRevealDone={onRevealDone}
               runConfigs={runConfigs}
@@ -131,7 +135,11 @@ export default function DocPane({
           <button
             type="button"
             className={`doc-view-button${doc.view === "preview" ? " is-active" : ""}`}
-            onClick={() => onView(doc.path, "preview")}
+            onClick={() => {
+              // 从源码切到预览时编辑器被 hidden，主动触发失焦回调确保 svg 等磁盘预览拿到最新存盘内容。
+              if (doc.view === "source") onBlur?.();
+              onView(doc.path, "preview");
+            }}
             title={t(previewLabel(doc.kind))}
             aria-label={t(previewLabel(doc.kind))}
             aria-pressed={doc.view === "preview"}

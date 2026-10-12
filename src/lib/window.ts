@@ -28,6 +28,25 @@ export function appExit(): Promise<void> {
   return invoke<void>("app_exit");
 }
 
+/**
+ * 监听原生窗口失去焦点（Tauri 窗口切到后台或其它程序时触发；纯浏览器下静默忽略）。
+ *
+ * WebView2 在无边框窗口（decorations=false）下切走焦点时，DOM 的 window.blur
+ * 未必每次都按时派发，把宿主层的焦点事件一起接上才能兜住所有切窗口场景。
+ */
+export function onWindowBlur(handler: () => void): () => void {
+  let disposed = false;
+  const unlisten = win
+    .onFocusChanged(({ payload: focused }) => {
+      if (!disposed && !focused) handler();
+    })
+    .catch(() => null);
+  return () => {
+    disposed = true;
+    void unlisten.then((off) => off?.()).catch(() => {});
+  };
+}
+
 /** 把模式解析成实际生效的深浅色。 */
 export function resolveTheme(mode: ThemeMode): "light" | "dark" {
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;

@@ -33,6 +33,8 @@ interface CodeEditorProps {
   document: OpenDocument | null;
   onChange: (path: string, contents: string) => void;
   onSave: () => void;
+  /** 焦点离开整个编辑器挂件（点向目录树、终端、提交面板等外部区域）时触发。 */
+  onBlur?: () => void;
   /** 搜索命中的落点；不属于当前文档或已经消费掉时为 null。 */
   reveal: RevealTarget | null;
   /** 跳完之后由这边通知，避免同一次定位被重复应用。 */
@@ -51,6 +53,7 @@ export default function CodeEditor({
   document,
   onChange,
   onSave,
+  onBlur,
   reveal,
   onRevealDone,
   runConfigs,
@@ -83,12 +86,14 @@ export default function CodeEditor({
   } | null>(null);
   const changeRef = useRef(onChange);
   const saveRef = useRef(onSave);
+  const blurRef = useRef(onBlur);
   const onRunRef = useRef(onRunConfig);
   /** 编辑器偏好在创建时读一次，之后靠下面的同步 effect 改，所以用 ref 传进挂载 effect。 */
   const optionsRef = useRef(settings.editor);
   optionsRef.current = settings.editor;
   changeRef.current = onChange;
   saveRef.current = onSave;
+  blurRef.current = onBlur;
   onRunRef.current = onRunConfig;
 
   useEffect(() => {
@@ -134,11 +139,13 @@ export default function CodeEditor({
     });
 
     // 落点是屏幕坐标：滚动、换行高、换 model、正文增减行都会让它挪位置，四样都问一遍。
+    // 失焦监听用 onDidBlurEditorWidget：打开内置查找框仍算在编辑器内，点向目录树/终端/标签栏才触发失焦保存。
     const sync = [
       editor.onDidScrollChange(() => measureRef.current()),
       editor.onDidLayoutChange(() => measureRef.current()),
       editor.onDidChangeModel(() => measureRef.current()),
       editor.onDidChangeModelContent(() => measureRef.current()),
+      editor.onDidBlurEditorWidget(() => blurRef.current?.()),
     ];
 
     return () => {

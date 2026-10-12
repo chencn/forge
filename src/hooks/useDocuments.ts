@@ -96,6 +96,8 @@ export function useDocuments(reportError: (message: string) => void) {
   listRef.current = documents;
   const activeRef = useRef<string | null>(activePath);
   activeRef.current = activePath;
+  /** 正在写盘的文件锁：防止编辑器失焦、切标签与窗口失焦同刻触发时对同一文件并发写盘。 */
+  const savingRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
   /**
    * 改列表只走这一条：先记进 ref 再交给 React。同一个事件里连着写两次（批量关闭
@@ -297,28 +299,48 @@ export function useDocuments(reportError: (message: string) => void) {
   );
 
   const save = useCallback(
-    async (path: string) => {
+    async (path: string): Promise<boolean> => {
+      // 若同一路径已有写盘请求在飞，先等上一趟落定，再按最新文本决定是否需要补存。
+      const pending = savingRef.current.get(path);
+      if (pending) {
+        await pending;
+        const after = listRef.current.find((item) => samePath(item.path, path));
+        if (!after || after.readOnly || after.contents === after.baseline) return true;
+      }
+
       const doc = listRef.current.find((item) => samePath(item.path, path));
       if (!doc || doc.readOnly) return false;
-      try {
-        const written = await writeFile(path, doc.contents, doc.lineEnding, doc.hasBom);
-        // 写盘要跨一次 IPC，期间用户可能已经在敲下一个字：回写前重读当前条目，
-        // 有新编辑就保留手里那份正文，只认领磁盘基线——否则刚敲的内容会被
-        // 保存前的快照整段抹掉（还不进撤销栈）。
-        const fresh = listRef.current.find((item) => samePath(item.path, path));
-        if (!fresh) return false;
-        const editedDuringSave = fresh.contents !== doc.contents;
-        upsert({
-          ...fresh,
-          baseline: written.contents,
-          contents: editedDuringSave ? fresh.contents : written.contents,
-          diskMs: written.modifiedMs,
-        });
-        return true;
-      } catch (cause) {
-        reportError(errorText(cause));
-        return false;
-      }
+
+      const task = (async () => {
+        try {
+          const written = await writeFile(path, doc.contents, doc.lineEnding, doc.hasBom);
+          // 写盘要跨一次 IPC，期间用户可能已经在敲下一个字：回写前重读当前条目，
+          // 有新编辑就保留手里那份正文，只认领磁盘基线——否则刚敲的内容会被
+          // 保存前的快照整段抹掉（还不进撤销栈）。
+          const fresh = listRef.current.find((item) => samePath(item.path, path));
+          if (!fresh) return false;
+          const editedDuringSave = fresh.contents !== doc.contents;
+          upsert({
+            ...fresh,
+            baseline: written.contents,
+            contents: editedDuringSave ? fresh.contents : written.contents,
+            diskMs: written.modifiedMs,
+            // svg 图片视图经 asset 协议读盘，保存后刷新指纹才能让 <img> 立即重取新图。
+            stamp: previewsFromDisk(fresh.kind)
+              ? written.modifiedMs || fresh.stamp
+              : fresh.stamp,
+          });
+          return true;
+        } catch (cause) {
+          reportError(errorText(cause));
+          return false;
+        } finally {
+          savingRef.current.delete(path);
+        }
+      })();
+
+      savingRef.current.set(path, task);
+      return task;
     },
     [reportError, upsert]
   );
