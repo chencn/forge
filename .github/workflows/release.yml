@@ -79,8 +79,8 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          # package.json 与 package-lock.json 一并处理。
-          npm version "$VERSION" --no-git-tag-version --no-workspace-update
+          # package.json 与 package-lock.json 一并处理；加 --allow-same-version 避免源码版本与 tag 恰好相同时报错。
+          npm version "$VERSION" --allow-same-version --no-git-tag-version --no-workspace-update
           node - <<'EOF'
           const fs = require("fs");
           // tauri.conf.json：应用版本，安装包文件名与 latest.json 都从这里来。
