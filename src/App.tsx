@@ -65,6 +65,8 @@ import { useRunConfigs } from "./hooks/useRunConfigs";
 import { useRunSessions } from "./hooks/useRunSessions";
 import { useHistory } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
+import { relaunchApp, runAutoUpdateFlow } from "./lib/updater";
+import UpdateStatusBar from "./components/UpdateStatusBar";
 import {
   disposeAllModels,
   disposeModel,
@@ -326,6 +328,42 @@ export default function App() {
     },
     [updateNotifications]
   );
+
+  /** 自动更新流程的通报走同一条管道：进 7 天历史 + 右下角气泡。 */
+  const pushUpdateNotice = useCallback(
+    (level: "info" | "warn", title: string, content: string) => {
+      const notif: AppNotification = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        title,
+        content,
+        level,
+        timestamp: Date.now(),
+        read: false,
+        projectRoot: workspaceRoot ?? "",
+      };
+      updateNotifications((prev) => [notif, ...prev]);
+      setActiveToasts((prev) => [notif, ...prev.slice(0, 2)]);
+    },
+    [updateNotifications, workspaceRoot]
+  );
+
+  /** 下载完成后的「立即安装？」弹窗；挂起的是版本号，resolve 值回给自动更新流程。 */
+  const [updatePrompt, setUpdatePrompt] = useState<string | null>(null);
+  const updatePromptResolve = useRef<((now: boolean) => void) | null>(null);
+
+  // 自动更新只按启动那一刻的设置跑一次：中途改设置下次启动才生效。
+  // settings 对象一变就重跑，会把「刚关掉自动下载」误解成「再下载一遍」。
+  useEffect(() => {
+    void runAutoUpdateFlow(settings.updates, {
+      onPromptInstall: (version) =>
+        new Promise<boolean>((resolve) => {
+          updatePromptResolve.current = resolve;
+          setUpdatePrompt(version);
+        }),
+      notify: pushUpdateNotice,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const docs = useDocuments(reportError);
   const git = useGitState(workspaceRoot, reportError);
@@ -2021,6 +2059,9 @@ export default function App() {
           closeQueue.current = [];
           if (queued.length > 0) closeBatch(queued);
         }
+        if (kind === "restartUpdate") {
+          await relaunchApp();
+        }
       } catch (cause) {
         reportError(errorText(cause));
       }
@@ -3102,6 +3143,12 @@ export default function App() {
           onOpenSettings={openSettingsTab}
           onError={reportError}
         />
+        <UpdateStatusBar
+          onOpenSettings={openSettingsTab}
+          onRequestRestart={(version) =>
+            setDialog({ kind: "restartUpdate", name: version, dir: null, entry: null })
+          }
+        />
         <MemoryGauge />
         <NotificationBell
           notifications={notifications}
@@ -3144,6 +3191,21 @@ export default function App() {
           request={dialog}
           onSubmit={(name, extra) => void submitDialog(name, extra)}
           onCancel={() => setDialog(null)}
+        />
+      ) : null}
+      {updatePrompt ? (
+        <PromptDialog
+          request={{ kind: "installUpdate", name: updatePrompt }}
+          onSubmit={() => {
+            setUpdatePrompt(null);
+            updatePromptResolve.current?.(true);
+            updatePromptResolve.current = null;
+          }}
+          onCancel={() => {
+            setUpdatePrompt(null);
+            updatePromptResolve.current?.(false);
+            updatePromptResolve.current = null;
+          }}
         />
       ) : null}
       {resolveOpen ? (

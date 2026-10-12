@@ -1,0 +1,112 @@
+# 打 tag 即发版：tag 是版本号的唯一事实来源。
+# 构建前用 tag 强制覆盖 package.json / package-lock.json / tauri.conf.json /
+# Cargo.toml 里的版本，发版前不需要手动同步任何文件，也不会忘。
+#
+# 产物（全部进 GitHub Release）：
+#   Windows  Forge_x.y.z_x64-setup.exe（NSIS）+ Forge_x.y.z_x64_en-US.msi
+#   Linux    Forge_x.y.z_amd64.deb + Forge_x.y.z_amd64.AppImage
+#   macOS    Forge_x.y.z_universal.dmg（x64 + arm64 双架构）
+# 以及应用内更新用的 latest.json（含全部平台条目与 minisign 签名）。
+# 更新端点：https://github.com/chencn/forge/releases/latest/download/latest.json
+#
+# 需要的仓库 Secrets（Settings → Secrets and variables → Actions）：
+#   TAURI_SIGNING_PRIVATE_KEY          更新签名私钥文件的内容（无密码，见 README）
+#   TAURI_SIGNING_PRIVATE_PASSWORD     留空即可（私钥未设密码，此行仅为占位说明）
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  # 同一个 tag 不允许两个构建并发发版；不同 tag 互不影响。
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      # 串行构建与发布：tauri-action 在多平台 matrix 下若并发运行，会导致各平台的 latest.json 竞态覆盖丢失。
+      max-parallel: 1
+      matrix:
+        include:
+          # bundles 用 CLI 参数分平台指定（tauri.conf.json 的 targets 只认单值或列表，
+          # 不认分平台 map）；产物对应关系见文件头注释。
+          - os: windows-latest # NSIS 安装器 + MSI
+            args: --bundles nsis,msi
+          - os: ubuntu-22.04 # deb + AppImage；用 22.04 保证老发行版的 glibc 兼容
+            args: --bundles deb,appimage
+          - os: macos-latest # universal：一次构建同时含 x64 与 arm64
+            args: --target universal-apple-darwin --bundles app,dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 Linux 打包依赖
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: 校验 tag 形式并取版本号
+        id: ver
+        shell: bash
+        run: |
+          # 只认 v1.2.3 / v1.2.3-beta.1 这类 tag，别的名字直接失败，不给模糊空间。
+          node -e "const t=process.argv[1];if(!/^v\d+\.\d+\.\d+([-+].+)?$/.test(t)){console.error('tag 必须形如 v1.2.3（可带 -prerelease），当前: '+t);process.exit(1)}" "$GITHUB_REF_NAME"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 用 tag 覆盖版本号
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # package.json 与 package-lock.json 一并处理。
+          npm version "$VERSION" --no-git-tag-version --no-workspace-update
+          node - <<'EOF'
+          const fs = require("fs");
+          // tauri.conf.json：应用版本，安装包文件名与 latest.json 都从这里来。
+          const confPath = "src-tauri/tauri.conf.json";
+          const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+          conf.version = process.env.VERSION;
+          fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+          // Cargo.toml：只改 [package] 顶部的 version 行，依赖项里的 version= 不动。
+          let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+          cargo = cargo.replace(/^version\s*=\s*"[^"]*"/m, `version = "${process.env.VERSION}"`);
+          fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+          EOF
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 更新包必须签名，公钥钉在 tauri.conf.json 的 plugins.updater.pubkey。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Forge ${{ github.ref_name }}
+          releaseBody: 在下方 Assets 里下载对应平台的安装包。应用内「设置 → 关于 → 检查更新」由 latest.json 驱动，自动匹配当前安装方式。
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: ${{ matrix.args }}

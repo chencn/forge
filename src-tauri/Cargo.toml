@@ -1,6 +1,6 @@
 [package]
 name = "forge"
-version = "0.1.0"
+version = "1.0.0"
 description = "Forge - Tauri desktop app"
 edition = "2021"
 rust-version = "1.80"
@@ -17,6 +17,11 @@ tauri-build = { version = "2", features = [] }
 # protocol-asset：本地图片要经 asset 协议喂给 webview，直接走 file:// 会被 CSP 挡掉。
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
+# 应用内更新：updater 负责从 GitHub Releases 检查、下载与装包（Windows 按当前
+# 安装方式自动选 MSI 或 NSIS 安装包）；process 只用它的 relaunch 装完重启。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9.0"

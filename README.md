@@ -68,9 +68,33 @@ npm run tauri:build    # 打包，安装包在 src-tauri/target/release/bundle/
 
 改完 Rust 跑 `npm run check:rs`。`npm run test:rs` 在本机会报 `STATUS_ENTRYPOINT_NOT_FOUND`，暂时用不了，原因见 `docs/backend/toolchain.md`。只想在浏览器里看界面用 `npm run dev`，但所有后端调用都会失败。
 
+## 发版与更新
+
+**发版：打 tag 即发。** 推一个 `v1.2.3` 形式的 tag，GitHub Actions（`.github/workflows/release.yml`）会在三个平台上构建并把安装包发布成 GitHub Release。版本号以 tag 为唯一事实来源，构建时 CI 直接用 tag 覆盖 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 里的版本，发版前不需要改任何文件。tag 带减号（如 `v1.2.3-beta.1`）会标成预发布。
+
+| 平台 | Release 里的产物 |
+| --- | --- |
+| Windows | `Forge_x.y.z_x64-setup.exe`（NSIS 安装器）、`Forge_x.y.z_x64_en-US.msi` |
+| Linux | `Forge_x.y.z_amd64.deb`、`Forge_x.y.z_amd64.AppImage` |
+| macOS | `Forge_x.y.z_universal.dmg`（x64 与 arm64 双架构一份包） |
+
+每个安装包都带 `.sig` 签名，Release 里另有一份 `latest.json`（各平台条目与签名），应用内更新靠它驱动。细节见 `docs/features/release-update/`。
+
+**应用内更新。** 设置 → 关于 → 检查更新是手动路子：检查、下载并安装。另有两条偏好可开自动：
+
+- **自动下载更新**（默认关）：启动后检查到新版本就后台下载。配套「**下载完成后询问安装**」（默认开）：开着会在下载完弹窗让你选是或否——选「是」立即安装，选「取消」下次启动时自动安装；关掉则下载完直接静默安装。
+- 关掉自动下载就只走手动检查，但**已经下载过还没装的更新，下次启动时会自动安装**。
+- Windows 按当前安装方式自动选包。MSI 装的下载 MSI，安装器装的下载 `-setup.exe`。拉起安装器时应用退出，装完由安装器重启；macOS / Linux 原地替换应用文件，装完重启应用生效。
+
+应用默认只向 GitHub Releases 请求一个地址（端点与验签公钥都钉死在 `src-tauri/tauri.conf.json` 的 `plugins.updater`）；设置中亦提供可选的更新镜像加速前缀（默认 `https://gh-proxy.com/`，默认关闭），即便走代理下载依然由客户端本地钉死的公钥执行 minisign 签名校验。
+
+**首次配置（只做一次）。** 更新签名密钥已生成：公钥已写进 `tauri.conf.json`，私钥在 `%TEMP%\forge-updater\forge.key`（不进仓库，丢了旧版应用将无法验证任何新包，务必备份）。到 GitHub 仓库 Settings → Secrets and variables → Actions 配两条 Secret：`TAURI_SIGNING_PRIVATE_KEY` 填 `forge.key` 文件的全部内容；`TAURI_SIGNING_PRIVATE_PASSWORD` 留空（私钥未设密码）。
+
+**macOS 未签名，首次打开要绕一下 Gatekeeper。** 没有 Apple 开发者证书，dmg 不做签名与公证；浏览器下载的 dmg 自带 quarantine 属性，直接双击会被系统拦下。三种绕法任选其一：右键点 Forge 选「打开」；或系统设置 → 隐私与安全性 → 点「仍要打开」；或终端执行 `xattr -cr /Applications/Forge.app`。这只是首次安装的事：应用内更新替换的文件不带 quarantine 属性，之后更新完启动不会再被拦。
+
 ## 设置
 
-设置在 `%APPDATA%\app.forge.desktop\settings.json`，全局生效，没有项目级设置。可改：外观、语言、点击关闭时是退出还是收进托盘、上次打开的文件夹、字号、制表宽度、缩略图、快捷键方案、代码保存策略、退出前是否保存未保存的改动、显示隐藏文件、显示被 git 忽略的文件、Shell 程序。
+设置在 `%APPDATA%\app.forge.desktop\settings.json`，全局生效，没有项目级设置。可改：外观、语言、点击关闭时是退出还是收进托盘、上次打开的文件夹、字号、制表宽度、缩略图、快捷键方案、代码保存策略、退出前是否保存未保存的改动、显示隐藏文件、显示被 git 忽略的文件、Shell 程序、自动下载更新、下载完成后询问安装、更新下载加速与代理地址。
 
 切语言后界面立即变，编辑器内置的右键菜单和查找框要重启窗口才跟着变。
 

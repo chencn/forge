@@ -36,17 +36,30 @@ import { shellProbe } from "../lib/term";
 import type { ShellInfo } from "../lib/term";
 import { languageNames } from "../lib/monacoEnv";
 import type { TranslationKey } from "../i18n/lang/zh";
+import {
+  checkForUpdate,
+  closeUpdate,
+  currentVersion,
+  downloadAndInstall,
+  humanBytes,
+  isUpdateFlowBusy,
+  relaunchApp,
+  setUpdateStatus,
+  watchUpdateFlowBusy,
+} from "../lib/updater";
+import type { DownloadReport, UpdateInfo } from "../lib/updater";
 
 /** 设置窗口左侧的模块，一行一个。 */
-type Module = "general" | "editor" | "terminal" | "lsp";
+type Module = "general" | "editor" | "terminal" | "lsp" | "about";
 
-const MODULES: Module[] = ["general", "editor", "terminal", "lsp"];
+const MODULES: Module[] = ["general", "editor", "terminal", "lsp", "about"];
 
 const MODULE_LABEL: Record<Module, TranslationKey> = {
   general: "settings.general",
   editor: "settings.editor",
   terminal: "settings.terminal",
   lsp: "settings.lsp",
+  about: "settings.about",
 };
 
 const THEME_OPTIONS: ThemeMode[] = ["light", "dark", "system"];
@@ -124,6 +137,16 @@ function runtimeOf(items: LspSessionStatus[] | undefined, stale: boolean): Runti
   return items.some((item) => item.status !== "running") ? "problem" : "running";
 }
 
+/** 应用内更新走到哪一步了：界面只反映这几档，插件内部的细节不外露。 */
+type UpdateStep =
+  | "idle"
+  | "checking"
+  | "latest"
+  | "available"
+  | "downloading"
+  | "installed"
+  | "error";
+
 interface Props {
   /** 当前项目根；未打开项目时没有可启动的会话，「启动」按钮禁用。 */
   workspace: string | null;
@@ -159,6 +182,20 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
   const [lspReasons, setLspReasons] = useState<Record<string, string>>({});
   /** 存在可查输出日志的条目；日志变化时重新计算，卡片上的「日志」按钮随之显示或收起。 */
   const [logged, setLogged] = useState<string[]>([]);
+  /** 应用内更新走到哪一步；进页面是待检查，动作只有「检查更新」与「下载安装」。 */
+  const [updateStep, setUpdateStep] = useState<UpdateStep>("idle");
+  /** 检查到的更新；下载安装都要拿着插件返回的这个对象。 */
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  /** 下载进度：已收字节与总字节（服务端没给长度时为 null，此时只报字节）。 */
+  const [progress, setProgress] = useState<DownloadReport>({ received: 0, total: null });
+  /** 检查或下载失败的原因；updater 的报错没有错误码，原样展示。 */
+  const [updateError, setUpdateError] = useState("");
+  /** 「重启应用」进行中；relaunch 成功进程就没了，失败要允许再点。 */
+  const [restarting, setRestarting] = useState(false);
+  /** 本机应用版本；纯浏览器预览没有 Tauri 接口，留空显示 —。 */
+  const [appVersion, setAppVersion] = useState("");
+  /** 自动更新流程（启动时那次）是否占着锁；占着就把手动按钮置灰。 */
+  const [flowBusy, setFlowBusy] = useState(isUpdateFlowBusy());
 
   useEffect(() => {
     const sync = () =>
@@ -309,6 +346,80 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    currentVersion()
+      .then(setAppVersion)
+      .catch(() => {
+        // 纯浏览器预览时没有应用接口，版本留空显示 —。
+      });
+  }, []);
+
+  useEffect(() => watchUpdateFlowBusy(() => setFlowBusy(isUpdateFlowBusy())), []);
+
+  // 离开设置页或组件卸载时，若仍持有未安装的 Update 资源，及时释放后端句柄
+  useEffect(() => {
+    return () => {
+      if (updateInfo) {
+        void closeUpdate(updateInfo.update);
+      }
+    };
+  }, [updateInfo]);
+
+  /**
+   * 检查更新：支持镜像加速代理前缀。
+   * 检查前先释放上一次未安装的更新资源句柄。
+   */
+  const checkUpdate = () => {
+    if (isUpdateFlowBusy()) return;
+    if (updateInfo) {
+      void closeUpdate(updateInfo.update);
+      setUpdateInfo(null);
+    }
+    setUpdateStep("checking");
+    const proxyUrl = settings.updates.proxyEnabled ? settings.updates.proxyUrl : undefined;
+    checkForUpdate({ proxyUrl })
+      .then((info) => {
+        setUpdateInfo(info);
+        setUpdateStep(info ? "available" : "latest");
+        if (info) {
+          setUpdateStatus({ phase: "available", version: info.version });
+        }
+      })
+      .catch((error: unknown) => {
+        setUpdateError(typeof error === "string" ? error : String(error));
+        setUpdateStep("error");
+      });
+  };
+
+  /**
+   * 下载并安装，接入全局互斥锁与状态栏同步通知。
+   */
+  const installUpdate = () => {
+    if (!updateInfo) return;
+    setProgress({ received: 0, total: null });
+    setUpdateStep("downloading");
+    setUpdateStatus({ phase: "downloading", version: updateInfo.version });
+    downloadAndInstall(updateInfo.update, (report) => {
+      setProgress(report);
+      setUpdateStatus({ downloadProgress: report });
+    })
+      .then(() => {
+        setUpdateStep("installed");
+        setUpdateStatus({ phase: "ready", version: updateInfo.version });
+      })
+      .catch((error: unknown) => {
+        setUpdateError(typeof error === "string" ? error : String(error));
+        setUpdateStep("error");
+        setUpdateStatus({ phase: "error", error: typeof error === "string" ? error : String(error) });
+      });
+  };
+
+  /** 重启应用让新版本生效；Windows 上通常由安装器重启，这个按钮是给 mac/Linux 的。 */
+  const restartForUpdate = () => {
+    setRestarting(true);
+    relaunchApp().catch(() => setRestarting(false));
+  };
 
   return (
     <div className="settings-page">
@@ -723,6 +834,144 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
                 );
               })}
               <p className="settings-note">{t("lsp.note")}</p>
+            </div>
+          ) : null}
+
+          {module === "about" ? (
+            <div className="settings-rows">
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.updates.autoDownload")}</span>
+                <Select
+                  label={t("settings.updates.autoDownload")}
+                  placeholder="—"
+                  value={settings.updates.autoDownload ? "yes" : "no"}
+                  options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                  onChange={(next) =>
+                    patch({ updates: { ...settings.updates, autoDownload: next === "yes" } })
+                  }
+                />
+              </div>
+
+              {/* 这一行以「自动下载更新」为前提：没开自动下载就没有「下载完成后」可言。 */}
+              {settings.updates.autoDownload ? (
+                <div className="settings-row">
+                  <span className="settings-label">{t("settings.updates.autoPromptInstall")}</span>
+                  <Select
+                    label={t("settings.updates.autoPromptInstall")}
+                    placeholder="—"
+                    value={settings.updates.autoPromptInstall ? "yes" : "no"}
+                    options={SWITCHES.map((option) => ({
+                      value: option,
+                      label: t(SWITCH_LABEL[option]),
+                    }))}
+                    onChange={(next) =>
+                      patch({ updates: { ...settings.updates, autoPromptInstall: next === "yes" } })
+                    }
+                  />
+                </div>
+              ) : null}
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.updates.proxyEnabled")}</span>
+                <Select
+                  label={t("settings.updates.proxyEnabled")}
+                  placeholder="—"
+                  value={settings.updates.proxyEnabled ? "yes" : "no"}
+                  options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                  onChange={(next) =>
+                    patch({ updates: { ...settings.updates, proxyEnabled: next === "yes" } })
+                  }
+                />
+              </div>
+
+              {settings.updates.proxyEnabled ? (
+                <div className="settings-row">
+                  <span className="settings-label">{t("settings.updates.proxyUrl")}</span>
+                  <input
+                    type="text"
+                    className="settings-input is-url"
+                    value={settings.updates.proxyUrl}
+                    placeholder="https://gh-proxy.com/"
+                    onChange={(e) =>
+                      patch({ updates: { ...settings.updates, proxyUrl: e.target.value } })
+                    }
+                  />
+                </div>
+              ) : null}
+
+              <div className="settings-row">
+                <span className="settings-label">{t("about.version")}</span>
+                <span className="about-value">{appVersion || "—"}</span>
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("about.check")}</span>
+                <button
+                  type="button"
+                  className="lsp-action"
+                  disabled={updateStep === "checking" || flowBusy}
+                  onClick={checkUpdate}
+                >
+                  {updateStep === "checking" ? (
+                    <span className="is-spinning">
+                      <Loader2 size={13} />
+                    </span>
+                  ) : (
+                    <RefreshCw size={13} />
+                  )}
+                  <span>{t(updateStep === "checking" ? "about.checking" : "about.check")}</span>
+                </button>
+              </div>
+
+              {updateStep === "latest" ? (
+                <p className="settings-note">{t("about.latest")}</p>
+              ) : null}
+              {updateStep === "error" ? (
+                <p className="settings-note">
+                  {t("about.error")} {updateError}
+                </p>
+              ) : null}
+
+              {updateStep === "available" && updateInfo ? (
+                <>
+                  <div className="settings-row">
+                    <span className="settings-label">{t("about.newVersion")}</span>
+                    <span className="about-value">{updateInfo.version}</span>
+                    <button type="button" className="lsp-action" onClick={installUpdate}>
+                      <Download size={13} />
+                      <span>{t("about.download")}</span>
+                    </button>
+                  </div>
+                  {/* 发版说明按行写的，保留换行展示；内容来自 Release 的说明文本。 */}
+                  {updateInfo.notes ? <pre className="about-notes">{updateInfo.notes}</pre> : null}
+                </>
+              ) : null}
+
+              {updateStep === "downloading" ? (
+                <div className="settings-row">
+                  <span className="settings-label">{t("about.progress")}</span>
+                  <span className="about-value">
+                    {progress.total
+                      ? `${Math.min(100, Math.round((progress.received / progress.total) * 100))}%`
+                      : humanBytes(progress.received)}
+                  </span>
+                </div>
+              ) : null}
+
+              {updateStep === "installed" ? (
+                <div className="settings-row">
+                  <span className="settings-label">{t("about.installed")}</span>
+                  <button
+                    type="button"
+                    className="lsp-action"
+                    disabled={restarting}
+                    onClick={restartForUpdate}
+                  >
+                    <RotateCw size={13} />
+                    <span>{t("about.restart")}</span>
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -117,6 +117,33 @@ impl Default for ExplorerSettings {
     }
 }
 
+/// 应用内更新的偏好。
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdateSettings {
+    /// 发现新版本后是否自动下载；关掉就只走设置页里的手动检查。
+    pub auto_download: bool,
+    /// 自动下载完成后是否弹窗询问安装；关掉就是下载完直接静默安装。
+    /// 只在 auto_download 开着时有意义。
+    pub auto_prompt_install: bool,
+    /// 是否开启 GitHub 镜像加速更新。
+    pub proxy_enabled: bool,
+    /// 镜像加速前缀地址，如 https://gh-proxy.com/。
+    pub proxy_url: String,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            auto_download: false,
+            // 默认问一句：Windows 上静默安装会直接拉起安装器并退出应用，不打招呼太吓人。
+            auto_prompt_install: true,
+            proxy_enabled: false,
+            proxy_url: "https://gh-proxy.com/".to_string(),
+        }
+    }
+}
+
 /// 一份全局设置。缺字段时按 Default 补，改结构不用迁移旧文件。
 ///
 /// 这里只放偏好：主题、字号这类几个月不动一次的选择。用户做过的流水（上次开的项目、
@@ -138,6 +165,8 @@ pub struct Settings {
     pub explorer: ExplorerSettings,
     /// 通知气泡弹出位置：bottom-right / top-right / bottom-left / top-left。
     pub notification_position: String,
+    /// 应用内更新：自动下载与安装前是否询问。
+    pub updates: UpdateSettings,
 }
 
 impl Default for Settings {
@@ -152,6 +181,7 @@ impl Default for Settings {
             branches: BranchSettings::default(),
             explorer: ExplorerSettings::default(),
             notification_position: "bottom-right".to_string(),
+            updates: UpdateSettings::default(),
         }
     }
 }

@@ -13,6 +13,7 @@ mod settings;
 mod sys;
 mod term;
 mod tray;
+mod update;
 mod watch;
 
 use tauri::Manager;
@@ -21,6 +22,9 @@ pub fn run() {
     // build + run 拆开是为了在事件循环上挂 RunEvent::Exit 的退出清理（见下面的 app.run）。
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 更新检查/下载在设置页手动触发；relaunch 供装完新包后重启应用。
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(watch::WatchSlot::default())
         .setup(|app| {
             tray::build(&app.handle().clone())?;
@@ -130,6 +134,10 @@ pub fn run() {
             tray::tray_labels,
             tray::app_exit,
             sys::sys_memory,
+            update::update_pending_load,
+            update::update_pending_save,
+            update::update_pending_clear,
+            update::update_check,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

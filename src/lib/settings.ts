@@ -71,6 +71,18 @@ export interface ExplorerSettings {
   showHidden: boolean;
 }
 
+/** 应用内更新的偏好，对应 Rust `UpdateSettings`。 */
+export interface UpdateSettings {
+  /** 发现新版本后自动下载；关掉就只走设置页里的手动检查。 */
+  autoDownload: boolean;
+  /** 下载完成后弹窗询问安装；关掉就是下载完直接静默安装。只在 autoDownload 开着时有意义。 */
+  autoPromptInstall: boolean;
+  /** 是否开启 GitHub 镜像加速更新。 */
+  proxyEnabled: boolean;
+  /** 镜像加速前缀地址，如 https://gh-proxy.com/。 */
+  proxyUrl: string;
+}
+
 /** 通知弹窗气泡显示位置，对应 IDEA 的 NotificationLocation。 */
 export type NotificationPosition = "bottom-right" | "top-right" | "bottom-left" | "top-left";
 
@@ -94,6 +106,8 @@ export interface Settings {
   explorer: ExplorerSettings;
   /** 通知弹窗气泡位置。 */
   notificationPosition: NotificationPosition;
+  /** 应用内更新。 */
+  updates: UpdateSettings;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -120,6 +134,12 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   explorer: { showIgnored: true, showHidden: false },
   notificationPosition: "bottom-right",
+  updates: {
+    autoDownload: false,
+    autoPromptInstall: true,
+    proxyEnabled: false,
+    proxyUrl: "https://gh-proxy.com/",
+  },
 };
 
 /** 翻一条引用的收藏标记：名单按引用全名存，日志的分支树和顶栏的分支弹层共用这一份。 */
@@ -147,6 +167,7 @@ function merge(raw: Partial<Settings> | null): Settings {
     commit: { ...DEFAULT_SETTINGS.commit, ...raw?.commit },
     branches: { ...DEFAULT_SETTINGS.branches, ...raw?.branches },
     explorer: { ...DEFAULT_SETTINGS.explorer, ...raw?.explorer },
+    updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },
     notificationPosition:
       raw?.notificationPosition === "top-right" ||
       raw?.notificationPosition === "bottom-left" ||

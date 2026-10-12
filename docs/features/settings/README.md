@@ -31,9 +31,11 @@ Rust 侧的默认值在各结构体的 `Default`，前端那份镜像是 `DEFAUL
 | `terminal.shell` | `""` | 空串用 `shell_probe` 排在第一的那条，见 `../terminal/` |
 | `commit.showOnDoubleClick` / `commit.commitAllWhenNothingStaged` | `"preview"` / `true` | 由提交窗口头部的齿轮改 |
 | `branches.actionsInSearch` / `showRecent` / `showTags` / `groupByDirectory` / `onSingleClick` / `favorites` | `true` / `true` / `true` / `true` / `"none"` / `[]` | 由分支弹层和日志分支面板的齿轮改 |
+| `updates.autoDownload` / `updates.autoPromptInstall` / `updates.proxyEnabled` / `updates.proxyUrl` | `false` / `true` / `false` / `"https://gh-proxy.com/"` | 应用内更新与镜像加速，由「关于」栏改；行为见 `../release-update/` |
 
-设置页有 通用 / 编辑器 / 终端 / 语言服务 四栏。`commit` 与 `branches` 两组存在同一份文件里，但修改它们的是
-提交窗口的齿轮和分支弹层、日志分支面板的齿轮，不在这四栏内。语言服务那一栏修改的不是 `settings.json`，
+设置页有 通用 / 编辑器 / 终端 / 语言服务 / 关于 五栏。`commit` 与 `branches` 两组存在同一份文件里，但修改它们的是
+提交窗口的齿轮和分支弹层、日志分支面板的齿轮，不在这五栏内。「关于」栏同时显示当前版本与手动检查更新，
+修改的就是 `updates` 这一组。语言服务那一栏修改的不是 `settings.json`，
 整份写回 `lsp.json`：一项一卡，左侧第一行是这门语言的显示名加档位下拉，第二行以「语言服务」标注那个进程的名字与参数
 （两个名字不是一回事：C# 对应 `csharp-ls`，PHP 对应 `intelephense`，`typescript` 这一项跑的是
 `typescript-language-server`，混着写会让人以为列表里多了几个看不懂的语言）。语言名不另存一份表，

@@ -32,6 +32,7 @@
 | `terminal` | 终端会话、换位置与收起都不杀 shell、输出补画 | `components/TerminalPane.tsx`、`lib/term.ts`、`lib/termStore.ts`、`src-tauri/src/term.rs` |
 | `run` | 运行配置（二十四族识别：npm / Maven / Gradle / Spring / 裸 java / Go 与 Wails / Cargo / Python / .NET / PHP / Ruby / Dart / Scala / Elixir / C·C++ / Zig / Deno / Clojure / Haskell / Julia / Lua / Swift / 裸脚本）、运行/重跑/停止、编辑程序配置页 | `components/RunControls.tsx`、`RunConfigsPage.tsx`、`RunPane.tsx`、`hooks/useRunConfigs.ts`、`useRunSessions.ts`、`src-tauri/src/run/`、`src-tauri/src/proc.rs` |
 | `settings` | 设置页各栏、settings.json 读写与默认值合并 | `components/SettingsPage.tsx`、`lib/settings.ts`、`hooks/useSettings.tsx`、`src-tauri/src/settings.rs` |
+| `release-update` | GitHub Actions 打 tag 发版、应用内检查更新与自动下载/挂起补装、更新签名与 macOS 未签名说明 | `.github/workflows/release.yml`、`src-tauri/tauri.conf.json`（`plugins.updater`）、`src-tauri/src/update.rs`、`lib/updater.ts` |
 | `tray-lifecycle` | 托盘、点关闭是收进托盘还是退应用、退出前强制保存与看门狗 | `src-tauri/src/tray.rs`、`lib/window.ts` |
 | `localization` | 中英词典与 Provider、语言怎么带到 Monaco / xterm / 托盘菜单 | `src/i18n/`、`lib/errors.ts` |
 

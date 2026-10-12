@@ -17,7 +17,9 @@ export type DialogKind =
   | "resetHard"
   | "pushUpTo"
   | "discard"
-  | "resetSettings";
+  | "resetSettings"
+  | "installUpdate"
+  | "restartUpdate";
 
 export interface DialogRequest {
   kind: DialogKind;
@@ -61,6 +63,8 @@ const TITLE_KEY: Record<DialogKind, TranslationKey> = {
   pushUpTo: "git.dialogPushUpTo",
   discard: "dialog.discardTitle",
   resetSettings: "dialog.resetAllTitle",
+  installUpdate: "dialog.updateTitle",
+  restartUpdate: "update.restartConfirmTitle",
 };
 
 /** 只有这几类需要输入名字，其余是确认框。 */
@@ -111,6 +115,10 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
   /** 确认框那句话，按要删的是文件、文件夹还是哪种引用挑。 */
   const bodyText = () => {
     if (request.kind === "resetSettings") return t("dialog.resetAllBody");
+    // 更新安装询问：name 里带的是新版本号。
+    if (request.kind === "installUpdate") return t("dialog.updateBody", { version: request.name });
+    if (request.kind === "restartUpdate")
+      return t("update.restartConfirmBody", { version: request.name });
     if (request.kind === "discard") return t("dialog.discardBody", { name: request.name });
     if (request.kind === "resetHard") return t("git.resetHardWarning", { rev: request.name });
     if (request.kind === "pushUpTo")
@@ -242,13 +250,15 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
                 ? t("dialog.resetAll")
                 : request.kind === "discard"
                   ? t("dialog.discard")
-                  : request.kind === "rename"
-                    ? t("dialog.confirm")
-                    : request.kind === "checkoutRev"
-                      ? t("git.checkoutShort")
-                      : request.kind === "renameBranch"
-                        ? t("dialog.rename")
-                        : t("dialog.create")}
+                  : request.kind === "installUpdate"
+                    ? t("dialog.installNow")
+                    : request.kind === "rename"
+                      ? t("dialog.confirm")
+                      : request.kind === "checkoutRev"
+                        ? t("git.checkoutShort")
+                        : request.kind === "renameBranch"
+                          ? t("dialog.rename")
+                          : t("dialog.create")}
           </button>
         </div>
       </div>
