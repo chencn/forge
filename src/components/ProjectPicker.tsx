@@ -48,8 +48,9 @@ export default function ProjectPicker({
 
   const name = root ? basenameOf(root) : null;
   const isMulti = mode === "multi";
-  /** 多工作区且同时常驻超过 1 个文件夹时，才显示顶栏数字徽标与弹层「已打开」分组。 */
-  const showOpenGroup = isMulti && openFolders.length > 1;
+  /** 开启多工作区且已有打开的文件夹时，弹层始终显示「已打开」分组；超过 1 个时顶栏额外显示数量徽标。 */
+  const showOpenGroup = isMulti && openFolders.length > 0;
+  const showCountBadge = isMulti && openFolders.length > 1;
   /** 「已打开」分组出现时，最近项目里过滤掉已在打开列表中的项，避免同一文件夹在弹层里上下重复出现。 */
   const visibleRecent = showOpenGroup
     ? recent.filter((path) => !openFolders.some((item) => samePath(item.path, path)))
@@ -79,7 +80,7 @@ export default function ProjectPicker({
       >
         <PanelTop size={14} aria-hidden="true" />
         <span className="toolbar-chip-label">{name ?? t("workspace.openFolder")}</span>
-        {showOpenGroup ? <span className="ws-count">{openFolders.length}</span> : null}
+        {showCountBadge ? <span className="ws-count">{openFolders.length}</span> : null}
         {pickable ? <ChevronDown size={13} aria-hidden="true" /> : null}
       </button>
 

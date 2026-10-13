@@ -278,10 +278,11 @@ export const zhTW: Record<TranslationKey, string> = {
   "keymap.idea": "IntelliJ IDEA",
   "keymap.eclipse": "Eclipse",
   "settings.minimap": "顯示縮圖",
-  "settings.workspaceMode": "工作區模式",
+  "settings.workspaceMode": "允許同時打開多個專案",
   "workspaceMode.multi": "多工作區常駐",
   "workspaceMode.single": "單工作區",
-  "workspaceMode.note": "多工作區常駐允許在同一視窗開啟並秒切多個資料夾，切走時後臺終端與執行任務保持存活。",
+  "workspaceMode.note":
+    "開啟後可在同一視窗同時打開多個資料夾並快速切換，背景專案的終端機與執行任務保持運作；選「否」時保持單工作區模式，打開新資料夾將替換目前資料夾。",
   "settings.closeBehavior": "點選關閉時",
   "closeBehavior.quit": "退出應用",
   "closeBehavior.tray": "最小化到托盤",

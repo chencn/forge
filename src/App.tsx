@@ -287,10 +287,10 @@ export default function App() {
   /** 递增即再对一趟语言服务：状态条里手动重启或停用之后要立刻反映到进程上。 */
   const [lspKick, setLspKick] = useState(0);
 
-  /** 启动时恢复上次常驻的文件夹列表与激活根；兼容旧版只有 lastFolder 的历史文件。 */
+  /** 启动时恢复上次常驻的文件夹列表与激活根；默认单工作区（single）时只恢复单个激活根。 */
   const initialActiveRoot = history.activeFolder || history.lastFolder || null;
   const [openFolders, setOpenFolders] = useState<string[]>(() => {
-    if (history.openFolders.length > 0) {
+    if (settings.workspaceMode === "multi" && history.openFolders.length > 0) {
       if (
         initialActiveRoot &&
         !history.openFolders.some((item) => samePath(item, initialActiveRoot))
@@ -524,20 +524,19 @@ export default function App() {
   });
   /** 交给目录树去定位的那一条，连同序号：同一路径再点一次也要重新滚一趟。 */
   const [treeReveal, setTreeReveal] = useState<{ path: string; seq: number } | null>(null);
-  /** 当前激活根在各按根状态表中的索引键。 */
+  /** 当前激活根在各按根状态表中的索引键；用 ref 同步供恒定引用的按根 setter 读取，避免切换项目后旧闭包写串工作区。 */
   const rootKey = workspaceRoot ?? "";
+  const rootKeyRef = useRef(rootKey);
+  rootKeyRef.current = rootKey;
   /** 目录树里选中的那一批，按根分别记忆；最后一条是主行，右键菜单和键位都读这一份。 */
   const [explorerPickByRoot, setExplorerPickByRoot] = useState<Record<string, FsEntry[]>>({});
   const explorerPick = useMemo(
     () => explorerPickByRoot[rootKey] ?? EMPTY_PICK,
     [explorerPickByRoot, rootKey]
   );
-  const setExplorerPick = useCallback(
-    (next: FsEntry[]) => {
-      setExplorerPickByRoot((prev) => ({ ...prev, [rootKey]: next }));
-    },
-    [rootKey]
-  );
+  const setExplorerPick = useCallback((next: FsEntry[]) => {
+    setExplorerPickByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
+  }, []);
   /** 剪切 / 复制攒下的那一批，连同它是挪走还是留下。 */
   const [clipboard, setClipboard] = useState<{ entries: FsEntry[]; cut: boolean } | null>(null);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
@@ -545,16 +544,14 @@ export default function App() {
   /** 编辑区页签栏里的比对，按根隔离，同一根内按打开顺序排。 */
   const [diffsByRoot, setDiffsByRoot] = useState<Record<string, DiffTab[]>>({});
   const diffs = useMemo(() => diffsByRoot[rootKey] ?? EMPTY_DIFFS, [diffsByRoot, rootKey]);
-  const setDiffs = useCallback(
-    (updater: DiffTab[] | ((prev: DiffTab[]) => DiffTab[])) => {
-      setDiffsByRoot((prev) => {
-        const current = prev[rootKey] ?? EMPTY_DIFFS;
-        const next = typeof updater === "function" ? updater(current) : updater;
-        return { ...prev, [rootKey]: next };
-      });
-    },
-    [rootKey]
-  );
+  const setDiffs = useCallback((updater: DiffTab[] | ((prev: DiffTab[]) => DiffTab[])) => {
+    const key = rootKeyRef.current;
+    setDiffsByRoot((prev) => {
+      const current = prev[key] ?? EMPTY_DIFFS;
+      const next = typeof updater === "function" ? updater(current) : updater;
+      return { ...prev, [key]: next };
+    });
+  }, []);
   /** 「在新标签页中显示差异」要一份新标签，靠它把同一处比对的键区分开。 */
   const diffSeq = useRef(0);
   /**
@@ -564,17 +561,15 @@ export default function App() {
    * 连同当时的每一篇都钉死，旧标签的箭头会走向过期的那一批。
    */
   const diffChainsByRoot = useRef(new Map<string, Map<string, DiffChain>>());
-  const getDiffChains = useCallback(
-    (targetRootKey = rootKey) => {
-      let map = diffChainsByRoot.current.get(targetRootKey);
-      if (!map) {
-        map = new Map<string, DiffChain>();
-        diffChainsByRoot.current.set(targetRootKey, map);
-      }
-      return map;
-    },
-    [rootKey]
-  );
+  const getDiffChains = useCallback((targetRootKey?: string) => {
+    const key = targetRootKey ?? rootKeyRef.current;
+    let map = diffChainsByRoot.current.get(key);
+    if (!map) {
+      map = new Map<string, DiffChain>();
+      diffChainsByRoot.current.set(key, map);
+    }
+    return map;
+  }, []);
   /** 底部工具窗口各自待在哪：按根隔离（底部、选项卡、还是收着）。底部一次只放一块。 */
   const [placesByRoot, setPlacesByRoot] = useState<Record<string, Record<BottomPane, Placement>>>({});
   const places = useMemo(
@@ -587,54 +582,47 @@ export default function App() {
         | Record<BottomPane, Placement>
         | ((prev: Record<BottomPane, Placement>) => Record<BottomPane, Placement>)
     ) => {
+      const key = rootKeyRef.current;
       setPlacesByRoot((prev) => {
-        const current = prev[rootKey] ?? DEFAULT_PLACES;
+        const current = prev[key] ?? DEFAULT_PLACES;
         const next = typeof updater === "function" ? updater(current) : updater;
         if (next === current) return prev;
-        return { ...prev, [rootKey]: next };
+        return { ...prev, [key]: next };
       });
     },
-    [rootKey]
+    []
   );
   /** 设置页开在不在页签栏里（全局一份，跨根保留）。 */
   const [settingsTab, setSettingsTab] = useState(false);
   /** 「编辑程序配置」那一页开在不在页签栏里（按根隔离）。 */
   const [runConfigsTabByRoot, setRunConfigsTabByRoot] = useState<Record<string, boolean>>({});
   const runConfigsTab = Boolean(runConfigsTabByRoot[rootKey]);
-  const setRunConfigsTab = useCallback(
-    (open: boolean) => {
-      setRunConfigsTabByRoot((prev) => ({ ...prev, [rootKey]: open }));
-    },
-    [rootKey]
-  );
+  const setRunConfigsTab = useCallback((open: boolean) => {
+    setRunConfigsTabByRoot((prev) => ({ ...prev, [rootKeyRef.current]: open }));
+  }, []);
   /** 递增即打开配置选择下拉，对应 `Alt+Shift+F10`。 */
   const [runChooser, setRunChooser] = useState(0);
   /** 页签栏当前选中的那一项，按根隔离，null 表示当前根编辑区是空的。 */
   const [activeTabByRoot, setActiveTabByRoot] = useState<Record<string, string | null>>({});
   const activeTab = activeTabByRoot[rootKey] ?? null;
-  const setActiveTab = useCallback(
-    (next: string | null) => {
-      setActiveTabByRoot((prev) => ({ ...prev, [rootKey]: next }));
-    },
-    [rootKey]
-  );
+  const setActiveTab = useCallback((next: string | null) => {
+    setActiveTabByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
+  }, []);
   /** 页签栏的排列顺序，按根隔离，只装标签 id；栏上有什么仍由各自的来源说。 */
   const [tabOrderByRoot, setTabOrderByRoot] = useState<Record<string, string[]>>({});
   const tabOrder = useMemo(
     () => tabOrderByRoot[rootKey] ?? EMPTY_TAB_ORDER,
     [rootKey, tabOrderByRoot]
   );
-  const setTabOrder = useCallback(
-    (updater: string[] | ((prev: string[]) => string[])) => {
-      setTabOrderByRoot((prev) => {
-        const current = prev[rootKey] ?? EMPTY_TAB_ORDER;
-        const next = typeof updater === "function" ? updater(current) : updater;
-        if (next === current) return prev;
-        return { ...prev, [rootKey]: next };
-      });
-    },
-    [rootKey]
-  );
+  const setTabOrder = useCallback((updater: string[] | ((prev: string[]) => string[])) => {
+    const key = rootKeyRef.current;
+    setTabOrderByRoot((prev) => {
+      const current = prev[key] ?? EMPTY_TAB_ORDER;
+      const next = typeof updater === "function" ? updater(current) : updater;
+      if (next === current) return prev;
+      return { ...prev, [key]: next };
+    });
+  }, []);
   /** 底部工具窗口整体高度，拖动上面那条横分隔条改它。 */
   const [bottomHeight, setBottomHeight] = useState(260);
   /** 侧边工具窗口宽度，拖动它右缘那条竖分隔条改它。 */
@@ -672,12 +660,9 @@ export default function App() {
   /** 底部查找窗口里那一趟的结果，按根隔离。一次只看一趟，重跑就地覆盖。 */
   const [findByRoot, setFindByRoot] = useState<Record<string, FindState>>({});
   const find = useMemo(() => findByRoot[rootKey] ?? EMPTY_FIND, [findByRoot, rootKey]);
-  const setFind = useCallback(
-    (next: FindState) => {
-      setFindByRoot((prev) => ({ ...prev, [rootKey]: next }));
-    },
-    [rootKey]
-  );
+  const setFind = useCallback((next: FindState) => {
+    setFindByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
+  }, []);
   const terminalApi = useRef<TerminalPaneHandle>(null);
   /**
    * 分割条拖动：拖动期间直接写那块面板的行内尺寸，松手才落到 state。
@@ -690,17 +675,15 @@ export default function App() {
   const sideDrag = useRef<{ startX: number; startWidth: number; live: number } | null>(null);
   /** 每块工具窗口上次待的位置（按根隔离），最小化后再点活动栏那颗要回原处。 */
   const lastPlaceByRoot = useRef(new Map<string, Record<BottomPane, "docked" | "tabbed">>());
-  const getLastPlace = useCallback(
-    (targetRootKey = rootKey) => {
-      let record = lastPlaceByRoot.current.get(targetRootKey);
-      if (!record) {
-        record = { ...DEFAULT_LAST_PLACE };
-        lastPlaceByRoot.current.set(targetRootKey, record);
-      }
-      return record;
-    },
-    [rootKey]
-  );
+  const getLastPlace = useCallback((targetRootKey?: string) => {
+    const key = targetRootKey ?? rootKeyRef.current;
+    let record = lastPlaceByRoot.current.get(key);
+    if (!record) {
+      record = { ...DEFAULT_LAST_PLACE };
+      lastPlaceByRoot.current.set(key, record);
+    }
+    return record;
+  }, []);
   const configs = useRunConfigs(workspaceRoot);
   const run = useRunSessions(configs);
 
@@ -1361,16 +1344,22 @@ export default function App() {
   }, [requestCloseRoot, workspaceRoot]);
 
   /** 传给顶栏工程切换器的常驻文件夹状态摘要（绿点 = 后台任务/终端运行中，蓝点 = 有未保存修改）。 */
-  const folderStatusList: FolderStatusItem[] = useMemo(
-    () =>
-      openFolders.map((folderPath) => ({
-        path: folderPath,
-        running:
-          run.hasRunningSessionsForRoot(folderPath) || hasAliveTermsForRoot(folderPath),
-        dirty: docs.hasDirtyForRoot(folderPath),
-      })),
-    [docs, openFolders, run, termRev]
-  );
+  const folderStatusList: FolderStatusItem[] = useMemo(() => {
+    const roots =
+      openFolders.length > 0
+        ? workspaceRoot && !openFolders.some((item) => samePath(item, workspaceRoot))
+          ? [...openFolders, workspaceRoot]
+          : openFolders
+        : workspaceRoot
+          ? [workspaceRoot]
+          : [];
+    return roots.map((folderPath) => ({
+      path: folderPath,
+      running:
+        run.hasRunningSessionsForRoot(folderPath) || hasAliveTermsForRoot(folderPath),
+      dirty: docs.hasDirtyForRoot(folderPath),
+    }));
+  }, [docs, openFolders, run, termRev, workspaceRoot]);
 
   const openFile = useCallback(
     (entry: FsEntry) => {

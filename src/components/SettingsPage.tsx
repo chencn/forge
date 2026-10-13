@@ -31,7 +31,6 @@ import type {
   KeymapScheme,
   NotificationPosition,
   SavePolicy,
-  WorkspaceMode,
 } from "../lib/settings";
 import { shellProbe } from "../lib/term";
 import type { ShellInfo } from "../lib/term";
@@ -87,11 +86,6 @@ const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: "en", label: "English" },
 ];
 const TAB_SIZES = [2, 4, 8];
-const WORKSPACE_MODES: WorkspaceMode[] = ["multi", "single"];
-const WORKSPACE_MODE_LABEL: Record<WorkspaceMode, TranslationKey> = {
-  multi: "workspaceMode.multi",
-  single: "workspaceMode.single",
-};
 const CLOSE_BEHAVIORS: CloseBehavior[] = ["quit", "tray"];
 const CLOSE_LABEL: Record<CloseBehavior, TranslationKey> = {
   quit: "closeBehavior.quit",
@@ -516,12 +510,9 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
                 <Select
                   label={t("settings.workspaceMode")}
                   placeholder="—"
-                  value={settings.workspaceMode}
-                  options={WORKSPACE_MODES.map((option) => ({
-                    value: option,
-                    label: t(WORKSPACE_MODE_LABEL[option]),
-                  }))}
-                  onChange={(workspaceMode) => patch({ workspaceMode })}
+                  value={settings.workspaceMode === "multi" ? "yes" : "no"}
+                  options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                  onChange={(next) => patch({ workspaceMode: next === "yes" ? "multi" : "single" })}
                 />
               </div>
 

@@ -295,10 +295,11 @@ export const zh = {
   "keymap.idea": "IntelliJ IDEA",
   "keymap.eclipse": "Eclipse",
   "settings.minimap": "显示缩略图",
-  "settings.workspaceMode": "工作区模式",
+  "settings.workspaceMode": "允许同时打开多个项目",
   "workspaceMode.multi": "多工作区常驻",
   "workspaceMode.single": "单工作区",
-  "workspaceMode.note": "多工作区常驻允许在同一窗口打开并秒切多个文件夹，切走时后台终端与运行任务保持存活。",
+  "workspaceMode.note":
+    "开启后可在同一窗口同时打开多个文件夹并快速切换，后台项目的终端与运行任务保持运行；选「否」时保持单工作区模式，打开新文件夹将替换当前文件夹。",
   "settings.closeBehavior": "点击关闭时",
   "closeBehavior.quit": "退出应用",
   "closeBehavior.tray": "最小化到托盘",

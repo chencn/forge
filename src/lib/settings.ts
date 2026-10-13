@@ -119,7 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   language: "",
   workspaceMode: "multi",
-  closeBehavior: "quit",
+  closeBehavior: "tray",
   editor: {
     fontSize: 13,
     tabSize: 2,
@@ -164,6 +164,7 @@ function merge(raw: Partial<Settings> | null): Settings {
     ...DEFAULT_SETTINGS,
     ...raw,
     workspaceMode: raw?.workspaceMode === "single" ? "single" : "multi",
+    closeBehavior: raw?.closeBehavior === "quit" ? "quit" : "tray",
     editor: {
       ...DEFAULT_SETTINGS.editor,
       ...raw?.editor,

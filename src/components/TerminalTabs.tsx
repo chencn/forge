@@ -22,10 +22,11 @@ import { useI18n } from "../i18n";
  * 而页签栏住在头部那一行、首屏就要画，不能被 xterm 拖下水。
  */
 
-/** 一条会话的页签名：优先用 shell 的可读名，退回落盘路径的尾段。 */
-function shellLabel(shell: string): string {
-  const tail = shell.split(/[\\/]/).pop() ?? shell;
-  return tail.replace(/\.exe$/i, "") || shell;
+/** 一条会话的页签名：未指定 shell 时回退到探测列表首项，取路径去后缀的尾段。 */
+function shellLabel(shell: string, shells: ShellInfo[] = []): string {
+  const path = shell || shells[0]?.path || "";
+  const tail = path.split(/[\\/]/).pop() ?? path;
+  return tail.replace(/\.exe$/i, "") || shells[0]?.name || "terminal";
 }
 
 export default function TerminalTabs({ cwd }: { cwd: string | null }) {
@@ -78,7 +79,7 @@ export default function TerminalTabs({ cwd }: { cwd: string | null }) {
               className="term-tab-label"
               onClick={() => setActiveTermFor(cwd, session.id)}
             >
-              {shellLabel(session.shell)}
+              {shellLabel(session.shell, shells)}
             </button>
             <button
               type="button"

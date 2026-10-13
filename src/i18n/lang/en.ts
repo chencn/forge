@@ -299,11 +299,11 @@ export const en: Record<TranslationKey, string> = {
   "keymap.idea": "IntelliJ IDEA",
   "keymap.eclipse": "Eclipse",
   "settings.minimap": "Show minimap",
-  "settings.workspaceMode": "Workspace mode",
+  "settings.workspaceMode": "Allow multiple projects",
   "workspaceMode.multi": "Multiple folders in window",
   "workspaceMode.single": "Single folder",
   "workspaceMode.note":
-    "Multiple folders mode keeps several folders open in one window for instant switching while background terminals and tasks stay alive.",
+    "When enabled, multiple folders can stay open in the same window with background terminals and tasks kept alive; when set to No, opening a folder replaces the current one.",
   "settings.closeBehavior": "When closing",
   "closeBehavior.quit": "Quit the app",
   "closeBehavior.tray": "Minimize to tray",

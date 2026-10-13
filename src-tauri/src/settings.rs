@@ -177,7 +177,7 @@ impl Default for Settings {
             theme: "system".to_string(),
             language: String::new(),
             workspace_mode: "multi".to_string(),
-            close_behavior: "quit".to_string(),
+            close_behavior: "tray".to_string(),
             editor: EditorSettings::default(),
             terminal: TerminalSettings::default(),
             commit: CommitSettings::default(),
@@ -256,15 +256,19 @@ mod tests {
         }
     }
 
-    /// 工作区模式缺省为 `multi`，且能读写 `single`。
+    /// 工作区模式缺省为 `multi`（是），点击关闭时缺省为 `tray`（最小化到托盘）。
     #[test]
-    fn workspace_mode_defaults_to_multi_and_parses_single() {
+    fn workspace_mode_and_close_behavior_defaults() {
         let def: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
         assert_eq!(def.workspace_mode, "multi");
+        assert_eq!(def.close_behavior, "tray");
 
-        let single: Settings =
-            serde_json::from_str(r#"{"theme":"dark","workspaceMode":"single"}"#).unwrap();
-        assert_eq!(single.workspace_mode, "single");
+        let custom: Settings = serde_json::from_str(
+            r#"{"theme":"dark","workspaceMode":"single","closeBehavior":"quit"}"#,
+        )
+        .unwrap();
+        assert_eq!(custom.workspace_mode, "single");
+        assert_eq!(custom.close_behavior, "quit");
     }
 }
 

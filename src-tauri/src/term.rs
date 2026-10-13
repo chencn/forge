@@ -79,12 +79,7 @@ fn shell_probe_impl() -> Vec<ShellInfo> {
     if cfg!(windows) {
         let system32 = env_path("SystemRoot", "System32");
         let no_logo = ["-NoLogo".to_string()];
-        push_shell(
-            &mut found,
-            "PowerShell",
-            &format!("{system32}\\WindowsPowerShell\\v1.0\\powershell.exe"),
-            &no_logo,
-        );
+        // 优先使用高版本 PowerShell（8 → 7 → 6），均未安装时再回退到系统内置 PowerShell。
         for version in ["8", "7", "6"] {
             push_shell(
                 &mut found,
@@ -93,6 +88,12 @@ fn shell_probe_impl() -> Vec<ShellInfo> {
                 &no_logo,
             );
         }
+        push_shell(
+            &mut found,
+            "PowerShell",
+            &format!("{system32}\\WindowsPowerShell\\v1.0\\powershell.exe"),
+            &no_logo,
+        );
         push_shell(&mut found, "pwsh", &which("pwsh.exe"), &no_logo);
         push_shell(&mut found, "cmd", &env_raw("ComSpec"), &[]);
         // 装了 Git 就认它 bin 下那份，PATH 里那条 usr\bin\bash.exe 是同一个程序的另一个入口。
