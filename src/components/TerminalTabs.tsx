@@ -7,8 +7,8 @@ import type { ShellInfo } from "../lib/term";
 import {
   closeTerm,
   openTerm,
-  setActiveTerm,
-  termSessions,
+  setActiveTermFor,
+  termSessionsFor,
   watchTermTabs,
 } from "../lib/termStore";
 import type { TermSession } from "../lib/termStore";
@@ -31,18 +31,17 @@ function shellLabel(shell: string): string {
 export default function TerminalTabs({ cwd }: { cwd: string | null }) {
   const { settings } = useSettings();
   const { t } = useI18n();
-  const [store, setStore] = useState<{ sessions: TermSession[]; activeId: string | null }>({
-    sessions: [],
-    activeId: null,
-  });
+  const [store, setStore] = useState<{ sessions: TermSession[]; activeId: string | null }>(() =>
+    termSessionsFor(cwd)
+  );
   const [shells, setShells] = useState<ShellInfo[]>([]);
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    setStore(termSessions());
-    return watchTermTabs(() => setStore(termSessions()));
-  }, []);
+    setStore(termSessionsFor(cwd));
+    return watchTermTabs(() => setStore(termSessionsFor(cwd)));
+  }, [cwd]);
 
   useEffect(() => {
     void shellProbe()
@@ -77,7 +76,7 @@ export default function TerminalTabs({ cwd }: { cwd: string | null }) {
               role="tab"
               aria-selected={session.id === store.activeId}
               className="term-tab-label"
-              onClick={() => setActiveTerm(session.id)}
+              onClick={() => setActiveTermFor(cwd, session.id)}
             >
               {shellLabel(session.shell)}
             </button>

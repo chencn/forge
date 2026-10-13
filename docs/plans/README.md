@@ -31,6 +31,7 @@
 | [run-and-debug/](./run-and-debug/README.md) | 运行配置与 IDEA 的对账，以及 Debug(DAP) | 方案一已落地 | Debug 那半边的 DAP 适配层完全没有；adapter 可执行文件从哪来没定。cargo 那条识别还没加 |
 | [global-search/](./global-search/README.md) | 搜索剩下的几件：替换、扫描中断、历史与作用域记忆、多趟结果并存、文件名高亮 | 进行中 | 替换要一条能写盘的后端命令，而写盘和「编辑器那份赢」这条规矩正面冲突，取舍未拍 |
 | [lsp-language-servers/](./lsp-language-servers/README.md) | 外挂 LSP：多语言语言服务的通道与开关 | 待验收 | 两轮八块代码都已落地，23 条 Rust 单测在独立工程跑绿；剩人工在 forge 界面里过一遍 |
+| [multi-workspace-tabs/](./multi-workspace-tabs/README.md) | 一个窗口常驻多个工程文件夹：切根不重载、页签整套跟着切、后台终端与任务不杀 | 待验收 | 前后端代码与单测均已落地；5 项待拍板点已按确认口径实现，剩在界面里人工走查 |
 
 ## 不进这里的那些
 

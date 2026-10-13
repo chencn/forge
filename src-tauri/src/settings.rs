@@ -156,6 +156,8 @@ pub struct Settings {
     pub theme: String,
     /// 界面语言：zh / en。
     pub language: String,
+    /// 工作区模式：multi（多工作区常驻）/ single（单工作区）。
+    pub workspace_mode: String,
     /// 点关闭做什么：tray 收进托盘，quit 直接退应用。
     pub close_behavior: String,
     pub editor: EditorSettings,
@@ -174,6 +176,7 @@ impl Default for Settings {
         Self {
             theme: "system".to_string(),
             language: String::new(),
+            workspace_mode: "multi".to_string(),
             close_behavior: "quit".to_string(),
             editor: EditorSettings::default(),
             terminal: TerminalSettings::default(),
@@ -251,6 +254,17 @@ mod tests {
             theme: theme.to_string(),
             ..Settings::default()
         }
+    }
+
+    /// 工作区模式缺省为 `multi`，且能读写 `single`。
+    #[test]
+    fn workspace_mode_defaults_to_multi_and_parses_single() {
+        let def: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(def.workspace_mode, "multi");
+
+        let single: Settings =
+            serde_json::from_str(r#"{"theme":"dark","workspaceMode":"single"}"#).unwrap();
+        assert_eq!(single.workspace_mode, "single");
     }
 }
 

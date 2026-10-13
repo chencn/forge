@@ -11,6 +11,9 @@ export type SavePolicy = "manual" | "blur";
 /** 点关闭按钮做什么：收进托盘还是直接退应用。 */
 export type CloseBehavior = "tray" | "quit";
 
+/** 工作区模式：一个窗口同时常驻多个文件夹（multi），还是只留一个（single）。 */
+export type WorkspaceMode = "multi" | "single";
+
 /** 编辑器偏好，对应 Rust `EditorSettings`。 */
 export interface EditorSettings {
   /** 字号（px），编辑器与两个控制台共用。 */
@@ -97,6 +100,8 @@ export interface Settings {
   theme: ThemeMode;
   /** 界面语言；空串表示跟随系统。 */
   language: Lang | "";
+  /** 工作区模式：多工作区常驻或单工作区。 */
+  workspaceMode: WorkspaceMode;
   /** 点关闭按钮做什么。 */
   closeBehavior: CloseBehavior;
   editor: EditorSettings;
@@ -113,6 +118,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   language: "",
+  workspaceMode: "multi",
   closeBehavior: "quit",
   editor: {
     fontSize: 13,
@@ -157,6 +163,7 @@ function merge(raw: Partial<Settings> | null): Settings {
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
+    workspaceMode: raw?.workspaceMode === "single" ? "single" : "multi",
     editor: {
       ...DEFAULT_SETTINGS.editor,
       ...raw?.editor,

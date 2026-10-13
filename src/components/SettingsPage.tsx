@@ -31,6 +31,7 @@ import type {
   KeymapScheme,
   NotificationPosition,
   SavePolicy,
+  WorkspaceMode,
 } from "../lib/settings";
 import { shellProbe } from "../lib/term";
 import type { ShellInfo } from "../lib/term";
@@ -86,6 +87,11 @@ const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: "en", label: "English" },
 ];
 const TAB_SIZES = [2, 4, 8];
+const WORKSPACE_MODES: WorkspaceMode[] = ["multi", "single"];
+const WORKSPACE_MODE_LABEL: Record<WorkspaceMode, TranslationKey> = {
+  multi: "workspaceMode.multi",
+  single: "workspaceMode.single",
+};
 const CLOSE_BEHAVIORS: CloseBehavior[] = ["quit", "tray"];
 const CLOSE_LABEL: Record<CloseBehavior, TranslationKey> = {
   quit: "closeBehavior.quit",
@@ -506,6 +512,20 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
               </div>
 
               <div className="settings-row">
+                <span className="settings-label">{t("settings.workspaceMode")}</span>
+                <Select
+                  label={t("settings.workspaceMode")}
+                  placeholder="—"
+                  value={settings.workspaceMode}
+                  options={WORKSPACE_MODES.map((option) => ({
+                    value: option,
+                    label: t(WORKSPACE_MODE_LABEL[option]),
+                  }))}
+                  onChange={(workspaceMode) => patch({ workspaceMode })}
+                />
+              </div>
+
+              <div className="settings-row">
                 <span className="settings-label">{t("settings.closeBehavior")}</span>
                 <Select
                   label={t("settings.closeBehavior")}
@@ -559,6 +579,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
                 />
               </div>
               <p className="settings-note">{t("language.note")}</p>
+              <p className="settings-note">{t("workspaceMode.note")}</p>
               {settings.closeBehavior === "tray" ? (
                 <p className="settings-note">{t("closeBehavior.note")}</p>
               ) : null}
@@ -1020,6 +1041,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
               patch({
                 theme: DEFAULT_SETTINGS.theme,
                 language: DEFAULT_SETTINGS.language,
+                workspaceMode: DEFAULT_SETTINGS.workspaceMode,
                 closeBehavior: DEFAULT_SETTINGS.closeBehavior,
                 notificationPosition: DEFAULT_SETTINGS.notificationPosition,
                 explorer: { ...DEFAULT_SETTINGS.explorer },

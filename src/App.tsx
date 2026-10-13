@@ -45,6 +45,7 @@ import type { SearchTab } from "./components/SearchEverywhere";
 import FindPane from "./components/FindPane";
 import { CommitIcon, ProjectIcon, SearchIcon, VcsIcon } from "./components/ToolWindowIcons";
 import ProjectPicker from "./components/ProjectPicker";
+import type { FolderStatusItem } from "./components/ProjectPicker";
 import BranchPicker from "./components/BranchPicker";
 import type { BranchAction } from "./components/BranchPicker";
 import ConflictWidget from "./components/ConflictWidget";
@@ -69,7 +70,6 @@ import { useSettings } from "./hooks/useSettings";
 import { relaunchApp, runAutoUpdateFlow } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
 import {
-  disposeAllModels,
   disposeModel,
   languageForPath,
   languageLabel,
@@ -103,7 +103,12 @@ import {
 import { codedError, describeError } from "./lib/errors";
 import { MOD_LABEL } from "./lib/sys";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
-import { dropTermSession, runInTerminal } from "./lib/termStore";
+import {
+  closeTermsForRoot,
+  hasAliveTermsForRoot,
+  runInTerminal,
+  watchTermTabs,
+} from "./lib/termStore";
 import { shellProbe } from "./lib/term";
 import type { ShellInfo } from "./lib/term";
 import {
@@ -241,34 +246,89 @@ const PANE_ICON: Record<BottomPane, ReactNode> = {
   notifications: <Bell size={13} className="entry-icon" aria-hidden="true" />,
 };
 
+/** 底部查找窗口单次搜索结果状态。 */
+interface FindState {
+  query: string;
+  options: SearchOptions;
+  page: TextPage | null;
+}
+
+const EMPTY_FIND: FindState = {
+  query: "",
+  options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
+  page: null,
+};
+const EMPTY_DIFFS: DiffTab[] = [];
+const EMPTY_PICK: FsEntry[] = [];
+const EMPTY_TAB_ORDER: string[] = [];
+const DEFAULT_PLACES: Record<BottomPane, Placement> = {
+  terminal: "hidden",
+  run: "hidden",
+  log: "hidden",
+  find: "hidden",
+  notifications: "hidden",
+};
+const DEFAULT_LAST_PLACE: Record<BottomPane, "docked" | "tabbed"> = {
+  terminal: "docked",
+  run: "docked",
+  log: "docked",
+  find: "docked",
+  notifications: "docked",
+};
+
 export default function App() {
   const { t } = useI18n();
   const { settings, patch, applied: resolved } = useSettings();
   const { history, patch: patchHistory, remember } = useHistory();
   const { config: lspConfig } = useLspConfig();
+  /** 终端会话增删或退出时递增，触发常驻文件夹运行态绿点重算。 */
+  const [termRev, setTermRev] = useState(0);
+  useEffect(() => watchTermTabs(() => setTermRev((value) => value + 1)), []);
   /** 递增即再对一趟语言服务：状态条里手动重启或停用之后要立刻反映到进程上。 */
   const [lspKick, setLspKick] = useState(0);
 
-  /** 上次打开的文件夹，跟着历史记录走。先声明以便初始化通知历史。 */
-  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(
-    history.lastFolder || null
-  );
+  /** 启动时恢复上次常驻的文件夹列表与激活根；兼容旧版只有 lastFolder 的历史文件。 */
+  const initialActiveRoot = history.activeFolder || history.lastFolder || null;
+  const [openFolders, setOpenFolders] = useState<string[]>(() => {
+    if (history.openFolders.length > 0) {
+      if (
+        initialActiveRoot &&
+        !history.openFolders.some((item) => samePath(item, initialActiveRoot))
+      ) {
+        return [...history.openFolders, initialActiveRoot];
+      }
+      return history.openFolders;
+    }
+    return initialActiveRoot ? [initialActiveRoot] : [];
+  });
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
+    if (initialActiveRoot) return initialActiveRoot;
+    return history.openFolders[0] ?? null;
+  });
 
   /** 当前项目最近 7 天通知历史（从持久化缓存加载并自动过滤过期记录）。 */
   const [notifications, setNotifications] = useState<AppNotification[]>(() =>
-    loadNotifications(history.lastFolder || null)
+    loadNotifications(initialActiveRoot)
   );
   /** 当前在右下角悬浮展示的气泡列表（最多同时展示 3 条）。 */
   const [activeToasts, setActiveToasts] = useState<AppNotification[]>([]);
 
-  // 辅助更新并持久化通知
+  // 按目标根更新并持久化通知：后台根产生的通知落回后台根自己的存储，不串进当前激活根。
   const updateNotifications = useCallback(
-    (updater: (prev: AppNotification[]) => AppNotification[]) => {
-      setNotifications((prev) => {
-        const next = updater(prev);
-        saveNotifications(workspaceRoot, next);
-        return next;
-      });
+    (
+      updater: (prev: AppNotification[]) => AppNotification[],
+      targetRoot: string | null = workspaceRoot
+    ) => {
+      if (samePath(targetRoot ?? "", workspaceRoot ?? "")) {
+        setNotifications((prev) => {
+          const next = updater(prev);
+          saveNotifications(workspaceRoot, next);
+          return next;
+        });
+        return;
+      }
+      const next = updater(loadNotifications(targetRoot));
+      saveNotifications(targetRoot, next);
     },
     [workspaceRoot]
   );
@@ -411,14 +471,23 @@ export default function App() {
    * 多调几次不会重复起进程或重复 didOpen；正在编辑的那份文档每敲一下会进一次这里，
    * 但内容没变的那几条会被它自己跳过。
    */
-  // 交给语言服务的文档集合：只给「已加载、可编辑、正文读回来了、且在磁盘上」的那几份。
-  // 虚拟文档（git 历史里那份）不在磁盘上，语言服务按 URI 读不到，一并排除。
+  // 交给语言服务的文档集合：只给「当前激活根下、已加载、可编辑、正文读回来了、且在磁盘上」的那几份。
+  // 虚拟文档（git 历史里那份）不在磁盘上，语言服务按 URI 读不到，一并排除；未激活根的文档排除后会自动触发其 LSP 会话回收。
   const lspDocuments = useCallback(
     () =>
-      docs.documents
-        .filter((doc) => !doc.loading && !doc.readOnly && doc.error === null && doc.onDisk)
-        .map((doc) => ({ path: doc.path, language: doc.language, text: doc.contents })),
-    [docs.documents]
+      workspaceRoot
+        ? docs.documents
+            .filter(
+              (doc) =>
+                !doc.loading &&
+                !doc.readOnly &&
+                doc.error === null &&
+                doc.onDisk &&
+                pathWithin(workspaceRoot, doc.path)
+            )
+            .map((doc) => ({ path: doc.path, language: doc.language, text: doc.contents }))
+        : [],
+    [docs.documents, workspaceRoot]
   );
 
   useEffect(() => {
@@ -455,41 +524,117 @@ export default function App() {
   });
   /** 交给目录树去定位的那一条，连同序号：同一路径再点一次也要重新滚一趟。 */
   const [treeReveal, setTreeReveal] = useState<{ path: string; seq: number } | null>(null);
-  /** 目录树里选中的那一批，按点击先后排；最后一条是主行，右键菜单和键位都读这一份。 */
-  const [explorerPick, setExplorerPick] = useState<FsEntry[]>([]);
+  /** 当前激活根在各按根状态表中的索引键。 */
+  const rootKey = workspaceRoot ?? "";
+  /** 目录树里选中的那一批，按根分别记忆；最后一条是主行，右键菜单和键位都读这一份。 */
+  const [explorerPickByRoot, setExplorerPickByRoot] = useState<Record<string, FsEntry[]>>({});
+  const explorerPick = useMemo(
+    () => explorerPickByRoot[rootKey] ?? EMPTY_PICK,
+    [explorerPickByRoot, rootKey]
+  );
+  const setExplorerPick = useCallback(
+    (next: FsEntry[]) => {
+      setExplorerPickByRoot((prev) => ({ ...prev, [rootKey]: next }));
+    },
+    [rootKey]
+  );
   /** 剪切 / 复制攒下的那一批，连同它是挪走还是留下。 */
   const [clipboard, setClipboard] = useState<{ entries: FsEntry[]; cut: boolean } | null>(null);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
-  /** 编辑区页签栏里的比对，按打开顺序排。 */
-  const [diffs, setDiffs] = useState<DiffTab[]>([]);
+  /** 编辑区页签栏里的比对，按根隔离，同一根内按打开顺序排。 */
+  const [diffsByRoot, setDiffsByRoot] = useState<Record<string, DiffTab[]>>({});
+  const diffs = useMemo(() => diffsByRoot[rootKey] ?? EMPTY_DIFFS, [diffsByRoot, rootKey]);
+  const setDiffs = useCallback(
+    (updater: DiffTab[] | ((prev: DiffTab[]) => DiffTab[])) => {
+      setDiffsByRoot((prev) => {
+        const current = prev[rootKey] ?? EMPTY_DIFFS;
+        const next = typeof updater === "function" ? updater(current) : updater;
+        return { ...prev, [rootKey]: next };
+      });
+    },
+    [rootKey]
+  );
   /** 「在新标签页中显示差异」要一份新标签，靠它把同一处比对的键区分开。 */
   const diffSeq = useRef(0);
   /**
-   * 开过的那一串文件，按链条编号存着这一串是按哪种口径比的。
+   * 开过的那一串文件，按「根 -> 链条编号」存着这一串是按哪种口径比的。
    *
    * 标签上只留编号与序号，这里存的是数据而不是闭包：留着闭包就等于把打开它时的那一批
    * 连同当时的每一篇都钉死，旧标签的箭头会走向过期的那一批。
    */
-  const diffChains = useRef(new Map<string, DiffChain>());
-  /** 底部工具窗口各自待在哪：底部、选项卡、还是收着。底部一次只放一块。 */
-  const [places, setPlaces] = useState<Record<BottomPane, Placement>>({
-    terminal: "hidden",
-    run: "hidden",
-    log: "hidden",
-    find: "hidden",
-    notifications: "hidden",
-  });
-  /** 设置页开在不在页签栏里。 */
+  const diffChainsByRoot = useRef(new Map<string, Map<string, DiffChain>>());
+  const getDiffChains = useCallback(
+    (targetRootKey = rootKey) => {
+      let map = diffChainsByRoot.current.get(targetRootKey);
+      if (!map) {
+        map = new Map<string, DiffChain>();
+        diffChainsByRoot.current.set(targetRootKey, map);
+      }
+      return map;
+    },
+    [rootKey]
+  );
+  /** 底部工具窗口各自待在哪：按根隔离（底部、选项卡、还是收着）。底部一次只放一块。 */
+  const [placesByRoot, setPlacesByRoot] = useState<Record<string, Record<BottomPane, Placement>>>({});
+  const places = useMemo(
+    () => placesByRoot[rootKey] ?? DEFAULT_PLACES,
+    [placesByRoot, rootKey]
+  );
+  const setPlaces = useCallback(
+    (
+      updater:
+        | Record<BottomPane, Placement>
+        | ((prev: Record<BottomPane, Placement>) => Record<BottomPane, Placement>)
+    ) => {
+      setPlacesByRoot((prev) => {
+        const current = prev[rootKey] ?? DEFAULT_PLACES;
+        const next = typeof updater === "function" ? updater(current) : updater;
+        if (next === current) return prev;
+        return { ...prev, [rootKey]: next };
+      });
+    },
+    [rootKey]
+  );
+  /** 设置页开在不在页签栏里（全局一份，跨根保留）。 */
   const [settingsTab, setSettingsTab] = useState(false);
-  /** 「编辑程序配置」那一页开在不在页签栏里。 */
-  const [runConfigsTab, setRunConfigsTab] = useState(false);
+  /** 「编辑程序配置」那一页开在不在页签栏里（按根隔离）。 */
+  const [runConfigsTabByRoot, setRunConfigsTabByRoot] = useState<Record<string, boolean>>({});
+  const runConfigsTab = Boolean(runConfigsTabByRoot[rootKey]);
+  const setRunConfigsTab = useCallback(
+    (open: boolean) => {
+      setRunConfigsTabByRoot((prev) => ({ ...prev, [rootKey]: open }));
+    },
+    [rootKey]
+  );
   /** 递增即打开配置选择下拉，对应 `Alt+Shift+F10`。 */
   const [runChooser, setRunChooser] = useState(0);
-  /** 页签栏当前选中的那一项，null 表示编辑区是空的。 */
-  const [activeTab, setActiveTab] = useState<string | null>(null);
-  /** 页签栏的排列顺序，只装标签 id；栏上有什么仍由各自的来源说。 */
-  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  /** 页签栏当前选中的那一项，按根隔离，null 表示当前根编辑区是空的。 */
+  const [activeTabByRoot, setActiveTabByRoot] = useState<Record<string, string | null>>({});
+  const activeTab = activeTabByRoot[rootKey] ?? null;
+  const setActiveTab = useCallback(
+    (next: string | null) => {
+      setActiveTabByRoot((prev) => ({ ...prev, [rootKey]: next }));
+    },
+    [rootKey]
+  );
+  /** 页签栏的排列顺序，按根隔离，只装标签 id；栏上有什么仍由各自的来源说。 */
+  const [tabOrderByRoot, setTabOrderByRoot] = useState<Record<string, string[]>>({});
+  const tabOrder = useMemo(
+    () => tabOrderByRoot[rootKey] ?? EMPTY_TAB_ORDER,
+    [rootKey, tabOrderByRoot]
+  );
+  const setTabOrder = useCallback(
+    (updater: string[] | ((prev: string[]) => string[])) => {
+      setTabOrderByRoot((prev) => {
+        const current = prev[rootKey] ?? EMPTY_TAB_ORDER;
+        const next = typeof updater === "function" ? updater(current) : updater;
+        if (next === current) return prev;
+        return { ...prev, [rootKey]: next };
+      });
+    },
+    [rootKey]
+  );
   /** 底部工具窗口整体高度，拖动上面那条横分隔条改它。 */
   const [bottomHeight, setBottomHeight] = useState(260);
   /** 侧边工具窗口宽度，拖动它右缘那条竖分隔条改它。 */
@@ -524,12 +669,15 @@ export default function App() {
   } | null>(null);
   /** 每开一次换一个序号当 key：同一份状态里再按一次 Ctrl+Shift+N 也要重置页签与词。 */
   const searchSeq = useRef(0);
-  /** 底部查找窗口里那一趟的结果。一次只看一趟，重跑就地覆盖。 */
-  const [find, setFind] = useState<{
-    query: string;
-    options: SearchOptions;
-    page: TextPage | null;
-  }>({ query: "", options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 }, page: null });
+  /** 底部查找窗口里那一趟的结果，按根隔离。一次只看一趟，重跑就地覆盖。 */
+  const [findByRoot, setFindByRoot] = useState<Record<string, FindState>>({});
+  const find = useMemo(() => findByRoot[rootKey] ?? EMPTY_FIND, [findByRoot, rootKey]);
+  const setFind = useCallback(
+    (next: FindState) => {
+      setFindByRoot((prev) => ({ ...prev, [rootKey]: next }));
+    },
+    [rootKey]
+  );
   const terminalApi = useRef<TerminalPaneHandle>(null);
   /**
    * 分割条拖动：拖动期间直接写那块面板的行内尺寸，松手才落到 state。
@@ -540,21 +688,34 @@ export default function App() {
   const bottomPanelRef = useRef<HTMLElement | null>(null);
   const splitDrag = useRef<{ startY: number; startHeight: number; live: number } | null>(null);
   const sideDrag = useRef<{ startX: number; startWidth: number; live: number } | null>(null);
-  /** 每块工具窗口上次待的位置，最小化后再点活动栏那颗要回原处。 */
-  const lastPlace = useRef<Record<BottomPane, "docked" | "tabbed">>({
-    terminal: "docked",
-    run: "docked",
-    log: "docked",
-    find: "docked",
-    notifications: "docked",
-  });
+  /** 每块工具窗口上次待的位置（按根隔离），最小化后再点活动栏那颗要回原处。 */
+  const lastPlaceByRoot = useRef(new Map<string, Record<BottomPane, "docked" | "tabbed">>());
+  const getLastPlace = useCallback(
+    (targetRootKey = rootKey) => {
+      let record = lastPlaceByRoot.current.get(targetRootKey);
+      if (!record) {
+        record = { ...DEFAULT_LAST_PLACE };
+        lastPlaceByRoot.current.set(targetRootKey, record);
+      }
+      return record;
+    },
+    [rootKey]
+  );
   const configs = useRunConfigs(workspaceRoot);
   const run = useRunSessions(configs);
 
   const dockedPane = BOTTOM_ORDER.find((key) => places[key] === "docked") ?? null;
-  /** 当前那篇文档：只有选中的是文档标签时才算「在看」。 */
+  /** 当前激活根下的打开文档列表。 */
+  const visibleDocs = useMemo(
+    () =>
+      workspaceRoot
+        ? docs.documents.filter((doc) => pathWithin(workspaceRoot, doc.path))
+        : docs.documents,
+    [docs.documents, workspaceRoot]
+  );
+  /** 当前那篇文档：只有选中的是当前根下的文档标签时才算「在看」。 */
   const shownDoc = activeTab && activeTab.startsWith("doc|") ? activeTab.slice(4) : null;
-  const activeDoc = docs.documents.find((doc) => doc.path === shownDoc) ?? null;
+  const activeDoc = visibleDocs.find((doc) => doc.path === shownDoc) ?? null;
   const activeDiffTab =
     activeTab && activeTab.startsWith("diff|")
       ? (diffs.find((tab) => tab.id === activeTab.slice(5)) ?? null)
@@ -563,14 +724,32 @@ export default function App() {
     activeTab && activeTab.startsWith("pane|") ? (activeTab.slice(5) as BottomPane) : null;
   const changeCount = git.status?.changes.length ?? 0;
 
+  /** 切根或切页签后，让 docs.activePath 与当前根正在看的文档对齐，保证目录树高亮与保存落点一致。 */
   useEffect(() => {
-    patchHistory({ lastFolder: workspaceRoot ?? "" });
-  }, [patchHistory, workspaceRoot]);
+    if (shownDoc && visibleDocs.some((doc) => doc.path === shownDoc)) {
+      if (docs.activePath !== shownDoc) docs.setActivePath(shownDoc);
+      return;
+    }
+    if (docs.activePath && workspaceRoot && !pathWithin(workspaceRoot, docs.activePath)) {
+      docs.setActivePath(visibleDocs[0]?.path ?? null);
+    }
+  }, [docs, shownDoc, visibleDocs, workspaceRoot]);
 
-  // 本地图片要经 asset 协议读，授权不落盘，每次打开工作区都得重授一遍。
   useEffect(() => {
+    patchHistory({
+      lastFolder: workspaceRoot ?? "",
+      activeFolder: workspaceRoot ?? "",
+      openFolders,
+    });
+  }, [openFolders, patchHistory, workspaceRoot]);
+
+  // 本地图片要经 asset 协议读，授权不落盘，每次打开或恢复常驻工作区都得授一遍。
+  useEffect(() => {
+    for (const folder of openFolders) {
+      if (folder) void allowAssetDir(folder).catch(() => {});
+    }
     if (workspaceRoot) void allowAssetDir(workspaceRoot).catch(() => {});
-  }, [workspaceRoot]);
+  }, [openFolders, workspaceRoot]);
 
   // 键位方案只存值：装绑定要 monaco，编辑器还没建起来时为它加载编辑器不划算。
   // 编辑器模块加载时取当前值装一次，之后换方案由那边撤掉上一套再装。
@@ -664,7 +843,11 @@ export default function App() {
    * 每批事件都把五条命令起八个 git 进程，构建期间就是持续失血。
    */
   const onDiskChange = useCallback(
-    (paths: string[]) => {
+    (changedRoot: string, paths: string[]) => {
+      // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
+      void docsRef.current.noteExternalChange(paths);
+      // 只有当前激活根的磁盘事件才触发当前目录树局部刷新与 Git 变更刷新。
+      if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
       refreshPaths(paths);
       // 构建期间每 150-300ms 就来一批事件，每批都起一个 git status 子进程的话
       // 就是持续失血：抖 500ms，风暴停下来才问一次最终状态。目录树那边是
@@ -675,47 +858,60 @@ export default function App() {
         gitDebounce.current = null;
         void gitRef.current.refreshChanges();
       }, 500);
-      void docsRef.current.noteExternalChange(paths);
     },
-    [refreshPaths]
+    [refreshPaths, workspaceRoot]
   );
 
-  useFileWatch(workspaceRoot, onDiskChange);
+  const watchedRoots = useMemo(
+    () => (openFolders.length > 0 ? openFolders : workspaceRoot ? [workspaceRoot] : []),
+    [openFolders, workspaceRoot]
+  );
+
+  useFileWatch(watchedRoots, onDiskChange);
 
   /** 把一块工具窗口放到底部：底部是排他的，原来那块退回收起。 */
-  const dockPane = useCallback((key: BottomPane) => {
-    lastPlace.current[key] = "docked";
-    setPlaces((current) => {
-      const next = { ...current };
-      for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
-      next[key] = "docked";
-      return next;
-    });
-    // 日志是三栏并排，太矮就没法看。
-    if (key === "log") setBottomHeight((height) => Math.max(height, 380));
-  }, []);
+  const dockPane = useCallback(
+    (key: BottomPane) => {
+      getLastPlace()[key] = "docked";
+      setPlaces((current) => {
+        const next = { ...current };
+        for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
+        next[key] = "docked";
+        return next;
+      });
+      // 日志是三栏并排，太矮就没法看。
+      if (key === "log") setBottomHeight((height) => Math.max(height, 380));
+    },
+    [getLastPlace, setPlaces]
+  );
 
   /** 收起：只藏界面，shell 和任务继续在后台跑。 */
-  const hidePane = useCallback((key: BottomPane) => {
-    setPlaces((current) => ({ ...current, [key]: "hidden" }));
-  }, []);
+  const hidePane = useCallback(
+    (key: BottomPane) => {
+      setPlaces((current) => ({ ...current, [key]: "hidden" }));
+    },
+    [setPlaces]
+  );
 
   /**
    * 拉起一块面板，但**只在它收着的时候**才动：已经停靠在底部或已挪进页签栏的，保持原状。
    * 触发运行/调试这类「顺带让你看一眼」的动作走这条，不能拿 `dockPane`——那会把用户
    * 手动挪到页签栏或正在看的面板强行拽回底部，等于篡改用户自己摆好的布局。
    */
-  const revealPane = useCallback((key: BottomPane) => {
-    setPlaces((current) => {
-      // 已经可见（停靠在底部或挪进页签栏）：用户自己摆的位置，原样不动。
-      if (current[key] !== "hidden") return current;
-      // 收着才拉起：底部是排他的，原来停靠的那块退回收起。
-      const next = { ...current };
-      for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
-      next[key] = "docked";
-      return next;
-    });
-  }, []);
+  const revealPane = useCallback(
+    (key: BottomPane) => {
+      setPlaces((current) => {
+        // 已经可见（停靠在底部或挪进页签栏）：用户自己摆的位置，原样不动。
+        if (current[key] !== "hidden") return current;
+        // 收着才拉起：底部是排他的，原来停靠的那块退回收起。
+        const next = { ...current };
+        for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
+        next[key] = "docked";
+        return next;
+      });
+    },
+    [setPlaces]
+  );
 
   /**
    * 把一块面板弄到眼前：收着的拉起到底部，挪进页签栏的就切到它那一页。
@@ -728,7 +924,7 @@ export default function App() {
       if (places[key] === "tabbed") setActiveTab(`pane|${key}`);
       else revealPane(key);
     },
-    [places, revealPane]
+    [places, revealPane, setActiveTab]
   );
 
   /**
@@ -776,16 +972,19 @@ export default function App() {
   );
 
   /** 挪进页签栏：好几块能同时开着，切换着看。 */
-  const tabPane = useCallback((key: BottomPane) => {
-    lastPlace.current[key] = "tabbed";
-    setPlaces((current) => {
-      const next = { ...current };
-      for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
-      next[key] = "tabbed";
-      return next;
-    });
-    setActiveTab(`pane|${key}`);
-  }, []);
+  const tabPane = useCallback(
+    (key: BottomPane) => {
+      getLastPlace()[key] = "tabbed";
+      setPlaces((current) => {
+        const next = { ...current };
+        for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
+        next[key] = "tabbed";
+        return next;
+      });
+      setActiveTab(`pane|${key}`);
+    },
+    [getLastPlace, setActiveTab, setPlaces]
+  );
 
   /** 活动栏那颗按钮：底部那块再点一次收起；在页签栏里的直接跳到它那一页。 */
   const railPane = useCallback(
@@ -793,10 +992,10 @@ export default function App() {
       if (places[key] === "docked") hidePane(key);
       else if (places[key] === "tabbed") setActiveTab(`pane|${key}`);
       // 收着的那颗：回到它上次待的地方，之前切到选项卡过就不硬塞回底部。
-      else if (lastPlace.current[key] === "tabbed") tabPane(key);
+      else if (getLastPlace()[key] === "tabbed") tabPane(key);
       else dockPane(key);
     },
-    [dockPane, hidePane, places, tabPane]
+    [dockPane, getLastPlace, hidePane, places, setActiveTab, tabPane]
   );
 
   /** 把一份比对落到页签栏里：同 id 就地更新，新 id 追加到末尾并选中。 */
@@ -980,6 +1179,171 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [configs, dialog, dockPane, everywhere, focusPane, hidePane, menu, places.run, resolveOpen, run]);
 
+  /** 彻底清理并移除一个常驻文件夹（在确认无脏文件/运行任务或用户已确认放弃后调用）。 */
+  const performCloseRoot = useCallback(
+    (targetRoot: string) => {
+      void closeTermsForRoot(targetRoot);
+      run.closeSessionsForRoot(targetRoot);
+      for (const doc of docs.documents) {
+        if (pathWithin(targetRoot, doc.path)) {
+          disposeModel(doc.path);
+        }
+      }
+      docs.closeForRoot(targetRoot);
+      setDiffsByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      for (const key of Array.from(diffChainsByRoot.current.keys())) {
+        if (samePath(key, targetRoot)) diffChainsByRoot.current.delete(key);
+      }
+      setFindByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      setExplorerPickByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      setRunConfigsTabByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      setTabOrderByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      setActiveTabByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      setPlacesByRoot((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (samePath(key, targetRoot)) delete next[key];
+        }
+        return next;
+      });
+      for (const key of Array.from(lastPlaceByRoot.current.keys())) {
+        if (samePath(key, targetRoot)) lastPlaceByRoot.current.delete(key);
+      }
+
+      const closingCurrent = workspaceRoot !== null && samePath(workspaceRoot, targetRoot);
+      const idx = openFolders.findIndex((item) => samePath(item, targetRoot));
+      const remaining = openFolders.filter((item) => !samePath(item, targetRoot));
+      setOpenFolders(remaining);
+
+      if (closingCurrent) {
+        setClipboard(null);
+        setActiveToasts([]);
+        const fallback =
+          remaining.length > 0
+            ? (remaining[Math.min(Math.max(0, idx), remaining.length - 1)] ?? null)
+            : null;
+        if (fallback && activeTab === "settings" && settingsTab) {
+          setActiveTabByRoot((prev) => ({ ...prev, [fallback]: "settings" }));
+        }
+        setWorkspaceRoot(fallback);
+      }
+    },
+    [activeTab, docs, openFolders, run, settingsTab, workspaceRoot]
+  );
+
+  /** 请求关闭指定文件夹：先处理失焦自动保存，再检查是否有未保存改动或后台运行任务。 */
+  const requestCloseRoot = useCallback(
+    async (targetRoot: string) => {
+      if (settings.editor.savePolicy === "blur") {
+        const saved = await docs.saveAllForRoot(targetRoot);
+        if (saved > 0 && workspaceRoot && samePath(workspaceRoot, targetRoot)) {
+          void git.refreshChanges();
+        }
+      }
+      const dirty = docs.hasDirtyForRoot(targetRoot);
+      const running =
+        run.hasRunningSessionsForRoot(targetRoot) || hasAliveTermsForRoot(targetRoot);
+      if (dirty || running) {
+        setDialog({
+          kind: "closeRoot",
+          name: basenameOf(targetRoot),
+          path: targetRoot,
+          closeReason: dirty && running ? "both" : dirty ? "dirty" : "running",
+          entry: null,
+          dir: null,
+        });
+        return;
+      }
+      performCloseRoot(targetRoot);
+    },
+    [docs, git, performCloseRoot, run, settings.editor.savePolicy, workspaceRoot]
+  );
+
+  /** 切换或添加文件夹：多工作区模式下常驻并秒切；单工作区模式下替换当前激活根。 */
+  const switchOrAddFolder = useCallback(
+    (picked: string) => {
+      if (settings.editor.savePolicy === "blur") {
+        void saveAllRef.current();
+      }
+      const existing = openFolders.find((item) => samePath(item, picked)) ?? picked;
+      const keepSettingsActive = activeTab === "settings" && settingsTab;
+
+      if (settings.workspaceMode === "single") {
+        // 单工作区模式：若所选不是已常驻的后台根，关闭当前激活根再切过去；不触碰之前常驻隐藏的其它根。
+        if (
+          workspaceRoot &&
+          !samePath(workspaceRoot, existing) &&
+          openFolders.length <= 1
+        ) {
+          performCloseRoot(workspaceRoot);
+        }
+        setOpenFolders((prev) => {
+          if (prev.length <= 1) return [existing];
+          return prev.some((item) => samePath(item, existing)) ? prev : [...prev, existing];
+        });
+      } else {
+        setOpenFolders((prev) =>
+          prev.some((item) => samePath(item, existing)) ? prev : [...prev, existing]
+        );
+      }
+
+      if (keepSettingsActive) {
+        setActiveTabByRoot((prev) => ({ ...prev, [existing]: "settings" }));
+      }
+      setActiveToasts([]);
+      setWorkspaceRoot(existing);
+      remember("recentFolders", existing);
+      setPanel("explorer");
+      setSidebarOpen(true);
+    },
+    [
+      activeTab,
+      openFolders,
+      performCloseRoot,
+      remember,
+      settings.editor.savePolicy,
+      settings.workspaceMode,
+      settingsTab,
+      workspaceRoot,
+    ]
+  );
+
   const openFolder = useCallback(async () => {
     const picked = await open({
       directory: true,
@@ -987,46 +1351,26 @@ export default function App() {
       title: t("workspace.openFolder"),
       defaultPath: workspaceRoot ?? undefined,
     });
-    // 确认选了新目录才收上一处的 shell：先收再弹框的话，用户点个取消
-    // 也会把还在跑的终端任务一起带走。
     if (typeof picked !== "string" || picked.length === 0) return;
-    void dropTermSession();
-    disposeAllModels();
-    docs.closeAll();
-    setDiffs([]);
-    setExplorerPick([]);
-    setClipboard(null);
-    setActiveToasts([]);
-    // 旧工程的比对链与查找结果里攥着旧工程绝对路径，留着只会泄漏内存，
-    // 命中行点击还会开到旧工程的文件去。
-    diffChains.current.clear();
-    setFind({
-      query: "",
-      options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
-      page: null,
-    });
-    setWorkspaceRoot(picked);
-    remember("recentFolders", picked);
-    setPanel("explorer");
-    setSidebarOpen(true);
-  }, [docs, remember, t, workspaceRoot]);
+    switchOrAddFolder(picked);
+  }, [switchOrAddFolder, t, workspaceRoot]);
 
   const closeFolder = useCallback(() => {
-    void dropTermSession();
-    disposeAllModels();
-    docs.closeAll();
-    setDiffs([]);
-    setExplorerPick([]);
-    setClipboard(null);
-    // 关闭工程同样清掉旧工程的比对链与查找结果，别把它们滞留到下一次 openFolder。
-    diffChains.current.clear();
-    setFind({
-      query: "",
-      options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
-      page: null,
-    });
-    setWorkspaceRoot(null);
-  }, [docs]);
+    if (!workspaceRoot) return;
+    void requestCloseRoot(workspaceRoot);
+  }, [requestCloseRoot, workspaceRoot]);
+
+  /** 传给顶栏工程切换器的常驻文件夹状态摘要（绿点 = 后台任务/终端运行中，蓝点 = 有未保存修改）。 */
+  const folderStatusList: FolderStatusItem[] = useMemo(
+    () =>
+      openFolders.map((folderPath) => ({
+        path: folderPath,
+        running:
+          run.hasRunningSessionsForRoot(folderPath) || hasAliveTermsForRoot(folderPath),
+        dirty: docs.hasDirtyForRoot(folderPath),
+      })),
+    [docs, openFolders, run, termRev]
+  );
 
   const openFile = useCallback(
     (entry: FsEntry) => {
@@ -1157,7 +1501,7 @@ export default function App() {
         0,
         list.findIndex((item) => item.path === change.path)
       );
-      diffChains.current.set(chainId, { kind: "change", staged, items: list });
+      getDiffChains().set(chainId, { kind: "change", staged, items: list });
       void openDiffTab(
         {
           id: step?.tabId ?? `${chainId}|${change.path}`,
@@ -1190,7 +1534,7 @@ export default function App() {
         }
       );
     },
-    [docs.dirty, docs.documents, git, openDiffTab, t]
+    [docs.dirty, docs.documents, getDiffChains, git, openDiffTab, t]
   );
 
   /** 「与本地比较」那几项：左那一侧是某个版本下的文件，右那一侧是工作区里现在这份。 */
@@ -1210,7 +1554,7 @@ export default function App() {
       const list = siblings && siblings.length > 0 ? siblings : undefined;
       let chain: DiffTab["chain"];
       if (list) {
-        diffChains.current.set(chainId, { kind: "against", chainId, revision, leftLabel, items: list });
+        getDiffChains().set(chainId, { kind: "against", chainId, revision, leftLabel, items: list });
         chain = {
           id: chainId,
           index: Math.max(
@@ -1239,7 +1583,7 @@ export default function App() {
         })
       );
     },
-    [git, openDiffTab, t, worktreeText]
+    [getDiffChains, git, openDiffTab, t, worktreeText]
   );
 
   /** 把某个版本下的文件写回工作区，目录树和开着的文档都跟着重读。 */
@@ -1269,7 +1613,7 @@ export default function App() {
       const list = siblings && siblings.length > 0 ? siblings : undefined;
       let chain: DiffTab["chain"];
       if (list) {
-        diffChains.current.set(chainId, { kind: "commitFile", commit, items: list });
+        getDiffChains().set(chainId, { kind: "commitFile", commit, items: list });
         chain = {
           id: chainId,
           index: Math.max(
@@ -1294,7 +1638,7 @@ export default function App() {
         () => gitCommitFile(root, commit.hash, file.path)
       );
     },
-    [git.root, openDiffTab]
+    [getDiffChains, git.root, openDiffTab]
   );
 
   /** 文件菜单里点名那两个版本：两侧都从仓库取，链上换下一篇比的还是这一对。 */
@@ -1314,7 +1658,7 @@ export default function App() {
       const list = siblings && siblings.length > 0 ? siblings : undefined;
       let chain: DiffTab["chain"];
       if (list) {
-        diffChains.current.set(chainId, { kind: "between", commit, parent, items: list });
+        getDiffChains().set(chainId, { kind: "between", commit, parent, items: list });
         chain = {
           id: chainId,
           index: Math.max(
@@ -1341,7 +1685,7 @@ export default function App() {
         })
       );
     },
-    [git, openDiffTab]
+    [getDiffChains, git, openDiffTab]
   );
 
   /** 日志第三栏文件菜单的落点：比对开标签页，其余直接读写工作区。 */
@@ -1598,7 +1942,7 @@ export default function App() {
     (tabId: string, delta: number, land?: "first" | "last") => {
       const tab = diffs.find((item) => item.id === tabId);
       const chain = tab?.chain;
-      const list = chain ? diffChains.current.get(chain.id) : undefined;
+      const list = chain ? getDiffChains().get(chain.id) : undefined;
       if (!chain || !list) return;
       const at = chain.index + delta;
       if (at < 0 || at >= chain.total) return;
@@ -1621,7 +1965,7 @@ export default function App() {
       const next = list.items[at];
       if (next) openAgainstWorktree(list.chainId, list.revision, list.leftLabel, next, list.items, step);
     },
-    [diffs, openAgainstWorktree, openBetweenRevisions, openChange, openCommitFile]
+    [diffs, getDiffChains, openAgainstWorktree, openBetweenRevisions, openChange, openCommitFile]
   );
 
   /**
@@ -2104,6 +2448,10 @@ export default function App() {
           closeQueue.current = [];
           if (queued.length > 0) closeBatch(queued);
         }
+        if (kind === "closeRoot" && path) {
+          performCloseRoot(path);
+          return;
+        }
         if (kind === "restartUpdate") {
           await relaunchApp();
         }
@@ -2130,11 +2478,23 @@ export default function App() {
         void git.refreshChanges();
       }
     },
-    [closeBatch, dialog, docs, dropDocument, git, refreshTree, remember, reportError, workspaceRoot]
+    [
+      closeBatch,
+      dialog,
+      docs,
+      dropDocument,
+      git,
+      performCloseRoot,
+      refreshTree,
+      remember,
+      reportError,
+      t,
+      workspaceRoot,
+    ]
   );
 
   /**
-   * 页签栏上的全部标签：文档、比对、工具窗口、设置，按这个次序排。
+   * 页签栏上的全部标签：当前激活根的文档、比对、工具窗口、设置，按这个次序排。
    *
    * 这一份必须按身份留住：下面 `tabs` 那一步是「按顺序去目录里找」，两边都进来
    * 就是标签数平方量级的比较，而 App 每渲染一次（打字、轮询、拖动松手）都走一趟。
@@ -2142,7 +2502,7 @@ export default function App() {
    */
   const tabCatalog: TabItem[] = useMemo(
     () => [
-    ...docs.documents.map((doc) => ({
+    ...visibleDocs.map((doc) => ({
       id: `doc|${doc.path}`,
       kind: "doc" as const,
       name: doc.name,
@@ -2191,26 +2551,30 @@ export default function App() {
         ]
       : []),
     ],
-    [diffs, docs.documents, places, runConfigsTab, settingsTab, t]
+    [diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
   );
 
   // 栏上有哪些标签由上面那份目录说，排在哪儿由 tabOrder 说：新开一颗落在当前这颗右边，拖动改这个数组。
   const catalogKey = useMemo(() => tabCatalog.map((tab) => tab.id).join("\n"), [tabCatalog]);
   /** 上一次活跃的那颗；新开的标签插到它右边，而不是统统追加到末尾。 */
   const prevActiveTab = useRef<string | null>(null);
+  const prevRootKeyRef = useRef(rootKey);
   useEffect(() => {
     const ids = catalogKey ? catalogKey.split("\n") : [];
+    const rootSwitched = prevRootKeyRef.current !== rootKey;
+    prevRootKeyRef.current = rootKey;
     setTabOrder((current) => {
       const kept = current.filter((id) => ids.includes(id));
       const added = ids.filter((id) => !kept.includes(id));
       if (kept.length === current.length && added.length === 0) return current;
-      const at = kept.indexOf(prevActiveTab.current ?? "");
+      const anchor = rootSwitched ? activeTab : prevActiveTab.current;
+      const at = kept.indexOf(anchor ?? "");
       const next = [...kept];
       added.forEach((id, offset) => next.splice((at < 0 ? next.length : at + 1) + offset, 0, id));
       return next;
     });
     prevActiveTab.current = activeTab;
-  }, [catalogKey, activeTab]);
+  }, [catalogKey, activeTab, rootKey, setTabOrder]);
 
   // 按 tabOrder 去目录里取：先建一张 id → 标签的表，免得十几颗标签排一遍要 compares 次查找。
   const tabs: TabItem[] = useMemo(() => {
@@ -2588,14 +2952,14 @@ export default function App() {
       if (!git.root) return;
       try {
         const text = await gitDiffText(git.root, left.hash, right.hash, "");
-        const virtual = `${left.short}..${right.short}.diff`;
+        const virtual = joinPath(git.root, `${left.short}..${right.short}.diff`);
         setActiveTab(`doc|${virtual}`);
         docs.openVirtual(virtual, text, "diff");
       } catch (cause) {
         reportError(errorText(cause));
       }
     },
-    [docs, git.root, reportError]
+    [docs, git.root, reportError, setActiveTab]
   );
 
   /** 分支弹层里那几条动作，落点都在 App 这一层。 */
@@ -2642,27 +3006,12 @@ export default function App() {
         project={
           <ProjectPicker
             root={workspaceRoot}
+            mode={settings.workspaceMode}
+            openFolders={folderStatusList}
             recent={history.recentFolders}
             onOpenFolder={() => void openFolder()}
-            onPick={(path) => {
-              void dropTermSession();
-              disposeAllModels();
-              docs.closeAll();
-              setDiffs([]);
-              setExplorerPick([]);
-              setClipboard(null);
-              // 与 openFolder 同一套清理：旧工程的比对链与查找结果不能带过去。
-              diffChains.current.clear();
-              setFind({
-                query: "",
-                options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
-                page: null,
-              });
-              setWorkspaceRoot(path);
-              remember("recentFolders", path);
-              setPanel("explorer");
-              setSidebarOpen(true);
-            }}
+            onPick={switchOrAddFolder}
+            onCloseFolder={(path) => void requestCloseRoot(path)}
             onCloseProject={closeFolder}
           />
         }

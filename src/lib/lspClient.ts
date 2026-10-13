@@ -61,10 +61,8 @@ let current: LspConfig = { version: 1, servers: {} };
  */
 /** 暂时不去起的组合，键同 `running`。 */
 const skipped = new Map<string, { detail: string; retryAt: number; signature: string }>();
-/** 根解析的备忘：同一次编辑里同一个目录不再问后端一遍。换工程时清空。 */
+/** 根解析的备忘：同一次编辑里同一个目录不再问后端一遍。键已含 workspaceRoot 与 dir，带 TTL。 */
 const roots = new Map<string, { root: string | null; at: number }>();
-/** 当前解析所依据的工程根；变了就要把备忘丢掉。 */
-let rootsScope = "";
 /** 后端事件只订阅一次。 */
 let detachMessage: UnlistenFn | null = null;
 let detachExit: UnlistenFn | null = null;
@@ -957,10 +955,6 @@ async function reconcileOnce(
   // provider 回调按这份查语言归属，先落地再算会话。
   current = config;
   configureBuiltin(config);
-  if (rootsScope !== (root ?? "")) {
-    roots.clear();
-    rootsScope = root ?? "";
-  }
 
   // 该跑的会话按 (server, 根) 分组：一份文档归它自己那个根管。
   const groups = new Map<string, { entry: LspServerEntry; root: string; docs: LspDocument[] }>();
@@ -969,14 +963,16 @@ async function reconcileOnce(
     if (!entry || entry.mode !== "lsp") continue;
     const found = await resolveRoot(entry, root, document.path);
     if (!found) {
-      // 工程里没有这门语言的技术栈：不启进程，也别每敲一个字都再报一次。
-      const miss = sessionKey(entry, root ?? "");
-      if (!skipped.has(miss)) {
+      // 工程该子目录里没有这门语言的技术栈：按文件所在目录记跳过，TTL 与根解析一致，不锁死整个工作区。
+      const dir = parentPath(document.path) ?? document.path;
+      const miss = sessionKey(entry, `${root ?? ""}${KEY_SEP}${dir}`);
+      const held = skipped.get(miss);
+      if (!held || Date.now() >= held.retryAt || held.signature !== signature(entry)) {
         skipped.set(miss, {
           detail: `未在项目「${root ?? ""}」中找到该语言的标志文件（${entry.rootMarkers.join(
             " / "
           )}）`,
-          retryAt: Number.POSITIVE_INFINITY,
+          retryAt: Date.now() + ROOTS_TTL,
           signature: signature(entry),
         });
       }
@@ -1179,7 +1175,6 @@ export async function shutdownLsp(): Promise<void> {
   running.clear();
   skipped.clear();
   roots.clear();
-  rootsScope = "";
   inflight.clear();
   pending = null;
   owners.clear();

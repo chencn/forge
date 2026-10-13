@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { errorText, fileStamp, readFile, writeFile } from "../lib/fs";
 import { codedError } from "../lib/errors";
-import { samePath } from "../lib/format";
+import { pathWithin, samePath } from "../lib/format";
 import { languageForPath } from "../lib/monacoEnv";
 import { docKindOf, hasTextContent, previewsFromDisk } from "../lib/docKind";
 import type { DocKind } from "../lib/docKind";
@@ -362,6 +362,21 @@ export function useDocuments(reportError: (message: string) => void) {
     return done;
   }, [save]);
 
+  /** 把指定工作区根下所有未保存的文档挨个写回磁盘（关闭单个文件夹前若开启自动保存可用）。 */
+  const saveAllForRoot = useCallback(
+    async (root: string): Promise<number> => {
+      const dirty = listRef.current.filter(
+        (doc) => !doc.readOnly && doc.contents !== doc.baseline && pathWithin(root, doc.path)
+      );
+      let done = 0;
+      for (const doc of dirty) {
+        if (await save(doc.path)) done += 1;
+      }
+      return done;
+    },
+    [save]
+  );
+
   /**
    * 文件监听报来一批磁盘上动过的路径，规则只有一条：不动用户正在写的东西。
    *
@@ -463,6 +478,19 @@ export function useDocuments(reportError: (message: string) => void) {
     activate(null);
   }, [activate, write]);
 
+  /** 关闭指定工作区根下的全部文档，保留其它常驻根已打开的文档不动。 */
+  const closeForRoot = useCallback(
+    (root: string) => {
+      const survivors = listRef.current.filter((item) => !pathWithin(root, item.path));
+      write(survivors);
+      const active = activeRef.current;
+      if (active !== null && pathWithin(root, active)) {
+        activate(survivors[survivors.length - 1]?.path ?? null);
+      }
+    },
+    [activate, write]
+  );
+
   const revealDone = useCallback(() => setReveal(null), []);
 
   const dirty = useCallback(
@@ -470,6 +498,15 @@ export function useDocuments(reportError: (message: string) => void) {
       const doc = documents.find((item) => samePath(item.path, path));
       return Boolean(doc && doc.contents !== doc.baseline);
     },
+    [documents]
+  );
+
+  /** 指定工作区根下是否存在尚未保存的脏文档（供顶栏工程切换器蓝点与关闭根前询问判定）。 */
+  const hasDirtyForRoot = useCallback(
+    (root: string) =>
+      documents.some(
+        (doc) => !doc.readOnly && doc.contents !== doc.baseline && pathWithin(root, doc.path)
+      ),
     [documents]
   );
 
@@ -490,20 +527,25 @@ export function useDocuments(reportError: (message: string) => void) {
       setView,
       save,
       saveAll,
+      saveAllForRoot,
       noteExternalChange,
       close,
       closeMany,
+      closeForRoot,
       closeAll,
       dirty,
+      hasDirtyForRoot,
     }),
     [
       activate,
       activePath,
       close,
       closeAll,
+      closeForRoot,
       closeMany,
       dirty,
       documents,
+      hasDirtyForRoot,
       noteExternalChange,
       open,
       openHit,
@@ -513,6 +555,7 @@ export function useDocuments(reportError: (message: string) => void) {
       revealDone,
       save,
       saveAll,
+      saveAllForRoot,
       setView,
       update,
     ]

@@ -4,7 +4,7 @@ import { procKill, procStart } from "../lib/proc";
 import type { ProcChunk, ProcExit, ProcSessionId } from "../lib/proc";
 import { ensureHelper, missingTool, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
-import { joinPath } from "../lib/format";
+import { joinPath, samePath } from "../lib/format";
 import { decodeChunk } from "../lib/term";
 import { useI18n } from "../i18n";
 import { codedError, describeError } from "../lib/errors";
@@ -15,6 +15,8 @@ export type SessionStatus = "running" | "done" | "failed" | "stopped";
 
 export interface RunSession {
   id: ProcSessionId;
+  /** 所属的工作区根目录。 */
+  root: string;
   /** 配置名，会话标签上显示的就是它。 */
   name: string;
   kind: RunConfiguration["kind"];
@@ -36,11 +38,17 @@ const ENCODER = new TextEncoder();
  * 与 termStore 的 MAX_SESSION_CHUNKS 同一套取舍——留最新的，老的淘汰。 */
 const MAX_SESSION_CHUNKS = 500;
 
+/** 归一化工作区根键，大小写与斜杠不敏感。 */
+function rootKey(root: string | null): string {
+  return root ? root.replaceAll("\\", "/").toLocaleLowerCase() : "";
+}
+
 /**
  * 运行会话的全部状态。控件在主工具栏、输出在底部工具窗口，两边都要拿到同一份，
  * 所以状态挂在 App 上，面板收起也不影响进程继续跑。
  *
  * 只管跑与不跑。「有哪些配置、选哪条」在 `useRunConfigs`，那一份是配置层的事。
+ * 多工作区常驻时，各根的运行会话并存，切根不杀进程，只按当前激活根过滤展示。
  */
 export function useRunSessions(configs: RunConfigController) {
   const { t } = useI18n();
@@ -53,12 +61,12 @@ export function useRunSessions(configs: RunConfigController) {
   const listenersRef = useRef(new Set<AppendListener>());
   /** 用户主动终止过的会话，退出事件靠它区分「已停止」和「跑挂了」。 */
   const killedRef = useRef(new Set<ProcSessionId>());
-  const [sessions, setSessions] = useState<RunSession[]>([]);
+  const [allSessions, setAllSessions] = useState<RunSession[]>([]);
   const sessionsRef = useRef<RunSession[]>([]);
-  sessionsRef.current = sessions;
-  const [activeId, setActiveId] = useState<ProcSessionId | null>(null);
-  /** 启动失败的原因；跑起来后清空。 */
-  const [error, setError] = useState<string | null>(null);
+  sessionsRef.current = allSessions;
+  const [activeIdByRoot, setActiveIdByRoot] = useState<Record<string, ProcSessionId | null>>({});
+  /** 启动失败的原因，按根存放；跑起来后清空。 */
+  const [errorByRoot, setErrorByRoot] = useState<Record<string, string | null>>({});
 
   const append = useCallback((id: ProcSessionId, chunk: Uint8Array) => {
     const buffer = buffersRef.current.get(id);
@@ -104,7 +112,7 @@ export function useRunSessions(configs: RunConfigController) {
         id,
         `\r\n${code === null || stopped ? tRef.current("run.killed") : tRef.current("run.finished", { code })}\r\n`
       );
-      setSessions((list) =>
+      setAllSessions((list) =>
         list.map((session) =>
           session.id === id
             ? {
@@ -132,33 +140,26 @@ export function useRunSessions(configs: RunConfigController) {
     void procKill(id);
   }, []);
 
-  // 换工程：上一批进程先终止，缓冲区清空。配置层自己会重扫。
-  useEffect(() => {
-    for (const session of sessionsRef.current) {
-      if (session.status === "running") stop(session.id);
-    }
-    buffersRef.current.clear();
-    killedRef.current.clear();
-    setSessions([]);
-    setActiveId(null);
-    setError(null);
-  }, [cwd, stop]);
-
   /**
    * 跑一条配置。先把占位展开、辅助文件落盘，再交给进程通道。
    * 这两步任一步失败都不该留下一个跑了一半的会话，所以都在 invoke 之前做完。
    */
   const startInto = useCallback(
-    (config: RunConfiguration, replaceId: ProcSessionId | null) => {
-      if (!cwd) return;
-      setError(null);
+    (config: RunConfiguration, replaceId: ProcSessionId | null, explicitRoot?: string) => {
+      const targetRoot = explicitRoot ?? cwd;
+      if (!targetRoot) return;
+      const key = rootKey(targetRoot);
+      setErrorByRoot((prev) => ({ ...prev, [key]: null }));
       const missing = missingTool(config.command, configs.tools);
       if (missing) {
-        setError(describeError(codedError("NO_TOOL", missing.replace(/[${}]/g, "")), t));
+        setErrorByRoot((prev) => ({
+          ...prev,
+          [key]: describeError(codedError("NO_TOOL", missing.replace(/[${}]/g, "")), t),
+        }));
         return;
       }
       const command = resolveCommand(config.command, configs.tools);
-      const dir = config.workingDir ? joinPath(cwd, config.workingDir) : cwd;
+      const dir = config.workingDir ? joinPath(targetRoot, config.workingDir) : targetRoot;
       void (async () => {
         if (config.helper) await ensureHelper(config.helper);
         return procStart(dir, command, config.env);
@@ -168,6 +169,7 @@ export function useRunSessions(configs: RunConfigController) {
           buffersRef.current.set(id, [ENCODER.encode(`$ ${command}\r\n`)]);
           const entry: RunSession = {
             id,
+            root: targetRoot,
             name: config.name,
             kind: config.kind,
             command,
@@ -175,7 +177,7 @@ export function useRunSessions(configs: RunConfigController) {
             status: "running",
             exit: null,
           };
-          setSessions((list) => {
+          setAllSessions((list) => {
             if (replaceId === null) return [...list, entry];
             // 重跑就地替换：IDEA 的 restart 在原标签页上重开，不新开一个。
             const index = list.findIndex((session) => session.id === replaceId);
@@ -184,12 +186,13 @@ export function useRunSessions(configs: RunConfigController) {
             next[index] = entry;
             return next;
           });
-          setActiveId(id);
+          setActiveIdByRoot((prev) => ({ ...prev, [key]: id }));
         },
         (cause: unknown) =>
-          setError(
-            describeError(cause instanceof Error ? cause.message : String(cause), t)
-          )
+          setErrorByRoot((prev) => ({
+            ...prev,
+            [key]: describeError(cause instanceof Error ? cause.message : String(cause), t),
+          }))
       );
     },
     [configs, cwd, t]
@@ -211,7 +214,7 @@ export function useRunSessions(configs: RunConfigController) {
       if (!session) return;
       if (session.status === "running") stop(id);
       buffersRef.current.delete(id);
-      startInto(session.config, id);
+      startInto(session.config, id, session.root);
     },
     [startInto, stop]
   );
@@ -220,27 +223,88 @@ export function useRunSessions(configs: RunConfigController) {
     (id: ProcSessionId) => {
       const list = sessionsRef.current;
       const session = list.find((item) => item.id === id);
-      if (session?.status === "running") stop(id);
+      if (!session) return;
+      if (session.status === "running") stop(id);
       buffersRef.current.delete(id);
       const rest = list.filter((item) => item.id !== id);
-      setSessions(rest);
-      setActiveId((current) =>
-        current === id ? (rest.length > 0 ? rest[rest.length - 1].id : null) : current
+      const restSameRoot = rest.filter((item) => samePath(item.root, session.root));
+      const key = rootKey(session.root);
+      setAllSessions(rest);
+      setActiveIdByRoot((prev) =>
+        prev[key] === id
+          ? {
+              ...prev,
+              [key]: restSameRoot.length > 0 ? restSameRoot[restSameRoot.length - 1].id : null,
+            }
+          : prev
       );
     },
     [stop]
   );
 
-  const clearAll = useCallback(() => {
-    for (const session of sessionsRef.current) {
-      if (session.status === "running") stop(session.id);
-      buffersRef.current.delete(session.id);
-    }
-    killedRef.current.clear();
-    setSessions([]);
-    setActiveId(null);
-  }, [stop]);
+  /** 清空指定工作区根下的全部运行会话（关闭文件夹或点击当前根「清空全部」时调用）。 */
+  const closeSessionsForRoot = useCallback(
+    (targetRoot: string) => {
+      const doomed = sessionsRef.current.filter((item) => samePath(item.root, targetRoot));
+      for (const session of doomed) {
+        if (session.status === "running") stop(session.id);
+        buffersRef.current.delete(session.id);
+        killedRef.current.delete(session.id);
+      }
+      const key = rootKey(targetRoot);
+      setAllSessions((list) => list.filter((item) => !samePath(item.root, targetRoot)));
+      setActiveIdByRoot((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      setErrorByRoot((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    },
+    [stop]
+  );
 
+  const clearAll = useCallback(() => {
+    if (!cwd) return;
+    closeSessionsForRoot(cwd);
+  }, [closeSessionsForRoot, cwd]);
+
+  /** 指定工作区根下是否有正在运行的任务（供顶栏工程切换器绿点与关闭前确认使用）。 */
+  const hasRunningSessionsForRoot = useCallback(
+    (targetRoot: string) =>
+      allSessions.some((item) => samePath(item.root, targetRoot) && item.status === "running"),
+    [allSessions]
+  );
+
+  const sessions = useMemo(
+    () => (cwd ? allSessions.filter((item) => samePath(item.root, cwd)) : []),
+    [allSessions, cwd]
+  );
+
+  const currentKey = rootKey(cwd);
+  const rawActiveId = cwd ? (activeIdByRoot[currentKey] ?? null) : null;
+  const activeId =
+    rawActiveId && sessions.some((item) => item.id === rawActiveId)
+      ? rawActiveId
+      : (sessions[sessions.length - 1]?.id ?? null);
+
+  const setActiveId = useCallback(
+    (next: ProcSessionId | null | ((prev: ProcSessionId | null) => ProcSessionId | null)) => {
+      if (!cwd) return;
+      const key = rootKey(cwd);
+      setActiveIdByRoot((prev) => {
+        const cur = prev[key] ?? null;
+        const resolved = typeof next === "function" ? next(cur) : next;
+        return { ...prev, [key]: resolved };
+      });
+    },
+    [cwd]
+  );
+
+  const error = cwd ? (errorByRoot[currentKey] ?? null) : null;
   const activeSession = sessions.find((session) => session.id === activeId) ?? null;
   const activeRunning = activeSession?.status === "running";
 
@@ -275,6 +339,8 @@ export function useRunSessions(configs: RunConfigController) {
       restartSession,
       clearAll,
       closeSession,
+      closeSessionsForRoot,
+      hasRunningSessionsForRoot,
       onAppend,
       bufferOf,
     }),
@@ -285,11 +351,14 @@ export function useRunSessions(configs: RunConfigController) {
       bufferOf,
       clearAll,
       closeSession,
+      closeSessionsForRoot,
       error,
+      hasRunningSessionsForRoot,
       notice,
       onAppend,
       restartSession,
       sessions,
+      setActiveId,
       start,
       stop,
     ]

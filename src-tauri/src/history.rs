@@ -23,8 +23,12 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct History {
-    /// 上次打开的文件夹；空串表示没有。启动时据此恢复工作区。
+    /// 上次打开的文件夹；空串表示没有。兼容单根模式与旧配置。
     pub last_folder: String,
+    /// 当前窗口常驻打开的全部文件夹，按打开顺序排；启动时据此恢复多工作区。
+    pub open_folders: Vec<String>,
+    /// 多工作区中当前激活的那一个文件夹；空串表示没有。
+    pub active_folder: String,
     /// 最近打开过的文件夹，新的在前；主工具栏的工程下拉列这份。
     pub recent_folders: Vec<String>,
     /// 最近签出过的分支，新的在前。
@@ -57,6 +61,12 @@ fn migrate_from_settings(settings_path: &Path) -> History {
     History {
         last_folder: root
             .get("lastFolder")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        open_folders: list("openFolders"),
+        active_folder: root
+            .get("activeFolder")
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string(),
@@ -186,6 +196,26 @@ mod tests {
         let back: History = serde_json::from_str(r#"{"recentBranches":["dev"]}"#).unwrap();
         assert_eq!(back.recent_branches, vec!["dev"]);
         assert!(back.recent_folders.is_empty());
+        assert!(back.open_folders.is_empty());
+        assert_eq!(back.active_folder, "");
         assert_eq!(back.last_folder, "");
+    }
+
+    /// 多工作区常驻字段 `openFolders` 与 `activeFolder` 能完整落盘并读回。
+    #[test]
+    fn multi_workspace_open_and_active_folders_roundtrip() {
+        let dir = temp_dir("multi-ws");
+        let expected = History {
+            last_folder: "D:/app/b".to_string(),
+            open_folders: vec!["D:/app/a".to_string(), "D:/app/b".to_string()],
+            active_folder: "D:/app/b".to_string(),
+            recent_folders: vec!["D:/app/b".to_string(), "D:/app/a".to_string()],
+            recent_branches: vec!["main".to_string()],
+            commit_messages: vec![],
+        };
+        save_in(&dir, &expected).unwrap();
+        let actual = load_in(&dir);
+        assert!(actual == expected);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

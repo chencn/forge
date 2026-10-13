@@ -7,6 +7,7 @@ import type { LspSessionStatus } from "../lib/lsp";
 import { useLspConfig, useLspSessionStatuses } from "../hooks/useLspConfig";
 import { serverEntries } from "../lib/lspConfig";
 import { languageNames } from "../lib/monacoEnv";
+import { pathWithin } from "../lib/format";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
 
@@ -63,7 +64,9 @@ export default function LspStatusBar({ workspace, onKicked, onOpenSettings, onEr
   const wanted = serverEntries(config).some((entry) => entry.mode === "lsp");
   if (!workspace || !wanted) return null;
 
-  const items = Object.values(sessions.byServer).flat();
+  const items = Object.values(sessions.byServer)
+    .flat()
+    .filter((item) => pathWithin(workspace, item.root));
   // 会话身份用的是服务键，人认的是语言：弹层一行给语言名，后面跟真正在跑的那个程序名。
   const entriesById = new Map(serverEntries(config).map((entry) => [entry.id, entry]));
   const runningCount = items.filter((item) => item.status === "running").length;

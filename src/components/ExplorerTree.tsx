@@ -64,9 +64,8 @@ function touched(key: string, changed: string) {
  */
 const IGNORE_DEBOUNCE_MS = 800;
 
-/** 展开过的目录；折叠时保留记录，再展开不用重新读盘。 */
+/** 展开过的目录；折叠或切根时保留记录，再展开或切回时不用重新读盘。 */
 function useLazyChildren(
-  root: string | null,
   refresh: { paths: string[] | null; seq: number },
   onError: (message: string) => void
 ) {
@@ -101,13 +100,6 @@ function useLazyChildren(
     setChildren(drop);
     setFailed(drop);
   }, [refresh]);
-
-  // 换工程：目录缓存键是绝对路径，跨工程复用会端出过期树（A 会话里发生的磁盘
-  // 变化不在这棵树上作废）；列目录失败过的目录也会被 failed 永久挡住，一并清。
-  useEffect(() => {
-    setChildren(new Map());
-    setFailed(new Map());
-  }, [root]);
 
   return { children, failed, load };
 }
@@ -219,17 +211,43 @@ export default function ExplorerTree({
   const [error, setError] = useState<string | null>(null);
   const onError = useCallback((message: string) => setError(message), []);
   const { t } = useI18n();
-  const { children, failed, load } = useLazyChildren(root, refresh, onError);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const { children, failed, load } = useLazyChildren(refresh, onError);
+  /** 每个工作区根各自记住自己展开了哪些目录，切根回来时恢复原状。 */
+  const expandedByRootRef = useRef<Map<string, Set<string>>>(new Map());
+  const [expanded, setExpandedState] = useState<Set<string>>(
+    () => expandedByRootRef.current.get(pathKey(root)) ?? new Set()
+  );
+  const setExpanded = useCallback(
+    (updater: Set<string> | ((current: Set<string>) => Set<string>)) => {
+      setExpandedState((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        expandedByRootRef.current.set(pathKey(root), next);
+        return next;
+      });
+    },
+    [root]
+  );
   const treeRef = useRef<HTMLDivElement>(null);
   /** 正在往哪儿定位；目标行没露出来之前一直挂着。 */
   const [revealTo, setRevealTo] = useState<string | null>(null);
   /** 被 .gitignore 忽略的路径判定；命中的行文字变橙棕色（对齐 IDEA）。 */
   const isIgnored = useIgnoredPaths(repoRoot, refresh, !showIgnored);
 
+  // 切换工作区根时恢复该根已有的展开集，不清空。
   useEffect(() => {
-    setExpanded(new Set());
-  }, [root, collapseSignal]);
+    setExpandedState(expandedByRootRef.current.get(pathKey(root)) ?? new Set());
+  }, [root]);
+
+  // 显式点「全部折叠」按钮时只清空当前根的展开集。
+  const prevCollapseRef = useRef(collapseSignal);
+  useEffect(() => {
+    if (prevCollapseRef.current !== collapseSignal) {
+      prevCollapseRef.current = collapseSignal;
+      const empty = new Set<string>();
+      expandedByRootRef.current.set(pathKey(root), empty);
+      setExpandedState(empty);
+    }
+  }, [collapseSignal, root]);
 
   useEffect(() => {
     if (reveal) setRevealTo(reveal.path);

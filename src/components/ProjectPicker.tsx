@@ -1,25 +1,44 @@
 import { useRef, useState } from "react";
-import { ChevronDown, FolderOpen, LogOut, PanelTop } from "lucide-react";
+import { ChevronDown, FolderOpen, LogOut, PanelTop, X } from "lucide-react";
 import Popover from "./Popover";
-import { basenameOf } from "../lib/format";
+import { basenameOf, samePath } from "../lib/format";
+import type { WorkspaceMode } from "../lib/settings";
 import { useI18n } from "../i18n";
+
+/** 常驻工作区列表中每一项的状态摘要。 */
+export interface FolderStatusItem {
+  path: string;
+  /** 该根下有正在运行的任务或存活的终端会话。 */
+  running: boolean;
+  /** 该根下有未保存的编辑器改动。 */
+  dirty: boolean;
+}
 
 interface ProjectPickerProps {
   /** 当前工程根；null 表示还没打开文件夹。 */
   root: string | null;
+  /** 工作区模式：multi（多工作区常驻）或 single（单工作区）。 */
+  mode?: WorkspaceMode;
+  /** 当前常驻打开的全部文件夹及其后台运行/脏状态。 */
+  openFolders?: FolderStatusItem[];
   /** 最近打开过的文件夹，新的在前。 */
   recent: string[];
   onOpenFolder: () => void;
   onPick: (path: string) => void;
+  /** 关闭某一个常驻文件夹（多工作区弹层行尾 × 使用）。 */
+  onCloseFolder?: (path: string) => void;
   onCloseProject: () => void;
 }
 
 /** IDEA 的工程入口在主工具栏最左边：一颗带下拉的芯片，不是一个静态标题。 */
 export default function ProjectPicker({
   root,
+  mode = "multi",
+  openFolders = [],
   recent,
   onOpenFolder,
   onPick,
+  onCloseFolder,
   onCloseProject,
 }: ProjectPickerProps) {
   const { t } = useI18n();
@@ -28,11 +47,18 @@ export default function ProjectPicker({
   const chipRef = useRef<HTMLButtonElement>(null);
 
   const name = root ? basenameOf(root) : null;
+  const isMulti = mode === "multi";
+  /** 多工作区且同时常驻超过 1 个文件夹时，才显示顶栏数字徽标与弹层「已打开」分组。 */
+  const showOpenGroup = isMulti && openFolders.length > 1;
+  /** 「已打开」分组出现时，最近项目里过滤掉已在打开列表中的项，避免同一文件夹在弹层里上下重复出现。 */
+  const visibleRecent = showOpenGroup
+    ? recent.filter((path) => !openFolders.some((item) => samePath(item.path, path)))
+    : recent;
   /**
    * 没打开工程时也一样能翻历史：有历史就弹那张列表，「打开文件夹」是列表末尾那一条。
    * 一条历史都没有才直接开对话框——那时弹层里除了这一条没别的内容。
    */
-  const pickable = name !== null || recent.length > 0;
+  const pickable = name !== null || recent.length > 0 || openFolders.length > 0;
 
   return (
     <div className="toolbar-chip-host">
@@ -53,32 +79,101 @@ export default function ProjectPicker({
       >
         <PanelTop size={14} aria-hidden="true" />
         <span className="toolbar-chip-label">{name ?? t("workspace.openFolder")}</span>
+        {showOpenGroup ? <span className="ws-count">{openFolders.length}</span> : null}
         {pickable ? <ChevronDown size={13} aria-hidden="true" /> : null}
       </button>
 
       {pickable ? (
-        <Popover anchor={anchor} onClose={() => setAnchor(null)} minWidth={280}>
+        <Popover anchor={anchor} onClose={() => setAnchor(null)} minWidth={290}>
+          {showOpenGroup ? (
+            <>
+              <p className="popover-label">
+                {t("project.openCount", { count: openFolders.length })}
+              </p>
+              {openFolders.map((item) => {
+                const isCurrent = root !== null && samePath(item.path, root);
+                const folderName = basenameOf(item.path);
+                return (
+                  <div
+                    key={item.path}
+                    role="button"
+                    tabIndex={0}
+                    className={`popover-item ws-open-row${isCurrent ? " is-current" : ""}`}
+                    onClick={() => {
+                      setAnchor(null);
+                      if (!isCurrent) onPick(item.path);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setAnchor(null);
+                        if (!isCurrent) onPick(item.path);
+                      }
+                    }}
+                  >
+                    <FolderOpen size={14} aria-hidden="true" />
+                    <span className="popover-item-label">{folderName}</span>
+                    {item.running ? (
+                      <span
+                        className="ws-dot is-running"
+                        title={t("project.runningDot")}
+                        aria-label={t("project.runningDot")}
+                      />
+                    ) : null}
+                    {item.dirty ? (
+                      <span
+                        className="ws-dot is-dirty"
+                        title={t("project.dirtyDot")}
+                        aria-label={t("project.dirtyDot")}
+                      />
+                    ) : null}
+                    <span className="popover-item-detail" title={item.path}>
+                      {item.path}
+                    </span>
+                    <button
+                      type="button"
+                      className="ws-row-close"
+                      title={t("project.closeNamed", { name: folderName })}
+                      aria-label={t("project.closeNamed", { name: folderName })}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setAnchor(null);
+                        onCloseFolder?.(item.path);
+                      }}
+                    >
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </div>
+                );
+              })}
+              <div className="popover-sep" />
+            </>
+          ) : null}
+
           <p className="popover-label">{t("project.recent")}</p>
-          {recent.length === 0 ? (
+          {visibleRecent.length === 0 ? (
             <p className="popover-note">{t("project.none")}</p>
           ) : (
-            recent.map((path) => (
-              <button
-                key={path}
-                type="button"
-                className={`popover-item${path === root ? " is-current" : ""}`}
-                onClick={() => {
-                  setAnchor(null);
-                  if (path !== root) onPick(path);
-                }}
-              >
-                <FolderOpen size={14} aria-hidden="true" />
-                <span className="popover-item-label">{basenameOf(path)}</span>
-                <span className="popover-item-detail" title={path}>
-                  {path}
-                </span>
-              </button>
-            ))
+            visibleRecent.map((path) => {
+              const isCurrent = root !== null && samePath(path, root);
+              return (
+                <button
+                  key={path}
+                  type="button"
+                  className={`popover-item${isCurrent ? " is-current" : ""}`}
+                  onClick={() => {
+                    setAnchor(null);
+                    if (!isCurrent) onPick(path);
+                  }}
+                >
+                  <FolderOpen size={14} aria-hidden="true" />
+                  <span className="popover-item-label">{basenameOf(path)}</span>
+                  <span className="popover-item-detail" title={path}>
+                    {path}
+                  </span>
+                </button>
+              );
+            })
           )}
           <div className="popover-sep" />
           <button
@@ -90,7 +185,7 @@ export default function ProjectPicker({
             }}
           >
             <FolderOpen size={14} aria-hidden="true" />
-            <span>{t("project.openOther")}</span>
+            <span>{t(isMulti ? "project.addFolder" : "project.openOther")}</span>
           </button>
           {name ? (
             <button
@@ -102,7 +197,9 @@ export default function ProjectPicker({
               }}
             >
               <LogOut size={14} aria-hidden="true" />
-              <span>{t("workspace.closeFolder")}</span>
+              <span>
+                {isMulti ? t("project.closeNamed", { name }) : t("workspace.closeFolder")}
+              </span>
             </button>
           ) : null}
         </Popover>

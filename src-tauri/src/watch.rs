@@ -5,7 +5,7 @@
 
 use crate::error::{err, err_parts};
 use crate::offload::{block, block_value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
@@ -27,22 +27,23 @@ const MAX_WAIT: Duration = Duration::from_millis(1000);
 /// 多条事件发，别把单条消息撑成几万条路径。
 const BATCH_CAP: usize = 256;
 
-/// 一次上报：受影响的路径，绝对路径，分隔符按平台原样。
-#[derive(Clone, Serialize)]
+/// 一次上报：变更所属的工程根与受影响的路径（绝对路径，分隔符按平台原样）。
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FsChange {
+    pub root: String,
     pub paths: Vec<String>,
 }
 
-/// 当前工作区的监听句柄、它监听的根目录与请求代号，三者必须一起换。
+/// 多工作区常驻下按根目录索引的监听表：每个打开的工程根各占一槽，互不顶替。
 ///
-/// 丢掉句柄 = notify 的回调闭包连同发送端一起释放，转发线程读到通道断开就自己退出，
+/// 丢掉某个根的句柄 = notify 的回调闭包连同发送端一起释放，转发线程读到通道断开就自己退出，
 /// 所以停止不需要额外的标志位。root 与代号合起来是 start/stop 的令牌：命令挪到阻塞
-/// 线程池后执行顺序没有保证，只有根与代号都对得上的请求才准写槽/清槽，落伍的不动
+/// 线程池后执行顺序没有保证，只有该根下代号不落伍的请求才准写槽/清槽
 /// （见 `fs_watch_start_impl` / `fs_watch_stop_impl`）。
 #[derive(Default)]
 pub struct WatchSlot {
-    inner: Mutex<Option<ActiveWatch>>,
+    inner: Mutex<HashMap<String, ActiveWatch>>,
 }
 
 /// 槽里的一条活动监听。
@@ -88,6 +89,18 @@ pub async fn fs_watch_start(
     block(move || fs_watch_start_impl(app, root, generation)).await
 }
 
+/// 判断某个根的 `fs_watch_start` 请求是否被允许写入槽位：
+/// 只有当该根尚无活动监听，或新请求的 `generation` 不落后于当前槽内代号时才放行。
+fn allow_start_for_root(active_generation: Option<u64>, incoming_generation: u64) -> bool {
+    !active_generation.is_some_and(|current| current > incoming_generation)
+}
+
+/// 判断某个根的 `fs_watch_stop` 请求是否命中当前槽位：
+/// 只有当该根存在且 `(root, generation)` 与槽内记录完全一致时才移除，过期 stop 直接忽略。
+fn allow_stop_for_root(active: Option<(&str, u64)>, root: &str, generation: u64) -> bool {
+    active.is_some_and(|(active_root, active_gen)| active_root == root && active_gen == generation)
+}
+
 fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<(), String> {
     let dir = Path::new(&root);
     if !dir.is_dir() {
@@ -95,15 +108,11 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
     }
 
     // 锁罩住「判过期 → 建 watcher → watch → 写槽」整段：转 async 后两次快速 start 能并发跑，
-    // 代号落后于槽里那轮的请求在这里直接让路——线程池乱序时慢到的旧 start 不能覆盖新监听。
-    // 旧句柄在覆盖赋值时 drop——drop 只注销系统监听、把发送端丢给转发线程，不回调进这把锁，
-    // 在临界区里丢它没有死锁风险。
+    // 同一根代号落后于槽里那轮的请求在这里直接让路——线程池乱序时慢到的旧 start 不能覆盖新监听。
+    // 仅替换该根的旧句柄，其它常驻根的监听句柄保持不动。
     let slot = app.state::<WatchSlot>();
     let mut guard = slot.inner.lock().expect("监听槽位锁");
-    if guard
-        .as_ref()
-        .is_some_and(|active| active.generation > generation)
-    {
+    if !allow_start_for_root(guard.get(&root).map(|active| active.generation), generation) {
         return Ok(());
     }
 
@@ -133,20 +142,24 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
         .map_err(|e| err_parts("WATCH_DIR", &[root.clone(), e.to_string()]))?;
 
     let pump_app = app.clone();
-    std::thread::spawn(move || pump(pump_app, receiver));
-    // 覆盖即停旧句柄；旧句柄一丢，它那条转发线程也就走到头了。
-    *guard = Some(ActiveWatch {
-        watcher,
-        root,
-        generation,
-    });
+    let pump_root = root.clone();
+    std::thread::spawn(move || pump(pump_app, pump_root, receiver));
+    // 插入或替换当前根的句柄；若该根有旧句柄，被替换后自动 drop 并收尾其转发线程。
+    guard.insert(
+        root.clone(),
+        ActiveWatch {
+            watcher,
+            root,
+            generation,
+        },
+    );
     Ok(())
 }
 
-/// 停止监听（关闭工作区时调用）。
+/// 停止指定工程根的监听（关闭某工作区根时调用）。
 ///
-/// root 与代号合起来是令牌：两者都对得上槽里那轮才真的清槽。stop 走阻塞线程池，
-/// 可能比用户随手换目录后那次新 start 晚到——不看令牌就无条件清，会把刚装好的
+/// root 与代号合起来是令牌：两者都对得上该根槽里那轮才真的移除。stop 走阻塞线程池，
+/// 可能比同一根重新打开后的新 start 晚到——不看令牌就无条件删，会把刚装好的
 /// 新监听掐死；对不上说明这条 stop 已经过期，什么都不动。
 /// 没有可失败的分支（过期即忽略），签名不带 `Result`（error-model 的无失败分支清单）。
 #[tauri::command]
@@ -161,16 +174,20 @@ pub async fn fs_watch_stop(app: AppHandle, root: String, generation: u64) {
 fn fs_watch_stop_impl(app: AppHandle, root: String, generation: u64) {
     let slot = app.state::<WatchSlot>();
     let mut guard = slot.inner.lock().expect("监听槽位锁");
-    let matches = guard.as_ref().is_some_and(|active| {
-        active.generation == generation && active.root == root
-    });
+    let matches = allow_stop_for_root(
+        guard
+            .get(&root)
+            .map(|active| (active.root.as_str(), active.generation)),
+        &root,
+        generation,
+    );
     if matches {
-        *guard = None;
+        guard.remove(&root);
     }
 }
 
 /// 攒批并发的转发线程。收到第一条后继续等静默期，把这段时间内的都并进来再发。
-fn pump(app: AppHandle, receiver: mpsc::Receiver<Vec<std::path::PathBuf>>) {
+fn pump(app: AppHandle, root: String, receiver: mpsc::Receiver<Vec<std::path::PathBuf>>) {
     let mut pending: BTreeSet<String> = BTreeSet::new();
     // 首批路径进集合的时刻，MAX_WAIT 从它起算：事件一直来时静默期永远打不满，
     // 没有这个起点就算不出「已经拖了多久」。
@@ -191,15 +208,15 @@ fn pump(app: AppHandle, receiver: mpsc::Receiver<Vec<std::path::PathBuf>>) {
                 Ok(paths) => soak(&mut pending, paths),
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => {
-                    flush(&app, &mut pending);
+                    flush(&app, &root, &mut pending);
                     return;
                 }
             }
         }
-        flush(&app, &mut pending);
+        flush(&app, &root, &mut pending);
         first_pending_at = None;
     }
-    flush(&app, &mut pending);
+    flush(&app, &root, &mut pending);
 }
 
 /// 这一轮该等多久再收下一条事件。
@@ -224,24 +241,64 @@ fn soak(pending: &mut BTreeSet<String>, paths: Vec<std::path::PathBuf>) {
     }
 }
 
-fn flush(app: &AppHandle, pending: &mut BTreeSet<String>) {
+fn flush(app: &AppHandle, root: &str, pending: &mut BTreeSet<String>) {
     if pending.is_empty() {
         return;
     }
     let all: Vec<String> = std::mem::take(pending).into_iter().collect();
     // soak 全收不丢，这里按 BATCH_CAP 拆开发，别把单条事件撑成几万条路径。
     for batch in all.chunks(BATCH_CAP) {
-        let _ = app.emit("fs://change", FsChange { paths: batch.to_vec() });
+        let _ = app.emit(
+            "fs://change",
+            FsChange {
+                root: root.to_string(),
+                paths: batch.to_vec(),
+            },
+        );
     }
 }
 #[cfg(test)]
 mod tests {
     use super::inside_git_dir;
-    use super::{interesting, soak, wait_duration, BATCH_CAP, MAX_WAIT, SETTLE};
+    use super::{
+        allow_start_for_root, allow_stop_for_root, interesting, soak, wait_duration, FsChange,
+        BATCH_CAP, MAX_WAIT, SETTLE,
+    };
     use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind};
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn multi_root_slot_tokens_isolate_start_and_stop_per_root() {
+        assert!(allow_start_for_root(None, 1), "新根首次启动应放行");
+        assert!(allow_start_for_root(Some(1), 2), "同一根更高代号应覆盖旧监听");
+        assert!(!allow_start_for_root(Some(3), 2), "乱序晚到的旧代号不能覆盖新监听");
+
+        assert!(
+            allow_stop_for_root(Some(("D:/repo-a", 2)), "D:/repo-a", 2),
+            "根与代号都匹配时才停止"
+        );
+        assert!(
+            !allow_stop_for_root(Some(("D:/repo-a", 3)), "D:/repo-a", 2),
+            "同一根重开后旧代号的晚到 stop 必须忽略"
+        );
+        assert!(
+            !allow_stop_for_root(Some(("D:/repo-b", 2)), "D:/repo-a", 2),
+            "不同根互不干扰"
+        );
+    }
+
+    #[test]
+    fn fs_change_carries_root_and_paths() {
+        let change = FsChange {
+            root: "D:/repo-a".to_string(),
+            paths: vec!["D:/repo-a/src/main.rs".to_string()],
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains(r#""root":"D:/repo-a""#));
+        assert!(json.contains(r#""paths":["D:/repo-a/src/main.rs"]"#));
+    }
 
     #[test]
     fn git_internals_are_filtered_out() {

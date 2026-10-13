@@ -13,7 +13,7 @@ import {
   termWrite,
 } from "../lib/term";
 import type { NativeScrollBinding } from "../lib/term";
-import { needTermSession, restartTermSession, termSession, watchTermSession } from "../lib/termStore";
+import { needTermSession, restartTermSession, termSessionFor, watchTermSession } from "../lib/termStore";
 import type { TermSession } from "../lib/termStore";
 import { errorText } from "../lib/fs";
 import { describeError } from "../lib/errors";
@@ -159,13 +159,13 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
     };
 
     const stop = watchTermSession(() => {
-      const session = termSession();
+      const session = termSessionFor(cwd);
       if (session) {
         draw(session);
         return;
       }
       // 一条会话都不剩了（把最后一个页签关掉了）：把画面清干净，别留着上一条的残字。
-      // 关掉的不是最后一条时 `termSession()` 会给回邻居，走上面那支重放，到不了这里。
+      // 关掉的不是最后一条时 `termSessionFor(cwd)` 会给回邻居，走上面那支重放，到不了这里。
       if (lastId !== null) {
         lastId = null;
         written = 0;
@@ -177,7 +177,7 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
     const attach = async () => {
       const fresh = freshRef.current;
       freshRef.current = false;
-      const current = termSession();
+      const current = termSessionFor(cwd);
       const session = fresh && current
         ? await restartTermSession(current.id, cwd, shellRef.current, term.cols, term.rows)
         : await needTermSession(cwd, shellRef.current, term.cols, term.rows);

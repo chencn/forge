@@ -9,6 +9,10 @@ import { invoke } from "@tauri-apps/api/core";
 export interface History {
   /** 上次打开的文件夹；空串表示没有。启动时据此恢复工作区。 */
   lastFolder: string;
+  /** 当前窗口常驻打开的全部文件夹，按打开顺序排。 */
+  openFolders: string[];
+  /** 多工作区中当前激活的那一个文件夹；空串表示没有。 */
+  activeFolder: string;
   /** 最近打开过的文件夹，新的在前；主工具栏的工程下拉列这份。 */
   recentFolders: string[];
   /** 最近签出过的分支，新的在前。 */
@@ -19,6 +23,8 @@ export interface History {
 
 export const DEFAULT_HISTORY: History = {
   lastFolder: "",
+  openFolders: [],
+  activeFolder: "",
   recentFolders: [],
   recentBranches: [],
   commitMessages: [],
@@ -36,6 +42,8 @@ export function withRemembered(list: string[], value: string): string[] {
 function merge(raw: Partial<History> | null): History {
   return {
     lastFolder: raw?.lastFolder ?? "",
+    openFolders: raw?.openFolders ?? [],
+    activeFolder: raw?.activeFolder ?? "",
     recentFolders: raw?.recentFolders ?? [],
     recentBranches: raw?.recentBranches ?? [],
     commitMessages: raw?.commitMessages ?? [],

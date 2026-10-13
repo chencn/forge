@@ -17,6 +17,7 @@ export type DialogKind =
   | "resetHard"
   | "pushUpTo"
   | "discard"
+  | "closeRoot"
   | "resetSettings"
   | "installUpdate"
   | "restartUpdate";
@@ -39,6 +40,8 @@ export interface DialogRequest {
   refKind?: "local" | "remote" | "tag";
   /** 填的是落盘位置那几类，画一句「落点：…」，省得写相对名时不知道会落到哪个目录。 */
   hint?: string;
+  /** 关闭文件夹确认框的原因：有未保存修改、有运行中后台任务，或两者兼有。 */
+  closeReason?: "dirty" | "running" | "both";
 }
 
 interface PromptDialogProps {
@@ -62,6 +65,7 @@ const TITLE_KEY: Record<DialogKind, TranslationKey> = {
   resetHard: "git.dialogResetHard",
   pushUpTo: "git.dialogPushUpTo",
   discard: "dialog.discardTitle",
+  closeRoot: "dialog.closeRootTitle",
   resetSettings: "dialog.resetAllTitle",
   installUpdate: "dialog.updateTitle",
   restartUpdate: "update.restartConfirmTitle",
@@ -110,6 +114,7 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
     request.kind === "deleteRef" ||
     request.kind === "resetHard" ||
     request.kind === "discard" ||
+    request.kind === "closeRoot" ||
     request.kind === "resetSettings";
 
   /** 确认框那句话，按要删的是文件、文件夹还是哪种引用挑。 */
@@ -120,6 +125,15 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
     if (request.kind === "restartUpdate")
       return t("update.restartConfirmBody", { version: request.name });
     if (request.kind === "discard") return t("dialog.discardBody", { name: request.name });
+    if (request.kind === "closeRoot") {
+      if (request.closeReason === "both") {
+        return t("dialog.closeRootDirtyAndRunning", { name: request.name });
+      }
+      if (request.closeReason === "dirty") {
+        return t("dialog.closeRootDirty", { name: request.name });
+      }
+      return t("dialog.closeRootRunning", { name: request.name });
+    }
     if (request.kind === "resetHard") return t("git.resetHardWarning", { rev: request.name });
     if (request.kind === "pushUpTo")
       return t("git.pushUpToWarning", { rev: request.name, branch: request.from ?? "" });
@@ -250,7 +264,9 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
                 ? t("dialog.resetAll")
                 : request.kind === "discard"
                   ? t("dialog.discard")
-                  : request.kind === "installUpdate"
+                  : request.kind === "closeRoot"
+                    ? t("dialog.closeRootConfirm")
+                    : request.kind === "installUpdate"
                     ? t("dialog.installNow")
                     : request.kind === "rename"
                       ? t("dialog.confirm")

@@ -58,6 +58,14 @@ export const en: Record<TranslationKey, string> = {
   "dialog.discardTitle": "Discard unsaved changes",
   "dialog.discardBody": "“{name}” has unsaved changes. Discard these changes and close the file?",
   "dialog.discard": "Discard",
+  "dialog.closeRootTitle": "Close Folder",
+  "dialog.closeRootDirtyAndRunning":
+    "“{name}” has unsaved files and running background tasks or terminals. Discard unsaved changes, stop background processes, and close this folder?",
+  "dialog.closeRootDirty":
+    "“{name}” has unsaved files. Discard these changes and close this folder?",
+  "dialog.closeRootRunning":
+    "“{name}” still has running background tasks or terminals. Stop these processes and close this folder?",
+  "dialog.closeRootConfirm": "Close Folder",
   "dialog.resetAllTitle": "Reset General Settings",
   "dialog.resetAllBody":
     "Restore the settings on the General page to their defaults? Theme, language, close behavior and notification position will be reset. Other pages are left untouched.",
@@ -133,9 +141,14 @@ export const en: Record<TranslationKey, string> = {
   "workspace.closeFolder": "Close Folder",
 
   "project.label": "Project",
+  "project.openCount": "Open ({count})",
   "project.recent": "Recent projects",
   "project.none": "No folders opened yet",
   "project.openOther": "Open folder…",
+  "project.addFolder": "Add folder…",
+  "project.closeNamed": "Close “{name}”",
+  "project.runningDot": "Background tasks or terminals running",
+  "project.dirtyDot": "Has unsaved changes",
 
   "panel.explorer": "Explorer",
   "panel.sourceControl": "Source Control",
@@ -286,6 +299,11 @@ export const en: Record<TranslationKey, string> = {
   "keymap.idea": "IntelliJ IDEA",
   "keymap.eclipse": "Eclipse",
   "settings.minimap": "Show minimap",
+  "settings.workspaceMode": "Workspace mode",
+  "workspaceMode.multi": "Multiple folders in window",
+  "workspaceMode.single": "Single folder",
+  "workspaceMode.note":
+    "Multiple folders mode keeps several folders open in one window for instant switching while background terminals and tasks stay alive.",
   "settings.closeBehavior": "When closing",
   "closeBehavior.quit": "Quit the app",
   "closeBehavior.tray": "Minimize to tray",

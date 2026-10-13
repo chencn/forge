@@ -122,9 +122,11 @@ function notifications(method: string): any[] {
   return messages().filter((message) => message.method === method).map((message) => message.params);
 }
 
-/** 找出已发出的 initialize 请求并回一条响应，让启动流程走完。 */
+/** 找出最新发出的 initialize 请求并回一条响应，让启动流程走完。 */
 function respondInitialize(): void {
-  const request = messages().find((message) => message.method === "initialize");
+  const request = messages()
+    .filter((message) => message.method === "initialize")
+    .at(-1);
   if (!request) throw new Error("initialize 请求还没发出");
   const handler = listeners.get("lsp://message");
   if (!handler) throw new Error("消息订阅还没挂上");
@@ -238,5 +240,24 @@ describe("didChange 防抖", () => {
     vi.advanceTimersByTime(150);
 
     expect(notifications("textDocument/didChange")).toHaveLength(baseline);
+  });
+
+  it("多工作区切换激活根时回收未激活根的 LSP 会话，且切回时复用已解析的 root 缓存", async () => {
+    const lspMod = await import("../../src/lib/lsp");
+    const docA = { path: "D:/proj/a.ts", language: "typescript", text: "const a = 1;" };
+    await startServerWith(docA);
+    expect(lspMod.lspResolveRoot).toHaveBeenCalledTimes(1);
+
+    // 切到空文档的另一工程根 B（只向 reconcileLsp 传当前激活根的文档）：A 根的 LSP 会话应被回收
+    await reconcileLsp("D:/proj-b", config, []);
+    await flush();
+    expect(lspMod.lspStop).toHaveBeenCalledWith("sess-1");
+
+    // 再次切回 D:/proj：roots 缓存未被切根清空，无需重复调用 lspResolveRoot
+    const back = reconcileLsp("D:/proj", config, [docA]);
+    await flush();
+    respondInitialize();
+    await back;
+    expect(lspMod.lspResolveRoot).toHaveBeenCalledTimes(1);
   });
 });

@@ -449,6 +449,63 @@ span.entry-icon > svg {
   font-weight: 600;
 }
 
+/* 顶栏工程切换器的已打开根计数徽标（仅多工作区模式且 >1 个根时展示） */
+.ws-count {
+  flex: none;
+  min-width: 17px;
+  height: 16px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 弹层「已打开」分组行：支持整行点击切换 + 行尾独立 × 关闭按钮 */
+.ws-open-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ws-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: none;
+}
+
+.ws-dot.is-running {
+  background: var(--accent-green);
+}
+
+.ws-dot.is-dirty {
+  background: var(--accent-blue);
+}
+
+.ws-row-close {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-xs);
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-muted);
+  flex: none;
+  margin-left: 2px;
+  margin-right: -3px;
+  opacity: 0.72;
+}
+
+.ws-row-close:hover {
+  opacity: 1;
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
 .menu-item,
 .popover-item {
   width: 100%;
@@ -2553,7 +2610,7 @@ span.entry-icon > svg {
   background: var(--accent-blue);
 }
 
-/* 页签栏最右侧常驻操作区：粘性贴右，标签过多横向滚动时也不被滚出视口。 */
+/* 页签栏最右侧常驻操作区：粘性贴右，复用统一的 icon-button is-inline。 */
 .editor-tabs-actions {
   position: sticky;
   right: 0;
@@ -2561,39 +2618,9 @@ span.entry-icon > svg {
   flex: none;
   display: flex;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 6px;
   background: var(--bg-secondary);
-  border-left: 1px solid var(--border-color);
   z-index: 2;
-}
-
-.editor-save-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  color: var(--text-tertiary);
-  background: transparent;
-  transition: background 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
-}
-
-.editor-save-button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.editor-save-button.is-dirty {
-  color: var(--accent-blue-text);
-  background: var(--accent-blue-bg);
-  font-weight: 500;
-}
-
-.editor-save-button.is-dirty:hover {
-  background: var(--button-solid);
-  color: var(--on-solid);
 }
 
 .code-host {

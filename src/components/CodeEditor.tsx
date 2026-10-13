@@ -12,6 +12,26 @@ import type { OpenDocument, RevealTarget } from "../hooks/useDocuments";
 /** 一颗 ▶ 占多宽。行号与代码之间那条带默认 10px，这里留出 1px 余量给指针命中。 */
 const PIN_WIDTH = 12;
 
+/**
+ * 按文件路径记录每个 Monaco Model 最近一次同步的正文与编辑器视图状态（光标、选区、滚动位置）。
+ * 放在模块级而非组件内部单槽 ref：切页签或跨工作区切根再切回时，不会因为单槽 path 变化而误调
+ * `model.setValue()` 冲掉撤销栈，也能在编辑器跨根重挂后原样恢复光标与滚动位置。
+ */
+const mirrorByPath = new Map<string, string>();
+const viewStateByPath = new Map<string, monaco.editor.ICodeEditorViewState | null>();
+
+monaco.editor.onWillDisposeModel((model) => {
+  const fsPath = model.uri.fsPath;
+  mirrorByPath.delete(fsPath);
+  viewStateByPath.delete(fsPath);
+  for (const key of Array.from(mirrorByPath.keys())) {
+    if (samePath(key, fsPath)) mirrorByPath.delete(key);
+  }
+  for (const key of Array.from(viewStateByPath.keys())) {
+    if (samePath(key, fsPath)) viewStateByPath.delete(key);
+  }
+});
+
 /** 换算到屏幕坐标之后的一个落点。 */
 interface RunGutterPin {
   line: number;
@@ -70,11 +90,6 @@ export default function CodeEditor({
   /** 换 model 期间抑制一次回调，避免把上一个文件的内容写进新文档。 */
   const swapping = useRef(false);
   const pathRef = useRef<string | null>(null);
-  /**
-   * 编辑器这边交出去的最新一份，连同它是哪条路径的。
-   * 用它认出「文档里的正文是我刚敲的那一份」，那种不用再取一遍全文来比。
-   */
-  const mirrorRef = useRef<{ path: string; text: string }>({ path: "", text: "" });
   /** model 是按哪一份文档的条件挂上的：这几样没变就不必再走 setModel / updateOptions。 */
   const wiredRef = useRef<{
     path: string;
@@ -134,14 +149,25 @@ export default function CodeEditor({
       const model = editor.getModel();
       if (!path || !model) return;
       const text = model.getValue();
-      mirrorRef.current = { path, text };
+      mirrorByPath.set(path, text);
       changeRef.current(path, text);
     });
 
     // 落点是屏幕坐标：滚动、换行高、换 model、正文增减行都会让它挪位置，四样都问一遍。
     // 失焦监听用 onDidBlurEditorWidget：打开内置查找框仍算在编辑器内，点向目录树/终端/标签栏才触发失焦保存。
+    const saveCurrentViewState = () => {
+      if (swapping.current) return;
+      const currentPath = pathRef.current;
+      if (currentPath && editor.getModel()) {
+        viewStateByPath.set(currentPath, editor.saveViewState());
+      }
+    };
     const sync = [
-      editor.onDidScrollChange(() => measureRef.current()),
+      editor.onDidScrollChange(() => {
+        saveCurrentViewState();
+        measureRef.current();
+      }),
+      editor.onDidChangeCursorSelection(() => saveCurrentViewState()),
       editor.onDidLayoutChange(() => measureRef.current()),
       editor.onDidChangeModel(() => measureRef.current()),
       editor.onDidChangeModelContent(() => measureRef.current()),
@@ -149,6 +175,7 @@ export default function CodeEditor({
     ];
 
     return () => {
+      saveCurrentViewState();
       for (const handle of sync) handle.dispose();
       subscription.dispose();
       editor.dispose();
@@ -171,6 +198,9 @@ export default function CodeEditor({
 
     if (!document || document.loading) {
       // 内容还没读回来时不建 model，否则会用空串建一个再也更新不到的模型。
+      if (pathRef.current && editor.getModel()) {
+        viewStateByPath.set(pathRef.current, editor.saveViewState());
+      }
       editor.setModel(null);
       pathRef.current = null;
       wiredRef.current = null;
@@ -192,16 +222,18 @@ export default function CodeEditor({
     if (sameWiring && model) {
       // 挂模型的那几样条件没变，只剩正文。是编辑器自己交出去的那一份就不动：
       // 原来这里每次渲染都调一次 model.getValue()，把整份文件再拷一遍来比相等。
-      if (
-        mirrorRef.current.path !== document.path ||
-        mirrorRef.current.text !== document.contents
-      ) {
+      if (mirrorByPath.get(document.path) !== document.contents) {
         swapping.current = true;
         model.setValue(document.contents);
         swapping.current = false;
-        mirrorRef.current = { path: document.path, text: document.contents };
+        mirrorByPath.set(document.path, document.contents);
       }
       return;
+    }
+
+    // 切换 Model 前先把上一篇文档的光标与滚动位置存起来。
+    if (pathRef.current && editor.getModel()) {
+      viewStateByPath.set(pathRef.current, editor.saveViewState());
     }
 
     const uri = modelUri(document.path);
@@ -219,21 +251,17 @@ export default function CodeEditor({
         : monaco.editor.EndOfLineSequence.LF
     );
     editor.updateOptions({ readOnly, domReadOnly: readOnly });
-    // 切过来的 model 里可能是上次编辑留下的那一份，跟文档对不上时以文档为准
-    // （从 git 历史开的那份虚拟文档每一遍都是新内容，就靠这一步落进去）。
-    // 判据要和「仅正文」那支一致，不能只看路径：挂模型的某一档变了但正文也同时换了时
-    // （行尾在外部被改、读取失败后重试成功），只比路径会把新正文漏掉，
-    // 而 wiredRef 已记成新档，之后每遍都判「无需再挂」——编辑器就长期停在旧文本上。
-    if (
-      !fresh &&
-      (mirrorRef.current.path !== document.path || mirrorRef.current.text !== document.contents)
-    ) {
+    // 只有当文档正文在外部或虚拟文档重开时真的变了，才调用 setValue；
+    // 平时切页签或切工程根回来时正文一致，绝不调 setValue，从而完整保留 Model 的撤销栈。
+    if (!fresh && mirrorByPath.get(document.path) !== document.contents) {
       next.setValue(document.contents);
     }
-    // 记「我们刚推下去的那一份」，不记 `next.getValue()`：后者按 model 的行尾渲染，
-    // CRLF 文档下它和 `contents` 只差在行尾，下一遍会被判成不一致而白重设一次正文。
-    mirrorRef.current = { path: document.path, text: document.contents };
+    mirrorByPath.set(document.path, document.contents);
     pathRef.current = document.path;
+    const savedView = viewStateByPath.get(document.path);
+    if (savedView) {
+      editor.restoreViewState(savedView);
+    }
     swapping.current = false;
     wiredRef.current = {
       path: document.path,

@@ -101,4 +101,34 @@ describe("termStore 监听生命周期", () => {
       expect(off).toHaveBeenCalledTimes(1);
     }
   });
+
+  it("多工作区按根隔离终端列表与激活项，关闭单根不影响后台根的终端", async () => {
+    const store = await import("../../src/lib/termStore");
+    const a1 = await store.openTerm("D:/repo-a", "cmd", 80, 24);
+    const a2 = await store.openTerm("D:/repo-a", "cmd", 80, 24);
+    const b1 = await store.openTerm("D:/repo-b", "cmd", 80, 24);
+    settleListens();
+    await flush();
+
+    // 各自根只看得到自己 cwd 下的终端
+    expect(store.termSessionsFor("D:/repo-a").sessions.map((s) => s.id)).toEqual([a1.id, a2.id]);
+    expect(store.termSessionsFor("D:/repo-a").activeId).toBe(a2.id);
+    expect(store.termSessionsFor("D:/repo-b").sessions.map((s) => s.id)).toEqual([b1.id]);
+    expect(store.termSessionsFor("D:/repo-b").activeId).toBe(b1.id);
+
+    // 在 A 根把激活终端切回 a1，不影响 B 根的激活终端 b1
+    store.setActiveTermFor("D:/repo-a", a1.id);
+    expect(store.termSessionFor("D:/repo-a")?.id).toBe(a1.id);
+    expect(store.termSessionFor("D:/repo-b")?.id).toBe(b1.id);
+    expect(store.hasAliveTermsForRoot("D:/repo-a")).toBe(true);
+    expect(store.hasAliveTermsForRoot("D:/repo-b")).toBe(true);
+
+    // 关闭 A 根：只销毁 A 根下的 a1、a2，B 根的 b1 必须继续活着
+    await store.closeTermsForRoot("D:/repo-a");
+    await flush();
+    expect(store.termSessionsFor("D:/repo-a").sessions).toHaveLength(0);
+    expect(store.hasAliveTermsForRoot("D:/repo-a")).toBe(false);
+    expect(store.termSessionsFor("D:/repo-b").sessions.map((s) => s.id)).toEqual([b1.id]);
+    expect(store.hasAliveTermsForRoot("D:/repo-b")).toBe(true);
+  });
 });
