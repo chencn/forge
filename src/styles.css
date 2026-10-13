@@ -345,11 +345,9 @@ span.entry-icon > svg {
   min-width: 220px;
   padding: 6px;
   border-radius: var(--radius-md);
-  /* 浮层常压在白色编辑区上，island 阴影只有 6% 不透明度，描边也要更实才分得开。 */
+  /* 浮层常压在目录树或编辑区上，采用实心不透明背景与实线描边（照 IDEA）。 */
   border: 1px solid var(--border-light);
-  background: var(--surface-island);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  background: var(--surface-island-strong);
   box-shadow:
     var(--island-shadow),
     0 2px 6px rgba(0, 0, 0, 0.1),
@@ -2689,10 +2687,9 @@ span.entry-icon > svg {
   gap: 1px;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: var(--surface-island);
+  background: var(--surface-island-strong);
   border: 1px solid var(--border-color);
   box-shadow: var(--island-shadow);
-  backdrop-filter: blur(8px);
 }
 
 .doc-view-button {
@@ -2829,10 +2826,9 @@ span.entry-icon > svg {
   gap: 2px;
   padding: 2px;
   border-radius: var(--radius-sm);
-  background: var(--surface-island);
+  background: var(--surface-island-strong);
   border: 1px solid var(--border-color);
   box-shadow: var(--island-shadow);
-  backdrop-filter: blur(8px);
 }
 
 .image-zoom {

@@ -59,7 +59,7 @@ import {
 } from "./components/NotificationCenter";
 import { loadNotifications, saveNotifications } from "./lib/notifications";
 import type { AppNotification } from "./lib/notifications";
-import { useDocuments } from "./hooks/useDocuments";
+import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
 import { useFileWatch } from "./hooks/useFileWatch";
 import { useGitState } from "./hooks/useGitState";
 import { useLspConfig } from "./hooks/useLspConfig";
@@ -433,7 +433,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const docs = useDocuments(reportError);
+  const docs = useDocuments(reportError, workspaceRoot);
   const git = useGitState(workspaceRoot, reportError);
   /** 全量存盘并同步刷新 Git 变更列表，供失焦自动保存、退出前保存与保存按钮共用。 */
   const flushDirtyDocs = useCallback(async () => {
@@ -454,22 +454,6 @@ export default function App() {
   gitRef.current = git;
   /** 磁盘事件触发的 git 刷新防抖计时器；只留最后一趟，风暴期间不起中间的子进程。 */
   const gitDebounce = useRef<number | null>(null);
-
-  /**
-   * 语言服务「跳转到定义」落到别的文件时，由这里把那份文件开出来并定位。
-   *
-   * 处理者挂一次就够，内部读 ref 取最新的 openHit，所以依赖是空的：
-   * 进依赖会让每次渲染都重挂一遍 opener。
-   */
-  useEffect(() => {
-    setOpenTargetHandler((path, line, column) => {
-      void docsRef.current.openHit(path, line, column).catch((cause: unknown) => {
-        reportError(errorText(cause));
-      });
-      return true;
-    });
-    return () => setOpenTargetHandler(null);
-  }, [reportError]);
 
   /**
    * 把打开的文档对到语言服务上。
@@ -607,6 +591,22 @@ export default function App() {
   const setActiveTab = useCallback((next: string | null) => {
     setActiveTabByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
   }, []);
+
+  /**
+   * 语言服务「跳转到定义」落到别的文件时，由这里把那份文件开出来并定位。
+   *
+   * 处理者内部通过 ref 取最新的 openHit 与 rootKey，跨文件跳转时同步激活目标文档页签。
+   */
+  useEffect(() => {
+    setOpenTargetHandler((path, line, column) => {
+      setActiveTab(`doc|${path}`);
+      void docsRef.current.openHit(path, line, column).catch((cause: unknown) => {
+        reportError(errorText(cause));
+      });
+      return true;
+    });
+    return () => setOpenTargetHandler(null);
+  }, [reportError, setActiveTab]);
   /** 页签栏的排列顺序，按根隔离，只装标签 id；栏上有什么仍由各自的来源说。 */
   const [tabOrderByRoot, setTabOrderByRoot] = useState<Record<string, string[]>>({});
   const tabOrder = useMemo(
@@ -687,17 +687,19 @@ export default function App() {
   const run = useRunSessions(configs);
 
   const dockedPane = BOTTOM_ORDER.find((key) => places[key] === "docked") ?? null;
-  /** 当前激活根下的打开文档列表。 */
+  /** 当前激活根下的打开文档列表（按打开时绑定的所属工作区隔离，支持外部库跳转与父级仓库虚拟文档）。 */
   const visibleDocs = useMemo(
     () =>
       workspaceRoot
-        ? docs.documents.filter((doc) => pathWithin(workspaceRoot, doc.path))
+        ? docs.documents.filter((doc) => belongsToRoot(doc, workspaceRoot))
         : docs.documents,
     [docs.documents, workspaceRoot]
   );
-  /** 当前那篇文档：只有选中的是当前根下的文档标签时才算「在看」。 */
+  /** 当前那篇文档：只有选中的是当前根下的文档标签时才算「在看」（走 samePath 兼容 Windows 盘符大小写差异）。 */
   const shownDoc = activeTab && activeTab.startsWith("doc|") ? activeTab.slice(4) : null;
-  const activeDoc = visibleDocs.find((doc) => doc.path === shownDoc) ?? null;
+  const activeDoc = shownDoc
+    ? (visibleDocs.find((doc) => samePath(doc.path, shownDoc)) ?? null)
+    : null;
   const activeDiffTab =
     activeTab && activeTab.startsWith("diff|")
       ? (diffs.find((tab) => tab.id === activeTab.slice(5)) ?? null)
@@ -708,14 +710,22 @@ export default function App() {
 
   /** 切根或切页签后，让 docs.activePath 与当前根正在看的文档对齐，保证目录树高亮与保存落点一致。 */
   useEffect(() => {
-    if (shownDoc && visibleDocs.some((doc) => doc.path === shownDoc)) {
-      if (docs.activePath !== shownDoc) docs.setActivePath(shownDoc);
-      return;
+    if (shownDoc) {
+      const matched = visibleDocs.find((doc) => samePath(doc.path, shownDoc));
+      if (matched) {
+        if (docs.activePath !== matched.path) docs.setActivePath(matched.path);
+        if (activeTab !== `doc|${matched.path}`) setActiveTab(`doc|${matched.path}`);
+        return;
+      }
     }
-    if (docs.activePath && workspaceRoot && !pathWithin(workspaceRoot, docs.activePath)) {
+    if (
+      docs.activePath &&
+      workspaceRoot &&
+      !visibleDocs.some((doc) => samePath(doc.path, docs.activePath!))
+    ) {
       docs.setActivePath(visibleDocs[0]?.path ?? null);
     }
-  }, [docs, shownDoc, visibleDocs, workspaceRoot]);
+  }, [activeTab, docs, setActiveTab, shownDoc, visibleDocs, workspaceRoot]);
 
   useEffect(() => {
     patchHistory({
@@ -828,9 +838,10 @@ export default function App() {
     (changedRoot: string, paths: string[]) => {
       // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
       void docsRef.current.noteExternalChange(paths);
-      // 只有当前激活根的磁盘事件才触发当前目录树局部刷新与 Git 变更刷新。
-      if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
+      // 目录树缓存跨根常驻保留，后台根的磁盘变动同样按路径作废对应目录缓存，确保切回时展示最新内容。
       refreshPaths(paths);
+      // 只有当前激活根的磁盘事件才触发当前 Git 变更刷新。
+      if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
       // 构建期间每 150-300ms 就来一批事件，每批都起一个 git status 子进程的话
       // 就是持续失血：抖 500ms，风暴停下来才问一次最终状态。目录树那边是
       // 即时精确作废的，不跟着等。
@@ -1179,7 +1190,7 @@ export default function App() {
       void closeTermsForRoot(targetRoot);
       run.closeSessionsForRoot(targetRoot);
       for (const doc of docs.documents) {
-        if (pathWithin(targetRoot, doc.path)) {
+        if (belongsToRoot(doc, targetRoot)) {
           disposeModel(doc.path);
         }
       }
@@ -1299,17 +1310,17 @@ export default function App() {
       const keepSettingsActive = activeTab === "settings" && settingsTab;
 
       if (settings.workspaceMode === "single") {
-        // 单工作区模式：若所选不是已常驻的后台根，关闭当前激活根再切过去；不触碰之前常驻隐藏的其它根。
-        if (
-          workspaceRoot &&
-          !samePath(workspaceRoot, existing) &&
-          openFolders.length <= 1
-        ) {
+        // 单工作区模式：若所选不是已常驻的后台根，关闭当前激活根并就地替换；不触碰其它已常驻的根。
+        const alreadyOpen = openFolders.some((item) => samePath(item, existing));
+        if (workspaceRoot && !samePath(workspaceRoot, existing) && !alreadyOpen) {
           performCloseRoot(workspaceRoot);
         }
         setOpenFolders((prev) => {
           if (prev.length <= 1) return [existing];
-          return prev.some((item) => samePath(item, existing)) ? prev : [...prev, existing];
+          if (prev.some((item) => samePath(item, existing))) return prev;
+          return workspaceRoot
+            ? prev.map((item) => (samePath(item, workspaceRoot) ? existing : item))
+            : [...prev, existing];
         });
       } else {
         setOpenFolders((prev) =>
@@ -1483,7 +1494,7 @@ export default function App() {
   /** 工作区里那份文件现在的文本：编辑器里没存的改动比磁盘新，删掉了就是空。 */
   const worktreeText = useCallback(
     async (absolute: string, deleted: boolean) => {
-      const openDoc = docs.documents.find((doc) => doc.path === absolute);
+      const openDoc = docs.documents.find((doc) => samePath(doc.path, absolute));
       if (openDoc && docs.dirty(absolute)) return openDoc.contents;
       if (deleted) return "";
       return (await readFile(absolute)).contents;
@@ -1525,7 +1536,7 @@ export default function App() {
           const original = staged
             ? await gitShow(root, "HEAD", baseAbsolute)
             : await gitIndexShow(root, baseAbsolute).catch(() => "");
-          const openDoc = docs.documents.find((doc) => doc.path === absolute);
+          const openDoc = docs.documents.find((doc) => samePath(doc.path, absolute));
           // 已暂存对比右侧是索引内容；未暂存对比右侧是工作区，编辑器未保存改动优先。
           const modified = staged
             ? await gitIndexShow(root, absolute)
@@ -2378,6 +2389,8 @@ export default function App() {
         if (kind === "newFile" && dir) {
           const created = await createFile(joinPath(dir, name));
           refreshTree();
+          // 新建文件后立即切到新文件的页签并打开。
+          setActiveTab(`doc|${created.path}`);
           void docs.open(created.path);
         }
         if (kind === "newBranch") {
@@ -2606,8 +2619,19 @@ export default function App() {
   useEffect(() => {
     if (!activeTab) return;
     if (tabCatalog.some((tab) => tab.id === activeTab)) return;
+    // 兼容 Windows 盘符大小写差异：若目标文档已在目录中但路径大小写不同，对齐到目录中的真实标签 id。
+    if (activeTab.startsWith("doc|")) {
+      const targetPath = activeTab.slice(4);
+      const matched = tabCatalog.find(
+        (tab) => tab.kind === "doc" && samePath(tab.id.slice(4), targetPath)
+      );
+      if (matched) {
+        setActiveTab(matched.id);
+        return;
+      }
+    }
     setActiveTab(tabs[tabs.length - 1]?.id ?? null);
-  }, [activeTab, tabCatalog, tabs]);
+  }, [activeTab, setActiveTab, tabCatalog, tabs]);
 
   const selectTab = useCallback(
     (id: string) => {

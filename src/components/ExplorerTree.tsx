@@ -233,8 +233,9 @@ export default function ExplorerTree({
   /** 被 .gitignore 忽略的路径判定；命中的行文字变橙棕色（对齐 IDEA）。 */
   const isIgnored = useIgnoredPaths(repoRoot, refresh, !showIgnored);
 
-  // 切换工作区根时恢复该根已有的展开集，不清空。
+  // 切换工作区根时恢复该根已有的展开集，并清除上一项目遗留的顶层错误提示。
   useEffect(() => {
+    setError(null);
     setExpandedState(expandedByRootRef.current.get(pathKey(root)) ?? new Set());
   }, [root]);
 

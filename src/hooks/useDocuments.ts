@@ -31,6 +31,8 @@ export interface RevealTarget {
 export interface OpenDocument {
   /** 文件绝对路径，同时作为标签的唯一键。 */
   path: string;
+  /** 打开该文档时所属的工作区根目录；用于多工作区页签隔离（含跳转到外部库或父级仓库的文件）。 */
+  root: string;
   /** 显示名（不含路径）。 */
   name: string;
   /** 按扩展名判定的文档类型，决定能开哪些视图。 */
@@ -85,7 +87,15 @@ function defaultView(kind: DocKind): DocView {
 
 const nameOf = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function useDocuments(reportError: (message: string) => void) {
+/** 判定一篇文档是否归属于指定工作区根：优先按打开时记录的所属根匹配，确保外部库跳转与父级仓库虚拟文档归属正确。 */
+export function belongsToRoot(doc: OpenDocument, targetRoot: string): boolean {
+  return doc.root ? samePath(doc.root, targetRoot) : pathWithin(targetRoot, doc.path);
+}
+
+export function useDocuments(
+  reportError: (message: string) => void,
+  workspaceRoot: string | null = null
+) {
   const [documents, setDocuments] = useState<OpenDocument[]>([]);
   const [activePath, writeActivePath] = useState<string | null>(null);
   /** 等着被编辑器消费的那一处定位；一次只挂一个，跳完就清。 */
@@ -96,6 +106,9 @@ export function useDocuments(reportError: (message: string) => void) {
   listRef.current = documents;
   const activeRef = useRef<string | null>(activePath);
   activeRef.current = activePath;
+  /** 记录当前激活的工作区根，供异步或全局跳转打开文档时绑定所属工作区。 */
+  const rootRef = useRef<string>(workspaceRoot ?? "");
+  rootRef.current = workspaceRoot ?? "";
   /** 正在写盘的文件锁：防止编辑器失焦、切标签与窗口失焦同刻触发时对同一文件并发写盘。 */
   const savingRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
@@ -134,45 +147,52 @@ export function useDocuments(reportError: (message: string) => void) {
    */
   const open = useCallback(
     async (path: string, at?: { line: number; column?: number; length?: number }) => {
-      activate(path);
+      const ownerRoot = rootRef.current;
+      const current = listRef.current;
+      const existing = current.find((item) => samePath(item.path, path));
+      const targetPath = existing?.path ?? path;
+      activate(targetPath);
       if (at) {
         revealSeq.current += 1;
         setReveal({
-          path,
+          path: targetPath,
           line: Math.max(1, at.line),
           column: Math.max(1, at.column ?? 1),
           length: Math.max(0, at.length ?? 0),
           token: revealSeq.current,
         });
       }
-      const current = listRef.current;
       /**
        * 已经开着的不再读盘：读回来那份会直接盖掉 `contents`/`baseline`，
        * 用户没保存的改动就静默没了，不进撤销栈也报不出错。
        * 加载中（标签已显示、正文还在飞）同样退出，否则会并发起第二次读。
        * 只有上次读取失败的才放行，让「再点一次」等于重试。
        */
-      const existing = current.find((item) => samePath(item.path, path));
-      if (existing && existing.error === null) return;
-      if (!current.some((item) => samePath(item.path, path))) write([...current, placeholder(path)]);
-      const kind = docKindOf(path);
+      if (existing && existing.error === null) {
+        if (ownerRoot && !samePath(existing.root, ownerRoot)) {
+          upsert({ ...existing, root: ownerRoot });
+        }
+        return;
+      }
+      if (!existing) write([...current, placeholder(targetPath, ownerRoot)]);
+      const kind = docKindOf(targetPath);
       try {
         // 已知的二进制格式：读不出文本也没有预览，打开前就说明，别等 readFile 报错。
         if (kind === "binary") {
           upsert({
-            ...placeholder(path),
+            ...placeholder(targetPath, ownerRoot),
             kind,
             readOnly: true,
             loading: false,
-            error: codedError("BINARY", path),
+            error: codedError("BINARY", targetPath),
           });
           return;
         }
         // 位图是二进制，readFile 会以非 UTF-8 拒收，所以只取指纹，正文交给 asset 协议。
         if (!hasTextContent(kind)) {
-          const stamp = await fileStamp(path);
+          const stamp = await fileStamp(targetPath);
           upsert({
-            ...placeholder(path),
+            ...placeholder(targetPath, ownerRoot),
             kind,
             readOnly: true,
             loading: false,
@@ -182,14 +202,15 @@ export function useDocuments(reportError: (message: string) => void) {
           });
           return;
         }
-        const content = await readFile(path);
+        const content = await readFile(targetPath);
         // svg 两样都要：正文给源码视图，指纹给图片视图做缓存失效。
         const stamp = previewsFromDisk(kind)
-          ? await fileStamp(path).catch(() => null)
+          ? await fileStamp(targetPath).catch(() => null)
           : null;
         upsert({
-          path,
-          name: nameOf(path),
+          path: targetPath,
+          root: ownerRoot,
+          name: nameOf(targetPath),
           kind,
           view: at && kind !== "text" ? "source" : defaultView(kind),
           onDisk: true,
@@ -197,7 +218,7 @@ export function useDocuments(reportError: (message: string) => void) {
           baseline: content.contents,
           lineEnding: content.lineEnding,
           hasBom: content.hasBom,
-          language: languageForPath(path),
+          language: languageForPath(targetPath),
           readOnly: false,
           loading: false,
           error: null,
@@ -206,7 +227,13 @@ export function useDocuments(reportError: (message: string) => void) {
         });
       } catch (cause) {
         const message = errorText(cause);
-        upsert({ ...placeholder(path), kind, readOnly: true, loading: false, error: message });
+        upsert({
+          ...placeholder(targetPath, ownerRoot),
+          kind,
+          readOnly: true,
+          loading: false,
+          error: message,
+        });
         reportError(message);
       }
     },
@@ -231,8 +258,12 @@ export function useDocuments(reportError: (message: string) => void) {
    */
   const openHit = useCallback(
     async (path: string, line: number, column?: number, length?: number) => {
+      const ownerRoot = rootRef.current;
       const existing = listRef.current.find((item) => samePath(item.path, path));
       if (existing && !existing.loading) {
+        if (ownerRoot && !samePath(existing.root, ownerRoot)) {
+          upsert({ ...existing, root: ownerRoot });
+        }
         activate(existing.path);
         revealSeq.current += 1;
         setReveal({
@@ -248,7 +279,7 @@ export function useDocuments(reportError: (message: string) => void) {
       }
       await open(path, { line, column, length });
     },
-    [activate, open, setView]
+    [activate, open, setView, upsert]
   );
 
   const update = useCallback(
@@ -263,11 +294,14 @@ export function useDocuments(reportError: (message: string) => void) {
   /** 把一份不在磁盘上的文本（某个版本下的文件）当只读文档开出来。 */
   const openVirtual = useCallback(
     (path: string, contents: string, language: string) => {
-      activate(path);
+      const ownerRoot = rootRef.current;
+      const targetPath = listRef.current.find((item) => samePath(item.path, path))?.path ?? path;
+      activate(targetPath);
       upsert({
-        path,
-        name: nameOf(path),
-        kind: docKindOf(path),
+        path: targetPath,
+        root: ownerRoot,
+        name: nameOf(targetPath),
+        kind: docKindOf(targetPath),
         // 虚拟文档不在磁盘上：svg 的图片视图取不到，留在源码；markdown 预览仍可用。
         view: "source",
         onDisk: false,
@@ -292,8 +326,10 @@ export function useDocuments(reportError: (message: string) => void) {
    */
   const openNotice = useCallback(
     (path: string, error: string) => {
-      activate(path);
-      upsert({ ...placeholder(path), readOnly: true, loading: false, error });
+      const ownerRoot = rootRef.current;
+      const targetPath = listRef.current.find((item) => samePath(item.path, path))?.path ?? path;
+      activate(targetPath);
+      upsert({ ...placeholder(targetPath, ownerRoot), readOnly: true, loading: false, error });
     },
     [activate, upsert]
   );
@@ -366,7 +402,7 @@ export function useDocuments(reportError: (message: string) => void) {
   const saveAllForRoot = useCallback(
     async (root: string): Promise<number> => {
       const dirty = listRef.current.filter(
-        (doc) => !doc.readOnly && doc.contents !== doc.baseline && pathWithin(root, doc.path)
+        (doc) => !doc.readOnly && doc.contents !== doc.baseline && belongsToRoot(doc, root)
       );
       let done = 0;
       for (const doc of dirty) {
@@ -481,10 +517,10 @@ export function useDocuments(reportError: (message: string) => void) {
   /** 关闭指定工作区根下的全部文档，保留其它常驻根已打开的文档不动。 */
   const closeForRoot = useCallback(
     (root: string) => {
-      const survivors = listRef.current.filter((item) => !pathWithin(root, item.path));
+      const survivors = listRef.current.filter((item) => !belongsToRoot(item, root));
       write(survivors);
       const active = activeRef.current;
-      if (active !== null && pathWithin(root, active)) {
+      if (active !== null && !survivors.some((item) => samePath(item.path, active))) {
         activate(survivors[survivors.length - 1]?.path ?? null);
       }
     },
@@ -505,7 +541,7 @@ export function useDocuments(reportError: (message: string) => void) {
   const hasDirtyForRoot = useCallback(
     (root: string) =>
       documents.some(
-        (doc) => !doc.readOnly && doc.contents !== doc.baseline && pathWithin(root, doc.path)
+        (doc) => !doc.readOnly && doc.contents !== doc.baseline && belongsToRoot(doc, root)
       ),
     [documents]
   );
@@ -562,10 +598,11 @@ export function useDocuments(reportError: (message: string) => void) {
   );
 }
 
-function placeholder(path: string): OpenDocument {
+function placeholder(path: string, root: string): OpenDocument {
   const kind = docKindOf(path);
   return {
     path,
+    root,
     name: nameOf(path),
     kind,
     view: defaultView(kind),

@@ -8,8 +8,9 @@
   --bg-active: #e5e7eb;
   --chrome-bg: #f8fafc;
   --app-bg: #eef2f7;
-  --surface-island: rgba(255, 255, 255, 0.78);
-  --surface-island-strong: rgba(255, 255, 255, 1);
+  /* 浮层、菜单与弹出框一律采用 IDEA 风格的实心不透明背景，禁止透出底层文字。 */
+  --surface-island: #ffffff;
+  --surface-island-strong: #ffffff;
   --surface-island-muted: rgba(248, 250, 252, 0.72);
   --island-shadow:
     0 14px 34px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.72);
@@ -82,8 +83,9 @@
   --bg-active: #2a2a2a;
   --chrome-bg: #141414;
   --app-bg: #050505;
-  --surface-island: rgba(17, 17, 17, 0.78);
-  --surface-island-strong: rgba(24, 24, 24, 1);
+  /* 深色档浮层同样使用实心不透明底色。 */
+  --surface-island: #181818;
+  --surface-island-strong: #181818;
   --surface-island-muted: rgba(20, 20, 20, 0.68);
   --island-shadow:
     0 16px 40px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.035);

@@ -152,7 +152,10 @@ export default function RunControls({
       icon: Pencil,
       // 识别出来的那条改不了本体：先存成自己的，再改那一份。
       hint: config.generated ? t("run.editGeneratedHint") : undefined,
-      onSelect: () => onEditConfigs(),
+      onSelect: () => {
+        setOpen(false);
+        onEditConfigs();
+      },
     },
     {
       label: config.pinned ? t("run.unpin") : t("run.pin"),
@@ -235,8 +238,9 @@ export default function RunControls({
                           title={`${config.name}\n${blocked ?? resolveCommand(config.command, configs.tools)}`}
                           onClick={() => {
                             if (blocked) return;
-                            // 点条目本身只是选中；要跑就点右边那颗三角，和 IDEA 一样分两件事。
+                            // 点条目本身选中该配置并收起下拉面板；要直接跑就点右边那颗三角，和 IDEA 一样分两件事。
                             configs.select(config.id);
+                            setOpen(false);
                           }}
                           onDoubleClick={() => {
                             if (!blocked) launch(config);
@@ -288,7 +292,14 @@ export default function RunControls({
           )}
 
           <div className="run-popover-foot">
-            <button type="button" className="text-button" onClick={onEditConfigs}>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                setOpen(false);
+                onEditConfigs();
+              }}
+            >
               <Wrench size={13} aria-hidden="true" />
               {t("run.editConfigs")}
             </button>

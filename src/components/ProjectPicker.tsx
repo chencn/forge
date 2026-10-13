@@ -48,9 +48,9 @@ export default function ProjectPicker({
 
   const name = root ? basenameOf(root) : null;
   const isMulti = mode === "multi";
-  /** 开启多工作区且已有打开的文件夹时，弹层始终显示「已打开」分组；超过 1 个时顶栏额外显示数量徽标。 */
-  const showOpenGroup = isMulti && openFolders.length > 0;
-  const showCountBadge = isMulti && openFolders.length > 1;
+  /** 开启多工作区或当前已有多个常驻文件夹时，弹层显示「已打开」分组，避免切回单工作区后后台文件夹无法查看与关闭。 */
+  const showOpenGroup = (isMulti && openFolders.length > 0) || openFolders.length > 1;
+  const showCountBadge = openFolders.length > 1;
   /** 「已打开」分组出现时，最近项目里过滤掉已在打开列表中的项，避免同一文件夹在弹层里上下重复出现。 */
   const visibleRecent = showOpenGroup
     ? recent.filter((path) => !openFolders.some((item) => samePath(item.path, path)))
