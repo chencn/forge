@@ -40,8 +40,9 @@ import {
   checkForUpdate,
   closeUpdate,
   currentVersion,
-  downloadAndInstall,
+  ensureCached,
   humanBytes,
+  installFromCache,
   isUpdateFlowBusy,
   relaunchApp,
   setUpdateStatus,
@@ -358,14 +359,15 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
 
   useEffect(() => watchUpdateFlowBusy(() => setFlowBusy(isUpdateFlowBusy())), []);
 
-  // 离开设置页或组件卸载时，若仍持有未安装的 Update 资源，及时释放后端句柄
+  // 离开设置页或组件卸载时，若仍持有空闲未使用的 Update 资源，及时释放后端句柄；
+  // 注意：若正在下载中或已进入安装流程，句柄由全局接管，严禁强杀。
   useEffect(() => {
     return () => {
-      if (updateInfo) {
+      if (updateInfo && updateStep !== "downloading" && updateStep !== "installed") {
         void closeUpdate(updateInfo.update);
       }
     };
-  }, [updateInfo]);
+  }, [updateInfo, updateStep]);
 
   /**
    * 检查更新：支持镜像加速代理前缀。
@@ -394,20 +396,22 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
   };
 
   /**
-   * 下载并安装，接入全局互斥锁与状态栏同步通知。
+   * 装这一版：包已在本地缓存就直接装，不在才下。接入全局互斥锁与状态栏同步通知。
    */
   const installUpdate = () => {
     if (!updateInfo) return;
+    const { update, version } = updateInfo;
     setProgress({ received: 0, total: null });
     setUpdateStep("downloading");
-    setUpdateStatus({ phase: "downloading", version: updateInfo.version });
-    downloadAndInstall(updateInfo.update, (report) => {
+    setUpdateStatus({ phase: "downloading", version });
+    ensureCached(update, (report) => {
       setProgress(report);
       setUpdateStatus({ downloadProgress: report });
     })
+      .then(() => installFromCache(update))
       .then(() => {
         setUpdateStep("installed");
-        setUpdateStatus({ phase: "ready", version: updateInfo.version });
+        setUpdateStatus({ phase: "ready", version });
       })
       .catch((error: unknown) => {
         setUpdateError(typeof error === "string" ? error : String(error));

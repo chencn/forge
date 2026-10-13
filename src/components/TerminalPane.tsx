@@ -15,11 +15,12 @@ import {
 import type { NativeScrollBinding } from "../lib/term";
 import { needTermSession, restartTermSession, termSessionFor, watchTermSession } from "../lib/termStore";
 import type { TermSession } from "../lib/termStore";
-import { errorText } from "../lib/fs";
+import { errorText, openExternal } from "../lib/fs";
 import { describeError } from "../lib/errors";
 import { monoFont } from "../lib/monacoEnv";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
+import { attachTerminalUrls, isHttpUrl } from "../lib/termUrl";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
@@ -95,6 +96,9 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
     term.open(scrollPort.sticky);
     termRef.current = term;
 
+    // 装配 URL 点击打开与划选复制
+    const urlHandler = attachTerminalUrls(term);
+
     const nativeScroll = bindNativeScroll(host, scrollPort.spacer, term);
     scrollRef.current = nativeScroll;
 
@@ -117,6 +121,7 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
 
     return () => {
       observer.disconnect();
+      urlHandler.dispose();
       nativeScroll.dispose();
       scrollRef.current = null;
       input.dispose();
@@ -207,10 +212,26 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
   const requestMenu = (event: ReactMouseEvent) => {
     event.preventDefault();
     const term = termRef.current;
+    const selection = term?.getSelection()?.trim() ?? "";
+    const selectedUrl = isHttpUrl(selection) ? selection : null;
+
     setMenu({
       x: event.clientX,
       y: event.clientY,
       items: [
+        ...(selectedUrl
+          ? [
+              {
+                label: t("terminal.openLink"),
+                onSelect: () => void openExternal(selectedUrl).catch(() => {}),
+              },
+              {
+                label: t("terminal.copyLink"),
+                onSelect: () => void navigator.clipboard.writeText(selectedUrl).catch(() => {}),
+              },
+              { separator: true },
+            ]
+          : []),
         {
           label: t("action.copy"),
           disabled: !(term?.hasSelection() ?? false),

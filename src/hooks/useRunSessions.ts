@@ -143,6 +143,9 @@ export function useRunSessions(configs: RunConfigController) {
   /**
    * 跑一条配置。先把占位展开、辅助文件落盘，再交给进程通道。
    * 这两步任一步失败都不该留下一个跑了一半的会话，所以都在 invoke 之前做完。
+   *
+   * 同一工作区下的同一个启动项（按 `config.id` 识别）永远复用已有的会话窗口/页签：
+   * 若已有同名同 ID 的会话（无论正在运行还是已结束），先停掉旧进程并就地替换，不重复开新窗口。
    */
   const startInto = useCallback(
     (config: RunConfiguration, replaceId: ProcSessionId | null, explicitRoot?: string) => {
@@ -158,6 +161,17 @@ export function useRunSessions(configs: RunConfigController) {
         }));
         return;
       }
+
+      // 查找当前工作区下属于同一启动项的已有会话：停掉还在跑的旧实例并准备复用槽位。
+      // 注意：不要在启动前过早删除旧会话终端 Buffer，避免异步期间终端白屏闪烁或启动失败导致历史丢失。
+      const existingSameConfig = sessionsRef.current.filter(
+        (item) => samePath(item.root, targetRoot) && item.config.id === config.id
+      );
+      for (const old of existingSameConfig) {
+        if (old.status === "running") stop(old.id);
+      }
+      const effectiveReplaceId = replaceId ?? existingSameConfig[0]?.id ?? null;
+
       const command = resolveCommand(config.command, configs.tools);
       const dir = config.workingDir ? joinPath(targetRoot, config.workingDir) : targetRoot;
       void (async () => {
@@ -165,8 +179,9 @@ export function useRunSessions(configs: RunConfigController) {
         return procStart(dir, command, config.env);
       })().then(
         (id) => {
-          // 后端可能在 promise 落地前就吐了首块输出，命令行只能补在前面。
-          buffersRef.current.set(id, [ENCODER.encode(`$ ${command}\r\n`)]);
+          // 后端可能在 promise 落地前就吐了首块输出，命令行补在最前面，保留已到达的输出。
+          const existing = buffersRef.current.get(id) ?? [];
+          buffersRef.current.set(id, [ENCODER.encode(`$ ${command}\r\n`), ...existing]);
           const entry: RunSession = {
             id,
             root: targetRoot,
@@ -178,12 +193,36 @@ export function useRunSessions(configs: RunConfigController) {
             exit: null,
           };
           setAllSessions((list) => {
-            if (replaceId === null) return [...list, entry];
-            // 重跑就地替换：IDEA 的 restart 在原标签页上重开，不新开一个。
-            const index = list.findIndex((session) => session.id === replaceId);
+            // 优先按 effectiveReplaceId 或同一工作区 + 同一 config.id 原位替换，同时剔除可能残留的重复项。
+            const index = list.findIndex(
+              (session) =>
+                (effectiveReplaceId !== null && session.id === effectiveReplaceId) ||
+                (samePath(session.root, targetRoot) && session.config.id === config.id)
+            );
             if (index < 0) return [...list, entry];
-            const next = list.slice();
-            next[index] = entry;
+            const next: RunSession[] = [];
+            let replaced = false;
+            for (let i = 0; i < list.length; i++) {
+              const item = list[i];
+              const isSameTarget =
+                (effectiveReplaceId !== null && item.id === effectiveReplaceId) ||
+                (samePath(item.root, targetRoot) && item.config.id === config.id);
+              if (isSameTarget) {
+                if (!replaced) {
+                  next.push(entry);
+                  replaced = true;
+                  // 新实例成功上屏后，再安全清理旧会话的终端缓存
+                  if (item.id !== id) {
+                    buffersRef.current.delete(item.id);
+                  }
+                } else {
+                  if (item.status === "running") stop(item.id);
+                  buffersRef.current.delete(item.id);
+                }
+              } else {
+                next.push(item);
+              }
+            }
             return next;
           });
           setActiveIdByRoot((prev) => ({ ...prev, [key]: id }));
@@ -195,11 +234,11 @@ export function useRunSessions(configs: RunConfigController) {
           }))
       );
     },
-    [configs, cwd, t]
+    [configs, cwd, stop, t]
   );
 
   const start = useCallback(
-    (config: RunConfiguration) => startInto(config, null),
+    (config: RunConfiguration, explicitRoot?: string) => startInto(config, null, explicitRoot),
     [startInto]
   );
 
@@ -328,6 +367,7 @@ export function useRunSessions(configs: RunConfigController) {
   return useMemo(
     () => ({
       sessions,
+      allSessions,
       activeId,
       setActiveId,
       activeSession,
@@ -348,6 +388,7 @@ export function useRunSessions(configs: RunConfigController) {
       activeId,
       activeRunning,
       activeSession,
+      allSessions,
       bufferOf,
       clearAll,
       closeSession,

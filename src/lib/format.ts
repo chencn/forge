@@ -1,8 +1,8 @@
 const SEPARATOR_PATTERN = /[\\/]/;
 
-/** 判断是否为 Windows 风格路径（盘符或 UNC）。 */
+/** 判断是否为 Windows 风格路径（盘符或 UNC）。兼容正反双斜杠前缀。 */
 export function isWindowsPath(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("//");
 }
 
 /** 取路径当前风格的分隔符。 */
@@ -108,9 +108,12 @@ export function patchStem(path: string): string {
   return stem === "" ? name : stem;
 }
 
-/** 统一分隔符与末尾斜杠；Windows 形状的路径再忽略大小写。 */
+/** 统一分隔符与末尾斜杠；Windows 形状的路径再忽略大小写。保留单个根斜杠 "/"。 */
 function normPath(p: string): string {
-  const flat = p.replace(/\\/g, "/").replace(/\/+$/, "");
+  let flat = p.replace(/\\/g, "/");
+  if (flat.length > 1 && flat.endsWith("/")) {
+    flat = flat.replace(/\/+$/, "");
+  }
   return isWindowsPath(flat) ? flat.toLowerCase() : flat;
 }
 
@@ -140,7 +143,9 @@ export function canonicalPath(path: string): string {
 export function pathWithin(ancestor: string, path: string): boolean {
   const base = normPath(ancestor);
   const target = normPath(path);
-  return target === base || target.startsWith(`${base}/`);
+  if (target === base) return true;
+  const prefix = base.endsWith("/") ? base : `${base}/`;
+  return target.startsWith(prefix);
 }
 
 /**

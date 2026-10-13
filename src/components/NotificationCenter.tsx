@@ -115,14 +115,17 @@ export function NotificationToasts({
   toasts,
   position = "bottom-right",
   onDismiss,
+  children,
 }: {
   toasts: AppNotification[];
   position?: NotificationPosition;
   onDismiss: (id: string) => void;
+  children?: React.ReactNode;
 }) {
-  if (toasts.length === 0) return null;
+  if (toasts.length === 0 && !children) return null;
   return (
     <div className={`notification-toasts-host is-${position}`} aria-live="polite">
+      {children}
       {toasts.map((item) => (
         <NotificationToast
           key={item.id}

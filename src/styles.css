@@ -1523,6 +1523,19 @@ span.entry-icon > svg {
   text-align: center;
 }
 
+/* 活动栏「运行」入口右下角的存活绿点（IDEA Execution Live Indicator）。 */
+.rail-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--run-badge-running);
+  box-shadow: 0 0 0 1.5px var(--bg-secondary);
+  pointer-events: none;
+}
+
 /* 底部工具窗口的入口钉在活动栏下端，和上面的项目 / 提交分开。 */
 .rail-spacer {
   flex: 1;
@@ -1560,6 +1573,7 @@ span.entry-icon > svg {
 }
 
 .tool-window-title {
+  flex: none;
   min-width: 0;
   font-size: 11px;
   font-weight: 600;
@@ -1589,6 +1603,61 @@ span.entry-icon > svg {
   min-height: 0;
   overflow-y: auto;
   background: var(--bg-primary);
+}
+
+/* 参照 IDEA `ProgressDialogUI.kt` 的居中模态进度框（用于批量删除文件 / 递归删除大目录）。 */
+.progress-dialog {
+  width: min(450px, 100%);
+  padding: 16px 18px 16px;
+}
+
+.progress-dialog-text {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-dialog-bar {
+  position: relative;
+  height: 4px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--border-color);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-dialog-bar-indeterminate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 38%;
+  border-radius: 999px;
+  background: var(--accent-blue);
+  animation: progress-indeterminate 1150ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    left: -38%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.progress-dialog-details {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .panel-note {
@@ -1824,6 +1893,10 @@ span.entry-icon > svg {
 }
 
 .run-session {
+  /* 单个运行页签限制最大宽度并允许在窄栏下收缩，绝不折行。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
   display: flex;
   align-items: center;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
@@ -1839,6 +1912,8 @@ span.entry-icon > svg {
 }
 
 .run-session-tab {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1846,6 +1921,16 @@ span.entry-icon > svg {
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 启动项名称单行显示，超出部分用省略号截断，防止连字符或长名称断成两行。 */
+.run-session-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .run-session.is-active .run-session-tab {
@@ -1853,6 +1938,7 @@ span.entry-icon > svg {
 }
 
 .run-session-close {
+  flex: none;
   width: 18px;
   height: 18px;
   margin-right: 3px;
@@ -2278,6 +2364,9 @@ span.entry-icon > svg {
 }
 
 .run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 11.5px;
   white-space: nowrap;
@@ -3541,6 +3630,25 @@ span.entry-icon > svg {
   color: var(--text-primary);
 }
 
+.status-note.is-delete-status {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+
+.status-note.is-delete-status.is-done {
+  color: var(--accent-green-text);
+}
+
+.status-delete-spin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--accent-blue-text);
+}
+
 /* 状态栏右下角的更新指示器：各阶段图标+紧凑文字，高亮待重启/可用态。 */
 .status-update {
   display: inline-flex;
@@ -4738,3 +4846,161 @@ span.entry-icon > svg {
   background: var(--accent-amber-bg);
   color: var(--accent-amber-text);
 }
+
+/* 构建依赖自动检测与同步提示卡片 (IDEA Auto-Import Notification Balloon) */
+.dep-sync-card {
+  pointer-events: auto;
+  /* 对齐 IDEA BalloonLayoutConfiguration.FixedWidth = 360px 与 NotificationBalloonRoundShadowBorderProvider.CORNER_RADIUS = 12px */
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  /* 对齐 IDEA Notification.borderInsets(4,4,6,0) + 三行布局 topSpaceHeight=7, bottomSpaceHeight=8 */
+  padding: 11px 14px 14px 14px;
+  border-radius: 12px;
+  background: var(--idea-notification-bg);
+  border: 1px solid var(--idea-notification-border);
+  box-shadow: var(--idea-notification-shadow);
+  display: flex;
+  align-items: flex-start;
+  position: relative;
+  animation: notification-slide-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dep-sync-card-lead {
+  /* 对齐 IDEA BalloonLayoutConfiguration: iconPanelWidth = 32px (16px icon + 右侧 12px 间距), 顶对齐第一行标题 */
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 28px;
+  padding-top: 1px;
+  flex-shrink: 0;
+}
+
+.dep-sync-info-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.dep-sync-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.dep-sync-card-title {
+  /* 对齐 IDEA NotificationsUtil.buildHtml 标题单行加粗与 closeOffset=28px 留白 */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--idea-notification-fg);
+  padding-right: 24px;
+  margin-bottom: 3px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dep-sync-card-desc {
+  /* 对齐 IDEA PackageJsonUpdateNotifier "来自 <a href>package.json</a>" 正文行 */
+  font-size: 13px;
+  color: var(--idea-notification-fg);
+  line-height: 18px;
+  word-break: break-word;
+}
+
+.dep-sync-file-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--idea-notification-link);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.dep-sync-file-link:hover {
+  text-decoration: underline;
+}
+
+.dep-sync-card-actions {
+  /* 对齐 IDEA CenteredLayoutWithActions: contentActionsSpaceHeight=7px, HorizontalLayout(actionGap=16px, CENTER) */
+  margin-top: 9px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.dep-sync-action-btn {
+  /* 对齐 IDEA NotificationsManagerImpl.createActionPanel (isSuggestionType=true) 的描边 JButton (Notification.Button) */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  background: var(--idea-notification-btn-bg);
+  border: 1px solid var(--idea-notification-btn-border);
+  color: var(--idea-notification-btn-fg);
+  transition: background 100ms ease, border-color 100ms ease;
+}
+
+.dep-sync-action-btn:hover {
+  background: var(--idea-notification-btn-hover-bg);
+}
+
+.dep-sync-action-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -1px;
+}
+
+.dep-sync-action-link {
+  /* 对齐 IDEA NotificationsManagerImpl.createAction 的 LinkLabel (Notification.linkForeground) */
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--idea-notification-link);
+  cursor: pointer;
+}
+
+.dep-sync-action-link:hover {
+  text-decoration: underline;
+}
+
+.dep-sync-card-close {
+  /* 对齐 IDEA NotificationBalloonActionProvider: 右上角关闭按钮，悬停气泡时显示，悬停按钮自身时绘 6px 圆角浅底 */
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--idea-notification-close-icon);
+  opacity: 0;
+  transition: opacity 100ms ease, background 100ms ease, border-color 100ms ease;
+}
+
+.dep-sync-card:hover .dep-sync-card-close,
+.dep-sync-card:focus-within .dep-sync-card-close {
+  opacity: 1;
+}
+
+.dep-sync-card-close:hover {
+  background: var(--idea-notification-icon-hover-bg);
+  border-color: var(--idea-notification-icon-hover-border);
+}
+

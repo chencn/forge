@@ -51,6 +51,20 @@
   --accent-yellow: #f59e0b;
   /* 被 .gitignore 忽略的文件在树里的文字色，取 IDEA 的 FILESTATUS_IDEA_FILESTATUS_IGNORED。 */
   --vcs-ignored: #8c4f00;
+  /* IDEA New UI (expUI_light_with_light_header.theme.json) Notification 气泡专属色板 */
+  --idea-notification-bg: #ffffff;
+  --idea-notification-border: #d3d5db;
+  --idea-notification-fg: #000000;
+  --idea-notification-link: #315fbd;
+  --idea-notification-btn-bg: #ffffff;
+  --idea-notification-btn-border: #c9ccd6;
+  --idea-notification-btn-fg: #000000;
+  --idea-notification-btn-hover-bg: #f7f8fa;
+  --idea-notification-icon-hover-bg: rgba(0, 0, 0, 0.05);
+  --idea-notification-icon-hover-border: #c9ccd6;
+  --idea-notification-info-icon: #4682fa;
+  --idea-notification-close-icon: #6c707e;
+  --idea-notification-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.06);
   --focus-ring: rgba(17, 24, 39, 0.06);
   --scrollbar-thumb: rgba(148, 163, 184, 0.58);
   --scrollbar-thumb-hover: rgba(100, 116, 139, 0.78);
@@ -122,6 +136,20 @@
   --accent-yellow: #fcd34d;
   /* 被 .gitignore 忽略的文件在树里的文字色（深色档，取 IDEA 的 D69A6B）。 */
   --vcs-ignored: #d69a6b;
+  /* IDEA New UI (expUI_dark.theme.json) Notification 气泡专属色板 */
+  --idea-notification-bg: #393b40;
+  --idea-notification-border: #43454a;
+  --idea-notification-fg: #f0f1f2;
+  --idea-notification-link: #6b9bfa;
+  --idea-notification-btn-bg: #393b40;
+  --idea-notification-btn-border: #6f737a;
+  --idea-notification-btn-fg: #ffffff;
+  --idea-notification-btn-hover-bg: #43454a;
+  --idea-notification-icon-hover-bg: rgba(255, 255, 255, 0.1);
+  --idea-notification-icon-hover-border: #5a5d63;
+  --idea-notification-info-icon: #548af7;
+  --idea-notification-close-icon: #a8adbd;
+  --idea-notification-shadow: 0 6px 20px rgba(0, 0, 0, 0.36), 0 2px 6px rgba(0, 0, 0, 0.24);
   --focus-ring: rgba(212, 212, 212, 0.14);
   --scrollbar-thumb: rgba(113, 113, 122, 0.68);
   --scrollbar-thumb-hover: rgba(161, 161, 170, 0.82);

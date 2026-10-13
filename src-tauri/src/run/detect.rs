@@ -46,7 +46,7 @@ fn regex(pattern: &str) -> Option<Regex> {
 /// 找构建文件的最大深度。再深就不是这个工程的模块了。
 const MAX_DEPTH: usize = 4;
 /// 整棵剪掉的目录名：构建产物、依赖、缓存。
-const SKIP_DIRS: &[&str] = &[
+pub(super) const SKIP_DIRS: &[&str] = &[
     "node_modules",
     ".git",
     ".idea",
@@ -138,7 +138,7 @@ struct Detector {
 }
 
 /// 把非空的片段用空格接成一行命令。
-fn line(parts: &[&str]) -> String {
+pub(super) fn line(parts: &[&str]) -> String {
     parts
         .iter()
         .filter(|part| !part.is_empty())
@@ -149,7 +149,7 @@ fn line(parts: &[&str]) -> String {
 
 /// 跑 `package.json` 脚本该喊哪个包管理器：按锁文件认，认不出来用 npm。
 /// 锁文件从脚本所在目录往上找到根——monorepo 里 `pnpm-lock.yaml` 常摆在仓库根而不是子包目录。
-fn npm_client(dir: &Path, root: &Path) -> &'static str {
+pub(super) fn npm_client(dir: &Path, root: &Path) -> &'static str {
     for (lock, client) in [
         ("bun.lockb", "bun"),
         ("bun.lock", "bun"),
@@ -165,7 +165,7 @@ fn npm_client(dir: &Path, root: &Path) -> &'static str {
 }
 
 /// 相对根目录的路径；根目录本身给空串。分隔符跟系统一致，前端拿到就能拼绝对路径。
-fn rel_path(root: &Path, path: &Path) -> String {
+pub(super) fn rel_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -178,7 +178,7 @@ fn line_at(text: &str, offset: usize) -> u32 {
 }
 
 /// 相对路径统一成 `/` 分隔：装订线那侧只认这一种写法。
-fn slashes(path: &str) -> String {
+pub(super) fn slashes(path: &str) -> String {
     path.replace('\\', "/")
 }
 
@@ -249,7 +249,7 @@ fn needs_quote(value: &str) -> bool {
 }
 
 /// 路径写成命令行里的一串，带空格或 cmd 的保留字符时才裹引号。
-fn quote(path: &str) -> String {
+pub(super) fn quote(path: &str) -> String {
     if path.is_empty() || path.starts_with('"') || !needs_quote(path) {
         return path.to_string();
     }
@@ -274,7 +274,7 @@ fn sub_dirs(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn is_skipped(entry: &walkdir::DirEntry) -> bool {
+pub(super) fn is_skipped(entry: &walkdir::DirEntry) -> bool {
     let name = entry.file_name();
     // 遍历里每个条目都要问一次，别为它现造一个小写 String。
     SKIP_DIRS
@@ -297,7 +297,7 @@ fn read_build_file(path: &Path, problems: &mut Vec<String>) -> Option<String> {
 }
 
 /// 往上找最近的那个自带构建脚本的目录——构建工具就在那里，多层模块共用根上那份 wrapper。
-fn nearest_ancestor_with(dir: &Path, root: &Path, names: &[&str]) -> Option<PathBuf> {
+pub(super) fn nearest_ancestor_with(dir: &Path, root: &Path, names: &[&str]) -> Option<PathBuf> {
     let mut current = Some(dir.to_path_buf());
     while let Some(path) = current {
         if names.iter().any(|name| path.join(name).is_file()) {
@@ -456,7 +456,7 @@ fn is_python_entry(text: &str) -> bool {
 ///
 /// program 可能带参数（如 Windows 的 `py -3`）：探测只认首个词，整段拿去
 /// `which` 的话磁盘上永远不存在叫 `py -3` 的文件，装了启动器反而被标成缺工具。
-fn program_missing(program: &str) -> Option<Unavailable> {
+pub(super) fn program_missing(program: &str) -> Option<Unavailable> {
     let head = program.split_whitespace().next().unwrap_or(program);
     if sys::which_program(head).is_empty() {
         return Some(Unavailable {
@@ -472,7 +472,7 @@ fn program_missing(program: &str) -> Option<Unavailable> {
 /// Windows 上优先官方启动器 `py -3`：`-3` 钉住大版本，装了多套 Python 时不会被老版本抢走。
 /// 商店装出来的 `WindowsApps\python.exe` 是 0 字节存根，`which` 拿得到、跑起来只会弹商店，
 /// 认出来就跳过。类 UNIX 常只有 `python3`，候选顺序保持原样。
-fn python_program() -> String {
+pub(super) fn python_program() -> String {
     if cfg!(windows) {
         if !sys::which_program("py").is_empty() {
             return "py -3".to_string();
@@ -565,7 +565,7 @@ fn toml_values(
         .collect()
 }
 
-fn maven_wrapper_names() -> (&'static str, &'static str) {
+pub(super) fn maven_wrapper_names() -> (&'static str, &'static str) {
     if cfg!(windows) {
         ("mvnw.cmd", "mvnw")
     } else {
@@ -573,7 +573,7 @@ fn maven_wrapper_names() -> (&'static str, &'static str) {
     }
 }
 
-fn gradle_wrapper_names() -> (&'static str, &'static str) {
+pub(super) fn gradle_wrapper_names() -> (&'static str, &'static str) {
     if cfg!(windows) {
         ("gradlew.bat", "gradlew")
     } else {

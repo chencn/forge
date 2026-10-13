@@ -4,8 +4,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::UNIX_EPOCH;
-use tauri::Manager;
+use std::time::{Duration, Instant, UNIX_EPOCH};
+use tauri::{Emitter, Manager};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -528,26 +528,119 @@ fn move_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     entry_at(Path::new(&to))
 }
 
+/// 删除进度事件载荷：对齐 IDEA `DeleteHandlerHelper.kt` + `LocalFileSystem.DELETE_CALLBACK`，
+/// 递归删除每删掉一个底层文件或目录就递增 `count`，按 50ms（20 FPS）节流推给前端模态进度框。
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct DeleteProgressPayload {
+    count: usize,
+    current: String,
+}
+
 #[tauri::command]
-pub async fn delete_entry(path: String) -> Result<(), String> {
+pub async fn delete_entry(app: tauri::AppHandle, path: String) -> Result<(), String> {
     block(move || {
         let _queued = fs_write_lock();
-        delete_entry_impl(path)
+        let mut count: usize = 0;
+        let mut last_emit = Instant::now()
+            .checked_sub(Duration::from_millis(60))
+            .unwrap_or_else(Instant::now);
+        let result = delete_entry_with_progress(&path, &mut |deleted_path| {
+            count += 1;
+            let now = Instant::now();
+            if now.duration_since(last_emit).as_millis() >= 50 {
+                last_emit = now;
+                let current = deleted_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| deleted_path.to_string_lossy().into_owned());
+                let _ = app.emit(
+                    "fs://delete-progress",
+                    DeleteProgressPayload { count, current },
+                );
+            }
+        });
+        if count > 0 {
+            let current = Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let _ = app.emit(
+                "fs://delete-progress",
+                DeleteProgressPayload { count, current },
+            );
+        }
+        result
     })
     .await
 }
 
 fn delete_entry_impl(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
+    delete_entry_with_progress(&path, &mut |_| {})
+}
+
+/// 递归删除文件或目录，每删掉一个底层文件或子目录就回调 `on_deleted`（对应 IDEA `NioFiles.deleteRecursively`）。
+fn delete_entry_with_progress(
+    path: &str,
+    on_deleted: &mut dyn FnMut(&Path),
+) -> Result<(), String> {
+    let target = Path::new(path);
     let meta = target
         .symlink_metadata()
-        .map_err(|e| io_err(&path, e))?;
-    let result = if meta.is_dir() && !meta.file_type().is_symlink() {
-        fs::remove_dir_all(target)
+        .map_err(|e| io_err(path, e))?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        remove_dir_recursive(target, on_deleted).map_err(|e| io_err(path, e))
     } else {
-        fs::remove_file(target)
-    };
-    result.map_err(|e| io_err(&path, e))
+        remove_single_file_or_symlink(target).map_err(|e| io_err(path, e))?;
+        on_deleted(target);
+        Ok(())
+    }
+}
+
+/// 删除单个文件或符号链接（兼容 Windows 目录软链 / junction）。
+/// 注意：必须先根据元数据区分文件与目录软链，严禁无条件 fallback 调 remove_dir，
+/// 否则普通文件被占用或权限不足时会被篡改为“目录名称无效 (os error 267)”。
+fn remove_single_file_or_symlink(target: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if let Ok(meta) = target.symlink_metadata() {
+            // Windows 下真实目录、目录软链接（mklink /D）与联接点（mklink /J）均具备 0x10 (FILE_ATTRIBUTE_DIRECTORY)，
+            // 必须使用 RemoveDirectoryW (fs::remove_dir) 删除；调用 DeleteFileW 会被系统拒绝并报拒绝访问 (os error 5)。
+            if meta.file_attributes() & 0x10 != 0 {
+                return fs::remove_dir(target);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(meta) = target.symlink_metadata() {
+            if meta.is_dir() {
+                return fs::remove_dir(target);
+            }
+        }
+    }
+    fs::remove_file(target)
+}
+
+fn remove_dir_recursive(
+    dir: &Path,
+    on_deleted: &mut dyn FnMut(&Path),
+) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let child_path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() && !file_type.is_symlink() {
+            remove_dir_recursive(&child_path, on_deleted)?;
+        } else {
+            remove_single_file_or_symlink(&child_path)?;
+            on_deleted(&child_path);
+        }
+    }
+    fs::remove_dir(dir)?;
+    on_deleted(dir);
+    Ok(())
 }
 
 #[tauri::command]

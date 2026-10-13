@@ -57,9 +57,12 @@ import {
   NotificationsView,
   NotificationToasts,
 } from "./components/NotificationCenter";
+import DepSyncToast from "./components/DepSyncToast";
+import { isManifestDeclarationFile } from "./lib/depSync";
 import { loadNotifications, saveNotifications } from "./lib/notifications";
 import type { AppNotification } from "./lib/notifications";
 import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
+import { useDepSync } from "./hooks/useDepSync";
 import { useFileWatch } from "./hooks/useFileWatch";
 import { useGitState } from "./hooks/useGitState";
 import { useLspConfig } from "./hooks/useLspConfig";
@@ -67,7 +70,7 @@ import { useRunConfigs } from "./hooks/useRunConfigs";
 import { useRunSessions } from "./hooks/useRunSessions";
 import { useHistory } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
-import { relaunchApp, runAutoUpdateFlow } from "./lib/updater";
+import { installReadyUpdate, relaunchApp, runAutoUpdateFlow } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
 import {
   disposeModel,
@@ -118,7 +121,7 @@ import {
   scriptTerminalLabel,
 } from "./lib/scriptRun";
 import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
-import { basenameOf, joinPath, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
+import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
 import { appExit, onWindowBlur, setTrayLabels } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
@@ -826,22 +829,210 @@ export default function App() {
     []
   );
 
+  /** 本地文件删除操作进行中标志：删除期间暂停响应磁盘监听，待删除结束后一次性刷新。 */
+  const fsDeletingRef = useRef(false);
+  /** 删除动作完成并主动刷新后的短暂回声抑制窗口（时间戳），防止尾随到达的监听事件重复刷树。 */
+  const suppressWatchUntilRef = useRef(0);
+  /**
+   * 文件删除进度状态（参照 IDEA `DeleteHandlerHelper.kt` + `ProgressDialogUI.kt`）：
+   * - `deleting` 阶段：批量删除或大目录删除超过延迟阈值时在窗口中央展示模态进度弹窗，
+   *   实时刷新底层递归回调上报的 `已删除：{count} 个文件/目录`；
+   * - `done` 阶段：模态框关闭，底部全局状态栏短暂提示已删除结果。
+   */
+  const [deleteStatus, setDeleteStatus] = useState<{
+    phase: "deleting" | "done";
+    name: string;
+    deletedCount: number;
+    current: number;
+    total: number;
+    modalVisible: boolean;
+  } | null>(null);
+  const deleteStatusTimerRef = useRef<number | null>(null);
+  const deleteModalDelayRef = useRef<number | null>(null);
+  /** 跨多个顶层选中项累计已删除的底层文件/目录数。 */
+  const deleteBaseCountRef = useRef(0);
+  /** 当前正在删除的单个顶层条目已上报的底层删除数。 */
+  const deleteCurrentTargetCountRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    let detach: (() => void) | null = null;
+    void listen<{ count: number; current: string }>("fs://delete-progress", (event) => {
+      if (!fsDeletingRef.current) return;
+      const { count, current } = event.payload;
+      deleteCurrentTargetCountRef.current = count;
+      const totalDeleted = deleteBaseCountRef.current + count;
+      setDeleteStatus((prev) =>
+        prev && prev.phase === "deleting"
+          ? {
+              ...prev,
+              deletedCount: totalDeleted,
+              name: current || prev.name,
+              modalVisible: prev.modalVisible || totalDeleted >= 2,
+            }
+          : prev
+      );
+    }).then((off) => {
+      if (cancelled) off();
+      else detach = off;
+    });
+    return () => {
+      cancelled = true;
+      if (detach) detach();
+      if (deleteStatusTimerRef.current !== null) {
+        window.clearTimeout(deleteStatusTimerRef.current);
+      }
+      if (deleteModalDelayRef.current !== null) {
+        window.clearTimeout(deleteModalDelayRef.current);
+      }
+      if (rescanConfigsTimerRef.current !== null) {
+        window.clearTimeout(rescanConfigsTimerRef.current);
+        rescanConfigsTimerRef.current = null;
+      }
+    };
+  }, []);
+  /** 包管理安装/清理会话运行期间按工作区根暂存的待刷新路径，待会话结束再统一刷新。 */
+  const deferredPathsByRootRef = useRef(new Map<string, { root: string; paths: Set<string> }>());
+  const runSessionsRef = useRef(run.allSessions);
+  runSessionsRef.current = run.allSessions;
+  /** 记录上一轮仍处于 running 状态的会话 ID -> root，用于会话刚结束时立即触发目录树刷新。 */
+  const prevRunningSessionsRef = useRef(new Map<string, string>());
+  const rescanConfigsTimerRef = useRef<number | null>(null);
+  const rescanConfigsRef = useRef(configs.rescan);
+  rescanConfigsRef.current = configs.rescan;
+
+  /** 判断运行会话是否为包安装或大批量文件增删命令（如 npm install / npm i / pnpm i / yarn / 依赖同步 / clean 等）。 */
+  const isBulkInstallSession = useCallback(
+    (session: (typeof run.allSessions)[number]) =>
+      session.config.id.startsWith("dep-sync::") ||
+      /\b(?:npm|pnpm|yarn|bun|cnpm|cargo|mvn|mvnw|gradle|gradlew|pip|pip3|poetry|uv|composer|dotnet|go)\b(?:\s+(?:install|i|ci|add|remove|rm|uninstall|update|up|sync|clean|tidy|restore|build| fetch)\b|\s*$)/i.test(
+        session.command.trim()
+      ),
+    []
+  );
+
+  // 当运行会话（特别是 npm install 等包管理/构建命令）结束时，立即全量刷新文件目录树与 Git 状态，
+  // 并在 600ms 后补刷一次以兜底进程退出后操作系统的延迟落盘事件。
+  useEffect(() => {
+    const currentRunning = new Map<string, string>();
+    for (const s of run.allSessions) {
+      if (s.status === "running") {
+        currentRunning.set(s.id, s.root);
+      }
+    }
+
+    const finishedRoots = new Set<string>();
+    for (const [id, root] of prevRunningSessionsRef.current.entries()) {
+      if (!currentRunning.has(id)) {
+        finishedRoots.add(root);
+      }
+    }
+    prevRunningSessionsRef.current = currentRunning;
+
+    for (const [key, entry] of [...deferredPathsByRootRef.current.entries()]) {
+      const stillRunning = run.allSessions.some(
+        (s) =>
+          s.status === "running" &&
+          samePath(s.root, entry.root) &&
+          isBulkInstallSession(s)
+      );
+      if (!stillRunning) {
+        deferredPathsByRootRef.current.delete(key);
+        finishedRoots.add(entry.root);
+      }
+    }
+
+    if (finishedRoots.size === 0) return;
+
+    refreshTree();
+    if (workspaceRoot && [...finishedRoots].some((r) => samePath(r, workspaceRoot))) {
+      void gitRef.current.refreshChanges();
+    }
+
+    const followUpTimer = window.setTimeout(() => {
+      refreshTree();
+      if (workspaceRoot && [...finishedRoots].some((r) => samePath(r, workspaceRoot))) {
+        void gitRef.current.refreshChanges();
+      }
+    }, 600);
+
+    return () => window.clearTimeout(followUpTimer);
+  }, [isBulkInstallSession, refreshTree, run.allSessions, workspaceRoot]);
+
   /**
    * 磁盘上出了事就三处一起补：目录树重读、变更清单重取、打开的文档按干净 / 脏分别处理。
    * 报来的路径既喂给文档判定，也用来把树的缓存精确作废——清整张表的话，
    * 每个展开中的目录每批都要重发一次列目录。
    *
-   * git 这侧只取变更清单：文件改动不会动分支、标签和 HEAD 上那条提交，
-   * 每批事件都把五条命令起八个 git 进程，构建期间就是持续失血。
+   * 删除文件期间或运行 `npm install` 等包安装任务期间暂停文件管理器刷新，等事件结束再统一刷新。
    */
   const onDiskChange = useCallback(
-    (changedRoot: string, paths: string[]) => {
+    (changedRoot: string, paths: string[], bulk = false) => {
       // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
       void docsRef.current.noteExternalChange(paths);
-      // 目录树缓存跨根常驻保留，后台根的磁盘变动同样按路径作废对应目录缓存，确保切回时展示最新内容。
-      refreshPaths(paths);
-      // 只有当前激活根的磁盘事件才触发当前 Git 变更刷新。
+      // 构建脚本或顶层依赖目录变动时，通知依赖同步检测器（内部先经 O(1) 白名单过滤 + 600ms 防抖）。
+      depSyncRef.current?.noteDiskChange(changedRoot, paths);
+
+      // 正在执行文件删除或处于删除刚结束的回声抑制窗口内时，暂停文件管理器与 Git 的重复刷新。
+      if (fsDeletingRef.current || Date.now() < suppressWatchUntilRef.current) {
+        return;
+      }
+
+      // 若该工作区当前有正在运行的包安装/清理会话（如 npm install），暂存路径等会话结束再刷。
+      const hasRunningInstall = runSessionsRef.current.some(
+        (s) =>
+          s.status === "running" &&
+          samePath(s.root, changedRoot) &&
+          isBulkInstallSession(s)
+      );
+      if (hasRunningInstall) {
+        const key = changedRoot.replaceAll("\\", "/").toLowerCase();
+        let deferred = deferredPathsByRootRef.current.get(key);
+        if (!deferred) {
+          deferred = { root: changedRoot, paths: new Set(paths) };
+          deferredPathsByRootRef.current.set(key, deferred);
+        } else {
+          for (const p of paths) deferred.paths.add(p);
+        }
+        return;
+      }
+
+      // 若本批是包管理器/批量风暴静默收尾（如在终端内执行了 npm install），或涉及依赖目录/锁文件，
+      // 直接执行一次全量目录树刷新（无闪烁后台重读），确保顶层与所有展开子目录及忽略态完整同步。
+      const touchesPackageArtifacts =
+        bulk ||
+        paths.some((p) => {
+          const norm = p.replaceAll("\\", "/").toLowerCase();
+          return (
+            norm.includes("/node_modules") ||
+            norm.includes("/.pnpm") ||
+            norm.includes("/target/") ||
+            norm.includes("/vendor/") ||
+            norm.includes("/.venv/") ||
+            /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|cargo\.lock|go\.sum|poetry\.lock|uv\.lock|composer\.lock)$/.test(
+              norm
+            )
+          );
+        });
+
+      if (touchesPackageArtifacts) {
+        refreshTree();
+      } else {
+        // 目录树缓存跨根常驻保留，后台根的磁盘变动同样按路径作废对应目录缓存，确保切回时展示最新内容。
+        refreshPaths(paths);
+      }
+      // 只有当前激活根的磁盘事件才触发当前 Git 变更与顶栏运行配置刷新。
       if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
+      // 当工程构建声明文件（如 package.json、pom.xml、Cargo.toml）因保存或 git checkout / git pull 变化时，防抖重扫顶栏运行配置。
+      if (paths.some((p) => isManifestDeclarationFile(p, changedRoot))) {
+        if (rescanConfigsTimerRef.current !== null) {
+          window.clearTimeout(rescanConfigsTimerRef.current);
+        }
+        rescanConfigsTimerRef.current = window.setTimeout(() => {
+          rescanConfigsTimerRef.current = null;
+          rescanConfigsRef.current();
+        }, 600);
+      }
       // 构建期间每 150-300ms 就来一批事件，每批都起一个 git status 子进程的话
       // 就是持续失血：抖 500ms，风暴停下来才问一次最终状态。目录树那边是
       // 即时精确作废的，不跟着等。
@@ -852,7 +1043,7 @@ export default function App() {
         void gitRef.current.refreshChanges();
       }, 500);
     },
-    [refreshPaths, workspaceRoot]
+    [isBulkInstallSession, refreshPaths, workspaceRoot]
   );
 
   const watchedRoots = useMemo(
@@ -919,6 +1110,11 @@ export default function App() {
     },
     [places, revealPane, setActiveTab]
   );
+
+  const focusRunPane = useCallback(() => focusPane("run"), [focusPane]);
+  const depSync = useDepSync(workspaceRoot, watchedRoots, run, focusRunPane);
+  const depSyncRef = useRef(depSync);
+  depSyncRef.current = depSync;
 
   /**
    * 本机扫出来的 shell，给脚本 ▶ 挑终端用。
@@ -1065,6 +1261,20 @@ export default function App() {
       revealInTree(path);
     },
     [docs, revealInTree]
+  );
+
+  /** 点击依赖同步气泡中的构建清单链接：在编辑器中打开该清单并在项目树定位。 */
+  const openDepSyncManifest = useCallback(
+    (manifestRelPath: string, itemRoot: string) => {
+      const baseRoot = nativeSeparators(itemRoot || workspaceRoot || "");
+      if (!baseRoot) return;
+      if (workspaceRoot && !samePath(baseRoot, workspaceRoot)) {
+        setWorkspaceRoot(baseRoot);
+      }
+      const fullPath = joinPath(baseRoot, nativeSeparators(manifestRelPath));
+      openSearchFile(fullPath, false);
+    },
+    [openSearchFile, workspaceRoot]
   );
 
   /**
@@ -2340,12 +2550,17 @@ export default function App() {
     targetDirOf,
   ]);
 
-  /** 已关闭的标签页要连 Monaco model 一起丢，否则内容留在内存里。 */
+  /** 已关闭的标签页要连 Monaco model 一起丢，否则内容留在内存里。支持单文件或被删目录下全部已打开文档清理。 */
   const dropDocument = useCallback(
-    (path: string) => {
-      if (docs.dirty(path)) return;
-      disposeModel(path);
-      docs.close(path);
+    (targetPath: string) => {
+      for (const doc of docs.documents) {
+        if (samePath(doc.path, targetPath) || pathWithin(targetPath, doc.path)) {
+          if (!docs.dirty(doc.path)) {
+            disposeModel(doc.path);
+            docs.close(doc.path);
+          }
+        }
+      }
     },
     [docs]
   );
@@ -2447,16 +2662,94 @@ export default function App() {
           refreshTree();
         }
         if (kind === "delete") {
-          // 目录树可以多选一起删，提交树那边只给一条绝对路径；两种都给同一个循环处理。
-          const targets =
+          // 目录树可以多选一起删，提交树那边只给一条绝对路径；删除期间挂起磁盘监听刷新，删完一次性刷新。
+          const rawTargets =
             dialog.many ?? [entry?.path ?? path].filter((held): held is string => held !== undefined);
-          for (const target of targets) {
-            await deleteEntry(target);
-            dropDocument(target);
-          }
+          // 若多选中同时包含父目录与该目录下的子项，过滤掉已被父目录覆盖的子路径，避免父目录删完后再删子项报 NotFound。
+          // 注意：去重与父子包含判断必须使用 samePath，避免 Windows 大小写异构导致同一路径互相排除变为空数组。
+          const targets = rawTargets.filter(
+            (target, idx) =>
+              rawTargets.findIndex((t) => samePath(t, target)) === idx &&
+              !rawTargets.some((other) => !samePath(other, target) && pathWithin(other, target))
+          );
           if (targets.length > 0) {
-            setExplorerPick([]);
+            if (deleteStatusTimerRef.current !== null) {
+              window.clearTimeout(deleteStatusTimerRef.current);
+              deleteStatusTimerRef.current = null;
+            }
+            if (deleteModalDelayRef.current !== null) {
+              window.clearTimeout(deleteModalDelayRef.current);
+              deleteModalDelayRef.current = null;
+            }
+            fsDeletingRef.current = true;
+            deleteBaseCountRef.current = 0;
+            deleteCurrentTargetCountRef.current = 0;
+            const showModalImmediately = targets.length > 1;
+            setDeleteStatus({
+              phase: "deleting",
+              name: basenameOf(targets[0]),
+              deletedCount: 0,
+              current: 1,
+              total: targets.length,
+              modalVisible: showModalImmediately,
+            });
+            // 参照 IDEA `ProgressWindow.DEFAULT_PROGRESS_DELAY_MILLIS`：单条目若在 180ms 内秒删完则不闪模态框，
+            // 删大目录耗时超过阈值时自动弹出居中模态进度框。
+            if (!showModalImmediately) {
+              deleteModalDelayRef.current = window.setTimeout(() => {
+                deleteModalDelayRef.current = null;
+                setDeleteStatus((prev) =>
+                  prev && prev.phase === "deleting" ? { ...prev, modalVisible: true } : prev
+                );
+              }, 180);
+            }
+            let completed = false;
+            try {
+              for (let i = 0; i < targets.length; i++) {
+                const target = targets[i];
+                deleteCurrentTargetCountRef.current = 0;
+                setDeleteStatus((prev) => ({
+                  phase: "deleting",
+                  name: basenameOf(target),
+                  deletedCount: deleteBaseCountRef.current,
+                  current: i + 1,
+                  total: targets.length,
+                  modalVisible: prev?.modalVisible ?? showModalImmediately,
+                }));
+                await deleteEntry(target);
+                deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
+                dropDocument(target);
+              }
+              setExplorerPick([]);
+              completed = true;
+            } finally {
+              fsDeletingRef.current = false;
+              suppressWatchUntilRef.current = Date.now() + 500;
+              if (deleteModalDelayRef.current !== null) {
+                window.clearTimeout(deleteModalDelayRef.current);
+                deleteModalDelayRef.current = null;
+              }
+              if (!completed) {
+                setDeleteStatus(null);
+              }
+            }
             refreshTree();
+            void git.refreshChanges();
+            if (completed) {
+              const finalDeletedCount = Math.max(targets.length, deleteBaseCountRef.current);
+              setDeleteStatus({
+                phase: "done",
+                name: basenameOf(targets[0]),
+                deletedCount: finalDeletedCount,
+                current: targets.length,
+                total: targets.length,
+                modalVisible: false,
+              });
+              deleteStatusTimerRef.current = window.setTimeout(() => {
+                deleteStatusTimerRef.current = null;
+                setDeleteStatus(null);
+              }, 2400);
+            }
           }
         }
         if (kind === "discard" && path) {
@@ -2471,6 +2764,12 @@ export default function App() {
           return;
         }
         if (kind === "restartUpdate") {
+          // 装的是缓存里那一版，延后过也不会重下；Windows 上安装器接管后就不会往下走，
+          // 后面这句只给 macOS / Linux 用。
+          const updates = settings.updates;
+          await installReadyUpdate(name, {
+            proxyUrl: updates.proxyEnabled ? updates.proxyUrl : undefined,
+          });
           await relaunchApp();
         }
       } catch (cause) {
@@ -2506,6 +2805,7 @@ export default function App() {
       refreshTree,
       remember,
       reportError,
+      settings,
       t,
       workspaceRoot,
     ]
@@ -2769,7 +3069,12 @@ export default function App() {
           </>
         ) : null}
         <span className="status-spacer" />
-        {key === "run" ? <span className="run-status">{run.notice}</span> : null}
+        {key === "run" && run.notice ? (
+          <span className="run-status">
+            {run.activeRunning ? <span className="run-dot is-running" aria-hidden="true" /> : null}
+            {run.notice}
+          </span>
+        ) : null}
         {/* 底部一次只见一块，切到选项卡才谈得上几块并存；反过来就是切回底部。 */}
         <button
           type="button"
@@ -3140,6 +3445,8 @@ export default function App() {
             {RAIL_BOTTOM.map((key) => {
               // 收着的那颗不亮；不管是待在底部还是待在页签栏里，都算开着。
               const open = places[key] !== "hidden";
+              const hasRunning =
+                key === "run" && run.sessions.some((session) => session.status === "running");
               return (
                 <button
                   key={key}
@@ -3161,6 +3468,8 @@ export default function App() {
                   ) : (
                     <VcsIcon size={18} />
                   )}
+                  {/* 照 IDEA 工具窗口栏：当前工程有运行中的会话时，运行图标右下角亮绿点。 */}
+                  {hasRunning ? <span className="rail-dot" aria-hidden="true" /> : null}
                 </button>
               );
             })}
@@ -3484,6 +3793,8 @@ export default function App() {
                       setRunChooser((signal) => signal + 1);
                       return;
                     }
+                    // 装订线直接运行单条启动项时同步选中它，并复用已有运行会话页签。
+                    configs.select(picked[0].id);
                     run.start(picked[0]);
                     focusPane("run");
                   }}
@@ -3550,6 +3861,30 @@ export default function App() {
             {t("status.changes", { count: git.status?.changes.length ?? 0 })}
           </button>
         ) : null}
+        {deleteStatus ? (
+          <span
+            className={`status-note is-delete-status is-${deleteStatus.phase}`}
+            role="status"
+            aria-live="polite"
+          >
+            {deleteStatus.phase === "deleting" ? (
+              <span className="status-delete-spin is-spinning" aria-hidden="true">
+                <RefreshCw size={11} />
+              </span>
+            ) : (
+              <Check size={12} aria-hidden="true" />
+            )}
+            <span>
+              {deleteStatus.phase === "deleting"
+                ? `${t("explorer.progressDeleting")} · ${t("explorer.progressAlreadyDeleted", {
+                    count: deleteStatus.deletedCount,
+                  })}`
+                : deleteStatus.deletedCount > 1
+                  ? t("explorer.deletedMany", { count: deleteStatus.deletedCount })
+                  : t("explorer.deletedOne", { name: deleteStatus.name })}
+            </span>
+          </span>
+        ) : null}
         <span className="status-spacer" />
         {activeDoc ? (
           <>
@@ -3599,12 +3934,22 @@ export default function App() {
         />
       </footer>
 
-      {/* IDEA 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角) */}
+      {/* IDEA 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角；统一堆栈流防重叠) */}
       <NotificationToasts
         toasts={activeToasts}
         position={settings.notificationPosition}
         onDismiss={dismissToast}
-      />
+      >
+        {depSync.items.length > 0 ? (
+          <DepSyncToast
+            items={depSync.items}
+            inline
+            onSync={depSync.syncItem}
+            onDismiss={depSync.dismissItem}
+            onOpenManifest={openDepSyncManifest}
+          />
+        ) : null}
+      </NotificationToasts>
 
       {everywhere && workspaceRoot ? (
         <Suspense fallback={null}>
@@ -3629,6 +3974,30 @@ export default function App() {
           onSubmit={(name, extra) => void submitDialog(name, extra)}
           onCancel={() => setDialog(null)}
         />
+      ) : null}
+      {/* 参照 IDEA `DeleteHandlerHelper.kt` + `ProgressDialogUI.kt`：居中模态删除进度框 */}
+      {deleteStatus?.phase === "deleting" && deleteStatus.modalVisible ? (
+        <div className="dialog-backdrop" role="presentation">
+          <div
+            className="dialog progress-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("explorer.progressDeleting")}
+          >
+            <p className="dialog-title">{t("explorer.progressDeleting")}</p>
+            <p className="progress-dialog-text">
+              {t("explorer.progressAlreadyDeleted", { count: deleteStatus.deletedCount })}
+            </p>
+            <div className="progress-dialog-bar" role="progressbar" aria-busy="true">
+              <div className="progress-dialog-bar-indeterminate" />
+            </div>
+            <p className="progress-dialog-details" title={deleteStatus.name}>
+              {deleteStatus.total > 1
+                ? `(${deleteStatus.current}/${deleteStatus.total}) ${deleteStatus.name}`
+                : deleteStatus.name}
+            </p>
+          </div>
+        </div>
       ) : null}
       {updatePrompt ? (
         <PromptDialog

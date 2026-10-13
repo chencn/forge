@@ -17,6 +17,8 @@ import {
 import type { NativeScrollBinding } from "../lib/term";
 import { monoFont } from "../lib/monacoEnv";
 import { useI18n } from "../i18n";
+import { attachTerminalUrls, isHttpUrl } from "../lib/termUrl";
+import { openExternal } from "../lib/fs";
 
 interface RunPaneProps {
   /** 会话状态在 App 上，这里只画输出。 */
@@ -60,6 +62,9 @@ export default function RunPane({ run, dark }: RunPaneProps) {
     term.open(scrollPort.sticky);
     termRef.current = term;
 
+    // 装配 URL 点击打开与划选复制
+    const urlHandler = attachTerminalUrls(term);
+
     const nativeScroll = bindNativeScroll(host, scrollPort.spacer, term);
     scrollRef.current = nativeScroll;
 
@@ -81,6 +86,7 @@ export default function RunPane({ run, dark }: RunPaneProps) {
     syncSize();
     return () => {
       observer.disconnect();
+      urlHandler.dispose();
       nativeScroll.dispose();
       scrollRef.current = null;
       termRef.current = null;
@@ -134,7 +140,9 @@ export default function RunPane({ run, dark }: RunPaneProps) {
   const requestMenu = (event: ReactMouseEvent) => {
     event.preventDefault();
     const term = termRef.current;
-    const selection = term?.getSelection() ?? "";
+    const rawSelection = term?.getSelection() ?? "";
+    const selection = rawSelection.trim();
+    const selectedUrl = isHttpUrl(selection) ? selection : null;
     const hasOutput = (term?.buffer.active.length ?? 0) > 0;
     /** 全选后取文本，再还原原选择：读整个缓冲区没有公开 API，这是 xterm 给的唯一路径。 */
     const copyAll = () => {
@@ -150,13 +158,26 @@ export default function RunPane({ run, dark }: RunPaneProps) {
       // 分组顺序照 IDEA 的 ConsoleView.PopupMenu：编辑动作（复制/全选）在前，
       // 分隔线之后是清空与会话动作。
       items: [
+        ...(selectedUrl
+          ? [
+              {
+                label: t("terminal.openLink"),
+                onSelect: () => void openExternal(selectedUrl).catch(() => {}),
+              },
+              {
+                label: t("terminal.copyLink"),
+                onSelect: () => void navigator.clipboard.writeText(selectedUrl).catch(() => {}),
+              },
+              { separator: true },
+            ]
+          : []),
         {
           label: t("run.copyOutput"),
           // IDEA 空选中时复制光标所在整行；这里没有行光标，退一步复制全部输出。
           disabled: !hasOutput,
           onSelect: () => {
-            if (selection.length > 0) {
-              void navigator.clipboard.writeText(selection).catch(() => {});
+            if (rawSelection.length > 0) {
+              void navigator.clipboard.writeText(rawSelection).catch(() => {});
             } else {
               copyAll();
             }

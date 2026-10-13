@@ -8,6 +8,7 @@ import type { FsEntry } from "../lib/fs";
 import type { GitChange } from "../lib/git";
 import { changeMark, folderMarks, gitIgnored, ignoredRoots, markClass } from "../lib/git";
 import { isPackageSegment, isUnderJvmSourceRoot } from "../lib/jvm";
+import { pathWithin } from "../lib/format";
 import EntryIcon from "./EntryIcon";
 
 interface ExplorerTreeProps {
@@ -46,21 +47,21 @@ function pathKey(path: string) {
 }
 
 /**
- * 这一份缓存跟这批变更有没有干系。
+ * 这一份缓存目录（`key`）跟这条变更路径（`changed`）有没有干系。
  *
- * 两种算有：缓存的那个目录是变更路径的祖先或就是它本身（里面少了一个、多了一个、属性变了），
- * 或者缓存的目录整个落在某条变更路径之下（那是一条目录被改名或删掉）。
+ * `changed` 落在 `key` 之下（新建、删除、改名它的子孙）要重读 `key`；
+ * `key` 落在 `changed` 之下（它的某个祖先被改名或删掉）也得作废。
  */
 function touched(key: string, changed: string) {
-  const a = pathKey(key);
-  const b = pathKey(changed);
+  const a = pathKey(key).replace(/\/+$/, "");
+  const b = pathKey(changed).replace(/\/+$/, "");
   return a === b || b.startsWith(`${a}/`) || a.startsWith(`${b}/`);
 }
 
 /**
  * 缓存作废的节流转：构建期间每 150-270 ms 就来一批磁盘事件，一批一起清整张表的话，
  * 每个展开中的目录每批都要重发一次 `list_directory`，读盘的总量跟着展开数往上翻。
- * 改成只清与这批路径相干的那些，一次构建通常只碰到 `target` 底下那几个。
+ * 改成只标记与这批路径相干的那些为过期（stale），并在后台静默重读后原地替换，避免界面闪烁。
  */
 const IGNORE_DEBOUNCE_MS = 800;
 
@@ -71,37 +72,85 @@ function useLazyChildren(
 ) {
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map());
   const [failed, setFailed] = useState<Map<string, string>>(new Map());
+  /** 触发可见目录后台重读的信号：只标记 stale 而不提前清空 children，消除刷新时的空白闪烁。 */
+  const [reloadTick, setReloadTick] = useState(0);
+  const childrenRef = useRef(children);
+  childrenRef.current = children;
+  const failedRef = useRef(failed);
+  failedRef.current = failed;
+  const staleKeysRef = useRef<Set<string>>(new Set());
+  const inflightRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(
     async (path: string) => {
-      if (children.has(path) || failed.has(path)) return;
+      const isStale = staleKeysRef.current.has(path);
+      if (!isStale && (childrenRef.current.has(path) || failedRef.current.has(path))) return;
+      if (inflightRef.current.has(path)) return;
+      staleKeysRef.current.delete(path);
+      inflightRef.current.add(path);
       try {
         const listing = await listDirectory(path);
+        setFailed((current) => {
+          if (!current.has(path)) return current;
+          const next = new Map(current);
+          next.delete(path);
+          return next;
+        });
         setChildren((current) => new Map(current).set(path, listing.entries));
       } catch (cause) {
+        // 目录已被删除时直接从缓存摘除；其它读盘错误记入 failed。
+        setChildren((current) => {
+          if (!current.has(path)) return current;
+          const next = new Map(current);
+          next.delete(path);
+          return next;
+        });
         setFailed((current) => new Map(current).set(path, errorText(cause)));
         onError(errorText(cause));
+      } finally {
+        inflightRef.current.delete(path);
+        // 若读盘期间该目录又收到新的过期标记，补发一次重读确保拿到最终状态。
+        if (staleKeysRef.current.has(path)) {
+          setReloadTick((v) => v + 1);
+        }
       }
     },
-    [children, failed, onError]
+    [onError]
   );
 
   useEffect(() => {
-    const drop = <T,>(current: Map<string, T>) => {
-      if (refresh.paths === null) return new Map<string, T>();
-      const doomed = [...current.keys()].filter((key) =>
-        refresh.paths!.some((changed) => touched(key, changed))
-      );
-      if (doomed.length === 0) return current;
-      const next = new Map(current);
-      for (const key of doomed) next.delete(key);
-      return next;
-    };
-    setChildren(drop);
-    setFailed(drop);
+    if (refresh.seq === 0) return;
+    if (refresh.paths === null) {
+      for (const key of childrenRef.current.keys()) {
+        staleKeysRef.current.add(key);
+      }
+      for (const key of failedRef.current.keys()) {
+        staleKeysRef.current.add(key);
+      }
+      failedRef.current = new Map();
+      setFailed(new Map());
+      setReloadTick((v) => v + 1);
+      return;
+    }
+    let anyTouched = false;
+    for (const key of childrenRef.current.keys()) {
+      if (refresh.paths.some((changed) => touched(key, changed))) {
+        staleKeysRef.current.add(key);
+        anyTouched = true;
+      }
+    }
+    for (const key of failedRef.current.keys()) {
+      if (refresh.paths.some((changed) => touched(key, changed))) {
+        staleKeysRef.current.add(key);
+        anyTouched = true;
+      }
+    }
+    if (anyTouched) {
+      setReloadTick((v) => v + 1);
+    }
   }, [refresh]);
 
-  return { children, failed, load };
+  return { children, failed, load, reloadTick };
 }
 
 /**
@@ -211,7 +260,7 @@ export default function ExplorerTree({
   const [error, setError] = useState<string | null>(null);
   const onError = useCallback((message: string) => setError(message), []);
   const { t } = useI18n();
-  const { children, failed, load } = useLazyChildren(refresh, onError);
+  const { children, failed, load, reloadTick } = useLazyChildren(refresh, onError);
   /** 每个工作区根各自记住自己展开了哪些目录，切根回来时恢复原状。 */
   const expandedByRootRef = useRef<Map<string, Set<string>>>(new Map());
   const [expanded, setExpandedState] = useState<Set<string>>(
@@ -449,11 +498,16 @@ export default function ExplorerTree({
     setRevealTo(null);
   });
 
-  // 根目录和每个展开中的目录，只要缓存里没有就读一次；refreshSignal 会同时作废两边。
+  // 根目录和每个展开中的目录，只要缓存里没有或已被标记过期就读一次。
+  // 多工作区切换时严格过滤仅属于当前 root 下的路径，避免读取上一项目的目录导致报错与误报。
   useEffect(() => {
     void load(root);
-    for (const path of expanded) void load(path);
-  }, [expanded, load, root]);
+    for (const path of expanded) {
+      if (pathWithin(root, path)) {
+        void load(path);
+      }
+    }
+  }, [expanded, load, reloadTick, root]);
 
   return (
     <div

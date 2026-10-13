@@ -66,7 +66,7 @@ npm run tauri:dev      # 开发：起 Vite，编译 Rust，开原生窗口
 npm run tauri:build    # 打包，安装包在 src-tauri/target/release/bundle/
 ```
 
-改完 Rust 跑 `npm run check:rs`。`npm run test:rs` 在本机会报 `STATUS_ENTRYPOINT_NOT_FOUND`，暂时用不了，原因见 `docs/backend/toolchain.md`。只想在浏览器里看界面用 `npm run dev`，但所有后端调用都会失败。
+改完 Rust 跑 `npm run check:rs`，测试跑 `npm run test:rs`（脚本自带 `FORGE_TEST_MANIFEST`，为什么需要它见 `docs/backend/toolchain.md`）。只想在浏览器里看界面用 `npm run dev`，但所有后端调用都会失败。
 
 ## 发版与更新
 

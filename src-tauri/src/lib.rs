@@ -111,6 +111,7 @@ pub fn run() {
             term::term_reap,
             proc::proc_start,
             proc::proc_kill,
+            run::dep_sync::dep_sync_probe,
             run::detect::run_detect,
             run::detect::run_tools,
             run::store::run_state_load,
@@ -138,6 +139,10 @@ pub fn run() {
             update::update_pending_save,
             update::update_pending_clear,
             update::update_check,
+            update::update_download_cached,
+            update::update_install_cached,
+            update::update_cache_state,
+            update::update_cache_remove,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

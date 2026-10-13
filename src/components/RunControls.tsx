@@ -196,6 +196,7 @@ export default function RunControls({
         onClick={() => setOpen((state) => !state)}
       >
         {selected ? <RunKindIcon kind={selected.kind} /> : null}
+        {selectedRunCount > 0 ? <span className="run-dot is-running" aria-hidden="true" /> : null}
         <span className={`run-selector-name${selected ? "" : " is-empty"}`}>
           {selected ? selected.name : t("run.none")}
         </span>
@@ -249,6 +250,9 @@ export default function RunControls({
                         >
                           <RunKindIcon kind={config.kind} />
                           <span className="run-row-name">{config.name}</span>
+                          {running ? (
+                            <span className="run-dot is-running" aria-hidden="true" />
+                          ) : null}
                           {blocked ? <span className="run-row-blocked">{blocked}</span> : null}
                         </button>
                         {running ? (

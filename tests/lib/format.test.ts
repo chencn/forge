@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basenameOf, isWindowsPath, joinPath, nativeSeparators, parentPath, patchStem, resolveRelative, samePath, separator } from "../../src/lib/format";
+import { basenameOf, isWindowsPath, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolveRelative, samePath, separator } from "../../src/lib/format";
 
 describe("isWindowsPath / separator", () => {
   it("盘符与 UNC 算 Windows 形状，反斜杠正斜杠都认", () => {
@@ -81,5 +81,20 @@ describe("patchStem 补丁主名", () => {
     expect(patchStem(".gitignore")).toBe(".gitignore");
     expect(patchStem(".env")).toBe(".env");
     expect(patchStem("Dockerfile")).toBe("Dockerfile");
+  });
+});
+
+describe("pathWithin 与跨平台路径包含契约", () => {
+  it("Linux / POSIX 根目录 / 正确包含下级子路径，不被剥离为空串", () => {
+    expect(pathWithin("/", "/var/log")).toBe(true);
+    expect(pathWithin("/", "/")).toBe(true);
+    expect(pathWithin("/var/log", "/var/log/app.log")).toBe(true);
+    expect(pathWithin("/var/log", "/var/run")).toBe(false);
+  });
+
+  it("Windows 盘符与 UNC 共享路径大小写不敏感包含与相等", () => {
+    expect(pathWithin("D:\\app", "d:/app/src/index.ts")).toBe(true);
+    expect(pathWithin("\\\\Server\\Share", "\\\\server\\share\\docs")).toBe(true);
+    expect(samePath("\\\\Server\\Share\\A.txt", "\\\\server\\share\\a.txt")).toBe(true);
   });
 });

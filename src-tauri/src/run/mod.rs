@@ -3,6 +3,7 @@
 //! 识别（`detect`）负责从工程目录里的构建文件推出可跑的那几台，落盘（`store`）只存用户自己
 //! 建的那批和选中/最近这两条线索。两者在产品根上汇合成同一份列表交给界面。
 
+pub mod dep_sync;
 pub mod detect;
 pub mod store;
 

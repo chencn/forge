@@ -42,6 +42,13 @@ export function useRunConfigs(root: string | null) {
   /** 每次换工程或重扫都换一个序号，落盘的副作用靠它区分「这一份结果」。 */
   const generation = useRef(0);
 
+  // 应用启动时即独立探测一次本机全局 JVM 工具（mvn/gradle/java），避免切换工作区窗口期内 tools 为空导致 NO_TOOL 误报。
+  useEffect(() => {
+    void runTools()
+      .then((found) => setTools(found))
+      .catch(() => {});
+  }, []);
+
   const rescan = useCallback(() => {
     if (!workspace) {
       setDetected([]);

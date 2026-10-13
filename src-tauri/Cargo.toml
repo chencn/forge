@@ -1,6 +1,6 @@
 [package]
 name = "forge"
-version = "1.0.1"
+version = "1.0.2"
 description = "Forge - Tauri desktop app"
 edition = "2021"
 rust-version = "1.80"
@@ -30,6 +30,8 @@ notify = "8"
 # 全文搜索：正则走 regex，遍历目录走 walkdir（两者都已锁在依赖树里，不额外下载）。
 regex = "1"
 walkdir = "2"
+# 更新包缓存读回时重新验签用。updater 插件内部就是这一个版本，显式声明不额外下载。
+minisign-verify = "0.3"
 
 # 关掉 WebView2 自带的右键菜单（刷新 / 另存为 / 打印）：桌面应用里不该出现，
 # 应用自己的菜单在前端摆。两者都是 tauri 已经锁在依赖树里的版本，不额外下载。

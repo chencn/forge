@@ -30,12 +30,12 @@ export function RunSessionTabs({ run }: { run: RunController }) {
             role="tab"
             aria-selected={session.id === run.activeId}
             className="run-session-tab"
-            title={session.command}
+            title={`${session.name}\n${session.command}`}
             onClick={() => run.setActiveId(session.id)}
           >
             <RunKindIcon kind={session.kind} />
             <span className={`run-dot is-${session.status}`} aria-hidden="true" />
-            <span>{session.name}</span>
+            <span className="run-session-name">{session.name}</span>
           </button>
           <button
             type="button"

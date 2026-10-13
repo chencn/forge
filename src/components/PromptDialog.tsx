@@ -99,6 +99,35 @@ const SECOND_FIELD: Partial<Record<DialogKind, { label: TranslationKey; placehol
     },
   };
 
+/** 更新询问的否定项是「稍后再更新」，不是放弃一次操作，所以不用通用「取消」。 */
+const UPDATE_KINDS: DialogKind[] = ["installUpdate", "restartUpdate"];
+
+/**
+ * 主按钮文案。没列进来的那几类（新建文件夹、文件、分支、标签、工作树、补丁）都是「创建」。
+ */
+const CONFIRM_KEY: Partial<Record<DialogKind, TranslationKey>> = {
+  delete: "dialog.confirm",
+  deleteRef: "dialog.confirm",
+  resetHard: "dialog.confirm",
+  pushUpTo: "dialog.confirm",
+  rename: "dialog.confirm",
+  restartUpdate: "dialog.confirm",
+  resetSettings: "dialog.resetAll",
+  discard: "dialog.discard",
+  closeRoot: "dialog.closeRootConfirm",
+  installUpdate: "dialog.installNow",
+  checkoutRev: "git.checkoutShort",
+  renameBranch: "dialog.rename",
+};
+
+export function confirmKey(kind: DialogKind): TranslationKey {
+  return CONFIRM_KEY[kind] ?? "dialog.create";
+}
+
+export function cancelKey(kind: DialogKind): TranslationKey {
+  return UPDATE_KINDS.includes(kind) ? "dialog.updateLater" : "dialog.cancel";
+}
+
 export default function PromptDialog({ request, onSubmit, onCancel }: PromptDialogProps) {
   const { t } = useI18n();
   const [value, setValue] = useState(request.name);
@@ -245,7 +274,7 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
 
         <div className="dialog-actions">
           <button type="button" className="button" onClick={onCancel}>
-            {t("dialog.cancel")}
+            {t(cancelKey(request.kind))}
           </button>
           <button
             type="button"
@@ -255,26 +284,7 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
             disabled={withInput && value.trim() === ""}
             autoFocus={!withInput}
           >
-            {request.kind === "delete" ||
-            request.kind === "deleteRef" ||
-            request.kind === "resetHard" ||
-            request.kind === "pushUpTo"
-              ? t("dialog.confirm")
-              : request.kind === "resetSettings"
-                ? t("dialog.resetAll")
-                : request.kind === "discard"
-                  ? t("dialog.discard")
-                  : request.kind === "closeRoot"
-                    ? t("dialog.closeRootConfirm")
-                    : request.kind === "installUpdate"
-                    ? t("dialog.installNow")
-                    : request.kind === "rename"
-                      ? t("dialog.confirm")
-                      : request.kind === "checkoutRev"
-                        ? t("git.checkoutShort")
-                        : request.kind === "renameBranch"
-                          ? t("dialog.rename")
-                          : t("dialog.create")}
+            {t(confirmKey(request.kind))}
           </button>
         </div>
       </div>
