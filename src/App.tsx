@@ -333,10 +333,17 @@ export default function App() {
     [workspaceRoot]
   );
 
-  // 工作区项目切换时，加载该项目的 7 天通知历史并重置屏幕浮动气泡
+  // 工作区项目切换时，加载该项目的 7 天通知历史并重置屏幕浮动气泡与跟项目绑定的弹层/日志筛选
   useEffect(() => {
     setNotifications(loadNotifications(workspaceRoot));
     setActiveToasts([]);
+    setLogReference("");
+    setLogCompareRef(null);
+    setLogPath("");
+    setResolveOpen(false);
+    setEverywhere(null);
+    setDialog(null);
+    setMenu(null);
   }, [workspaceRoot]);
 
   /** 统一上报错误与通知（参照 IDEA：右下角弹出 Notification Balloon，并留存在最近 7 天通知历史中）。 */
@@ -544,14 +551,6 @@ export default function App() {
   /** 编辑区页签栏里的比对，按根隔离，同一根内按打开顺序排。 */
   const [diffsByRoot, setDiffsByRoot] = useState<Record<string, DiffTab[]>>({});
   const diffs = useMemo(() => diffsByRoot[rootKey] ?? EMPTY_DIFFS, [diffsByRoot, rootKey]);
-  const setDiffs = useCallback((updater: DiffTab[] | ((prev: DiffTab[]) => DiffTab[])) => {
-    const key = rootKeyRef.current;
-    setDiffsByRoot((prev) => {
-      const current = prev[key] ?? EMPTY_DIFFS;
-      const next = typeof updater === "function" ? updater(current) : updater;
-      return { ...prev, [key]: next };
-    });
-  }, []);
   /** 「在新标签页中显示差异」要一份新标签，靠它把同一处比对的键区分开。 */
   const diffSeq = useRef(0);
   /**
@@ -981,19 +980,31 @@ export default function App() {
     [dockPane, getLastPlace, hidePane, places, setActiveTab, tabPane]
   );
 
-  /** 把一份比对落到页签栏里：同 id 就地更新，新 id 追加到末尾并选中。 */
+  /** 把一份比对落到页签栏里：同 id 就地更新，新 id 追加到末尾并选中；支持指定目标根，防异步期间切根写串。 */
   /** 填内容的那一次不许抢焦点：加载完成时用户可能已经切去别处了。 */
-  const putDiff = useCallback((tab: DiffTab, activate: boolean = true) => {
-    setDiffs((list) =>
-      list.some((item) => item.id === tab.id)
-        ? list.map((item) => (item.id === tab.id ? tab : item))
-        : [...list, tab]
-    );
-    if (activate) setActiveTab(`diff|${tab.id}`);
-  }, []);
+  const putDiff = useCallback(
+    (tab: DiffTab, activate: boolean = true, targetRootKey?: string) => {
+      const key = targetRootKey ?? rootKeyRef.current;
+      setDiffsByRoot((prev) => {
+        const list = prev[key] ?? EMPTY_DIFFS;
+        const next = list.some((item) => item.id === tab.id)
+          ? list.map((item) => (item.id === tab.id ? tab : item))
+          : [...list, tab];
+        return { ...prev, [key]: next };
+      });
+      if (activate) {
+        setActiveTabByRoot((prev) => ({ ...prev, [key]: `diff|${tab.id}` }));
+      }
+    },
+    []
+  );
 
-  const closeDiff = useCallback((id: string) => {
-    setDiffs((list) => list.filter((item) => item.id !== id));
+  const closeDiff = useCallback((id: string, targetRootKey?: string) => {
+    const key = targetRootKey ?? rootKeyRef.current;
+    setDiffsByRoot((prev) => {
+      const list = prev[key] ?? EMPTY_DIFFS;
+      return { ...prev, [key]: list.filter((item) => item.id !== id) };
+    });
   }, []);
 
   /**
@@ -1432,6 +1443,7 @@ export default function App() {
       base: Omit<DiffTab, "original" | "modified" | "notice">,
       load: () => Promise<GitFileSides>
     ) => {
+      const targetKey = rootKeyRef.current;
       // 这几条串里都藏着路径：显示串拼着两条（`a → b`、`x ↔ y`），双文件比对还把两条路径写进了表头。
       // 逐段判：任一侧是图片或二进制，这次比对就没得比。
       const blocked = [base.path, base.leftLabel, base.rightLabel]
@@ -1440,24 +1452,28 @@ export default function App() {
         .find((kind) => !canDiff(kind));
       if (blocked) {
         // 存错误码原文，渲染时再翻；这样切语言时这句说明也跟着换。
-        putDiff({
-          ...base,
-          original: "",
-          modified: "",
-          notice: codedError(
-            "NO_DIFF",
-            base.path || `${base.leftLabel} → ${base.rightLabel}`,
-            blocked
-          ),
-        });
+        putDiff(
+          {
+            ...base,
+            original: "",
+            modified: "",
+            notice: codedError(
+              "NO_DIFF",
+              base.path || `${base.leftLabel} → ${base.rightLabel}`,
+              blocked
+            ),
+          },
+          true,
+          targetKey
+        );
         return;
       }
-      putDiff({ ...base, original: "", modified: "" });
+      putDiff({ ...base, original: "", modified: "" }, true, targetKey);
       try {
         const sides = await load();
-        putDiff({ ...base, original: sides.original, modified: sides.modified }, false);
+        putDiff({ ...base, original: sides.original, modified: sides.modified }, false, targetKey);
       } catch (cause) {
-        closeDiff(base.id);
+        closeDiff(base.id, targetKey);
         reportError(errorText(cause));
       }
     },
@@ -2668,6 +2684,7 @@ export default function App() {
       />
     ) : (
       <GitLogPane
+        key={workspaceRoot ?? ""}
         git={git}
         reportError={reportError}
         onFileAction={fileAction}
@@ -3297,6 +3314,7 @@ export default function App() {
                 ) : workspaceRoot ? (
                   <Suspense fallback={null}>
                     <GitPanel
+                      key={workspaceRoot}
                       git={git}
                       workspaceRoot={workspaceRoot}
                       onOpenChange={openChange}

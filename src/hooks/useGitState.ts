@@ -87,6 +87,8 @@ export function useGitState(
   const pendingRef = useRef(0);
   /** 缓存已知已探明的仓库根，用于解除全量刷新时 gitProbe 的串行等待。 */
   const repoRootRef = useRef<string | null>(null);
+  /** 记录上一次刷新的 workspaceRoot，切换工作区时立即清空旧项目的 Git 状态与缓存根。 */
+  const lastWorkspaceRef = useRef<string | null>(workspaceRoot);
 
   const beginRefresh = useCallback(() => {
     pendingRef.current += 1;
@@ -107,6 +109,15 @@ export function useGitState(
     // 只有最新那一次允许写状态，否则旧结果会把新结果盖掉，面板停在半路上。
     const ticket = (seqRef.current += 1);
     const stale = () => ticket !== seqRef.current;
+    if (lastWorkspaceRef.current !== workspaceRoot) {
+      lastWorkspaceRef.current = workspaceRoot;
+      repoRootRef.current = null;
+      setProbe(null);
+      setStatus(null);
+      setBranches([]);
+      setTags([]);
+      setLastCommit(null);
+    }
     if (!workspaceRoot) {
       repoRootRef.current = null;
       setProbe(null);

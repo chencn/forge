@@ -67,23 +67,30 @@ export function useRunConfigs(root: string | null) {
       });
   }, [workspace]);
 
-  // 换工程：先读用户那几样决定，再扫构建文件。
+  // 换工程：先清掉上一个工程的内存态，再读用户那几样决定并扫构建文件，防止异步返回前把旧工程配置写串。
   useEffect(() => {
+    setDetected([]);
+    setCustom([]);
+    setPrefs({ selected: "", pinned: [] });
+    setProblems([]);
+    customRef.current = [];
+    prefsRef.current = { selected: "", pinned: [] };
     if (!workspace) {
-      setDetected([]);
-      setCustom([]);
-      setPrefs({ selected: "", pinned: [] });
       return;
     }
+    rescan();
+    const generationId = generation.current;
     void loadRunState(workspace)
       .then((state) => {
+        if (generationId !== generation.current) return;
+        customRef.current = state.configs;
+        prefsRef.current = { selected: state.selected, pinned: state.pinned };
         setCustom(state.configs);
         setPrefs({ selected: state.selected, pinned: state.pinned });
       })
       .catch(() => {
         // 读不到就当没有：配置文件坏了不该让整个运行区消失。
       });
-    rescan();
   }, [workspace, rescan]);
 
   const configs = useMemo(() => {
