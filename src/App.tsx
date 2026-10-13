@@ -290,24 +290,16 @@ export default function App() {
   /** 递增即再对一趟语言服务：状态条里手动重启或停用之后要立刻反映到进程上。 */
   const [lspKick, setLspKick] = useState(0);
 
-  /** 启动时恢复上次常驻的文件夹列表与激活根；默认单工作区（single）时只恢复单个激活根。 */
-  const initialActiveRoot = history.activeFolder || history.lastFolder || null;
-  const [openFolders, setOpenFolders] = useState<string[]>(() => {
-    if (settings.workspaceMode === "multi" && history.openFolders.length > 0) {
-      if (
-        initialActiveRoot &&
-        !history.openFolders.some((item) => samePath(item, initialActiveRoot))
-      ) {
-        return [...history.openFolders, initialActiveRoot];
-      }
-      return history.openFolders;
-    }
-    return initialActiveRoot ? [initialActiveRoot] : [];
-  });
-  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
-    if (initialActiveRoot) return initialActiveRoot;
-    return history.openFolders[0] ?? null;
-  });
+  /**
+   * 启动时默认只恢复原来激活的单个项目。
+   * 运行期间保留多个项目是为了保留正在启动的应用与后台会话；应用重启后后台进程已重置，无需恢复多个。
+   */
+  const initialActiveRoot =
+    history.activeFolder || history.lastFolder || history.openFolders[0] || null;
+  const [openFolders, setOpenFolders] = useState<string[]>(() =>
+    initialActiveRoot ? [initialActiveRoot] : []
+  );
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => initialActiveRoot);
 
   /** 当前项目最近 7 天通知历史（从持久化缓存加载并自动过滤过期记录）。 */
   const [notifications, setNotifications] = useState<AppNotification[]>(() =>
