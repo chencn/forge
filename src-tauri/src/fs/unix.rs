@@ -67,6 +67,60 @@ pub fn open_external(url: &str) -> Result<(), String> {
         .map_err(|e| io_err(url, e))
 }
 
+/// 将文件或目录安全移入类 Unix 系统废纸篓。
+/// macOS 优先尝试 `trash` CLI（基于 Cocoa API），无此工具时通过 `osascript` 走 Finder（采用 argv 传参防注入）；
+/// Linux 优先尝试 `gio trash`（GNOME/KDE/XFCE 等默认桌面工具）与 `trash-put`。
+pub fn trash(path: &Path) -> Result<(), String> {
+    if !path.exists() && path.symlink_metadata().is_err() {
+        return Err(io_err(
+            &path.to_string_lossy(),
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ));
+    }
+
+    // 注意：必须使用 std::path::absolute 而非 canonicalize，防止解析符号链接导致外部真实目标被误删。
+    let abs_path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+
+    if cfg!(target_os = "macos") {
+        // macOS: 优先尝试 trash 命令行（Cocoa API，无需 Finder 自动化权限）
+        if let Ok(status) = Command::new("trash").arg(&abs_path).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        // 次选：osascript 驱动 Finder。必须通过 argv 参数传递路径，避免字符串拼接造成 AppleScript 注入。
+        let status = Command::new("osascript")
+            .arg("-e")
+            .arg("on run argv")
+            .arg("-e")
+            .arg("tell application \"Finder\" to delete POSIX file (item 1 of argv)")
+            .arg("-e")
+            .arg("end run")
+            .arg(&abs_path)
+            .status()
+            .map_err(|e| io_err(&path.to_string_lossy(), e))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(io_err(&path.to_string_lossy(), "osascript failed"));
+    }
+
+    // Linux: 优先 gio trash，次选 trash-put
+    if let Ok(status) = Command::new("gio").arg("trash").arg(&abs_path).status() {
+        if status.success() {
+            return Ok(());
+        }
+    }
+    if let Ok(status) = Command::new("trash-put").arg(&abs_path).status() {
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    Err(io_err(&path.to_string_lossy(), "no trash utility available"))
+}
+
 /// 测试用：类 unix 的隐藏约定就是文件名以点开头。
 #[cfg(test)]
 pub fn mark_hidden(path: &Path) {

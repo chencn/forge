@@ -52,11 +52,11 @@ export const en: Record<TranslationKey, string> = {
   "dialog.create": "Create",
   "dialog.confirm": "OK",
   "dialog.cancel": "Cancel",
-  "dialog.deleteFileWarning": "Permanently delete “{name}”? This action cannot be undone.",
+  "dialog.deleteFileWarning": "Move “{name}” to the Recycle Bin / Trash?",
   "dialog.deleteManyWarning":
-    "Permanently delete “{name}” and {count} items in total? This action cannot be undone.",
+    "Move “{name}” and {count} items in total to the Recycle Bin / Trash?",
   "dialog.deleteFolderWarning":
-    "Permanently delete “{name}” and all of its contents? This action cannot be undone.",
+    "Move “{name}” and all of its contents to the Recycle Bin / Trash?",
   "dialog.discardTitle": "Discard unsaved changes",
   "dialog.discardBody": "“{name}” has unsaved changes. Discard these changes and close the file?",
   "dialog.discard": "Discard",

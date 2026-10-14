@@ -27,6 +27,28 @@ extern "system" {
         directory: *const u16,
         show: i32,
     ) -> *mut std::ffi::c_void;
+    fn SHFileOperationW(lpFileOp: *mut SHFILEOPSTRUCTW) -> i32;
+}
+
+/// SHFileOperationW 操作常量与标志位
+const FO_DELETE: u32 = 0x0003;
+const FOF_SILENT: u16 = 0x0004;
+const FOF_NOCONFIRMATION: u16 = 0x0010;
+const FOF_ALLOWUNDO: u16 = 0x0040;
+const FOF_NOERRORUI: u16 = 0x0400;
+
+#[repr(C)]
+#[cfg_attr(target_arch = "x86", repr(packed))]
+#[allow(non_snake_case)]
+struct SHFILEOPSTRUCTW {
+    hwnd: *mut std::ffi::c_void,
+    wFunc: u32,
+    pFrom: *const u16,
+    pTo: *const u16,
+    fFlags: u16,
+    fAnyOperationsAborted: i32,
+    hNameMappings: *mut std::ffi::c_void,
+    lpszProgressTitle: *const u16,
 }
 
 /// ShellExecuteW 的显示方式：正常窗口。
@@ -120,6 +142,60 @@ pub fn open_external(url: &str) -> Result<(), String> {
         return Err(io_err(url, format!("ShellExecute 返回 {}", result as isize)));
     }
     Ok(())
+}
+
+/// 将文件或目录安全移入 Windows 回收站（Recycle Bin），支持系统级一键“放回原处”。
+pub fn trash(path: &Path) -> Result<(), String> {
+    if !path.exists() && path.symlink_metadata().is_err() {
+        return Err(io_err(
+            &path.to_string_lossy(),
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ));
+    }
+
+    // SHFileOperationW 必须使用规范绝对路径，但严禁包含 `\\?\` 或 `\\?\UNC\` 扩展前缀
+    // （否则 Shell API 无法识别，会返回 124/0x7C 错误）。
+    // 注意：必须使用 std::path::absolute 而非 canonicalize，防止解析符号链接导致外部真实目标被误删。
+    let full_path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let path_str = full_path.to_string_lossy();
+    let clean_path = if let Some(stripped) = path_str.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", stripped)
+    } else if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        path_str.into_owned()
+    };
+    // Win32 Shell API 要求路径必须使用反斜杠
+    let clean_path = clean_path.replace('/', "\\");
+
+    // pFrom 字段要求双 NUL（\0\0）结尾的宽字符缓冲
+    let mut wide_buf: Vec<u16> = clean_path.encode_utf16().collect();
+    wide_buf.push(0);
+    wide_buf.push(0);
+
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: wide_buf.as_ptr(),
+        pTo: std::ptr::null(),
+        fFlags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+
+    let ret = unsafe { SHFileOperationW(&mut op) };
+    if ret == 0 {
+        if op.fAnyOperationsAborted != 0 {
+            return Err(io_err(&path.to_string_lossy(), "operation aborted"));
+        }
+        Ok(())
+    } else {
+        Err(io_err(
+            &path.to_string_lossy(),
+            std::io::Error::from_raw_os_error(ret),
+        ))
+    }
 }
 
 /// 测试用：把文件标记为隐藏属性。

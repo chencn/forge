@@ -25,7 +25,7 @@
 | `rename_entry` | `from, to` | `FsEntry` | `to` 存在则 `TARGET_EXISTS`，源不动 | `fs/mod.rs:279` |
 | `copy_entry` | `from, to` | `FsEntry` | 目录走 `copy_tree` 递归整棵子树，其余（文件、符号链接）交给 `fs::copy` | `fs/mod.rs:305` |
 | `move_entry` | `from, to` | `FsEntry` | 同盘即 rename；跨盘复制后删源，删不掉给 `MOVED_WITH_SOURCE` | `fs/mod.rs:316` |
-| `delete_entry` | `path` | `()` | 永久删除，目录递归；不进回收站 | `fs/mod.rs:329` |
+| `delete_entry` | `path` | `()` | 优先移入系统回收站 / 废纸篓，不支持时递归物理删除兜底 | `fs/mod.rs:541` |
 | `reveal_entry` | `path` | `()` | Windows 起 `explorer /select,<path>` | `fs/mod.rs:343` |
 | `file_stamp` | `path` | `FileStamp{size,modifiedMs}` | 不读正文；图片预览靠它换缓存串 | `fs/mod.rs:357` |
 | `fs_allow_asset` | `root` | `()` | 把该目录连子树加进 asset 允许名单，不落盘 | `fs/mod.rs:373` |

@@ -541,6 +541,35 @@ struct DeleteProgressPayload {
 pub async fn delete_entry(app: tauri::AppHandle, path: String) -> Result<(), String> {
     block(move || {
         let _queued = fs_write_lock();
+        let target = Path::new(&path);
+
+        // 校验目标本身是否存在（支持符号链接）
+        if !target.exists() && target.symlink_metadata().is_err() {
+            return Err(io_err(&path, std::io::Error::from(std::io::ErrorKind::NotFound)));
+        }
+
+        // 优先移入系统回收站 / 废纸篓，安全防误删
+        match platform::trash(target) {
+            Ok(()) => {
+                // 回收站操作通常为瞬间完成的单次原子调用，不发送 fs://delete-progress 避免打断前端 180ms 延时造成进度模态框闪烁
+                return Ok(());
+            }
+            Err(err) => {
+                // 若失败原因为权限不足或被其他进程占用锁定，直接阻断报错，严禁降级物理递归删除导致子树部分损毁
+                if err.contains("os error 5")          // ERROR_ACCESS_DENIED (Windows) / EACCES (Unix)
+                    || err.contains("os error 13")      // EACCES (Unix)
+                    || err.contains("os error 32")      // ERROR_SHARING_VIOLATION (Windows)
+                    || err.contains("Permission denied")
+                    || err.contains("not found")
+                    || err.contains("operation aborted")
+                {
+                    return Err(err);
+                }
+                // 仅在因介质或桌面环境不支持回收站时（如网络共享 UNC 或无桌面环境服务器），降级为物理递归删除兜底
+            }
+        }
+
+        // 若系统回收站不可用（例如网络共享 UNC 或无桌面环境），降级为物理递归删除
         let mut count: usize = 0;
         let mut last_emit = Instant::now()
             .checked_sub(Duration::from_millis(60))
@@ -838,6 +867,82 @@ mod tests {
 
         delete_entry_impl(lossy(&folder)).unwrap();
         assert!(!folder.exists(), "删除目录应连内部文件一起清掉");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trash_moves_file_and_folder() {
+        let dir = sandbox("trash-test");
+        let folder = dir.join("trash-sub");
+        create_folder_impl(lossy(&folder)).unwrap();
+        let file = folder.join("file.txt");
+        create_file_impl(lossy(&file)).unwrap();
+        assert!(file.exists());
+
+        // 移入回收站
+        let result = platform::trash(&file);
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            assert!(result.is_ok(), "Windows/macOS 上回收站应调用成功: {:?}", result);
+            assert!(!file.exists(), "移入回收站后原路径文件应已移除");
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            if result.is_ok() {
+                assert!(!file.exists(), "移入回收站后原路径文件应已移除");
+            }
+        }
+
+        let folder_result = platform::trash(&folder);
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            assert!(folder_result.is_ok(), "Windows/macOS 上目录移入回收站应调用成功: {:?}", folder_result);
+            assert!(!folder.exists(), "移入回收站后原路径文件夹应已移除");
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            if folder_result.is_ok() {
+                assert!(!folder.exists(), "移入回收站后原路径文件夹应已移除");
+            }
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trash_symlink_does_not_delete_target() {
+        let dir = sandbox("trash-symlink-test");
+        let real_dir = dir.join("real_target_dir");
+        create_folder_impl(lossy(&real_dir)).unwrap();
+        let file_in_real = real_dir.join("payload.txt");
+        create_file_impl(lossy(&file_in_real)).unwrap();
+        assert!(file_in_real.exists());
+
+        let link_dir = dir.join("link_to_target");
+
+        // 在 Windows 上创建 Junction，在 Unix 上创建目录软链接
+        #[cfg(windows)]
+        let created = {
+            std::process::Command::new("cmd")
+                .args(&["/c", "mklink", "/J", &lossy(&link_dir), &lossy(&real_dir)])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        };
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(&real_dir, &link_dir).is_ok();
+
+        if created && link_dir.symlink_metadata().is_ok() {
+            let res = platform::trash(&link_dir);
+            if res.is_ok() {
+                // 链接本身应当被移除
+                assert!(link_dir.symlink_metadata().is_err(), "软链接本身应被移入回收站");
+                // 关键断言：被指向的真实目标必须完好无损，严禁被穿透删除！
+                assert!(real_dir.exists(), "软链接指向的真实目录必须完好保留");
+                assert!(file_in_real.exists(), "真实目录内的文件必须完好保留");
+            }
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
