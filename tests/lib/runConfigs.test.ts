@@ -61,6 +61,8 @@ describe("newShellConfig 自定义配置的形状", () => {
       name: "我的任务",
       kind: "shell",
       command: "",
+      workingDir: "",
+      env: [],
       generated: false,
       pinned: false,
       unavailable: null,

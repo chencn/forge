@@ -184,6 +184,10 @@ fn disable_default_context_menu(app: &tauri::AppHandle) {
             let Ok(core) = controller.CoreWebView2() else {
                 return;
             };
+            let mut browser_pid = 0u32;
+            if core.BrowserProcessId(&mut browser_pid).is_ok() && browser_pid != 0 {
+                sys::set_webview_browser_pid(browser_pid);
+            }
             let Ok(settings) = core.Settings() else {
                 return;
             };

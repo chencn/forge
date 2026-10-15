@@ -1,6 +1,16 @@
 import DOMPurify from "dompurify";
+import hljs from "highlight.js";
 import { Marked } from "marked";
 import { resolveRelative, isWindowsPath, nativeSeparators } from "./format";
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 /** 链接是不是要走系统浏览器：绝对 URL 带协议，或协议相对（//host）。 */
 function isExternal(href: string): boolean {
@@ -61,6 +71,30 @@ export function renderMarkdown(
 
   parser.use({
     renderer: {
+      code({ text, lang }) {
+        const cleanLang = (lang || "").trim().split(/\s+/)[0].toLowerCase();
+        let highlighted = "";
+        if (cleanLang && hljs.getLanguage(cleanLang)) {
+          try {
+            highlighted = hljs.highlight(text, { language: cleanLang, ignoreIllegals: true }).value;
+          } catch {
+            highlighted = escapeHtml(text);
+          }
+        } else if (cleanLang === "plaintext" || cleanLang === "text" || cleanLang === "txt") {
+          highlighted = escapeHtml(text);
+        } else {
+          // 未显式指定语言或未知语言时，自动检测高亮
+          try {
+            const auto = hljs.highlightAuto(text);
+            highlighted = auto.value;
+          } catch {
+            highlighted = escapeHtml(text);
+          }
+        }
+        const langClass = cleanLang ? ` language-${escapeHtml(cleanLang)}` : "";
+        const tag = cleanLang ? `<span class="code-lang-tag">${escapeHtml(cleanLang)}</span>` : "";
+        return `<div class="code-block-wrapper">${tag}<pre><code class="hljs${langClass}">${highlighted}</code></pre></div>`;
+      },
       image({ href, title, text }) {
         const { url } = resolveHref(href, docDir, assetOf);
         const alt = text.replace(/"/g, "&quot;");
@@ -87,8 +121,8 @@ export function renderMarkdown(
 
   const raw = parser.parse(source, { async: false });
   return DOMPurify.sanitize(raw, {
-    // data-* 要留着：上面打的两个标记靠它把点击导去系统程序。
-    ADD_ATTR: ["data-external", "data-local", "target"],
+    // data-* 要留着：上面打的两个标记靠它把点击导去系统程序；class 供代码高亮样式用。
+    ADD_ATTR: ["data-external", "data-local", "target", "class"],
     // DOMPurify 默认放行 http(s)/mailto/data 与相对地址，唯独不认 asset 协议——
     // 那是非 Windows 平台上本地图片的 scheme，补进去。协议本身在 CSP 里另有约束。
     ALLOWED_URI_REGEXP:

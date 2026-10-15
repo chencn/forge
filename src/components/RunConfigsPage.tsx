@@ -1,9 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Copy, FolderOpen, Plus, Trash } from "lucide-react";
 import Select from "./Select";
 import { RUN_KIND_ORDER, RunKindIcon, runKindLabel } from "../lib/runIcons";
-import { resolveCommand } from "../lib/runConfigs";
+import { newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { EnvVar, RunConfiguration, RunKind } from "../lib/runConfigs";
 import type { RunConfigController } from "../hooks/useRunConfigs";
 import { basenameOf, joinPath } from "../lib/format";
@@ -24,7 +24,18 @@ const KINDS: RunKind[] = RUN_KIND_ORDER;
  */
 export default function RunConfigsPage({ configs }: RunConfigsPageProps) {
   const { t } = useI18n();
-  const [picked, setPicked] = useState<string>(configs.custom[0]?.id ?? configs.configs[0]?.id ?? "");
+  const [picked, setPicked] = useState<string>(
+    configs.selected?.id ?? configs.custom[0]?.id ?? configs.configs[0]?.id ?? ""
+  );
+
+  useEffect(() => {
+    if (configs.selected?.id && configs.selected.id !== picked) {
+      setPicked(configs.selected.id);
+    } else if (!picked && (configs.custom[0] || configs.configs[0])) {
+      setPicked((configs.custom[0] ?? configs.configs[0]).id);
+    }
+  }, [configs.selected?.id, configs.custom, configs.configs, picked]);
+
   const current = useMemo(
     () => configs.configs.find((config) => config.id === picked) ?? configs.custom[0] ?? null,
     [configs.configs, configs.custom, picked]
@@ -38,19 +49,9 @@ export default function RunConfigsPage({ configs }: RunConfigsPageProps) {
   );
 
   const addOne = () => {
-    const draft: RunConfiguration = {
-      id: crypto.randomUUID(),
-      name: t("run.newConfigName"),
-      kind: "shell",
-      command: "",
-      workingDir: "",
-      env: [],
-      generated: false,
-      pinned: false,
-      unavailable: null,
-      helper: null,
-    };
+    const draft = newShellConfig(crypto.randomUUID(), t("run.newConfigName"));
     configs.saveCustom(draft);
+    configs.select(draft.id);
     setPicked(draft.id);
   };
 
@@ -129,7 +130,17 @@ export default function RunConfigsPage({ configs }: RunConfigsPageProps) {
         </header>
 
         {!current ? (
-          <p className="settings-note">{t("run.none")}</p>
+          <div className="run-configs-empty">
+            <p className="settings-note">{t("run.detectEmpty")}</p>
+            <button
+              type="button"
+              className="button is-primary is-tiny run-empty-action"
+              onClick={addOne}
+            >
+              <Plus size={12} aria-hidden="true" />
+              {t("run.addCustom")}
+            </button>
+          </div>
         ) : (
           <div className="settings-rows">
             {current.generated ? (

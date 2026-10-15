@@ -2,6 +2,7 @@ use crate::offload::block_value;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -210,11 +211,24 @@ const CHILD: &str = "child";
 /// Tauri 的页面代码全跑在这些进程里，宿主进程那次 API 调用读不到，只能按进程名归到一档。
 const WEBVIEW_EXE: &str = "msedgewebview2.exe";
 
-/// 挑出 `self_pid` 及其全部后代，按归属归并成几档。
+/// 全局记录的本实例所连接的 WebView2 Browser 进程 PID。
+/// 当运行多个应用实例时，WebView2 默认共享同一套 Browser 进程树。通过它能准确定位整个 WebView 环境。
+static WEBVIEW_BROWSER_PID: AtomicU32 = AtomicU32::new(0);
+
+pub fn set_webview_browser_pid(pid: u32) {
+    if pid != 0 {
+        WEBVIEW_BROWSER_PID.store(pid, Ordering::Relaxed);
+    }
+}
+
+/// 挑出 `self_pid` 及其后代，按归属归并成 host / child / webview 几档。
 ///
-/// 后代靠 `ppid` 链推：Windows 在父进程先退出时不会把孩子重挂到别处，那一行的 `ppid`
-/// 指向一个已死的 pid，链断在这里，整棵子树就不算了——宁可少报，也不把无关进程记到本应用头上。
-/// `seen` 挡的是 PID 复用造成的环，环一旦闭合按 `ppid` 推会无限循环。
+/// 多实例感知：
+/// 当系统运行了多个本应用实例（如打开两个 Forge 窗口/进程）时，WebView2 默认复用同一个
+/// Browser / GPU 进程树。导致在操作系统进程树中，WebView2 的 ppid 父进程只挂在首个启动的实例上，
+/// 后续实例在 ppid 链上没有 WebView 子进程。
+/// 此处通过 `WEBVIEW_BROWSER_PID` 或同名宿主实例定位属于本应用的 WebView2 进程树，
+/// 并按活跃宿主实例数进行内存均摊，使各实例都能准确反映各自的内存消耗。
 fn group(
     rows: &[ProcInfo],
     self_pid: u32,
@@ -227,50 +241,142 @@ fn group(
         kids.entry(row.ppid).or_default().push(row.pid);
     }
 
-    let mut picked: Vec<&ProcInfo> = Vec::new();
-    let mut seen: HashSet<u32> = HashSet::new();
-    let mut queue: VecDeque<u32> = VecDeque::new();
-    queue.push_back(self_pid);
-    seen.insert(self_pid);
-    while let Some(pid) = queue.pop_front() {
-        if let Some(row) = by_pid.get(&pid) {
-            picked.push(row);
-        }
-        if let Some(children) = kids.get(&pid) {
-            for child in children {
-                if seen.insert(*child) {
-                    queue.push_back(*child);
+    let Some(self_info) = by_pid.get(&self_pid) else {
+        return Vec::new();
+    };
+    let self_program = &self_info.program;
+
+    // 统计当前系统中所有与本应用同名的活跃宿主实例（如开了多个 forge.exe）
+    let host_instances: Vec<u32> = rows
+        .iter()
+        .filter(|r| r.program.eq_ignore_ascii_case(self_program))
+        .map(|r| r.pid)
+        .collect();
+    let host_count = host_instances.len().max(1) as u64;
+
+    // 1) 收集属于本实例独占的普通子进程（终端、LSP 等，排除 webview）
+    let mut child_picked: Vec<&ProcInfo> = Vec::new();
+    let mut child_seen: HashSet<u32> = HashSet::new();
+    let mut child_queue: VecDeque<u32> = VecDeque::new();
+    child_seen.insert(self_pid);
+
+    if let Some(children) = kids.get(&self_pid) {
+        for child_pid in children {
+            if let Some(child_row) = by_pid.get(child_pid) {
+                if !child_row.program.eq_ignore_ascii_case(WEBVIEW_EXE) {
+                    if child_seen.insert(*child_pid) {
+                        child_queue.push_back(*child_pid);
+                    }
                 }
             }
         }
     }
 
+    while let Some(pid) = child_queue.pop_front() {
+        if let Some(row) = by_pid.get(&pid) {
+            child_picked.push(row);
+        }
+        if let Some(children) = kids.get(&pid) {
+            for child in children {
+                if child_seen.insert(*child) {
+                    child_queue.push_back(*child);
+                }
+            }
+        }
+    }
+
+    // 2) 确定属于本应用家族的 WebView2 Browser 根进程：
+    //    a) 优先使用运行时记录的 WEBVIEW_BROWSER_PID；
+    //    b) 兜底：快照中寻找 ppid 为本应用同名宿主实例的 msedgewebview2.exe。
+    let mut browser_pids: Vec<u32> = Vec::new();
+    let known_browser_pid = WEBVIEW_BROWSER_PID.load(Ordering::Relaxed);
+    if known_browser_pid != 0 {
+        if let Some(row) = by_pid.get(&known_browser_pid) {
+            if row.program.eq_ignore_ascii_case(WEBVIEW_EXE) {
+                browser_pids.push(known_browser_pid);
+            }
+        }
+    }
+
+    if browser_pids.is_empty() {
+        for row in rows {
+            if row.program.eq_ignore_ascii_case(WEBVIEW_EXE) && host_instances.contains(&row.ppid) {
+                if !browser_pids.contains(&row.pid) {
+                    browser_pids.push(row.pid);
+                }
+            }
+        }
+    }
+
+    // 3) 遍历收集 WebView2 根进程及其所有子孙进程（GPU、渲染器、网络服务等）
+    let mut webview_picked: Vec<&ProcInfo> = Vec::new();
+    let mut webview_seen: HashSet<u32> = HashSet::new();
+    let mut webview_queue: VecDeque<u32> = VecDeque::new();
+
+    for browser_pid in browser_pids {
+        if webview_seen.insert(browser_pid) {
+            webview_queue.push_back(browser_pid);
+        }
+    }
+
+    while let Some(pid) = webview_queue.pop_front() {
+        if let Some(row) = by_pid.get(&pid) {
+            if row.program.eq_ignore_ascii_case(WEBVIEW_EXE) {
+                webview_picked.push(row);
+                if let Some(children) = kids.get(&pid) {
+                    for child in children {
+                        if webview_seen.insert(*child) {
+                            webview_queue.push_back(*child);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4) 汇总结算各档占用
     let mut parts: Vec<MemoryPart> = Vec::new();
-    for row in picked {
-        let (kind, program) = if row.pid == self_pid {
-            (HOST, String::new())
-        } else if row.program.eq_ignore_ascii_case(WEBVIEW_EXE) {
-            (WEBVIEW, WEBVIEW_EXE.to_string())
-        } else {
-            (CHILD, row.program.to_ascii_lowercase())
-        };
+
+    // 宿主进程
+    parts.push(MemoryPart {
+        kind: HOST,
+        program: String::new(),
+        mb: read_bytes(self_pid) / MB,
+        count: 1,
+    });
+
+    // 独占子进程（如终端、LSP）
+    for row in child_picked {
+        let program = row.program.to_ascii_lowercase();
         let mb = read_bytes(row.pid) / MB;
-        match parts
-            .iter_mut()
-            .find(|part| part.kind == kind && part.program == program)
-        {
+        match parts.iter_mut().find(|part| part.kind == CHILD && part.program == program) {
             Some(part) => {
                 part.mb += mb;
                 part.count += 1;
             }
             None => parts.push(MemoryPart {
-                kind,
+                kind: CHILD,
                 program,
                 mb,
                 count: 1,
             }),
         }
     }
+
+    // WebView 进程（均摊）
+    if !webview_picked.is_empty() {
+        let total_webview_bytes: u64 = webview_picked.iter().map(|r| read_bytes(r.pid)).sum();
+        let total_webview_count = webview_picked.len() as u32;
+        let mb = (total_webview_bytes / MB) / host_count;
+        let count = (total_webview_count + host_count as u32 - 1) / (host_count as u32);
+        parts.push(MemoryPart {
+            kind: WEBVIEW,
+            program: WEBVIEW_EXE.to_string(),
+            mb,
+            count: count.max(1),
+        });
+    }
+
     parts.sort_by(|a, b| b.mb.cmp(&a.mb).then_with(|| a.program.cmp(&b.program)));
     parts
 }
@@ -481,6 +587,39 @@ mod tests {
                 ("child".to_string(), "node.exe".to_string(), 9, 2),
                 ("webview".to_string(), "msedgewebview2.exe".to_string(), 5, 2),
                 ("host".to_string(), String::new(), 1, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn shares_webview_memory_across_multiple_forge_instances() {
+        let rows = [
+            // 实例 1
+            row(10, 0, "forge.exe"),
+            // 实例 2（在 Windows 下复用已有的 WebView2 运行时）
+            row(20, 0, "forge.exe"),
+            // WebView2 Browser 根进程（由首个实例 10 唤起，ppid 为 10）
+            row(2, 10, "msedgewebview2.exe"),
+            // GPU 进程与两个实例的渲染器子进程（ppid 均指向 Browser 进程 2）
+            row(3, 2, "msedgewebview2.exe"),
+            row(4, 2, "msedgewebview2.exe"),
+            row(5, 2, "msedgewebview2.exe"),
+        ];
+        // WebView 总体私有工作集 = 2 + 3 + 4 + 5 = 14 MB，共 4 个进程
+        // 2 个活跃的 forge 实例各均摊一半：7 MB，2 个进程
+        assert_eq!(
+            shape(&rows, 10),
+            vec![
+                ("host".to_string(), String::new(), 10, 1),
+                ("webview".to_string(), "msedgewebview2.exe".to_string(), 7, 2),
+            ]
+        );
+        // 关键断言：实例 2 同样能正确均摊到 7 MB WebView 内存，不再为 0！
+        assert_eq!(
+            shape(&rows, 20),
+            vec![
+                ("host".to_string(), String::new(), 20, 1),
+                ("webview".to_string(), "msedgewebview2.exe".to_string(), 7, 2),
             ]
         );
     }

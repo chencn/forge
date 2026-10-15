@@ -109,6 +109,7 @@ export default function DocPane({
               source={doc.contents}
               docPath={doc.path}
               onOpenLocal={onOpenLocal}
+              onToggleSource={() => onView(doc.path, "source")}
             />
           </Suspense>
         ) : null}

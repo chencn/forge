@@ -72,6 +72,8 @@ import { useHistory } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
 import { installReadyUpdate, relaunchApp, runAutoUpdateFlow } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
+import { shouldCopyDomSelection } from "./lib/copySelection";
+import { DoubleShiftDetector } from "./lib/doubleShift";
 import {
   disposeModel,
   languageForPath,
@@ -1285,14 +1287,15 @@ export default function App() {
   /**
    * 搜索那三颗键位是应用级的，不走 monaco 的键绑定，三个快捷键方案里都是同一套。
    *
-   * 双击 Shift 照 IDEA 那条键盘手势（`$default.xml` 里的 `shift SHIFT`）：两次 Shift 的
-   * 间隔不超过 300ms 才算，中间落了别的键就重新计。焦点在输入框里时不认这条，
+   * 双击 Shift 照 IDEA 那条键盘手势（`$default.xml` 里的 `shift SHIFT`）：两次轻击 Shift 的
+   * 间隔不超过 350ms 才算，中间落了别的键就重新计。长按 Shift（持续按住或发生 repeat）
+   * 严格判定为长按，绝不触发搜索。焦点在输入框里时不认这条，
    * 否则重命名框里连按两下 Shift 会把弹层盖上去；monaco 那块输入面除外，
    * 它是编辑器本体，IDEA 在这儿照样生效。终端的辅助 textarea 不除外，那边敲的是 shell。
    */
   useEffect(() => {
-    let lastShiftAt = 0;
-    const onKey = (event: KeyboardEvent) => {
+    const detector = new DoubleShiftDetector();
+    const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const inEditor = target?.classList.contains("inputarea") ?? false;
       const inField =
@@ -1304,28 +1307,38 @@ export default function App() {
         // Ctrl+Shift+F 是 Find in Files：直接开在文本页签，词取编辑器选区。
         if (key === "f") {
           event.preventDefault();
+          detector.reset();
           openEverywhere("text", selectedText());
           return;
         }
         // Ctrl+Shift+N 是 Go to File：同一个弹层落在文件页签上，不是另一个框。
         if (key === "n") {
           event.preventDefault();
+          detector.reset();
           openEverywhere("files");
           return;
         }
       }
-      if (event.key !== "Shift" || inField || dialog || menu || resolveOpen || everywhere) return;
-      const now = event.timeStamp;
-      if (now - lastShiftAt <= 300) {
-        lastShiftAt = 0;
+      const disabled = inField || !!dialog || !!menu || resolveOpen || !!everywhere;
+      if (detector.handleKeyDown(event, disabled)) {
         event.preventDefault();
         openEverywhere("all");
-        return;
       }
-      lastShiftAt = now;
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onKeyUp = (event: KeyboardEvent) => {
+      detector.handleKeyUp(event);
+    };
+    const onBlur = () => {
+      detector.reset();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, [dialog, everywhere, menu, openEverywhere, resolveOpen]);
 
   /**
@@ -2487,6 +2500,33 @@ export default function App() {
   );
 
   /**
+   * 选中一段文字后，Ctrl/Cmd+C 把这段文字写入系统剪贴板。
+   *
+   * 挂在捕获阶段：下面资源管理器那段冒泡监听会把同一次按键当成「复制文件」。
+   * 输入框、Monaco 与终端的 textarea 不在这里处理，编辑和粘贴仍走原来的路。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const node = event.target instanceof HTMLElement ? event.target : null;
+      const text = window.getSelection()?.toString() ?? "";
+      if (
+        !shouldCopyDomSelection(
+          event,
+          node ? { tagName: node.tagName, isContentEditable: node.isContentEditable } : null,
+          text,
+        )
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void navigator.clipboard.writeText(text).catch(() => {});
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
+  /**
    * 目录树菜单上画了键位的那几句必须真能用，且只作用在选中集上。
    * 只在这侧栏停着、树里有选中的时候接手；输入框和编辑器里的按键一律让行。
    */
@@ -2507,6 +2547,9 @@ export default function App() {
       // 主修饰键按平台认：macOS 上 Cmd+C/V，其余平台 Ctrl+C/V（对齐 Monaco 的 CtrlCmd 语义）。
       const mod = event.ctrlKey || event.metaKey;
       if (mod && !event.altKey && (key === "c" || key === "x")) {
+        // 页面上已有文字选区时，这次按键属于那段文字。捕获阶段会把 Ctrl+C 写入剪贴板；
+        // 这里再让开一次，避免把目录树里选中的文件标成已复制或已剪切。
+        if ((window.getSelection()?.toString() ?? "").length > 0) return;
         event.preventDefault();
         copyPicked(explorerPick, key === "x");
         return;

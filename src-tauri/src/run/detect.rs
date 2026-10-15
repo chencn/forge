@@ -336,7 +336,7 @@ fn is_identifier(name: &str) -> bool {
 /// 识别结果整行交给 `cmd /C` 或 `sh -c` 跑，`&`、`|`、`$()`、引号这些一拼进去就是命令注入；
 /// 这些名字（npm 脚本键、cargo 包名、go 包路径……）全部来自仓库文件，恶意仓库想借运行入口
 /// 执行任意命令只隔这一层。白名单外的名字宁可少给一条运行配置，也不开这条通道：
-/// 放行 Unicode 字母数字与 `_ - . / @`（`@scope/pkg`、`cmd/api` 这类带分隔的名字要能通过），
+/// 放行 Unicode 字母数字与 `_ - . / @ :`（`@scope/pkg`、`cmd/api`、`tauri:dev` 这类带分隔的名字要能通过），
 /// 拒绝空白、shell 元字符、引号、`$` 与反引号，以及任何一段 `..`（不得逃出工程目录）。
 fn safe_component(s: &str) -> bool {
     if s.is_empty() {
@@ -344,7 +344,7 @@ fn safe_component(s: &str) -> bool {
     }
     let allowed = s
         .chars()
-        .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '@'));
+        .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '@' | ':'));
     // 单独的 `.` 与 `..` 也不是可跑的目标；`..` 夹在相对路径中间同样要拒。
     // 前导 `-` 也不能放：`npm run -o` 会被 npm 当成自家旗标解析，这是参数注入
     // 而不是命令注入，但拒绝的成本就一个字符的判断。
@@ -702,7 +702,7 @@ impl Detector {
     /// 工具不在模块那一层时指过去：Maven 认 `-f <pom>`，Gradle 认 `-p <目录>`。
     /// 喊的永远是工具自己那层往下数的相对路径，工程挪盘子也不用改配置。
     fn location(&self, tool: &Tool, flag: &str, target: &Path) -> String {
-        if tool.dir == target {
+        if tool.dir == target || target == tool.dir.join("pom.xml") {
             return String::new();
         }
         format!("{flag} {}", quote(&rel_path(&tool.dir, target)))
@@ -796,7 +796,8 @@ impl Detector {
         // 聚合模块（packaging=pom）自己不出运行项，但 wrapper 可能就在它那一层。
         let aggregator = capture(&text, r"(?s)<packaging>\s*([^<]+?)\s*</packaging>")
             .as_deref()
-            == Some("pom");
+            == Some("pom")
+            || text.contains("<modules>");
         // `<parent>` 块里也有 artifactId，先摘掉再取本工程自己的那个。
         let stripped = strip_first(&text, r"(?s)<parent>.*?</parent>");
         let artifact = capture(&stripped, r"(?s)<artifactId>\s*([^<]+?)\s*</artifactId>")
@@ -822,26 +823,26 @@ impl Detector {
             Vec::new()
         };
 
-        if !aggregator {
-            let (goals, kind) = if spring {
-                ("spring-boot:run", RunKind::Spring)
-            } else {
-                ("clean package", RunKind::Maven)
-            };
-            self.push(RunConfiguration {
-                id: format!("{kind:?}:{}/{goals}", self.workdir(dir)),
-                name: format!("{artifact} [{goals}]"),
-                kind,
-                command: line(&[&tool.invoke, &location, goals]),
-                working_dir: self.workdir(&tool.dir),
-                env: Vec::new(),
-                generated: true,
-                pinned: false,
-                unavailable: tool.missing.clone(),
-                helper: None,
-                markers: spring_marks,
-            });
-        }
+        // 聚合模块（packaging=pom）没有应用启动类，但通常作为整个多模块项目的构建打包入口（clean package）。
+        let (goals, kind) = if !aggregator && spring {
+            ("spring-boot:run", RunKind::Spring)
+        } else {
+            ("clean package", RunKind::Maven)
+        };
+        self.push(RunConfiguration {
+            id: format!("{kind:?}:{}/{goals}", self.workdir(dir)),
+            name: format!("{artifact} [{goals}]"),
+            kind,
+            command: line(&[&tool.invoke, &location, goals]),
+            working_dir: self.workdir(&tool.dir),
+            env: Vec::new(),
+            generated: true,
+            pinned: false,
+            unavailable: tool.missing.clone(),
+            helper: None,
+            markers: spring_marks,
+        });
+
         if aggregator {
             return;
         }
@@ -2174,11 +2175,13 @@ mod tests {
 
     #[test]
     fn safe_component_passes_names_and_rejects_shell_payloads() {
-        // 放行：普通名、npm 的 scope 包名、go 的相对包路径、带下划线/连字符/点的名字、Unicode。
+        // 放行：普通名、npm 的 scope 包名、go 的相对包路径、带下划线/连字符/点/冒号的名字、Unicode。
         assert!(safe_component("dev"));
         assert!(safe_component("@scope/pkg"));
         assert!(safe_component("cmd/api"));
         assert!(safe_component("my-pkg_2.0"));
+        assert!(safe_component("tauri:dev"));
+        assert!(safe_component("check:ts"));
         assert!(safe_component("构建脚本"));
         // 拒：空串、点目录、往上跳的路径段、空白、shell 元字符、命令替换、引号与反引号。
         assert!(!safe_component(""));
@@ -2269,6 +2272,11 @@ mod tests {
             names(&outcome)
         );
         assert!(outcome.configs.iter().any(|c| c.name == "Tool.main()"));
+        // 根部聚合模块提供全工程的构建入口
+        let parent = find(&outcome, "demo-parent [clean package]");
+        assert_eq!(parent.kind, RunKind::Maven);
+        assert!(!parent.command.contains("-f"), "根工程在当前目录打包不需要 -f：{}", parent.command);
+        assert!(parent.command.ends_with("clean package"), "{}", parent.command);
         fs::remove_dir_all(&dir).unwrap();
     }
 

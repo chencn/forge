@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { ChevronDown, MoreVertical, Pencil, Play, RefreshCw, Square, Wrench } from "lucide-react";
+import { ChevronDown, MoreVertical, Pencil, Play, Plus, RefreshCw, Square, Wrench } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import Popover from "./Popover";
 import { RerunIcon, RunIcon, StopIcon } from "./RunIcons";
 import { RunKindIcon, RUN_KIND_ORDER, runKindLabel } from "../lib/runIcons";
 import { codedError, describeError } from "../lib/errors";
-import { missingTool, resolveCommand } from "../lib/runConfigs";
+import { missingTool, newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
 import type { RunConfigController } from "../hooks/useRunConfigs";
 import type { RunController } from "../hooks/useRunSessions";
@@ -100,10 +100,18 @@ export default function RunControls({
     if (!open) setFilter("");
   }, [open]);
 
-  // 信号每递增一次把下拉打开一次；挂载时那个 0 不算。一条配置都没有时不开空下拉。
+  // 信号每递增一次把下拉打开一次；挂载时那个 0 不算。工作区可用时即响应打开下拉。
   useEffect(() => {
-    if (chooserSignal > 0 && configs.configs.length > 0) setOpen(true);
-  }, [chooserSignal, configs.configs]);
+    if (chooserSignal > 0 && enabled) setOpen(true);
+  }, [chooserSignal, enabled]);
+
+  const addAndEditCustom = useCallback(() => {
+    const draft = newShellConfig(crypto.randomUUID(), t("run.newConfigName"));
+    configs.saveCustom(draft);
+    configs.select(draft.id);
+    setOpen(false);
+    onEditConfigs();
+  }, [configs, onEditConfigs, t]);
 
   const launch = useCallback(
     (config: RunConfiguration) => {
@@ -175,7 +183,7 @@ export default function RunControls({
         (session) => session.status === "running" && session.config.id === selected.id
       ).length
     : 0;
-  const canRun = enabled && selected !== null && blockedOf(selected) === null;
+  const canRun = enabled && (selected ? blockedOf(selected) === null : true);
   /** 停止那颗管的是「现在还在跑的那几台」，多条时先弹列表再停。 */
   const runningSessions = run.sessions.filter((session) => session.status === "running");
   const stopAll = () => {
@@ -191,7 +199,7 @@ export default function RunControls({
         className="run-selector"
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={!enabled || configs.configs.length === 0}
+        disabled={!enabled}
         title={t("run.chooseConfig")}
         onClick={() => setOpen((state) => !state)}
       >
@@ -204,23 +212,35 @@ export default function RunControls({
       </button>
 
       {open ? (
-        <Popover anchor={triggerRef.current} onClose={() => setOpen(false)}>
-          <div className="run-filter">
-            <input
-              // 弹层一开就要能打字：键位选完配置直接输入名字，是 IDEA 的手感。
-              autoFocus
-              className="run-filter-input"
-              placeholder={t("run.filter")}
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && firstMatch && !blockedOf(firstMatch)) launch(firstMatch);
-              }}
-            />
-          </div>
+        <Popover anchor={triggerRef.current} onClose={() => setOpen(false)} minWidth={280}>
+          {configs.configs.length > 0 ? (
+            <div className="run-filter">
+              <input
+                // 弹层一开就要能打字：键位选完配置直接输入名字，是 IDEA 的手感。
+                autoFocus
+                className="run-filter-input"
+                placeholder={t("run.filter")}
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && firstMatch && !blockedOf(firstMatch)) launch(firstMatch);
+                }}
+              />
+            </div>
+          ) : null}
 
           {configs.configs.length === 0 ? (
-            <p className="run-empty">{t("run.detectEmpty")}</p>
+            <div className="run-empty-wrapper">
+              <p className="run-empty">{t("run.detectEmpty")}</p>
+              <button
+                type="button"
+                className="button is-primary is-tiny run-empty-action"
+                onClick={addAndEditCustom}
+              >
+                <Plus size={12} aria-hidden="true" />
+                {t("run.addCustom")}
+              </button>
+            </div>
           ) : (
             <div className="run-list" role="menu">
               {sections.map((section) => (
@@ -296,6 +316,16 @@ export default function RunControls({
           )}
 
           <div className="run-popover-foot">
+            {configs.configs.length > 0 ? (
+              <button
+                type="button"
+                className="text-button"
+                onClick={addAndEditCustom}
+              >
+                <Plus size={13} aria-hidden="true" />
+                {t("run.addCustom")}
+              </button>
+            ) : null}
             <button
               type="button"
               className="text-button"
@@ -331,10 +361,14 @@ export default function RunControls({
               (selectedRunCount > 0
                 ? t("run.rerunNamed", { name: selected.name })
                 : t("run.startNamed", { name: selected.name }))
-            : t("run.none")
+            : t("run.addCustom")
         }
         onClick={() => {
-          if (!selected || blockedOf(selected)) return;
+          if (!selected) {
+            addAndEditCustom();
+            return;
+          }
+          if (blockedOf(selected)) return;
           if (selectedRunCount > 0) restartOf(selected);
           else launch(selected);
         }}
