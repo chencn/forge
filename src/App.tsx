@@ -124,7 +124,7 @@ import {
 } from "./lib/scriptRun";
 import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
-import { appExit, onWindowBlur, setTrayLabels } from "./lib/window";
+import { appExit, onWindowBlur, onWindowFocus, setTrayLabels } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
 import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
@@ -813,6 +813,35 @@ export default function App() {
     return () => window.removeEventListener("contextmenu", block, true);
   }, []);
 
+  // 窗口重新激活时（对齐 IDEA 的 Frame Activation / VSCode 的 focus 刷新）：
+  // 外部敲完 git 命令（如外部终端提交/切分支）切回应用窗口时，自动静默同步一次 Git 状态与最近提交。
+  useEffect(() => {
+    let lastFocusSync = 0;
+    return onWindowFocus(() => {
+      const now = Date.now();
+      // 避免快速在多窗口切换时频繁起进程（设置 1.5 秒节流冷却）
+      if (now - lastFocusSync < 1500) return;
+      lastFocusSync = now;
+      if (workspaceRoot) {
+        void gitRef.current.refresh();
+      }
+    });
+  }, [workspaceRoot]);
+
+  // 当 Git 侧边栏打开或 Git Log 面板展开时，设置 30 秒低频防饥饿兜底轮询，
+  // 避免在外部执行 Git 操作后、未切窗口时副屏长达半小时不刷新。
+  useEffect(() => {
+    if (!workspaceRoot) return;
+    const isGitPaneVisible = (sidebarOpen && panel === "git") || places.log !== "hidden";
+    if (!isGitPaneVisible) return;
+
+    const interval = window.setInterval(() => {
+      void gitRef.current.refreshChanges();
+    }, 30000);
+
+    return () => window.clearInterval(interval);
+  }, [panel, places.log, sidebarOpen, workspaceRoot]);
+
   const refreshTree = useCallback(
     () => setTreeRefresh((current) => ({ paths: null, seq: current.seq + 1 })),
     []
@@ -886,7 +915,9 @@ export default function App() {
     };
   }, []);
   /** 包管理安装/清理会话运行期间按工作区根暂存的待刷新路径，待会话结束再统一刷新。 */
-  const deferredPathsByRootRef = useRef(new Map<string, { root: string; paths: Set<string> }>());
+  const deferredPathsByRootRef = useRef(
+    new Map<string, { root: string; paths: Set<string>; firstAt: number }>()
+  );
   const runSessionsRef = useRef(run.allSessions);
   runSessionsRef.current = run.allSessions;
   /** 记录上一轮仍处于 running 状态的会话 ID -> root，用于会话刚结束时立即触发目录树刷新。 */
@@ -955,89 +986,130 @@ export default function App() {
 
   /**
    * 磁盘上出了事就三处一起补：目录树重读、变更清单重取、打开的文档按干净 / 脏分别处理。
-   * 报来的路径既喂给文档判定，也用来把树的缓存精确作废——清整张表的话，
-   * 每个展开中的目录每批都要重发一次列目录。
+   * 报来的路径既喂给文档判定，也用来把树的缓存精确作废。
    *
-   * 删除文件期间或运行 `npm install` 等包安装任务期间暂停文件管理器刷新，等事件结束再统一刷新。
+   * 区分工作区常规文件与 .git 版本控制元数据：
+   * - 外部执行 git commit / checkout / branch 等仅变动 .git 核心指针时，精准触发 Git 刷新，
+   *   不误触工作区目录树重读，避免无谓的磁盘开销；
+   * - 运行包安装期间，工作区文件暂存防风暴，并带 3000ms 超时上限防饥饿；Git 状态刷新正常响应。
    */
   const onDiskChange = useCallback(
     (changedRoot: string, paths: string[], bulk = false) => {
+      const isGitInternal = (p: string) => {
+        const norm = p.replaceAll("\\", "/");
+        return norm.includes("/.git/") || norm.endsWith("/.git");
+      };
+      const workspacePaths = paths.filter((p) => !isGitInternal(p));
+      const hasGitInternal = paths.some(isGitInternal);
+
       // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
-      void docsRef.current.noteExternalChange(paths);
-      // 构建脚本或顶层依赖目录变动时，通知依赖同步检测器（内部先经 O(1) 白名单过滤 + 600ms 防抖）。
-      depSyncRef.current?.noteDiskChange(changedRoot, paths);
+      if (workspacePaths.length > 0) {
+        void docsRef.current.noteExternalChange(workspacePaths);
+        // 构建脚本或顶层依赖目录变动时，通知依赖同步检测器（内部先经 O(1) 白名单过滤 + 600ms 防抖）。
+        depSyncRef.current?.noteDiskChange(changedRoot, workspacePaths);
+      }
 
       // 正在执行文件删除或处于删除刚结束的回声抑制窗口内时，暂停文件管理器与 Git 的重复刷新。
       if (fsDeletingRef.current || Date.now() < suppressWatchUntilRef.current) {
         return;
       }
 
-      // 若该工作区当前有正在运行的包安装/清理会话（如 npm install），暂存路径等会话结束再刷。
-      const hasRunningInstall = runSessionsRef.current.some(
-        (s) =>
-          s.status === "running" &&
-          samePath(s.root, changedRoot) &&
-          isBulkInstallSession(s)
-      );
-      if (hasRunningInstall) {
-        const key = changedRoot.replaceAll("\\", "/").toLowerCase();
-        let deferred = deferredPathsByRootRef.current.get(key);
-        if (!deferred) {
-          deferred = { root: changedRoot, paths: new Set(paths) };
-          deferredPathsByRootRef.current.set(key, deferred);
-        } else {
-          for (const p of paths) deferred.paths.add(p);
+      // 若该工作区当前有正在运行的包安装/清理会话（如 npm install），暂存工作区文件路径等会话结束再刷。
+      // 加入 3000ms 防饥饿超时机制，防止后台长任务导致文件树永久不刷新。
+      let deferWorkspace = false;
+      if (workspacePaths.length > 0) {
+        const hasRunningInstall = runSessionsRef.current.some(
+          (s) =>
+            s.status === "running" &&
+            samePath(s.root, changedRoot) &&
+            isBulkInstallSession(s)
+        );
+        if (hasRunningInstall) {
+          const key = changedRoot.replaceAll("\\", "/").toLowerCase();
+          const now = Date.now();
+          let deferred = deferredPathsByRootRef.current.get(key);
+          if (!deferred) {
+            deferred = { root: changedRoot, paths: new Set(workspacePaths), firstAt: now };
+            deferredPathsByRootRef.current.set(key, deferred);
+            deferWorkspace = true;
+          } else if (now - deferred.firstAt < 3000) {
+            for (const p of workspacePaths) deferred.paths.add(p);
+            deferWorkspace = true;
+          } else {
+            // 已超过 3000ms 上限，强制放行并重置积攒计时
+            deferredPathsByRootRef.current.delete(key);
+          }
         }
-        return;
       }
 
-      // 若本批是包管理器/批量风暴静默收尾（如在终端内执行了 npm install），或涉及依赖目录/锁文件，
-      // 直接执行一次全量目录树刷新（无闪烁后台重读），确保顶层与所有展开子目录及忽略态完整同步。
-      const touchesPackageArtifacts =
-        bulk ||
-        paths.some((p) => {
-          const norm = p.replaceAll("\\", "/").toLowerCase();
-          return (
-            norm.includes("/node_modules") ||
-            norm.includes("/.pnpm") ||
-            norm.includes("/target/") ||
-            norm.includes("/vendor/") ||
-            norm.includes("/.venv/") ||
-            /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|cargo\.lock|go\.sum|poetry\.lock|uv\.lock|composer\.lock)$/.test(
-              norm
-            )
-          );
-        });
+      if (!deferWorkspace && workspacePaths.length > 0) {
+        // 若本批是包管理器/批量风暴静默收尾（如在终端内执行了 npm install），或涉及依赖目录/锁文件，
+        // 直接执行一次全量目录树刷新（无闪烁后台重读），确保顶层与所有展开子目录及忽略态完整同步。
+        const touchesPackageArtifacts =
+          bulk ||
+          workspacePaths.some((p) => {
+            const norm = p.replaceAll("\\", "/").toLowerCase();
+            return (
+              norm.includes("/node_modules") ||
+              norm.includes("/.pnpm") ||
+              norm.includes("/target/") ||
+              norm.includes("/vendor/") ||
+              norm.includes("/.venv/") ||
+              /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|cargo\.lock|go\.sum|poetry\.lock|uv\.lock|composer\.lock)$/.test(
+                norm
+              )
+            );
+          });
 
-      if (touchesPackageArtifacts) {
-        refreshTree();
-      } else {
-        // 目录树缓存跨根常驻保留，后台根的磁盘变动同样按路径作废对应目录缓存，确保切回时展示最新内容。
-        refreshPaths(paths);
+        if (touchesPackageArtifacts) {
+          refreshTree();
+        } else {
+          // 目录树缓存跨根常驻保留，后台根的磁盘变动同样按路径作废对应目录缓存，确保切回时展示最新内容。
+          refreshPaths(workspacePaths);
+        }
+
+        // 当工程构建声明文件（如 package.json、pom.xml、Cargo.toml）因保存或 git checkout / git pull 变化时，防抖重扫顶栏运行配置。
+        if (workspacePaths.some((p) => isManifestDeclarationFile(p, changedRoot))) {
+          if (rescanConfigsTimerRef.current !== null) {
+            window.clearTimeout(rescanConfigsTimerRef.current);
+          }
+          rescanConfigsTimerRef.current = window.setTimeout(() => {
+            rescanConfigsTimerRef.current = null;
+            rescanConfigsRef.current();
+          }, 600);
+        }
       }
+
       // 只有当前激活根的磁盘事件才触发当前 Git 变更与顶栏运行配置刷新。
       if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
-      // 当工程构建声明文件（如 package.json、pom.xml、Cargo.toml）因保存或 git checkout / git pull 变化时，防抖重扫顶栏运行配置。
-      if (paths.some((p) => isManifestDeclarationFile(p, changedRoot))) {
-        if (rescanConfigsTimerRef.current !== null) {
-          window.clearTimeout(rescanConfigsTimerRef.current);
-        }
-        rescanConfigsTimerRef.current = window.setTimeout(() => {
-          rescanConfigsTimerRef.current = null;
-          rescanConfigsRef.current();
-        }, 600);
+
+      // 判断 Git 指针变动中是否涉及 HEAD、分支引用或合并状态（如果是，需要全量 refresh 分支、提交记录与状态）
+      const hasHeadOrRefChange = paths.some((p) => {
+        const norm = p.replaceAll("\\", "/").toLowerCase();
+        return (
+          norm.includes("/.git/head") ||
+          norm.includes("/.git/refs/") ||
+          norm.includes("/.git/packed-refs") ||
+          norm.includes("/.git/merge_head")
+        );
+      });
+
+      // 只有涉及工作区文件变动或 Git 关键指针变动时才刷新 Git。
+      // 防抖时间从 500ms 缩短至 200ms，大幅提升修改后状态栏与侧栏的反馈速度。
+      if (workspacePaths.length > 0 || hasGitInternal) {
+        const gitTimer = gitDebounce.current;
+        if (gitTimer) window.clearTimeout(gitTimer);
+        gitDebounce.current = window.setTimeout(() => {
+          gitDebounce.current = null;
+          if (hasHeadOrRefChange) {
+            void gitRef.current.refresh();
+          } else {
+            void gitRef.current.refreshChanges();
+          }
+        }, 200);
       }
-      // 构建期间每 150-300ms 就来一批事件，每批都起一个 git status 子进程的话
-      // 就是持续失血：抖 500ms，风暴停下来才问一次最终状态。目录树那边是
-      // 即时精确作废的，不跟着等。
-      const gitTimer = gitDebounce.current;
-      if (gitTimer) window.clearTimeout(gitTimer);
-      gitDebounce.current = window.setTimeout(() => {
-        gitDebounce.current = null;
-        void gitRef.current.refreshChanges();
-      }, 500);
     },
-    [isBulkInstallSession, refreshPaths, workspaceRoot]
+    [isBulkInstallSession, refreshPaths, refreshTree, workspaceRoot]
   );
 
   const watchedRoots = useMemo(

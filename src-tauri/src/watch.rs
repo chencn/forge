@@ -65,14 +65,90 @@ fn interesting(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Other | EventKind::Access(_))
 }
 
-/// 这条路径是不是落在 `.git` 里。
+/// 判断一条路径是否为应被忽略的 git 内部无用文件。
 ///
-/// 暂存、提交、切分支都会写 `.git/index`、`.git/HEAD` 这些文件，监听是递归的，
-/// 于是每次 git 操作都会再触发一轮「磁盘变了」——前端收到就把目录树、git 状态、
-/// 文档重读一遍，等于给每次暂存白加一倍开销，点起来就卡。
-/// `.git` 里的变动本来就轮不到用户看，直接不往外发。
-fn inside_git_dir(path: &Path) -> bool {
-    path.components().any(|part| part.as_os_str() == ".git")
+/// 外部 `git commit`、`git add`、`git checkout` 等操作只写 `.git` 内部指针，工作区源码并未变动；
+/// 若粗暴地把整个 `.git` 全部丢弃，外部提交后应用将永远无法感知状态变化。
+/// 因此：
+/// - 放行代表版本库关键状态变化的指针文件（`HEAD`、`refs/`、`index`、`packed-refs`、`MERGE_HEAD` 等）；
+/// - 严密过滤高频写入且无前端状态意义的内部海量对象（`objects/`、`logs/`、`hooks/`）与临时锁文件（`*.lock`）。
+fn ignorable_git_internal(path: &Path) -> bool {
+    let mut after_git = false;
+    let mut git_rel = std::path::PathBuf::new();
+    for part in path.components() {
+        if after_git {
+            git_rel.push(part.as_os_str());
+        } else if part.as_os_str() == ".git" {
+            after_git = true;
+        }
+    }
+    // 不在 .git 目录内，是普通工作区文件，放行（不忽略）
+    if !after_git {
+        return false;
+    }
+
+    // 锁文件（如 index.lock、HEAD.lock）正处于写入未决阶段，过滤避免引发无效的抖动
+    if let Some(ext) = git_rel.extension() {
+        if ext == "lock" {
+            return true;
+        }
+    }
+
+    // objects、logs、hooks 等包含大量底层对象和日志，过滤掉以防事件风暴
+    let mut components = git_rel.components();
+    if let Some(first) = components.next() {
+        let first_str = first.as_os_str();
+        if first_str == "objects"
+            || first_str == "logs"
+            || first_str == "hooks"
+            || first_str == "info"
+        {
+            return true;
+        }
+        // refs/heads/*, refs/tags/*, refs/remotes/* 放行
+        if first_str == "refs" {
+            return false;
+        }
+        // 工作树 worktrees/<name>/ 下的 HEAD / index / refs 等同样放行
+        if first_str == "worktrees" {
+            if let Some(filename) = git_rel.file_name() {
+                let name = filename.to_string_lossy();
+                if is_git_indicator_name(&name) {
+                    return false;
+                }
+            }
+            if git_rel.components().any(|c| c.as_os_str() == "refs") {
+                return false;
+            }
+            return true;
+        }
+    }
+
+    // 关键顶层指针与索引文件放行；其它未知的内部草稿文件默认忽略
+    if let Some(filename) = git_rel.file_name() {
+        let name = filename.to_string_lossy();
+        if is_git_indicator_name(&name) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_git_indicator_name(name: &str) -> bool {
+    matches!(
+        name,
+        "HEAD"
+            | "index"
+            | "packed-refs"
+            | "config"
+            | "FETCH_HEAD"
+            | "ORIG_HEAD"
+            | "MERGE_HEAD"
+            | "CHERRY_PICK_HEAD"
+            | "REBASE_HEAD"
+            | "BISECT_HEAD"
+    )
 }
 
 /// 开始监听一个目录；已经在监听别的目录就先停掉旧的。
@@ -122,12 +198,12 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
             if !interesting(&event.kind) {
                 return;
             }
-            // 一条事件可能带多个路径（改名就是），只要有一个不在 .git 里就还值得发；
-            // 落在 .git 里的那几个剔掉，免得暂存 / 提交顺带把整块界面刷一遍。
+            // 关键的 Git 指针（如 HEAD、refs、index 等）与普通工作区文件均予放行，
+            // 过滤无意义的内部对象（objects/）、提交日志（logs/）与未决的临时锁（*.lock）。
             let paths: Vec<std::path::PathBuf> = event
                 .paths
                 .into_iter()
-                .filter(|path| !inside_git_dir(path))
+                .filter(|path| !ignorable_git_internal(path))
                 .collect();
             if !paths.is_empty() {
                 // 转发线程已经退了就直接丢事件，不该让 notify 的回调报错。
@@ -259,7 +335,7 @@ fn flush(app: &AppHandle, root: &str, pending: &mut BTreeSet<String>) {
 }
 #[cfg(test)]
 mod tests {
-    use super::inside_git_dir;
+    use super::ignorable_git_internal;
     use super::{
         allow_start_for_root, allow_stop_for_root, interesting, soak, wait_duration, FsChange,
         BATCH_CAP, MAX_WAIT, SETTLE,
@@ -302,22 +378,35 @@ mod tests {
 
     #[test]
     fn git_internals_are_filtered_out() {
-        // 暂存写的是 .git/index，提交写 .git/HEAD、.git/objects——这些都不该往外发，
-        // 否则每次 git 操作都白搭一轮全量刷新。
-        assert!(inside_git_dir(Path::new("/repo/.git/index")));
-        assert!(inside_git_dir(Path::new("/repo/.git/HEAD")));
-        assert!(inside_git_dir(Path::new("/repo/.git/objects/ab/cdef")));
-        assert!(inside_git_dir(Path::new(r"C:\repo\.git\index")));
-        assert!(inside_git_dir(Path::new("/repo/sub/.git/config")), "子模块的也算");
+        // 外部 git commit 会写 objects/ 与 logs/，这些高频日志与底层对象必须过滤；
+        // 锁文件（如 index.lock）未决阶段也不该推给前端。
+        assert!(ignorable_git_internal(Path::new("/repo/.git/objects/ab/cdef")));
+        assert!(ignorable_git_internal(Path::new("/repo/.git/logs/HEAD")));
+        assert!(ignorable_git_internal(Path::new("/repo/.git/logs/refs/heads/main")));
+        assert!(ignorable_git_internal(Path::new("/repo/.git/hooks/pre-commit")));
+        assert!(ignorable_git_internal(Path::new("/repo/.git/index.lock")));
+        assert!(ignorable_git_internal(Path::new(r"C:\repo\.git\HEAD.lock")));
+        assert!(ignorable_git_internal(Path::new("/repo/.git/COMMIT_EDITMSG")));
+
+        // 关键版本库状态指针必须放行，以便外部提交、切分支、暂存后能及时感知
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/index")));
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/HEAD")));
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/refs/heads/main")));
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/refs/tags/v1.0.0")));
+        assert!(!ignorable_git_internal(Path::new(r"C:\repo\.git\index")));
+        assert!(!ignorable_git_internal(Path::new("/repo/sub/.git/config")), "子模块配置放行");
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/packed-refs")));
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/MERGE_HEAD")));
+        assert!(!ignorable_git_internal(Path::new("/repo/.git/worktrees/wt1/HEAD")));
     }
 
     #[test]
     fn working_tree_files_are_kept() {
-        assert!(!inside_git_dir(Path::new("/repo/src/App.tsx")));
-        assert!(!inside_git_dir(Path::new("/repo/package.json")));
+        assert!(!ignorable_git_internal(Path::new("/repo/src/App.tsx")));
+        assert!(!ignorable_git_internal(Path::new("/repo/package.json")));
         // 名字里带 git 的普通文件不该被误伤。
-        assert!(!inside_git_dir(Path::new("/repo/.gitignore")));
-        assert!(!inside_git_dir(Path::new("/repo/git-notes.txt")));
+        assert!(!ignorable_git_internal(Path::new("/repo/.gitignore")));
+        assert!(!ignorable_git_internal(Path::new("/repo/git-notes.txt")));
     }
 
     #[test]

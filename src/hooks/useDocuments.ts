@@ -6,8 +6,8 @@ import { languageForPath } from "../lib/monacoEnv";
 import { docKindOf, hasTextContent, previewsFromDisk } from "../lib/docKind";
 import type { DocKind } from "../lib/docKind";
 
-/** 文档的展示视图：源码还是渲染后的预览。 */
-export type DocView = "source" | "preview";
+/** 文档的展示视图：源码、渲染后的预览、或分栏（左编辑右预览）。 */
+export type DocView = "source" | "preview" | "split";
 
 /**
  * 搜索命中要落到的位置。
@@ -169,8 +169,15 @@ export function useDocuments(
        * 只有上次读取失败的才放行，让「再点一次」等于重试。
        */
       if (existing && existing.error === null) {
-        if (ownerRoot && !samePath(existing.root, ownerRoot)) {
-          upsert({ ...existing, root: ownerRoot });
+        const freshLanguage = languageForPath(targetPath, existing.contents);
+        const shouldUpdateLang = freshLanguage !== existing.language;
+        const shouldUpdateRoot = ownerRoot && !samePath(existing.root, ownerRoot);
+        if (shouldUpdateLang || shouldUpdateRoot) {
+          upsert({
+            ...existing,
+            language: freshLanguage,
+            root: shouldUpdateRoot ? ownerRoot : existing.root,
+          });
         }
         return;
       }
@@ -218,7 +225,7 @@ export function useDocuments(
           baseline: content.contents,
           lineEnding: content.lineEnding,
           hasBom: content.hasBom,
-          language: languageForPath(targetPath),
+          language: languageForPath(targetPath, content.contents),
           readOnly: false,
           loading: false,
           error: null,
@@ -273,8 +280,8 @@ export function useDocuments(
           length: Math.max(0, length ?? 0),
           token: revealSeq.current,
         });
-        // 跳的是那一行文字，markdown 与 svg 停在预览视图时要把视图扳回源码。
-        if (existing.view !== "source") setView(existing.path, "source");
+        // 跳的是那一行文字，markdown 与 svg 仅在纯预览视图时要把视图扳回源码（分栏模式下编辑器本就可见）。
+        if (existing.view === "preview") setView(existing.path, "source");
         return;
       }
       await open(path, { line, column, length });

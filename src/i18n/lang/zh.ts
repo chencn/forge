@@ -286,6 +286,8 @@ export const zh = {
 
   "preview.source": "源码",
   "preview.markdown": "预览",
+  "preview.split": "分栏（左编辑右预览）",
+  "preview.splitResetTip": "双击恢复默认居中",
   "preview.svg": "图片",
   "preview.image": "图片",
   "preview.toggle": "切换视图",

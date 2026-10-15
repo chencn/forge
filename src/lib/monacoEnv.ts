@@ -34,6 +34,7 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   py: "python",
   java: "java",
   kt: "kotlin",
+  kts: "kotlin",
   c: "c",
   h: "c",
   cpp: "cpp",
@@ -57,28 +58,165 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   toml: "ini",
   ini: "ini",
   conf: "ini",
+  properties: "properties",
   dockerfile: "dockerfile",
   graphql: "graphql",
   lua: "lua",
   r: "r",
   dart: "dart",
+
+  // 云原生与基础设施（Protobuf / Terraform HCL / Bicep）
+  proto: "proto",
+  tf: "hcl",
+  tfvars: "hcl",
+  hcl: "hcl",
+  bicep: "bicep",
+
+  // 现代前端、文档与模板（MDX / Pug / Handlebars / FreeMarker / Liquid / Twig）
+  mdx: "mdx",
+  pug: "pug",
+  jade: "pug",
+  handlebars: "handlebars",
+  hbs: "handlebars",
+  ftl: "freemarker2",
+  ftlh: "freemarker2",
+  ftlx: "freemarker2",
+  liquid: "liquid",
+  twig: "twig",
+
+  // 常用语言体系（Scala / Elixir / Clojure / Julia / Perl / Solidity / CoffeeScript / F# / Objective-C）
+  scala: "scala",
+  sc: "scala",
+  sbt: "scala",
+  ex: "elixir",
+  exs: "elixir",
+  clj: "clojure",
+  cljs: "clojure",
+  cljc: "clojure",
+  edn: "clojure",
+  jl: "julia",
+  pl: "perl",
+  pm: "perl",
+  sol: "sol",
+  coffee: "coffeescript",
+  fs: "fsharp",
+  fsi: "fsharp",
+  fsx: "fsharp",
+  fsscript: "fsharp",
+  m: "objective-c",
+
+  // .NET 项目工程与界面（XML 家族）与 Razor 模板
+  csproj: "xml",
+  fsproj: "xml",
+  vbproj: "xml",
+  vcxproj: "xml",
+  props: "xml",
+  targets: "xml",
+  xaml: "xml",
+  axaml: "xml",
+  svg: "xml",
+  svgz: "xml",
+  wxs: "xml",
+  wxi: "xml",
+  wxl: "xml",
+  manifest: "xml",
+  xsd: "xml",
+  xsl: "xml",
+  xslt: "xml",
+  cshtml: "razor",
+
+  // Ruby 生态
+  gemspec: "ruby",
+  rbx: "ruby",
+  rjs: "ruby",
+
+  // 科学计算、文档与着色器（reStructuredText / WGSL / TypeSpec）
+  rst: "restructuredtext",
+  wgsl: "wgsl",
+  tsp: "typespec",
+
+  // 数据库与数据分析（Cypher / SPARQL / DAX / PowerQuery）
+  cyp: "cypher",
+  cypher: "cypher",
+  rq: "sparql",
+  dax: "msdax",
+  msdax: "msdax",
+  pq: "powerquery",
+  pqm: "powerquery",
+
+  // Lisp 与工业/硬件（Scheme / Pascal / Tcl / SystemVerilog / Structured Text）
+  scm: "scheme",
+  ss: "scheme",
+  sch: "scheme",
+  rkt: "scheme",
+  pas: "pascal",
+  pp: "pascal",
+  p: "pascal",
+  tcl: "tcl",
+  sv: "systemverilog",
+  svh: "systemverilog",
+  st: "st",
+  iecst: "st",
 };
 
-/** 文件名到语言的少数特例，扩展名表覆盖不到。 */
+/** 文件名到语言的少数特例，扩展名表覆盖不到（包含无扩展名的构建脚本与配置文件）。 */
 const LANGUAGE_BY_NAME: Record<string, string> = {
   dockerfile: "dockerfile",
   makefile: "makefile",
+  gradlew: "shell",
+  mvnw: "shell",
+  gemfile: "ruby",
+  rakefile: "ruby",
+  fastfile: "ruby",
+  podfile: "ruby",
+  vagrantfile: "ruby",
+  "build.sbt": "scala",
+  justfile: "shell",
+  procfile: "shell",
   ".gitignore": "ini",
+  ".gitmodules": "ini",
+  ".gitconfig": "ini",
+  ".gitattributes": "ini",
+  ".editorconfig": "ini",
+  ".npmrc": "ini",
   ".env": "ini",
+  ".bashrc": "shell",
+  ".bash_profile": "shell",
+  ".bash_aliases": "shell",
+  ".zshrc": "shell",
+  ".profile": "shell",
 };
 
-/** 路径 → Monaco 语言 id，识别不到时退回纯文本。 */
-export function languageForPath(path: string): string {
+/** 路径与内容 → Monaco 语言 id，识别不到时退回纯文本。 */
+export function languageForPath(path: string, contents?: string): string {
   const name = (path.split(/[\\/]/).pop() ?? "").toLocaleLowerCase();
   if (LANGUAGE_BY_NAME[name]) return LANGUAGE_BY_NAME[name];
   const dot = name.lastIndexOf(".");
-  if (dot < 0) return "plaintext";
-  return LANGUAGE_BY_EXTENSION[name.slice(dot + 1)] ?? "plaintext";
+  const ext = dot >= 0 ? name.slice(dot + 1) : "";
+  if (ext && LANGUAGE_BY_EXTENSION[ext]) return LANGUAGE_BY_EXTENSION[ext];
+
+  // 检查首行 Shebang 标记（如 #!/bin/sh, #!/usr/bin/env bash 等无扩展名脚本）
+  if (contents && contents.startsWith("#!")) {
+    const end = contents.indexOf("\n");
+    const firstLine = (end >= 0 ? contents.slice(0, end) : contents).toLowerCase();
+    if (firstLine.includes("bash") || firstLine.includes("/sh") || firstLine.includes("zsh")) {
+      return "shell";
+    }
+    if (firstLine.includes("python")) {
+      return "python";
+    }
+    if (firstLine.includes("node")) {
+      return "javascript";
+    }
+    if (firstLine.includes("ruby")) {
+      return "ruby";
+    }
+    if (firstLine.includes("perl")) {
+      return "perl";
+    }
+  }
+
+  return "plaintext";
 }
 
 /**
@@ -113,6 +251,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   markdown: "Markdown",
   yaml: "YAML",
   ini: "Ini",
+  properties: "Properties",
   dockerfile: "Dockerfile",
   graphql: "GraphQL",
   lua: "Lua",
@@ -120,6 +259,39 @@ const LANGUAGE_LABELS: Record<string, string> = {
   dart: "Dart",
   makefile: "Makefile",
   diff: "Diff",
+
+  // 补充语言展示名
+  proto: "Protobuf",
+  hcl: "HCL",
+  bicep: "Bicep",
+  mdx: "MDX",
+  pug: "Pug",
+  handlebars: "Handlebars",
+  freemarker2: "FreeMarker",
+  liquid: "Liquid",
+  twig: "Twig",
+  scala: "Scala",
+  elixir: "Elixir",
+  clojure: "Clojure",
+  julia: "Julia",
+  perl: "Perl",
+  sol: "Solidity",
+  coffeescript: "CoffeeScript",
+  fsharp: "F#",
+  "objective-c": "Objective-C",
+  razor: "Razor",
+  restructuredtext: "reStructuredText",
+  wgsl: "WGSL",
+  typespec: "TypeSpec",
+  cypher: "Cypher",
+  sparql: "SPARQL",
+  scheme: "Scheme",
+  pascal: "Pascal",
+  tcl: "Tcl",
+  msdax: "DAX",
+  powerquery: "PowerQuery",
+  systemverilog: "SystemVerilog",
+  st: "Structured Text",
 };
 
 /** 状态栏要给人看的语言名，不是 monaco 的内部 id。 */

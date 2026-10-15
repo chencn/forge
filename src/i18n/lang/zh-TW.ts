@@ -270,6 +270,8 @@ export const zhTW: Record<TranslationKey, string> = {
   "editor.readOnly": "只讀",
   "preview.source": "原始碼",
   "preview.markdown": "預覽",
+  "preview.split": "分欄（左編輯右預覽）",
+  "preview.splitResetTip": "按兩下恢復預設置中",
   "preview.svg": "圖片",
   "preview.image": "圖片",
   "preview.toggle": "切換檢視",

@@ -1,6 +1,6 @@
-import { lazy, Suspense } from "react";
-import { Code2, Eye } from "lucide-react";
-import CodeEditor from "./CodeEditor";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Code2, Columns2, Eye } from "lucide-react";
+import CodeEditor, { type CodeEditorHandle } from "./CodeEditor";
 import ImagePreview from "./ImagePreview";
 import PaneNotice from "./PaneNotice";
 import { canPreview } from "../hooks/useDocuments";
@@ -9,6 +9,7 @@ import type { DocKind } from "../lib/docKind";
 import { describeError } from "../lib/errors";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { useI18n } from "../i18n";
+import type { MarkdownPreviewHandle } from "./MarkdownPreview";
 
 /** marked 与 DOMPurify 只在渲染预览时要用，跟着第一次切到预览那侧才取。 */
 const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
@@ -71,7 +72,70 @@ export default function DocPane({
 }: DocPaneProps) {
   const { t } = useI18n();
   const sourceCapable = doc.kind !== "image" && doc.kind !== "binary";
-  const showPreview = canPreview(doc) && doc.view === "preview";
+  const isSplit = doc.kind === "markdown" && doc.view === "split";
+  const showPreview = canPreview(doc) && (doc.view === "preview" || isSplit);
+  const hideSource = showPreview && !isSplit;
+
+  /** 分栏模式下左侧编辑器的宽度百分比（默认 50%，支持 20%~80% 范围拖动调节）。 */
+  const [splitRatio, setSplitRatio] = useState(50);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const splitDragRef = useRef<{ startX: number; startRatio: number; totalWidth: number } | null>(null);
+
+  /** 分栏联动滚动句柄与防回环锁。 */
+  const editorHandleRef = useRef<CodeEditorHandle>(null);
+  const previewHandleRef = useRef<MarkdownPreviewHandle>(null);
+  const scrollLockRef = useRef<"editor" | "preview" | null>(null);
+  const unlockTimerRef = useRef<number | null>(null);
+
+  const handleEditorScrollRatio = useCallback(
+    (ratio: number) => {
+      if (!isSplit) return;
+      if (scrollLockRef.current === "preview") return;
+      scrollLockRef.current = "editor";
+      previewHandleRef.current?.setScrollRatio(ratio);
+      if (unlockTimerRef.current !== null) {
+        window.clearTimeout(unlockTimerRef.current);
+      }
+      unlockTimerRef.current = window.setTimeout(() => {
+        scrollLockRef.current = null;
+        unlockTimerRef.current = null;
+      }, 60);
+    },
+    [isSplit]
+  );
+
+  const handlePreviewScrollRatio = useCallback(
+    (ratio: number) => {
+      if (!isSplit) return;
+      if (scrollLockRef.current === "editor") return;
+      scrollLockRef.current = "preview";
+      editorHandleRef.current?.setScrollRatio(ratio);
+      if (unlockTimerRef.current !== null) {
+        window.clearTimeout(unlockTimerRef.current);
+      }
+      unlockTimerRef.current = window.setTimeout(() => {
+        scrollLockRef.current = null;
+        unlockTimerRef.current = null;
+      }, 60);
+    },
+    [isSplit]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (unlockTimerRef.current !== null) {
+        window.clearTimeout(unlockTimerRef.current);
+      }
+    };
+  }, []);
+
+  // 切入分栏模式时，按当前编辑器的滚动比例初始化右侧预览区
+  useEffect(() => {
+    if (isSplit && editorHandleRef.current && previewHandleRef.current) {
+      const ratio = editorHandleRef.current.getScrollRatio();
+      previewHandleRef.current.setScrollRatio(ratio);
+    }
+  }, [isSplit]);
 
   // 打不开的文档（二进制、读失败）把原因摆在正文正中：横幅只闪一下，人还没看就走了。
   if (doc.error !== null) {
@@ -84,11 +148,16 @@ export default function DocPane({
 
   return (
     <div className="doc-pane">
-      <div className="doc-body">
+      <div className={`doc-body${isSplit ? " is-split" : ""}`} ref={bodyRef}>
         {sourceCapable ? (
-          // 藏起来而不是卸载：Monaco 实例留着，撤销栈和光标才不会丢。
-          <div className="doc-source" hidden={showPreview}>
+          // 藏起来而不是卸载：Monaco 实例留着，撤销栈和光标才不会丢；分栏模式下按比例划分宽度。
+          <div
+            className="doc-source"
+            hidden={hideSource}
+            style={isSplit ? { width: `${splitRatio}%`, flex: "none" } : undefined}
+          >
             <CodeEditor
+              ref={editorHandleRef}
               document={doc}
               onChange={onChange}
               onSave={onSave}
@@ -99,19 +168,57 @@ export default function DocPane({
               projectRoot={projectRoot}
               onRunConfig={onRunConfig}
               onRunScript={onRunScript}
+              onScrollRatio={handleEditorScrollRatio}
             />
           </div>
         ) : null}
 
+        {isSplit ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="doc-split-divider"
+            title={t("preview.splitResetTip")}
+            onDoubleClick={() => setSplitRatio(50)}
+            onPointerDown={(event) => {
+              if (!bodyRef.current) return;
+              const rect = bodyRef.current.getBoundingClientRect();
+              splitDragRef.current = {
+                startX: event.clientX,
+                startRatio: splitRatio,
+                totalWidth: rect.width,
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              const drag = splitDragRef.current;
+              if (!drag || drag.totalWidth <= 0) return;
+              const deltaRatio = ((event.clientX - drag.startX) / drag.totalWidth) * 100;
+              const next = Math.max(20, Math.min(80, drag.startRatio + deltaRatio));
+              setSplitRatio(next);
+            }}
+            onPointerUp={() => {
+              splitDragRef.current = null;
+            }}
+          />
+        ) : null}
+
         {showPreview && doc.kind === "markdown" ? (
-          <Suspense fallback={null}>
-            <MarkdownPreview
-              source={doc.contents}
-              docPath={doc.path}
-              onOpenLocal={onOpenLocal}
-              onToggleSource={() => onView(doc.path, "source")}
-            />
-          </Suspense>
+          <div
+            className="doc-preview-pane"
+            style={isSplit ? { width: `${100 - splitRatio}%`, flex: "none" } : undefined}
+          >
+            <Suspense fallback={null}>
+              <MarkdownPreview
+                ref={previewHandleRef}
+                source={doc.contents}
+                docPath={doc.path}
+                onOpenLocal={onOpenLocal}
+                onToggleSource={() => onView(doc.path, "source")}
+                onScrollRatio={handlePreviewScrollRatio}
+              />
+            </Suspense>
+          </div>
         ) : null}
 
         {showPreview && doc.kind === "svg" ? (
@@ -133,12 +240,26 @@ export default function DocPane({
           >
             <Code2 size={15} aria-hidden="true" />
           </button>
+          {doc.kind === "markdown" ? (
+            <button
+              type="button"
+              className={`doc-view-button${doc.view === "split" ? " is-active" : ""}`}
+              onClick={() => {
+                onView(doc.path, "split");
+              }}
+              title={t("preview.split")}
+              aria-label={t("preview.split")}
+              aria-pressed={doc.view === "split"}
+            >
+              <Columns2 size={15} aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="button"
             className={`doc-view-button${doc.view === "preview" ? " is-active" : ""}`}
             onClick={() => {
-              // 从源码切到预览时编辑器被 hidden，主动触发失焦回调确保 svg 等磁盘预览拿到最新存盘内容。
-              if (doc.view === "source") onBlur?.();
+              // 从有编辑器的视图切到纯预览时编辑器被 hidden，主动触发失焦回调确保 svg 等磁盘预览拿到最新存盘内容。
+              if (doc.view !== "preview") onBlur?.();
               onView(doc.path, "preview");
             }}
             title={t(previewLabel(doc.kind))}

@@ -290,6 +290,8 @@ export const en: Record<TranslationKey, string> = {
 
   "preview.source": "Source",
   "preview.markdown": "Preview",
+  "preview.split": "Split View",
+  "preview.splitResetTip": "Double-click to reset to 50%",
   "preview.svg": "Image",
   "preview.image": "Image",
   "preview.toggle": "Toggle view",

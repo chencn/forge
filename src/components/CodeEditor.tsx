@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { modelUri, monaco } from "../lib/monacoEditor";
 import { monoFont } from "../lib/monacoEnv";
 import { basenameOf, samePath } from "../lib/format";
@@ -48,6 +48,12 @@ interface ScriptGutterPin {
   tip: string;
 }
 
+/** 供分栏模式下双向同步滚动位置的指令句柄。 */
+export interface CodeEditorHandle {
+  setScrollRatio: (ratio: number) => void;
+  getScrollRatio: () => number;
+}
+
 interface CodeEditorProps {
   /** 当前标签对应的文档；为 null 时编辑器留空。 */
   document: OpenDocument | null;
@@ -67,20 +73,26 @@ interface CodeEditorProps {
   onRunConfig: (configs: RunConfiguration[]) => void;
   /** 点了脚本文件第 1 行那颗 ▶：把这份脚本发到对应终端里执行。 */
   onRunScript: (path: string) => void;
+  /** 滚动位置变化时的比例回调（0~1），供分栏模式下与预览区联动。 */
+  onScrollRatio?: (ratio: number) => void;
 }
 
-export default function CodeEditor({
-  document,
-  onChange,
-  onSave,
-  onBlur,
-  reveal,
-  onRevealDone,
-  runConfigs,
-  projectRoot,
-  onRunConfig,
-  onRunScript,
-}: CodeEditorProps) {
+export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor(
+  {
+    document,
+    onChange,
+    onSave,
+    onBlur,
+    reveal,
+    onRevealDone,
+    runConfigs,
+    projectRoot,
+    onRunConfig,
+    onRunScript,
+    onScrollRatio,
+  }: CodeEditorProps,
+  ref
+) {
   const { t } = useI18n();
   const { settings } = useSettings();
   const hostRef = useRef<HTMLDivElement>(null);
@@ -110,6 +122,33 @@ export default function CodeEditor({
   saveRef.current = onSave;
   blurRef.current = onBlur;
   onRunRef.current = onRunConfig;
+  const onScrollRatioRef = useRef(onScrollRatio);
+  onScrollRatioRef.current = onScrollRatio;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setScrollRatio: (ratio: number) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const scrollHeight = editor.getScrollHeight();
+        const clientHeight = editor.getLayoutInfo().height;
+        const max = scrollHeight - clientHeight;
+        if (max > 0) {
+          editor.setScrollTop(Math.round(ratio * max));
+        }
+      },
+      getScrollRatio: () => {
+        const editor = editorRef.current;
+        if (!editor) return 0;
+        const scrollHeight = editor.getScrollHeight();
+        const clientHeight = editor.getLayoutInfo().height;
+        const max = scrollHeight - clientHeight;
+        return max > 0 ? editor.getScrollTop() / max : 0;
+      },
+    }),
+    []
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -163,9 +202,17 @@ export default function CodeEditor({
       }
     };
     const sync = [
-      editor.onDidScrollChange(() => {
+      editor.onDidScrollChange((e) => {
         saveCurrentViewState();
         measureRef.current();
+        if (e.scrollTopChanged) {
+          const scrollHeight = editor.getScrollHeight();
+          const clientHeight = editor.getLayoutInfo().height;
+          const max = scrollHeight - clientHeight;
+          if (max > 0) {
+            onScrollRatioRef.current?.(e.scrollTop / max);
+          }
+        }
       }),
       editor.onDidChangeCursorSelection(() => saveCurrentViewState()),
       editor.onDidLayoutChange(() => measureRef.current()),
@@ -242,6 +289,8 @@ export default function CodeEditor({
     swapping.current = true;
     if (!next) {
       next = monaco.editor.createModel(document.contents, document.language, uri);
+    } else if (next.getLanguageId() !== document.language) {
+      monaco.editor.setModelLanguage(next, document.language);
     }
     next.updateOptions({ tabSize: settings.editor.tabSize, insertSpaces: true });
     editor.setModel(next);
@@ -407,4 +456,4 @@ export default function CodeEditor({
       </div>
     </div>
   );
-}
+});

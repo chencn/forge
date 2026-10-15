@@ -8,8 +8,10 @@ import type { ShellInfo } from "./term";
  */
 export type ScriptKind = "bat" | "cmd" | "ps1" | "sh" | "bash";
 
-/** 按扩展名认出脚本类型；不是这五类就返回 null。 */
+/** 按扩展名或特殊文件名认出脚本类型；不是这五类就返回 null。 */
 export function scriptKindOf(path: string): ScriptKind | null {
+  const name = (path.split(/[\\/]/).pop() ?? "").toLowerCase();
+  if (name === "gradlew" || name === "mvnw") return "sh";
   const dot = path.lastIndexOf(".");
   if (dot < 0) return null;
   const ext = path.slice(dot + 1).toLowerCase();

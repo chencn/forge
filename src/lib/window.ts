@@ -47,6 +47,31 @@ export function onWindowBlur(handler: () => void): () => void {
   };
 }
 
+/**
+ * 监听原生窗口重新获得焦点（从后台切回前台时触发；对齐 IDEA 的 Frame Activation 机制）。
+ *
+ * 结合 Tauri 的 onFocusChanged 与 DOM 的 window.focus，确保切回窗口时可靠唤醒。
+ */
+export function onWindowFocus(handler: () => void): () => void {
+  let disposed = false;
+  const unlisten = win
+    .onFocusChanged(({ payload: focused }) => {
+      if (!disposed && focused) handler();
+    })
+    .catch(() => null);
+
+  const onDomFocus = () => {
+    if (!disposed) handler();
+  };
+  window.addEventListener("focus", onDomFocus);
+
+  return () => {
+    disposed = true;
+    window.removeEventListener("focus", onDomFocus);
+    void unlisten.then((off) => off?.()).catch(() => {});
+  };
+}
+
 /** 把模式解析成实际生效的深浅色。 */
 export function resolveTheme(mode: ThemeMode): "light" | "dark" {
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;

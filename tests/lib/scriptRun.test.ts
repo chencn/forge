@@ -8,12 +8,15 @@ function shell(name: string): ShellInfo {
 }
 
 describe("scriptKindOf 按扩展名认脚本", () => {
-  it("五类都认，大小写不敏感", () => {
+  it("五类都认，大小写不敏感，且支持 gradlew 与 mvnw", () => {
     expect(scriptKindOf("run.bat")).toBe("bat");
     expect(scriptKindOf("run.CMD")).toBe("cmd");
     expect(scriptKindOf("deploy.ps1")).toBe("ps1");
     expect(scriptKindOf("build.sh")).toBe("sh");
     expect(scriptKindOf("ci.bash")).toBe("bash");
+    expect(scriptKindOf("gradlew")).toBe("sh");
+    expect(scriptKindOf("mvnw")).toBe("sh");
+    expect(scriptKindOf("/path/to/gradlew")).toBe("sh");
   });
 
   it("不是脚本家族的返回 null", () => {

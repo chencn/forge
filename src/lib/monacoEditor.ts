@@ -67,6 +67,172 @@ if (monaco.typescript) {
   monaco.typescript.javascriptDefaults.addExtraLib(fallbackDts, "ts:fallback-modules.d.ts");
 }
 
+// 注册 properties 语言规范（Java / Spring / Gradle 等 .properties 配置文件）
+monaco.languages.register({
+  id: "properties",
+  extensions: [".properties"],
+  aliases: ["Properties", "properties"],
+  mimetypes: ["text/x-properties"],
+});
+
+monaco.languages.setLanguageConfiguration("properties", {
+  comments: {
+    lineComment: "#",
+  },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+  ],
+});
+
+monaco.languages.setMonarchTokensProvider("properties", {
+  defaultToken: "",
+  tokenPostfix: ".properties",
+  tokenizer: {
+    root: [
+      // 注释：以 # 或 ! 开头的整行
+      [/^\s*[#!].*$/, "comment"],
+      // 属性键与分隔符：支持带点、短横线、下划线的多级属性名（如 spring.datasource.url=... 或 key: value）
+      [/^(\s*)([^\s:=#!]+)(\s*[:=]\s*)/, ["", "key", "delimiter"]],
+      // 变量占位符引用：${...}
+      [/\$\{[^}]*\}/, "variable"],
+      // 布尔开关字面量
+      [/\b(true|false|yes|no|on|off)\b/i, "keyword"],
+      // 常用数值
+      [/\b\d+(\.\d+)?\b/, "number"],
+      // 字符串字面量
+      [/"([^"\\]|\\.)*"/, "string"],
+      [/[']([^'\\]|\\.)*[']/, "string"],
+      // 行末反斜杠续行符
+      [/\\$/, "delimiter"],
+    ],
+  },
+});
+
+// 增强 Monaco 内置 shell 语言高亮（覆盖 gradlew / mvnw / .sh / .bash 语法与双引号插值）
+monaco.languages.setLanguageConfiguration("shell", {
+  comments: {
+    lineComment: "#",
+  },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+    { open: "`", close: "`" },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+    { open: "`", close: "`" },
+  ],
+});
+
+monaco.languages.setMonarchTokensProvider("shell", {
+  defaultToken: "",
+  ignoreCase: false,
+  tokenPostfix: ".shell",
+
+  keywords: [
+    "if", "then", "elif", "else", "fi", "case", "esac", "for", "while",
+    "until", "do", "done", "in", "select", "return", "function", "continue", "break",
+  ],
+
+  builtins: [
+    "echo", "printf", "read", "cd", "pwd", "ls", "dirname", "basename",
+    "uname", "readlink", "expr", "test", "mkdir", "rm", "cp", "mv",
+    "touch", "chmod", "chown", "cat", "grep", "sed", "awk", "cut",
+    "find", "sort", "uniq", "tr", "wc", "xargs", "tar", "gzip",
+    "curl", "wget", "kill", "sleep", "which", "command", "type",
+    "source", "eval", "exec", "export", "set", "unset", "shift",
+    "trap", "exit", "wait", "local", "readonly", "shopt", "alias",
+  ],
+
+  tokenizer: {
+    root: [
+      // Shebang 与注释
+      [/^#!.*$/, "metatag"],
+      [/^\s*#.*$/, "comment"],
+      [/\s+#.*$/, "comment"],
+
+      // 函数声明：foo () { 或 function foo
+      [/^\s*function\s+([a-zA-Z_0-9\-]+)/, ["keyword", "function"]],
+      [/^\s*([a-zA-Z_0-9\-]+)\s*\(\s*\)/, ["function", "delimiter"]],
+
+      // 变量赋值：PRG=xxx 或 APP_HOME=xxx
+      [/^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\+?=)/, ["", "variable", "delimiter"]],
+
+      // 单字符预定义变量与特殊变量：$0, $1, $*, $@, $?, $#, $$
+      [/\$[0-9*@#?\-$!_]/, "variable.predefined"],
+      // 变量引用：$VAR 与 ${VAR...}
+      [/\$[a-zA-Z_][a-zA-Z0-9_]*/, "variable"],
+      [/\$\{[^}]+\}/, "variable"],
+
+      // 命令替换反引号：`...`
+      [/`[^`]*`/, "variable.parameter"],
+
+      // 命令行选项参数：-h, -z, --help
+      [/\s(\-{1,2}[a-zA-Z0-9_\-]+)/, "attribute.name"],
+
+      // 关键字与内置命令
+      [
+        /[a-zA-Z_][a-zA-Z0-9_]*/,
+        {
+          cases: {
+            "@keywords": "keyword",
+            "@builtins": "type.identifier",
+            "@default": "",
+          },
+        },
+      ],
+
+      // 字符串：单引号纯文本，双引号支持插值
+      [/'[^']*'/, "string"],
+      [/"/, "string", "@qqstring"],
+
+      // 数值
+      [/\b\d+(\.\d+)?\b/, "number"],
+
+      // 括号与符号
+      [/[{}()\[\]]/, "@brackets"],
+      [/[=><!~?&|+\-*\/\^;]/, "delimiter"],
+    ],
+
+    qqstring: [
+      [/[^"\\$]+/, "string"],
+      [/\$[0-9*@#?\-$!_]/, "variable.predefined"],
+      [/\$[a-zA-Z_][a-zA-Z0-9_]*/, "variable"],
+      [/\$\{[^}]+\}/, "variable"],
+      [/\\./, "string.escape"],
+      [/"/, "string", "@pop"],
+    ],
+  },
+});
+
 /**
  * 跳到别的文件时的打开处理。
  *

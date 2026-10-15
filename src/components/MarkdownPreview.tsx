@@ -1,8 +1,22 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import ContextMenu, { type MenuAnchor, type MenuItem } from "./ContextMenu";
 import { useI18n } from "../i18n";
 import { assetUrl, openExternal } from "../lib/fs";
 import { renderMarkdown } from "../lib/markdown";
+
+/** 供分栏模式下双向同步滚动位置的指令句柄。 */
+export interface MarkdownPreviewHandle {
+  setScrollRatio: (ratio: number) => void;
+  getScrollRatio: () => number;
+}
 
 interface MarkdownPreviewProps {
   /** markdown 正文。 */
@@ -13,6 +27,8 @@ interface MarkdownPreviewProps {
   onOpenLocal: (absolute: string) => void;
   /** 切换到源码视图。 */
   onToggleSource?: () => void;
+  /** 滚动位置变化时的比例回调（0~1），供分栏模式下与编辑器联动。 */
+  onScrollRatio?: (ratio: number) => void;
 }
 
 /**
@@ -23,15 +39,45 @@ interface MarkdownPreviewProps {
  * 链接的点击在容器上统一拦一次：外链交系统浏览器，本地文件交编辑器，
  * 页内锚点留给浏览器自己滚。
  */
-export default function MarkdownPreview({
-  source,
-  docPath,
-  onOpenLocal,
-  onToggleSource,
-}: MarkdownPreviewProps) {
+export default forwardRef<MarkdownPreviewHandle, MarkdownPreviewProps>(function MarkdownPreview(
+  { source, docPath, onOpenLocal, onToggleSource, onScrollRatio }: MarkdownPreviewProps,
+  ref
+) {
   const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
+  const onScrollRatioRef = useRef(onScrollRatio);
+  onScrollRatioRef.current = onScrollRatio;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setScrollRatio: (ratio: number) => {
+        const host = hostRef.current;
+        if (!host) return;
+        const max = host.scrollHeight - host.clientHeight;
+        if (max > 0) {
+          host.scrollTop = Math.round(ratio * max);
+        }
+      },
+      getScrollRatio: () => {
+        const host = hostRef.current;
+        if (!host) return 0;
+        const max = host.scrollHeight - host.clientHeight;
+        return max > 0 ? host.scrollTop / max : 0;
+      },
+    }),
+    []
+  );
+
+  const handleScroll = () => {
+    const host = hostRef.current;
+    if (!host) return;
+    const max = host.scrollHeight - host.clientHeight;
+    if (max > 0) {
+      onScrollRatioRef.current?.(host.scrollTop / max);
+    }
+  };
 
   const html = useMemo(
     () => renderMarkdown(source, docPath, (absolute) => assetUrl(absolute, 0)),
@@ -149,6 +195,7 @@ export default function MarkdownPreview({
         ref={hostRef}
         tabIndex={-1}
         className="markdown-body"
+        onScroll={handleScroll}
         onContextMenu={handleContextMenu}
         onKeyDown={(event) => {
           if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
@@ -184,4 +231,4 @@ export default function MarkdownPreview({
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
     </>
   );
-}
+});

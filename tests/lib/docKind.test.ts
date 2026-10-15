@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canDiff, docKindOf, hasTextContent, previewsFromDisk } from "../../src/lib/docKind";
+import { canPreview, type DocView } from "../../src/hooks/useDocuments";
 
 describe("docKindOf 按扩展名分五类", () => {
   it("常见代码与无扩展名落 text", () => {
@@ -42,5 +43,29 @@ describe("视图能力判定", () => {
     expect(canDiff("text")).toBe(true);
     expect(canDiff("image")).toBe(false);
     expect(canDiff("binary")).toBe(false);
+  });
+
+  it("canPreview 与 DocView 视图类型判定", () => {
+    const mdDoc = {
+      path: "/repo/README.md",
+      root: "/repo",
+      name: "README.md",
+      kind: "markdown" as const,
+      view: "split" as DocView,
+      contents: "# Hello",
+      baseline: "# Hello",
+      lineEnding: "lf" as const,
+      hasBom: false,
+      language: "markdown",
+      readOnly: false,
+      loading: false,
+      error: null,
+      diskMs: 0,
+      stamp: 0,
+      onDisk: true,
+    };
+    expect(canPreview(mdDoc)).toBe(true);
+    const views: DocView[] = ["source", "split", "preview"];
+    expect(views).toContain(mdDoc.view);
   });
 });
