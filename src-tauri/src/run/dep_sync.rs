@@ -234,7 +234,100 @@ fn read_manifest_bytes(path: &Path) -> Option<Vec<u8>> {
 /// 读取磁盘上的构建文件并计算语义 CRC32；文件不存在或超长时返回 `None`。
 fn file_semantic_crc32(path: &Path, syntax: CommentSyntax) -> Option<u32> {
     let bytes = read_manifest_bytes(path)?;
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if filename.eq_ignore_ascii_case("package-lock.json") {
+        return Some(package_lock_semantic_crc32(&bytes));
+    }
+    if filename.eq_ignore_ascii_case("Cargo.toml") {
+        return Some(cargo_toml_semantic_crc32(&bytes));
+    }
     Some(semantic_crc32_bytes(&bytes, syntax))
+}
+
+/// 针对 `package-lock.json`：
+/// 忽略工程自身的版本修改（顶层 `version` 以及 `packages[""].version`）；
+/// 第三方依赖包的 `version` 完整保留；
+/// 若文件无法解析为 JSON，则回退到去注释/去空白的全文语义 CRC32。
+pub fn package_lock_semantic_crc32(bytes: &[u8]) -> u32 {
+    if let Ok(mut val) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(obj) = val.as_object_mut() {
+            // 忽略顶层 version
+            obj.remove("version");
+            // 忽略 packages[""].version（lockfileVersion 2 & 3 中当前工程自身的版本镜像）
+            if let Some(packages) = obj.get_mut("packages").and_then(|p| p.as_object_mut()) {
+                if let Some(root_pkg) = packages.get_mut("").and_then(|r| r.as_object_mut()) {
+                    root_pkg.remove("version");
+                }
+            }
+            if let Ok(serialized) = serde_json::to_vec(&obj) {
+                let mut crc = Crc32::new();
+                for &b in &serialized {
+                    crc.update_byte(b);
+                }
+                return crc.finalize();
+            }
+        }
+    }
+    semantic_crc32_bytes(bytes, CommentSyntax::SlashComment)
+}
+
+/// 针对 `Cargo.toml`：
+/// 忽略 `[package]`（以及 `[workspace.package]`）中的非依赖元数据字段
+/// （如 `version`、`description`、`authors`、`readme`、`license` 等）；
+/// 仅保留与构建与依赖解析相关的核心配置（如各种 `dependencies`、`workspace`、`patch` 等）；
+/// 若语法错误无法解析为 TOML，则回退到去注释/去空白的全文语义 CRC32。
+pub fn cargo_toml_semantic_crc32(bytes: &[u8]) -> u32 {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return semantic_crc32_bytes(bytes, CommentSyntax::HashComment);
+    };
+    if let Ok(mut val) = toml::from_str::<toml::Value>(text) {
+        if let Some(table) = val.as_table_mut() {
+            const NON_DEP_PACKAGE_KEYS: &[&str] = &[
+                "version",
+                "description",
+                "authors",
+                "homepage",
+                "repository",
+                "documentation",
+                "readme",
+                "keywords",
+                "categories",
+                "license",
+                "license-file",
+                "publish",
+                "edition",
+                "rust-version",
+                "exclude",
+                "include",
+                "default-run",
+            ];
+
+            if let Some(pkg) = table.get_mut("package").and_then(|p| p.as_table_mut()) {
+                for &k in NON_DEP_PACKAGE_KEYS {
+                    pkg.remove(k);
+                }
+            }
+
+            if let Some(ws) = table.get_mut("workspace").and_then(|w| w.as_table_mut()) {
+                if let Some(ws_pkg) = ws.get_mut("package").and_then(|p| p.as_table_mut()) {
+                    for &k in NON_DEP_PACKAGE_KEYS {
+                        ws_pkg.remove(k);
+                    }
+                }
+            }
+
+            if let Ok(serialized) = toml::to_string(&table) {
+                let mut crc = Crc32::new();
+                for &b in serialized.as_bytes() {
+                    if !b.is_ascii_whitespace() {
+                        crc.update_byte(b);
+                    }
+                }
+                return crc.finalize();
+            }
+        }
+    }
+    semantic_crc32_bytes(bytes, CommentSyntax::HashComment)
 }
 
 /// 针对 `package.json` / `composer.json` 等 JSON 构建清单：
@@ -1190,6 +1283,203 @@ mod tests {
 
         let go = items.iter().find(|i| i.kind == RunKind::Go).unwrap();
         assert_eq!(go.install_config.command, "go mod download");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn package_lock_ignores_root_version_but_tracks_dependency_changes() {
+        let lock_v1 = r#"{
+            "name": "my-app",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+                "": {
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "dependencies": { "react": "^19.0.0" }
+                },
+                "node_modules/react": {
+                    "version": "19.0.0",
+                    "resolved": "https://registry.npmjs.org/react/-/react-19.0.0.tgz"
+                }
+            }
+        }"#;
+
+        // 仅修改顶层 version 与 packages[""].version
+        let lock_v2 = r#"{
+            "name": "my-app",
+            "version": "1.0.1",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+                "": {
+                    "name": "my-app",
+                    "version": "1.0.1",
+                    "dependencies": { "react": "^19.0.0" }
+                },
+                "node_modules/react": {
+                    "version": "19.0.0",
+                    "resolved": "https://registry.npmjs.org/react/-/react-19.0.0.tgz"
+                }
+            }
+        }"#;
+
+        // 修改第三方依赖版本
+        let lock_v3 = r#"{
+            "name": "my-app",
+            "version": "1.0.1",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+                "": {
+                    "name": "my-app",
+                    "version": "1.0.1",
+                    "dependencies": { "react": "^19.0.1" }
+                },
+                "node_modules/react": {
+                    "version": "19.0.1",
+                    "resolved": "https://registry.npmjs.org/react/-/react-19.0.1.tgz"
+                }
+            }
+        }"#;
+
+        let crc1 = package_lock_semantic_crc32(lock_v1.as_bytes());
+        let crc2 = package_lock_semantic_crc32(lock_v2.as_bytes());
+        let crc3 = package_lock_semantic_crc32(lock_v3.as_bytes());
+
+        assert_eq!(crc1, crc2, "仅修改 package-lock.json 的项目自身版本号时 CRC32 应保持不变");
+        assert_ne!(crc1, crc3, "修改第三方依赖版本时 package-lock.json 的 CRC32 必须改变");
+
+        // 集成探测测试
+        let dir = temp_project("npm-lock-test");
+        write(&dir, "package.json", r#"{"name":"my-app","version":"1.0.0","dependencies":{"react":"^19.0.0"}}"#);
+        write(&dir, "package-lock.json", lock_v1);
+        write(&dir, "node_modules/.package-lock.json", "{}");
+
+        let items1 = dep_sync_probe_impl(&dir.to_string_lossy());
+        let npm1 = items1.iter().find(|i| i.id == "npm::package.json").unwrap();
+        let pkg_crc_before = npm1.files_crc["package.json"];
+        let lock_crc_before = npm1.files_crc["package-lock.json"];
+
+        // 模拟 npm version patch：同时修改 package.json 和 package-lock.json 的版本号
+        write(&dir, "package.json", r#"{"name":"my-app","version":"1.0.1","dependencies":{"react":"^19.0.0"}}"#);
+        write(&dir, "package-lock.json", lock_v2);
+
+        let items2 = dep_sync_probe_impl(&dir.to_string_lossy());
+        let npm2 = items2.iter().find(|i| i.id == "npm::package.json").unwrap();
+        assert_eq!(npm2.files_crc["package.json"], pkg_crc_before, "package.json CRC 保持不变");
+        assert_eq!(npm2.files_crc["package-lock.json"], lock_crc_before, "package-lock.json CRC 保持不变");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cargo_toml_ignores_package_version_and_metadata_but_tracks_dependency_changes() {
+        let cargo_v1 = r#"
+            [package]
+            name = "my-crate"
+            version = "0.1.0"
+            description = "A demo crate"
+            authors = ["Alice <alice@example.com>"]
+            edition = "2021"
+
+            [dependencies]
+            serde = "1.0"
+        "#;
+
+        let cargo_v2 = r#"
+            [package]
+            name = "my-crate"
+            version = "0.2.0"
+            description = "Updated description"
+            authors = ["Bob <bob@example.com>"]
+            edition = "2021"
+
+            [dependencies]
+            serde = "1.0"
+        "#;
+
+        let cargo_v3 = r#"
+            [package]
+            name = "my-crate"
+            version = "0.2.0"
+            edition = "2021"
+
+            [dependencies]
+            serde = "2.0"
+        "#;
+
+        let crc1 = cargo_toml_semantic_crc32(cargo_v1.as_bytes());
+        let crc2 = cargo_toml_semantic_crc32(cargo_v2.as_bytes());
+        let crc3 = cargo_toml_semantic_crc32(cargo_v3.as_bytes());
+
+        assert_eq!(crc1, crc2, "仅修改 Cargo.toml [package] 版本号及元数据时 CRC32 应保持不变");
+        assert_ne!(crc1, crc3, "修改 Cargo.toml [dependencies] 依赖版本时 CRC32 必须改变");
+
+        // Workspace 支持测试
+        let ws_v1 = r#"
+            [workspace]
+            members = ["crates/*"]
+
+            [workspace.package]
+            version = "1.0.0"
+            authors = ["Alice"]
+
+            [workspace.dependencies]
+            serde = "1.0"
+        "#;
+        let ws_v2 = r#"
+            [workspace]
+            members = ["crates/*"]
+
+            [workspace.package]
+            version = "1.0.1"
+            authors = ["Alice", "Bob"]
+
+            [workspace.dependencies]
+            serde = "1.0"
+        "#;
+        let ws_v3 = r#"
+            [workspace]
+            members = ["crates/*"]
+
+            [workspace.package]
+            version = "1.0.1"
+
+            [workspace.dependencies]
+            serde = "2.0"
+        "#;
+
+        assert_eq!(
+            cargo_toml_semantic_crc32(ws_v1.as_bytes()),
+            cargo_toml_semantic_crc32(ws_v2.as_bytes()),
+            "修改 [workspace.package] 的 version 不影响语义 CRC32"
+        );
+        assert_ne!(
+            cargo_toml_semantic_crc32(ws_v1.as_bytes()),
+            cargo_toml_semantic_crc32(ws_v3.as_bytes()),
+            "修改 [workspace.dependencies] 的版本必须影响语义 CRC32"
+        );
+
+        // 集成探测测试
+        let dir = temp_project("cargo-test");
+        write(&dir, "Cargo.toml", cargo_v1);
+
+        let items1 = dep_sync_probe_impl(&dir.to_string_lossy());
+        let rust1 = items1.iter().find(|i| i.id == "rust::Cargo.toml").unwrap();
+        let cargo_crc_before = rust1.files_crc["Cargo.toml"];
+
+        write(&dir, "Cargo.toml", cargo_v2);
+        let items2 = dep_sync_probe_impl(&dir.to_string_lossy());
+        let rust2 = items2.iter().find(|i| i.id == "rust::Cargo.toml").unwrap();
+        assert_eq!(rust2.files_crc["Cargo.toml"], cargo_crc_before, "修改 Cargo.toml 版本号不改变 CRC");
+
+        write(&dir, "Cargo.toml", cargo_v3);
+        let items3 = dep_sync_probe_impl(&dir.to_string_lossy());
+        let rust3 = items3.iter().find(|i| i.id == "rust::Cargo.toml").unwrap();
+        assert_ne!(rust3.files_crc["Cargo.toml"], cargo_crc_before, "修改 Cargo.toml 依赖版本必须改变 CRC");
 
         fs::remove_dir_all(&dir).unwrap();
     }
