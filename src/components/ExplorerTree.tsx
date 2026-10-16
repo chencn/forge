@@ -175,13 +175,14 @@ function affectsIgnoreRules(paths: string[]): boolean {
  * 不含它下面的每个文件；所以判定不能只比相等，得看这一行是不是落在某个忽略项之下。
  * 目录与文件用同一套判定：忽略目录下的所有内容都算忽略。
  *
- * 性能优化：只有在初始挂载、全量刷新、或变更路径包含 .gitignore 时才重新触发扫描，
- * 避免普通文件编辑在后台反复拉起耗时的全树忽略检查进程。
+ * 第一次按仓库根拉一份就留着。目录监听会把 node_modules 的写入报成全量刷新，
+ * 要是每次刷新都把进行中的 `git status --ignored` 作废重来，名单永远落不下来，
+ * 排除目录就一直是普通灰文件夹。之后只有 .gitignore / exclude 变了才重扫。
  */
 function useIgnoredPaths(
   repoRoot: string | null,
   refresh: { paths: string[] | null; seq: number },
-  /** 只有真要把忽略项藏起来时才需要这一份；「显示忽略项」开着的时候不用问。 */
+  /** 显示忽略项时也要：排除目录的橙色文件夹靠这份名单认。 */
   needed: boolean
 ) {
   const [patterns, setPatterns] = useState<string[]>([]);
@@ -198,12 +199,6 @@ function useIgnoredPaths(
       setPatterns([]);
       return;
     }
-
-    // 路径门禁：如果已经加载过规则，且本批变动不是全量刷新，且变动路径中没有任何忽略规则文件，跳过扫描
-    if (hasLoadedRef.current && refresh.paths !== null && !affectsIgnoreRules(refresh.paths)) {
-      return;
-    }
-
     let stale = false;
     const timer = window.setTimeout(() => {
       void gitIgnored(repoRoot)
@@ -216,6 +211,24 @@ function useIgnoredPaths(
         .catch(() => {
           // 纯浏览器预览时没有这条命令，忽略项就都按没忽略画。
         });
+    }, IGNORE_DEBOUNCE_MS);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [repoRoot, needed]);
+
+  // 忽略规则文件变了才重扫。全量刷新（paths === null）不进来，避免把上面那次结果冲掉。
+  useEffect(() => {
+    if (!repoRoot || !needed || !hasLoadedRef.current) return;
+    if (!refresh.paths || !affectsIgnoreRules(refresh.paths)) return;
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      void gitIgnored(repoRoot)
+        .then((list) => {
+          if (!stale) setPatterns(list);
+        })
+        .catch(() => {});
     }, IGNORE_DEBOUNCE_MS);
     return () => {
       stale = true;
@@ -279,8 +292,8 @@ export default function ExplorerTree({
   const treeRef = useRef<HTMLDivElement>(null);
   /** 正在往哪儿定位；目标行没露出来之前一直挂着。 */
   const [revealTo, setRevealTo] = useState<string | null>(null);
-  /** 被 .gitignore 忽略的路径判定；命中的行文字变橙棕色（对齐 IDEA）。 */
-  const isIgnored = useIgnoredPaths(repoRoot, refresh, !showIgnored);
+  /** 被 .gitignore 忽略的路径判定。显示忽略项时也要这份：排除目录靠它换橙色文件夹。 */
+  const isIgnored = useIgnoredPaths(repoRoot, refresh, true);
 
   // 切换工作区根时恢复该根已有的展开集，并清除上一项目遗留的顶层错误提示。
   useEffect(() => {
@@ -534,6 +547,10 @@ export default function ExplorerTree({
         const mark = isDirectory ? null : markOf.get(lower);
         const dot = isDirectory ? dotOf.get(lower) : undefined;
         const ignored = isIgnored(entry.path);
+        // 被忽略、又不是点开头的目录：IDEA 画成排除根（橙色文件夹 + 浅黄底）。
+        // `.idea` 这类点目录只走隐藏态，不换这枚图标。`node_modules` 再补一行 library root。
+        const excludedDir = isDirectory && ignored && !entry.name.startsWith(".");
+        const libraryRoot = excludedDir && entry.name === "node_modules";
         // 链末落在 JVM 源码根之下的是包节点，用包图标。
         const isPackage = isDirectory && isUnderJvmSourceRoot(deepest);
         return (
@@ -547,7 +564,8 @@ export default function ExplorerTree({
                 activePath === entry.path ? "is-active" : "",
                 marked ? "is-picked" : "",
                 entry.isHidden ? "is-hidden-item" : "",
-                ignored ? "is-ignored-item" : "",
+                ignored && !excludedDir ? "is-ignored-item" : "",
+                excludedDir ? "is-excluded-dir" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
@@ -577,8 +595,17 @@ export default function ExplorerTree({
               ) : (
                 <span className="tree-chevron" />
               )}
-              <EntryIcon name={displayName} isDirectory={isDirectory} isPackage={isPackage} size={15} />
-              <span className="tree-name">{displayName}</span>
+              <EntryIcon
+                name={displayName}
+                isDirectory={isDirectory}
+                isPackage={isPackage}
+                excluded={excludedDir}
+                size={15}
+              />
+              <span className="tree-name">
+                {displayName}
+                {libraryRoot ? <span className="tree-location">library root</span> : null}
+              </span>
               {mark ? <span className={`tree-mark ${markClass(mark)}`}>{mark}</span> : null}
               {dot ? (
                 <span className={`change-dot ${markClass(dot)}`} aria-hidden="true" />

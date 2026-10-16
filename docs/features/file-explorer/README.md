@@ -12,7 +12,8 @@
 `explorer.showHidden` 管隐藏项、默认关，`explorer.showIgnored` 管被 git 忽略的项、默认开。两个都存在 `settings.explorer`，
 存盘和读回缺字段时按同一套默认值补。
 Windows 的隐藏位读 `GetFileAttributesW` 的 HIDDEN|SYSTEM，类 unix 认文件名以点开头。
-显示出来时隐藏项的字色压到 `--text-muted`，选中或激活时回到常规色。被过滤掉的目录连整棵子树一起藏。
+显示出来时隐藏项的字色压到 `--text-muted`，图标附加 50% 半透明度（对齐 IDEA 的 `IconLoader.getTransparentIcon(icon, 0.5f)`），选中或激活时回到常规色。被过滤掉的目录连整棵子树一起藏。
+被忽略、又不是点开头的目录（`dist`、`node_modules`）按 IDEA 的排除根画：橙色文件夹（`excludeRoot.svg`）加浅黄底 `--vcs-excluded-bg`。点开头的忽略目录（`.idea`）仍走隐藏态，不换这枚图标。`node_modules` 名字后面再跟一行灰色的 `library root`。
 这两个开关也管搜索：全局搜索按同一份 `settings.explorer` 在后端扫描层剪枝，见 `../search/`。
 
 单条 stat 失败进 `unreadable` 数组，不影响同一目录其余条目。

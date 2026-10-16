@@ -32,7 +32,7 @@ import { flatMenu } from "./ContextMenu";
 import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import type { GitChange, GitCommit as AmendTarget, GitCommitDetail, GitCommitFile } from "../lib/git";
-import { changeMark, folderMarks, gitCommitDetail, markClass } from "../lib/git";
+import { changeMark, folderMarks, gitCommitDetail, isDeletedMark, markClass } from "../lib/git";
 import type { GitState } from "../hooks/useGitState";
 import { basenameOf } from "../lib/format";
 import { collapsePackageDirs, isUnderJvmSourceRoot } from "../lib/jvm";
@@ -445,7 +445,9 @@ export default function GitPanel({
             title={change.path}
           >
             <EntryIcon name={basenameOf(change.path)} size={13} />
-            <span className="change-name">{change.path}</span>
+            <span className={`change-name${isDeletedMark(changeMark(change)) ? " is-deleted" : ""}`}>
+              {change.path}
+            </span>
             <span className={`change-mark ${markClass(changeMark(change))}`}>
               {changeMark(change)}
             </span>
@@ -532,7 +534,11 @@ export default function GitPanel({
             title={row.change.path}
           >
             <EntryIcon name={basenameOf(row.change.path)} size={13} />
-            <span className="change-name">{basenameOf(row.change.path)}</span>
+            <span
+              className={`change-name${isDeletedMark(changeMark(row.change)) ? " is-deleted" : ""}`}
+            >
+              {basenameOf(row.change.path)}
+            </span>
             <span className={`change-mark ${markClass(changeMark(row.change))}`}>
               {changeMark(row.change)}
             </span>
@@ -1014,7 +1020,9 @@ export default function GitPanel({
                       title={file.path}
                     >
                       <EntryIcon name={basenameOf(file.path)} size={13} />
-                      <span className="change-name">{file.path}</span>
+                      <span className={`change-name${isDeletedMark(file.status) ? " is-deleted" : ""}`}>
+                        {file.path}
+                      </span>
                       {file.status ? (
                         <span className={`change-mark ${markClass(file.status)}`}>{file.status}</span>
                       ) : null}

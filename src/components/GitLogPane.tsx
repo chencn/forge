@@ -49,6 +49,7 @@ import {
   gitDiffNames,
   gitDiffText,
   gitLog,
+  isDeletedMark,
 } from "../lib/git";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
@@ -1225,7 +1226,9 @@ export default function GitLogPane({
           {item.status || "·"}
         </span>
         <EntryIcon name={item.path.split("/").pop() ?? item.path} size={13} />
-        <span className="log-file-name">{item.path.split("/").pop()}</span>
+        <span className={`log-file-name${isDeletedMark(item.status) ? " is-deleted" : ""}`}>
+          {item.path.split("/").pop()}
+        </span>
         {showDetails && !compareRef ? (
           <span className="log-file-lines">
             +{item.added} −{item.removed}

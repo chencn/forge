@@ -1712,10 +1712,26 @@ span.entry-icon > svg {
   color: var(--text-muted);
 }
 
+/* 隐藏文件/目录的图标按 50% 半透明渲染（对齐 IDEA 的 IconLoader.getTransparentIcon(icon, 0.5f)）。 */
+.tree-row.is-hidden-item .entry-icon {
+  opacity: 0.5;
+}
+
 /* 被 .gitignore 忽略的行：整行文字变橙棕色（对齐 IDEA 的 FILESTATUS_IDEA_FILESTATUS_IGNORED）。
    比隐藏态更具体，两者同时命中时以它为准；选中态仍盖过它，不然选不中看不出来。 */
 .tree-row.is-ignored-item:not(.is-active):not(.is-picked) {
   color: var(--vcs-ignored);
+}
+
+/* 排除目录：整行浅黄底（IDEA 文件颜色里 Excluded 那一档）。文字保持常规色，橙色在文件夹图标上。 */
+.tree-row.is-excluded-dir:not(.is-active):not(.is-picked) {
+  background: var(--vcs-excluded-bg);
+}
+
+.tree-location {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .tree-chevron {
@@ -3908,6 +3924,16 @@ span.entry-icon > svg {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 删除态的文件名画一条红线（删除线）。文件已经不在盘上了，行尾那个红色的 D 只有 12px 宽，
+   扫一眼一列文件时分不出哪几条是删掉的。提交面板与日志第三栏共用这一条。
+   资源管理器不画：删除的文件已经不在盘上，那边根本没有它的行。 */
+.change-name.is-deleted,
+.log-file-name.is-deleted {
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-red-text);
+  text-decoration-thickness: 1px;
 }
 
 .change-stage {

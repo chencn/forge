@@ -4,6 +4,7 @@ import {
   changeMark,
   folderMarks,
   ignoredRoots,
+  isDeletedMark,
   markClass,
   recoveryOf,
 } from "../../src/lib/git";
@@ -47,6 +48,27 @@ describe("markClass 徽标染色类", () => {
     expect(markClass("!")).toBe("mark-conflict");
     expect(markClass("M")).toBe("mark-m");
     expect(markClass("A")).toBe("mark-a");
+  });
+});
+
+describe("isDeletedMark 删除态", () => {
+  it("只认大写的 D，其余字母与空串都不是删除", () => {
+    expect(isDeletedMark("D")).toBe(true);
+    expect(isDeletedMark("M")).toBe(false);
+    expect(isDeletedMark("A")).toBe(false);
+    expect(isDeletedMark("U")).toBe(false);
+    expect(isDeletedMark("!")).toBe(false);
+    expect(isDeletedMark("")).toBe(false);
+    // 小写的 d 不是 git 给的状态字母，别把它当成删除。
+    expect(isDeletedMark("d")).toBe(false);
+  });
+
+  it("删除态与 changeMark 的输出对得上", () => {
+    expect(isDeletedMark(changeMark(change({ workStatus: "D" })))).toBe(true);
+    expect(isDeletedMark(changeMark(change({ indexStatus: "D" })))).toBe(true);
+    expect(isDeletedMark(changeMark(change({ indexStatus: "A", workStatus: "D" })))).toBe(true);
+    expect(isDeletedMark(changeMark(change({ workStatus: "M" })))).toBe(false);
+    expect(isDeletedMark(changeMark(change({ untracked: true })))).toBe(false);
   });
 });
 

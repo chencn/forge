@@ -453,6 +453,17 @@ export function markClass(mark: string): string {
   return mark === "!" ? "mark-conflict" : `mark-${mark.toLowerCase()}`;
 }
 
+/**
+ * 是不是删除态。文件已经不在盘上了，光靠行尾那个红色的 `D` 认不出来，
+ * 提交面板与日志第三栏都要给文件名画一条红线（删除线）。
+ *
+ * 只认字母本身，不认它从哪来：索引位是 `D`、工作区位是 `D`、还是提交里那一份的状态是 `D`，
+ * 三种来源走到这里都是同一个判断。
+ */
+export function isDeletedMark(mark: string): boolean {
+  return mark === "D";
+}
+
 /** 一组变更的聚合标记：子孙含 M 即为 M，否则取最后一个非 D 的字母；无有效变更返回 null。 */
 export function aggregateMark(changes: GitChange[]): string | null {
   let hasM = false;

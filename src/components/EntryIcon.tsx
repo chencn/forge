@@ -9,6 +9,14 @@ import {
   subscribeFileIcons,
 } from "../lib/fileIcons";
 
+/** IDEA 的排除目录图标（expui/nodes/excludeRoot.svg），浅色：奶油底、橙色描边。 */
+const EXCLUDE_ROOT_LIGHT =
+  '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8.15132 4.35836L8.29689 4.5H8.5H13C13.8284 4.5 14.5 5.17157 14.5 6V12.1333C14.5 12.919 13.9104 13.5 13.25 13.5H2.75C2.08955 13.5 1.5 12.919 1.5 12.1333V3.86667C1.5 3.08099 2.08955 2.5 2.75 2.5H6.03823C6.16847 2.5 6.29357 2.55082 6.38691 2.64164L8.15132 4.35836Z" fill="#FCE9D9" stroke="#F28C35"/></svg>';
+
+/** 同一枚图标的深色档（excludeRoot_dark.svg）。 */
+const EXCLUDE_ROOT_DARK =
+  '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8.15132 4.35836L8.29689 4.5H8.5H13C13.8284 4.5 14.5 5.17157 14.5 6V12.1333C14.5 12.919 13.9104 13.5 13.25 13.5H2.75C2.08955 13.5 1.5 12.919 1.5 12.1333V3.86667C1.5 3.08099 2.08955 2.5 2.75 2.5H6.03823C6.16847 2.5 6.29357 2.55082 6.38691 2.64164L8.15132 4.35836Z" fill="#45322B" stroke="#C77D55"/></svg>';
+
 interface EntryIconProps {
   /** 文件名或目录名；带路径也行，内部只认最后一段。 */
   name: string;
@@ -16,6 +24,11 @@ interface EntryIconProps {
   isDirectory?: boolean;
   /** 是否 JVM 包节点（目录链合并出的 `com.example`），用包图标而非文件夹图标。 */
   isPackage?: boolean;
+  /**
+   * 排除目录（IDEA 的 ExcludeRoot）。被 git 忽略、又不是点开头的目录用这枚橙色文件夹，
+   * 不再按名字去取普通文件夹图标。
+   */
+  excluded?: boolean;
   size?: number;
 }
 
@@ -30,6 +43,7 @@ export default function EntryIcon({
   name,
   isDirectory = false,
   isPackage = false,
+  excluded = false,
   size = 18,
 }: EntryIconProps) {
   const ready = useSyncExternalStore(subscribeFileIcons, fileIconsReady);
@@ -39,6 +53,17 @@ export default function EntryIcon({
   useEffect(() => {
     void ensureFileIcons();
   }, []);
+
+  if (excluded) {
+    return (
+      <span
+        className={className}
+        style={{ width: size, height: size }}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: applied === "dark" ? EXCLUDE_ROOT_DARK : EXCLUDE_ROOT_LIGHT }}
+      />
+    );
+  }
 
   if (ready) {
     const svg = iconSvg(resolveIconPath(name, isDirectory, isPackage), applied === "dark");
