@@ -128,7 +128,8 @@ fn server(
 
 /// 认识的语言服务。加一个语言就往这里加一行。
 ///
-/// 档位缺省沿用第一轮：`typescript` 走 `builtin`，其余 `off`，正好等于没接 LSP 时的现状。
+/// typescript 缺省走 `builtin`。外部 `typescript-language-server` 是单独的 Node 进程，
+/// 总内存比渲染进程里的内置服务更大，所以不把它当成缺省。其余语言缺省 `off`。
 fn seed() -> BTreeMap<String, LspServerConfig> {
     let mut servers = BTreeMap::new();
     let mut put = |id: &str, config: LspServerConfig| {

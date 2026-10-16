@@ -267,9 +267,12 @@ export default function GitPanel({
   const [amendDetail, setAmendDetail] = useState<GitCommitDetail | null>(null);
   /** 修正之前提交框里写的是什么，取消勾选要原样还回去。 */
   const messageBeforeAmend = useRef("");
+  /** 作废还在飞的「取上次提交说明」。提交成功后清空框，晚到的结果不能再把说明填回去。 */
+  const amendSeq = useRef(0);
 
   /** IDEA 的 Amend：勾上把上次提交摊开（说明进框、文件成节），取消就收回这些。 */
   const switchAmend = (on: boolean) => {
+    const seq = (amendSeq.current += 1);
     if (!on) {
       setMessage(messageBeforeAmend.current);
       setAmendDetail(null);
@@ -282,10 +285,13 @@ export default function GitPanel({
     setAmend(true);
     void gitCommitDetail(git.root, head.hash)
       .then((detail) => {
+        if (seq !== amendSeq.current) return;
         setAmendDetail(detail);
         setMessage(detail.body ? `${detail.subject}\n\n${detail.body}` : detail.subject);
       })
-      .catch(() => setAmendDetail(null));
+      .catch(() => {
+        if (seq === amendSeq.current) setAmendDetail(null);
+      });
   };
   /** 提交区整体：拖分隔条要量它当前高度，收起时也靠它保持头部可见。 */
   const commitBoxRef = useRef<HTMLDivElement>(null);
@@ -696,12 +702,15 @@ export default function GitPanel({
         if (!stagedAll) return;
       }
       if (andPush) {
-        const done = await git.commitAndPush(text, amend, false);
-        if (!done) return;
+        // true 表示提交已经落盘，推送失败也算。说明已经用掉，框要空出来。
+        const committed = await git.commitAndPush(text, amend, false);
+        if (!committed) return;
       } else {
         const done = await git.commit(text, amend);
         if (!done) return;
       }
+      amendSeq.current += 1;
+      messageBeforeAmend.current = "";
       onCommitted(text);
       setMessage("");
       setAmend(false);

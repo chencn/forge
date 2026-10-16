@@ -862,7 +862,7 @@ function disableBuiltin(language: string): void {
   }
 }
 
-/** 把内置语义恢复到默认（全开）。切回 builtin / off 时用。 */
+/** 把内置语义恢复到默认（全开）。切回 builtin 时用。 */
 function enableBuiltin(language: string): void {
   const defaults =
     language === "typescript"
@@ -896,8 +896,9 @@ const builtinState = new Map<string, "on" | "off">();
 
 /**
  * 按配置同步内置语义的开关。每种语言算一遍：
- * 只有 `builtin` 档启用内置，`lsp` 外部服务或 `off` 全关档均关闭内置。
- * 只有 ts / js 有内置语义可切，别的语言这一步是空转。状态没变就不动。
+ * 只有 `builtin` 档启用内置，`lsp` 与 `off` 都关掉。
+ * 外部服务没装上时也不把 tsserver 拉回渲染进程：那份编译器比外部进程更沉，
+ * 失败就保持关闭。只有 ts / js 有内置语义可切。状态没变就不动。
  */
 function configureBuiltin(config: LspConfig): void {
   for (const entry of serverEntries(config)) {

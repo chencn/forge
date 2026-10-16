@@ -477,22 +477,26 @@ export function useGitState(
     [refresh, reportError, root]
   );
 
-  /** 提交并推送：一次性执行本地提交与远端推送，只在全部完成（或报错）后一次性刷新，避免中间多余的刷新跳动 */
+  /**
+   * 提交并推送。返回值只表示提交有没有落盘：落盘了说明框就要清掉，
+   * 哪怕后面的推送失败——那段文字已经写进提交里了。
+   */
   const commitAndPush = useCallback(
     async (message: string, amend: boolean, setUpstream = false) => {
       if (!root) return false;
       pushingCountRef.current += 1;
       setPushing(true);
+      let committed = false;
       try {
         await gitCommit(root, message, amend);
+        committed = true;
         await gitPush(root, setUpstream);
-        await refresh();
         return true;
       } catch (cause) {
-        reportError(errorText(cause), "push");
-        await refresh();
-        return false;
+        reportError(errorText(cause), committed ? "push" : undefined);
+        return committed;
       } finally {
+        await refresh();
         pushingCountRef.current = Math.max(0, pushingCountRef.current - 1);
         if (pushingCountRef.current === 0) setPushing(false);
       }

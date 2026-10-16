@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reconcileLsp, shutdownLsp } from "../../src/lib/lspClient";
+import { monaco } from "../../src/lib/monacoEditor";
+import { lspStart } from "../../src/lib/lsp";
 import type { LspConfig } from "../../src/lib/lspConfig";
 
 /**
@@ -83,6 +85,7 @@ vi.mock("../../src/lib/monacoEditor", () => ({
       getModel: vi.fn(() => null),
       getModels: vi.fn(() => []),
       setModelMarkers: vi.fn(),
+      onDidCreateModel: vi.fn(),
     },
     typescript: {
       typescriptDefaults: { setModeConfiguration: vi.fn() },
@@ -259,5 +262,56 @@ describe("didChange 防抖", () => {
     respondInitialize();
     await back;
     expect(lspMod.lspResolveRoot).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("内置语义开关", () => {
+  const doc = { path: "D:/proj/a.ts", language: "typescript", text: "v1" };
+  const tsConfig = (mode: "off" | "builtin" | "lsp"): LspConfig => ({
+    version: 2,
+    servers: {
+      typescript: {
+        mode,
+        program: "typescript-language-server",
+        path: "",
+        args: "--stdio",
+        languages: ["typescript"],
+        rootMarkers: ["package.json"],
+        installCommand: "",
+        startupTimeoutMs: 30_000,
+        initOptions: null,
+        supportsBuiltin: true,
+      },
+    },
+  });
+
+  const modeConfig = () =>
+    monaco.typescript.typescriptDefaults.setModeConfiguration as unknown as ReturnType<typeof vi.fn>;
+
+  it("外部服务起不来时也不把内置 tsserver 拉起来", async () => {
+    await reconcileLsp("D:/proj", tsConfig("builtin"), []);
+    await flush();
+    modeConfig().mockClear();
+
+    vi.mocked(lspStart).mockRejectedValueOnce("NOT_FOUND");
+    await reconcileLsp("D:/proj", tsConfig("lsp"), [doc]);
+    await flush();
+    expect(modeConfig()).toHaveBeenCalledWith(
+      expect.objectContaining({ diagnostics: false, hovers: false })
+    );
+  });
+
+  it("外部服务跑起来之后关掉内置语义", async () => {
+    await reconcileLsp("D:/proj", tsConfig("builtin"), []);
+    await flush();
+    modeConfig().mockClear();
+
+    const started = reconcileLsp("D:/proj", tsConfig("lsp"), [doc]);
+    await flush();
+    respondInitialize();
+    await started;
+    expect(modeConfig()).toHaveBeenCalledWith(
+      expect.objectContaining({ diagnostics: false, hovers: false })
+    );
   });
 });

@@ -20,6 +20,26 @@ import {
   themeToken,
 } from "./monacoEnv";
 import { applyKeymap } from "./keymap";
+import { TokenizationRegistry } from "monaco-editor/editor/common/languages.js";
+import { IConfigurationService } from "monaco-editor/platform/configuration/common/configuration.js";
+import {
+  StandaloneServices,
+  updateConfigurationService,
+} from "monaco-editor/editor/standalone/browser/standaloneServices.js";
+import { installViewportTokenization } from "./viewportTokens";
+
+// 超过约 30 万行时，这项为真会整篇停掉高亮。关掉之后屏幕上的行一直有颜色。
+updateConfigurationService(
+  StandaloneServices.get(IConfigurationService),
+  { largeFileOptimizations: false },
+  false
+);
+
+// 词法表在语言第一次用到时才填。这里先订上，大文件就不会在空闲时把整篇状态扫完。
+installViewportTokenization(
+  TokenizationRegistry,
+  monaco.languages.getLanguages().map((language) => language.id)
+);
 
 // 走本地 worker，不依赖 CDN：桌面应用离线也要能补全和高亮。
 (globalThis as unknown as { MonacoEnvironment?: monaco.Environment }).MonacoEnvironment = {
@@ -48,6 +68,23 @@ import { applyKeymap } from "./keymap";
 // 配置 Monaco 内置 TypeScript / JavaScript 编译器选项：
 // 避免默认空配置导致 moduleResolution 退回 Classic 从而产生 TS2792 报错，以及开启 React JSX 支持。
 if (monaco.typescript) {
+  // 内置 tsserver 跑在渲染进程里。模型一创建，默认开着的诊断就会把 worker 拉起来，
+  // 之后再关也停不掉。先全部关掉；只有配置明确是 builtin，才由 lspClient 打开。
+  const suspended = {
+    completionItems: false,
+    hovers: false,
+    definitions: false,
+    references: false,
+    rename: false,
+    diagnostics: false,
+    documentSymbols: false,
+    signatureHelp: false,
+    documentHighlights: false,
+    codeActions: false,
+  };
+  monaco.typescript.typescriptDefaults.setModeConfiguration(suspended);
+  monaco.typescript.javascriptDefaults.setModeConfiguration(suspended);
+
   const compilerOptions: monaco.typescript.CompilerOptions = {
     target: monaco.typescript.ScriptTarget.ESNext,
     module: monaco.typescript.ModuleKind.ESNext,
