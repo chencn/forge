@@ -1,14 +1,16 @@
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { termClose, termOpen, termWrite } from "./term";
+import { decodeChunk, termClose, termOpen, termWrite } from "./term";
 import type { TermChunk, TermExit, TermSessionId } from "./term";
 import { samePath } from "./format";
+import { stripEraseScrollback } from "./termHistory";
 
 /**
- * 一条终端会话：后端 PTY 的 id，外加一份界面收起时也不丢的输出缓冲。
+ * 一条终端会话：后端 PTY 的 id。
  *
  * 会话故意放在模块级而不是组件里——面板最小化、在底部和选项卡之间来回切，
- * 都不该把 shell 一起带走；任务要继续跑，回来还得看见之前打印的东西。
+ * 都不该把 shell 一起带走。画面留在各自的 xterm 里，同时按会话留一份原始输出：
+ * xterm 被拆掉或滚屏被擦掉之后，新实例还能把已经滚出视线的日志写回去。
  * 多条会话并存，页签按 `sessions` 的顺序排，`activeId` 是当前看着的那条。
  * 多工作区常驻时，每个工作区根各自维护一组会话与自己的激活会话 id，切根时不杀后台终端。
  */
@@ -18,16 +20,12 @@ export interface TermSession {
   cwd: string | null;
   /** 这条会话用的 shell 路径；页签上的名字按它取。 */
   shell: string;
-  /** base64 片段，按到达顺序存；重挂界面时原样喂回 xterm。 */
-  chunks: string[];
   /** shell 自己退出了，界面据此决定要不要另起一条。 */
   exited: boolean;
 }
 
 type Watcher = () => void;
-
-/** 单条会话最多保留多少段输出缓冲，防住无限膨胀内存泄漏（500 段 * ~32KB 约 16MB 滚屏记录）。 */
-const MAX_SESSION_CHUNKS = 500;
+type TermSink = (data: Uint8Array) => void;
 
 let sessions: TermSession[] = [];
 let activeId: TermSessionId | null = null;
@@ -39,6 +37,63 @@ const sessionWatchers = new Set<Watcher>();
 const tabWatchers = new Set<Watcher>();
 /** 输出与退出的事件订阅，一条会话一对；关会话时按 id 摘掉。 */
 const unlisten = new Map<TermSessionId, UnlistenFn[]>();
+/** 每条会话当前的画面入口。 */
+const sinks = new Map<TermSessionId, TermSink>();
+/** 每条会话的原始输出。xterm 重建时整段重放，滚出视线的行还在。 */
+const history = new Map<TermSessionId, Uint8Array[]>();
+const historyBytes = new Map<TermSessionId, number>();
+/** 擦滚屏序列被切在两包之间时，记住没判断完的前缀。 */
+const eraseCarry = new Map<TermSessionId, Uint8Array>();
+/** 一份历史大约够撑满 xterm 的滚屏。再老的从头部丢掉。 */
+const HISTORY_LIMIT = 8_000_000;
+
+function pushHistory(id: TermSessionId, data: Uint8Array) {
+  const queued = history.get(id) ?? [];
+  queued.push(data.slice());
+  let total = (historyBytes.get(id) ?? 0) + data.byteLength;
+  while (queued.length > 1 && total > HISTORY_LIMIT) {
+    total -= queued.shift()?.byteLength ?? 0;
+  }
+  history.set(id, queued);
+  historyBytes.set(id, total);
+}
+
+function deliver(id: TermSessionId, data: Uint8Array) {
+  const stripped = stripEraseScrollback(eraseCarry.get(id) ?? new Uint8Array(0), data);
+  eraseCarry.set(id, stripped.carry);
+  if (stripped.data.byteLength === 0) return;
+  pushHistory(id, stripped.data);
+  sinks.get(id)?.(stripped.data);
+}
+
+function forgetOutput(id: TermSessionId) {
+  sinks.delete(id);
+  history.delete(id);
+  historyBytes.delete(id);
+  eraseCarry.delete(id);
+}
+
+/** 清屏按钮：把留着的原始输出也清掉，避免下次重放把刚清掉的日志写回来。 */
+export function clearTermHistory(id: TermSessionId): void {
+  history.delete(id);
+  historyBytes.delete(id);
+  eraseCarry.delete(id);
+}
+
+/**
+ * 把一条会话的输出接到画面上。
+ *
+ * 挂上时先把已经留下的整段历史写进这个 xterm，滚出视线的行跟着回到滚屏里。
+ * 返回的函数只摘掉入口，历史还留着，下一次挂上继续重放。
+ */
+export function attachTermOutput(id: TermSessionId, sink: TermSink): () => void {
+  const snapshot = (history.get(id) ?? []).slice();
+  sinks.set(id, sink);
+  for (const chunk of snapshot) sink(chunk);
+  return () => {
+    if (sinks.get(id) === sink) sinks.delete(id);
+  };
+}
 
 /** 归一化工作区根键，大小写与斜杠不敏感。 */
 function rootKey(cwd: string | null): string {
@@ -148,11 +203,13 @@ export function setActiveTermFor(cwd: string | null, id: TermSessionId): void {
 /** 已关闭会话的登记簿。listen 要一次 IPC 往返才 resolve，登记（关闭）可能赶在
  * 订阅返回之前——resolve 时查这张表，命中的监听当场解绑，不留成收不走的孤儿。 */
 const closed = new Set<TermSessionId>();
+/** 同一个根上正在开的那一条。面板挂载会被跑两遍，不能因此起两个 shell。 */
+const opening = new Map<string, Promise<TermSession>>();
 
 /** 起一条新会话，返回它。起完自动切成激活。 */
 async function open(cwd: string | null, shell: string, cols: number, rows: number): Promise<TermSession> {
   const id = await termOpen(cwd, shell, cols, rows);
-  const created: TermSession = { id, cwd, shell, chunks: [], exited: false };
+  const created: TermSession = { id, cwd, shell, exited: false };
   sessions = [...sessions, created];
   activeId = id;
   activeIdByRoot.set(rootKey(cwd), id);
@@ -167,15 +224,8 @@ async function open(cwd: string | null, shell: string, cols: number, rows: numbe
   };
   void listen<TermChunk>("term://output", (event) => {
     if (event.payload.id !== id) return;
-    const target = sessions.find((item) => item.id === id);
-    if (!target) return;
-    // 超过上限淘汰旧块，截断内存占用
-    if (target.chunks.length >= MAX_SESSION_CHUNKS) {
-      target.chunks.splice(0, target.chunks.length - MAX_SESSION_CHUNKS + 1);
-    }
-    target.chunks.push(event.payload.data);
-    // 只通知终端屏幕渲染，不触发页签栏等纯结构组件
-    notifySession();
+    if (!sessions.some((item) => item.id === id)) return;
+    deliver(id, decodeChunk(event.payload.data));
   }).then(adopt);
   void listen<TermExit>("term://exit", (event) => {
     if (event.payload.id !== id) return;
@@ -243,6 +293,7 @@ export async function closeTerm(id: TermSessionId): Promise<void> {
   sessions = sessions.filter((item) => item.id !== id);
   // 先登记再解绑：还挂在 IPC 往返上的订阅 resolve 时会查到这张表。
   closed.add(id);
+  forgetOutput(id);
   for (const off of unlisten.get(id) ?? []) off();
   unlisten.delete(id);
   if (activeIdByRoot.get(key) === id) {
@@ -268,6 +319,7 @@ export async function closeTermsForRoot(cwd: string | null): Promise<void> {
   sessions = sessions.filter((item) => !doomedIds.has(item.id));
   for (const item of doomed) {
     closed.add(item.id);
+    forgetOutput(item.id);
     for (const off of unlisten.get(item.id) ?? []) off();
     unlisten.delete(item.id);
   }
@@ -284,7 +336,10 @@ export async function dropTermSession(): Promise<void> {
   sessions = [];
   activeId = null;
   activeIdByRoot.clear();
-  for (const item of all) closed.add(item.id);
+  for (const item of all) {
+    closed.add(item.id);
+    forgetOutput(item.id);
+  }
   for (const [, offs] of unlisten) for (const off of offs) off();
   unlisten.clear();
   notifyAll();
@@ -315,7 +370,14 @@ export async function needTermSession(
     notifyAll();
     return alive;
   }
-  return open(cwd, shell, cols, rows);
+  const key = rootKey(cwd);
+  const pending = opening.get(key);
+  if (pending) return pending;
+  const created = open(cwd, shell, cols, rows).finally(() => {
+    if (opening.get(key) === created) opening.delete(key);
+  });
+  opening.set(key, created);
+  return created;
 }
 
 /** 终端里那颗「重开会话」：把指定会话收掉再原地起一条新的。 */

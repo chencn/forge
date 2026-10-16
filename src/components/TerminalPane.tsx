@@ -1,32 +1,19 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
-import {
-  bindNativeScroll,
-  decodeChunk,
-  mountNativeScrollPort,
-  terminalColors,
-  termResize,
-  termWrite,
-} from "../lib/term";
-import type { NativeScrollBinding } from "../lib/term";
-import { needTermSession, restartTermSession, termSessionFor, watchTermSession } from "../lib/termStore";
-import type { TermSession } from "../lib/termStore";
 import { errorText, openExternal } from "../lib/fs";
 import { describeError } from "../lib/errors";
-import { monoFont } from "../lib/monacoEnv";
+import { needTermSession, restartTermSession, termSessionFor, watchTermTabs } from "../lib/termStore";
+import { registerTermSlot, termControl } from "../lib/termSurface";
+import { isHttpUrl } from "../lib/termUrl";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
-import { attachTerminalUrls, isHttpUrl } from "../lib/termUrl";
-import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
   /** 新会话的起始目录；换工作区时重开一个 shell。 */
   cwd: string | null;
-  /** 深浅色切换只改配色，不能把 shell 干掉。 */
+  /** 深浅色由宿主里的 xterm 自己换，这里留着是为了和原来的面板接口一致。 */
   dark: boolean;
 }
 
@@ -37,182 +24,66 @@ export interface TerminalPaneHandle {
 }
 
 export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { cwd, dark },
-  ref
+  { cwd },
+  ref,
 ) {
   const { settings } = useSettings();
   const { t } = useI18n();
-  const hostRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const sessionRef = useRef<TermSession | null>(null);
   const shellRef = useRef(settings.terminal.shell);
   shellRef.current = settings.terminal.shell;
-  /** 换语言不该把 shell 重开一遍，报错文案现取。 */
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
   const translateRef = useRef(t);
   translateRef.current = t;
-  /** 自增一次就重新走一遍挂会话的流程。 */
-  const [epoch, setEpoch] = useState(0);
+  const [activeId, setActiveId] = useState<string | null>(() => termSessionFor(cwd)?.id ?? null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
-  /** 只有「重开会话」置真：别的重挂（换位置、切选项卡）都该沿用后台那条 shell。 */
-  const freshRef = useRef(false);
-  /** 量到真实尺寸才允许碰 PTY 的行列数。 */
-  const [sized, setSized] = useState(false);
-  /** 原生滚动层绑定控制面。 */
-  const scrollRef = useRef<NativeScrollBinding | null>(null);
+  const [fault, setFault] = useState<string | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const findRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => watchTermTabs(() => setActiveId(termSessionFor(cwd)?.id ?? null)), [cwd]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFault(null);
+    void needTermSession(cwd, shellRef.current, 80, 24).catch((cause: unknown) => {
+      if (cancelled) return;
+      setFault(describeError(errorText(cause), translateRef.current));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd]);
+
+  useEffect(() => {
+    if (findOpen) findRef.current?.focus();
+  }, [findOpen]);
+
+  const restart = () => {
+    const id = termSessionFor(cwdRef.current)?.id;
+    if (!id) return;
+    void restartTermSession(id, cwdRef.current, shellRef.current, 80, 24).catch((cause: unknown) => {
+      setFault(describeError(errorText(cause), translateRef.current));
+    });
+  };
 
   useImperativeHandle(
     ref,
     () => ({
-      clear: () => termRef.current?.clear(),
-      restart: () => {
-        freshRef.current = true;
-        setEpoch((value) => value + 1);
+      clear: () => {
+        const id = termSessionFor(cwdRef.current)?.id;
+        if (id) termControl(id)?.clear();
       },
+      restart,
     }),
-    []
+    [],
   );
-
-  // 终端实例建一次；会话存在模块级，所以这里重建不等于重开 shell。
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-
-    const term = new Terminal({
-      fontFamily: monoFont(),
-      fontSize: 12,
-      lineHeight: 1.45,
-      cursorBlink: true,
-      // IDEA 终端光标是细竖线，不是 xterm 默认的方块（方块闪起来是一大坨）。
-      cursorStyle: "bar",
-      cursorInactiveStyle: "bar",
-      scrollback: 5000,
-      theme: terminalColors(dark),
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-
-    // 采用 snow-file-explorer 的原生滚动层结构：画面挂在粘性视口上，滚动条留给浏览器原生引擎
-    const scrollPort = mountNativeScrollPort(host);
-    term.open(scrollPort.sticky);
-    termRef.current = term;
-
-    // 装配 URL 点击打开与划选复制
-    const urlHandler = attachTerminalUrls(term);
-
-    const nativeScroll = bindNativeScroll(host, scrollPort.spacer, term);
-    scrollRef.current = nativeScroll;
-
-    const input = term.onData((data) => {
-      const session = sessionRef.current;
-      if (session && !session.exited) void termWrite(session.id, data);
-    });
-    const syncSize = () => {
-      // 0×0 的宿主量出来的行列会把 ConPTY 带进死状态，量不到就当没发生。
-      if (host.clientWidth < 20 || host.clientHeight < 20) return;
-      fit.fit();
-      setSized(true);
-      const session = sessionRef.current;
-      if (session && !session.exited) void termResize(session.id, term.cols, term.rows);
-      nativeScroll.sync();
-    };
-    const observer = new ResizeObserver(syncSize);
-    observer.observe(host);
-    syncSize();
-
-    return () => {
-      observer.disconnect();
-      urlHandler.dispose();
-      nativeScroll.dispose();
-      scrollRef.current = null;
-      input.dispose();
-      termRef.current = null;
-      sessionRef.current = null;
-      term.dispose();
-      // 移除挂载的原生滚动 DOM 节点
-      scrollPort.sticky.remove();
-      scrollPort.spacer.remove();
-      // 故意不关会话：界面收起来，shell 还得在后台跑。
-    };
-  }, []);
-
-  // 挂上会话：能沿用就沿用，把攒下的输出补画；沿用不了才起新的。
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term || !sized) return;
-    let cancelled = false;
-    let written = 0;
-    let lastId: string | null = null;
-
-    const draw = (session: TermSession) => {
-      // 换了会话就整体重放；同一条只补新增的片段。
-      if (session.id !== lastId) {
-        lastId = session.id;
-        written = 0;
-        term.reset();
-      }
-      sessionRef.current = session;
-      const hadChunks = session.chunks.length > 0;
-      while (written < session.chunks.length) {
-        term.write(decodeChunk(session.chunks[written]));
-        written += 1;
-      }
-      // 重放结束后锚定到最新输出底部并同步原生滚动条
-      if (hadChunks) {
-        term.scrollToBottom();
-      }
-      scrollRef.current?.sync();
-    };
-
-    const stop = watchTermSession(() => {
-      const session = termSessionFor(cwd);
-      if (session) {
-        draw(session);
-        return;
-      }
-      // 一条会话都不剩了（把最后一个页签关掉了）：把画面清干净，别留着上一条的残字。
-      // 关掉的不是最后一条时 `termSessionFor(cwd)` 会给回邻居，走上面那支重放，到不了这里。
-      if (lastId !== null) {
-        lastId = null;
-        written = 0;
-        sessionRef.current = null;
-        term.reset();
-        scrollRef.current?.sync();
-      }
-    });
-    const attach = async () => {
-      const fresh = freshRef.current;
-      freshRef.current = false;
-      const current = termSessionFor(cwd);
-      const session = fresh && current
-        ? await restartTermSession(current.id, cwd, shellRef.current, term.cols, term.rows)
-        : await needTermSession(cwd, shellRef.current, term.cols, term.rows);
-      if (cancelled) return;
-      draw(session);
-      if (!session.exited) void termResize(session.id, term.cols, term.rows);
-      term.scrollToBottom();
-      scrollRef.current?.sync();
-    };
-    void attach().catch((cause: unknown) => {
-      if (cancelled) return;
-      // 起不来时把原因写在终端里，别留一块没有解释的空白。
-      term.writeln(`\x1b[31m${describeError(errorText(cause), translateRef.current)}\x1b[0m`);
-    });
-
-    return () => {
-      cancelled = true;
-      stop();
-    };
-  }, [cwd, epoch, sized]);
-
-  useEffect(() => {
-    const term = termRef.current;
-    if (term) term.options.theme = terminalColors(dark);
-  }, [dark]);
 
   const requestMenu = (event: ReactMouseEvent) => {
     event.preventDefault();
-    const term = termRef.current;
-    const selection = term?.getSelection()?.trim() ?? "";
+    const control = activeId ? termControl(activeId) : null;
+    const selection = control?.selection().trim() ?? "";
     const selectedUrl = isHttpUrl(selection) ? selection : null;
 
     setMenu({
@@ -234,9 +105,9 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
           : []),
         {
           label: t("action.copy"),
-          disabled: !(term?.hasSelection() ?? false),
+          disabled: !(control?.hasSelection() ?? false),
           onSelect: () => {
-            const text = term?.getSelection();
+            const text = control?.selection();
             if (text) void navigator.clipboard.writeText(text);
           },
         },
@@ -246,35 +117,80 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
             void navigator.clipboard
               .readText()
               .then((text) => {
-                const session = sessionRef.current;
-                if (text && session && !session.exited) void termWrite(session.id, text);
+                if (text && activeId) termControl(activeId)?.paste(text);
               })
               .catch(() => {});
           },
         },
-        { label: t("terminal.clear"), onSelect: () => term?.clear() },
-        {
-          label: t("terminal.restart"),
-          onSelect: () => {
-            freshRef.current = true;
-            setEpoch((value) => value + 1);
-          },
-        },
+        { label: t("terminal.clear"), onSelect: () => control?.clear() },
+        { label: t("terminal.find"), onSelect: () => setFindOpen(true) },
+        { label: t("terminal.restart"), onSelect: restart },
       ],
     });
   };
 
+  const onKeyDown = (event: ReactKeyboardEvent) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      event.stopPropagation();
+      setFindOpen(true);
+    }
+  };
+
+  const search = (forward: boolean) => {
+    if (!activeId || !query) return;
+    const control = termControl(activeId);
+    if (forward) control?.findNext(query);
+    else control?.findPrevious(query);
+  };
+
   return (
     <>
-      <div
-        ref={hostRef}
-        className="term-host"
-        onContextMenu={(event) => {
-          event.preventDefault();
-          requestMenu(event);
-        }}
-      />
+      <div className="term-live" onKeyDownCapture={onKeyDown}>
+        {findOpen ? (
+          <div className="term-search">
+            <input
+              ref={findRef}
+              className="settings-input"
+              value={query}
+              placeholder={t("terminal.find")}
+              aria-label={t("terminal.find")}
+              onChange={(event) => {
+                const next = event.target.value;
+                setQuery(next);
+                if (activeId && next) termControl(activeId)?.findNext(next);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  search(!event.shiftKey);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setFindOpen(false);
+                }
+              }}
+            />
+          </div>
+        ) : null}
+        {fault ? <p className="term-fault">{fault}</p> : null}
+        <div className="term-host" onContextMenu={requestMenu}>
+          <div className="term-sticky">
+            {activeId ? <TerminalSlot sessionId={activeId} /> : null}
+          </div>
+          <div className="term-spacer" aria-hidden="true" />
+        </div>
+      </div>
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
     </>
   );
 });
+
+function TerminalSlot({ sessionId }: { sessionId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    return registerTermSlot(sessionId, element);
+  }, [sessionId]);
+  return <div ref={ref} className="term-slot" />;
+}

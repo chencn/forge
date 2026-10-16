@@ -131,4 +131,13 @@ describe("termStore 监听生命周期", () => {
     expect(store.termSessionsFor("D:/repo-b").sessions.map((s) => s.id)).toEqual([b1.id]);
     expect(store.hasAliveTermsForRoot("D:/repo-b")).toBe(true);
   });
+
+  it("同一个根上同时要会话时只开一个 shell", async () => {
+    const store = await import("../../src/lib/termStore");
+    const first = store.needTermSession("D:/repo-a", "cmd", 80, 24);
+    const second = store.needTermSession("D:/repo-a", "cmd", 80, 24);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.id).toBe(b.id);
+    expect(invokes.filter((call) => call.cmd === "term_open")).toHaveLength(1);
+  });
 });

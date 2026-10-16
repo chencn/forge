@@ -4,6 +4,7 @@ import CodeEditor, { type CodeEditorHandle } from "./CodeEditor";
 import ImagePreview from "./ImagePreview";
 import PaneNotice from "./PaneNotice";
 import { canPreview } from "../hooks/useDocuments";
+import { retainEditorModels } from "../lib/modelRetention";
 import type { DocView, OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import type { DocKind } from "../lib/docKind";
 import { describeError } from "../lib/errors";
@@ -30,6 +31,8 @@ interface DocPaneProps {
   runConfigs: RunConfiguration[];
   /** 工程根绝对路径。 */
   projectRoot: string;
+  /** 还开着的文档路径。超出最近几篇的 Monaco model 按这个名单回收。 */
+  openPaths: readonly string[];
   /** 点了装订线那颗 ▶：一条就直接跑，几条就开选择器让他挑。 */
   onRunConfig: (configs: RunConfiguration[]) => void;
   /** 点了脚本文件装订线那颗 ▶：把脚本发到对应终端里执行。 */
@@ -67,10 +70,18 @@ export default function DocPane({
   onRevealDone,
   runConfigs,
   projectRoot,
+  openPaths,
   onRunConfig,
   onRunScript,
 }: DocPaneProps) {
   const { t } = useI18n();
+  const openPathsRef = useRef(openPaths);
+  openPathsRef.current = openPaths;
+  const openKey = openPaths.join("\0");
+  useEffect(() => {
+    if (doc.loading) return;
+    retainEditorModels(doc.path, openPathsRef.current);
+  }, [doc.loading, doc.path, openKey]);
   const sourceCapable = doc.kind !== "image" && doc.kind !== "binary";
   const isSplit = doc.kind === "markdown" && doc.view === "split";
   const showPreview = canPreview(doc) && (doc.view === "preview" || isSplit);

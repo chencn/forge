@@ -39,6 +39,7 @@ export const zh = {
   "terminal.chooseShell": "选择终端类型",
   "terminal.openLink": "打开链接",
   "terminal.copyLink": "复制链接地址",
+  "terminal.find": "查找",
 
   "dialog.newFolder": "新建文件夹",
   "dialog.newFile": "新建文件",

@@ -113,6 +113,7 @@ import {
   closeTermsForRoot,
   hasAliveTermsForRoot,
   runInTerminal,
+  termSessions,
   watchTermTabs,
 } from "./lib/termStore";
 import { shellProbe } from "./lib/term";
@@ -143,6 +144,7 @@ const DiffPane = lazy(() => import("./components/DiffPane"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const GitLogPane = lazy(() => import("./components/GitLogPane"));
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
+const TerminalHost = lazy(() => import("./components/TerminalHost"));
 const RunPane = lazy(() => import("./components/RunPane"));
 const RunConfigsPage = lazy(() => import("./components/RunConfigsPage"));
 const SearchEverywhere = lazy(() => import("./components/SearchEverywhere"));
@@ -3898,6 +3900,7 @@ export default function App() {
                   onRevealDone={docs.revealDone}
                   runConfigs={configs.configs}
                   projectRoot={workspaceRoot ?? ""}
+                  openPaths={docs.documents.map((item) => item.path)}
                   onRunConfig={(picked) => {
                     if (picked.length > 1) {
                       // 这一行落进好几条：选中位次最靠前的那条，再把下拉打开让他改。
@@ -4077,6 +4080,13 @@ export default function App() {
             onOpenFile={openSearchFile}
             onOpenHit={openSearchHit}
           />
+        </Suspense>
+      ) : null}
+      {termSessions().sessions.length > 0 ||
+      places.terminal !== "hidden" ||
+      activePane === "terminal" ? (
+        <Suspense fallback={null}>
+          <TerminalHost dark={resolved === "dark"} />
         </Suspense>
       ) : null}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}

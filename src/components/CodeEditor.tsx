@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { modelUri, monaco } from "../lib/monacoEditor";
+import { isRetainingModels } from "../lib/modelRetention";
 import { monoFont } from "../lib/monacoEnv";
 import { basenameOf, samePath } from "../lib/format";
 import { gutterTargets } from "../lib/runMarkers";
@@ -23,10 +24,12 @@ const viewStateByPath = new Map<string, monaco.editor.ICodeEditorViewState | nul
 monaco.editor.onWillDisposeModel((model) => {
   const fsPath = model.uri.fsPath;
   mirrorByPath.delete(fsPath);
-  viewStateByPath.delete(fsPath);
   for (const key of Array.from(mirrorByPath.keys())) {
     if (samePath(key, fsPath)) mirrorByPath.delete(key);
   }
+  // 超限回收时 model 会关掉再重建，光标得留着。关标签不走这条，记录一起丢掉。
+  if (isRetainingModels()) return;
+  viewStateByPath.delete(fsPath);
   for (const key of Array.from(viewStateByPath.keys())) {
     if (samePath(key, fsPath)) viewStateByPath.delete(key);
   }

@@ -41,6 +41,7 @@ export const en: Record<TranslationKey, string> = {
   "terminal.chooseShell": "Select terminal type",
   "terminal.openLink": "Open Link",
   "terminal.copyLink": "Copy Link Address",
+  "terminal.find": "Find",
 
   "dialog.newFolder": "New folder",
   "dialog.newFile": "New file",

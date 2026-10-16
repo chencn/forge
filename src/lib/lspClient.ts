@@ -491,9 +491,18 @@ interface LspDiagnostic {
 }
 
 /** 把诊断落到 Monaco 的 marker 上。行号要 +1：LSP 从 0 起，Monaco 从 1 起。 */
+const diagnosticsByPath = new Map<string, monaco.editor.IMarkerData[]>();
+
+function diagnosticsKey(raw: string): string | null {
+  try {
+    const path = monaco.Uri.parse(raw).fsPath;
+    return path ? canonicalPath(path) : null;
+  } catch {
+    return null;
+  }
+}
+
 function applyDiagnostics(params: { uri: string; diagnostics: LspDiagnostic[] }): void {
-  const model = findModelByUri(params.uri);
-  if (!model) return;
   const markers = params.diagnostics.map((diagnostic) => ({
     severity: severityOf(diagnostic.severity),
     message: diagnostic.message,
@@ -503,8 +512,21 @@ function applyDiagnostics(params: { uri: string; diagnostics: LspDiagnostic[] })
     endLineNumber: diagnostic.range.end.line + 1,
     endColumn: diagnostic.range.end.character + 1,
   }));
+  const key = diagnosticsKey(params.uri);
+  if (key) diagnosticsByPath.set(key, markers);
+  const model = findModelByUri(params.uri);
+  if (!model) return;
   monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, markers);
 }
+
+function restoreDiagnostics(model: monaco.editor.ITextModel): void {
+  if (model.uri.scheme !== "file") return;
+  const cached = diagnosticsByPath.get(canonicalPath(model.uri.fsPath));
+  if (!cached) return;
+  monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, cached);
+}
+
+monaco.editor.onDidCreateModel((model) => restoreDiagnostics(model));
 
 /**
  * 按 URI 找 model。
@@ -1085,6 +1107,8 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
     notify(server, "textDocument/didClose", { textDocument: { uri } });
     server.opened.delete(uri);
     server.sent.delete(uri);
+    const cached = diagnosticsKey(uri);
+    if (cached) diagnosticsByPath.delete(cached);
     // 关标签时 model 常已 dispose，清 marker 要判一下，否则会在这个已死的 model 上写。
     const model = findModelByUri(uri);
     if (model) monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, []);

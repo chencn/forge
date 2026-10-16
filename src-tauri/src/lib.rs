@@ -110,6 +110,7 @@ pub fn run() {
             term::term_resize,
             term::term_close,
             term::term_reap,
+            term::term_windows_build,
             proc::proc_start,
             proc::proc_kill,
             run::dep_sync::dep_sync_probe,

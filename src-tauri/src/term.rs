@@ -343,3 +343,42 @@ fn reap_impl() {
 pub fn reap_all_for_exit() {
     reap_impl();
 }
+
+/// Windows 构建号。xterm 用它决定 ConPTY 的换行补救开不开。
+#[tauri::command]
+pub fn term_windows_build() -> Option<u32> {
+    windows_build_number()
+}
+
+#[cfg(windows)]
+fn windows_build_number() -> Option<u32> {
+    #[repr(C)]
+    struct OsVersionInfoExW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd_version: [u16; 128],
+        service_pack_major: u16,
+        service_pack_minor: u16,
+        suite_mask: u16,
+        product_type: u8,
+        reserved: u8,
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoExW) -> i32;
+    }
+
+    let mut info = unsafe { std::mem::zeroed::<OsVersionInfoExW>() };
+    info.size = std::mem::size_of::<OsVersionInfoExW>() as u32;
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status < 0 { None } else { Some(info.build) }
+}
+
+#[cfg(not(windows))]
+fn windows_build_number() -> Option<u32> {
+    None
+}

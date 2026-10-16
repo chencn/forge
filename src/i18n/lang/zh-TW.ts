@@ -37,6 +37,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "terminal.chooseShell": "選擇終端型別",
   "terminal.openLink": "開啟連結",
   "terminal.copyLink": "複製連結位址",
+  "terminal.find": "尋找",
   "dialog.newFolder": "新建資料夾",
   "dialog.newFile": "新建檔案",
   "dialog.newBranch": "新建分支",

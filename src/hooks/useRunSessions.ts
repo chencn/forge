@@ -34,8 +34,7 @@ export type AppendListener = (id: ProcSessionId, chunk: Uint8Array) => void;
 
 const ENCODER = new TextEncoder();
 
-/** 每个会话的输出块上限：dev server 挂几小时的话，无上限的 push 会把 WebView 撑爆。
- * 与 termStore 的 MAX_SESSION_CHUNKS 同一套取舍——留最新的，老的淘汰。 */
+/** 每个会话的输出块上限：dev server 挂几小时的话，无上限的 push 会把 WebView 撑爆。留最新的，老的淘汰。 */
 const MAX_SESSION_CHUNKS = 500;
 
 /** 归一化工作区根键，大小写与斜杠不敏感。 */

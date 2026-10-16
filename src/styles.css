@@ -1897,6 +1897,7 @@ span.entry-icon > svg {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .run-pane {
@@ -2624,8 +2625,96 @@ span.entry-icon > svg {
 
 /* 光标闪烁：xterm 默认是 `step-end` 硬切（一亮一灭，看着扎眼、显得快）。
    改成整段 opacity 平滑淡入淡出，周期仍取 1s（半周期 500ms，与 IDEA 的 caret 一致）。 */
-.term-host .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar {
+.term-host .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar,
+.term-live .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar {
   animation: forge-caret-blink 1s ease-in-out infinite !important;
+}
+
+/* 终端自己的滚动条。运行输出仍走上面的 .term-host 原生滚动。
+   内边距放在 xterm 外面：垫在 .xterm 上时，格子铺不满的那一圈会露出纯黑。 */
+.term-live {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.term-live > .term-host {
+  background: transparent;
+}
+
+.term-host .term-sticky > .term-slot {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 100%;
+}
+
+.term-live-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+/* 插槽和画面用绝对铺满，避免 height:100% 在最大化时先算成 0，再把终端重排没。 */
+.term-slot,
+.term-live-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.term-live .xterm,
+.term-live .xterm-viewport,
+.term-live .xterm-screen {
+  background-color: var(--bg-primary) !important;
+}
+
+.term-live .xterm {
+  height: 100%;
+  padding: 0;
+}
+
+/* xterm 滚动条自带的顶边和左边内阴影，缺省色是纯黑。 */
+.term-live .xterm .xterm-scrollable-element > .shadow {
+  display: none !important;
+}
+
+.term-park {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 800px;
+  height: 600px;
+  pointer-events: none;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.term-search {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.term-search .settings-input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.term-fault {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--text-danger, #f87171);
 }
 
 @keyframes forge-caret-blink {

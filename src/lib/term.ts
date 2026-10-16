@@ -62,6 +62,20 @@ export function termReap(): Promise<void> {
   return invoke<void>("term_reap");
 }
 
+let windowsBuild: Promise<number | undefined> | null = null;
+
+/**
+ * Windows 构建号，给 xterm 的 ConPTY 换行补救用。
+ *
+ * 构造终端时就要带上，所以调用方在 `new Terminal` 之前等它。非 Windows 或读失败都是 undefined。
+ */
+export function windowsBuildNumber(): Promise<number | undefined> {
+  windowsBuild ??= invoke<number | null>("term_windows_build")
+    .then((value) => value ?? undefined)
+    .catch(() => undefined);
+  return windowsBuild;
+}
+
 /** base64 → 字节数组，交给 xterm 自己增量解码 UTF-8。 */
 export function decodeChunk(data: string): Uint8Array {
   const binary = atob(data);
@@ -96,7 +110,8 @@ export function terminalColors(isDark?: boolean): Record<string, string> {
       // xterm 默认 brightYellow 为 #fce94f（亮柠檬黄，在深色背景下严重泛白发虚）。
       // 这里采用温润饱满且轮廓鲜明的高对比度金黄/暖黄色（#e5c07b / #f3cc62），清晰舒适。
       yellow: "#e5c07b",
-      blue: "#60a5fa",
+      // 夜间底是黑的，目录名是蓝底上的浅色字。这块底要深，浅了字会糊进去。
+      blue: "#1e40af",
       magenta: "#c084fc",
       cyan: "#38bdf8",
       white: "#e5e7eb",
@@ -104,7 +119,8 @@ export function terminalColors(isDark?: boolean): Record<string, string> {
       brightRed: "#ef4444",
       brightGreen: "#22c55e",
       brightYellow: "#f3cc62",
-      brightBlue: "#3b82f6",
+      // 蓝字落在黑底上，用浅色才看得见。
+      brightBlue: "#93c5fd",
       brightMagenta: "#a855f7",
       brightCyan: "#06b6d4",
       brightWhite: "#f9fafb",
@@ -124,7 +140,8 @@ export function terminalColors(isDark?: boolean): Record<string, string> {
     red: "#dc2626",
     green: "#16a34a",
     yellow: "#b45309",
-    blue: "#2563eb",
+    // 白天底是白的，目录名是蓝底上的深色字。这块底要浅，深了字会糊进去。
+    blue: "#dbeafe",
     magenta: "#9333ea",
     cyan: "#0891b2",
     white: "#4b5563",
@@ -132,6 +149,7 @@ export function terminalColors(isDark?: boolean): Record<string, string> {
     brightRed: "#b91c1c",
     brightGreen: "#15803d",
     brightYellow: "#92400e",
+    // 蓝字落在白底上，用深色才看得见。
     brightBlue: "#1d4ed8",
     brightMagenta: "#7e22ce",
     brightCyan: "#0e7490",
@@ -180,6 +198,10 @@ export function bindNativeScroll(
 ): NativeScrollBinding {
   let applying = false;
   let queued: number | ReturnType<typeof setTimeout> = 0;
+  /** 用户离开底部之后，新输出只加长滚屏，不再改视口。 */
+  let awayFromTail = false;
+  /** 上次由程序停在的底部行。用户从这里往上翻，才算离开底部。 */
+  let placedTail = 0;
 
   const measureCellHeight = (): number => {
     const rows = term.rows || 0;
@@ -216,12 +238,25 @@ export function bindNativeScroll(
       return;
     }
     const nextHeight = maxLine * cell;
-    if (spacer.style.height !== `${nextHeight}px`) spacer.style.height = `${nextHeight}px`;
-    // 用户正在拖/甩原生滚动条时，视口行已经跟上，不要回写 scrollTop，否则惯性会被掐断。
+    const tail = maxLine * cell;
     const line = Math.round(host.scrollTop / cell);
-    if (line === viewportY) return;
+    // 输出回调可能排在滚动事件前面。滚动条已经离开上次停住的底部，就不要再拽回去。
+    if (!awayFromTail && placedTail > 0 && line < placedTail - 1) awayFromTail = true;
+    // 撑高会同步触发 scroll。这段里挡住，避免宿主还停在旧位置时把画面拉走。
     applying = true;
-    host.scrollTop = Math.min(viewportY, maxLine) * cell;
+    try {
+      if (spacer.style.height !== `${nextHeight}px`) spacer.style.height = `${nextHeight}px`;
+      if (!awayFromTail) {
+        if (viewportY < maxLine) term.scrollToBottom();
+        if (Math.abs(host.scrollTop - tail) > 1) host.scrollTop = tail;
+        placedTail = maxLine;
+      } else if (Math.abs(line - viewportY) > 1) {
+        // 人在看上面的日志。新行进了缓冲，视口留在用户停下的那一行。
+        term.scrollToLine(Math.min(line, maxLine));
+      }
+    } catch {
+      // 忽略已释放实例
+    }
     applying = false;
   };
 
@@ -243,15 +278,32 @@ export function bindNativeScroll(
     if (cell <= 0) return;
     const line = Math.round(host.scrollTop / cell);
     let viewportY = 0;
+    let maxLine = 0;
     try {
-      viewportY = term.buffer.active.viewportY;
+      const buf = term.buffer.active;
+      viewportY = buf.viewportY;
+      maxLine = Math.max(0, buf.baseY);
     } catch {
       return;
     }
-    if (line === viewportY) return;
+    if (line >= maxLine - 1) {
+      awayFromTail = false;
+      placedTail = maxLine;
+      if (viewportY >= maxLine - 1) return;
+      applying = true;
+      try {
+        term.scrollToBottom();
+      } catch {
+        // 忽略已释放实例
+      }
+      applying = false;
+      return;
+    }
+    awayFromTail = true;
+    if (Math.abs(line - viewportY) <= 1) return;
     applying = true;
     try {
-      term.scrollToLine(line);
+      term.scrollToLine(Math.min(line, maxLine));
     } catch {
       // 忽略已释放实例
     }
@@ -268,6 +320,8 @@ export function bindNativeScroll(
       return;
     }
     if (passThrough) return;
+    // 往上翻要在滚动事件之前记下来。输出回调若先跑，不能把视口拽回底部。
+    if (event.deltaY < 0) awayFromTail = true;
     // 不 preventDefault：浏览器才能对这条宿主原生滚动条做平滑惯性滑动。
     // stopImmediatePropagation 阻止 xterm 内部截获并吞噬滚轮。
     event.stopImmediatePropagation();
