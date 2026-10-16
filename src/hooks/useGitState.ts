@@ -256,6 +256,7 @@ export function useGitState(
 
   const run = useCallback(
     async (action: () => Promise<unknown>) => {
+      beginRefresh();
       try {
         await action();
         await refresh();
@@ -266,9 +267,11 @@ export function useGitState(
         // 不重探一遍就得等人手点刷新才看得到那条横幅。
         await refresh();
         return false;
+      } finally {
+        endRefresh();
       }
     },
-    [refresh, reportError]
+    [beginRefresh, endRefresh, refresh, reportError]
   );
 
   /** 暂存 / 取消暂存只动索引：失败弹错，成功只重取变更清单，不碰分支标签日志。 */
@@ -453,6 +456,7 @@ export function useGitState(
   const remote = useCallback(
     async (action: (repo: string) => Promise<string>, actionKey?: string) => {
       if (!root) return null;
+      beginRefresh();
       try {
         const detail = await action(root);
         await refresh();
@@ -460,9 +464,11 @@ export function useGitState(
       } catch (cause) {
         reportError(errorText(cause), actionKey);
         return null;
+      } finally {
+        endRefresh();
       }
     },
-    [refresh, reportError, root]
+    [beginRefresh, endRefresh, refresh, reportError, root]
   );
 
   const fetch = useCallback(() => remote(gitFetch, "fetch"), [remote]);

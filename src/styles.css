@@ -832,7 +832,7 @@ span.entry-icon > svg {
   transition: background 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
 }
 
-.button:hover {
+.button:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -843,7 +843,7 @@ span.entry-icon > svg {
   color: var(--button-solid-text);
 }
 
-.button.is-primary:hover {
+.button.is-primary:hover:not(:disabled) {
   opacity: 0.88;
   color: var(--button-solid-text);
 }
@@ -852,6 +852,16 @@ span.entry-icon > svg {
   background: var(--accent-red);
   border-color: var(--accent-red);
   color: var(--on-solid);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.button.is-loading,
+.button:disabled.is-loading {
+  opacity: 0.85;
 }
 
 /* 横幅里那种小动作按钮，跟着 12px 正文一档走。 */
@@ -3800,6 +3810,10 @@ span.entry-icon > svg {
 .commit-buttons .button {
   flex: none;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 

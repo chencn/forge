@@ -298,6 +298,8 @@ export default function GitPanel({
   const [commitHeight, setCommitHeight] = useState<number | null>(null);
   /** 收起提交区，只留上面那条工具行。 */
   const [commitCollapsed, setCommitCollapsed] = useState(false);
+  /** 当前正在执行的提交/推送动作：提交中或提交并推送中，用于展示 loading 图标并禁用重复触发 */
+  const [committingAction, setCommittingAction] = useState<"commit" | "commitAndPush" | null>(null);
   /** 拖分隔条时的起点：按下那刻的指针纵坐标与提交区高度。 */
   const commitDrag = useRef<{ startY: number; startHeight: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -676,20 +678,26 @@ export default function GitPanel({
   };
 
   const commit = async (andPush: boolean) => {
+    if (committingAction !== null) return;
     const text = message.trim();
     if (!text && !amend) return;
-    // 后端提交的是索引，所以这里先把那批文件替 IDEA 暂存上；中途失败会留在索引里，用「全部取消暂存」退得回去。
-    if (commitAll) {
-      const stagedAll = await git.stage(tracked.map((change) => absolute(change.path)));
-      if (!stagedAll) return;
+    setCommittingAction(andPush ? "commitAndPush" : "commit");
+    try {
+      // 后端提交的是索引，所以这里先把那批文件替 IDEA 暂存上；中途失败会留在索引里，用「全部取消暂存」退得回去。
+      if (commitAll) {
+        const stagedAll = await git.stage(tracked.map((change) => absolute(change.path)));
+        if (!stagedAll) return;
+      }
+      const done = await git.commit(text, amend);
+      if (!done) return;
+      onCommitted(text);
+      setMessage("");
+      setAmend(false);
+      setAmendDetail(null);
+      if (andPush) await git.push(false);
+    } finally {
+      setCommittingAction(null);
     }
-    const done = await git.commit(text, amend);
-    if (!done) return;
-    onCommitted(text);
-    setMessage("");
-    setAmend(false);
-    setAmendDetail(null);
-    if (andPush) await git.push(false);
   };
 
   /** 双击落在哪一档由设置说：源文件走编辑器，否则和单击一样开比对。 */
@@ -1262,7 +1270,9 @@ export default function GitPanel({
               onKeyDown={(event) => {
                 if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                   event.preventDefault();
-                  void commit(false);
+                  if (canCommit && committingAction === null && !isGenerating) {
+                    void commit(false);
+                  }
                 }
               }}
             />
@@ -1294,19 +1304,43 @@ export default function GitPanel({
             <div className="commit-buttons">
               <button
                 type="button"
-                className="button is-primary commit-button"
-                disabled={!canCommit}
+                className={`button is-primary commit-button${committingAction === "commit" ? " is-loading" : ""}`}
+                disabled={!canCommit || committingAction !== null || isGenerating}
                 onClick={() => void commit(false)}
               >
-                {t(amend ? "git.amendButton" : "git.commitButton")}
+                {committingAction === "commit" ? (
+                  <Loader2
+                    size={13}
+                    className="is-spinning"
+                    data-spin="true"
+                    style={{
+                      display: "inline-block",
+                      transformOrigin: "50% 50%",
+                      animation: "spin 1.4s linear infinite",
+                    }}
+                  />
+                ) : null}
+                <span>{t(amend ? "git.amendButton" : "git.commitButton")}</span>
               </button>
               <button
                 type="button"
-                className="button"
-                disabled={!canCommit}
+                className={`button${committingAction === "commitAndPush" ? " is-loading" : ""}`}
+                disabled={!canCommit || committingAction !== null || isGenerating}
                 onClick={() => void commit(true)}
               >
-                {t("git.commitAndPush")}
+                {committingAction === "commitAndPush" ? (
+                  <Loader2
+                    size={13}
+                    className="is-spinning"
+                    data-spin="true"
+                    style={{
+                      display: "inline-block",
+                      transformOrigin: "50% 50%",
+                      animation: "spin 1.4s linear infinite",
+                    }}
+                  />
+                ) : null}
+                <span>{t("git.commitAndPush")}</span>
               </button>
 
               <div
@@ -1321,6 +1355,7 @@ export default function GitPanel({
                 <button
                   type="button"
                   className="button is-small"
+                  disabled={committingAction !== null}
                   onClick={isGenerating ? handleCancelAiCommit : () => void handleGenerateAiCommit()}
                   title={t(isGenerating ? "aiCommit.cancel" : "aiCommit.generate")}
                   style={{
