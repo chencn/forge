@@ -409,25 +409,12 @@ export default function BranchPicker({
               </svg>
             ) : null}
             {ahead > 0 ? (
-              git.pushing ? (
-                <Loader2
-                  size={10}
-                  className="is-spinning sync-out"
-                  data-spin="true"
-                  style={{
-                    display: "inline-block",
-                    transformOrigin: "50% 50%",
-                    animation: "spin 1.4s linear infinite",
-                  }}
-                />
-              ) : (
-                <svg viewBox="0 0 16 16" className="sync-out">
-                  <g transform="rotate(180 6 6.5)">
-                    <rect width="2" height="8.386" x="3.532" y=".269" transform="rotate(45 4.532 4.462)" />
-                    <polygon points="0 2 7 9 0 9" />
-                  </g>
-                </svg>
-              )
+              <svg viewBox="0 0 16 16" className="sync-out">
+                <g transform="rotate(180 6 6.5)">
+                  <rect width="2" height="8.386" x="3.532" y=".269" transform="rotate(45 4.532 4.462)" />
+                  <polygon points="0 2 7 9 0 9" />
+                </g>
+              </svg>
             ) : null}
           </span>
         ) : null}
