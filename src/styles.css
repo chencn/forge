@@ -832,7 +832,7 @@ span.entry-icon > svg {
   transition: background 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
 }
 
-.button:hover:not(:disabled) {
+.button:hover:not(:disabled):not(.is-primary):not(.is-danger) {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -844,8 +844,17 @@ span.entry-icon > svg {
 }
 
 .button.is-primary:hover:not(:disabled) {
-  opacity: 0.88;
+  background: var(--button-solid);
+  border-color: var(--button-solid);
   color: var(--button-solid-text);
+  opacity: 0.9;
+}
+
+.button.is-primary:active:not(:disabled) {
+  background: var(--button-solid);
+  border-color: var(--button-solid);
+  color: var(--button-solid-text);
+  opacity: 0.98;
 }
 
 .button.is-danger {
@@ -854,9 +863,23 @@ span.entry-icon > svg {
   color: var(--on-solid);
 }
 
+.button.is-danger:hover:not(:disabled) {
+  background: var(--accent-red);
+  border-color: var(--accent-red);
+  color: var(--on-solid);
+  opacity: 0.9;
+}
+
 .button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.button.is-primary:disabled {
+  background: var(--button-solid);
+  border-color: var(--button-solid);
+  color: var(--button-solid-text);
+  opacity: 0.45;
 }
 
 .button.is-loading,
@@ -3755,24 +3778,6 @@ span.entry-icon > svg {
   flex: none;
   white-space: nowrap;
   cursor: pointer;
-}
-
-.commit-last {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-  max-width: 150px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  color: var(--accent-blue-text);
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.commit-last:hover {
-  background: var(--accent-blue-bg);
-  color: var(--accent-blue-text);
 }
 
 .commit-lines {

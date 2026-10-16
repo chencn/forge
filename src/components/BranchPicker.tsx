@@ -7,6 +7,7 @@ import {
   GitBranch,
   GitCommit,
   GitPullRequestArrow,
+  Loader2,
   Plus,
   RefreshCw,
   Search,
@@ -371,13 +372,33 @@ export default function BranchPicker({
       <button
         type="button"
         ref={chipRef}
-        className="toolbar-chip"
+        className={`toolbar-chip${git.pushing ? " is-pushing" : ""}`}
         aria-label={t("panel.sourceControl")}
         aria-expanded={anchor !== null}
-        title={syncText ? `${baseTitle} · ${syncText}` : baseTitle}
+        title={
+          git.pushing
+            ? `${baseTitle} · ${t("git.pushing")}`
+            : syncText
+              ? `${baseTitle} · ${syncText}`
+              : baseTitle
+        }
         onClick={() => setAnchor((current) => (current ? null : chipRef.current))}
       >
-        <GitBranch size={14} aria-hidden="true" />
+        {git.pushing ? (
+          <Loader2
+            size={14}
+            className="is-spinning"
+            data-spin="true"
+            aria-hidden="true"
+            style={{
+              display: "inline-block",
+              transformOrigin: "50% 50%",
+              animation: "spin 1.4s linear infinite",
+            }}
+          />
+        ) : (
+          <GitBranch size={14} aria-hidden="true" />
+        )}
         <span className="toolbar-chip-label">{status?.branch ?? "—"}</span>
         {ahead + behind > 0 ? (
           <span className="branch-sync" aria-hidden="true">
@@ -388,12 +409,25 @@ export default function BranchPicker({
               </svg>
             ) : null}
             {ahead > 0 ? (
-              <svg viewBox="0 0 16 16" className="sync-out">
-                <g transform="rotate(180 6 6.5)">
-                  <rect width="2" height="8.386" x="3.532" y=".269" transform="rotate(45 4.532 4.462)" />
-                  <polygon points="0 2 7 9 0 9" />
-                </g>
-              </svg>
+              git.pushing ? (
+                <Loader2
+                  size={10}
+                  className="is-spinning sync-out"
+                  data-spin="true"
+                  style={{
+                    display: "inline-block",
+                    transformOrigin: "50% 50%",
+                    animation: "spin 1.4s linear infinite",
+                  }}
+                />
+              ) : (
+                <svg viewBox="0 0 16 16" className="sync-out">
+                  <g transform="rotate(180 6 6.5)">
+                    <rect width="2" height="8.386" x="3.532" y=".269" transform="rotate(45 4.532 4.462)" />
+                    <polygon points="0 2 7 9 0 9" />
+                  </g>
+                </svg>
+              )
             ) : null}
           </span>
         ) : null}

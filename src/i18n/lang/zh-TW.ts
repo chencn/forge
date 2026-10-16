@@ -517,6 +517,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "git.filesDeleted": "{count} 已刪除",
   "git.commitAndPush": "提交併推送(P)...",
   "git.push": "推送",
+  "git.pushing": "推送中…",
   "git.pull": "拉取",
   "git.fetch": "抓取遠端",
   "git.fetching": "抓取中…",

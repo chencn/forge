@@ -78,6 +78,9 @@ export function useGitState(
   /** HEAD 上那一条，提交框的「上次提交」用。 */
   const [lastCommit, setLastCommit] = useState<GitCommit | null>(null);
   const [loading, setLoading] = useState(false);
+  /** 当前是否有向远端推送的操作正在进行 */
+  const [pushing, setPushing] = useState(false);
+  const pushingCountRef = useRef(0);
   /** 已经发起过几次刷新，用来认出「我这一轮已经被更新的刷新超过了」。 */
   const seqRef = useRef(0);
   /**
@@ -256,7 +259,6 @@ export function useGitState(
 
   const run = useCallback(
     async (action: () => Promise<unknown>) => {
-      beginRefresh();
       try {
         await action();
         await refresh();
@@ -267,11 +269,9 @@ export function useGitState(
         // 不重探一遍就得等人手点刷新才看得到那条横幅。
         await refresh();
         return false;
-      } finally {
-        endRefresh();
       }
     },
-    [beginRefresh, endRefresh, refresh, reportError]
+    [refresh, reportError]
   );
 
   /** 暂存 / 取消暂存只动索引：失败弹错，成功只重取变更清单，不碰分支标签日志。 */
@@ -456,7 +456,10 @@ export function useGitState(
   const remote = useCallback(
     async (action: (repo: string) => Promise<string>, actionKey?: string) => {
       if (!root) return null;
-      beginRefresh();
+      if (actionKey === "push") {
+        pushingCountRef.current += 1;
+        setPushing(true);
+      }
       try {
         const detail = await action(root);
         await refresh();
@@ -465,10 +468,36 @@ export function useGitState(
         reportError(errorText(cause), actionKey);
         return null;
       } finally {
-        endRefresh();
+        if (actionKey === "push") {
+          pushingCountRef.current = Math.max(0, pushingCountRef.current - 1);
+          if (pushingCountRef.current === 0) setPushing(false);
+        }
       }
     },
-    [beginRefresh, endRefresh, refresh, reportError, root]
+    [refresh, reportError, root]
+  );
+
+  /** 提交并推送：一次性执行本地提交与远端推送，只在全部完成（或报错）后一次性刷新，避免中间多余的刷新跳动 */
+  const commitAndPush = useCallback(
+    async (message: string, amend: boolean, setUpstream = false) => {
+      if (!root) return false;
+      pushingCountRef.current += 1;
+      setPushing(true);
+      try {
+        await gitCommit(root, message, amend);
+        await gitPush(root, setUpstream);
+        await refresh();
+        return true;
+      } catch (cause) {
+        reportError(errorText(cause), "push");
+        await refresh();
+        return false;
+      } finally {
+        pushingCountRef.current = Math.max(0, pushingCountRef.current - 1);
+        if (pushingCountRef.current === 0) setPushing(false);
+      }
+    },
+    [refresh, reportError, root]
   );
 
   const fetch = useCallback(() => remote(gitFetch, "fetch"), [remote]);
@@ -535,6 +564,7 @@ export function useGitState(
       lastCommit,
       root,
       loading,
+      pushing,
       refresh,
       refreshChanges,
       absoluteOf,
@@ -542,6 +572,7 @@ export function useGitState(
       stage,
       unstage,
       commit,
+      commitAndPush,
       checkout,
       createBranch,
       createTag,
@@ -589,6 +620,7 @@ export function useGitState(
       lastCommit,
       root,
       loading,
+      pushing,
       refresh,
       refreshChanges,
       absoluteOf,
@@ -596,6 +628,7 @@ export function useGitState(
       stage,
       unstage,
       commit,
+      commitAndPush,
       checkout,
       createBranch,
       createTag,

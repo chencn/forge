@@ -538,6 +538,7 @@ export const zh = {
   "git.filesDeleted": "{count} 已删除",
   "git.commitAndPush": "提交并推送(P)...",
   "git.push": "推送",
+  "git.pushing": "推送中…",
   "git.pull": "拉取",
   "git.fetch": "抓取远端",
   "git.fetching": "抓取中…",

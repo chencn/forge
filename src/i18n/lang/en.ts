@@ -541,6 +541,7 @@ export const en: Record<TranslationKey, string> = {
   "git.filesDeleted": "{count} deleted",
   "git.commitAndPush": "Commit and Push...",
   "git.push": "Push",
+  "git.pushing": "Pushing…",
   "git.pull": "Pull",
   "git.fetch": "Fetch remotes",
   "git.fetching": "Fetching…",

@@ -15,7 +15,6 @@ import {
   CircleSlash,
   Eye,
   FolderGit2,
-  GitCommit,
   GitMerge,
   History,
   Loader2,
@@ -34,7 +33,7 @@ import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { flatMenu } from "./ContextMenu";
 import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
-import type { GitChange, GitCommit as AmendTarget, GitCommitDetail, GitCommitFile } from "../lib/git";
+import type { GitChange, GitCommitDetail, GitCommitFile } from "../lib/git";
 import { changeMark, folderMarks, gitCommitDetail, isDeletedMark, markClass } from "../lib/git";
 import {
   cancelAiCommit,
@@ -264,10 +263,6 @@ export default function GitPanel({
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   /** 说明历史弹层的锚点。 */
   const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
-  /** 「上次提交」那颗下拉：列的是还没推出去的提交，选中哪条就修正哪条。 */
-  const amendRef = useRef<HTMLButtonElement>(null);
-  const [amendAnchor, setAmendAnchor] = useState<HTMLElement | null>(null);
-  const [amendTargets, setAmendTargets] = useState<AmendTarget[]>([]);
   /** 勾上修正时那次提交的完整信息：说明要搬进提交框，改到的文件要在树顶列出来。 */
   const [amendDetail, setAmendDetail] = useState<GitCommitDetail | null>(null);
   /** 修正之前提交框里写的是什么，取消勾选要原样还回去。 */
@@ -688,13 +683,17 @@ export default function GitPanel({
         const stagedAll = await git.stage(tracked.map((change) => absolute(change.path)));
         if (!stagedAll) return;
       }
-      const done = await git.commit(text, amend);
-      if (!done) return;
+      if (andPush) {
+        const done = await git.commitAndPush(text, amend, false);
+        if (!done) return;
+      } else {
+        const done = await git.commit(text, amend);
+        if (!done) return;
+      }
       onCommitted(text);
       setMessage("");
       setAmend(false);
       setAmendDetail(null);
-      if (andPush) await git.push(false);
     } finally {
       setCommittingAction(null);
     }
@@ -862,14 +861,6 @@ export default function GitPanel({
   }
 
   const total = git.status?.changes.length ?? 0;
-  const lastCommit = git.lastCommit;
-  /**
-   * 修正目标：第一条永远是上次提交（HEAD），后面接还没推出去的那几条。
-   * 全推出去了也至少留第一条——IDEA 那份清单空的时候同样退回「last commit」。
-   */
-  const amendList: AmendTarget[] = lastCommit
-    ? [lastCommit, ...amendTargets.filter((commit) => commit.hash !== lastCommit.hash)]
-    : amendTargets;
 
   /**
    * 整树那几件事。图标条、变更树空白处、模块行右键用的是同一套，
@@ -1181,28 +1172,6 @@ export default function GitPanel({
             />
             <span>{t("git.amend")}</span>
           </label>
-          {lastCommit ? (
-            <button
-              type="button"
-              ref={amendRef}
-              className={`commit-last${amend ? " is-on" : ""}`}
-              title={t("git.pickAmendTarget")}
-              aria-expanded={amendAnchor !== null}
-              aria-haspopup="menu"
-              onClick={() => {
-                if (amendAnchor) {
-                  setAmendAnchor(null);
-                  return;
-                }
-                void git.loadAmendTargets().then(setAmendTargets);
-                setAmendAnchor(amendRef.current);
-              }}
-            >
-              <GitCommit size={12} aria-hidden="true" />
-              <span>{t("git.lastCommit")}</span>
-              <ChevronDown size={11} aria-hidden="true" />
-            </button>
-          ) : null}
           <button
             type="button"
             ref={historyRef}
@@ -1395,42 +1364,10 @@ export default function GitPanel({
                   </button>
                 ) : null}
               </div>
-
-              {/* 「提交全部」开着时暂存区空也能提交，这句提示就不该再挡在那儿。 */}
-              {staged.length === 0 && !amend && !commitAll ? (
-                <p className="commit-hint" style={{ width: "100%" }}>{t("git.nothingStaged")}</p>
-              ) : null}
             </div>
           </>
         )}
       </div>
-
-      <Popover anchor={amendAnchor} onClose={() => setAmendAnchor(null)} minWidth={300}>
-        <p className="popover-label">{t("git.pickAmendTarget")}</p>
-        {amendList.map((commit, index) => (
-          <button
-            key={commit.hash}
-            type="button"
-            className="popover-item"
-            disabled={index > 0}
-            title={index > 0 ? t("git.amendNeedsRewrite") : commit.subject}
-            onClick={() => {
-              setAmendAnchor(null);
-              switchAmend(true);
-            }}
-          >
-            {index === 0 && amend ? (
-              <Check size={13} aria-hidden="true" />
-            ) : (
-              <span className="menu-icon-spacer" />
-            )}
-            <span className="popover-item-label">
-              {index === 0 ? t("git.lastCommit") : commit.subject}
-            </span>
-            <span className="popover-accel">{commit.short}</span>
-          </button>
-        ))}
-      </Popover>
 
       <Popover anchor={historyAnchor} onClose={() => setHistoryAnchor(null)} minWidth={300}>
         <p className="popover-label">{t("git.messageHistory")}</p>
