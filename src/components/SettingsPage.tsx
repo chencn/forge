@@ -12,6 +12,7 @@ import {
 import Select from "./Select";
 import PromptDialog from "./PromptDialog";
 import CopyButton from "./CopyButton";
+import AiCommitSettingsPanel from "./AiCommitSettingsPanel";
 import { LspInstallDialog, LspLogDialog, LspServerDialog } from "./LspDialogs";
 import { useSettings } from "../hooks/useSettings";
 import { useLspConfig, useLspSessionStatuses } from "../hooks/useLspConfig";
@@ -51,15 +52,16 @@ import {
 import type { DownloadReport, UpdateInfo } from "../lib/updater";
 
 /** 设置窗口左侧的模块，一行一个。 */
-type Module = "general" | "editor" | "terminal" | "lsp" | "about";
+export type SettingsModule = "general" | "editor" | "terminal" | "lsp" | "aiCommit" | "about";
 
-const MODULES: Module[] = ["general", "editor", "terminal", "lsp", "about"];
+const MODULES: SettingsModule[] = ["general", "editor", "terminal", "lsp", "aiCommit", "about"];
 
-const MODULE_LABEL: Record<Module, TranslationKey> = {
+const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   general: "settings.general",
   editor: "settings.editor",
   terminal: "settings.terminal",
   lsp: "settings.lsp",
+  aiCommit: "settings.aiCommit",
   about: "settings.about",
 };
 
@@ -156,14 +158,22 @@ interface Props {
   onLspKick?: () => void;
   /** 让指定 server 立即在项目中启动；返回未能启动的原因。 */
   onLspWake?: (serverId: string) => Promise<WakeResult>;
+  /** 初始或外部要求激活的模块。 */
+  initialModule?: SettingsModule;
 }
 
-export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props) {
+export default function SettingsPage({ workspace, onLspKick, onLspWake, initialModule }: Props) {
   const { t, lang, setLang } = useI18n();
   const { settings, patch } = useSettings();
   const { config, patchServer, probes, reprobe, probing } = useLspConfig();
   const sessions = useLspSessionStatuses();
-  const [module, setModule] = useState<Module>("general");
+  const [module, setModule] = useState<SettingsModule>(initialModule ?? "general");
+
+  useEffect(() => {
+    if (initialModule) {
+      setModule(initialModule);
+    }
+  }, [initialModule]);
   /** 「重置所有设置」的二次确认框；确认后才把整份设置写回默认值。 */
   const [confirmReset, setConfirmReset] = useState(false);
   /** 这台机器上可用的 shell；排在第一位的是终端默认使用的那个。 */
@@ -853,6 +863,8 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake }: Props)
               <p className="settings-note">{t("lsp.note")}</p>
             </div>
           ) : null}
+
+          {module === "aiCommit" ? <AiCommitSettingsPanel /> : null}
 
           {module === "about" ? (
             <div className="settings-rows">

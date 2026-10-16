@@ -1,3 +1,4 @@
+mod ai_commit;
 mod error;
 mod fs;
 mod git;
@@ -143,6 +144,11 @@ pub fn run() {
             update::update_install_cached,
             update::update_cache_state,
             update::update_cache_remove,
+            ai_commit::ai_commit_config_load,
+            ai_commit::ai_commit_config_save,
+            ai_commit::ai_commit_generate,
+            ai_commit::ai_commit_cancel,
+            ai_commit::ai_commit_list_models,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

@@ -30,6 +30,9 @@ notify = "8"
 # 全文搜索：正则走 regex，遍历目录走 walkdir（两者都已锁在依赖树里，不额外下载）。
 regex = "1"
 walkdir = "2"
+# AI 提交生成：直接使用依赖树里已有的 reqwest 与 tokio，不额外下载新库。
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
 # 更新包缓存读回时重新验签用。updater 插件内部就是这一个版本，显式声明不额外下载。
 minisign-verify = "0.3"
 

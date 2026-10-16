@@ -51,6 +51,7 @@ import type { BranchAction } from "./components/BranchPicker";
 import ConflictWidget from "./components/ConflictWidget";
 import Popover from "./components/Popover";
 import WelcomeScreen from "./components/WelcomeScreen";
+import type { SettingsModule } from "./components/SettingsPage";
 import MemoryGauge from "./components/MemoryGauge";
 import {
   NotificationBell,
@@ -574,6 +575,7 @@ export default function App() {
   );
   /** 设置页开在不在页签栏里（全局一份，跨根保留）。 */
   const [settingsTab, setSettingsTab] = useState(false);
+  const [settingsModule, setSettingsModule] = useState<SettingsModule>("general");
   /** 「编辑程序配置」那一页开在不在页签栏里（按根隔离）。 */
   const [runConfigsTabByRoot, setRunConfigsTabByRoot] = useState<Record<string, boolean>>({});
   const runConfigsTab = Boolean(runConfigsTabByRoot[rootKey]);
@@ -3083,7 +3085,8 @@ export default function App() {
   const closeAllTabs = useCallback(() => dropTabs(tabs), [dropTabs, tabs]);
 
   /** 设置从页签栏进：已经开着就跳到它，否则新开一页。 */
-  const openSettingsTab = useCallback(() => {
+  const openSettingsTab = useCallback((module: unknown = "general") => {
+    setSettingsModule(typeof module === "string" ? (module as SettingsModule) : "general");
     setSettingsTab(true);
     setActiveTab("settings");
   }, []);
@@ -3793,6 +3796,7 @@ export default function App() {
                         void docs.open(absolute);
                       }}
                       onOpenResolve={() => setResolveOpen(true)}
+                      onOpenAiSettings={() => openSettingsTab("aiCommit")}
                     />
                   </Suspense>
                 ) : (
@@ -3876,6 +3880,7 @@ export default function App() {
               ) : activeTab === "settings" ? (
                 <SettingsPage
                   workspace={workspaceRoot}
+                  initialModule={settingsModule}
                   onLspKick={() => setLspKick((value) => value + 1)}
                   onLspWake={wakeLspServer}
                 />

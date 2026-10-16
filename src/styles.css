@@ -266,11 +266,25 @@ button {
   gap: 1px;
 }
 
+.is-spinning {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 50%;
+  animation: spin 1.2s linear infinite !important;
+}
+
+svg.is-spinning,
 .is-spinning svg {
-  animation: spin 900ms linear infinite;
+  display: inline-block;
+  transform-origin: 50% 50%;
+  animation: spin 1.2s linear infinite !important;
 }
 
 @keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
   to {
     transform: rotate(360deg);
   }
@@ -1424,15 +1438,20 @@ span.entry-icon > svg {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
+  *:not(.is-spinning):not([data-spin="true"]),
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
 
-  .is-spinning svg {
-    animation: none;
+  /* 加载与生成指示器的旋转动画保留，确保用户能明确感知后台任务正在运行 */
+  .is-spinning,
+  svg.is-spinning,
+  .is-spinning svg,
+  [data-spin="true"] {
+    animation: spin 1.4s linear infinite !important;
+    animation-duration: 1.4s !important;
   }
 }
 

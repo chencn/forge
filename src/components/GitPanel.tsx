@@ -18,10 +18,13 @@ import {
   GitCommit,
   GitMerge,
   History,
+  Loader2,
   Minus,
   Pencil,
   Plus,
   RefreshCw,
+  Settings,
+  Sparkles,
   SquarePlus,
   Trash2,
   Undo2,
@@ -33,6 +36,13 @@ import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import type { GitChange, GitCommit as AmendTarget, GitCommitDetail, GitCommitFile } from "../lib/git";
 import { changeMark, folderMarks, gitCommitDetail, isDeletedMark, markClass } from "../lib/git";
+import {
+  cancelAiCommit,
+  collectFilesDiff,
+  formatAiCommitError,
+  generateAiCommitMessage,
+  loadAiCommitConfig,
+} from "../lib/aiCommit";
 import type { GitState } from "../hooks/useGitState";
 import { basenameOf } from "../lib/format";
 import { collapsePackageDirs, isUnderJvmSourceRoot } from "../lib/jvm";
@@ -91,6 +101,8 @@ interface GitPanelProps {
   onUnignore: (relative: string) => void;
   /** 修正那一节里的文件：点开看的是那次提交里这一份的差异，不是工作区比对。 */
   onOpenCommitFile: (revision: string, file: GitCommitFile) => void;
+  /** 点击设置按钮打开 AI 提交配置 */
+  onOpenAiSettings?: () => void;
 }
 
 /** 变更树的一层目录；`path` 是仓库相对路径，git 输出恒用正斜杠。 */
@@ -227,12 +239,18 @@ export default function GitPanel({
   onFileAction,
   onUnignore,
   onOpenCommitFile,
+  onOpenAiSettings,
 }: GitPanelProps) {
   const { t, locale } = useI18n();
   /** 条内那颗视图选项的锚点。 */
   const viewRef = useRef<HTMLButtonElement>(null);
   const [viewAnchor, setViewAnchor] = useState<HTMLElement | null>(null);
   const [message, setMessage] = useState("");
+  /** AI 生成相关状态 */
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
+  const generationIdRef = useRef<string | null>(null);
   /** 修正上次提交：勾上后不带新说明也能按提交。 */
   const [amend, setAmend] = useState(false);
   /** 忽略文件清单，勾上视图选项那项才去拉。 */
@@ -576,6 +594,86 @@ export default function GitPanel({
 
   /** IDEA 的 isCommitAll：开着「提交全部」且暂存区是空的，提交对象换成全部已跟踪改动。 */
   const commitAll = commitAllWhenNothingStaged && staged.length === 0 && tracked.length > 0;
+
+  const handleCancelAiCommit = () => {
+    if (generationIdRef.current) {
+      void cancelAiCommit(generationIdRef.current);
+      generationIdRef.current = null;
+    }
+    setIsGenerating(false);
+  };
+
+  const handleGenerateAiCommit = async () => {
+    if (isGenerating) {
+      handleCancelAiCommit();
+      return;
+    }
+    setAiError(null);
+    let config;
+    try {
+      config = await loadAiCommitConfig();
+    } catch {
+      setAiError(t("aiCommit.failed"));
+      return;
+    }
+
+    if (!config.enabled) {
+      setAiError(t("aiCommit.AI_COMMIT_DISABLED"));
+      return;
+    }
+
+    const activeProvider = config.providers.find((p) => p.id === config.activeProviderId);
+    if (!activeProvider) {
+      setAiError(t("aiCommit.configureFirst"));
+      return;
+    }
+
+    // 确认要提交的文件：如果有暂存文件，则取暂存文件；如果没有暂存但开着 commitAll 且有 tracked，则取 tracked
+    const isStagedMode = staged.length > 0;
+    const targets = isStagedMode ? staged : (commitAll ? tracked : []);
+
+    if (targets.length === 0) {
+      setAiError(t("aiCommit.noChanges"));
+      return;
+    }
+
+    const root = git.root ?? workspaceRoot;
+    setIsGenerating(true);
+    const opId = crypto.randomUUID();
+    generationIdRef.current = opId;
+
+    try {
+      const files = await collectFilesDiff(root, targets, isStagedMode);
+      if (files.length === 0) {
+        setAiError(t("aiCommit.AI_COMMIT_EMPTY_DIFF"));
+        setIsGenerating(false);
+        return;
+      }
+
+      const generated = await generateAiCommitMessage({
+        operationId: opId,
+        files,
+        overrideProviderId: activeProvider.id,
+      });
+
+      if (message.trim().length > 0) {
+        setConfirmReplace(generated);
+      } else {
+        setMessage(generated);
+        inputRef.current?.focus();
+      }
+    } catch (err: unknown) {
+      const errStr = err instanceof Error ? err.message : String(err);
+      if (errStr !== "AI_COMMIT_CANCELLED") {
+        setAiError(formatAiCommitError(err, t));
+      }
+    } finally {
+      if (generationIdRef.current === opId) {
+        generationIdRef.current = null;
+        setIsGenerating(false);
+      }
+    }
+  };
 
   const commit = async (andPush: boolean) => {
     const text = message.trim();
@@ -1179,6 +1277,20 @@ export default function GitPanel({
               </p>
             ) : null}
 
+            {aiError ? (
+              <p className="commit-note is-conflict" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>
+                  <AlertTriangle size={13} aria-hidden="true" style={{ verticalAlign: -2, marginRight: 4 }} />
+                  {aiError}
+                </span>
+                {onOpenAiSettings ? (
+                  <button type="button" className="group-link" onClick={onOpenAiSettings}>
+                    {t("aiCommit.settings")}
+                  </button>
+                ) : null}
+              </p>
+            ) : null}
+
             <div className="commit-buttons">
               <button
                 type="button"
@@ -1196,9 +1308,62 @@ export default function GitPanel({
               >
                 {t("git.commitAndPush")}
               </button>
+
+              <div
+                className="commit-buttons-right"
+                style={{
+                  marginLeft: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 3,
+                }}
+              >
+                <button
+                  type="button"
+                  className="button is-small"
+                  onClick={isGenerating ? handleCancelAiCommit : () => void handleGenerateAiCommit()}
+                  title={t(isGenerating ? "aiCommit.cancel" : "aiCommit.generate")}
+                  style={{
+                    height: 24,
+                    padding: "0 8px",
+                    fontSize: 11.5,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  {isGenerating ? (
+                    <Loader2
+                      size={12}
+                      className="is-spinning"
+                      data-spin="true"
+                      style={{
+                        display: "inline-block",
+                        transformOrigin: "50% 50%",
+                        animation: "spin 1.4s linear infinite",
+                      }}
+                    />
+                  ) : (
+                    <Sparkles size={12} />
+                  )}
+                  <span>AI</span>
+                </button>
+                {onOpenAiSettings ? (
+                  <button
+                    type="button"
+                    className="icon-button is-inline"
+                    onClick={onOpenAiSettings}
+                    title={t("aiCommit.settings")}
+                    style={{ width: 24, height: 24 }}
+                  >
+                    <Settings size={13} />
+                  </button>
+                ) : null}
+              </div>
+
               {/* 「提交全部」开着时暂存区空也能提交，这句提示就不该再挡在那儿。 */}
               {staged.length === 0 && !amend && !commitAll ? (
-                <p className="commit-hint">{t("git.nothingStaged")}</p>
+                <p className="commit-hint" style={{ width: "100%" }}>{t("git.nothingStaged")}</p>
               ) : null}
             </div>
           </>
@@ -1256,6 +1421,35 @@ export default function GitPanel({
       </Popover>
 
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
+
+      {confirmReplace !== null ? (
+        <div className="dialog-backdrop" onClick={() => setConfirmReplace(null)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <h3 className="dialog-title">{t("aiCommit.replaceConfirmTitle")}</h3>
+            <p className="dialog-body">{t("aiCommit.replaceConfirmBody")}</p>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="button"
+                onClick={() => setConfirmReplace(null)}
+              >
+                {t("aiCommit.keep")}
+              </button>
+              <button
+                type="button"
+                className="button is-primary"
+                onClick={() => {
+                  setMessage(confirmReplace);
+                  setConfirmReplace(null);
+                  inputRef.current?.focus();
+                }}
+              >
+                {t("aiCommit.replace")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
