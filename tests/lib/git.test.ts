@@ -35,19 +35,23 @@ describe("changeMark 变更徽标", () => {
     expect(changeMark(change({ conflicted: true }))).toBe("!");
   });
 
-  it("工作区位的字母优先于索引位，索引位单独改动也认得出", () => {
+  it("工作区盖过暂存区，只暂存时才用索引位", () => {
     expect(changeMark(change({ workStatus: "M" }))).toBe("M");
     expect(changeMark(change({ indexStatus: "A" }))).toBe("A");
+    expect(changeMark(change({ indexStatus: "A", workStatus: "M" }))).toBe("M");
     expect(changeMark(change({ indexStatus: "A", workStatus: "D" }))).toBe("D");
+    expect(changeMark(change({ conflicted: true, workStatus: "M" }))).toBe("!");
   });
 });
 
 describe("markClass 徽标染色类", () => {
-  it("感叹号走专用类，其余按小写字母", () => {
+  it("感叹号走专用类，类型变化跟修改同色，复制跟重命名同色", () => {
     // `.mark-!` 不是合法选择器，冲突单独一类。
     expect(markClass("!")).toBe("mark-conflict");
     expect(markClass("M")).toBe("mark-m");
     expect(markClass("A")).toBe("mark-a");
+    expect(markClass("T")).toBe("mark-m");
+    expect(markClass("C")).toBe("mark-r");
   });
 });
 
@@ -73,10 +77,12 @@ describe("isDeletedMark 删除态", () => {
 });
 
 describe("aggregateMark 目录聚合标记", () => {
-  it("子孙里有 M 就聚合为 M；删除不向上传播", () => {
+  it("按权重取最高的一档；删除不向上传播", () => {
     expect(aggregateMark([change({ indexStatus: "A" }), change({ workStatus: "M" })])).toBe("M");
     expect(aggregateMark([change({ workStatus: "D" })])).toBeNull();
     expect(aggregateMark([change({ indexStatus: "A" }), change({ workStatus: "D" })])).toBe("A");
+    expect(aggregateMark([change({ workStatus: "M" }), change({ conflicted: true })])).toBe("!");
+    expect(aggregateMark([change({ indexStatus: "R" }), change({ untracked: true })])).toBe("R");
   });
 });
 
@@ -91,6 +97,14 @@ describe("folderMarks 目录圆点表", () => {
   it("删除态不把目录染成 D", () => {
     const marks = folderMarks([change({ path: "src/gone.ts", workStatus: "D" })]);
     expect(marks.has("src")).toBe(false);
+  });
+
+  it("同一层里冲突压过修改", () => {
+    const marks = folderMarks([
+      change({ path: "src/a.ts", workStatus: "M" }),
+      change({ path: "src/b.ts", conflicted: true }),
+    ]);
+    expect(marks.get("src")).toBe("!");
   });
 });
 

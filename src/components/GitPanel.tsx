@@ -460,7 +460,11 @@ export default function GitPanel({
             title={change.path}
           >
             <EntryIcon name={basenameOf(change.path)} size={13} />
-            <span className={`change-name${isDeletedMark(changeMark(change)) ? " is-deleted" : ""}`}>
+            <span
+              className={`change-name ${markClass(changeMark(change))}${
+                isDeletedMark(changeMark(change)) ? " is-deleted" : ""
+              }`}
+            >
               {change.path}
             </span>
             <span className={`change-mark ${markClass(changeMark(change))}`}>
@@ -517,7 +521,13 @@ export default function GitPanel({
               isPackage={isUnderJvmSourceRoot(row.node.path)}
               size={13}
             />
-            <span className="change-name">{row.node.name}</span>
+            <span
+              className={`change-name${
+                dirMarks.get(row.node.path) ? ` ${markClass(dirMarks.get(row.node.path)!)}` : ""
+              }`}
+            >
+              {row.node.name}
+            </span>
             {dirMarks.get(row.node.path) ? (
               <span
                 className={`change-dot ${markClass(dirMarks.get(row.node.path)!)}`}
@@ -550,7 +560,9 @@ export default function GitPanel({
           >
             <EntryIcon name={basenameOf(row.change.path)} size={13} />
             <span
-              className={`change-name${isDeletedMark(changeMark(row.change)) ? " is-deleted" : ""}`}
+              className={`change-name ${markClass(changeMark(row.change))}${
+                isDeletedMark(changeMark(row.change)) ? " is-deleted" : ""
+              }`}
             >
               {basenameOf(row.change.path)}
             </span>
@@ -1117,7 +1129,11 @@ export default function GitPanel({
                       title={file.path}
                     >
                       <EntryIcon name={basenameOf(file.path)} size={13} />
-                      <span className={`change-name${isDeletedMark(file.status) ? " is-deleted" : ""}`}>
+                      <span
+                        className={`change-name${file.status ? ` ${markClass(file.status)}` : ""}${
+                          isDeletedMark(file.status) ? " is-deleted" : ""
+                        }`}
+                      >
                         {file.path}
                       </span>
                       {file.status ? (

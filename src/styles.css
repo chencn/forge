@@ -1832,8 +1832,10 @@ span.entry-icon > svg {
   color: var(--accent-red-text);
 }
 
+/* 深色档不用 amber-bg：那是 18% 的底色，挂到文件名上会淡到看不清。
+   跟浅色一样用文字档的琥珀，也是 VS Code 默认主题里修改项的那一档金。 */
 :root[data-theme="dark"] .mark-m {
-  color: var(--accent-amber-bg);
+  color: var(--accent-amber-text);
 }
 
 .tree-error {

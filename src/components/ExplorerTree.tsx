@@ -602,7 +602,7 @@ export default function ExplorerTree({
                 excluded={excludedDir}
                 size={15}
               />
-              <span className="tree-name">
+              <span className={`tree-name${mark || dot ? ` ${markClass(mark ?? dot ?? "")}` : ""}`}>
                 {displayName}
                 {libraryRoot ? <span className="tree-location">library root</span> : null}
               </span>

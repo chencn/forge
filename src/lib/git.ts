@@ -438,19 +438,32 @@ export function gitCommitFile(
   return invoke<GitFileSides>("git_commit_file", { root, revision, path });
 }
 
-/** 变更项的简短状态标记，用于列表右侧单字母徽标。 */
+/**
+ * 变更项的简短状态标记，用于列表右侧单字母徽标，也用于文件名染色。
+ *
+ * 对齐 VS Code 的写入顺序：冲突最后盖住一切；否则工作区盖过暂存区。
+ * 所以「暂存为新增、工作区又改过」（`AM`）显示 `M`，不再留在绿色的 `A`。
+ * 只暂存、工作区没动时才用索引位。两边都空时退回 `M`，避免调用方拿到空字母。
+ */
 export function changeMark(change: GitChange): string {
   if (change.untracked) return "U";
   if (change.conflicted) return "!";
   const work = change.workStatus.trim();
   const index = change.indexStatus.trim();
-  if (work && work !== "M") return work;
-  return index || work || "M";
+  return work || index || "M";
 }
 
-/** 标记字母 → 行尾染色 class。冲突的 `!` 单独一个类，其余按字母（`.mark-!` 不是合法选择器）。 */
+/**
+ * 标记字母 → 染色 class。冲突的 `!` 单独一个类（`.mark-!` 不是合法选择器）。
+ * 类型变化 `T` 跟修改同色，复制 `C` 跟重命名同色，对应 VS Code 的配色分组。
+ * 暂存的修改、删除和未暂存用同一档色：VS Code 默认主题里这两对色值相同。
+ */
 export function markClass(mark: string): string {
-  return mark === "!" ? "mark-conflict" : `mark-${mark.toLowerCase()}`;
+  if (mark === "!") return "mark-conflict";
+  const letter = mark.toLowerCase();
+  if (letter === "t") return "mark-m";
+  if (letter === "c") return "mark-r";
+  return `mark-${letter}`;
 }
 
 /**
@@ -464,42 +477,64 @@ export function isDeletedMark(mark: string): boolean {
   return mark === "D";
 }
 
-/** 一组变更的聚合标记：子孙含 M 即为 M，否则取最后一个非 D 的字母；无有效变更返回 null。 */
+/**
+ * 往父目录聚合时的权重，大的赢。删除是 0：文件已经不在盘上，不给父目录染色，对齐 VS Code。
+ * 其余对齐 VS Code `Resource.priority`：冲突最高，修改（含类型变化）其次，
+ * 复制和重命名再次，新增与未跟踪最低。同级不互相覆盖，避免圆点颜色跟着路径序晃。
+ */
+function markRank(mark: string): number {
+  switch (mark) {
+    case "!":
+      return 4;
+    case "M":
+    case "T":
+      return 3;
+    case "C":
+    case "R":
+      return 2;
+    case "D":
+      return 0;
+    default:
+      return 1;
+  }
+}
+
+/** 一组变更的聚合标记：取权重最高的字母；全是删除或没有变更时返回 null。 */
 export function aggregateMark(changes: GitChange[]): string | null {
-  let hasM = false;
-  let last = "";
+  let best = "";
+  let bestRank = 0;
   for (const change of changes) {
     const mark = changeMark(change);
-    // 删除态不向父级传播（文件已不存在），对齐 VS Code。
-    if (mark === "D") continue;
-    if (mark === "M") hasM = true;
-    last = mark;
+    const rank = markRank(mark);
+    if (rank > bestRank) {
+      best = mark;
+      bestRank = rank;
+    }
   }
-  return hasM ? "M" : last || null;
+  return bestRank > 0 ? best : null;
 }
 
 /**
- * 目录聚合标记表：键为仓库相对路径（正斜杠），值为聚合字母，供目录行的圆点染色。
+ * 目录聚合标记表：键为仓库相对路径（正斜杠），值为聚合字母，供目录名和圆点染色。
  * 每个变更沿祖先链向上累加，规则同 {@link aggregateMark}。
  * @param changes 变更清单
  * @returns 目录相对路径 → 聚合字母；没有变更的目录不在表里
  */
 export function folderMarks(changes: GitChange[]): Map<string, string> {
-  const acc = new Map<string, { hasM: boolean; last: string }>();
+  const acc = new Map<string, { rank: number; mark: string }>();
   for (const change of changes) {
     const mark = changeMark(change);
-    if (mark === "D") continue;
+    const rank = markRank(mark);
+    if (rank === 0) continue;
     const parts = change.path.split("/");
     let dir = "";
     for (let i = 0; i < parts.length - 1; i += 1) {
       dir = dir ? `${dir}/${parts[i]}` : parts[i];
-      const entry = acc.get(dir) ?? { hasM: false, last: "" };
-      entry.last = mark;
-      if (mark === "M") entry.hasM = true;
-      acc.set(dir, entry);
+      const entry = acc.get(dir);
+      if (!entry || rank > entry.rank) acc.set(dir, { rank, mark });
     }
   }
   const out = new Map<string, string>();
-  for (const [dir, entry] of acc) out.set(dir, entry.hasM ? "M" : entry.last);
+  for (const [dir, entry] of acc) out.set(dir, entry.mark);
   return out;
 }
