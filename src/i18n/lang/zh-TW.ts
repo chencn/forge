@@ -316,7 +316,7 @@ export const zhTW: Record<TranslationKey, string> = {
     "只為文字與原始碼加入「透過 Forge 開啟」，例如 txt、md、json、yaml 以及常見語言的原始檔。不含圖片、壓縮檔、辦公文件與可執行檔。開啟後只在編輯區暫時顯示，不收成專案。Windows 10 的右鍵選單會直接顯示；Windows 11 的新選單在「開啟方式」裡，完整選單在「顯示更多選項」裡。預設關閉。",
   "shellOpen.default": "設為預設開啟方式",
   "shellOpen.defaultNote":
-    "開啟後，按兩下這些文字與原始碼會用 Forge 開啟。Windows 10 會直接從原來的程式換過來。Windows 11 的「開啟方式」裡也會列出 Forge；若按兩下仍被原來的程式開啟，在「開啟方式」中選 Forge 並勾選「一律使用此應用程式開啟」。關掉後交還給原來的程式。",
+    "開啟後，按兩下這些文字與原始碼會用 Forge 開啟。檔案圖示盡量保留原來的樣子，不會改成 Forge 圖示。Windows 10 會直接從原來的程式換過來。Windows 11 的「開啟方式」裡也會列出 Forge；若按兩下仍被原來的程式開啟，在「開啟方式」中選 Forge 並勾選「一律使用此應用程式開啟」。關掉後交還給原來的程式。",
   "shellOpen.extra": "追加檔案格式",
   "shellOpen.extraPlaceholder": "例如 prisma",
   "shellOpen.extraAdd": "新增",

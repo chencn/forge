@@ -337,7 +337,7 @@ export const en: Record<TranslationKey, string> = {
     "Adds “Open with Forge” for text and source files only, such as txt, md, json, yaml, and common source extensions. Images, archives, office documents, and executables are excluded. A file opens in the editor and is not added as a project. On Windows 10 this item is on the context menu. On Windows 11 it is under Open with, and also under Show more options. Off by default.",
   "shellOpen.default": "Use Forge as the default",
   "shellOpen.defaultNote":
-    "Double-click then opens these text and source files in Forge. Windows 10 switches away from the previous app immediately. Windows 11 also lists Forge under Open with; if a double-click still uses the old app, choose Forge there and check Always use this app. Turning this off gives the default back.",
+    "Double-click then opens these text and source files in Forge. File icons keep their previous look and are not replaced with the Forge icon. Windows 10 switches away from the previous app immediately. Windows 11 also lists Forge under Open with; if a double-click still uses the old app, choose Forge there and check Always use this app. Turning this off gives the default back.",
   "shellOpen.extra": "Additional file types",
   "shellOpen.extraPlaceholder": "e.g. prisma",
   "shellOpen.extraAdd": "Add",

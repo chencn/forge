@@ -336,8 +336,8 @@ mod registry {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Foundation::WIN32_ERROR;
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegDeleteTreeW, RegDeleteValueW, RegQueryInfoKeyW, RegQueryValueExW,
-        RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_DWORD, REG_SZ,
+        RegCloseKey, RegCreateKeyW, RegDeleteTreeW, RegDeleteValueW, RegEnumValueW, RegQueryInfoKeyW,
+        RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_DWORD, REG_SZ,
     };
 
     struct Key(HKEY);
@@ -352,12 +352,23 @@ mod registry {
         }
     }
 
-    /// 打开方式对话框和「默认应用」设置页里显示的程序名。
-    const PROGID: &str = "Forge.Text";
+    /// 旧版共用 ProgId。新版按后缀用 `Forge.{ext}`，文件图标才能各自保留。
+    const LEGACY_PROGID: &str = "Forge.Text";
     const APP_NAME: &str = "Forge";
     const CAPABILITIES: &str = r"Software\Forge\Capabilities";
     const REGISTERED: &str = r"Software\RegisteredApplications";
     const TOASTS: &str = r"Software\Microsoft\Windows\CurrentVersion\ApplicationAssociationToasts";
+
+    fn forge_prog_id(ext: &str) -> String {
+        format!("Forge.{ext}")
+    }
+
+    fn is_ours(prog: &str) -> bool {
+        prog.eq_ignore_ascii_case(LEGACY_PROGID)
+            || prog
+                .get(..6)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Forge."))
+    }
 
     pub fn sync(
         open_folder: bool,
@@ -403,18 +414,28 @@ mod registry {
             .and_then(|name| name.to_str())
             .unwrap_or("forge.exe");
         let exts = managed_extensions(if listed { extras } else { &[] });
+        let saved = read_prev();
         if listed {
-            write_progid(exe)?;
             write_application(exe, exe_name, &exts)?;
             write_capabilities(exe, &exts)?;
             for ext in &exts {
+                let preferred = saved
+                    .get(ext)
+                    .filter(|prog| !prog.is_empty() && !is_ours(prog))
+                    .cloned()
+                    .or_else(|| read_user_choice(ext).filter(|prog| !is_ours(prog)));
+                let icon = resolve_icon(ext, preferred.as_deref());
+                write_ext_progid(exe, ext, icon.as_deref())?;
                 add_open_with(ext, exe_name)?;
             }
             for ext in &previous {
                 if !extras.iter().any(|item| item == ext) {
                     remove_open_with(ext, exe_name)?;
+                    delete_tree(&format!(r"Software\Classes\{}", forge_prog_id(ext)))?;
                 }
             }
+            // 清掉旧版共用 ProgId，避免文件继续显示成 Forge 图标。
+            delete_tree(&format!(r"Software\Classes\{LEGACY_PROGID}"))?;
             write_recorded(extras)?;
         } else {
             for ext in TEXT_EXTENSIONS {
@@ -423,12 +444,12 @@ mod registry {
             for ext in &previous {
                 remove_open_with(ext, exe_name)?;
             }
-            remove_registration(exe_name)?;
+            remove_registration(exe_name, &exts, &previous)?;
         }
 
         if default_file {
             let sid = current_sid()?;
-            claim_defaults(&exts, &sid)?;
+            claim_defaults(exe, &exts, &sid)?;
         } else {
             release_defaults()?;
         }
@@ -445,12 +466,19 @@ mod registry {
         out
     }
 
-    fn write_progid(exe: &str) -> Result<(), String> {
-        let root = format!(r"Software\Classes\{PROGID}");
+    /// 每个后缀一个 ProgId。DefaultIcon 用原来的类型图标，不用 forge.exe。
+    fn write_ext_progid(exe: &str, ext: &str, icon: Option<&str>) -> Result<(), String> {
+        let prog = forge_prog_id(ext);
+        let root = format!(r"Software\Classes\{prog}");
         let key = create_key(&root)?;
         set_default(&key, APP_NAME)?;
-        let icon = create_key(&format!(r"{root}\DefaultIcon"))?;
-        set_default(&icon, &format!("\"{exe}\",0"))?;
+        let icon_path = format!(r"{root}\DefaultIcon");
+        if let Some(icon) = icon {
+            let icon_key = create_key(&icon_path)?;
+            set_default(&icon_key, icon)?;
+        } else {
+            delete_tree(&icon_path)?;
+        }
         let command = create_key(&format!(r"{root}\shell\open\command"))?;
         set_default(&command, &command_value(exe, "%1"))?;
         Ok(())
@@ -474,19 +502,23 @@ mod registry {
         let cap = create_key(CAPABILITIES)?;
         set_named(&cap, "ApplicationName", APP_NAME)?;
         set_named(&cap, "ApplicationDescription", APP_NAME)?;
+        // 设置页里的应用图标仍用 Forge；文件列表图标见各后缀 ProgId。
         set_named(&cap, "ApplicationIcon", &format!("\"{exe}\",0"))?;
         delete_tree(&format!(r"{CAPABILITIES}\FileAssociations"))?;
         let files = create_key(&format!(r"{CAPABILITIES}\FileAssociations"))?;
         for ext in exts {
-            set_named(&files, &format!(".{ext}"), PROGID)?;
+            set_named(&files, &format!(".{ext}"), &forge_prog_id(ext))?;
         }
         let registered = create_key(REGISTERED)?;
         set_named(&registered, APP_NAME, CAPABILITIES)?;
         Ok(())
     }
 
-    fn remove_registration(exe_name: &str) -> Result<(), String> {
-        delete_tree(&format!(r"Software\Classes\{PROGID}"))?;
+    fn remove_registration(exe_name: &str, exts: &[String], previous: &[String]) -> Result<(), String> {
+        delete_tree(&format!(r"Software\Classes\{LEGACY_PROGID}"))?;
+        for ext in exts.iter().chain(previous.iter()) {
+            delete_tree(&format!(r"Software\Classes\{}", forge_prog_id(ext)))?;
+        }
         delete_tree(&format!(r"Software\Classes\Applications\{exe_name}"))?;
         delete_tree(CAPABILITIES)?;
         delete_value(REGISTERED, APP_NAME)?;
@@ -494,16 +526,20 @@ mod registry {
     }
 
     fn add_open_with(ext: &str, exe_name: &str) -> Result<(), String> {
+        let prog = forge_prog_id(ext);
         for path in open_with_keys(ext) {
             let key = create_key(&path)?;
-            set_named(&key, PROGID, "")?;
+            set_named(&key, &prog, "")?;
+            delete_value(&path, LEGACY_PROGID)?;
         }
         add_mru(ext, exe_name)
     }
 
     fn remove_open_with(ext: &str, exe_name: &str) -> Result<(), String> {
+        let prog = forge_prog_id(ext);
         for path in open_with_keys(ext) {
-            delete_value(&path, PROGID)?;
+            delete_value(&path, &prog)?;
+            delete_value(&path, LEGACY_PROGID)?;
         }
         remove_mru(ext, exe_name)
     }
@@ -573,20 +609,23 @@ mod registry {
         format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}\OpenWithList")
     }
 
-    fn claim_defaults(exts: &[String], sid: &str) -> Result<(), String> {
+    fn claim_defaults(exe: &str, exts: &[String], sid: &str) -> Result<(), String> {
         let mut saved = read_prev();
         let mut still = BTreeMap::new();
         for ext in exts {
+            let ours = forge_prog_id(ext);
             let current = read_user_choice(ext);
             let previous = saved.remove(ext);
             let remembered = previous.clone().or_else(|| {
-                if current.as_deref() == Some(PROGID) {
+                if current.as_ref().is_some_and(|prog| is_ours(prog)) {
                     None
                 } else {
                     Some(current.unwrap_or_default())
                 }
             });
-            match write_user_choice(ext, PROGID, sid) {
+            let icon = resolve_icon(ext, remembered.as_deref().filter(|prog| !prog.is_empty()));
+            write_ext_progid(exe, ext, icon.as_deref())?;
+            match write_user_choice(ext, &ours, sid) {
                 Ok(()) => {
                     if let Some(prev) = remembered {
                         still.insert(ext.clone(), prev);
@@ -621,7 +660,7 @@ mod registry {
     }
 
     fn restore_one(ext: &str, prev: &str, sid: &str) -> Result<(), String> {
-        if read_user_choice(ext).as_deref() != Some(PROGID) {
+        if !read_user_choice(ext).as_ref().is_some_and(|prog| is_ours(prog)) {
             delete_toast(ext)?;
             return Ok(());
         }
@@ -631,6 +670,101 @@ mod registry {
             write_user_choice(ext, prev, sid)?;
         }
         delete_toast(ext)
+    }
+
+    /// 优先用接管前的 ProgId 图标，再退到系统/打开方式里别的程序图标。不用 forge.exe。
+    fn resolve_icon(ext: &str, preferred: Option<&str>) -> Option<String> {
+        if let Some(prog) = preferred {
+            if let Some(icon) = read_prog_icon(prog) {
+                return Some(icon);
+            }
+        }
+        if let Some(current) = read_user_choice(ext) {
+            if let Some(icon) = read_prog_icon(&current) {
+                return Some(icon);
+            }
+        }
+        for prog in open_with_progids(ext) {
+            if let Some(icon) = read_prog_icon(&prog) {
+                return Some(icon);
+            }
+        }
+        if let Some(prog) = class_default_progid(ext) {
+            if let Some(icon) = read_prog_icon(&prog) {
+                return Some(icon);
+            }
+        }
+        None
+    }
+
+    fn read_prog_icon(prog: &str) -> Option<String> {
+        if prog.is_empty() || is_ours(prog) {
+            return None;
+        }
+        let path = format!(r"Software\Classes\{prog}\DefaultIcon");
+        read_default_value(HKEY_CURRENT_USER, &path)
+            .or_else(|| read_default_value(HKEY_LOCAL_MACHINE, &path))
+            .filter(|icon| !icon.trim().is_empty())
+    }
+
+    fn class_default_progid(ext: &str) -> Option<String> {
+        let path = format!(r"Software\Classes\.{ext}");
+        read_default_value(HKEY_CURRENT_USER, &path)
+            .or_else(|| read_default_value(HKEY_LOCAL_MACHINE, &path))
+            .filter(|prog| !prog.is_empty() && !is_ours(prog))
+    }
+
+    fn open_with_progids(ext: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for path in open_with_keys(ext) {
+            let Ok(key) = query_key(&path) else {
+                continue;
+            };
+            for name in enum_value_names(&key) {
+                if name.is_empty() || is_ours(&name) {
+                    continue;
+                }
+                if !out.iter().any(|held| held.eq_ignore_ascii_case(&name)) {
+                    out.push(name);
+                }
+            }
+        }
+        out
+    }
+
+    fn read_default_value(root: HKEY, subkey: &str) -> Option<String> {
+        let key = query_key_root(root, subkey).ok()?;
+        read_default(&key)
+    }
+
+    fn enum_value_names(key: &Key) -> Vec<String> {
+        let mut out = Vec::new();
+        for index in 0..256u32 {
+            let mut name = vec![0u16; 256];
+            let mut name_len = name.len() as u32;
+            let status = unsafe {
+                RegEnumValueW(
+                    key.0,
+                    index,
+                    Some(windows::core::PWSTR(name.as_mut_ptr())),
+                    &mut name_len,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if status.0 != 0 {
+                break;
+            }
+            name.truncate(name_len as usize);
+            if let Ok(text) = String::from_utf16(&name) {
+                if !text.is_empty() {
+                    out.push(text);
+                }
+            }
+        }
+        out
     }
 
     fn write_user_choice(ext: &str, prog_id: &str, sid: &str) -> Result<(), String> {
@@ -661,11 +795,13 @@ mod registry {
 
     fn write_toast(ext: &str) -> Result<(), String> {
         let key = create_key(TOASTS)?;
-        set_dword(&key, &format!("{PROGID}_.{ext}"), 0)
+        set_dword(&key, &format!("{}_.{ext}", forge_prog_id(ext)), 0)?;
+        delete_value(TOASTS, &format!("{LEGACY_PROGID}_.{ext}"))
     }
 
     fn delete_toast(ext: &str) -> Result<(), String> {
-        delete_value(TOASTS, &format!("{PROGID}_.{ext}"))
+        delete_value(TOASTS, &format!("{}_.{ext}", forge_prog_id(ext)))?;
+        delete_value(TOASTS, &format!("{LEGACY_PROGID}_.{ext}"))
     }
 
     fn read_prev() -> BTreeMap<String, String> {
@@ -905,12 +1041,45 @@ mod registry {
 
     /// 已有的 UserChoice 常常拒绝写入，但还是可以读出原来的 ProgId。
     fn query_key(subkey: &str) -> Result<Key, String> {
+        query_key_root(HKEY_CURRENT_USER, subkey)
+    }
+
+    fn query_key_root(root: HKEY, subkey: &str) -> Result<Key, String> {
         use windows::Win32::System::Registry::{RegOpenKeyExW, KEY_QUERY_VALUE};
         let name = HSTRING::from(subkey);
         let mut key = HKEY::default();
-        let status = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &name, None, KEY_QUERY_VALUE, &mut key) };
+        let status = unsafe { RegOpenKeyExW(root, &name, None, KEY_QUERY_VALUE, &mut key) };
         check(status)?;
         Ok(Key(key))
+    }
+
+    fn read_default(key: &Key) -> Option<String> {
+        let mut size = 0u32;
+        let status = unsafe { RegQueryValueExW(key.0, PCWSTR::null(), None, None, None, Some(&mut size)) };
+        if status.0 != 0 || size < 2 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        let mut got = size;
+        let status = unsafe {
+            RegQueryValueExW(
+                key.0,
+                PCWSTR::null(),
+                None,
+                None,
+                Some(buf.as_mut_ptr()),
+                Some(&mut got),
+            )
+        };
+        if status.0 != 0 {
+            return None;
+        }
+        let units: Vec<u16> = buf
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect();
+        String::from_utf16(&units).ok()
     }
 
     fn set_default(key: &Key, value: &str) -> Result<(), String> {
