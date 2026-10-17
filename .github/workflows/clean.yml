@@ -1,0 +1,139 @@
+# 和发版同一个触发：推送 v* tag 时，等这次 Release 跑完，再删过时记录。
+# Actions 里的 Release 构建、以及 GitHub Release（安装包）都只留最近 5 条。
+# 本次 tag 对应的发布不会删。Git tag 本身保留。
+
+name: Clean
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 只保留最近 5 条构建和 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT: ${{ github.run_id }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # $1 工作流文件名，$2 保留条数（已结束的，从新到旧）
+          prune() {
+            local workflow="$1"
+            local keep="$2"
+            local page=1
+            local lines=""
+            while true; do
+              local json
+              json=$(gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=100&page=${page}")
+              local count
+              count=$(jq '.workflow_runs | length' <<< "$json")
+              if [ "$count" -eq 0 ]; then
+                break
+              fi
+              local batch
+              batch=$(jq -r '
+                .workflow_runs[]
+                | select(.status != "queued" and .status != "in_progress" and .status != "waiting" and .status != "pending" and .status != "requested" and .status != "action_required")
+                | "\(.created_at) \(.id) \(.display_title)"
+              ' <<< "$json")
+              if [ -n "$batch" ]; then
+                lines="${lines}"$'\n'"${batch}"
+              fi
+              if [ "$count" -lt 100 ]; then
+                break
+              fi
+              page=$((page + 1))
+            done
+
+            local sorted
+            sorted=$(printf '%s\n' "$lines" | sed '/^$/d' | sort -r)
+            local index=0
+            while IFS= read -r row; do
+              [ -z "$row" ] && continue
+              local id title
+              id=$(awk '{print $2}' <<< "$row")
+              title=${row#* }
+              title=${title#* }
+              if [ "$id" = "$CURRENT" ]; then
+                echo "跳过  #${id}（当前这次）"
+                continue
+              fi
+              if [ "$index" -lt "$keep" ]; then
+                echo "保留  #${id}  ${title}"
+                index=$((index + 1))
+                continue
+              fi
+              gh api --method DELETE "repos/${REPO}/actions/runs/${id}"
+              echo "删除  #${id}  ${title}"
+            done <<< "$sorted"
+          }
+
+          # 新 Release 要等三个平台都传完才存在。先等这次发版结束，再按「最近 5 条」裁。
+          run_id=""
+          for _ in $(seq 1 60); do
+            run_id=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?per_page=20" \
+              --jq "[.workflow_runs[] | select(.head_sha==\"${SHA}\" and .head_branch==\"${TAG}\")][0].id")
+            if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+            echo "等待 Release #${run_id}"
+            gh run watch "$run_id" --exit-status || echo "这次发版没有成功，仍清理更旧的记录"
+          else
+            echo "没找到本次 tag 的 Release 工作流，直接清理已有记录"
+          fi
+
+          echo "构建记录：保留最近 5 条"
+          prune release.yml 5
+          echo "Clean：清掉以往的清理记录"
+          prune clean.yml 0
+
+          echo "GitHub Release：保留最近 5 条"
+          page=1
+          release_lines=""
+          while true; do
+            json=$(gh api "repos/${REPO}/releases?per_page=100&page=${page}")
+            count=$(jq 'length' <<< "$json")
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+            batch=$(jq -r '.[] | "\(.published_at // .created_at) \(.id) \(.tag_name)"' <<< "$json")
+            if [ -n "$batch" ]; then
+              release_lines="${release_lines}"$'\n'"${batch}"
+            fi
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
+          sorted_releases=$(printf '%s\n' "$release_lines" | sed '/^$/d' | sort -r)
+          index=0
+          while IFS= read -r row; do
+            [ -z "$row" ] && continue
+            id=$(awk '{print $2}' <<< "$row")
+            tag=$(awk '{print $3}' <<< "$row")
+            if [ "$tag" = "$TAG" ]; then
+              echo "保留  ${tag}（本次发布）"
+              index=$((index + 1))
+              continue
+            fi
+            if [ "$index" -lt 5 ]; then
+              echo "保留  ${tag}"
+              index=$((index + 1))
+              continue
+            fi
+            gh api --method DELETE "repos/${REPO}/releases/${id}"
+            echo "删除  ${tag}"
+          done <<< "$sorted_releases"

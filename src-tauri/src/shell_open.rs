@@ -1,13 +1,17 @@
 //! 资源管理器里的「通过 Forge 打开」。
 //!
-//! 文件夹进项目，文件只暂时打开。文件必须落在下面这份文本白名单里。
-//! 右键动词在 Windows 10 直接出现，在 Windows 11 的新菜单里走「打开方式」，
-//! 完整菜单仍在「显示更多选项」。默认打开另外记一份，关掉时交还给原来的程序。
+//! 文件夹进项目，文件只暂时打开。文件必须落在文本白名单里（`forge-shell-ext`）。
+//! 右键动词在 Windows 10 直接出现，在 Windows 11 的新菜单里直接显示，
+//! 完整经典菜单仍在「显示更多选项」。默认打开另外记一份，关掉时交还给原来的程序。
 
 use crate::error::err;
 use crate::offload::block;
 use base64::Engine;
 use crate::tray;
+use forge_shell_ext::{
+    is_text_extension as is_text_ext, normalize_extra_extensions as normalize_extras,
+    TEXT_EXTENSIONS,
+};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
@@ -15,26 +19,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 右键菜单在注册表里的键名。跟别的程序的 `Forge` 错开。
 const VERB: &str = "ForgeOpen";
-
-/// 编辑器认得出、并且本体是文本的扩展名。小写，不含点。
-///
-/// 以编辑器语言表为准，再补上纯文本常见后缀。压缩过的 `svgz` 不在里面：
-/// 它不是文本。无扩展名的 `Dockerfile`、`Makefile` 资源管理器无法按后缀挂菜单，
-/// 所以也不在这里。
-const TEXT_EXTENSIONS: &[&str] = &[
-    "adoc", "asciidoc", "axaml", "bash", "bat", "bicep", "c", "cc", "cfg", "cjs", "clj", "cljc",
-    "cljs", "cmd", "coffee", "conf", "config", "cpp", "cs", "cshtml", "csproj", "css", "csv", "cts",
-    "cyp", "cypher", "dart", "dax", "dockerfile", "edn", "env", "ex", "exs", "fs", "fsi", "fsproj",
-    "fsscript", "fsx", "ftl", "ftlh", "ftlx", "gemspec", "go", "graphql", "h", "handlebars", "hbs",
-    "hcl", "hpp", "htm", "html", "iecst", "ini", "jade", "java", "jl", "js", "json", "json5", "jsonc",
-    "jsx", "kt", "kts", "less", "liquid", "log", "lua", "m", "manifest", "markdown", "md", "mdown",
-    "mdx", "mjs", "mkd", "msdax", "mts", "org", "p", "pas", "php", "pl", "pm", "pp", "pq", "pqm",
-    "properties", "props", "proto", "ps1", "psd1", "psm1", "pug", "py", "r", "rb", "rbx", "rjs",
-    "rkt", "rq", "rs", "rst", "sass", "sbt", "sc", "scala", "sch", "scm", "scss", "sh", "sol", "sql",
-    "ss", "st", "sv", "svelte", "svg", "svh", "swift", "targets", "tcl", "text", "tf", "tfvars",
-    "toml", "ts", "tsp", "tsx", "tsv", "twig", "txt", "vbproj", "vcxproj", "vue", "wgsl", "wxi",
-    "wxl", "wxs", "xaml", "xml", "xsd", "xsl", "xslt", "yaml", "yml", "zsh",
-];
 
 /// 启动参数里挑出来、交给编辑器的路径。
 #[derive(Clone, Serialize, Default)]
@@ -49,49 +33,12 @@ pub struct ShellPlan {
 pub struct Pending(Mutex<ShellPlan>);
 
 pub fn is_text_extension(ext: &str) -> bool {
-    TEXT_EXTENSIONS
-        .iter()
-        .any(|item| item.eq_ignore_ascii_case(ext))
-}
-
-/// 把用户输入收成一条扩展名：去掉空白和前导点，小写。不合规则返回空。
-pub fn canonical_extension(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    let stripped = trimmed
-        .strip_prefix("*.")
-        .or_else(|| trimmed.strip_prefix('.'))
-        .unwrap_or(trimmed);
-    let text = stripped.trim().to_ascii_lowercase();
-    if text.is_empty() || text.len() > 32 {
-        return None;
-    }
-    let mut chars = text.chars();
-    let first = chars.next()?;
-    if !first.is_ascii_alphanumeric() {
-        return None;
-    }
-    if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '-')) {
-        return None;
-    }
-    Some(text)
+    is_text_ext(ext)
 }
 
 /// 用户追加的扩展名。内置名单里已有的丢掉，重复的只留第一次。
 pub fn normalize_extra_extensions(raw: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for item in raw {
-        let Some(ext) = canonical_extension(item) else {
-            continue;
-        };
-        if is_text_extension(&ext) {
-            continue;
-        }
-        if out.iter().any(|held: &String| held.eq_ignore_ascii_case(&ext)) {
-            continue;
-        }
-        out.push(ext);
-    }
-    out
+    normalize_extras(raw)
 }
 
 fn file_allowed(path: &Path, extras: &[String]) -> bool {
@@ -148,6 +95,9 @@ pub fn shell_builtin_extensions() -> Vec<String> {
 }
 
 /// 按开关把资源管理器菜单和默认打开写成当前状态。关掉就删掉我们写过的键。
+///
+/// 返回 `Some(原因)` 表示 Win11 新菜单没装上、已退回经典动词。设置页把这条
+/// 报给用户，免得文案写着「新菜单会直接显示」而实际没显示却毫无提示。
 #[tauri::command]
 pub async fn shell_integration_apply(
     open_folder: bool,
@@ -155,7 +105,7 @@ pub async fn shell_integration_apply(
     default_file: bool,
     label: String,
     extra_extensions: Vec<String>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     block(move || apply_integration(open_folder, open_file, default_file, &label, &extra_extensions)).await
 }
 
@@ -165,7 +115,7 @@ fn apply_integration(
     default_file: bool,
     label: &str,
     extra_extensions: &[String],
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let extras = normalize_extra_extensions(extra_extensions);
     #[cfg(windows)]
     {
@@ -183,6 +133,24 @@ fn apply_integration(
     #[cfg(not(windows))]
     {
         let _ = (open_folder, open_file, default_file, label, extras);
+        Ok(None)
+    }
+}
+
+/// 卸载前把所有接管过的关联交还。由 `--uninstall-clean` 调用。
+///
+/// 卸载器删掉 `forge.exe` 之后，`UserChoice` 里还指着 `Forge.txt` 这类 ProgId，
+/// 双击文件只会弹「找不到应用」。这里把默认交还、ProgId 与右键动词一并清掉。
+pub fn clean_for_uninstall() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // 卸载时不需要警告：经典动词本来就该一起清掉。
+        let result = registry::sync(false, false, false, "forge.exe", "", &[]).map(|_| ());
+        crate::shell_sparse::clean_work_dir();
+        result
+    }
+    #[cfg(not(windows))]
+    {
         Ok(())
     }
 }
@@ -261,7 +229,7 @@ fn hash_user_choice_bytes(input: &[u8]) -> String {
 }
 
 fn word_swap(value: u32) -> u32 {
-    (value >> 16) | (value << 16)
+    value.rotate_left(16)
 }
 
 fn md5(message: &[u8]) -> [u8; 16] {
@@ -377,17 +345,31 @@ mod registry {
         exe: &str,
         label: &str,
         extras: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
+        // 默认打开方式依附于「通过 Forge 打开文件」。文件菜单关了就把默认也交还。
+        let default_file = default_file && open_file;
+        let install_dir = std::path::Path::new(exe)
+            .parent()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        // 上一轮写过的追加后缀。必须在 shell_sparse::sync 之前读：那个函数会
+        // 改写同一族注册表键，读晚了拿到的就是新名单，删掉的项永远清不掉。
+        let previous = read_recorded_extras();
+        // 稀疏包成功时，新菜单和「显示更多选项」都会出现这条命令。
+        // 再写经典动词就会变成两条，所以成功后把 shell\ForgeOpen 删掉。
+        let outcome = crate::shell_sparse::sync(open_folder, open_file, &install_dir, label, extras)?;
+        let classic_folder = open_folder && !outcome.packaged;
+        let classic_file = open_file && !outcome.packaged;
+
         for key in folder_keys() {
-            if open_folder {
+            if classic_folder {
                 let placeholder = if key.contains("Background") { "%V" } else { "%1" };
-                write_verb(&key, label, exe, &command_value(exe, placeholder))?;
+                write_verb(key, label, exe, &command_value(exe, placeholder))?;
             } else {
-                delete_tree(&key)?;
+                delete_tree(key)?;
             }
         }
-        let previous = read_recorded_extras();
-        let wanted: &[String] = if open_file { extras } else { &[] };
+        let wanted: &[String] = if classic_file { extras } else { &[] };
         for ext in &previous {
             if !wanted.iter().any(|item| item == ext) {
                 delete_tree(&file_verb(ext))?;
@@ -395,13 +377,13 @@ mod registry {
         }
         for ext in TEXT_EXTENSIONS {
             let key = file_verb(ext);
-            if open_file {
+            if classic_file {
                 write_verb(&key, label, exe, &command_value(exe, "%1"))?;
             } else {
                 delete_tree(&key)?;
             }
         }
-        if open_file {
+        if classic_file {
             for ext in extras {
                 write_verb(&file_verb(ext), label, exe, &command_value(exe, "%1"))?;
             }
@@ -436,6 +418,8 @@ mod registry {
             }
             // 清掉旧版共用 ProgId，避免文件继续显示成 Forge 图标。
             delete_tree(&format!(r"Software\Classes\{LEGACY_PROGID}"))?;
+            // 记下这一轮登记过的追加后缀。它服务的是「打开方式」那一族，
+            // 与经典右键动词是否写入无关，所以不受 packaged 影响。
             write_recorded(extras)?;
         } else {
             for ext in TEXT_EXTENSIONS {
@@ -453,11 +437,15 @@ mod registry {
         } else {
             release_defaults()?;
         }
-        if !listed && !default_file {
+        // 菜单配置键（标题与两个开关）现在只在 `Software\Forge\ShellMenu`，
+        // 和这里的 `extras` / `prev` 记录不共用。整族关掉时才一起清。
+        if !open_folder && !open_file && !default_file {
             delete_tree(EXTRA_RECORD)?;
+            delete_tree(crate::shell_sparse::MENU_KEY)?;
         }
+
         notify_associations();
-        Ok(())
+        Ok(outcome.warning)
     }
 
     fn managed_extensions(extras: &[String]) -> Vec<String> {
@@ -941,7 +929,8 @@ mod registry {
     }
 
     fn read_recorded_extras() -> Vec<String> {
-        let Ok(key) = create_key(EXTRA_RECORD) else {
+        // 只读不建：这里建键会在关掉功能后又留下一个空键。
+        let Ok(key) = query_key(EXTRA_RECORD) else {
             return Vec::new();
         };
         let Some(text) = read_named(&key, "extras") else {
@@ -1009,6 +998,8 @@ mod registry {
         let parent = create_key(key)?;
         set_default(&parent, label)?;
         set_named(&parent, "Icon", icon)?;
+        // 传统菜单（含「显示更多选项」）里排到顶部一组。多个 Top 时后写的更靠前。
+        set_named(&parent, "Position", "Top")?;
         let child = create_key(&format!(r"{key}\command"))?;
         set_default(&child, command)?;
         Ok(())
@@ -1145,24 +1136,9 @@ mod registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
     use std::fs;
 
-    #[test]
-    fn text_extensions_are_unique_lowercase_and_reject_binaries() {
-        let mut seen = BTreeSet::new();
-        for ext in TEXT_EXTENSIONS {
-            assert!(seen.insert(*ext), "扩展名重复：{ext}");
-            assert_eq!(*ext, ext.to_ascii_lowercase(), "扩展名要小写：{ext}");
-            assert!(!ext.starts_with('.'), "扩展名不要带点：{ext}");
-        }
-        for banned in ["png", "jpg", "jpeg", "gif", "webp", "exe", "dll", "zip", "pdf", "docx", "svgz", "mp4", "wasm"] {
-            assert!(!is_text_extension(banned), "{banned} 不该在白名单里");
-        }
-        assert!(is_text_extension("TXT"));
-        assert!(is_text_extension("rs"));
-        assert!(is_text_extension("svg"));
-    }
+    // 白名单自身的检查（唯一、小写、不含二进制后缀）在 forge-shell-ext 的测试里。
 
     #[test]
     fn plan_keeps_folders_and_whitelisted_files_only() {
@@ -1186,19 +1162,6 @@ mod tests {
         assert_eq!(plan.files, vec![dir.join("note.txt").display().to_string()]);
 
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn extra_extensions_drop_builtin_and_duplicates() {
-        let extras = normalize_extra_extensions(&[
-            "TXT".into(),
-            ".prisma".into(),
-            "prisma".into(),
-            "*.PRISMA".into(),
-            "bad/ext".into(),
-            "  http  ".into(),
-        ]);
-        assert_eq!(extras, vec!["prisma".to_string(), "http".to_string()]);
     }
 
     #[test]

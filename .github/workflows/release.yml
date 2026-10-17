@@ -97,6 +97,9 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
+      # `forge_shell_cmd.dll` 由 src-tauri/build.rs 在编译主 crate 时一并编出，
+      # 落到 windows/shell/ 供 tauri resources 打进安装包，这里不需要单独一步。
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

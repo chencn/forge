@@ -194,7 +194,8 @@ function merge(raw: Partial<Settings> | null): Settings {
     shell: {
       openFolder: raw?.shell?.openFolder === true,
       openFile: raw?.shell?.openFile === true,
-      defaultFile: raw?.shell?.defaultFile === true,
+      // 没开「通过 Forge 打开文件」时，不能单独占着默认打开方式。
+      defaultFile: raw?.shell?.openFile === true && raw?.shell?.defaultFile === true,
       extraExtensions: normalizeExtraExtensions(raw?.shell?.extraExtensions),
     },
     updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },

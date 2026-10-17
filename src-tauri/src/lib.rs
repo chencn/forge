@@ -12,6 +12,8 @@ mod proc;
 mod run;
 mod settings;
 mod shell_open;
+#[cfg(windows)]
+mod shell_sparse;
 mod sys;
 mod term;
 mod tray;
@@ -21,6 +23,14 @@ mod watch;
 use tauri::Manager;
 
 pub fn run() {
+    // 卸载器在删文件之前调一次：把双击默认、ProgId、右键动词一并交还，
+    // 否则卸载后双击 .txt 还会去找已经不存在的 forge.exe。
+    if std::env::args().skip(1).any(|arg| arg == "--uninstall-clean") {
+        if let Err(error) = shell_open::clean_for_uninstall() {
+            eprintln!("[forge] 卸载清理未完成：{error}");
+        }
+        return;
+    }
     // build + run 拆开是为了在事件循环上挂 RunEvent::Exit 的退出清理（见下面的 app.run）。
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -29,7 +39,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 第二份进程把资源管理器传来的路径交给这一份，自己退出。
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            shell_open::deliver(&app, &args);
+            shell_open::deliver(app, &args);
         }))
         .manage(watch::WatchSlot::default())
         .manage(shell_open::Pending::default())

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/forge-shell-cmd", "crates/forge-shell-ext"]
+resolver = "2"
+
 [package]
 name = "forge"
 version = "1.0.6"
@@ -24,6 +28,8 @@ tauri-plugin-process = "2"
 # 资源管理器「通过 Forge 打开」再点一次时，把路径交给已经开着的窗口，不另起一份。
 # 不要 deep-link：那条要额外配协议，这里只需要单实例。
 tauri-plugin-single-instance = { version = "2", default-features = false }
+# 文本后缀白名单。Win11 新菜单的 DLL 也读这一份，两处不能各写一份。
+forge-shell-ext = { path = "crates/forge-shell-ext" }
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

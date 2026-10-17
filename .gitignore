@@ -5,7 +5,9 @@ node_modules/
 dist/
 .vite/
 src-tauri/target/
+src-tauri/target-check/
 src-tauri/gen/schemas/
+src-tauri/windows/shell/forge_shell_cmd.dll
 
 # 日志
 *.log

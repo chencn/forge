@@ -332,9 +332,9 @@ export const en: Record<TranslationKey, string> = {
   "shellOpen.file": "Open files with Forge",
   "shellOpen.menu": "Open with Forge",
   "shellOpen.folderNote":
-    "Adds “Open with Forge” to folder context menus in File Explorer. A folder is added as a project. Off by default.",
+    "Adds “Open with Forge” to folder context menus in File Explorer. On Windows 11 it appears on the modern menu; the classic item remains under Show more options. A folder is added as a project. The first enable installs a local certificate for the menu extension, kept under your user account only, with no administrator rights needed. Off by default.",
   "shellOpen.fileNote":
-    "Adds “Open with Forge” for text and source files only, such as txt, md, json, yaml, and common source extensions. Images, archives, office documents, and executables are excluded. A file opens in the editor and is not added as a project. On Windows 10 this item is on the context menu. On Windows 11 it is under Open with, and also under Show more options. Off by default.",
+    "Adds “Open with Forge” for text and source files only, such as txt, md, json, yaml, and common source extensions. Images, archives, office documents, and executables are excluded. A file opens in the editor and is not added as a project. On Windows 11 it appears on the modern menu; the classic item remains under Show more options. The first enable installs a local certificate for the menu extension, kept under your user account only, with no administrator rights needed. Off by default.",
   "shellOpen.default": "Use Forge as the default",
   "shellOpen.defaultNote":
     "Double-click then opens these text and source files in Forge. File icons keep their previous look and are not replaced with the Forge icon. Windows 10 switches away from the previous app immediately. Windows 11 also lists Forge under Open with; if a double-click still uses the old app, choose Forge there and check Always use this app. Turning this off gives the default back.",

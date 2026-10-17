@@ -641,70 +641,81 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                       placeholder="—"
                       value={settings.shell.openFile ? "yes" : "no"}
                       options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
-                      onChange={(next) =>
-                        patch({ shell: { ...settings.shell, openFile: next === "yes" } })
-                      }
+                      onChange={(next) => {
+                        const openFile = next === "yes";
+                        patch({
+                          shell: {
+                            ...settings.shell,
+                            openFile,
+                            defaultFile: openFile ? settings.shell.defaultFile : false,
+                          },
+                        });
+                      }}
                     />
                   </div>
-                  <div className="settings-row">
-                    <span className="settings-label">{t("shellOpen.default")}</span>
-                    <Select
-                      label={t("shellOpen.default")}
-                      placeholder="—"
-                      value={settings.shell.defaultFile ? "yes" : "no"}
-                      options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
-                      onChange={(next) =>
-                        patch({ shell: { ...settings.shell, defaultFile: next === "yes" } })
-                      }
-                    />
-                  </div>
-                  <div className="settings-row is-stack">
-                    <span className="settings-label">{t("shellOpen.extra")}</span>
-                    <div className="shell-extra">
-                      <div className="shell-extra-add">
-                        <input
-                          className="settings-input"
-                          value={extraDraft}
-                          placeholder={t("shellOpen.extraPlaceholder")}
-                          aria-label={t("shellOpen.extra")}
-                          onChange={(event) => setExtraDraft(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter") return;
-                            event.preventDefault();
-                            addExtra();
-                          }}
-                        />
-                        <button type="button" className="text-button" onClick={addExtra}>
-                          {t("shellOpen.extraAdd")}
-                        </button>
-                      </div>
-                      {settings.shell.extraExtensions.length > 0 ? (
-                        <ul className="shell-extra-list">
-                          {settings.shell.extraExtensions.map((ext) => (
-                            <li key={ext} className="shell-extra-chip">
-                              <span>.{ext}</span>
-                              <button
-                                type="button"
-                                aria-label={t("shellOpen.extraRemove", { ext })}
-                                onClick={() =>
-                                  patch({
-                                    shell: {
-                                      ...settings.shell,
-                                      extraExtensions: settings.shell.extraExtensions.filter(
-                                        (item) => item !== ext
-                                      ),
-                                    },
-                                  })
-                                }
-                              >
-                                ×
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
+                  {settings.shell.openFile ? (
+                    <div className="settings-row">
+                      <span className="settings-label">{t("shellOpen.default")}</span>
+                      <Select
+                        label={t("shellOpen.default")}
+                        placeholder="—"
+                        value={settings.shell.defaultFile ? "yes" : "no"}
+                        options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                        onChange={(next) =>
+                          patch({ shell: { ...settings.shell, defaultFile: next === "yes" } })
+                        }
+                      />
                     </div>
-                  </div>
+                  ) : null}
+                  {settings.shell.openFile ? (
+                    <div className="settings-row is-stack">
+                      <span className="settings-label">{t("shellOpen.extra")}</span>
+                      <div className="shell-extra">
+                        <div className="shell-extra-add">
+                          <input
+                            className="settings-input"
+                            value={extraDraft}
+                            placeholder={t("shellOpen.extraPlaceholder")}
+                            aria-label={t("shellOpen.extra")}
+                            onChange={(event) => setExtraDraft(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter") return;
+                              event.preventDefault();
+                              addExtra();
+                            }}
+                          />
+                          <button type="button" className="text-button" onClick={addExtra}>
+                            {t("shellOpen.extraAdd")}
+                          </button>
+                        </div>
+                        {settings.shell.extraExtensions.length > 0 ? (
+                          <ul className="shell-extra-list">
+                            {settings.shell.extraExtensions.map((ext) => (
+                              <li key={ext} className="shell-extra-chip">
+                                <span>.{ext}</span>
+                                <button
+                                  type="button"
+                                  aria-label={t("shellOpen.extraRemove", { ext })}
+                                  onClick={() =>
+                                    patch({
+                                      shell: {
+                                        ...settings.shell,
+                                        extraExtensions: settings.shell.extraExtensions.filter(
+                                          (item) => item !== ext
+                                        ),
+                                      },
+                                    })
+                                  }
+                                >
+                                  ×
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
                 </>
               ) : null}
               <p className="settings-note">{t("language.note")}</p>
@@ -716,8 +727,12 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                 <>
                   <p className="settings-note">{t("shellOpen.folderNote")}</p>
                   <p className="settings-note">{t("shellOpen.fileNote")}</p>
-                  <p className="settings-note">{t("shellOpen.defaultNote")}</p>
-                  <p className="settings-note">{t("shellOpen.extraNote")}</p>
+                  {settings.shell.openFile ? (
+                    <>
+                      <p className="settings-note">{t("shellOpen.defaultNote")}</p>
+                      <p className="settings-note">{t("shellOpen.extraNote")}</p>
+                    </>
+                  ) : null}
                 </>
               ) : null}
             </div>

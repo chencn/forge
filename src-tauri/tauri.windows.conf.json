@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "windows/appx-tools/**/*": "appx-tools/",
+      "windows/shell/forge_shell_cmd.dll": "forge_shell_cmd.dll"
+    }
+  }
+}

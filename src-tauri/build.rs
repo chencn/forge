@@ -1,6 +1,78 @@
 fn main() {
+    // 必须先于 tauri_build：windows 配置把 DLL 列进 resources，缺文件会直接失败。
+    build_shell_cmd_dll();
     tauri_build::build();
     link_manifest_into_tests();
+}
+
+/// 编出 Win11 新菜单用的 `forge_shell_cmd.dll`。
+///
+/// 用独立 `CARGO_TARGET_DIR`，避免与正在编译的 forge 抢同一把 target 锁。
+/// `--target` 必须跟着传：交叉编译时宿主机的产物架构不对，装进包里加载不了。
+fn build_shell_cmd_dll() {
+    println!("cargo:rerun-if-changed=crates/forge-shell-cmd/src/lib.rs");
+    println!("cargo:rerun-if-changed=crates/forge-shell-cmd/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/forge-shell-ext/src/lib.rs");
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if !target.contains("windows") {
+        return;
+    }
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| format!("{manifest}/target"));
+    let alt_target = std::path::Path::new(&out_dir).join("forge-shell-cmd-target");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut cmd = std::process::Command::new(&cargo);
+    cmd.args([
+        "build",
+        "-p",
+        "forge-shell-cmd",
+        "--manifest-path",
+        &format!("{manifest}/Cargo.toml"),
+        "--target-dir",
+        &alt_target.to_string_lossy(),
+        "--target",
+        &target,
+    ]);
+    // `PROFILE` 可能是自定义 profile 名（`--profile foo`），那类目录 cargo 也建在
+    // target/<profile> 下，但只有 debug/release 才对应 `--release` 语义。
+    if profile == "release" {
+        cmd.arg("--release");
+    }
+    match cmd.status() {
+        Ok(code) if code.success() => {
+            let dll_name = "forge_shell_cmd.dll";
+            // 传了 --target 之后产物落在 target/<triple>/<profile>/。
+            let built = alt_target.join(&target).join(&profile).join(dll_name);
+            if !built.is_file() {
+                println!(
+                    "cargo:warning=forge-shell-cmd 已编译但未找到 {}",
+                    built.display()
+                );
+                return;
+            }
+            let main_target = std::env::var("CARGO_TARGET_DIR")
+                .unwrap_or_else(|_| format!("{manifest}/target"));
+            let main_target = std::path::Path::new(&main_target);
+            // 交叉编译时主产物的目录也带 triple；原生编译则不带。取已经存在的那个。
+            let triple_dir = main_target.join(&target).join(&profile);
+            let sibling_dir = if triple_dir.is_dir() {
+                triple_dir
+            } else {
+                main_target.join(&profile)
+            };
+            let sibling = sibling_dir.join(dll_name);
+            let _ = std::fs::create_dir_all(&sibling_dir);
+            let _ = std::fs::copy(&built, &sibling);
+            let bundle_dir = std::path::Path::new(&manifest).join("windows").join("shell");
+            let _ = std::fs::create_dir_all(&bundle_dir);
+            let _ = std::fs::copy(&built, bundle_dir.join(dll_name));
+            let _ = std::fs::copy(&built, std::path::Path::new(&out_dir).join(dll_name));
+            println!("cargo:warning=forge_shell_cmd.dll -> {}", sibling.display());
+        }
+        Ok(_) => println!("cargo:warning=forge-shell-cmd 编译失败，Win11 新菜单将不可用"),
+        Err(error) => println!("cargo:warning=无法启动 forge-shell-cmd 编译：{error}"),
+    }
 }
 
 /// 让 `cargo test` 生成的测试可执行文件也带上 Common-Controls 依赖声明。

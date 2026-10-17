@@ -1150,6 +1150,7 @@ name = "forge"
 version = "1.0.6"
 dependencies = [
  "base64 0.23.1",
+ "forge-shell-ext",
  "libc",
  "minisign-verify",
  "notify",
@@ -1171,6 +1172,19 @@ dependencies = [
  "webview2-com",
  "windows",
 ]
+
+[[package]]
+name = "forge-shell-cmd"
+version = "1.0.6"
+dependencies = [
+ "forge-shell-ext",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
+name = "forge-shell-ext"
+version = "1.0.6"
 
 [[package]]
 name = "form_urlencoded"

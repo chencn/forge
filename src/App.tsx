@@ -1767,9 +1767,15 @@ export default function App() {
       defaultFile: settings.shell.defaultFile,
       label: menuLabel,
       extraExtensions: settings.shell.extraExtensions,
-    }).catch((cause) => {
-      if (!cancelled) reportErrorRef.current(errorText(cause));
-    });
+    })
+      .then((warning) => {
+        // Win11 新菜单没装上时后端会退回经典动词，这里把原因说清楚，
+        // 免得用户以为「打开开关了却没有菜单」。
+        if (!cancelled && warning) reportErrorRef.current(errorText(warning));
+      })
+      .catch((cause) => {
+        if (!cancelled) reportErrorRef.current(errorText(cause));
+      });
     return () => {
       cancelled = true;
     };
