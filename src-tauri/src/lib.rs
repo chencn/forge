@@ -50,6 +50,7 @@ pub fn run() {
             fs::delete_entry,
             fs::reveal_entry,
             fs::file_stamp,
+            fs::stat_entries,
             fs::find_files,
             fs::search_text,
             fs::fs_allow_asset,

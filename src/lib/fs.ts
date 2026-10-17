@@ -131,6 +131,17 @@ export function fileStamp(path: string): Promise<FileStamp> {
   return invoke<FileStamp>("file_stamp", { path });
 }
 
+/** 一条路径是文件还是文件夹，给系统拖放分类用。 */
+export interface PathKind {
+  path: string;
+  kind: EntryKind;
+}
+
+/** 批量看路径类型。不存在的条目不会出现在结果里。 */
+export function statEntries(paths: string[]): Promise<PathKind[]> {
+  return invoke<PathKind[]>("stat_entries", { paths });
+}
+
 /**
  * 本地文件的 asset URL，交给 <img> 用。
  *

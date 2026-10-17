@@ -2,6 +2,7 @@ import { useCallback, lazy, Suspense, useEffect, useMemo, useRef, useState } fro
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Bell,
   Check,
@@ -104,8 +105,10 @@ import {
   readFile,
   renameEntry,
   revealEntry,
+  statEntries,
   writeFile,
 } from "./lib/fs";
+import { dropHintKey, splitDrop } from "./lib/dropIn";
 import { codedError, describeError } from "./lib/errors";
 import { MOD_LABEL } from "./lib/sys";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
@@ -1681,6 +1684,113 @@ export default function App() {
     },
     [docs]
   );
+
+  /** 从系统文件管理器拖到窗口上时的悬停提示；null 表示当前没在拖。 */
+  const [dropHover, setDropHover] = useState<{
+    pending: boolean;
+    files: number;
+    folders: number;
+  } | null>(null);
+  /**
+   * 文件和文件夹一起放下时，先等新项目变成当前根再开文件。
+   * 文档的所属根是打开那一刻读的，根还没切过去就会绑到旧项目上。
+   */
+  const pendingDropFiles = useRef<{ root: string; files: string[] } | null>(null);
+  const dropGen = useRef(0);
+
+  /** 拖进来的文件只在编辑区打开，不把所在目录收成项目。图片要先授父目录，预览才取得出来。 */
+  const openDroppedFiles = useCallback(
+    async (paths: string[]) => {
+      await Promise.all(
+        paths.map((path) => {
+          const parent = parentPath(path);
+          return parent ? allowAssetDir(parent).catch(() => {}) : Promise.resolve();
+        })
+      );
+      for (const path of paths) {
+        setActiveTab(`doc|${path}`);
+        void docs.open(path);
+      }
+    },
+    [docs, setActiveTab]
+  );
+
+  useEffect(() => {
+    const pending = pendingDropFiles.current;
+    if (!pending || !workspaceRoot || !samePath(workspaceRoot, pending.root)) return;
+    pendingDropFiles.current = null;
+    void openDroppedFiles(pending.files);
+  }, [openDroppedFiles, workspaceRoot]);
+
+  const acceptDropRef = useRef<(paths: string[]) => void>(() => {});
+  acceptDropRef.current = (paths) => {
+    void (async () => {
+      let entries;
+      try {
+        entries = await statEntries(paths);
+      } catch (cause) {
+        reportError(errorText(cause));
+        return;
+      }
+      const { files, folders } = splitDrop(entries);
+      if (files.length === 0 && folders.length === 0) return;
+      if (folders.length > 0) {
+        const target = folders[folders.length - 1];
+        for (const folder of folders) switchOrAddFolder(folder);
+        if (files.length > 0) {
+          if (workspaceRoot && samePath(workspaceRoot, target)) void openDroppedFiles(files);
+          else pendingDropFiles.current = { root: target, files };
+        }
+        return;
+      }
+      void openDroppedFiles(files);
+    })();
+  };
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let webview;
+    try {
+      webview = getCurrentWebview();
+    } catch {
+      return;
+    }
+    void webview
+      .onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "enter") {
+          const gen = ++dropGen.current;
+          setDropHover({ pending: true, files: 0, folders: 0 });
+          void statEntries(payload.paths)
+            .then((entries) => {
+              if (disposed || dropGen.current !== gen) return;
+              const split = splitDrop(entries);
+              setDropHover({
+                pending: false,
+                files: split.files.length,
+                folders: split.folders.length,
+              });
+            })
+            .catch(() => {});
+          return;
+        }
+        if (payload.type === "over") return;
+        dropGen.current += 1;
+        setDropHover(null);
+        if (payload.type === "drop") acceptDropRef.current(payload.paths);
+      })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   /** markdown 预览里点本地链接：按类型开进编辑区（图片进预览，文本进编辑器）。 */
   const openLocalFile = useCallback(
@@ -4143,6 +4253,22 @@ export default function App() {
           onOpen={(change) => editSource(change.path)}
           onClose={() => setResolveOpen(false)}
         />
+      ) : null}
+      {dropHover ? (
+        <div className="drop-overlay" role="status">
+          <div className="drop-overlay-card">
+            {dropHover.folders > 0 && dropHover.files === 0 ? (
+              <FolderPlus size={18} aria-hidden="true" />
+            ) : (
+              <FilePlus size={18} aria-hidden="true" />
+            )}
+            <span>
+              {t(dropHintKey(dropHover.files, dropHover.folders, dropHover.pending), {
+                count: dropHover.folders > 1 ? dropHover.folders : dropHover.files,
+              })}
+            </span>
+          </div>
+        </div>
       ) : null}
     </div>
   );

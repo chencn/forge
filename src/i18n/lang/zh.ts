@@ -278,6 +278,12 @@ export const zh = {
   "explorer.deletedMany": "已删除 {count} 个文件/目录",
 
   "welcome.hint": "请选择项目文件夹",
+  "drop.pending": "松开以打开",
+  "drop.file": "松开以暂时打开",
+  "drop.files": "松开以暂时打开 {count} 个文件",
+  "drop.folder": "松开以添加为新项目",
+  "drop.folders": "松开以添加 {count} 个新项目",
+  "drop.mixed": "松开以暂时打开文件，并添加为新项目",
   "editor.closeTab": "关闭标签",
   "editor.region": "编辑区",
   "editor.save": "保存",

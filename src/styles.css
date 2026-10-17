@@ -271,9 +271,9 @@ button {
   align-items: center;
   justify-content: center;
   transform-origin: 50% 50%;
-  animation: spin 1.2s linear infinite !important;
 }
 
+/* 只转图标本身。容器再转一圈的话，两层叠在一起，速度会变成两倍。 */
 svg.is-spinning,
 .is-spinning svg {
   display: inline-block;
@@ -1471,15 +1471,15 @@ span.entry-icon > svg {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *:not(.is-spinning):not([data-spin="true"]),
+  *:not(.is-spinning):not([data-spin="true"]):not(.is-spinning *),
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
 
-  /* 加载与生成指示器的旋转动画保留，确保用户能明确感知后台任务正在运行 */
-  .is-spinning,
+  /* 加载与生成指示器的旋转动画保留，确保用户能明确感知后台任务正在运行。
+     同样只转图标，避免容器和图标各转一圈。 */
   svg.is-spinning,
   .is-spinning svg,
   [data-spin="true"] {
@@ -3557,6 +3557,33 @@ span.entry-icon > svg {
 
 .welcome-key-row dd {
   margin: 0;
+}
+
+/* 从系统拖文件或文件夹进来时盖住整个窗口。事件由宿主接管，这层只做提示，不吃点击。 */
+.drop-overlay {
+  position: fixed;
+  inset: 10px;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent-blue);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  pointer-events: none;
+}
+
+.drop-overlay-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, calc(100% - 48px));
+  padding: 14px 18px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--surface-island-strong);
+  box-shadow: var(--island-shadow);
+  color: var(--text-primary);
+  font-size: 14px;
 }
 
 .welcome-key-row kbd {

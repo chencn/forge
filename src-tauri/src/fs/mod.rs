@@ -44,7 +44,7 @@ use windows as platform;
 
 #[cfg(not(windows))]
 use unix as platform;
-use crate::offload::block;
+use crate::offload::{block, block_value};
 
 /// 编辑器一次读入的上限，超过就拒绝打开，避免把大文件灌进 webview。
 const EDITOR_CEILING: u64 = 8 * 1024 * 1024;
@@ -695,6 +695,33 @@ pub async fn file_stamp(path: String) -> Result<FileStamp, String> {
     block(move || file_stamp_impl(path)).await
 }
 
+/// 拖放进来的路径各是文件还是文件夹。不存在的条目直接略过。
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathKind {
+    pub path: String,
+    pub kind: EntryKind,
+}
+
+pub fn stat_entries_impl(paths: Vec<String>) -> Vec<PathKind> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let Ok(entry) = entry_at(Path::new(&path)) else {
+            continue;
+        };
+        out.push(PathKind {
+            path,
+            kind: entry.kind,
+        });
+    }
+    out
+}
+
+#[tauri::command]
+pub async fn stat_entries(paths: Vec<String>) -> Vec<PathKind> {
+    block_value(move || stat_entries_impl(paths), Vec::new).await
+}
+
 fn file_stamp_impl(path: String) -> Result<FileStamp, String> {
     let meta = fs::metadata(&path).map_err(|e| io_err(&path, e))?;
     if meta.is_dir() {
@@ -819,6 +846,34 @@ mod tests {
         assert_eq!(listing.entries[1].size, 1);
         assert_eq!(listing.entries[2].extension.as_deref(), Some("txt"));
         assert_eq!(listing.parent.as_deref(), Some(lossy(dir.parent().unwrap()).as_str()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stat_entries_splits_files_and_folders() {
+        let dir = sandbox("stat");
+        fs::create_dir(dir.join("proj")).unwrap();
+        touch(&dir, "note.txt", b"hi");
+
+        let kinds = stat_entries_impl(vec![
+            lossy(&dir.join("proj")),
+            lossy(&dir.join("note.txt")),
+            lossy(&dir.join("missing")),
+        ]);
+        assert_eq!(
+            kinds,
+            vec![
+                PathKind {
+                    path: lossy(&dir.join("proj")),
+                    kind: EntryKind::Directory,
+                },
+                PathKind {
+                    path: lossy(&dir.join("note.txt")),
+                    kind: EntryKind::File,
+                },
+            ]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

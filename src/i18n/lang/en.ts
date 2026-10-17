@@ -282,6 +282,12 @@ export const en: Record<TranslationKey, string> = {
   "explorer.deletedMany": "Deleted {count} files/directories",
 
   "welcome.hint": "Select a project folder",
+  "drop.pending": "Drop to open",
+  "drop.file": "Drop to open temporarily",
+  "drop.files": "Drop to open {count} files temporarily",
+  "drop.folder": "Drop to add as a new project",
+  "drop.folders": "Drop to add {count} new projects",
+  "drop.mixed": "Drop to open files and add them as projects",
   "editor.closeTab": "Close tab",
   "editor.region": "Editor",
   "editor.save": "Save",
