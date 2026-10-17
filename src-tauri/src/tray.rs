@@ -125,6 +125,10 @@ pub fn app_exit(app: AppHandle) {
     app.exit(0);
 }
 
+pub(crate) fn show_main(app: &AppHandle) {
+    reveal(app);
+}
+
 fn reveal(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;

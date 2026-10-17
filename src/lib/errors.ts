@@ -32,6 +32,7 @@ function humanBytes(raw: string | undefined): string {
  */
 const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   IO: (p, t) => t("error.io", { path: p[0] ?? "", detail: p[1] ?? "" }),
+  SHELL_REG: (p, t) => t("error.shellReg", { detail: p[0] ?? "" }),
   PATH_GONE: (p, t) => t("error.pathGone", { path: p[0] ?? "" }),
   IS_DIR: (p, t) => t("error.isDir", { path: p[0] ?? "" }),
   TOO_LARGE: (p, t) => t("error.tooLarge", { size: humanBytes(p[0]), max: humanBytes(p[1]) }),

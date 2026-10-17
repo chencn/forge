@@ -110,7 +110,8 @@ import {
 } from "./lib/fs";
 import { dropHintKey, splitDrop } from "./lib/dropIn";
 import { codedError, describeError } from "./lib/errors";
-import { MOD_LABEL } from "./lib/sys";
+import { IS_WINDOWS, MOD_LABEL } from "./lib/sys";
+import { applyShellIntegration, takeShellOpen } from "./lib/shellOpen";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
 import {
   closeTermsForRoot,
@@ -1722,6 +1723,21 @@ export default function App() {
     void openDroppedFiles(pending.files);
   }, [openDroppedFiles, workspaceRoot]);
 
+  const openIncomingRef = useRef<(files: string[], folders: string[]) => void>(() => {});
+  openIncomingRef.current = (files, folders) => {
+    if (files.length === 0 && folders.length === 0) return;
+    if (folders.length > 0) {
+      const target = folders[folders.length - 1];
+      for (const folder of folders) switchOrAddFolder(folder);
+      if (files.length > 0) {
+        if (workspaceRoot && samePath(workspaceRoot, target)) void openDroppedFiles(files);
+        else pendingDropFiles.current = { root: target, files };
+      }
+      return;
+    }
+    void openDroppedFiles(files);
+  };
+
   const acceptDropRef = useRef<(paths: string[]) => void>(() => {});
   acceptDropRef.current = (paths) => {
     void (async () => {
@@ -1732,20 +1748,64 @@ export default function App() {
         reportError(errorText(cause));
         return;
       }
-      const { files, folders } = splitDrop(entries);
-      if (files.length === 0 && folders.length === 0) return;
-      if (folders.length > 0) {
-        const target = folders[folders.length - 1];
-        for (const folder of folders) switchOrAddFolder(folder);
-        if (files.length > 0) {
-          if (workspaceRoot && samePath(workspaceRoot, target)) void openDroppedFiles(files);
-          else pendingDropFiles.current = { root: target, files };
-        }
-        return;
-      }
-      void openDroppedFiles(files);
+      const split = splitDrop(entries);
+      openIncomingRef.current(split.files, split.folders);
     })();
   };
+
+  const menuLabel = t("shellOpen.menu");
+  const reportErrorRef = useRef(reportError);
+  reportErrorRef.current = reportError;
+
+  // 设置里的两个开关默认关。勾上才写资源管理器右键，关掉就删掉写过的键。
+  useEffect(() => {
+    if (!IS_WINDOWS || !("__TAURI_INTERNALS__" in window)) return;
+    let cancelled = false;
+    void applyShellIntegration({
+      openFolder: settings.shell.openFolder,
+      openFile: settings.shell.openFile,
+      defaultFile: settings.shell.defaultFile,
+      label: menuLabel,
+      extraExtensions: settings.shell.extraExtensions,
+    }).catch((cause) => {
+      if (!cancelled) reportErrorRef.current(errorText(cause));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    menuLabel,
+    settings.shell.defaultFile,
+    settings.shell.extraExtensions,
+    settings.shell.openFile,
+    settings.shell.openFolder,
+  ]);
+
+  // 资源管理器「通过 Forge 打开」带进来的路径：文件夹添加项目，文本文件暂时打开。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const pull = () => {
+      void takeShellOpen()
+        .then((plan) => {
+          openIncomingRef.current(plan.files ?? [], plan.folders ?? []);
+        })
+        .catch(() => {});
+    };
+    pull();
+    void listen("shell-open", () => {
+      if (!disposed) pull();
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;

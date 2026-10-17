@@ -144,6 +144,31 @@ impl Default for UpdateSettings {
     }
 }
 
+/// 资源管理器右键「通过 Forge 打开」。两个开关都默认关，要用户自己勾上。
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShellSettings {
+    /// 文件夹右键菜单。打开后按添加项目处理。
+    pub open_folder: bool,
+    /// 文本文件右键菜单。只登记白名单里的文本格式，打开后暂时进编辑区。
+    pub open_file: bool,
+    /// 这些文本文件的双击默认程序。关掉就交还给原来的程序。
+    pub default_file: bool,
+    /// 用户追加的扩展名。内置名单不在这里，重复项由写入前的归一去掉。
+    pub extra_extensions: Vec<String>,
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        Self {
+            open_folder: false,
+            open_file: false,
+            default_file: false,
+            extra_extensions: Vec::new(),
+        }
+    }
+}
+
 /// 一份全局设置。缺字段时按 Default 补，改结构不用迁移旧文件。
 ///
 /// 这里只放偏好：主题、字号这类几个月不动一次的选择。用户做过的流水（上次开的项目、
@@ -165,6 +190,8 @@ pub struct Settings {
     pub commit: CommitSettings,
     pub branches: BranchSettings,
     pub explorer: ExplorerSettings,
+    /// 资源管理器右键菜单。默认都不开。
+    pub shell: ShellSettings,
     /// 通知气泡弹出位置：bottom-right / top-right / bottom-left / top-left。
     pub notification_position: String,
     /// 应用内更新：自动下载与安装前是否询问。
@@ -183,6 +210,7 @@ impl Default for Settings {
             commit: CommitSettings::default(),
             branches: BranchSettings::default(),
             explorer: ExplorerSettings::default(),
+            shell: ShellSettings::default(),
             notification_position: "bottom-right".to_string(),
             updates: UpdateSettings::default(),
         }
@@ -269,6 +297,23 @@ mod tests {
         .unwrap();
         assert_eq!(custom.workspace_mode, "single");
         assert_eq!(custom.close_behavior, "quit");
+    }
+
+    /// 资源管理器菜单两个开关缺省都是关。旧文件没有这段时不能被读成打开。
+    #[test]
+    fn shell_open_defaults_off() {
+        let def: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(!def.shell.open_folder);
+        assert!(!def.shell.open_file);
+        assert!(!def.shell.default_file);
+        assert!(def.shell.extra_extensions.is_empty());
+
+        let custom: Settings = serde_json::from_str(
+            r#"{"shell":{"openFolder":true,"openFile":false}}"#,
+        )
+        .unwrap();
+        assert!(custom.shell.open_folder);
+        assert!(!custom.shell.open_file);
     }
 }
 

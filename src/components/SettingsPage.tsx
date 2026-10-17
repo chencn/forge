@@ -24,6 +24,9 @@ import { describeError } from "../lib/errors";
 import { useI18n } from "../i18n";
 import type { Lang } from "../i18n";
 import type { ThemeMode } from "../lib/window";
+import { IS_WINDOWS } from "../lib/sys";
+import { builtinShellExtensions } from "../lib/shellOpen";
+import { appendExtraExtension, normalizeExtraExtensions } from "../lib/shellWhitelist";
 import { DEFAULT_SETTINGS } from "../lib/settings";
 import { clearLspLogs, lspLogs, watchLspLogs, watchLspStatus } from "../lib/lspClient";
 import type { WakeResult } from "../lib/lspClient";
@@ -168,14 +171,47 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
   const { config, patchServer, probes, reprobe, probing } = useLspConfig();
   const sessions = useLspSessionStatuses();
   const [module, setModule] = useState<SettingsModule>(initialModule ?? "general");
+  /** 「重置所有设置」的二次确认框；确认后才把整份设置写回默认值。 */
+  const [confirmReset, setConfirmReset] = useState(false);
+  /** 内置文本后缀。用来拦住用户把已有格式再追加一遍。 */
+  const [builtinExtensions, setBuiltinExtensions] = useState<string[]>([]);
+  const [extraDraft, setExtraDraft] = useState("");
 
   useEffect(() => {
     if (initialModule) {
       setModule(initialModule);
     }
   }, [initialModule]);
-  /** 「重置所有设置」的二次确认框；确认后才把整份设置写回默认值。 */
-  const [confirmReset, setConfirmReset] = useState(false);
+
+  useEffect(() => {
+    if (!IS_WINDOWS) return;
+    let cancelled = false;
+    void builtinShellExtensions()
+      .then((list) => {
+        if (!cancelled) setBuiltinExtensions(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const extraKey = settings.shell.extraExtensions.join("\0");
+  useEffect(() => {
+    if (builtinExtensions.length === 0) return;
+    const cleaned = normalizeExtraExtensions(settings.shell.extraExtensions, builtinExtensions);
+    if (cleaned.join("\0") === extraKey) return;
+    patch({ shell: { ...settings.shell, extraExtensions: cleaned } });
+  }, [builtinExtensions, extraKey, patch, settings.shell]);
+
+  const addExtra = () => {
+    if (appendExtraExtension([], extraDraft, []).length === 0) return;
+    const next = appendExtraExtension(settings.shell.extraExtensions, extraDraft, builtinExtensions);
+    setExtraDraft("");
+    if (next !== settings.shell.extraExtensions) {
+      patch({ shell: { ...settings.shell, extraExtensions: next } });
+    }
+  };
   /** 这台机器上可用的 shell；排在第一位的是终端默认使用的那个。 */
   const [shells, setShells] = useState<ShellInfo[]>([]);
   /** 正在安装哪一个条目（同一时刻只允许一个）。 */
@@ -583,10 +619,106 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                   }
                 />
               </div>
+
+              {IS_WINDOWS ? (
+                <>
+                  <div className="settings-row">
+                    <span className="settings-label">{t("shellOpen.folder")}</span>
+                    <Select
+                      label={t("shellOpen.folder")}
+                      placeholder="—"
+                      value={settings.shell.openFolder ? "yes" : "no"}
+                      options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                      onChange={(next) =>
+                        patch({ shell: { ...settings.shell, openFolder: next === "yes" } })
+                      }
+                    />
+                  </div>
+                  <div className="settings-row">
+                    <span className="settings-label">{t("shellOpen.file")}</span>
+                    <Select
+                      label={t("shellOpen.file")}
+                      placeholder="—"
+                      value={settings.shell.openFile ? "yes" : "no"}
+                      options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                      onChange={(next) =>
+                        patch({ shell: { ...settings.shell, openFile: next === "yes" } })
+                      }
+                    />
+                  </div>
+                  <div className="settings-row">
+                    <span className="settings-label">{t("shellOpen.default")}</span>
+                    <Select
+                      label={t("shellOpen.default")}
+                      placeholder="—"
+                      value={settings.shell.defaultFile ? "yes" : "no"}
+                      options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+                      onChange={(next) =>
+                        patch({ shell: { ...settings.shell, defaultFile: next === "yes" } })
+                      }
+                    />
+                  </div>
+                  <div className="settings-row is-stack">
+                    <span className="settings-label">{t("shellOpen.extra")}</span>
+                    <div className="shell-extra">
+                      <div className="shell-extra-add">
+                        <input
+                          className="settings-input"
+                          value={extraDraft}
+                          placeholder={t("shellOpen.extraPlaceholder")}
+                          aria-label={t("shellOpen.extra")}
+                          onChange={(event) => setExtraDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter") return;
+                            event.preventDefault();
+                            addExtra();
+                          }}
+                        />
+                        <button type="button" className="text-button" onClick={addExtra}>
+                          {t("shellOpen.extraAdd")}
+                        </button>
+                      </div>
+                      {settings.shell.extraExtensions.length > 0 ? (
+                        <ul className="shell-extra-list">
+                          {settings.shell.extraExtensions.map((ext) => (
+                            <li key={ext} className="shell-extra-chip">
+                              <span>.{ext}</span>
+                              <button
+                                type="button"
+                                aria-label={t("shellOpen.extraRemove", { ext })}
+                                onClick={() =>
+                                  patch({
+                                    shell: {
+                                      ...settings.shell,
+                                      extraExtensions: settings.shell.extraExtensions.filter(
+                                        (item) => item !== ext
+                                      ),
+                                    },
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  </div>
+                </>
+              ) : null}
               <p className="settings-note">{t("language.note")}</p>
               <p className="settings-note">{t("workspaceMode.note")}</p>
               {settings.closeBehavior === "tray" ? (
                 <p className="settings-note">{t("closeBehavior.note")}</p>
+              ) : null}
+              {IS_WINDOWS ? (
+                <>
+                  <p className="settings-note">{t("shellOpen.folderNote")}</p>
+                  <p className="settings-note">{t("shellOpen.fileNote")}</p>
+                  <p className="settings-note">{t("shellOpen.defaultNote")}</p>
+                  <p className="settings-note">{t("shellOpen.extraNote")}</p>
+                </>
               ) : null}
             </div>
           ) : null}
@@ -1052,6 +1184,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                 closeBehavior: DEFAULT_SETTINGS.closeBehavior,
                 notificationPosition: DEFAULT_SETTINGS.notificationPosition,
                 explorer: { ...DEFAULT_SETTINGS.explorer },
+                shell: { ...DEFAULT_SETTINGS.shell },
               });
             }}
             onCancel={() => setConfirmReset(false)}

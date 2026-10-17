@@ -71,6 +71,7 @@ export const zh = {
 
   "error.dismiss": "关闭",
   "error.io": "无法打开「{path}」：{detail}",
+  "error.shellReg": "无法写入资源管理器菜单：{detail}",
   "error.pathGone": "「{path}」已不存在",
   "error.isDir": "「{path}」是文件夹，无法作为文件打开",
   "error.tooLarge": "文件大小为 {size}，超出编辑器可打开的上限 {max}",
@@ -323,6 +324,21 @@ export const zh = {
   "workspaceMode.single": "单工作区",
   "workspaceMode.note":
     "开启后可在同一窗口同时打开多个文件夹并快速切换，后台项目的终端与运行任务保持运行；选「否」时保持单工作区模式，打开新文件夹将替换当前文件夹。",
+  "shellOpen.folder": "通过 Forge 打开文件夹",
+  "shellOpen.file": "通过 Forge 打开文件",
+  "shellOpen.menu": "通过 Forge 打开",
+  "shellOpen.folderNote":
+    "在资源管理器的文件夹右键菜单里加入「通过 Forge 打开」。打开后按添加项目处理。默认关闭。",
+  "shellOpen.fileNote":
+    "在资源管理器里为文本和源代码加入「通过 Forge 打开」，例如 txt、md、json、yaml 以及常见语言的源文件。不含图片、压缩包、办公文档和可执行文件。打开后只在编辑区暂时显示，不收成项目。Windows 10 的右键菜单会直接显示；Windows 11 的新菜单在「打开方式」里，完整菜单在「显示更多选项」里。默认关闭。",
+  "shellOpen.default": "设为默认打开方式",
+  "shellOpen.defaultNote":
+    "打开后，双击这些文本和源代码会用 Forge 打开。Windows 10 会直接从原来的程序换过来。Windows 11 的「打开方式」里也会列出 Forge；若双击仍被原来的程序打开，在「打开方式」中选 Forge 并勾选「始终使用此应用打开」。关掉后交还给原来的程序。",
+  "shellOpen.extra": "追加文件格式",
+  "shellOpen.extraPlaceholder": "例如 prisma",
+  "shellOpen.extraAdd": "添加",
+  "shellOpen.extraRemove": "移除 .{ext}",
+  "shellOpen.extraNote": "内置格式不能修改。这里只追加你自己的后缀，和内置或已追加的重复时会自动去掉。",
   "settings.closeBehavior": "点击关闭时",
   "closeBehavior.quit": "退出应用",
   "closeBehavior.tray": "最小化到托盘",

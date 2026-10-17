@@ -3572,6 +3572,59 @@ span.entry-icon > svg {
   pointer-events: none;
 }
 
+.shell-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+}
+
+.shell-extra-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell-extra-add .settings-input {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.shell-extra-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shell-extra-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px 1px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue-text);
+  font-size: 12px;
+}
+
+.shell-extra-chip button {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  color: inherit;
+}
+
+.shell-extra-chip button:hover {
+  background: var(--bg-hover);
+}
+
 .drop-overlay-card {
   display: flex;
   align-items: center;

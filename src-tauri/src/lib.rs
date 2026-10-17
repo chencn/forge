@@ -11,6 +11,7 @@ mod offload;
 mod proc;
 mod run;
 mod settings;
+mod shell_open;
 mod sys;
 mod term;
 mod tray;
@@ -26,10 +27,17 @@ pub fn run() {
         // 更新检查/下载在设置页手动触发；relaunch 供装完新包后重启应用。
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 第二份进程把资源管理器传来的路径交给这一份，自己退出。
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            shell_open::deliver(&app, &args);
+        }))
         .manage(watch::WatchSlot::default())
+        .manage(shell_open::Pending::default())
         .setup(|app| {
             tray::build(&app.handle().clone())?;
             disable_default_context_menu(app.handle());
+            // 冷启动时前端还没挂监听，先把参数存下，页面起来再取。
+            shell_open::deliver(app.handle(), &std::env::args().skip(1).collect::<Vec<_>>());
             Ok(())
         })
         // 关闭按钮归关闭按钮管，托盘还是退出，看设置里那一项怎么选。
@@ -135,6 +143,9 @@ pub fn run() {
             history::history_save,
             settings::settings_load,
             settings::settings_save,
+            shell_open::shell_builtin_extensions,
+            shell_open::shell_integration_apply,
+            shell_open::shell_open_take,
             tray::tray_labels,
             tray::app_exit,
             sys::sys_memory,

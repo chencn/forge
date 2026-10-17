@@ -77,6 +77,7 @@ export const en: Record<TranslationKey, string> = {
 
   "error.dismiss": "Dismiss",
   "error.io": "Unable to open {path}: {detail}",
+  "error.shellReg": "Couldn't update the File Explorer menu: {detail}",
   "error.pathGone": "{path} no longer exists",
   "error.isDir": "{path} is a folder and cannot be opened as a file",
   "error.tooLarge": "The file size is {size}, which exceeds the editor limit of {max}",
@@ -327,6 +328,21 @@ export const en: Record<TranslationKey, string> = {
   "workspaceMode.single": "Single folder",
   "workspaceMode.note":
     "When enabled, multiple folders can stay open in the same window with background terminals and tasks kept alive; when set to No, opening a folder replaces the current one.",
+  "shellOpen.folder": "Open folders with Forge",
+  "shellOpen.file": "Open files with Forge",
+  "shellOpen.menu": "Open with Forge",
+  "shellOpen.folderNote":
+    "Adds “Open with Forge” to folder context menus in File Explorer. A folder is added as a project. Off by default.",
+  "shellOpen.fileNote":
+    "Adds “Open with Forge” for text and source files only, such as txt, md, json, yaml, and common source extensions. Images, archives, office documents, and executables are excluded. A file opens in the editor and is not added as a project. On Windows 10 this item is on the context menu. On Windows 11 it is under Open with, and also under Show more options. Off by default.",
+  "shellOpen.default": "Use Forge as the default",
+  "shellOpen.defaultNote":
+    "Double-click then opens these text and source files in Forge. Windows 10 switches away from the previous app immediately. Windows 11 also lists Forge under Open with; if a double-click still uses the old app, choose Forge there and check Always use this app. Turning this off gives the default back.",
+  "shellOpen.extra": "Additional file types",
+  "shellOpen.extraPlaceholder": "e.g. prisma",
+  "shellOpen.extraAdd": "Add",
+  "shellOpen.extraRemove": "Remove .{ext}",
+  "shellOpen.extraNote": "Built-in types can't be changed. Add your own extensions here. Duplicates of a built-in or an existing entry are ignored.",
   "settings.closeBehavior": "When closing",
   "closeBehavior.quit": "Quit the app",
   "closeBehavior.tray": "Minimize to tray",

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { normalizeExtraExtensions } from "./shellWhitelist";
 import type { ThemeMode } from "./window";
 import type { Lang } from "../i18n";
 
@@ -66,6 +67,18 @@ export interface BranchSettings {
   favorites: string[];
 }
 
+/** 资源管理器右键「通过 Forge 打开」。两个都要用户自己打开。 */
+export interface ShellSettings {
+  /** 文件夹右键。打开后按添加项目处理。 */
+  openFolder: boolean;
+  /** 文本文件右键。只登记白名单里的文本格式，打开后暂时进编辑区。 */
+  openFile: boolean;
+  /** 这些文本文件的双击默认程序。 */
+  defaultFile: boolean;
+  /** 用户追加的扩展名。内置名单不在这里。 */
+  extraExtensions: string[];
+}
+
 /** 资源管理器的显示偏好。 */
 export interface ExplorerSettings {
   /** 显示被 .gitignore 忽略的文件/目录。 */
@@ -109,6 +122,8 @@ export interface Settings {
   commit: CommitSettings;
   branches: BranchSettings;
   explorer: ExplorerSettings;
+  /** 资源管理器右键菜单。默认都不开。 */
+  shell: ShellSettings;
   /** 通知弹窗气泡位置。 */
   notificationPosition: NotificationPosition;
   /** 应用内更新。 */
@@ -139,6 +154,7 @@ export const DEFAULT_SETTINGS: Settings = {
     favorites: [],
   },
   explorer: { showIgnored: true, showHidden: false },
+  shell: { openFolder: false, openFile: false, defaultFile: false, extraExtensions: [] },
   notificationPosition: "bottom-right",
   updates: {
     autoDownload: false,
@@ -175,6 +191,12 @@ function merge(raw: Partial<Settings> | null): Settings {
     commit: { ...DEFAULT_SETTINGS.commit, ...raw?.commit },
     branches: { ...DEFAULT_SETTINGS.branches, ...raw?.branches },
     explorer: { ...DEFAULT_SETTINGS.explorer, ...raw?.explorer },
+    shell: {
+      openFolder: raw?.shell?.openFolder === true,
+      openFile: raw?.shell?.openFile === true,
+      defaultFile: raw?.shell?.defaultFile === true,
+      extraExtensions: normalizeExtraExtensions(raw?.shell?.extraExtensions),
+    },
     updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },
     notificationPosition:
       raw?.notificationPosition === "top-right" ||

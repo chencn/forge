@@ -21,6 +21,9 @@ tauri-plugin-dialog = "2"
 # 安装方式自动选 MSI 或 NSIS 安装包）；process 只用它的 relaunch 装完重启。
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 资源管理器「通过 Forge 打开」再点一次时，把路径交给已经开着的窗口，不另起一份。
+# 不要 deep-link：那条要额外配协议，这里只需要单实例。
+tauri-plugin-single-instance = { version = "2", default-features = false }
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -41,7 +44,16 @@ minisign-verify = "0.3"
 # 应用自己的菜单在前端摆。两者都是 tauri 已经锁在依赖树里的版本，不额外下载。
 [target."cfg(windows)".dependencies]
 webview2-com = "0.39"
-windows = { version = "0.62", features = ["Win32_Foundation"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_UI_Shell",
+] }
 
 # proc.rs / lsp.rs 停会话时按进程组整树收（libc::kill 给负 pid 发 SIGKILL）；
 # tauri 树里已锁这一份，显式声明不额外下载。

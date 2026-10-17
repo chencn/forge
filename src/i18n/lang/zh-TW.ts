@@ -67,6 +67,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "dialog.resetAll": "重置",
   "error.dismiss": "關閉",
   "error.io": "無法開啟「{path}」：{detail}",
+  "error.shellReg": "無法寫入檔案總管選單：{detail}",
   "error.pathGone": "「{path}」已不存在",
   "error.isDir": "「{path}」是資料夾，無法作為檔案開啟",
   "error.tooLarge": "檔案大小為 {size}，超出編輯器可開啟的上限 {max}",
@@ -306,6 +307,21 @@ export const zhTW: Record<TranslationKey, string> = {
   "workspaceMode.single": "單工作區",
   "workspaceMode.note":
     "開啟後可在同一視窗同時打開多個資料夾並快速切換，背景專案的終端機與執行任務保持運作；選「否」時保持單工作區模式，打開新資料夾將替換目前資料夾。",
+  "shellOpen.folder": "透過 Forge 開啟資料夾",
+  "shellOpen.file": "透過 Forge 開啟檔案",
+  "shellOpen.menu": "透過 Forge 開啟",
+  "shellOpen.folderNote":
+    "在檔案總管的資料夾右鍵選單加入「透過 Forge 開啟」。開啟後按新增專案處理。預設關閉。",
+  "shellOpen.fileNote":
+    "只為文字與原始碼加入「透過 Forge 開啟」，例如 txt、md、json、yaml 以及常見語言的原始檔。不含圖片、壓縮檔、辦公文件與可執行檔。開啟後只在編輯區暫時顯示，不收成專案。Windows 10 的右鍵選單會直接顯示；Windows 11 的新選單在「開啟方式」裡，完整選單在「顯示更多選項」裡。預設關閉。",
+  "shellOpen.default": "設為預設開啟方式",
+  "shellOpen.defaultNote":
+    "開啟後，按兩下這些文字與原始碼會用 Forge 開啟。Windows 10 會直接從原來的程式換過來。Windows 11 的「開啟方式」裡也會列出 Forge；若按兩下仍被原來的程式開啟，在「開啟方式」中選 Forge 並勾選「一律使用此應用程式開啟」。關掉後交還給原來的程式。",
+  "shellOpen.extra": "追加檔案格式",
+  "shellOpen.extraPlaceholder": "例如 prisma",
+  "shellOpen.extraAdd": "新增",
+  "shellOpen.extraRemove": "移除 .{ext}",
+  "shellOpen.extraNote": "內建格式不能修改。這裡只追加你自己的副檔名，和內建或已追加的重複時會自動去掉。",
   "settings.closeBehavior": "點選關閉時",
   "closeBehavior.quit": "退出應用",
   "closeBehavior.tray": "最小化到托盤",

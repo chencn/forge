@@ -4,6 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 export const IS_MAC =
   typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.userAgent);
 
+/** 资源管理器右键菜单只在 Windows 上登记。 */
+export const IS_WINDOWS =
+  typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
 /** 快捷键文案里的主修饰键（Ctrl / Cmd）。 */
 export const MOD_LABEL = IS_MAC ? "Cmd" : "Ctrl";
 
