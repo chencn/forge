@@ -85,6 +85,7 @@ import {
   setOpenTargetHandler,
 } from "./lib/monacoEnv";
 import { EMPTY_TREE_HASH, gitCommitDetail, gitCommitFile, gitDiffText, gitIgnoreRule, gitIndexShow, gitShow } from "./lib/git";
+import { lineChangeBaseline } from "./lib/lineChanges";
 import type {
   GitChange,
   GitCommit as GitCommitInfo,
@@ -128,6 +129,13 @@ import {
   scriptKindOf,
   scriptTerminalLabel,
 } from "./lib/scriptRun";
+import {
+  executeHttpRequest,
+  formatHttpExchange,
+  httpRequestLabel,
+  httpResponsePath,
+  parseHttpFile,
+} from "./lib/httpFile";
 import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
 import { appExit, onWindowBlur, onWindowFocus, setTrayLabels } from "./lib/window";
@@ -712,6 +720,22 @@ export default function App() {
   const activePane =
     activeTab && activeTab.startsWith("pane|") ? (activeTab.slice(5) as BottomPane) : null;
   const changeCount = git.status?.changes.length ?? 0;
+  /**
+   * 当前这篇相对上次提交的基线。打字时正文还没进变更清单，所以不在清单里的跟踪文件也要对照。
+   * 身份只跟路径、HEAD 和变更清单走，正文每敲一下字不会把基线换掉。
+   */
+  const changeBaseline = useMemo(() => {
+    const path = activeDoc?.path;
+    if (!path || !git.root) return null;
+    const request = lineChangeBaseline(git.root, path, git.status?.changes ?? []);
+    if (!request) return null;
+    return {
+      root: git.root,
+      head: git.lastCommit?.hash ?? "",
+      path: git.absoluteOf(request.relativePath),
+      allowEmpty: request.allowEmpty,
+    };
+  }, [activeDoc?.path, git]);
 
   /** 切根或切页签后，让 docs.activePath 与当前根正在看的文档对齐，保证目录树高亮与保存落点一致。 */
   useEffect(() => {
@@ -1232,6 +1256,57 @@ export default function App() {
       ).catch((cause: unknown) => reportError(errorText(cause)));
     },
     [focusPane, reportError, workspaceRoot]
+  );
+
+  /** 同一条请求连点时，只采纳最后一次的响应。键是文件路径（分栏）或响应页签路径。 */
+  const httpGenRef = useRef(new Map<string, number>());
+  /** 左右分栏时挂在请求文件右边的响应正文。换文件就按路径对上，不另开页签。 */
+  const [httpSide, setHttpSide] = useState<{ path: string; text: string } | null>(null);
+  /**
+   * `.http` / `.rest` 装订线那颗 ▶：解析编辑器里的当前正文，发出这一条请求。
+   *
+   * 引用了还没跑过的具名请求时会先把依赖发出去。
+   * 左右分栏把响应留在这份文件右边；单独页签才开只读页。两种都不写回磁盘。
+   */
+  const runHttp = useCallback(
+    (path: string, line: number, contents: string) => {
+      const file = parseHttpFile(contents);
+      const request = file.requests.find((item) => item.line === line);
+      if (!request) return;
+      const dir = parentPath(path) ?? workspaceRoot ?? "";
+      const split = settings.httpResponse === "split";
+      const key = split ? path : httpResponsePath(path, line);
+      const label = httpRequestLabel(request);
+      const gen = (httpGenRef.current.get(key) ?? 0) + 1;
+      httpGenRef.current.set(key, gen);
+      const sending = t("http.sending", { name: label });
+      const show = (text: string) => {
+        if (split) {
+          setHttpSide({ path, text });
+          return;
+        }
+        docsRef.current.openVirtual(key, text, "http");
+      };
+      if (!split) setActiveTab(`doc|${key}`);
+      show(sending);
+      void executeHttpRequest(file, request, { dir, workspace: workspaceRoot })
+        .then((result) => {
+          if (httpGenRef.current.get(key) !== gen) return;
+          show(
+            formatHttpExchange(result, {
+              binary: t("http.binary", { size: result.bodyBytes }),
+              truncated: t("http.truncated", { size: result.body.length }),
+            })
+          );
+        })
+        .catch((cause: unknown) => {
+          if (httpGenRef.current.get(key) !== gen) return;
+          const raw = errorText(cause);
+          show(describeError(raw, t));
+          reportError(raw);
+        });
+    },
+    [reportError, setActiveTab, settings.httpResponse, t, workspaceRoot]
   );
 
   /** 挪进页签栏：好几块能同时开着，切换着看。 */
@@ -4090,6 +4165,15 @@ export default function App() {
                     focusPane("run");
                   }}
                   onRunScript={runScript}
+                  onRunHttp={runHttp}
+                  httpResponse={
+                    settings.httpResponse === "split" &&
+                    httpSide !== null &&
+                    samePath(httpSide.path, activeDoc.path)
+                      ? httpSide.text
+                      : null
+                  }
+                  changeBaseline={changeBaseline}
                 />
               ) : (
                 <WelcomeScreen

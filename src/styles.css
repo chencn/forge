@@ -2918,6 +2918,41 @@ span.entry-icon > svg {
   min-height: 0;
 }
 
+/* 相对上次提交的标记。色条贴在行号与代码之间那条带的左缘，运行按钮仍居中，同一行可以并存。
+   删掉的行没有留下行高，用三角挂在缺口上沿或下沿。右侧概览条和小地图的颜色在装饰选项里。 */
+.monaco-editor .change-mark-added,
+.monaco-editor .change-mark-modified {
+  box-sizing: border-box;
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+
+.monaco-editor .change-mark-added {
+  border-left-color: var(--accent-green);
+}
+
+.monaco-editor .change-mark-modified {
+  border-left-color: var(--accent-blue);
+}
+
+.monaco-editor .change-mark-deleted::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 4px solid var(--accent-red);
+  pointer-events: none;
+}
+
+.monaco-editor .change-mark-deleted.is-before::after {
+  bottom: auto;
+  top: 0;
+}
+
 /* monaco 把 --vscode-* 只写在 .monaco-editor 上，而它的浮层宿主是这条链的兄弟节点，
    右键菜单在 shadow root 里取不到变量就成了透明底。自定义属性能穿进 shadow tree，补齐即可。 */
 .shadow-root-host {

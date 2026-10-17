@@ -97,6 +97,14 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   LSP_NO_INSTALL: (p, t) => t("error.lspNoInstall", { server: p[0] ?? "" }),
   LSP_INSTALL_SPAWN: (p, t) =>
     t("error.lspInstallSpawn", { program: p[0] ?? "", detail: p[1] ?? "" }),
+  HTTP_URL: (p, t) => t("error.httpUrl", { url: p[0] ?? "" }),
+  HTTP_NETWORK: (p, t) => t("error.httpNetwork", { detail: p[0] ?? "" }),
+  HTTP_TIMEOUT: (p, t) => t("error.httpTimeout", { detail: p[0] ?? "" }),
+  HTTP_HEADER: (p, t) => t("error.httpHeader", { name: p[0] ?? "" }),
+  HTTP_METHOD: (p, t) => t("error.httpMethod", { method: p[0] ?? "" }),
+  HTTP_BODY: (p, t) => t("error.httpBody", { detail: p[0] ?? "" }),
+  HTTP_CYCLE: (p, t) => t("error.httpCycle", { name: p[0] ?? "" }),
+  HTTP_ENCODING: (p, t) => t("error.httpEncoding", { encoding: p[0] ?? "" }),
 };
 
 /** 把后端回的错误文本翻成当前界面语言；不含代码的原样返回。 */

@@ -161,6 +161,255 @@ monaco.languages.setMonarchTokensProvider("properties", {
   },
 });
 
+// `.http` 与 `.rest` 是同一种请求文件。高亮请求行、变量、分隔线和正文里的 JSON。
+monaco.languages.register({
+  id: "http",
+  extensions: [".http", ".rest"],
+  aliases: ["HTTP", "http"],
+  mimetypes: ["text/x-http"],
+});
+
+monaco.languages.setLanguageConfiguration("http", {
+  comments: { lineComment: "#" },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+  ],
+});
+
+monaco.languages.setMonarchTokensProvider("http", {
+  defaultToken: "",
+  tokenPostfix: ".http",
+  tokenizer: {
+    root: [
+      [/^#{3,}.*$/, "comment"],
+      [/^\s*(?:#|\/\/).*$/, "comment"],
+      [/^(@\S+)(\s*=\s*)(.*)$/, ["variable", "delimiter", "string"]],
+      [
+        /^(?:GET|HEAD|POST|PUT|DELETE|PATCH|OPTIONS|TRACE|CONNECT|PROPFIND|PROPPATCH|MKCOL|COPY|MOVE|LOCK|UNLOCK|GRAPHQL|QUERY|PURGE)\b/,
+        { token: "keyword", next: "@request" },
+      ],
+      [/^https?:\/\/\S+/, { token: "string", next: "@request" }],
+      [/^\{\{/, { token: "variable", next: "@request" }],
+      // 响应页第一行是状态行，请求文件不会以这个开头。
+      [/^HTTP\/\d+(?:\.\d+)?/, { token: "keyword", next: "@status" }],
+      [/^\s*$/, ""],
+    ],
+    status: [
+      [/\b[1-5]\d\d\b/, "number"],
+      [/.$/, { token: "string", next: "@responseMeta" }],
+      [/./, "string"],
+    ],
+    responseMeta: [
+      [/^\s*$/, { token: "", next: "@responseHeaders" }],
+      [/^https?:\/\/\S+/, "string"],
+      [/^.*$/, "comment"],
+    ],
+    responseHeaders: [
+      [/^\s*$/, { token: "", next: "@body" }],
+      [/^([^:]+)(:)(.*)$/, ["type", "delimiter", "string"]],
+      [/^.*$/, "comment"],
+    ],
+    request: [
+      [/\{\{[^}]+\}\}/, "variable"],
+      [/HTTP\/\d+(?:\.\d+)?/, "number"],
+      [/.$/, { token: "string", next: "@headers" }],
+      [/./, "string"],
+    ],
+    headers: [
+      [/^#{3,}.*$/, { token: "comment", next: "@root" }],
+      [/^\s*$/, { token: "", next: "@body" }],
+      [/^\s*(?:#|\/\/).*$/, "comment"],
+      [/^\s*[?&].*$/, "string"],
+      [/\{\{[^}]+\}\}/, "variable"],
+      [/^([^:]+)(:)(.*)$/, ["type", "delimiter", "string"]],
+    ],
+    body: [
+      [/^#{3,}.*$/, { token: "comment", next: "@root" }],
+      [/^>.*$/, "comment"],
+      [/\{\{[^}]+\}\}/, "variable"],
+      [/"([^"\\]|\\.)*"/, "string"],
+      [/<\/?[\w:.-]+(?:\s[^<>]*)?>/, "type"],
+      [/\b(?:true|false|null)\b/, "keyword"],
+      [/-?\b\d+(?:\.\d+)?\b/, "number"],
+      [/[{}[\],]/, "delimiter"],
+    ],
+  },
+});
+
+// go.mod / go.work / go.sum。扩展名不是 .go，内置 Go 语言对不上。
+monaco.languages.register({
+  id: "gomod",
+  filenames: ["go.mod", "go.work", "go.sum", "go.work.sum"],
+  aliases: ["Go Mod", "go.mod"],
+});
+
+monaco.languages.setLanguageConfiguration("gomod", {
+  comments: { lineComment: "//" },
+  brackets: [["(", ")"]],
+  autoClosingPairs: [
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "`", close: "`" },
+  ],
+});
+
+monaco.languages.setMonarchTokensProvider("gomod", {
+  defaultToken: "",
+  tokenPostfix: ".gomod",
+  tokenizer: {
+    root: [
+      [/\/\/.*$/, "comment"],
+      [
+        /\b(?:module|go|toolchain|godebug|require|exclude|replace|retract|use|ignore|tool)\b/,
+        "keyword",
+      ],
+      [/=>/, "delimiter"],
+      [/"([^"\\]|\\.)*"/, "string"],
+      [/`[^`]*`/, "string"],
+      [/\bv\d+\.\d+\.\d+(?:[-+][\w.+]+)?/, "number"],
+      [/\b\d+\.\d+(?:\.\d+)?\b/, "number"],
+      [/\bh1:[A-Za-z0-9+/=]+/, "string"],
+      [/[()[\]]/, "delimiter"],
+    ],
+  },
+});
+
+// build.gradle / settings.gradle。Monaco 没有 Groovy，按 Gradle 里常见的词上色。
+monaco.languages.register({
+  id: "gradle",
+  extensions: [".gradle"],
+  aliases: ["Gradle", "gradle"],
+});
+
+monaco.languages.setLanguageConfiguration("gradle", {
+  comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+  ],
+});
+
+monaco.languages.setMonarchTokensProvider("gradle", {
+  defaultToken: "",
+  tokenPostfix: ".gradle",
+  tokenizer: {
+    root: [
+      [/\/\/.*$/, "comment"],
+      [/\/\*/, "comment", "@comment"],
+      [/'''/, "string", "@sqq"],
+      [/"""/, "string", "@dqq"],
+      [/'([^'\\]|\\.)*'/, "string"],
+      [/"([^"\\]|\\.)*"/, "string"],
+      [
+        /\b(?:plugins|plugin|apply|from|dependencies|repositories|implementation|api|compileOnly|runtimeOnly|testImplementation|testCompileOnly|testRuntimeOnly|annotationProcessor|kapt|classpath|id|version|ext|allprojects|subprojects|task|tasks|sourceSets|java|application|mavenCentral|google|include|exclude|project|rootProject|buildscript|configurations|publishing)\b/,
+        "keyword",
+      ],
+      [/\b(?:true|false|null)\b/, "keyword"],
+      [/\b\d+(?:\.\d+)?\b/, "number"],
+      [/[{}()[\]]/, "delimiter"],
+    ],
+    comment: [
+      [/[^\/*]+/, "comment"],
+      [/\*\//, "comment", "@pop"],
+      [/[\/*]/, "comment"],
+    ],
+    sqq: [
+      [/[^']+/, "string"],
+      [/'''/, "string", "@pop"],
+      [/'/, "string"],
+    ],
+    dqq: [
+      [/[^"]+/, "string"],
+      [/"""/, "string", "@pop"],
+      [/"/, "string"],
+    ],
+  },
+});
+
+// CMakeLists.txt / .cmake。扩展名经常是 txt，内置语言里没有 CMake。
+monaco.languages.register({
+  id: "cmake",
+  extensions: [".cmake"],
+  filenames: ["CMakeLists.txt"],
+  aliases: ["CMake", "cmake"],
+});
+
+monaco.languages.setLanguageConfiguration("cmake", {
+  comments: { lineComment: "#" },
+  brackets: [["(", ")"]],
+  autoClosingPairs: [
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+  ],
+});
+
+monaco.languages.setMonarchTokensProvider("cmake", {
+  defaultToken: "",
+  tokenPostfix: ".cmake",
+  tokenizer: {
+    root: [
+      [/#.*$/, "comment"],
+      [/\$\{[^}]*\}/, "variable"],
+      [/"([^"\\]|\\.)*"/, "string"],
+      [
+        /\b(?:cmake_minimum_required|project|add_executable|add_library|add_subdirectory|target_link_libraries|target_include_directories|target_compile_definitions|target_compile_options|target_compile_features|find_package|find_library|find_path|set|unset|option|if|else|elseif|endif|foreach|endforeach|while|endwhile|function|endfunction|macro|endmacro|include|install|message|list|string|file|configure_file|add_custom_command|add_custom_target|enable_testing|add_test|set_target_properties|get_target_property|include_directories|link_directories|aux_source_directory)\b/,
+        "keyword",
+      ],
+      [/\b(?:TRUE|FALSE|ON|OFF|YES|NO)\b/, "keyword"],
+      [/\b\d+(?:\.\d+)?\b/, "number"],
+      [/[()]/, "delimiter"],
+    ],
+  },
+});
+
+// requirements.txt。普通 .txt 仍是纯文本，只有依赖清单走这里。
+monaco.languages.register({
+  id: "pip-requirements",
+  aliases: ["Requirements", "pip-requirements"],
+});
+
+monaco.languages.setLanguageConfiguration("pip-requirements", {
+  comments: { lineComment: "#" },
+});
+
+monaco.languages.setMonarchTokensProvider("pip-requirements", {
+  defaultToken: "",
+  tokenPostfix: ".requirements",
+  tokenizer: {
+    root: [
+      [/#.*$/, "comment"],
+      [/^\s*-{1,2}\S+/, "keyword"],
+      [/[=><!~]=|[><]/, "delimiter"],
+      [/\b\d+(?:\.\d+)+(?:[-.][\w.+]+)?/, "number"],
+      [/[\[\]]/, "delimiter"],
+    ],
+  },
+});
+
 // 增强 Monaco 内置 shell 语言高亮（覆盖 gradlew / mvnw / .sh / .bash 语法与双引号插值）
 monaco.languages.setLanguageConfiguration("shell", {
   comments: {

@@ -25,9 +25,6 @@ tauri-plugin-dialog = "2"
 # 安装方式自动选 MSI 或 NSIS 安装包）；process 只用它的 relaunch 装完重启。
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-# 资源管理器「通过 Forge 打开」再点一次时，把路径交给已经开着的窗口，不另起一份。
-# 不要 deep-link：那条要额外配协议，这里只需要单实例。
-tauri-plugin-single-instance = { version = "2", default-features = false }
 # 文本后缀白名单。Win11 新菜单的 DLL 也读这一份，两处不能各写一份。
 forge-shell-ext = { path = "crates/forge-shell-ext" }
 url = "2"

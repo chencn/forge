@@ -32,6 +32,7 @@ import { clearLspLogs, lspLogs, watchLspLogs, watchLspStatus } from "../lib/lspC
 import type { WakeResult } from "../lib/lspClient";
 import type {
   CloseBehavior,
+  HttpResponseLayout,
   KeymapScheme,
   NotificationPosition,
   SavePolicy,
@@ -92,6 +93,11 @@ const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: "en", label: "English" },
 ];
 const TAB_SIZES = [2, 4, 8];
+const HTTP_RESPONSE_LAYOUTS: HttpResponseLayout[] = ["split", "tab"];
+const HTTP_RESPONSE_LABEL: Record<HttpResponseLayout, TranslationKey> = {
+  split: "httpResponse.split",
+  tab: "httpResponse.tab",
+};
 const CLOSE_BEHAVIORS: CloseBehavior[] = ["quit", "tray"];
 const CLOSE_LABEL: Record<CloseBehavior, TranslationKey> = {
   quit: "closeBehavior.quit",
@@ -567,6 +573,20 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
               </div>
 
               <div className="settings-row">
+                <span className="settings-label">{t("settings.httpResponse")}</span>
+                <Select
+                  label={t("settings.httpResponse")}
+                  placeholder="—"
+                  value={settings.httpResponse}
+                  options={HTTP_RESPONSE_LAYOUTS.map((option) => ({
+                    value: option,
+                    label: t(HTTP_RESPONSE_LABEL[option]),
+                  }))}
+                  onChange={(httpResponse) => patch({ httpResponse })}
+                />
+              </div>
+
+              <div className="settings-row">
                 <span className="settings-label">{t("settings.closeBehavior")}</span>
                 <Select
                   label={t("settings.closeBehavior")}
@@ -715,23 +735,6 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                         ) : null}
                       </div>
                     </div>
-                  ) : null}
-                </>
-              ) : null}
-              <p className="settings-note">{t("language.note")}</p>
-              <p className="settings-note">{t("workspaceMode.note")}</p>
-              {settings.closeBehavior === "tray" ? (
-                <p className="settings-note">{t("closeBehavior.note")}</p>
-              ) : null}
-              {IS_WINDOWS ? (
-                <>
-                  <p className="settings-note">{t("shellOpen.folderNote")}</p>
-                  <p className="settings-note">{t("shellOpen.fileNote")}</p>
-                  {settings.shell.openFile ? (
-                    <>
-                      <p className="settings-note">{t("shellOpen.defaultNote")}</p>
-                      <p className="settings-note">{t("shellOpen.extraNote")}</p>
-                    </>
                   ) : null}
                 </>
               ) : null}
@@ -1196,6 +1199,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                 theme: DEFAULT_SETTINGS.theme,
                 language: DEFAULT_SETTINGS.language,
                 workspaceMode: DEFAULT_SETTINGS.workspaceMode,
+                httpResponse: DEFAULT_SETTINGS.httpResponse,
                 closeBehavior: DEFAULT_SETTINGS.closeBehavior,
                 notificationPosition: DEFAULT_SETTINGS.notificationPosition,
                 explorer: { ...DEFAULT_SETTINGS.explorer },

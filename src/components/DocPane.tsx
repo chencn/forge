@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Code2, Columns2, Eye } from "lucide-react";
 import CodeEditor, { type CodeEditorHandle } from "./CodeEditor";
 import ImagePreview from "./ImagePreview";
@@ -8,6 +8,7 @@ import { retainEditorModels } from "../lib/modelRetention";
 import type { DocView, OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import type { DocKind } from "../lib/docKind";
 import { describeError } from "../lib/errors";
+import type { ChangeBaseline } from "../lib/lineChanges";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { useI18n } from "../i18n";
 import type { MarkdownPreviewHandle } from "./MarkdownPreview";
@@ -37,6 +38,15 @@ interface DocPaneProps {
   onRunConfig: (configs: RunConfiguration[]) => void;
   /** 点了脚本文件装订线那颗 ▶：把脚本发到对应终端里执行。 */
   onRunScript: (path: string) => void;
+  /** 点了 `.http` / `.rest` 请求行上的 ▶。 */
+  onRunHttp: (path: string, line: number, contents: string) => void;
+  /**
+   * 左右分栏时这一份请求对应的响应正文。
+   * 为 null 表示不在右边挂响应（还没发送，或设置成了单独页签）。
+   */
+  httpResponse: string | null;
+  /** 相对上次提交的基线。null 表示这篇不画改动。只给源码那台编辑器。 */
+  changeBaseline: ChangeBaseline | null;
 }
 
 /**
@@ -73,6 +83,9 @@ export default function DocPane({
   openPaths,
   onRunConfig,
   onRunScript,
+  onRunHttp,
+  httpResponse,
+  changeBaseline,
 }: DocPaneProps) {
   const { t } = useI18n();
   const openPathsRef = useRef(openPaths);
@@ -83,9 +96,32 @@ export default function DocPane({
     retainEditorModels(doc.path, openPathsRef.current);
   }, [doc.loading, doc.path, openKey]);
   const sourceCapable = doc.kind !== "image" && doc.kind !== "binary";
-  const isSplit = doc.kind === "markdown" && doc.view === "split";
-  const showPreview = canPreview(doc) && (doc.view === "preview" || isSplit);
-  const hideSource = showPreview && !isSplit;
+  const markdownSplit = doc.kind === "markdown" && doc.view === "split";
+  const httpSplit = httpResponse !== null;
+  const layoutSplit = markdownSplit || httpSplit;
+  const responseDoc = useMemo<OpenDocument | null>(() => {
+    if (httpResponse === null) return null;
+    return {
+      path: `${doc.path}#response`,
+      root: doc.root,
+      name: "response.http",
+      kind: "text",
+      view: "source",
+      contents: httpResponse,
+      baseline: httpResponse,
+      lineEnding: "lf",
+      hasBom: false,
+      language: "http",
+      readOnly: true,
+      loading: false,
+      error: null,
+      diskMs: 0,
+      stamp: 0,
+      onDisk: false,
+    };
+  }, [doc.path, doc.root, httpResponse]);
+  const showPreview = canPreview(doc) && (doc.view === "preview" || markdownSplit);
+  const hideSource = showPreview && !markdownSplit;
 
   /** 分栏模式下左侧编辑器的宽度百分比（默认 50%，支持 20%~80% 范围拖动调节）。 */
   const [splitRatio, setSplitRatio] = useState(50);
@@ -100,7 +136,7 @@ export default function DocPane({
 
   const handleEditorScrollRatio = useCallback(
     (ratio: number) => {
-      if (!isSplit) return;
+      if (!markdownSplit) return;
       if (scrollLockRef.current === "preview") return;
       scrollLockRef.current = "editor";
       previewHandleRef.current?.setScrollRatio(ratio);
@@ -112,12 +148,12 @@ export default function DocPane({
         unlockTimerRef.current = null;
       }, 60);
     },
-    [isSplit]
+    [markdownSplit]
   );
 
   const handlePreviewScrollRatio = useCallback(
     (ratio: number) => {
-      if (!isSplit) return;
+      if (!markdownSplit) return;
       if (scrollLockRef.current === "editor") return;
       scrollLockRef.current = "preview";
       editorHandleRef.current?.setScrollRatio(ratio);
@@ -129,7 +165,7 @@ export default function DocPane({
         unlockTimerRef.current = null;
       }, 60);
     },
-    [isSplit]
+    [markdownSplit]
   );
 
   useEffect(() => {
@@ -142,11 +178,11 @@ export default function DocPane({
 
   // 切入分栏模式时，按当前编辑器的滚动比例初始化右侧预览区
   useEffect(() => {
-    if (isSplit && editorHandleRef.current && previewHandleRef.current) {
+    if (markdownSplit && editorHandleRef.current && previewHandleRef.current) {
       const ratio = editorHandleRef.current.getScrollRatio();
       previewHandleRef.current.setScrollRatio(ratio);
     }
-  }, [isSplit]);
+  }, [markdownSplit]);
 
   // 打不开的文档（二进制、读失败）把原因摆在正文正中：横幅只闪一下，人还没看就走了。
   if (doc.error !== null) {
@@ -159,13 +195,13 @@ export default function DocPane({
 
   return (
     <div className="doc-pane">
-      <div className={`doc-body${isSplit ? " is-split" : ""}`} ref={bodyRef}>
+      <div className={`doc-body${layoutSplit ? " is-split" : ""}`} ref={bodyRef}>
         {sourceCapable ? (
           // 藏起来而不是卸载：Monaco 实例留着，撤销栈和光标才不会丢；分栏模式下按比例划分宽度。
           <div
             className="doc-source"
             hidden={hideSource}
-            style={isSplit ? { width: `${splitRatio}%`, flex: "none" } : undefined}
+            style={layoutSplit ? { width: `${splitRatio}%`, flex: "none" } : undefined}
           >
             <CodeEditor
               ref={editorHandleRef}
@@ -179,12 +215,14 @@ export default function DocPane({
               projectRoot={projectRoot}
               onRunConfig={onRunConfig}
               onRunScript={onRunScript}
+              onRunHttp={onRunHttp}
               onScrollRatio={handleEditorScrollRatio}
+              changeBaseline={changeBaseline}
             />
           </div>
         ) : null}
 
-        {isSplit ? (
+        {layoutSplit ? (
           <div
             role="separator"
             aria-orientation="vertical"
@@ -217,7 +255,7 @@ export default function DocPane({
         {showPreview && doc.kind === "markdown" ? (
           <div
             className="doc-preview-pane"
-            style={isSplit ? { width: `${100 - splitRatio}%`, flex: "none" } : undefined}
+            style={markdownSplit ? { width: `${100 - splitRatio}%`, flex: "none" } : undefined}
           >
             <Suspense fallback={null}>
               <MarkdownPreview
@@ -229,6 +267,26 @@ export default function DocPane({
                 onScrollRatio={handlePreviewScrollRatio}
               />
             </Suspense>
+          </div>
+        ) : null}
+
+        {responseDoc ? (
+          <div
+            className="doc-preview-pane"
+            style={{ width: `${100 - splitRatio}%`, flex: "none" }}
+          >
+            <CodeEditor
+              document={responseDoc}
+              onChange={() => {}}
+              onSave={() => {}}
+              reveal={null}
+              onRevealDone={() => {}}
+              runConfigs={[]}
+              projectRoot={projectRoot}
+              onRunConfig={() => {}}
+              onRunScript={() => {}}
+              onRunHttp={() => {}}
+            />
           </div>
         ) : null}
 

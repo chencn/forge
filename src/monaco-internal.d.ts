@@ -13,6 +13,25 @@ declare module "monaco-editor/platform/configuration/common/configuration.js" {
   export const IConfigurationService: unknown;
 }
 
+declare module "monaco-editor/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.js" {
+  export class DefaultLinesDiffComputer {
+    computeDiff(
+      original: string[],
+      modified: string[],
+      options: {
+        ignoreTrimWhitespace: boolean;
+        maxComputationTimeMs: number;
+        computeMoves: boolean;
+      }
+    ): {
+      changes: {
+        original: { startLineNumber: number; endLineNumberExclusive: number; isEmpty: boolean };
+        modified: { startLineNumber: number; endLineNumberExclusive: number; isEmpty: boolean };
+      }[];
+    };
+  }
+}
+
 declare module "monaco-editor/editor/standalone/browser/standaloneServices.js" {
   export const StandaloneServices: {
     get(id: unknown): unknown;

@@ -37,10 +37,20 @@ describe("languageForPath 路径到 Monaco 语言映射", () => {
     expect(languageForPath("Gemfile")).toBe("ruby");
     expect(languageForPath("Rakefile")).toBe("ruby");
     expect(languageForPath("build.sbt")).toBe("scala");
+    expect(languageForPath("Cargo.lock")).toBe("ini");
+    expect(languageForPath("D:\\app\\code\\forge\\Cargo.lock")).toBe("ini");
+    expect(languageForPath(".env")).toBe("ini");
+    expect(languageForPath(".env.development")).toBe("ini");
+    expect(languageForPath("D:\\app\\code\\gyt-h5\\.env.development")).toBe("ini");
+    expect(languageForPath(".env.production.local")).toBe("ini");
+    expect(languageForPath(".environment")).toBe("plaintext");
     expect(languageForPath(".bashrc")).toBe("shell");
     expect(languageForPath(".gitconfig")).toBe("ini");
     expect(languageForPath("README")).toBe("plaintext");
     expect(languageForPath("data.unknown")).toBe("plaintext");
+    expect(languageForPath("api.http")).toBe("http");
+    expect(languageForPath("api.rest")).toBe("http");
+    expect(languageForPath("C:\\project\\requests\\login.HTTP")).toBe("http");
     // Shebang 识别
     expect(languageForPath("custom-script", "#!/bin/bash\necho 1")).toBe("shell");
     expect(languageForPath("run-job", "#!/usr/bin/env python3\nprint(1)")).toBe("python");
@@ -80,5 +90,33 @@ describe("languageForPath 路径到 Monaco 语言映射", () => {
     expect(languageLabel("hcl")).toBe("HCL");
     expect(languageLabel("scala")).toBe("Scala");
     expect(languageLabel("sol")).toBe("Solidity");
+  });
+
+  it("主流语言的工程文件按文件名识别", () => {
+    expect(languageForPath("D:\\app\\go\\go-print\\go.mod")).toBe("gomod");
+    expect(languageForPath("go.sum")).toBe("gomod");
+    expect(languageForPath("go.work")).toBe("gomod");
+    expect(languageForPath("go.work.sum")).toBe("gomod");
+    expect(languageForPath("build.gradle")).toBe("gradle");
+    expect(languageForPath("settings.gradle")).toBe("gradle");
+    expect(languageForPath("build.gradle.kts")).toBe("kotlin");
+    expect(languageForPath("CMakeLists.txt")).toBe("cmake");
+    expect(languageForPath("src\\CMakeLists.txt")).toBe("cmake");
+    expect(languageForPath("toolchain.cmake")).toBe("cmake");
+    expect(languageForPath("requirements.txt")).toBe("pip-requirements");
+    expect(languageForPath("requirements-dev.txt")).toBe("pip-requirements");
+    expect(languageForPath("dev-requirements.txt")).toBe("pip-requirements");
+    expect(languageForPath("notes.txt")).toBe("plaintext");
+    expect(languageForPath("Pipfile")).toBe("ini");
+    expect(languageForPath("setup.cfg")).toBe("ini");
+    expect(languageForPath("composer.lock")).toBe("json");
+    expect(languageForPath("poetry.lock")).toBe("ini");
+    expect(languageForPath("pubspec.lock")).toBe("yaml");
+    expect(languageForPath("Dockerfile.dev")).toBe("dockerfile");
+    expect(languageForPath("Containerfile")).toBe("dockerfile");
+    expect(languageForPath("GNUmakefile")).toBe("makefile");
+    expect(languageLabel("gomod")).toBe("Go Mod");
+    expect(languageLabel("gradle")).toBe("Gradle");
+    expect(languageLabel("cmake")).toBe("CMake");
   });
 });

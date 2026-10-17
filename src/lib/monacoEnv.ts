@@ -58,7 +58,12 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   toml: "ini",
   ini: "ini",
   conf: "ini",
+  cfg: "ini",
   properties: "properties",
+  gradle: "gradle",
+  cmake: "cmake",
+  http: "http",
+  rest: "http",
   dockerfile: "dockerfile",
   graphql: "graphql",
   lua: "lua",
@@ -171,6 +176,8 @@ const LANGUAGE_BY_NAME: Record<string, string> = {
   podfile: "ruby",
   vagrantfile: "ruby",
   "build.sbt": "scala",
+  // 扩展名是 .lock，跟 Cargo.toml 一样是 TOML，走同一套高亮。
+  "cargo.lock": "ini",
   justfile: "shell",
   procfile: "shell",
   ".gitignore": "ini",
@@ -179,7 +186,6 @@ const LANGUAGE_BY_NAME: Record<string, string> = {
   ".gitattributes": "ini",
   ".editorconfig": "ini",
   ".npmrc": "ini",
-  ".env": "ini",
   ".bashrc": "shell",
   ".bash_profile": "shell",
   ".bash_aliases": "shell",
@@ -191,6 +197,8 @@ const LANGUAGE_BY_NAME: Record<string, string> = {
 export function languageForPath(path: string, contents?: string): string {
   const name = (path.split(/[\\/]/).pop() ?? "").toLocaleLowerCase();
   if (LANGUAGE_BY_NAME[name]) return LANGUAGE_BY_NAME[name];
+  const named = languageByFileName(name);
+  if (named) return named;
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot + 1) : "";
   if (ext && LANGUAGE_BY_EXTENSION[ext]) return LANGUAGE_BY_EXTENSION[ext];
@@ -217,6 +225,40 @@ export function languageForPath(path: string, contents?: string): string {
   }
 
   return "plaintext";
+}
+
+/**
+ * 扩展名对不上语言的工程文件。
+ *
+ * `go.mod` 的扩展名是 `mod`，`CMakeLists.txt` 的扩展名是 `txt`，
+ * `Dockerfile.dev` 的扩展名是 `dev`。这些要按文件名认，不能等扩展名表。
+ */
+function languageByFileName(name: string): string | null {
+  if (name === ".env" || name.startsWith(".env.")) return "ini";
+  if (name === "go.mod" || name === "go.work" || name === "go.sum" || name === "go.work.sum") {
+    return "gomod";
+  }
+  if (name === "cmakelists.txt") return "cmake";
+  if (name === "pipfile" || name === "poetry.lock" || name === "uv.lock") return "ini";
+  if (name === "pipfile.lock" || name === "composer.lock" || name === "package.resolved") {
+    return "json";
+  }
+  if (name === "pubspec.lock") return "yaml";
+  if (name === "gnumakefile" || name === "makefile.am" || name === "makefile.in") return "makefile";
+  if (
+    name === "containerfile" ||
+    name.startsWith("containerfile.") ||
+    name.startsWith("dockerfile.")
+  ) {
+    return "dockerfile";
+  }
+  if (
+    /^(?:dev-)?requirements(?:[._-][\w.-]+)?\.(?:txt|in)$/.test(name) ||
+    /^constraints(?:[._-][\w.-]+)?\.(?:txt|in)$/.test(name)
+  ) {
+    return "pip-requirements";
+  }
+  return null;
 }
 
 /**
@@ -252,6 +294,11 @@ const LANGUAGE_LABELS: Record<string, string> = {
   yaml: "YAML",
   ini: "Ini",
   properties: "Properties",
+  gomod: "Go Mod",
+  gradle: "Gradle",
+  cmake: "CMake",
+  "pip-requirements": "Requirements",
+  http: "HTTP",
   dockerfile: "Dockerfile",
   graphql: "GraphQL",
   lua: "Lua",

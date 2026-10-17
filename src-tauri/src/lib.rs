@@ -1,5 +1,6 @@
 mod ai_commit;
 mod error;
+mod http_exchange;
 mod fs;
 mod git;
 mod history;
@@ -37,16 +38,13 @@ pub fn run() {
         // 更新检查/下载在设置页手动触发；relaunch 供装完新包后重启应用。
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // 第二份进程把资源管理器传来的路径交给这一份，自己退出。
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            shell_open::deliver(app, &args);
-        }))
         .manage(watch::WatchSlot::default())
         .manage(shell_open::Pending::default())
         .setup(|app| {
             tray::build(&app.handle().clone())?;
             disable_default_context_menu(app.handle());
-            // 冷启动时前端还没挂监听，先把参数存下，页面起来再取。
+            // 这一份进程自己的窗口。资源管理器传来的路径记在这里，页面起来再取。
+            // 不占单实例锁：再启动一次就是另一个窗口，不会被这一份吃掉。
             shell_open::deliver(app.handle(), &std::env::args().skip(1).collect::<Vec<_>>());
             Ok(())
         })
@@ -172,6 +170,8 @@ pub fn run() {
             ai_commit::ai_commit_generate,
             ai_commit::ai_commit_cancel,
             ai_commit::ai_commit_list_models,
+            http_exchange::http_exchange,
+            http_exchange::http_env,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

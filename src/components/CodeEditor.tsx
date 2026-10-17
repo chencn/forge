@@ -5,10 +5,20 @@ import { monoFont } from "../lib/monacoEnv";
 import { basenameOf, samePath } from "../lib/format";
 import { gutterTargets } from "../lib/runMarkers";
 import { scriptKindOf } from "../lib/scriptRun";
+import { httpRequestLabel, isHttpFile, parseHttpFile } from "../lib/httpFile";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { useSettings } from "../hooks/useSettings";
-import { useI18n } from "../i18n";
+import { translate, useI18n } from "../i18n";
 import type { OpenDocument, RevealTarget } from "../hooks/useDocuments";
+import {
+  changeBaselineKey,
+  gutterChanges,
+  headFile,
+  lineForRulerClick,
+  rulerClickBounds,
+  type ChangeBaseline,
+  type GutterChange,
+} from "../lib/lineChanges";
 
 /** 一颗 ▶ 占多宽。行号与代码之间那条带默认 10px，这里留出 1px 余量给指针命中。 */
 const PIN_WIDTH = 12;
@@ -51,6 +61,14 @@ interface ScriptGutterPin {
   tip: string;
 }
 
+/** `.http` / `.rest` 里每一条请求行上的 ▶。 */
+interface HttpGutterPin {
+  line: number;
+  top: number;
+  left: number;
+  tip: string;
+}
+
 /** 供分栏模式下双向同步滚动位置的指令句柄。 */
 export interface CodeEditorHandle {
   setScrollRatio: (ratio: number) => void;
@@ -76,8 +94,92 @@ interface CodeEditorProps {
   onRunConfig: (configs: RunConfiguration[]) => void;
   /** 点了脚本文件第 1 行那颗 ▶：把这份脚本发到对应终端里执行。 */
   onRunScript: (path: string) => void;
+  /** 点了 `.http` / `.rest` 请求行上的 ▶：发送这一条请求。正文用编辑器里的最新内容。 */
+  onRunHttp: (path: string, line: number, contents: string) => void;
   /** 滚动位置变化时的比例回调（0~1），供分栏模式下与预览区联动。 */
   onScrollRatio?: (ratio: number) => void;
+  /**
+   * 相对上次提交的基线。null 表示这篇不画（未跟踪、冲突、仓库外、已删除）。
+   * 右侧响应页那台编辑器不传。
+   */
+  changeBaseline?: ChangeBaseline | null;
+}
+
+/** 色值和主题变量同一套，概览条和小地图吃不到 CSS 变量，只能给具体颜色。 */
+function markColor(kind: GutterChange["kind"]): string {
+  const dark = document.documentElement.dataset.theme === "dark";
+  if (kind === "added") return dark ? "#4ade80cc" : "#22c55ecc";
+  if (kind === "modified") return dark ? "#58a6ffcc" : "#3b82f6cc";
+  return dark ? "#f87171cc" : "#ef4444cc";
+}
+
+function markTip(kind: GutterChange["kind"]): string {
+  if (kind === "added") return translate("editor.changeAdded");
+  if (kind === "modified") return translate("editor.changeModified");
+  return translate("editor.changeDeleted");
+}
+
+function changeDecorations(
+  model: monaco.editor.ITextModel,
+  mark: GutterChange
+): monaco.editor.IModelDeltaDecoration[] {
+  const lineCount = model.getLineCount();
+  const start = Math.min(Math.max(1, mark.startLine), lineCount);
+  const end = Math.min(Math.max(start, mark.endLine), lineCount);
+  const color = markColor(mark.kind);
+  const overviewRuler = { color, position: monaco.editor.OverviewRulerLane.Full };
+  const minimap = { color, position: monaco.editor.MinimapPosition.Gutter };
+  const stickiness = monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges;
+  const tip = markTip(mark.kind);
+  // 右侧滚动条和迷你地图只在起始行留一个短点。整段改动拉满会盖住滑块，点滚动条就点不中。
+  const rulerRange = {
+    startLineNumber: start,
+    startColumn: 1,
+    endLineNumber: start,
+    endColumn: 1,
+  };
+  if (mark.kind === "deleted") {
+    const column = model.getLineMaxColumn(start);
+    return [
+      {
+        range: {
+          startLineNumber: start,
+          startColumn: column,
+          endLineNumber: start,
+          endColumn: column,
+        },
+        options: {
+          stickiness,
+          linesDecorationsClassName:
+            mark.edge === "before" ? "change-mark-deleted is-before" : "change-mark-deleted",
+          linesDecorationsTooltip: tip,
+          overviewRuler,
+          minimap,
+        },
+      },
+    ];
+  }
+  const className = mark.kind === "added" ? "change-mark-added" : "change-mark-modified";
+  const gutter: monaco.editor.IModelDeltaDecoration = {
+    range: { startLineNumber: start, startColumn: 1, endLineNumber: end, endColumn: 1 },
+    options: {
+      isWholeLine: true,
+      stickiness,
+      linesDecorationsClassName: className,
+      linesDecorationsTooltip: tip,
+    },
+  };
+  if (start === end) {
+    gutter.options = { ...gutter.options, overviewRuler, minimap };
+    return [gutter];
+  }
+  return [
+    gutter,
+    {
+      range: rulerRange,
+      options: { stickiness, overviewRuler, minimap },
+    },
+  ];
 }
 
 export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor(
@@ -92,7 +194,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     projectRoot,
     onRunConfig,
     onRunScript,
+    onRunHttp,
     onScrollRatio,
+    changeBaseline = null,
   }: CodeEditorProps,
   ref
 ) {
@@ -169,7 +273,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       smoothScrolling: true,
       renderLineHighlight: "all",
       padding: { top: 10, bottom: 12 },
-      scrollbar: { verticalScrollbarSize: 11, horizontalScrollbarSize: 11, useShadows: false },
+      scrollbar: { verticalScrollbarSize: 20, horizontalScrollbarSize: 11, useShadows: false },
       overviewRulerLanes: 2,
       fixedOverflowWidgets: true,
       // monaco 给 hover 只留一档偏好：偏上时若上方放不下，它不翻到下方，而是把整块夹到
@@ -325,6 +429,131 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     };
   }, [document, settings.editor.tabSize, wiringNonce]);
 
+  const baselinePropRef = useRef(changeBaseline);
+  baselinePropRef.current = changeBaseline;
+  const baselineKey = changeBaselineKey(changeBaseline);
+  const reloadMarksRef = useRef<() => void>(() => {});
+
+  /**
+   * 行号旁按整段改动画色条；右侧只在起始行留一个短点，横向上铺满滚动条，点击再向左扩到小地图。
+   * 打字只重算差异；HEAD 原文按提交哈希缓存，状态没变就不再起 git。
+   */
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const collection = editor.createDecorationsCollection();
+    let timer = 0;
+    let ticket = 0;
+    let readyKey = "";
+    let original = "";
+    let marks: GutterChange[] = [];
+
+    const paint = () => {
+      const spec = baselinePropRef.current;
+      const model = editor.getModel();
+      if (!spec || !model || readyKey !== changeBaselineKey(spec)) return;
+      if (!spec.allowEmpty && original === "") {
+        marks = [];
+        return;
+      }
+      marks = gutterChanges(original, model.getValue());
+      collection.set(marks.flatMap((mark) => changeDecorations(model, mark)));
+    };
+
+    const node = editor.getDomNode();
+    const onRulerPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || marks.length === 0) return;
+      const info = editor.getLayoutInfo();
+      const layout = info.overviewRuler;
+      const rect = node?.getBoundingClientRect();
+      if (!rect || layout.height <= 0 || layout.width <= 0) return;
+      const bounds = rulerClickBounds(
+        rect.right - layout.right - layout.width,
+        layout.width,
+        rect.left + info.minimap.minimapLeft,
+        info.minimap.minimapWidth
+      );
+      const top = rect.top + layout.top;
+      if (event.clientX < bounds.left || event.clientX > bounds.right) return;
+      if (event.clientY < top || event.clientY > top + layout.height) return;
+      const line = lineForRulerClick(
+        event.clientY - top,
+        layout.height,
+        editor.getScrollHeight(),
+        editor.getOption(monaco.editor.EditorOption.lineHeight),
+        marks.map((mark) => ({ startLine: mark.startLine, endLine: mark.startLine })),
+        (lineNumber) => editor.getTopForLineNumber(lineNumber)
+      );
+      if (line === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.revealLineInCenter(line, monaco.editor.ScrollType.Smooth);
+      editor.focus();
+    };
+    node?.addEventListener("pointerdown", onRulerPointerDown, true);
+
+    const load = () => {
+      const spec = baselinePropRef.current;
+      const mine = (ticket += 1);
+      const key = changeBaselineKey(spec);
+      window.clearTimeout(timer);
+      if (!spec) {
+        readyKey = "";
+        original = "";
+        marks = [];
+        collection.clear();
+        return;
+      }
+      if (key === readyKey) {
+        paint();
+        return;
+      }
+      collection.clear();
+      marks = [];
+      readyKey = "";
+      void headFile(spec.root, spec.head, spec.path).then((text) => {
+        if (mine !== ticket) return;
+        const current = baselinePropRef.current;
+        if (!current || changeBaselineKey(current) !== key) return;
+        readyKey = key;
+        if (!current.allowEmpty && text === "") {
+          original = "";
+          marks = [];
+          collection.clear();
+          return;
+        }
+        original = text;
+        paint();
+      });
+    };
+
+    reloadMarksRef.current = load;
+    const content = editor.onDidChangeModelContent(() => {
+      window.clearTimeout(timer);
+      // 换文件时 setValue 发生在 swapping 里，这一轮的正文已经是新的，不必再等打字防抖。
+      timer = window.setTimeout(paint, swapping.current ? 0 : 200);
+    });
+    const model = editor.onDidChangeModel(() => load());
+    const theme = new MutationObserver(() => paint());
+    theme.observe(window.document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+    return () => {
+      window.clearTimeout(timer);
+      ticket += 1;
+      content.dispose();
+      model.dispose();
+      theme.disconnect();
+      node?.removeEventListener("pointerdown", onRulerPointerDown, true);
+      collection.clear();
+      reloadMarksRef.current = () => {};
+    };
+  }, [wiringNonce]);
+
+  useEffect(() => {
+    reloadMarksRef.current();
+  }, [baselineKey, t, wiringNonce]);
+
   /**
    * 装订线上那几颗 ▶：这篇文档里哪几行有可跑的声明。
    *
@@ -339,12 +568,26 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   const [pins, setPins] = useState<RunGutterPin[]>([]);
   /** 脚本文件第 1 行那颗 ▶：点了把脚本发到终端。非脚本文件时为 null。 */
   const [scriptPin, setScriptPin] = useState<ScriptGutterPin | null>(null);
+  /** `.http` / `.rest` 每一条请求行一颗 ▶。 */
+  const [httpPins, setHttpPins] = useState<HttpGutterPin[]>([]);
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
   /** 当前文档是不是脚本文件；装订线那颗 ▶ 与「运行配置」那套互不相干。 */
   const scriptPath = document && scriptKindOf(document.path) ? document.path : null;
+  const httpPath = document && isHttpFile(document.path) ? document.path : null;
+  const httpTargets = useMemo(() => {
+    if (!document || !httpPath) return [];
+    return parseHttpFile(document.contents).requests.map((request) => ({
+      line: request.line,
+      name: httpRequestLabel(request),
+    }));
+  }, [document, httpPath]);
   const scriptPathRef = useRef(scriptPath);
   scriptPathRef.current = scriptPath;
+  const httpPathRef = useRef(httpPath);
+  httpPathRef.current = httpPath;
+  const httpTargetsRef = useRef(httpTargets);
+  httpTargetsRef.current = httpTargets;
   const translateRef = useRef(t);
   translateRef.current = t;
 
@@ -395,13 +638,26 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
           }
         : null
     );
+
+    const httpNext: HttpGutterPin[] = [];
+    for (const target of httpTargetsRef.current) {
+      const at = editor.getScrolledVisiblePosition({ lineNumber: target.line, column: 1 });
+      if (!at) continue;
+      httpNext.push({
+        line: target.line,
+        top: at.top,
+        left,
+        tip: translateRef.current("run.gutter.runHttp", { name: target.name }),
+      });
+    }
+    setHttpPins(httpNext);
   }, []);
   const measureRef = useRef(measure);
   measureRef.current = measure;
 
   useEffect(() => {
     measure();
-  }, [measure, targets, t, scriptPath]);
+  }, [measure, targets, t, scriptPath, httpTargets]);
 
   /**
    * 把搜索命中落成编辑器里的光标与选区。
@@ -456,6 +712,23 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
             onClick={() => onRunScript(scriptPath)}
           />
         ) : null}
+        {httpPins.map((pin) => (
+          <button
+            key={`http-${pin.line}`}
+            type="button"
+            className="run-gutter-run"
+            style={{ top: pin.top, left: pin.left }}
+            data-tip={pin.tip}
+            aria-label={pin.tip}
+            onClick={() => {
+              const path = httpPathRef.current;
+              if (!path) return;
+              const model = editorRef.current?.getModel();
+              const contents = model ? model.getValue() : (document?.contents ?? "");
+              onRunHttp(path, pin.line, contents);
+            }}
+          />
+        ))}
       </div>
     </div>
   );
