@@ -167,6 +167,8 @@ export type NativeScrollPort = {
 export type NativeScrollBinding = {
   /** 排一次「视口 → 滚动条」同步（内部用 rAF 合帧）。 */
   sync: () => void;
+  /** 回到最底，并继续让新输出带着画面和滚动条走。 */
+  follow: () => void;
   /** 解绑滚动 / 滚轮监听与 xterm 订阅。 */
   dispose: () => void;
 };
@@ -198,61 +200,71 @@ export function bindNativeScroll(
 ): NativeScrollBinding {
   let applying = false;
   let queued: number | ReturnType<typeof setTimeout> = 0;
-  /** 用户离开底部之后，新输出只加长滚屏，不再改视口。 */
+  /** 用户把滚动条离开底部之后，新输出不再改画面，也不改滚动条位置。 */
   let awayFromTail = false;
-  /** 上次由程序停在的底部行。用户从这里往上翻，才算离开底部。 */
-  let placedTail = 0;
+
+  const boxHeight = (el: HTMLElement | null): number => {
+    if (!el) return 0;
+    if (el.clientHeight > 0) return el.clientHeight;
+    const parsed = parseFloat(el.style && el.style.height);
+    return parsed > 0 ? parsed : 0;
+  };
 
   const measureCellHeight = (): number => {
     const rows = term.rows || 0;
     if (rows < 1) return 0;
     const screen = host.querySelector<HTMLElement>(".xterm-screen");
-    const canvas = screen ? screen.querySelector("canvas") : null;
-    const styled = (el: HTMLElement | null): number => {
-      if (!el) return 0;
-      if (el.clientHeight > 0) return el.clientHeight;
-      const parsed = parseFloat(el.style && el.style.height);
-      return parsed > 0 ? parsed : 0;
-    };
-    const height =
-      styled(screen) || styled(canvas) || styled(host.querySelector<HTMLElement>(".term-sticky"));
-    if (height <= 0) return 0;
-    return height / rows;
+    const canvas = screen?.querySelector("canvas") ?? host.querySelector("canvas");
+    const sticky = host.querySelector<HTMLElement>(".term-sticky");
+    const slot = host.querySelector<HTMLElement>(".term-slot");
+    const height = boxHeight(screen) || boxHeight(canvas) || boxHeight(slot) || boxHeight(sticky);
+    if (height > 0) return height / rows;
+    // 画面还没排上尺寸时，用字号撑出滚动范围，避免进度条一直停在开头。
+    const fontSize = Number(term.options.fontSize) || 12;
+    const lineHeight = Number(term.options.lineHeight) || 1;
+    return fontSize * (lineHeight > 0 ? lineHeight : 1);
   };
 
-  let cachedCell = 0;
-  const cellHeight = (): number => (cachedCell > 0 ? cachedCell : measureCellHeight());
+  const maxScrollTop = (): number => Math.max(0, host.scrollHeight - host.clientHeight);
+
+  const atBottom = (): boolean => {
+    const max = maxScrollTop();
+    return max <= 1 || host.scrollTop >= max - 2;
+  };
+
+  const pinHostToBottom = (): void => {
+    const max = maxScrollTop();
+    if (Math.abs(host.scrollTop - max) > 1) host.scrollTop = max;
+  };
+
+  const readBuffer = (): { maxLine: number; viewportY: number } | null => {
+    try {
+      const buf = term.buffer.active;
+      return { maxLine: Math.max(0, buf.baseY), viewportY: buf.viewportY };
+    } catch {
+      return null;
+    }
+  };
 
   const syncFromTerm = (): void => {
     if (applying) return;
     const cell = measureCellHeight();
     if (cell <= 0) return;
-    cachedCell = cell;
-    let maxLine = 0;
-    let viewportY = 0;
-    try {
-      const buf = term.buffer.active;
-      maxLine = Math.max(0, buf.baseY);
-      viewportY = buf.viewportY;
-    } catch {
-      return;
-    }
-    const nextHeight = maxLine * cell;
-    const tail = maxLine * cell;
-    const line = Math.round(host.scrollTop / cell);
-    // 输出回调可能排在滚动事件前面。滚动条已经离开上次停住的底部，就不要再拽回去。
-    if (!awayFromTail && placedTail > 0 && line < placedTail - 1) awayFromTail = true;
+    const lines = readBuffer();
+    if (!lines) return;
+    // 滚轮已经记了「离开底部」，但这一下其实没滚开（人还停在尾部）。继续跟随。
+    if (awayFromTail && atBottom()) awayFromTail = false;
     // 撑高会同步触发 scroll。这段里挡住，避免宿主还停在旧位置时把画面拉走。
     applying = true;
     try {
-      if (spacer.style.height !== `${nextHeight}px`) spacer.style.height = `${nextHeight}px`;
+      const nextHeight = `${lines.maxLine * cell}px`;
+      if (spacer.style.height !== nextHeight) spacer.style.height = nextHeight;
       if (!awayFromTail) {
-        if (viewportY < maxLine) term.scrollToBottom();
-        if (Math.abs(host.scrollTop - tail) > 1) host.scrollTop = tail;
-        placedTail = maxLine;
-      } else if (Math.abs(line - viewportY) > 1) {
-        // 人在看上面的日志。新行进了缓冲，视口留在用户停下的那一行。
-        term.scrollToLine(Math.min(line, maxLine));
+        if (lines.viewportY < lines.maxLine) term.scrollToBottom();
+        // 先读 scrollHeight，把刚写上的 spacer 高度算进可滚动范围，再落到真正的底部。
+        // 用行高估出来的尾部会被夹在旧的最大值上，进度条就停在原地。
+        void host.scrollHeight;
+        pinHostToBottom();
       }
     } catch {
       // 忽略已释放实例
@@ -272,24 +284,25 @@ export function bindNativeScroll(
     });
   };
 
+  const follow = (): void => {
+    awayFromTail = false;
+    try {
+      term.scrollToBottom();
+    } catch {
+      // 忽略已释放实例
+    }
+    syncFromTerm();
+  };
+
   const onHostScroll = (): void => {
     if (applying) return;
-    const cell = cellHeight();
+    const cell = measureCellHeight();
     if (cell <= 0) return;
-    const line = Math.round(host.scrollTop / cell);
-    let viewportY = 0;
-    let maxLine = 0;
-    try {
-      const buf = term.buffer.active;
-      viewportY = buf.viewportY;
-      maxLine = Math.max(0, buf.baseY);
-    } catch {
-      return;
-    }
-    if (line >= maxLine - 1) {
+    const lines = readBuffer();
+    if (!lines) return;
+    if (atBottom()) {
       awayFromTail = false;
-      placedTail = maxLine;
-      if (viewportY >= maxLine - 1) return;
+      if (lines.viewportY >= lines.maxLine) return;
       applying = true;
       try {
         term.scrollToBottom();
@@ -300,10 +313,11 @@ export function bindNativeScroll(
       return;
     }
     awayFromTail = true;
-    if (Math.abs(line - viewportY) <= 1) return;
+    const line = Math.min(lines.maxLine, Math.max(0, Math.round(host.scrollTop / cell)));
+    if (Math.abs(line - lines.viewportY) <= 1) return;
     applying = true;
     try {
-      term.scrollToLine(Math.min(line, maxLine));
+      term.scrollToLine(line);
     } catch {
       // 忽略已释放实例
     }
@@ -321,7 +335,8 @@ export function bindNativeScroll(
     }
     if (passThrough) return;
     // 往上翻要在滚动事件之前记下来。输出回调若先跑，不能把视口拽回底部。
-    if (event.deltaY < 0) awayFromTail = true;
+    // 已经在最上面时再往上滑不会动滚动条，不能因此停掉跟随。
+    if (event.deltaY < 0 && host.scrollTop > 1) awayFromTail = true;
     // 不 preventDefault：浏览器才能对这条宿主原生滚动条做平滑惯性滑动。
     // stopImmediatePropagation 阻止 xterm 内部截获并吞噬滚轮。
     event.stopImmediatePropagation();
@@ -334,6 +349,7 @@ export function bindNativeScroll(
 
   return {
     sync,
+    follow,
     dispose() {
       if (queued) {
         if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(queued as number);

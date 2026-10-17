@@ -156,6 +156,7 @@ function LiveTerm({ session, dark }: { session: TermSession; dark: boolean }) {
           void termResize(session.id, term.cols, term.rows);
         }
         paintTerm(term);
+        scrollBinding?.sync();
       };
       fitRef.current = fit;
 

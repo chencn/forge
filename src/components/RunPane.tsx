@@ -103,7 +103,7 @@ export default function RunPane({ run, dark }: RunPaneProps) {
 
   // 工具窗口头部那颗「滚动到末尾」够不着这里的 xterm，用事件转一手。
   useEffect(() => {
-    const onScrollEnd = () => termRef.current?.scrollToBottom();
+    const onScrollEnd = () => scrollRef.current?.follow();
     window.addEventListener("forge:run-scroll-end", onScrollEnd);
     return () => window.removeEventListener("forge:run-scroll-end", onScrollEnd);
   }, []);
