@@ -1147,7 +1147,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "forge"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "base64 0.23.1",
  "forge-shell-ext",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "forge-shell-cmd"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "forge-shell-ext",
  "windows",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "forge-shell-ext"
-version = "1.0.6"
+version = "1.0.7"
 
 [[package]]
 name = "form_urlencoded"

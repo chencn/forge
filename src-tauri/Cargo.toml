@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "forge"
-version = "1.0.6"
+version = "1.0.7"
 description = "Forge - Tauri desktop app"
 edition = "2021"
 rust-version = "1.80"

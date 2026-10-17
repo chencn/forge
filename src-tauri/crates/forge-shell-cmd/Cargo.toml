@@ -1,6 +1,6 @@
 [package]
 name = "forge-shell-cmd"
-version = "1.0.6"
+version = "1.0.7"
 edition = "2021"
 description = "Windows 11 modern context menu command for Forge"
 publish = false
