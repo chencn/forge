@@ -40,9 +40,16 @@ export default function UpdateStatusBar({
   if (status.phase === "checking") {
     return (
       <span className="status-update is-checking" title={t("update.status.checking")}>
-        <span className="is-spinning">
-          <Loader2 size={12} />
-        </span>
+        <Loader2
+          size={12}
+          className="is-spinning"
+          data-spin="true"
+          style={{
+            display: "inline-block",
+            transformOrigin: "50% 50%",
+            animation: "spin 1.4s linear infinite",
+          }}
+        />
         <span>{t("update.status.checking")}</span>
       </span>
     );
@@ -78,9 +85,16 @@ export default function UpdateStatusBar({
         onClick={onOpenSettings}
         title={label}
       >
-        <span className="is-spinning">
-          <Loader2 size={12} />
-        </span>
+        <Loader2
+          size={12}
+          className="is-spinning"
+          data-spin="true"
+          style={{
+            display: "inline-block",
+            transformOrigin: "50% 50%",
+            animation: "spin 1.4s linear infinite",
+          }}
+        />
         <span>{label}</span>
       </button>
     );
