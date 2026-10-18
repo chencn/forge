@@ -1,6 +1,6 @@
 [package]
 name = "forge-shell-ext"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 description = "Shared text extension whitelist for Forge shell integration"
 publish = false
