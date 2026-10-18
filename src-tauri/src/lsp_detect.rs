@@ -17,6 +17,8 @@ const CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// 「这个工程里没找到根标志」只信这几秒：用户随时会补一个 `go.mod` 或 `Cargo.toml` 进来。
 const MISS_TTL: Duration = Duration::from_secs(5);
+/// 缓存条目上限。键含文件所在目录，多工程 + monorepo 时条目会一路涨。
+const CACHE_LIMIT: usize = 512;
 /// 向下扫的最大深度。再深就不是「工程根」而是别人的依赖了。
 const MAX_DEPTH: usize = 2;
 /// 一眼就不可能是工程根的目录名，向下扫时整棵剪掉。
@@ -189,6 +191,19 @@ fn cached(markers: &[String], workspace_root: &Path, file: Option<&Path>) -> Opt
     // 打开一批文件时前端是同时问过来的。
     let found = resolve(markers, workspace_root, file);
     if let Ok(mut guard) = cache().lock() {
+        // 键里带着「文件所在目录」：monorepo 里散落几百个目录、再加上多个常驻工程，
+        // 这张表会一路涨。过期的条目已经没人读（TTL 到了就重扫），先清过期的，
+        // 还超就整张重开——最坏只是多扫几趟盘。
+        if guard.len() >= CACHE_LIMIT {
+            let now = Instant::now();
+            guard.retain(|_, (at, cached)| {
+                let window = if cached.is_some() { CACHE_TTL } else { MISS_TTL };
+                now.duration_since(*at) < window
+            });
+            if guard.len() >= CACHE_LIMIT {
+                guard.clear();
+            }
+        }
         guard.insert(key, (Instant::now(), found.clone()));
     }
     found

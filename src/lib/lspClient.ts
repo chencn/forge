@@ -61,6 +61,25 @@ let current: LspConfig = { version: 1, servers: {} };
  */
 /** 暂时不去起的组合，键同 `running`。 */
 const skipped = new Map<string, { detail: string; retryAt: number; signature: string }>();
+/**
+ * 跳过标记的上限。键里带着「文件所在目录」，一个工程里没装这门语言的目录能有几百个，
+ * 多个常驻工程加起来就上千条；每条只是一个小字符串，但没理由让它无界地涨。
+ * 超限时先清过期的（过期条目本来也要重新判定），还超就整张重开。
+ */
+const SKIPPED_LIMIT = 512;
+
+function rememberSkip(
+  key: string,
+  entry: { detail: string; retryAt: number; signature: string }
+): void {
+  skipped.set(key, entry);
+  if (skipped.size <= SKIPPED_LIMIT) return;
+  const now = Date.now();
+  for (const [held, item] of skipped) {
+    if (now >= item.retryAt) skipped.delete(held);
+  }
+  if (skipped.size > SKIPPED_LIMIT) skipped.clear();
+}
 /** 根解析的备忘：同一次编辑里同一个目录不再问后端一遍。键已含 workspaceRoot 与 dir，带 TTL。 */
 const roots = new Map<string, { root: string | null; at: number }>();
 /** 后端事件只订阅一次。 */
@@ -150,8 +169,27 @@ async function resolveRoot(
   // 后端按原样路径回根，同一目录可能给出 `D:/x` 或 `D:\x` 两种写法；归一化后再当会话身份，
   // 否则同目录会被当成两个工程根，各起一条会话（状态条上出现两个同名语言服务）。
   const root = hit?.root ? canonicalPath(hit.root) : null;
-  roots.set(memo, { root, at: Date.now() });
+  rememberRoot(memo, root);
   return root;
+}
+
+/**
+ * 根解析备忘的条目上限。
+ *
+ * 键里带着文件所在目录：一个 monorepo 里散落几百个目录、再加上多个常驻工程，
+ * 这张表会一路涨下去。过期的条目本身已经没人会读（TTL 到了就重新问后端），
+ * 所以超限时先把过期的清掉，还超就整张重开——最坏只是多问几趟后端。
+ */
+const ROOTS_CACHE_LIMIT = 512;
+
+function rememberRoot(memo: string, root: string | null): void {
+  roots.set(memo, { root, at: Date.now() });
+  if (roots.size <= ROOTS_CACHE_LIMIT) return;
+  const now = Date.now();
+  for (const [key, item] of roots) {
+    if (now - item.at >= ROOTS_TTL) roots.delete(key);
+  }
+  if (roots.size > ROOTS_CACHE_LIMIT) roots.clear();
 }
 
 /** 启动后端进程。返回会话 id，失败时抛出带错误码的字符串。幂等：同键再调一次拿到同一条。 */
@@ -276,7 +314,7 @@ async function launchSession(
   } catch (cause) {
     // 后端已经为「找不到」与「spawn 失败」记过账，这里只补本地状态，并把原始错误串交给调用方。
     const detail = typeof cause === "string" ? cause : String(cause);
-    skipped.set(key, { detail, retryAt: retryFrom(detail), signature: signature(entry) });
+    rememberSkip(key, { detail, retryAt: retryFrom(detail), signature: signature(entry) });
     emitStatus(entry.id, "missing", detail);
     return detail;
   }
@@ -308,7 +346,7 @@ async function launchSession(
     // 握手失败时也不能把进程留在内存里：上报后端记录退避，随后回收。
     void lspFailed(id, detail).catch(() => {});
     await lspStop(id).catch(() => {});
-    skipped.set(key, { detail, retryAt: Date.now() + 15_000, signature: signature(entry) });
+    rememberSkip(key, { detail, retryAt: Date.now() + 15_000, signature: signature(entry) });
     emitStatus(entry.id, "missing", detail);
     return detail;
   }
@@ -476,6 +514,7 @@ function handleExit(payload: LspExit): void {
   if (!server) return;
   running.delete(server.key);
   cancelAllChanges(server);
+  forgetDiagnostics(server);
   emitStatus(server.entry.id, "missing", detail);
 }
 
@@ -991,7 +1030,7 @@ async function reconcileOnce(
       const miss = sessionKey(entry, `${root ?? ""}${KEY_SEP}${dir}`);
       const held = skipped.get(miss);
       if (!held || Date.now() >= held.retryAt || held.signature !== signature(entry)) {
-        skipped.set(miss, {
+        rememberSkip(miss, {
           detail: `未在项目「${root ?? ""}」中找到该语言的标志文件（${entry.rootMarkers.join(
             " / "
           )}）`,
@@ -1012,6 +1051,7 @@ async function reconcileOnce(
     if (!groups.has(key)) {
       running.delete(key);
       cancelAllChanges(server);
+      forgetDiagnostics(server);
       await lspStop(server.id).catch(() => {});
     }
   }
@@ -1090,6 +1130,20 @@ function cancelChange(server: RunningServer, uri: string): void {
 /** 清掉一条会话全部排定中的 didChange（会话停止时用）。 */
 function cancelAllChanges(server: RunningServer): void {
   for (const uri of [...server.pendingChanges.keys()]) cancelChange(server, uri);
+}
+
+/**
+ * 会话不再需要时，把它管过的文档的诊断备忘一并摘掉。
+ *
+ * `diagnosticsByPath` 是「关标签后重建 model 还能把波浪线摆回去」的备份，会话在的时候
+ * 是必要的；会话已经收掉之后这份备份就只是残留，而它按文件路径累积、每条都带着完整
+ * 诊断文本，多工程来回切时只涨不落。文档重新打开会重新收到诊断。
+ */
+function forgetDiagnostics(server: RunningServer): void {
+  for (const uri of server.opened.keys()) {
+    const key = diagnosticsKey(uri);
+    if (key) diagnosticsByPath.delete(key);
+  }
 }
 
 /** 一条会话的文档增删改。调用方已经把落在它那个根里的那批传进来，这里不再筛。 */
@@ -1196,7 +1250,10 @@ export async function wakeLsp(
 export async function shutdownLsp(): Promise<void> {
   const all = [...running.values()];
   // 先把各会话排定中的 didChange 计时器撤掉，再清表：留着它们到点会在空会话上白发消息。
-  for (const server of all) cancelAllChanges(server);
+  for (const server of all) {
+    cancelAllChanges(server);
+    forgetDiagnostics(server);
+  }
   running.clear();
   skipped.clear();
   roots.clear();
@@ -1205,6 +1262,7 @@ export async function shutdownLsp(): Promise<void> {
   owners.clear();
   logs.clear();
   orphans.clear();
+  diagnosticsByPath.clear();
   // providersRegistered 不清：provider 一旦注册就撤不掉（monaco 只在 dispose 时移除），
   // 清掉只会让下次 reconcile 又注册一遍，同一个语言就挂上两份 provider，hover 弹两次。
   detachMessage?.();

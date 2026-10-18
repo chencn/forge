@@ -3997,6 +3997,7 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      openRoots={watchedRoots}
                       picked={explorerPick.map((entry) => entry.path)}
                       onPick={setExplorerPick}
                       onOpenFile={openFile}
@@ -4346,7 +4347,7 @@ export default function App() {
       places.terminal !== "hidden" ||
       activePane === "terminal" ? (
         <Suspense fallback={null}>
-          <TerminalHost dark={resolved === "dark"} />
+          <TerminalHost dark={resolved === "dark"} cwd={workspaceRoot} />
         </Suspense>
       ) : null}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}

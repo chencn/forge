@@ -7,7 +7,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { bindNativeScroll, termResize, terminalColors, termWrite, windowsBuildNumber } from "../lib/term";
 import type { NativeScrollBinding } from "../lib/term";
-import { attachTermOutput, clearTermHistory, termSessions, watchTermTabs } from "../lib/termStore";
+import { attachTermOutput, clearTermHistory, termSessionById, termSessionsFor, watchTermTabs } from "../lib/termStore";
 import type { TermSession } from "../lib/termStore";
 import { TermOutputBuffer } from "../lib/termOutputBuffer";
 import { registerTermControl, termPark, termSlot, watchTermSlots } from "../lib/termSurface";
@@ -17,6 +17,8 @@ import "@xterm/xterm/css/xterm.css";
 
 interface TerminalHostProps {
   dark: boolean;
+  /** 当前激活的工作区根。只有它名下的会话才常驻画面，见 `keptLive`。 */
+  cwd: string | null;
 }
 
 /**
@@ -25,9 +27,13 @@ interface TerminalHostProps {
  * 面板收起只是把画面节点挪进屏幕外的停靠区，shell 和滚屏都留着。
  * 真正显示时再挪进 `TerminalPane` 的插槽，并按插槽尺寸 fit。
  */
-export default function TerminalHost({ dark }: TerminalHostProps) {
-  const [sessions, setSessions] = useState(() => termSessions().sessions);
-  useEffect(() => watchTermTabs(() => setSessions(termSessions().sessions)), []);
+export default function TerminalHost({ dark, cwd }: TerminalHostProps) {
+  const [sessions, setSessions] = useState(() => termSessionsFor(cwd).sessions);
+  useEffect(() => {
+    const sync = () => setSessions(termSessionsFor(cwd).sessions);
+    sync();
+    return watchTermTabs(sync);
+  }, [cwd]);
   return (
     <>
       {sessions.map((session) => (
@@ -166,7 +172,7 @@ function LiveTerm({ session, dark }: { session: TermSession; dark: boolean }) {
       add(attachTermOutput(session.id, (data) => buffer?.enqueue(data, () => {})));
       const input = term.onData((data) => {
         buffer?.flush();
-        const current = termSessions().sessions.find((item) => item.id === session.id);
+        const current = termSessionById(session.id);
         if (current && !current.exited) void termWrite(session.id, data);
       });
       add(() => input.dispose());

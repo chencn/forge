@@ -5,6 +5,7 @@ import ImagePreview from "./ImagePreview";
 import PaneNotice from "./PaneNotice";
 import { canPreview } from "../hooks/useDocuments";
 import { retainEditorModels } from "../lib/modelRetention";
+import { disposeModel } from "../lib/monacoEnv";
 import type { DocView, OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import type { DocKind } from "../lib/docKind";
 import { describeError } from "../lib/errors";
@@ -122,6 +123,27 @@ export default function DocPane({
   }, [doc.path, doc.root, httpResponse]);
   const showPreview = canPreview(doc) && (doc.view === "preview" || markdownSplit);
   const hideSource = showPreview && !markdownSplit;
+
+  /**
+   * 响应那台编辑器用的是自己造的一份「虚拟文档」，不在 `openPaths` 名单里，
+   * `retainEditorModels` 不认识它，关掉分栏后它的 Monaco model 会一直留在内存里
+   * （还带着整份响应正文）。这里跟着响应路径走：换了或没了就把它关掉。
+   */
+  const responsePath = responseDoc?.path ?? null;
+  const responsePathRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = responsePathRef.current;
+    responsePathRef.current = responsePath;
+    if (previous !== null && previous !== responsePath) disposeModel(previous);
+  }, [responsePath]);
+  useEffect(
+    () => () => {
+      const held = responsePathRef.current;
+      responsePathRef.current = null;
+      if (held !== null) disposeModel(held);
+    },
+    []
+  );
 
   /** 分栏模式下左侧编辑器的宽度百分比（默认 50%，支持 20%~80% 范围拖动调节）。 */
   const [splitRatio, setSplitRatio] = useState(50);

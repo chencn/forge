@@ -39,23 +39,64 @@ const tabWatchers = new Set<Watcher>();
 const unlisten = new Map<TermSessionId, UnlistenFn[]>();
 /** 每条会话当前的画面入口。 */
 const sinks = new Map<TermSessionId, TermSink>();
-/** 每条会话的原始输出。xterm 重建时整段重放，滚出视线的行还在。 */
+/** 每条会话的原始输出。xterm 重建时整段重放，滚出视线的行还在。
+ *
+ * 表顺序就是「最近有输出」的顺序：每次追加把该会话挪到表尾，挤预算时从表头开始。
+ */
 const history = new Map<TermSessionId, Uint8Array[]>();
 const historyBytes = new Map<TermSessionId, number>();
 /** 擦滚屏序列被切在两包之间时，记住没判断完的前缀。 */
 const eraseCarry = new Map<TermSessionId, Uint8Array>();
 /** 一份历史大约够撑满 xterm 的滚屏。再老的从头部丢掉。 */
 const HISTORY_LIMIT = 8_000_000;
+/**
+ * 全部会话合计的回放预算。
+ *
+ * 单条封顶挡不住多项目：每个工作区根各留一条会话、每条各留 8MB，常驻工程一多，
+ * 这部分就跟着会话数线性涨。合计再封一道之后，超出时按轮转从各条最老的块开始丢，
+ * 每条都留个大致均等的份额——而不是把某一条整个清空，切回去时那一屏还得在。
+ */
+const HISTORY_TOTAL_LIMIT = 24_000_000;
+/** 当前全部会话合计留着的字节数。 */
+let historyTotal = 0;
+
+/** 合计超出预算时轮转丢块：每轮各条丢一块，直到回到预算内。 */
+function trimHistoryTotal() {
+  while (historyTotal > HISTORY_TOTAL_LIMIT) {
+    let dropped = false;
+    for (const [id, queued] of history) {
+      if (historyTotal <= HISTORY_TOTAL_LIMIT) return;
+      // 至少留一块：刚到的输出不能被自己挤掉，重放也得有个开头。
+      if (queued.length <= 1) continue;
+      const chunk = queued.shift();
+      if (!chunk) continue;
+      historyTotal -= chunk.byteLength;
+      historyBytes.set(id, (historyBytes.get(id) ?? 0) - chunk.byteLength);
+      dropped = true;
+    }
+    if (!dropped) return;
+  }
+}
 
 function pushHistory(id: TermSessionId, data: Uint8Array) {
   const queued = history.get(id) ?? [];
+  // 挪到表尾：Map 的顺序即「最近有输出」的顺序，挤预算时从表头那条开始。
+  history.delete(id);
+  history.set(id, queued);
+  const before = historyBytes.get(id) ?? 0;
   queued.push(data.slice());
-  let total = (historyBytes.get(id) ?? 0) + data.byteLength;
+  let total = before + data.byteLength;
   while (queued.length > 1 && total > HISTORY_LIMIT) {
     total -= queued.shift()?.byteLength ?? 0;
   }
-  history.set(id, queued);
   historyBytes.set(id, total);
+  historyTotal += total - before;
+  trimHistoryTotal();
+}
+
+/** 全部会话当前留着的回放字节数（诊断与测试用）。 */
+export function termHistoryBytes(): number {
+  return historyTotal;
 }
 
 function deliver(id: TermSessionId, data: Uint8Array) {
@@ -68,6 +109,8 @@ function deliver(id: TermSessionId, data: Uint8Array) {
 
 function forgetOutput(id: TermSessionId) {
   sinks.delete(id);
+  historyTotal -= historyBytes.get(id) ?? 0;
+  if (historyTotal < 0) historyTotal = 0;
   history.delete(id);
   historyBytes.delete(id);
   eraseCarry.delete(id);
@@ -75,6 +118,8 @@ function forgetOutput(id: TermSessionId) {
 
 /** 清屏按钮：把留着的原始输出也清掉，避免下次重放把刚清掉的日志写回来。 */
 export function clearTermHistory(id: TermSessionId): void {
+  historyTotal -= historyBytes.get(id) ?? 0;
+  if (historyTotal < 0) historyTotal = 0;
   history.delete(id);
   historyBytes.delete(id);
   eraseCarry.delete(id);
@@ -144,6 +189,11 @@ export function termSession(): TermSession | null {
   return sessions.find((item) => item.id === activeId) ?? null;
 }
 
+/** 按 id 取一条会话；会话已经关掉时返回 null。 */
+export function termSessionById(id: TermSessionId): TermSession | null {
+  return sessions.find((item) => item.id === id) ?? null;
+}
+
 /** 返回指定工作区根下当前激活的那条会话。 */
 export function termSessionFor(cwd: string | null): TermSession | null {
   const { sessions: list, activeId: id } = termSessionsFor(cwd);
@@ -201,8 +251,19 @@ export function setActiveTermFor(cwd: string | null, id: TermSessionId): void {
 }
 
 /** 已关闭会话的登记簿。listen 要一次 IPC 往返才 resolve，登记（关闭）可能赶在
- * 订阅返回之前——resolve 时查这张表，命中的监听当场解绑，不留成收不走的孤儿。 */
+ * 订阅返回之前——resolve 时查这张表，命中的监听当场解绑，不留成收不走的孤儿。
+ *
+ * 会话 id 单调递增、不会复用，所以老条目本身没有用处；常驻久了开关几十次终端就攒下一串。
+ * 留最近 256 个足够覆盖往返窗口（毫秒级），更早的整批丢掉。 */
 const closed = new Set<TermSessionId>();
+const CLOSED_LIMIT = 256;
+
+function markClosed(id: TermSessionId) {
+  closed.add(id);
+  if (closed.size <= CLOSED_LIMIT) return;
+  for (const stale of [...closed].slice(0, closed.size - CLOSED_LIMIT)) closed.delete(stale);
+}
+
 /** 同一个根上正在开的那一条。面板挂载会被跑两遍，不能因此起两个 shell。 */
 const opening = new Map<string, Promise<TermSession>>();
 
@@ -292,7 +353,7 @@ export async function closeTerm(id: TermSessionId): Promise<void> {
   const index = sessions.indexOf(target);
   sessions = sessions.filter((item) => item.id !== id);
   // 先登记再解绑：还挂在 IPC 往返上的订阅 resolve 时会查到这张表。
-  closed.add(id);
+  markClosed(id);
   forgetOutput(id);
   for (const off of unlisten.get(id) ?? []) off();
   unlisten.delete(id);
@@ -318,7 +379,7 @@ export async function closeTermsForRoot(cwd: string | null): Promise<void> {
   const doomedIds = new Set(doomed.map((item) => item.id));
   sessions = sessions.filter((item) => !doomedIds.has(item.id));
   for (const item of doomed) {
-    closed.add(item.id);
+    markClosed(item.id);
     forgetOutput(item.id);
     for (const off of unlisten.get(item.id) ?? []) off();
     unlisten.delete(item.id);
@@ -337,7 +398,7 @@ export async function dropTermSession(): Promise<void> {
   activeId = null;
   activeIdByRoot.clear();
   for (const item of all) {
-    closed.add(item.id);
+    markClosed(item.id);
     forgetOutput(item.id);
   }
   for (const [, offs] of unlisten) for (const off of offs) off();

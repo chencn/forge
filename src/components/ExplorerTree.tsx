@@ -33,6 +33,11 @@ interface ExplorerTreeProps {
   showIgnored: boolean;
   /** 显示隐藏文件（Windows 隐藏属性 / 点开头）。 */
   showHidden: boolean;
+  /**
+   * 还开着的工作区根。不在这些根下的目录缓存与展开记录会被清掉——
+   * 常驻工程换来换去时，这些按目录累积的表是跟着「看过多少目录」涨的，关掉的工程不该还占着。
+   */
+  openRoots: readonly string[];
   /** 选中集里的路径，按点击先后排；状态提在 App，右键菜单和键位都读同一份。 */
   picked: string[];
   onPick: (entries: FsEntry[]) => void;
@@ -150,7 +155,45 @@ function useLazyChildren(
     }
   }, [refresh]);
 
-  return { children, failed, load, reloadTick };
+  /**
+   * 丢掉不在这些根下的目录缓存。关掉的工程不该继续占着「看过的每个目录各一份条目」。
+   * 清掉是安全的：再打开那个工程时目录树会重新读盘。
+   */
+  const prune = useCallback((openRoots: readonly string[]) => {
+    if (openRoots.length === 0) return;
+    const doomedChildren = pruneOutside(childrenRef.current, openRoots);
+    const doomedFailed = pruneOutside(failedRef.current, openRoots);
+    for (const key of doomedChildren) staleKeysRef.current.delete(key);
+    for (const key of doomedFailed) staleKeysRef.current.delete(key);
+    if (doomedChildren.length > 0) {
+      setChildren((current) => {
+        const next = new Map(current);
+        for (const key of doomedChildren) next.delete(key);
+        return next;
+      });
+    }
+    if (doomedFailed.length > 0) {
+      setFailed((current) => {
+        const next = new Map(current);
+        for (const key of doomedFailed) next.delete(key);
+        return next;
+      });
+    }
+  }, []);
+
+  return { children, failed, load, reloadTick, prune };
+}
+
+/** 目录缓存里，属于已经关掉的工程的那些。 */
+function pruneOutside(
+  cache: ReadonlyMap<string, unknown>,
+  openRoots: readonly string[]
+): string[] {
+  const doomed: string[] = [];
+  for (const key of cache.keys()) {
+    if (!openRoots.some((root) => pathWithin(root, key))) doomed.push(key);
+  }
+  return doomed;
 }
 
 /**
@@ -266,6 +309,7 @@ export default function ExplorerTree({
   picked,
   showIgnored,
   showHidden,
+  openRoots,
   onPick,
   onOpenFile,
   onContextMenu,
@@ -273,7 +317,7 @@ export default function ExplorerTree({
   const [error, setError] = useState<string | null>(null);
   const onError = useCallback((message: string) => setError(message), []);
   const { t } = useI18n();
-  const { children, failed, load, reloadTick } = useLazyChildren(refresh, onError);
+  const { children, failed, load, reloadTick, prune } = useLazyChildren(refresh, onError);
   /** 每个工作区根各自记住自己展开了哪些目录，切根回来时恢复原状。 */
   const expandedByRootRef = useRef<Map<string, Set<string>>>(new Map());
   const [expanded, setExpandedState] = useState<Set<string>>(
@@ -300,6 +344,23 @@ export default function ExplorerTree({
     setError(null);
     setExpandedState(expandedByRootRef.current.get(pathKey(root)) ?? new Set());
   }, [root]);
+
+  /**
+   * 常驻工程被关掉之后，它那份目录缓存与展开记录都不再有用了：
+   * 目录缓存按「看过的目录」累积，展开集按根累积，都是跟着用过的工程数涨的。
+   * 只保留还开着的根下的部分；再打开那个工程时重读一遍即可。
+   */
+  const openRootsKey = openRoots.join("\0");
+  useEffect(() => {
+    const roots = openRootsKey === "" ? [] : openRootsKey.split("\0");
+    if (roots.length === 0) return;
+    // 当前正在看的这个根一定要留着，哪怕调用方给的名单里暂时还没有它。
+    if (!roots.some((item) => pathWithin(item, root))) roots.push(root);
+    prune(roots);
+    for (const key of [...expandedByRootRef.current.keys()]) {
+      if (!roots.some((item) => pathWithin(item, key))) expandedByRootRef.current.delete(key);
+    }
+  }, [openRootsKey, prune, root]);
 
   // 显式点「全部折叠」按钮时只清空当前根的展开集。
   const prevCollapseRef = useRef(collapseSignal);

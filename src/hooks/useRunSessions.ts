@@ -5,6 +5,7 @@ import type { ProcChunk, ProcExit, ProcSessionId } from "../lib/proc";
 import { ensureHelper, missingTool, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { joinPath, samePath } from "../lib/format";
+import { ChunkBuffer } from "../lib/chunkBuffer";
 import { decodeChunk } from "../lib/term";
 import { useI18n } from "../i18n";
 import { codedError, describeError } from "../lib/errors";
@@ -34,8 +35,16 @@ export type AppendListener = (id: ProcSessionId, chunk: Uint8Array) => void;
 
 const ENCODER = new TextEncoder();
 
-/** 每个会话的输出块上限：dev server 挂几小时的话，无上限的 push 会把 WebView 撑爆。留最新的，老的淘汰。 */
-const MAX_SESSION_CHUNKS = 500;
+/**
+ * 每个会话留着的输出上限，按字节算。
+ *
+ * 原来按块数封顶（500 块），而后端一块最多 32KB，跑得久的 dev server 就是 16MB 一条会话，
+ * 且每条会话各占一份——多项目常驻时这部分是跟着会话数线性涨的。
+ * 改成按字节封顶：1MB 已经比 xterm 那 8000 行滚屏能显示的多，切会话重放看到的仍是完整的一屏。
+ */
+const MAX_SESSION_BYTES = 1_000_000;
+/** 块数上限：输出碎成几十字节一块时，兜住数组本身的长度。 */
+const MAX_SESSION_CHUNKS = 4_000;
 
 /** 归一化工作区根键，大小写与斜杠不敏感。 */
 function rootKey(root: string | null): string {
@@ -55,8 +64,8 @@ export function useRunSessions(configs: RunConfigController) {
   // 事件回调只在挂载时注册一次，取文案要走最新的翻译。
   const tRef = useRef(t);
   tRef.current = t;
-  /** 每个会话收到过的原始字节，切会话时整体重放进唯一的终端。 */
-  const buffersRef = useRef(new Map<ProcSessionId, Uint8Array[]>());
+  /** 每个会话收到过的原始字节，切会话时整体重放进唯一的终端。按字节封顶，见 `ChunkBuffer`。 */
+  const buffersRef = useRef(new Map<ProcSessionId, ChunkBuffer>());
   const listenersRef = useRef(new Set<AppendListener>());
   /** 用户主动终止过的会话，退出事件靠它区分「已停止」和「跑挂了」。 */
   const killedRef = useRef(new Set<ProcSessionId>());
@@ -70,13 +79,11 @@ export function useRunSessions(configs: RunConfigController) {
   const append = useCallback((id: ProcSessionId, chunk: Uint8Array) => {
     const buffer = buffersRef.current.get(id);
     if (buffer) {
-      buffer.push(chunk);
       // 上限淘汰最老的块：切会话时重放的是"最近一段"而不是全部历史。
-      if (buffer.length > MAX_SESSION_CHUNKS) {
-        buffer.splice(0, buffer.length - MAX_SESSION_CHUNKS);
-      }
+      buffer.append(chunk);
     } else {
-      buffersRef.current.set(id, [chunk]);
+      buffersRef.current.set(id, new ChunkBuffer(MAX_SESSION_BYTES, MAX_SESSION_CHUNKS));
+      buffersRef.current.get(id)?.append(chunk);
     }
     for (const listener of listenersRef.current) listener(id, chunk);
   }, []);
@@ -179,8 +186,10 @@ export function useRunSessions(configs: RunConfigController) {
       })().then(
         (id) => {
           // 后端可能在 promise 落地前就吐了首块输出，命令行补在最前面，保留已到达的输出。
-          const existing = buffersRef.current.get(id) ?? [];
-          buffersRef.current.set(id, [ENCODER.encode(`$ ${command}\r\n`), ...existing]);
+          const existing = buffersRef.current.get(id);
+          const buffer = existing ?? new ChunkBuffer(MAX_SESSION_BYTES, MAX_SESSION_CHUNKS);
+          buffer.prepend(ENCODER.encode(`$ ${command}\r\n`));
+          buffersRef.current.set(id, buffer);
           const entry: RunSession = {
             id,
             root: targetRoot,
@@ -359,7 +368,7 @@ export function useRunSessions(configs: RunConfigController) {
 
   /** 某个会话收到过的全部输出，控制台重放用。 */
   const bufferOf = useCallback(
-    (id: ProcSessionId) => buffersRef.current.get(id) ?? [],
+    (id: ProcSessionId) => buffersRef.current.get(id)?.toArray() ?? [],
     []
   );
 
