@@ -9,14 +9,12 @@ import type { GitChange } from "../lib/git";
 import { changeMark, folderMarks, ignoredRoots, markClass } from "../lib/git";
 import { invalidateIgnored, loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
 import { isPackageSegment, isUnderJvmSourceRoot } from "../lib/jvm";
-import { pathWithin } from "../lib/format";
+import { pathWithin, samePath } from "../lib/format";
 import EntryIcon from "./EntryIcon";
 
 interface ExplorerTreeProps {
   /** 工作区根目录，树的顶层。 */
   root: string;
-  /** 当前编辑器里的文件，用来高亮所在行。 */
-  activePath: string | null;
   /** 仓库根；与 root 不同时相对路径按仓库根算。 */
   repoRoot: string | null;
   /** 仓库改动，用来在名字右侧画 M/A/D 标记。 */
@@ -281,7 +279,6 @@ interface Row {
 
 function ExplorerTree({
   root,
-  activePath,
   repoRoot,
   changes,
   collapseSignal,
@@ -583,7 +580,7 @@ function ExplorerTree({
         const isDirectory = entry.kind === "directory";
         // 展开态跟着包链最深那层：合并后的行点开读到的是链末，再展开才是子包。
         const open = isDirectory && expanded.has(deepest);
-        const marked = picked.includes(entry.path);
+        const marked = picked.some((path) => samePath(path, entry.path));
         const lower = pathKey(entry.path);
         // 文件取自身字母标记；目录取子孙聚合标记，画成圆点。
         const mark = isDirectory ? null : markOf.get(lower);
@@ -599,11 +596,10 @@ function ExplorerTree({
           <div key={entry.path} role="none">
             <div
               role="treeitem"
-              aria-selected={marked || activePath === entry.path}
+              aria-selected={marked}
               aria-expanded={isDirectory ? open : undefined}
               className={[
                 "tree-row",
-                activePath === entry.path ? "is-active" : "",
                 marked ? "is-picked" : "",
                 entry.isHidden ? "is-hidden-item" : "",
                 ignored && !excludedDir ? "is-ignored-item" : "",

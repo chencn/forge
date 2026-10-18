@@ -1755,12 +1755,7 @@ span.entry-icon > svg {
   background: var(--bg-hover);
 }
 
-.tree-row.is-active {
-  background: var(--accent-blue-bg);
-  color: var(--accent-blue-text);
-}
-
-/* 多选那一批的行；和日志里选中提交那行同一档配色，选中集和编辑器所在文件是两回事。 */
+/* 选中行。打开的文件不再另涂一档，避免切页签后颜色还留在当前文档上。 */
 .tree-row.is-picked {
   background: var(--accent-blue-bg);
 }

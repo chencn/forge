@@ -799,8 +799,9 @@ export default function App() {
   }, [activeDoc?.path, git]);
 
   /**
-   * 目录树的激活行只跟着当前正在看的文档。页签换成设置、比对或工具窗口时拿掉高亮。
-   * 树上若只选中了刚离开的那一篇，选中一起清掉；多选或另选的目录不动。
+   * 侧栏蓝底只来自选中，不因「这篇正开着」再涂一档。
+   * 页签离开后，若只选中了另一个文件，把选中清掉。点树打开时选中和页签是同一篇，留着。
+   * 多选和目录选中不动。
    */
   const shownDocRef = useRef<string | null>(null);
   useEffect(() => {
@@ -820,7 +821,9 @@ export default function App() {
     }
 
     const leftFile = previous !== null && (shownDoc === null || !samePath(previous, shownDoc));
-    if (leftFile && explorerPick.length === 1 && samePath(explorerPick[0].path, previous)) {
+    const pickedFile =
+      explorerPick.length === 1 && explorerPick[0].kind !== "directory" ? explorerPick[0] : null;
+    if (leftFile && pickedFile && (shownDoc === null || !samePath(pickedFile.path, shownDoc))) {
       setExplorerPick([]);
     }
   }, [activeTab, docs, explorerPick, setActiveTab, setExplorerPick, shownDoc, visibleDocs]);
@@ -4164,7 +4167,6 @@ export default function App() {
                   workspaceRoot ? (
                     <ExplorerTree
                       root={workspaceRoot}
-                      activePath={docs.activePath}
                       repoRoot={git.root}
                       changes={git.status?.changes ?? EMPTY_CHANGES}
                       collapseSignal={collapseSignal}
