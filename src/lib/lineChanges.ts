@@ -98,9 +98,9 @@ const MIN_RULER_MARK = 6;
 const RULER_CLICK_SLACK = 48;
 
 /**
- * 右侧短标记的横向点击范围。
- * 小地图开在右边时，整条小地图都能点，不用贴着最右几个像素。
- * 小地图在左边或关掉时，从滚动条向左再留一段。
+ * 右侧滚动条上的点击范围。
+ * 小地图有自己的纵坐标：短文件只画在上方一截，不能按整条编辑器高度去对。
+ * 点小地图交给编辑器自己，这里只认滚动条；没开小地图时向左留一段。
  */
 export function rulerClickBounds(
   rulerLeft: number,
@@ -109,9 +109,12 @@ export function rulerClickBounds(
   minimapWidth: number
 ): { left: number; right: number } {
   const right = rulerLeft + rulerWidth;
-  const minimapOnRight =
-    minimapWidth > 0 && minimapLeft < rulerLeft && minimapLeft + minimapWidth >= rulerLeft - 1;
-  return { left: minimapOnRight ? minimapLeft : rulerLeft - RULER_CLICK_SLACK, right };
+  let left = rulerLeft - RULER_CLICK_SLACK;
+  if (minimapWidth > 0 && minimapLeft < rulerLeft) {
+    const minimapRight = minimapLeft + minimapWidth;
+    if (minimapRight > left) left = Math.max(left, minimapRight);
+  }
+  return { left, right };
 }
 
 /**

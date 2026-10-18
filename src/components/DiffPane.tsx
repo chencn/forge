@@ -107,8 +107,10 @@ export default function DiffPane({
       fontFamily: monoFont(),
       fontSize: 13,
       minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      renderOverviewRuler: false,
+      // 和普通编辑器一样，最后一行下面留一屏，短文件的滑块才不会占满右侧。
+      scrollBeyondLastLine: true,
+      // 右侧两条概览：左红是删掉的，右绿是新增的，用来看出这篇里改动落在哪。
+      renderOverviewRuler: true,
       diffWordWrap: "off",
       // 右键菜单要由 monaco 画，才吃得到应用的中文文案。
       editContext: false,

@@ -269,7 +269,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       lineHeight: 20,
       fontLigatures: false,
       minimap: { enabled: optionsRef.current.minimap, maxColumn: 90 },
-      scrollBeyondLastLine: false,
+      // 最后一行下面再留一屏。否则一百来行的文件滑块会占满轨道，点和色块对不齐。VS Code 同样如此。
+      scrollBeyondLastLine: true,
       smoothScrolling: true,
       renderLineHighlight: "all",
       padding: { top: 10, bottom: 12 },
@@ -435,7 +436,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   const reloadMarksRef = useRef<() => void>(() => {});
 
   /**
-   * 行号旁按整段改动画色条；右侧只在起始行留一个短点，横向上铺满滚动条，点击再向左扩到小地图。
+   * 行号旁按整段改动画色条；右侧只在起始行留一个短点。小地图按它自己的比例跳，不跟滚动条混用。
    * 打字只重算差异；HEAD 原文按提交哈希缓存，状态没变就不再起 git。
    */
   useEffect(() => {
@@ -461,12 +462,12 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     };
 
     const node = editor.getDomNode();
-    const onRulerPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 || marks.length === 0) return;
+    const rulerLineAt = (event: MouseEvent): number | null => {
+      if (marks.length === 0) return null;
       const info = editor.getLayoutInfo();
       const layout = info.overviewRuler;
       const rect = node?.getBoundingClientRect();
-      if (!rect || layout.height <= 0 || layout.width <= 0) return;
+      if (!rect || layout.height <= 0 || layout.width <= 0) return null;
       const bounds = rulerClickBounds(
         rect.right - layout.right - layout.width,
         layout.width,
@@ -474,9 +475,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         info.minimap.minimapWidth
       );
       const top = rect.top + layout.top;
-      if (event.clientX < bounds.left || event.clientX > bounds.right) return;
-      if (event.clientY < top || event.clientY > top + layout.height) return;
-      const line = lineForRulerClick(
+      if (event.clientX < bounds.left || event.clientX > bounds.right) return null;
+      if (event.clientY < top || event.clientY > top + layout.height) return null;
+      return lineForRulerClick(
         event.clientY - top,
         layout.height,
         editor.getScrollHeight(),
@@ -484,14 +485,28 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         marks.map((mark) => ({ startLine: mark.startLine, endLine: mark.startLine })),
         (lineNumber) => editor.getTopForLineNumber(lineNumber)
       );
+    };
+    const onRulerPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const line = rulerLineAt(event);
       if (line === null) return;
       event.preventDefault();
       event.stopPropagation();
       editor.setPosition({ lineNumber: line, column: 1 });
-      editor.revealLineInCenter(line, monaco.editor.ScrollType.Smooth);
+      // 编辑器还没焦点时，focus 会先记下滚动位置，浏览器把输入框滚进视口后再还原。
+      // 还原发生在跳转之后，第一次就停在原地，所以先 focus，再滚到那一行。
       editor.focus();
+      const reveal = () => editor.revealLineInCenter(line, monaco.editor.ScrollType.Smooth);
+      reveal();
+      window.requestAnimationFrame(reveal);
+    };
+    const onRulerMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || rulerLineAt(event) === null) return;
+      event.preventDefault();
+      event.stopPropagation();
     };
     node?.addEventListener("pointerdown", onRulerPointerDown, true);
+    node?.addEventListener("mousedown", onRulerMouseDown, true);
 
     const load = () => {
       const spec = baselinePropRef.current;
@@ -545,6 +560,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       model.dispose();
       theme.disconnect();
       node?.removeEventListener("pointerdown", onRulerPointerDown, true);
+      node?.removeEventListener("mousedown", onRulerMouseDown, true);
       collection.clear();
       reloadMarksRef.current = () => {};
     };

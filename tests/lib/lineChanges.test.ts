@@ -107,8 +107,8 @@ describe("lineForRulerClick 点右侧色块落到哪一行", () => {
 });
 
 describe("rulerClickBounds 横向能点多宽", () => {
-  it("小地图在右边时，从它的左缘一直点到滚动条右缘", () => {
-    expect(rulerClickBounds(900, 20, 800, 100)).toEqual({ left: 800, right: 920 });
+  it("小地图在右边时，点击区停在滚动条上，小地图用自己的坐标", () => {
+    expect(rulerClickBounds(900, 20, 800, 100)).toEqual({ left: 900, right: 920 });
   });
 
   it("没开小地图时，从滚动条向左留出一段，不用贴着边", () => {
