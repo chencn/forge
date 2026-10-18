@@ -27,6 +27,12 @@ describe("describeError 翻译", () => {
     expect(text).toContain('"max":"10.0 MB"');
   });
 
+  it("GIT_OUTPUT_TOO_LARGE 有映射，不至于把英文原文直接甩给用户", () => {
+    expect(describeError(codedError("GIT_OUTPUT_TOO_LARGE", "stdout > 67108864 bytes"), t)).toBe(
+      'error.gitOutputTooLarge?{"detail":"stdout > 67108864 bytes"}'
+    );
+  });
+
   it("GIT 代码的明细就是 git 原文，空明细走专用文案", () => {
     expect(describeError(codedError("GIT", "  fatal: bad object  "), t)).toBe("fatal: bad object");
     expect(describeError(codedError("GIT", "  "), t)).toBe("error.gitBare?{}");

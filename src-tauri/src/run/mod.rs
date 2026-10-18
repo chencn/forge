@@ -5,6 +5,7 @@
 
 pub mod dep_sync;
 pub mod detect;
+pub mod scan;
 pub mod store;
 
 use serde::{Deserialize, Serialize};

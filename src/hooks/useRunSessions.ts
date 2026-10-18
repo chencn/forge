@@ -273,6 +273,8 @@ export function useRunSessions(configs: RunConfigController) {
       if (!session) return;
       if (session.status === "running") stop(id);
       buffersRef.current.delete(id);
+      // kill 标记也要跟着会话走，不然手动关签后这条 id 永久留在集合里。
+      killedRef.current.delete(id);
       const rest = list.filter((item) => item.id !== id);
       const restSameRoot = rest.filter((item) => samePath(item.root, session.root));
       const key = rootKey(session.root);

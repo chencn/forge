@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { stopWorkspaceWatch, watchWorkspace } from "../lib/fs";
+import { isBulkArtifactPath } from "../lib/watchBatch";
 
 /** 后端已经并过一次批，这里再并一次：一次保存会连着来好几条事件，别让它抖着手感。 */
 const COALESCE_MS = 120;
@@ -15,23 +16,6 @@ const STORM_SETTLE_MS = 1200;
 const STORM_MAX_WAIT_MS = 6000;
 /** 单批路径数达到该阈值即视为批量文件增删事件。 */
 const STORM_PATH_THRESHOLD = 10;
-
-/** 判断路径是否落在包管理器或构建工具的高频批量读写目录中。 */
-function isBulkArtifactPath(path: string): boolean {
-  const norm = path.replaceAll("\\", "/").toLowerCase();
-  return (
-    norm.includes("/node_modules/") ||
-    norm.endsWith("/node_modules") ||
-    norm.includes("/.pnpm/") ||
-    norm.includes("/target/") ||
-    norm.includes("/dist/") ||
-    norm.includes("/build/") ||
-    norm.includes("/.gradle/") ||
-    norm.includes("/.next/") ||
-    norm.includes("/vendor/") ||
-    norm.includes("/.venv/")
-  );
-}
 
 interface FsChangePayload {
   /** 变更所属的工作区根目录（与 watchWorkspace 入参一致）。 */

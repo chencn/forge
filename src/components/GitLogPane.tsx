@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   ArrowDownLeft,
@@ -271,7 +271,7 @@ function refDirKeysOf(labels: string[]): string[] {
 }
 
 /** IDEA 的日志窗口：左边引用树，中间提交列表，右边这次提交的文件清单与元信息。 */
-export default function GitLogPane({
+function GitLogPane({
   git,
   reportError,
   onFileAction,
@@ -1827,3 +1827,6 @@ export default function GitLogPane({
     </div>
   );
 }
+
+/** 日志那三栏（图 + 列表 + 详情）是这里最贵的一块，props 没变就挡在外面。 */
+export default memo(GitLogPane);

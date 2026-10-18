@@ -78,6 +78,7 @@ Var UpdateMode
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
+Var ShellDllAside
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -686,6 +687,56 @@ Function un.HideExec
   !insertmacro HideExecImpl
 FunctionEnd
 
+; 结束加载了 forge_shell_cmd.dll 的 COM 宿主（64 位 dllhost.exe）。
+;
+; 安装器本身是 32 位的。$SYSDIR\taskkill.exe 会被 WOW64 重定向到 SysWOW64，
+; 那个 32 位 taskkill 的 MODULES 过滤看不到 64 位进程，而且会一直卡住，
+; 直到 HideExec 在 8 秒后把它杀掉。宿主还活着，后面的 File 就会弹出
+; 「无法打开要写入的文件」。先关掉重定向，才能调到真正的 System32\taskkill.exe。
+!macro StopShellHost UNFUNC
+  System::Call "kernel32::Wow64EnableWow64FsRedirection(i 0)"
+  Push '"$WINDIR\System32\taskkill.exe" /F /FI "MODULES eq forge_shell_cmd.dll"'
+  Call ${UNFUNC}
+  System::Call "kernel32::Wow64EnableWow64FsRedirection(i 1)"
+!macroend
+
+; 已映射的 DLL 不能原地覆盖，但可以改名。把旧文件挪走后，原路径就能写出新文件。
+; 宿主如果在 taskkill 之后又被外壳拉起来，改名仍然成功。
+!macro MoveShellDllAside UNFUNC
+  !insertmacro StopShellHost ${UNFUNC}
+  Sleep 300
+  StrCpy $ShellDllAside ""
+  ${If} ${FileExists} "$INSTDIR\forge_shell_cmd.dll"
+    Push $R5
+    System::Call "kernel32::GetTickCount() i.r5"
+    StrCpy $ShellDllAside "$INSTDIR\forge_shell_cmd.dll.$R5.old"
+    Pop $R5
+    ClearErrors
+    Rename "$INSTDIR\forge_shell_cmd.dll" "$ShellDllAside"
+    ${If} ${Errors}
+      StrCpy $ShellDllAside ""
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+; 新文件落地后再收一次宿主，然后删掉改名留下的旧 DLL。
+!macro DeleteShellDllAside UNFUNC ID
+  !insertmacro StopShellHost ${UNFUNC}
+  Sleep 300
+  ${If} $ShellDllAside != ""
+    Delete "$ShellDllAside"
+  ${EndIf}
+  FindFirst $0 $1 "$INSTDIR\forge_shell_cmd.dll.*.old"
+  shell_old_${ID}:
+    StrCmp $1 "" shell_old_done_${ID}
+    Delete "$INSTDIR\$1"
+    FindNext $0 $1
+    Goto shell_old_${ID}
+  shell_old_done_${ID}:
+  FindClose $0
+  ClearErrors
+!macroend
+
 Section Install
   SetOutPath $INSTDIR
 
@@ -703,7 +754,8 @@ Section Install
   Call HideExec
   Push '"$SYSDIR\taskkill.exe" /F /IM "${MAINBINARYNAME}.exe"'
   Call HideExec
-  Sleep 200
+  ; Win11 新菜单把 forge_shell_cmd.dll 加载在 dllhost.exe 里。主程序退出不会放开这把锁。
+  !insertmacro MoveShellDllAside HideExec
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -720,6 +772,9 @@ Section Install
   {{#each binaries}}
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
+
+  ; 新 DLL 已经写到原路径，这时再结束仍映射着旧文件的宿主，并清掉改名残留。
+  !insertmacro DeleteShellDllAside HideExec inst
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -876,7 +931,8 @@ Section Uninstall
   ; 确保主程序彻底退出
   Push '"$SYSDIR\taskkill.exe" /F /IM "${MAINBINARYNAME}.exe"'
   Call un.HideExec
-  Sleep 200
+  ; 同 Install 段：先把被 dllhost 映射的 DLL 改走，否则下面的 Delete 会静默失败。
+  !insertmacro MoveShellDllAside un.HideExec
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
@@ -891,6 +947,8 @@ Section Uninstall
   {{#each binaries}}
     Delete "$INSTDIR\\{{this}}"
   {{/each}}
+
+  !insertmacro DeleteShellDllAside un.HideExec uninst
 
   ; Delete app associations
   {{#each file_associations as |association| ~}}

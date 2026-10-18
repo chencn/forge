@@ -65,6 +65,20 @@ fn interesting(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Other | EventKind::Access(_))
 }
 
+/// 这一条事件会不会改变「目录里有什么」。
+///
+/// 只认新增、删除和改名（含跨目录移动，两头各报一次）：这三种才换得出构建标志文件。
+/// 改文件内容不算——目录清单缓存记的是名字，内容变了名字没变，作废它就是把重列的代价
+/// 摊到每次保存上。
+fn changes_listing(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(notify::event::ModifyKind::Name(_))
+    )
+}
+
 /// 判断一条路径是否为应被忽略的 git 内部无用文件。
 ///
 /// 外部 `git commit`、`git add`、`git checkout` 等操作只写 `.git` 内部指针，工作区源码并未变动；
@@ -206,6 +220,11 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
                 .filter(|path| !ignorable_git_internal(path))
                 .collect();
             if !paths.is_empty() {
+                // 动到目录内容的那些事件顺手作废构建清单缓存：识别与依赖探测共用那一份，
+                // 不等它自己过期就把旧工程留在缓存里，新加的 `pom.xml` 会看不见。
+                if changes_listing(&event.kind) {
+                    crate::run::scan::invalidate_many(&paths);
+                }
                 // 转发线程已经退了就直接丢事件，不该让 notify 的回调报错。
                 let _ = sender.send(paths);
             }
@@ -337,10 +356,12 @@ fn flush(app: &AppHandle, root: &str, pending: &mut BTreeSet<String>) {
 mod tests {
     use super::ignorable_git_internal;
     use super::{
-        allow_start_for_root, allow_stop_for_root, interesting, soak, wait_duration, FsChange,
-        BATCH_CAP, MAX_WAIT, SETTLE,
+        allow_start_for_root, allow_stop_for_root, changes_listing, interesting, soak,
+        wait_duration, FsChange, BATCH_CAP, MAX_WAIT, SETTLE,
     };
-    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind};
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
+    };
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -422,6 +443,22 @@ mod tests {
         assert!(interesting(&EventKind::Modify(ModifyKind::Data(DataChange::Any))));
         assert!(interesting(&EventKind::Create(CreateKind::Any)));
         assert!(interesting(&EventKind::Remove(RemoveKind::Any)));
+    }
+
+    #[test]
+    fn only_listing_changes_wake_the_directory_cache() {
+        use notify::EventKind;
+        // 目录清单缓存记的是「这一层有哪些标志文件名字」。新增、删除、改名（含跨目录移动，
+        // 两头各一条）才会换掉这份名单，才值得作废它。
+        assert!(changes_listing(&EventKind::Create(CreateKind::File)));
+        assert!(changes_listing(&EventKind::Remove(RemoveKind::File)));
+        assert!(changes_listing(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::Any
+        ))));
+        // 保存只改内容：名字没变，跟着作废等于把重列目录的代价摊到每次敲字上。
+        assert!(!changes_listing(&EventKind::Modify(ModifyKind::Data(DataChange::Any))));
+        assert!(!changes_listing(&EventKind::Access(AccessKind::Open(AccessMode::Any))));
+        assert!(!changes_listing(&EventKind::Other));
     }
 
     #[test]

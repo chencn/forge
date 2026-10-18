@@ -22,6 +22,7 @@ export const en: Record<TranslationKey, string> = {
   "menu.rename": "Rename",
   "menu.copyPath": "Copy path",
   "menu.reveal": "Reveal in system file manager",
+  "menu.locateInSidebar": "Locate in Sidebar",
   "menu.cut": "Cut",
   "menu.openWith": "Open in Associated Application",
   "menu.compareFiles": "Compare Files",
@@ -93,6 +94,7 @@ export const en: Record<TranslationKey, string> = {
   "error.watchStart": "Unable to start file watching: {detail}",
   "error.watchDir": "Unable to watch {path}: {detail}",
   "error.gitSpawn": "Unable to run git: {detail}",
+  "error.gitOutputTooLarge": "This file is too large to show its changes: {detail}",
   "error.blockSpawn": "Background task could not start: {detail}",
   "error.gitBare": "The git command failed",
   "error.noRepo": "Repository folder not found: {path}",
@@ -283,7 +285,6 @@ export const en: Record<TranslationKey, string> = {
   "run.killed": "Process was terminated",
 
   "explorer.noFolder": "No folder open yet",
-  "explorer.viewOptions": "View options",
   "explorer.showIgnored": "Show ignored files",
   "explorer.showHidden": "Show hidden files",
   "explorer.progressDeleting": "Deleting",

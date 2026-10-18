@@ -13,7 +13,8 @@ import {
   type TextHit,
   type TextPage,
 } from "../lib/fs";
-import { gitIgnored, ignoredRoots } from "../lib/git";
+import { ignoredRoots } from "../lib/git";
+import { loadIgnored } from "../lib/ignoredCache";
 import EntryIcon from "./EntryIcon";
 import MatchSnippet from "./MatchSnippet";
 
@@ -133,7 +134,8 @@ export default function SearchEverywhere({
       return;
     }
     let stale = false;
-    void gitIgnored(repoRoot)
+    // 与目录树、Git 面板共用一份扫描结果：新鲜期内不另起 `git status --ignored` 全仓扫描。
+    void loadIgnored(repoRoot)
       .then((list) => {
         if (!stale) setIgnored(ignoredRoots(repoRoot, list));
       })

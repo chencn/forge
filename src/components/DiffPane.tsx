@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { AlignLeft, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Columns2, ExternalLink, Lock, X } from "lucide-react";
 import PaneNotice from "./PaneNotice";
 import { monaco } from "../lib/monacoEditor";
@@ -70,7 +70,7 @@ function sideRow(label: string, path?: string) {
   );
 }
 
-export default function DiffPane({
+function DiffPane({
   leftLabel,
   rightLabel,
   path,
@@ -349,3 +349,6 @@ export default function DiffPane({
     </section>
   );
 }
+
+/** Monaco 的比对视图自己管更新，外层重渲染不该把它整份重建。 */
+export default memo(DiffPane);

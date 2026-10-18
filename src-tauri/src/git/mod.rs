@@ -210,6 +210,31 @@ fn run_git_stdin(root: &Path, args: &[&str], input: &str) -> Result<GitOutput, S
     run_git_raw(root, args, Some(input))
 }
 
+/// 单条 git 命令 stdout/stderr 各自的驻留上限。行协议下这个量级意味着
+/// 几十万条变更，面板早就渲染不动了——超限回错误码比无界驻留诚实。
+const GIT_OUTPUT_CEILING: usize = 64 * 1024 * 1024;
+
+/// 按块抽干一个管道，最多存 `ceiling` 字节；再多就只读不存——必须一路读到 EOF，
+/// 否则对端塞满管道缓冲会卡死在写操作上。返回 (字节, 是否超限)。
+fn read_capped(reader: &mut impl std::io::Read, ceiling: usize) -> (Vec<u8>, bool) {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    let mut overflow = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => {
+                if !overflow && bytes.len() + count <= ceiling {
+                    bytes.extend_from_slice(&chunk[..count]);
+                } else {
+                    overflow = true;
+                }
+            }
+        }
+    }
+    (bytes, overflow)
+}
+
 fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOutput, String> {
     // 读的一律放行，写的排队，免得两条同时落进 `.git` 撞锁。
     let _queued = mutates_repo(args).then(git_write_lock);
@@ -252,13 +277,25 @@ fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOut
             .write_all(input.as_bytes())
             .map_err(|error| err("GIT_SPAWN", error))?;
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| err("GIT_SPAWN", error))?;
+    let mut stdout_pipe = child.stdout.take().expect("git stdout piped");
+    let mut stderr_pipe = child.stderr.take().expect("git stderr piped");
+    // 两条管道都要有人抽干，git 才不会塞满管道卡死在写操作上；stderr 挪去线程，
+    // 主线程收 stdout。超限的字节继续读但不再存，落定后再判超限。
+    let stderr_task = std::thread::spawn(move || read_capped(&mut stderr_pipe, GIT_OUTPUT_CEILING));
+    let (stdout_bytes, stdout_over) = read_capped(&mut stdout_pipe, GIT_OUTPUT_CEILING);
+    let (stderr_bytes, stderr_over) = match stderr_task.join() {
+        Ok(pair) => pair,
+        Err(_) => return Err(err("GIT_SPAWN", "git stderr reader panicked")),
+    };
+    let status = child.wait().map_err(|error| err("GIT_SPAWN", error))?;
+    if stdout_over || stderr_over {
+        let stream = if stdout_over { "stdout" } else { "stderr" };
+        return Err(err("GIT_OUTPUT_TOO_LARGE", format!("{stream} > {} bytes", GIT_OUTPUT_CEILING)));
+    }
     Ok(GitOutput {
-        ok: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        ok: status.success(),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
     })
 }
 
@@ -352,7 +389,11 @@ fn git_probe_cached(path: String) -> GitProbe {
                 // 只缓存认出库子的那份：git 临时不在 PATH、目录刚建好、杀毒软件拦一下这类
                 // 瞬时失败要是记进表，内置终端里 `git init` 完界面还得挂着「不是仓库」10 秒。
                 if probe.available && probe.repo_root.is_some() {
-                    lock(cache).insert(key, (Instant::now(), probe.clone()));
+                    let mut cache = lock(cache);
+                    // 过期的条目在写入时顺手删掉，而不是躺在表里等同名 key 覆盖：
+                    // 关掉的工程再不会来读它，留着就是只增不减。
+                    cache.retain(|_, (at, _)| at.elapsed() < PROBE_TTL);
+                    cache.insert(key, (Instant::now(), probe.clone()));
                 }
                 probe
             }
@@ -2152,12 +2193,67 @@ fn git_commit_file_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        git_authors_impl, git_commit_detail_impl, git_log_impl, git_restore_file_impl,
-        git_status_impl, merge_file_lists, parse_log, parse_refs, parse_status, valid_range,
-        valid_rev, GitLogQuery,
+        git_authors_impl, git_commit_detail_impl, git_log_impl, git_probe_impl,
+        git_restore_file_impl, git_show_impl, git_status_impl, merge_file_lists, parse_log,
+        parse_refs, parse_status, read_capped, valid_range, valid_rev, GitLogQuery,
     };
     // relative_path 的用例直接拿 &Path 当根，这里补上类型导入。
     use std::path::Path;
+
+    #[test]
+    fn read_capped_keeps_all_bytes_under_the_ceiling() {
+        let data = vec![b'a'; 4096];
+        let (bytes, overflow) = read_capped(&mut data.as_slice(), 64 * 1024);
+        assert!(!overflow);
+        assert_eq!(bytes.len(), 4096);
+    }
+
+    /// 拿真实测试项目走一遍读取链（探根、status、log、blob）。依赖本机路径，
+    /// 默认 `#[ignore]`；用 `FORGE_DEMO=<仓库根> cargo test --lib -- --ignored git` 跑。
+    #[test]
+    #[ignore = "requires FORGE_DEMO pointing at a local git repository"]
+    fn smoke_against_forge_demo() {
+        let Some(demo) = std::env::var_os("FORGE_DEMO") else {
+            panic!("FORGE_DEMO 未设置：指向一个本地 git 仓库根目录");
+        };
+        let demo = Path::new(&demo);
+        assert!(demo.join(".git").exists(), "{} 不是 git 仓库", demo.display());
+        let root = demo.to_str().expect("demo path utf8").to_string();
+
+        let probe = git_probe_impl(&root);
+        assert!(probe.available, "git 可执行文件不可用");
+        assert!(probe.repo_root.is_some(), "没认出仓库根");
+
+        let status = git_status_impl(root.clone()).expect("git status 失败");
+        let log = git_log_impl(
+            root.clone(),
+            GitLogQuery {
+                reference: String::new(),
+                author: String::new(),
+                text: String::new(),
+                regex: false,
+                since_ms: 0,
+                path: String::new(),
+                limit: 10,
+            },
+        )
+        .expect("git log 失败");
+        assert!(!log.is_empty(), "demo 仓库应当有提交");
+        // 输出上限改造后（0.1）blob 读取链照常工作。
+        let blob = git_show_impl(root, "HEAD".to_string(), "package.json".to_string())
+            .expect("git show 失败");
+        assert!(blob.contains('"'), "package.json 应当是 JSON");
+        drop(status);
+    }
+
+    #[test]
+    fn read_capped_flags_overflow_but_keeps_draining() {
+        // 超限后必须一路读到 EOF（Cursor 会走完），否则真管道里的 git 会卡死在写上。
+        let data = vec![b'b'; 100 * 1024];
+        let (bytes, overflow) = read_capped(&mut data.as_slice(), 8 * 1024);
+        assert!(overflow, "超过上限要置位");
+        assert!(bytes.len() <= 8 * 1024, "超限的字节不入库");
+    }
 
     #[test]
     fn remote_head_symref_is_not_listed_as_a_branch() {

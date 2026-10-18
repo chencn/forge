@@ -9,9 +9,10 @@
 //!    前端提示据此自动消隐（Auto-Expire）。
 
 use super::detect::{
-    gradle_wrapper_names, is_skipped, line, maven_wrapper_names, nearest_ancestor_with, npm_client,
-    program_missing, python_program, quote, rel_path, slashes,
+    gradle_wrapper_names, is_skipped, line, maven_wrapper_names, npm_client, program_missing,
+    python_program, quote, rel_path, slashes,
 };
+use super::scan;
 use super::{RunConfiguration, RunKind, Unavailable};
 use crate::offload::block_value;
 use crate::sys;
@@ -470,7 +471,7 @@ fn resolve_jvm_tool(
     unix_wrapper: &str,
     program: &str,
 ) -> (String, PathBuf, Option<Unavailable>) {
-    if let Some(at) = nearest_ancestor_with(dir, root, &[win_wrapper, unix_wrapper]) {
+    if let Some(at) = scan::nearest_ancestor_with(dir, root, &[win_wrapper, unix_wrapper]) {
         let invoke = if cfg!(windows) {
             win_wrapper.to_string()
         } else {
@@ -570,7 +571,7 @@ fn probe_npm(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 /// 探测 Maven (`pom.xml`)。
 fn probe_maven(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let pom = dir.join("pom.xml");
-    if !pom.is_file() {
+    if !scan::has_file(dir, "pom.xml") {
         return;
     }
     let mut files_crc = BTreeMap::new();
@@ -608,13 +609,10 @@ fn probe_maven(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 
 /// 探测 Gradle (`build.gradle(.kts)`)。
 fn probe_gradle(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
-    let Some(primary) = ["build.gradle.kts", "build.gradle"]
-        .iter()
-        .map(|name| dir.join(name))
-        .find(|path| path.is_file())
-    else {
+    let Some(name) = scan::first_file(dir, &["build.gradle.kts", "build.gradle"]) else {
         return;
     };
+    let primary = dir.join(name);
     let mut files_crc = BTreeMap::new();
     for (file, syntax) in [
         ("build.gradle.kts", CommentSyntax::SlashComment),
@@ -662,7 +660,7 @@ fn probe_gradle(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 /// 对齐 IDEA Rust 插件仅跟踪 `Cargo.toml`、`rust-toolchain.toml` 与 `.cargo/config.toml`。
 fn probe_rust(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let cargo_toml = dir.join("Cargo.toml");
-    if !cargo_toml.is_file() {
+    if !scan::has_file(dir, "Cargo.toml") {
         return;
     }
     let mut files_crc = BTreeMap::new();
@@ -706,7 +704,7 @@ fn probe_rust(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 /// 注意：不将 `go.sum` 计入触发源，避免 `go build` / `go test` 更新校验和时引发误报。
 fn probe_go(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let go_mod = dir.join("go.mod");
-    if !go_mod.is_file() {
+    if !scan::has_file(dir, "go.mod") {
         return;
     }
     let mut files_crc = BTreeMap::new();
@@ -742,13 +740,10 @@ fn probe_go(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 
 /// 探测 Python (`pyproject.toml` / `Pipfile` / `requirements.txt`)。
 fn probe_python(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
-    let Some(primary) = ["pyproject.toml", "Pipfile", "requirements.txt"]
-        .iter()
-        .map(|name| dir.join(name))
-        .find(|path| path.is_file())
-    else {
+    let Some(name) = scan::first_file(dir, &["pyproject.toml", "Pipfile", "requirements.txt"]) else {
         return;
     };
+    let primary = dir.join(name);
     let mut files_crc = BTreeMap::new();
     for (file, syntax) in [
         ("pyproject.toml", CommentSyntax::HashComment),
@@ -764,10 +759,10 @@ fn probe_python(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
         return;
     }
 
-    let has_uv = dir.join("uv.lock").is_file();
-    let has_poetry = dir.join("poetry.lock").is_file();
-    let has_pipenv = dir.join("Pipfile").is_file() || dir.join("Pipfile.lock").is_file();
-    let has_reqs = dir.join("requirements.txt").is_file();
+    let has_uv = scan::has_file(dir, "uv.lock");
+    let has_poetry = scan::has_file(dir, "poetry.lock");
+    let has_pipenv = scan::has_file(dir, "Pipfile") || scan::has_file(dir, "Pipfile.lock");
+    let has_reqs = scan::has_file(dir, "requirements.txt");
 
     let (cmd, label, program) = if has_uv {
         ("uv sync".to_string(), "uv sync".to_string(), "uv".to_string())
@@ -810,9 +805,9 @@ fn probe_python(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let missing_installed = if has_uv {
         !has_venv
     } else if has_poetry {
-        !has_venv && !dir.join("poetry.lock").is_file()
+        !has_venv && !scan::has_file(dir, "poetry.lock")
     } else if has_pipenv {
-        !has_venv && !dir.join("Pipfile.lock").is_file()
+        !has_venv && !scan::has_file(dir, "Pipfile.lock")
     } else {
         false
     };
@@ -890,7 +885,7 @@ fn probe_php(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 /// 探测 Ruby (`Gemfile`)。
 fn probe_ruby(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let gemfile = dir.join("Gemfile");
-    if !gemfile.is_file() {
+    if !scan::has_file(dir, "Gemfile") {
         return;
     }
     let mut files_crc = BTreeMap::new();
@@ -972,7 +967,7 @@ fn probe_dart(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 /// 探测 Elixir (`mix.exs`)。
 fn probe_elixir(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let mix_exs = dir.join("mix.exs");
-    if !mix_exs.is_file() {
+    if !scan::has_file(dir, "mix.exs") {
         return;
     }
     let mut files_crc = BTreeMap::new();
@@ -1008,18 +1003,9 @@ fn probe_elixir(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 
 /// 探测 .NET (`*.csproj` / `*.fsproj`)。
 fn probe_dotnet(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut projects: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            matches!(
-                path.extension().and_then(|ext| ext.to_str()),
-                Some("csproj") | Some("fsproj")
-            )
-        })
+    let mut projects: Vec<PathBuf> = scan::typed_files(dir, &["csproj", "fsproj"])
+        .into_iter()
+        .map(|name| dir.join(name))
         .collect();
     if projects.is_empty() {
         return;
@@ -1103,6 +1089,39 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(&path, text).unwrap();
+    }
+
+    /// 目录清单缓存**故意**不因「只改正文」而作废。这条用例锁住它的前提：正文仍然读得到。
+    #[test]
+    fn a_content_edit_moves_the_fingerprint_without_any_invalidation() {
+        let dir = temp_project("content-edit");
+        write(&dir, "package.json", r#"{"dependencies":{"react":"18.0.0"}}"#);
+        scan::invalidate_many(&[dir.join("seed")]);
+        let before = dep_sync_probe_impl(dir.to_str().unwrap());
+        assert!(!before.is_empty(), "带依赖的 package.json 该被探测到");
+
+        // 只改依赖版本，不新增不删除任何文件，也不手动作废。
+        write(&dir, "package.json", r#"{"dependencies":{"react":"19.0.0"}}"#);
+        let after = dep_sync_probe_impl(dir.to_str().unwrap());
+        assert_ne!(before, after, "指纹没跟着正文变，说明缓存把改动挡住了");
+
+        let again = dep_sync_probe_impl(dir.to_str().unwrap());
+        assert_eq!(after, again, "清单缓存热了以后结果该一模一样");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 真实工程上验同一件事：冷缓存与热缓存的探测结果必须一字不差——
+    /// 共享那份名单只省了重复列目录，不该改变任何一个单元。
+    #[test]
+    #[ignore = "requires FORGE_DEMO pointing at the local demo project"]
+    fn demo_probe_matches_cold_and_warm_listing_cache() {
+        let demo = std::env::var_os("FORGE_DEMO").expect("FORGE_DEMO 未设置");
+        let root = demo.to_string_lossy().into_owned();
+        let cold = dep_sync_probe_impl(&root);
+        let warm = dep_sync_probe_impl(&root);
+        assert!(!cold.is_empty(), "forge-demo 有 package.json，探测不该空手");
+        assert_eq!(cold, warm, "同一棵树，热缓存不该改变结果");
     }
 
     #[test]

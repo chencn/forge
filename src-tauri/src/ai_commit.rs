@@ -19,6 +19,24 @@ const AI_COMMIT_FILE: &str = "ai-commit.json";
 /// 为模型生成预留的输出 Token 上限（含思维链推理 token）。
 const COMMIT_OUTPUT_TOKEN_BUDGET: usize = 4_096;
 
+/// AI 请求共用的连接池。
+///
+/// 每次调用都现搭一个 `Client`，等于每回把 TLS 上下文和连接池重建一遍——生成一次提交说明
+/// 是两次往返（列模型 + 生成），用户点一下就走一趟全新的握手。
+/// 超时不能留在 builder 上：生成给 90s、列模型给 15s，所以改由每个请求自己带 `.timeout()`。
+fn shared_client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or_else(|| "AI_COMMIT_NETWORK_ERROR".to_string())
+}
+
 /// 单个服务商配置。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -532,14 +550,11 @@ pub async fn ai_commit_generate(
     }
     let _guard = OperationGuard(operation_id);
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|_| "AI_COMMIT_NETWORK_ERROR")?;
+    let client = shared_client()?;
 
     let mut req = client
         .post(&plan.url)
+        .timeout(Duration::from_secs(90))
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
         .json(&plan.body);
@@ -670,15 +685,12 @@ pub async fn ai_commit_list_models(
 ) -> Result<Vec<String>, String> {
     let url = resolve_models_url(&endpoint, allows_insecure_http).map_err(|e| e.to_string())?;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|_| "AI_COMMIT_NETWORK_ERROR".to_string())?;
+    let client = shared_client()?;
 
     let send_req = |target_url: &str| {
         let mut req = client
             .get(target_url)
+            .timeout(Duration::from_secs(15))
             .header("Accept", "application/json")
             .header("User-Agent", "forge-ide");
 
@@ -728,6 +740,14 @@ pub async fn ai_commit_list_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 连接池只该有一份：每次调用现搭 Client 会连 TLS 上下文一起重建，一次生成要走两趟握手。
+    #[test]
+    fn ai_requests_share_one_client() {
+        let first = shared_client().expect("构造共享 client 失败");
+        let second = shared_client().expect("构造共享 client 失败");
+        assert!(std::ptr::eq(first, second), "两次取到的不是同一份连接池");
+    }
 
     #[test]
     fn sensitive_paths_are_blocked() {

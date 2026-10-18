@@ -13,7 +13,7 @@ Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注�
 
 ## 模块划分
 
-行数按文件当前长度计。
+行数按文件当前长度计，只在该模块被改动时重算那一行；没动过的模块可能落着，别把这张表当全量核对结果。
 
 | 模块 | 行数 | 管什么 | 命令数 |
 | --- | --- | --- | --- |
@@ -21,17 +21,20 @@ Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注�
 | `src-tauri/src/fs/search.rs` | 798 | 按名字找文件、逐文件扫正文；深度、条目数、单文件大小、返回条数四道上限定在这一层 | 2 |
 | `src-tauri/src/fs/windows.rs` | 103 | kernel32 / shell32 直接 FFI：属性位、`explorer /select`、`ShellExecuteW` | — |
 | `src-tauri/src/fs/unix.rs` | 59 | 同三个入口的 unix 实现：点开头当隐藏、`open -R` / `xdg-open` | — |
-| `src-tauri/src/git/mod.rs` | 1777 | 以参数数组 spawn 系统 git，解析 porcelain / numstat / for-each-ref / log | 48 |
+| `src-tauri/src/git/mod.rs` | 2681 | 以参数数组 spawn 系统 git，解析 porcelain / numstat / for-each-ref / log；两路输出各有 64 MiB 上限，超了报 `GIT_OUTPUT_TOO_LARGE` 而不是截半份 | 49 |
 | `src-tauri/src/term.rs` | 269 | portable-pty 的 shell 会话，输出 base64 走事件；`shell_probe` 扫本机 shell | 6 |
 | `src-tauri/src/proc.rs` | 182 | 跑一行命令并转发两路输出，停止时整棵进程树一起杀；`env` 那组变量逐条叠在继承来的父环境上 | 2 |
 | `src-tauri/src/run/mod.rs` | 82 | 运行配置的数据模型：类型、命令行、工作目录、环境变量、缺工具的原因、起跑前要落盘的辅助文件 | — |
-| `src-tauri/src/run/detect.rs` | 1045 | 扫工程出候选配置：npm 脚本、pom / gradle 两族、Spring 插件标记、裸 `.java` 的单文件启动；本机 `mvn` / `gradle` / `java` 与 wrapper 的解析也在这层 | 2 |
+| `src-tauri/src/run/detect.rs` | 3176 | 扫工程出候选配置：npm 脚本、pom / gradle 两族、Spring 插件标记、裸 `.java` 的单文件启动；本机 `mvn` / `gradle` / `java` 与 wrapper 的解析也在这层。标志文件在不在一律问 `run/scan.rs` 那份名单，不再逐个 stat | 2 |
+| `src-tauri/src/run/scan.rs` | 365 | 一层目录列一次得到的构建标志文件名单，识别与依赖探测共用；监听的新增/删除/改名即时作废，另带 2s TTL 兜底没被监听的根 | — |
+| `src-tauri/src/run/dep_sync.rs` | 1505 | 依赖同步探测：按清单算语义指纹（注释/空行/版本字段不参与）、判断本地装没装、给出安装命令 | 1 |
 | `src-tauri/src/run/store.rs` | 189 | `runConfigs.json` 按工程读写，落盘前只留用户自己建的那几条与三个 id 列表 | 2 |
-| `src-tauri/src/watch.rs` | 166 | notify 递归监听，150ms 去抖、单批最多 256 条路径后成批发事件 | 2 |
+| `src-tauri/src/watch.rs` | 505 | notify 递归监听，150ms 静默去抖、1s 封顶，攒下的路径按 256 拆批发 `fs://change`；新增/删除/改名顺手作废 `run/scan.rs` 那份名单 | 2 |
 | `src-tauri/src/lsp.rs` | 752 | 语言服务会话表：stdio 管道、`Content-Length` 分帧读写、stderr 按行转事件、按窗口/server/根三份身份记账、退避与空闲回收、状态快照 | 7 |
 | `src-tauri/src/lsp_config.rs` | 704 | `lsp.json` 读写：12 语言种子表、档位与空字段归一化、旧 `settings.json` 的 `lsp` 段一次性迁移、原子写 | 2 |
 | `src-tauri/src/lsp_probe.rs` | 350 | 安装状态探测（PATH 补齐、`PATHEXT`、`.ps1`、rust-analyzer 的 shim 复核）与一键安装 | 2 |
 | `src-tauri/src/lsp_detect.rs` | 310 | 按 `rootMarkers` 在工程里找语言服务的真根：向上越界即停、向下 2 层、结果缓存 60 秒 | 1 |
+| `src-tauri/src/ai_commit.rs` | 872 | AI 提交说明：`ai-commit.json` 读写、三家协议请求计划、敏感路径拦截、可取消的在飞请求；所有请求共用一个连接池 | 5 |
 | `src-tauri/src/settings.rs` | 226 | `settings.json` 读写，全在系统配置目录，缺字段按 `Default` 补，写盘走 `write_atomic` | 2 |
 | `src-tauri/src/history.rs` | 191 | `history.json` 读写：上次开的项目、最近项目/分支/提交说明；首次从旧 `settings.json` 迁移，坏文件退回空表 | 2 |
 | `src-tauri/src/tray.rs` | 135 | 托盘图标与两项菜单、点关闭是收起还是先存盘再退 | 2 |

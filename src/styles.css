@@ -1624,6 +1624,11 @@ span.entry-icon > svg {
   pointer-events: auto;
 }
 
+.tool-window-head:hover .icon-button.is-hover:disabled,
+.tool-window-head .icon-button.is-hover:disabled:focus-visible {
+  opacity: 0.4;
+}
+
 .tool-window-title {
   flex: none;
   min-width: 0;

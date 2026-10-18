@@ -25,6 +25,13 @@ const READ_BYTES: usize = 64 * 1024;
 /// 缓冲只涨不落；到顶就停会话走退出记账，别把内存吃穿。正常的 LSP 单条消息远到不了这个量级。
 const MAX_READ_BUFFER: usize = 16 * 1024 * 1024;
 
+/// stderr 无行尾时的累积上限：攒到就截发一条日志、清空重来。stderr 只是日志，
+/// 超限不杀会话（和 `MAX_READ_BUFFER` 的止损语义区分开）。
+const MAX_STDERR_LINE: usize = 1024 * 1024;
+
+/// 单条日志发往前端的长度上限。面板按条数封顶、不看单条大小，超长行先切短再进门。
+const MAX_EMITTED_LOG_LINE: usize = 64 * 1024;
+
 /// 一个活着的语言服务会话。stdout 由读线程单独持有，stdin 留在这里给 `lsp_write` 写。
 ///
 /// 会话身份就是表里的键：`窗口::server::工程根`。同一个键第二次请求不会重复起进程。
@@ -507,6 +514,9 @@ fn read_loop(mut reader: impl Read, stop_rx: mpsc::Receiver<()>, app: AppHandle,
 }
 
 /// stderr 要有人读，否则管道缓冲满了 server 会卡住；内容按行发出去当日志。
+/// 行尾同时认 `\n` 和 `\r`：进度条型输出连吐一整年也不会有 `\n`。
+/// 攒超 `MAX_STDERR_LINE` 还没等到行尾就截断发一条、清空继续读——
+/// 不学 `read_loop` 停会话止损：stderr 只是日志，协议没坏，会话还得留着打字用。
 fn stderr_loop(mut reader: impl Read, app: AppHandle, id: String) {
     let mut buffer: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -515,19 +525,46 @@ fn stderr_loop(mut reader: impl Read, app: AppHandle, id: String) {
             Ok(0) | Err(_) => break,
             Ok(count) => {
                 buffer.extend_from_slice(&chunk[..count]);
-                while let Some(index) = buffer.iter().position(|byte| *byte == b'\n') {
+                while let Some(index) =
+                    buffer.iter().position(|byte| *byte == b'\n' || *byte == b'\r')
+                {
                     let line: Vec<u8> = buffer.drain(..=index).collect();
-                    let text = String::from_utf8_lossy(&line).trim_end().to_string();
-                    if !text.is_empty() {
+                    if let Some(text) = log_line(&String::from_utf8_lossy(&line)) {
                         let _ = app.emit(
                             "lsp://log",
                             LspLog { id: id.clone(), kind: LspLogKind::Server, text },
                         );
                     }
                 }
+                if buffer.len() > MAX_STDERR_LINE {
+                    if let Some(text) = log_line(&String::from_utf8_lossy(&buffer)) {
+                        let _ = app.emit(
+                            "lsp://log",
+                            LspLog { id: id.clone(), kind: LspLogKind::Server, text },
+                        );
+                    }
+                    buffer.clear();
+                }
             }
         }
     }
+}
+
+/// 一块 stderr 文本折成一条日志：空行丢弃，超长的截到 `MAX_EMITTED_LOG_LINE`
+/// 并按字符边界收尾（日志面板按条数封顶、不看单条大小，超长行得先切短再进门）。
+fn log_line(raw: &str) -> Option<String> {
+    let text = raw.trim_end();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() <= MAX_EMITTED_LOG_LINE {
+        return Some(text.to_string());
+    }
+    let mut end = MAX_EMITTED_LOG_LINE;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &text[..end]))
 }
 
 /// 从缓冲的 `from` 处取一条完整消息，返回「这条占到哪儿」和 JSON 正文。
@@ -803,7 +840,20 @@ fn merge_detail(first: Option<&str>, second: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
-    use super::{find, parse_args, take_message};
+    use super::{find, log_line, parse_args, take_message, MAX_EMITTED_LOG_LINE};
+
+    /// 空行丢弃、超长截断、多字节字符不许拦腰断。
+    #[test]
+    fn log_line_truncates_on_char_boundary() {
+        assert_eq!(log_line("  \r\n"), None);
+        assert_eq!(log_line("server ready\r\n").as_deref(), Some("server ready"));
+        let huge = "あ".repeat(MAX_EMITTED_LOG_LINE);
+        let one = log_line(&huge).expect("nonempty");
+        assert!(one.len() <= MAX_EMITTED_LOG_LINE + '…'.len_utf8());
+        assert!(one.ends_with('…'));
+        // 截断点落在三字节假名中间时也要保持合法 UTF-8。
+        assert!(std::str::from_utf8(&one.as_bytes()[..one.len() - '…'.len_utf8()]).is_ok());
+    }
 
     /// 空白分隔的普通参数。
     #[test]

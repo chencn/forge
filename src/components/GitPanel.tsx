@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -35,6 +35,7 @@ import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import type { GitChange, GitCommitDetail, GitCommitFile } from "../lib/git";
 import { changeMark, folderMarks, gitCommitDetail, isDeletedMark, markClass } from "../lib/git";
+import { loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
 import {
   cancelAiCommit,
   collectFilesDiff,
@@ -215,7 +216,7 @@ const HEAD_MARK = HEAD_TEXT + 6;
 /** 未跟踪文件并进「未暂存」的上限；超过就独立成节。同 IDEA 的 vcs.unversioned.files.max.intree。 */
 const UNTRACKED_INLINE_LIMIT = 1000;
 
-export default function GitPanel({
+function GitPanel({
   git,
   workspaceRoot,
   onOpenChange,
@@ -323,20 +324,28 @@ export default function GitPanel({
   }, [rewordSignal]);
 
   useEffect(() => {
-    if (!showIgnored) {
+    if (!showIgnored || !git.root) {
       setIgnored([]);
       return;
     }
     let stale = false;
-    void git.loadIgnored().then((list) => {
+    const unsubscribe = subscribeIgnored(git.root, (list) => {
+      if (!stale) setIgnored(list);
+    });
+    void loadIgnored(git.root).then((list) => {
       if (!stale) setIgnored(list);
     });
     return () => {
       stale = true;
+      unsubscribe();
     };
-    // 忽略清单只会随工作区内容变，所以跟着 `status` 走；
-    // 依赖整个 `git` 的话，App 每渲染一次就多一个 `git status --ignored` 子进程。
-  }, [showIgnored, git.loadIgnored, git.status]);
+  }, [showIgnored, git.root]);
+
+  // 忽略清单只会随工作区内容变，所以跟着 `status` 打个卡；走共享缓存后，
+  // 保存风暴期间 status 勤快刷新也只合并成新鲜期外的一趟 `git status --ignored`。
+  useEffect(() => {
+    if (showIgnored && git.root) void loadIgnored(git.root);
+  }, [showIgnored, git.root, git.status]);
 
   const staged = git.stagedChanges;
   const tracked = git.trackedChanges;
@@ -1450,3 +1459,6 @@ export default function GitPanel({
     </div>
   );
 }
+
+/** 正文存在 App 那一层，敲一个字它就重渲染；变更清单没动时不必跟着走一遍。 */
+export default memo(GitPanel);

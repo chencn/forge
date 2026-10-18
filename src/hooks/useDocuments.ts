@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { errorText, fileStamp, readFile, writeFile } from "../lib/fs";
 import { codedError } from "../lib/errors";
-import { pathWithin, samePath } from "../lib/format";
+import { canonicalPath, pathWithin, samePath } from "../lib/format";
 import { languageForPath } from "../lib/monacoEnv";
 import { docKindOf, hasTextContent, previewsFromDisk } from "../lib/docKind";
 import type { DocKind } from "../lib/docKind";
@@ -92,6 +92,14 @@ export function belongsToRoot(doc: OpenDocument, targetRoot: string): boolean {
   return doc.root ? samePath(doc.root, targetRoot) : pathWithin(targetRoot, doc.path);
 }
 
+/** 自己写盘之后，认这段时间内的监听回声为同一件事的尾巴，不再读一遍盘。 */
+const SELF_WRITE_WINDOW_MS = 1200;
+
+const ENCODER = new TextEncoder();
+
+/** 一份文本按 UTF-8 占多少字节：判断磁盘上是不是就是手里这份，不用整读回来。 */
+const utf8Length = (text: string) => ENCODER.encode(text).length;
+
 export function useDocuments(
   reportError: (message: string) => void,
   workspaceRoot: string | null = null
@@ -111,6 +119,13 @@ export function useDocuments(
   rootRef.current = workspaceRoot ?? "";
   /** 正在写盘的文件锁：防止编辑器失焦、切标签与窗口失焦同刻触发时对同一文件并发写盘。 */
   const savingRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  /**
+   * 最近一次写盘成功的时间戳，按规范化路径存。
+   *
+   * 保存返回的那份正文与 mtime 就是磁盘现状，紧跟其后的监听回声再 `readFile` 一遍
+   * 纯属白读一趟 IPC；这一串时间戳就是让回声认出「这是我自己刚写的」。窗口外自然过期。
+   */
+  const savedAtRef = useRef<Map<string, number>>(new Map());
 
   /**
    * 改列表只走这一条：先记进 ref 再交给 React。同一个事件里连着写两次（批量关闭
@@ -373,6 +388,8 @@ export function useDocuments(
               ? written.modifiedMs || fresh.stamp
               : fresh.stamp,
           });
+          // 认领这份磁盘现状：紧随其后的监听回声不必再 readFile 一遍。
+          savedAtRef.current.set(canonicalPath(path), Date.now());
           return true;
         } catch (cause) {
           reportError(errorText(cause));
@@ -444,6 +461,28 @@ export function useDocuments(
             upsert({ ...fresh, stamp: token, diskMs: stamp.modifiedMs, error: null });
             continue;
           }
+          // 自己刚写盘的那几秒：先拿一次 stat 验明回声是不是自己那次写的尾巴。
+          // mtime 还是保存时认下的那个数，磁盘上就是手里这份，整读一遍纯属白读；
+          // 对不上说明这几秒里又有别人动过，照常往下重读，不能让它藏在抑制窗口里。
+          const key = canonicalPath(doc.path);
+          const savedAt = savedAtRef.current.get(key);
+          if (savedAt !== undefined) {
+            if (Date.now() - savedAt > SELF_WRITE_WINDOW_MS) savedAtRef.current.delete(key);
+            else {
+              const stamp = await fileStamp(doc.path);
+              const fresh = listRef.current.find((item) => samePath(item.path, doc.path));
+              if (!fresh) continue;
+              // mtime 拿不到（0）时不认这条捷径；mtime 对上了还要比一次字节数——FAT / exFAT
+              // 和部分网络盘的 mtime 只到秒，同一秒里别人的改动否则会被当成自己的回声吞掉。
+              // 对不上就照常往下重读：宁可多读一遍，也不能把外部改动藏在这道窗口里。
+              if (
+                stamp.modifiedMs !== 0 &&
+                stamp.modifiedMs === fresh.diskMs &&
+                utf8Length(fresh.contents) === stamp.size
+              )
+                continue;
+            }
+          }
           const content = await readFile(doc.path);
           // 读盘要跨一次 IPC，期间用户可能已经开始编辑：重读当前条目，
           // 不再干净（contents 与 baseline 有出入）就跳过重载，磁盘版本
@@ -496,6 +535,7 @@ export function useDocuments(
       const index = current.findIndex((item) => samePath(item.path, path));
       const next = current.filter((item) => !samePath(item.path, path));
       write(next);
+      savedAtRef.current.delete(canonicalPath(path));
       if (activeRef.current !== null && samePath(activeRef.current, path)) {
         activate((next[Math.min(index, next.length - 1)] ?? null)?.path ?? null);
       }
@@ -508,6 +548,7 @@ export function useDocuments(
     (paths: string[]) => {
       const survivors = listRef.current.filter((item) => !paths.some((p) => samePath(p, item.path)));
       write(survivors);
+      for (const path of paths) savedAtRef.current.delete(canonicalPath(path));
       const active = activeRef.current;
       if (active !== null && paths.some((p) => samePath(p, active))) {
         activate(survivors[survivors.length - 1]?.path ?? null);
@@ -519,13 +560,16 @@ export function useDocuments(
   const closeAll = useCallback(() => {
     write([]);
     activate(null);
+    savedAtRef.current.clear();
   }, [activate, write]);
 
   /** 关闭指定工作区根下的全部文档，保留其它常驻根已打开的文档不动。 */
   const closeForRoot = useCallback(
     (root: string) => {
+      const closing = listRef.current.filter((item) => belongsToRoot(item, root));
       const survivors = listRef.current.filter((item) => !belongsToRoot(item, root));
       write(survivors);
+      for (const doc of closing) savedAtRef.current.delete(canonicalPath(doc.path));
       const active = activeRef.current;
       if (active !== null && !survivors.some((item) => samePath(item.path, active))) {
         activate(survivors[survivors.length - 1]?.path ?? null);

@@ -12,6 +12,7 @@
 //! 占位只用于「本机 PATH 上那个工具」——把绝对路径烤进配置里，换台机器或挪个 JDK 就全废了，
 //! 起跑前由界面按 `run_tools` 报回来的实际路径展开（见 `docs/features/run/README.md`）。
 
+use super::scan;
 use super::{HelperFile, RunConfiguration, RunKind, RunMarker, Unavailable};
 use crate::error::{err, err_parts};
 use crate::offload::{block, block_value};
@@ -39,7 +40,13 @@ fn regex(pattern: &str) -> Option<Regex> {
         return Some(built.clone());
     }
     let built = Regex::new(pattern).ok()?;
-    lock(cache).insert(pattern.to_string(), built.clone());
+    let mut cache = lock(cache);
+    // 这个缓存只该装源码里写死的字面模式。万一哪天又被喂了按名字拼的动态
+    // 模式（一个类名一条、永久驻留），封顶清空比泄漏便宜。
+    if cache.len() >= 512 {
+        cache.clear();
+    }
+    cache.insert(pattern.to_string(), built.clone());
     Some(built)
 }
 
@@ -157,7 +164,7 @@ pub(super) fn npm_client(dir: &Path, root: &Path) -> &'static str {
         ("yarn.lock", "yarn"),
         ("package-lock.json", "npm"),
     ] {
-        if nearest_ancestor_with(dir, root, &[lock]).is_some() {
+        if scan::nearest_ancestor_with(dir, root, &[lock]).is_some() {
             return client;
         }
     }
@@ -189,9 +196,35 @@ fn line_of(text: &str, pattern: &str) -> Option<u32> {
 }
 
 /// `parent` 那个对象一开头的 `{`。
+///
+/// 模式固定、键名从捕获里比对——把父名拼进 pattern 的话，每个唯一键名
+/// 都会在进程级缓存里留下一条永久驻留的正则。
 fn object_open(text: &str, parent: &str) -> Option<usize> {
-    let pattern = format!(r#""{}"\s*:\s*\{{"#, regex::escape(parent));
-    Some(regex(&pattern)?.find(text)?.end() - 1)
+    let pattern = regex(r#""([^"]*)"\s*:\s*\{"#)?;
+    for cap in pattern.captures_iter(text) {
+        if &cap[1] == parent {
+            return Some(cap.get(0)?.end() - 1);
+        }
+    }
+    None
+}
+
+/// `name` 是否作为独立单词出现在 `text` 里（`\b name \b` 的字面量语义）。
+/// 供按名字拼模式的场合替代动态正则，免得把名字喂进缓存。
+fn mentions_word(text: &str, name: &str) -> bool {
+    let word_char = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut from = 0;
+    while let Some(offset) = text[from..].find(name) {
+        let start = from + offset;
+        let end = start + name.len();
+        let before_free = text[..start].chars().next_back().is_none_or(|ch| !word_char(ch));
+        let after_free = text[end..].chars().next().is_none_or(|ch| !word_char(ch));
+        if before_free && after_free {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 /// 数出 `parent` 那个对象直接下一层的每一个键，连同它主张所在的那一行。
@@ -294,21 +327,6 @@ fn read_build_file(path: &Path, problems: &mut Vec<String>) -> Option<String> {
             None
         }
     }
-}
-
-/// 往上找最近的那个自带构建脚本的目录——构建工具就在那里，多层模块共用根上那份 wrapper。
-pub(super) fn nearest_ancestor_with(dir: &Path, root: &Path, names: &[&str]) -> Option<PathBuf> {
-    let mut current = Some(dir.to_path_buf());
-    while let Some(path) = current {
-        if names.iter().any(|name| path.join(name).is_file()) {
-            return Some(path);
-        }
-        if path == root {
-            return None;
-        }
-        current = path.parent().map(Path::to_path_buf);
-    }
-    None
 }
 
 fn dir_name(dir: &Path) -> String {
@@ -417,9 +435,15 @@ fn has_main_method(text: &str) -> bool {
 ///
 /// Kotlin 与 Groovy 的顶层 `main` 未必有同名类型，那种就只剩 `main` 这一处。
 fn jvm_markers(file: &str, stem: &str, text: &str) -> Vec<RunMarker> {
-    let declaration = regex::escape(stem);
+    // 声明行：固定模式抓捕获，类名与 stem 在代码里比对。拼进 pattern 的话，
+    // 扫大仓时每个唯一类名都会在进程级缓存里驻留一条正则。
+    let declaration = regex(r"\b(?:class|interface|enum|record|object)\s+(\w+)").and_then(|re| {
+        re.captures_iter(text)
+            .find(|cap| &cap[1] == stem)
+            .and_then(|cap| cap.get(0).map(|found| line_at(text, found.start())))
+    });
     let lines = [
-        line_of(text, &format!(r"\b(?:class|interface|enum|record|object)\s+{declaration}\b")),
+        declaration,
         line_of(text, r"\b(?:void|fun)\s+main\s*[(<]"),
     ];
     let mut out: Vec<RunMarker> = Vec::new();
@@ -640,9 +664,9 @@ fn mentions_plugin(text: &str, name: &str) -> bool {
     {
         return true;
     }
-    regex(&format!("(?s)plugins\\s*\\{{[^}}]*\\b{name}\\b"))
-        .map(|regex| regex.is_match(text))
-        .unwrap_or(false)
+    regex(r"(?s)plugins\s*\{([^}]*)\}")
+        .and_then(|regex| regex.captures(text).map(|cap| cap[1].to_string()))
+        .is_some_and(|block| mentions_word(&block, name))
 }
 
 /// 问这个 java 的大版本号。首行形如 `openjdk version "17.0.2" 2022-01-18 LTS`，取不到回 0。
@@ -669,7 +693,7 @@ impl Detector {
     /// 工程自带的构建脚本在最前面。没有 wrapper 就喊 PATH 上那个工具，用占位写它，
     /// 命令一律从工程根起跑。
     fn tool(&mut self, dir: &Path, win_wrapper: &str, unix_wrapper: &str, program: &str) -> Tool {
-        if let Some(at) = nearest_ancestor_with(dir, &self.root, &[win_wrapper, unix_wrapper]) {
+        if let Some(at) = scan::nearest_ancestor_with(dir, &self.root, &[win_wrapper, unix_wrapper]) {
             // 从脚本所在层起跑，命令行里只写脚本名，不受路径上的空格影响。
             let invoke = if cfg!(windows) {
                 win_wrapper.to_string()
@@ -720,7 +744,7 @@ impl Detector {
             return;
         }
         let path = dir.join("package.json");
-        if !path.is_file() {
+        if !scan::has_file(dir, "package.json") {
             return;
         }
         self.owned.push(dir.to_path_buf());
@@ -786,7 +810,7 @@ impl Detector {
     /// 扫一个目录里的 `pom.xml`。
     fn maven(&mut self, dir: &Path) {
         let pom = dir.join("pom.xml");
-        if !pom.is_file() {
+        if !scan::has_file(dir, "pom.xml") {
             return;
         }
         self.owned.push(dir.to_path_buf());
@@ -873,13 +897,10 @@ impl Detector {
 
     /// 扫一个目录里的 `build.gradle` / `build.gradle.kts`。
     fn gradle(&mut self, dir: &Path) {
-        let Some(script) = ["build.gradle.kts", "build.gradle"]
-            .iter()
-            .map(|name| dir.join(name))
-            .find(|path| path.is_file())
-        else {
+        let Some(name) = scan::first_file(dir, &["build.gradle.kts", "build.gradle"]) else {
             return;
         };
+        let script = dir.join(name);
         self.owned.push(dir.to_path_buf());
         let Some(text) = read_build_file(&script, &mut self.problems) else {
             return;
@@ -1121,7 +1142,7 @@ impl Detector {
     /// 扫一个目录里的 `go.mod`。Wails 另有标志文件；其余按「哪些目录是可执行包」出条目。
     fn golang(&mut self, dir: &Path) {
         let manifest = dir.join("go.mod");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "go.mod") {
             return;
         }
         self.owned.push(dir.to_path_buf());
@@ -1137,7 +1158,7 @@ impl Detector {
         let workdir = self.workdir(dir);
 
         // Wails v2 与 v3 都用 `wails.json`，起跑命令也一样：`wails dev` 自己起前端。
-        if dir.join("wails.json").is_file() {
+        if scan::has_file(dir, "wails.json") {
             self.wails.push(dir.to_path_buf());
             self.push(RunConfiguration {
                 id: format!("wails:{workdir}:dev"),
@@ -1219,7 +1240,7 @@ impl Detector {
                 .entry(parent.to_path_buf())
                 .or_insert_with(|| {
                     parent != module
-                        && nearest_ancestor_with(parent, module, &["go.mod"])
+                        && scan::nearest_ancestor_with(parent, module, &["go.mod"])
                             .is_some_and(|at| at != module)
                 });
             if nested {
@@ -1267,7 +1288,7 @@ impl Detector {
     /// 工作区根那份通常只有 `[workspace]`，成员 crate 由遍历到它们各自那层时认。
     fn rust(&mut self, dir: &Path) {
         let manifest = dir.join("Cargo.toml");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "Cargo.toml") {
             return;
         }
         self.owned.push(dir.to_path_buf());
@@ -1357,17 +1378,18 @@ impl Detector {
 
     /// 扫一个目录里的 Python 工程标志。一个工程只给一条：框架优先，其次带 `__main__.py` 的包。
     fn python(&mut self, dir: &Path) {
-        let manifests: Vec<PathBuf> = [
+        let mut manifests: Vec<PathBuf> = Vec::new();
+        for name in [
             "pyproject.toml",
             "setup.py",
             "setup.cfg",
             "Pipfile",
             "requirements.txt",
-        ]
-        .iter()
-        .map(|name| dir.join(name))
-        .filter(|path| path.is_file())
-        .collect();
+        ] {
+            if scan::has_file(dir, name) {
+                manifests.push(dir.join(name));
+            }
+        }
         if manifests.is_empty() {
             return;
         }
@@ -1385,7 +1407,7 @@ impl Detector {
 
         // Django 的 `manage.py` 是硬标志；其余框架先看依赖，再从源文件里找那个构造调用。
         // 第三个那一项是入口所在的源文件，装订线就指它；认不出文件的是 None。
-        let entry = if dir.join("manage.py").is_file() {
+        let entry = if scan::has_file(dir, "manage.py") {
             Some((
                 "runserver".to_string(),
                 format!("{program} manage.py runserver"),
@@ -1481,7 +1503,7 @@ impl Detector {
     fn bare_python(&mut self) {
         let program = python_program();
         for name in ["main.py", "app.py", "run.py"] {
-            if self.root.join(name).is_file() {
+            if scan::has_file(&self.root, name) {
                 self.push(RunConfiguration {
                     id: format!("py::script:{name}"),
                     name: name.to_string(),
@@ -1502,18 +1524,9 @@ impl Detector {
 
     /// 扫一个目录里的 `.csproj` / `.fsproj`：可执行的项目给 `dotnet run --project`，类库不给。
     fn dotnet(&mut self, dir: &Path) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        let mut projects: Vec<PathBuf> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                matches!(
-                    path.extension().and_then(|ext| ext.to_str()),
-                    Some("csproj") | Some("fsproj")
-                )
-            })
+        let mut projects: Vec<PathBuf> = scan::typed_files(dir, &["csproj", "fsproj"])
+            .into_iter()
+            .map(|name| dir.join(name))
             .collect();
         if projects.is_empty() {
             return;
@@ -1577,10 +1590,10 @@ impl Detector {
     /// 再退一步才是 PHP 内置服务器顶到 `public/index.php` 前面。
     fn php(&mut self, dir: &Path) {
         let manifest = dir.join("composer.json");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "composer.json") {
             return;
         }
-        if dir.join("artisan").is_file() {
+        if scan::has_file(dir, "artisan") {
             self.push_simple(RunKind::Php, dir, "artisan serve", "php artisan serve".to_string(), "php");
             return;
         }
@@ -1631,7 +1644,7 @@ impl Detector {
     /// 不是 Rails 但有 `config.ru` 走 rackup，再退一步是那个引 Sinatra 的脚本。
     fn ruby(&mut self, dir: &Path) {
         let manifest = dir.join("Gemfile");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "Gemfile") {
             return;
         }
         let Some(text) = read_build_file(&manifest, &mut self.problems) else {
@@ -1656,7 +1669,7 @@ impl Detector {
                 "bundle exec rails server".to_string(),
                 "bundle",
             );
-        } else if dir.join("config.ru").is_file() {
+        } else if scan::has_file(dir, "config.ru") {
             self.push_simple(RunKind::Ruby, dir, "rackup", "bundle exec rackup".to_string(), "bundle");
         } else if let Some(file) = self.source_where(dir, "rb", |text| text.contains("Sinatra")) {
             self.push_simple(
@@ -1672,7 +1685,7 @@ impl Detector {
     /// `pubspec.yaml`：带 Flutter SDK 依赖的是移动应用，其余按 Dart 工程起。
     fn dart(&mut self, dir: &Path) {
         let manifest = dir.join("pubspec.yaml");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "pubspec.yaml") {
             return;
         }
         let Some(text) = read_build_file(&manifest, &mut self.problems) else {
@@ -1687,7 +1700,7 @@ impl Detector {
 
     /// `build.sbt`：多模块也先给根上这一条，`sbt run` 自己会挑主类。
     fn scala(&mut self, dir: &Path) {
-        if dir.join("build.sbt").is_file() {
+        if scan::has_file(dir, "build.sbt") {
             self.push_simple(RunKind::Scala, dir, "sbt run", "sbt run".to_string(), "sbt");
         }
     }
@@ -1695,7 +1708,7 @@ impl Detector {
     /// `mix.exs`：Phoenix 走 `mix phx.server`，普通 OTP 应用 `mix run --no-halt` 把 supervision tree 起来。
     fn elixir(&mut self, dir: &Path) {
         let manifest = dir.join("mix.exs");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "mix.exs") {
             return;
         }
         let Some(text) = read_build_file(&manifest, &mut self.problems) else {
@@ -1723,11 +1736,9 @@ impl Detector {
     /// C / C++：`CMakeLists.txt` 先配再编（没配过的工程直接 `cmake --build build` 会失败，
     /// 所以这一条把配置那步带上）；只有 Makefile 的目录才喊 `make`。
     fn native(&mut self, dir: &Path) {
-        let cmake = dir.join("CMakeLists.txt").is_file();
-        let makefile = ["Makefile", "makefile"]
-            .iter()
-            .map(|name| dir.join(name))
-            .find(|path| path.is_file());
+        let cmake = scan::has_file(dir, "CMakeLists.txt");
+        let makefile = scan::first_file(dir, &["Makefile", "makefile"])
+            .map(|name| dir.join(name));
         if cmake {
             self.push_simple(
                 RunKind::Cpp,
@@ -1748,7 +1759,7 @@ impl Detector {
         let Some(text) = read_build_file(&path, &mut self.problems) else {
             return;
         };
-        let has_run = Regex::new(r"(?m)^[\w./-]*\brun\s*:")
+        let has_run = regex(r"(?m)^[\w./-]*\brun\s*:")
             .map(|regex| regex.is_match(&text))
             .unwrap_or(false);
         let command = if has_run { "make run" } else { "make" };
@@ -1758,7 +1769,7 @@ impl Detector {
     /// `build.zig`：声明了 run 步骤就 `zig build run`。
     fn zig(&mut self, dir: &Path) {
         let manifest = dir.join("build.zig");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "build.zig") {
             return;
         }
         let Some(text) = read_build_file(&manifest, &mut self.problems) else {
@@ -1776,13 +1787,10 @@ impl Detector {
 
     /// `deno.json` / `deno.jsonc` 的 `tasks`：每条一个 `deno task <名>`，和 npm 脚本同一个口径。
     fn deno(&mut self, dir: &Path) {
-        let path = ["deno.json", "deno.jsonc"]
-            .iter()
-            .map(|name| dir.join(name))
-            .find(|candidate| candidate.is_file());
-        let Some(path) = path else {
+        let Some(name) = scan::first_file(dir, &["deno.json", "deno.jsonc"]) else {
             return;
         };
+        let path = dir.join(name);
         self.owned.push(dir.to_path_buf());
         let Some(text) = read_build_file(&path, &mut self.problems) else {
             return;
@@ -1825,12 +1833,12 @@ impl Detector {
     /// Clojure：`project.clj` 是 Leiningen 的工程走 `lein run`；`deps.edn` 走 `clojure -M`，
     /// 有 `:dev` 别名就带上（那别名通常就是 `-main` 的落点）。
     fn clojure(&mut self, dir: &Path) {
-        if dir.join("project.clj").is_file() {
+        if scan::has_file(dir, "project.clj") {
             self.push_simple(RunKind::Clojure, dir, "lein run", "lein run".to_string(), "lein");
             return;
         }
         let manifest = dir.join("deps.edn");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "deps.edn") {
             return;
         }
         let Some(text) = read_build_file(&manifest, &mut self.problems) else {
@@ -1843,13 +1851,8 @@ impl Detector {
 
     /// Haskell：Stack 的工程（`stack.yaml` 或它的 `package.yaml`）走 `stack run`，只有 `.cabal` 的走 `cabal run`。
     fn haskell(&mut self, dir: &Path) {
-        let stack = dir.join("stack.yaml").is_file() || dir.join("package.yaml").is_file();
-        let cabal = fs::read_dir(dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.ok())
-            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("cabal"));
+        let stack = scan::has_file(dir, "stack.yaml") || scan::has_file(dir, "package.yaml");
+        let cabal = !scan::typed_files(dir, &["cabal"]).is_empty();
         if stack {
             self.push_simple(RunKind::Haskell, dir, "stack run", "stack run".to_string(), "stack");
         } else if cabal {
@@ -1860,11 +1863,11 @@ impl Detector {
     /// Julia：`Project.toml` 那层找 `src/main.jl` 或根上的 `main.jl`，`--project=.` 把环境钉在这个目录。
     /// 两个都没有就当库——不给条目比猜一个入口诚实。
     fn julia(&mut self, dir: &Path) {
-        if !dir.join("Project.toml").is_file() {
+        if !scan::has_file(dir, "Project.toml") {
             return;
         }
         for name in ["src/main.jl", "main.jl"] {
-            if dir.join(name).is_file() {
+            if scan::has_file(dir, name) {
                 self.push_simple(
                     RunKind::Julia,
                     dir,
@@ -1880,12 +1883,12 @@ impl Detector {
     /// Lua：有 `conf.lua` 就是 LÖVE 工程（那两个文件是它的骨架）；工程根上单一个 `main.lua`
     /// 才交给 lua 解释器，别的目录里的 `.lua` 多半是嵌进去的脚本。
     fn lua(&mut self, dir: &Path) {
-        if dir.join("conf.lua").is_file() {
+        if scan::has_file(dir, "conf.lua") {
             self.push_simple(RunKind::Lua, dir, "love", "love .".to_string(), "love");
             return;
         }
         if dir == self.root
-            && dir.join("main.lua").is_file()
+            && scan::has_file(&self.root, "main.lua")
             && !self.owned.iter().any(|at| at == dir)
         {
             self.push_simple(RunKind::Lua, dir, "main.lua", "lua main.lua".to_string(), "lua");
@@ -1895,13 +1898,13 @@ impl Detector {
     /// `Package.swift`：可执行目标挨个出一条；只有一个时 `swift run` 不用点名。
     fn swift(&mut self, dir: &Path) {
         let manifest = dir.join("Package.swift");
-        if !manifest.is_file() {
+        if !scan::has_file(dir, "Package.swift") {
             return;
         }
         let Some(text) = read_build_file(&manifest, &mut self.problems) else {
             return;
         };
-        let targets: Vec<String> = Regex::new(r#"executableTarget\(\s*name:\s*"([^"]+)""#)
+        let targets: Vec<String> = regex(r#"executableTarget\(\s*name:\s*"([^"]+)""#)
             .map(|regex| {
                 regex
                     .captures_iter(&text)
@@ -1987,7 +1990,7 @@ impl Detector {
     fn bare_shell(&mut self) {
         let program = if cfg!(windows) { "bash" } else { "sh" };
         for name in ["run.sh", "start.sh", "dev.sh"] {
-            if !self.root.join(name).is_file() {
+            if !scan::has_file(&self.root, name) {
                 continue;
             }
             self.push(RunConfiguration {
@@ -2104,6 +2107,21 @@ fn run_detect_impl(root: String) -> Result<RunDetectOutcome, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 拿本机真实示例工程走一遍完整探测链。
+    /// `FORGE_DEMO=<工程根> cargo test --lib -- --ignored run::detect`。
+    #[test]
+    #[ignore = "requires FORGE_DEMO pointing at the local demo project"]
+    fn smoke_against_forge_demo() {
+        let demo = std::env::var_os("FORGE_DEMO").expect("FORGE_DEMO 未设置");
+        let outcome = run_detect_impl(demo.to_string_lossy().into_owned()).expect("探测失败");
+        assert!(outcome.problems.is_empty(), "problems: {:?}", outcome.problems);
+        assert!(
+            outcome.configs.iter().any(|c| c.command.contains("start")),
+            "应当认出 npm scripts：{:?}",
+            outcome.configs.iter().map(|c| &c.command).collect::<Vec<_>>()
+        );
+    }
 
     fn temp_project(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("forge-run-detect-{tag}"));

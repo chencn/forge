@@ -184,23 +184,47 @@ fn normalize_url(raw: &str) -> Result<Url, String> {
     }
 }
 
+/// 组请求体。先把总尺寸算出来再落第一趟读：`$processFile` 指到超大文件时，
+/// 「整读再拒」会先把几百 MB 搬进内存。读的时候也按剩余额度封顶，
+/// 预检之后文件又长胖的话照样按超限处理，不会漏网。
 fn assemble_body(pieces: &[HttpBodyPiece]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
+    use std::io::Read as _;
+    let mut total: u64 = 0;
     for piece in pieces {
         if let Some(text) = &piece.text {
-            out.extend(text.as_bytes());
+            total += text.len() as u64;
         }
         if let Some(path) = &piece.file {
             if path.is_empty() {
                 return Err(err("HTTP_BODY", path));
             }
-            let bytes = std::fs::read(path).map_err(|error| {
-                crate::error::err_parts("IO", &[path.clone(), error.to_string()])
-            })?;
+            let len = std::fs::metadata(path)
+                .map_err(|error| crate::error::err_parts("IO", &[path.clone(), error.to_string()]))?
+                .len();
+            total += len;
+        }
+        if total > MAX_BODY as u64 {
+            return Err(err("HTTP_BODY", format!("{total} > {} bytes", MAX_BODY)));
+        }
+    }
+    let mut out = Vec::with_capacity(total as usize);
+    for piece in pieces {
+        if let Some(text) = &piece.text {
+            out.extend(text.as_bytes());
+        }
+        if let Some(path) = &piece.file {
+            // take 到剩余额度 +1：多出一字节即超限，且最坏只多读一字节。
+            let room = (MAX_BODY - out.len()) as u64 + 1;
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)
+                .and_then(|file| file.take(room).read_to_end(&mut bytes))
+                .map_err(|error| {
+                    crate::error::err_parts("IO", &[path.clone(), error.to_string()])
+                })?;
             out.extend(bytes);
         }
         if out.len() > MAX_BODY {
-            return Err(err("HTTP_BODY", MAX_BODY.to_string()));
+            return Err(err("HTTP_BODY", format!("{} > {} bytes", out.len(), MAX_BODY)));
         }
     }
     Ok(out)
@@ -298,5 +322,38 @@ mod tests {
         assert!(!is_env_name(""));
         assert!(!is_env_name("A=B"));
         assert!(!is_env_name("1NAME"));
+    }
+
+    #[test]
+    fn body_rejects_oversized_file_before_reading() {
+        let dir = std::env::temp_dir().join(format!("forge-http-body-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 9MiB，大于 8MiB 的 MAX_BODY：预检要拦下它，而不是「整读再拒」。
+        let big = dir.join("big.bin");
+        std::fs::write(&big, vec![7u8; 9 * 1024 * 1024]).unwrap();
+        let small = dir.join("small.txt");
+        std::fs::write(&small, b"hello").unwrap();
+
+        let error = assemble_body(&[HttpBodyPiece {
+            text: None,
+            file: Some(big.display().to_string()),
+        }])
+        .unwrap_err();
+        assert!(error.starts_with("HTTP_BODY\u{1}"), "{error}");
+
+        // 小文件与文本段照常拼装；不存在的文件回 IO 码。
+        let ok = assemble_body(&[
+            HttpBodyPiece { text: Some("a".to_string()), file: None },
+            HttpBodyPiece { text: None, file: Some(small.display().to_string()) },
+        ])
+        .unwrap();
+        assert_eq!(&ok[..], b"ahello");
+        let missing = assemble_body(&[HttpBodyPiece {
+            text: None,
+            file: Some(dir.join("nope.bin").display().to_string()),
+        }])
+        .unwrap_err();
+        assert!(missing.starts_with("IO\u{1}"), "{missing}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

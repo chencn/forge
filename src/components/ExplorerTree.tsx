@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { errorText, listDirectory } from "../lib/fs";
@@ -6,7 +6,8 @@ import { describeError } from "../lib/errors";
 import { useI18n } from "../i18n";
 import type { FsEntry } from "../lib/fs";
 import type { GitChange } from "../lib/git";
-import { changeMark, folderMarks, gitIgnored, ignoredRoots, markClass } from "../lib/git";
+import { changeMark, folderMarks, ignoredRoots, markClass } from "../lib/git";
+import { invalidateIgnored, loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
 import { isPackageSegment, isUnderJvmSourceRoot } from "../lib/jvm";
 import { pathWithin } from "../lib/format";
 import EntryIcon from "./EntryIcon";
@@ -68,7 +69,6 @@ function touched(key: string, changed: string) {
  * 每个展开中的目录每批都要重发一次 `list_directory`，读盘的总量跟着展开数往上翻。
  * 改成只标记与这批路径相干的那些为过期（stale），并在后台静默重读后原地替换，避免界面闪烁。
  */
-const IGNORE_DEBOUNCE_MS = 800;
 
 /** 展开过的目录；折叠或切根时保留记录，再展开或切回时不用重新读盘。 */
 function useLazyChildren(
@@ -229,11 +229,9 @@ function useIgnoredPaths(
   needed: boolean
 ) {
   const [patterns, setPatterns] = useState<string[]>([]);
-  const hasLoadedRef = useRef(false);
 
   // 仓库切换时重置模式列表与加载状态
   useEffect(() => {
-    hasLoadedRef.current = false;
     setPatterns([]);
   }, [repoRoot]);
 
@@ -243,41 +241,24 @@ function useIgnoredPaths(
       return;
     }
     let stale = false;
-    const timer = window.setTimeout(() => {
-      void gitIgnored(repoRoot)
-        .then((list) => {
-          if (!stale) {
-            setPatterns(list);
-            hasLoadedRef.current = true;
-          }
-        })
-        .catch(() => {
-          // 纯浏览器预览时没有这条命令，忽略项就都按没忽略画。
-        });
-    }, IGNORE_DEBOUNCE_MS);
+    // 扫描进度由缓存广播（别的面板先起的同一趟也算数）。
+    const unsubscribe = subscribeIgnored(repoRoot, (list) => {
+      if (!stale) setPatterns(list);
+    });
+    void loadIgnored(repoRoot).then((list) => {
+      if (!stale) setPatterns(list);
+    });
     return () => {
       stale = true;
-      window.clearTimeout(timer);
+      unsubscribe();
     };
   }, [repoRoot, needed]);
 
   // 忽略规则文件变了才重扫。全量刷新（paths === null）不进来，避免把上面那次结果冲掉。
   useEffect(() => {
-    if (!repoRoot || !needed || !hasLoadedRef.current) return;
-    if (!refresh.paths || !affectsIgnoreRules(refresh.paths)) return;
-    let stale = false;
-    const timer = window.setTimeout(() => {
-      void gitIgnored(repoRoot)
-        .then((list) => {
-          if (!stale) setPatterns(list);
-        })
-        .catch(() => {});
-    }, IGNORE_DEBOUNCE_MS);
-    return () => {
-      stale = true;
-      window.clearTimeout(timer);
-    };
-  }, [repoRoot, refresh, needed]);
+    if (!repoRoot || !needed || !refresh.paths || !affectsIgnoreRules(refresh.paths)) return;
+    invalidateIgnored(repoRoot);
+  }, [repoRoot, needed, refresh]);
 
   return useMemo(() => {
     if (!repoRoot || patterns.length === 0) return () => false;
@@ -298,7 +279,7 @@ interface Row {
   depth: number;
 }
 
-export default function ExplorerTree({
+function ExplorerTree({
   root,
   activePath,
   repoRoot,
@@ -688,3 +669,6 @@ export default function ExplorerTree({
     </div>
   );
 }
+
+/** 敲一个字 App 就重渲染一次；目录树这几百行只认列出来的那些 props，多余的渲染挡掉。 */
+export default memo(ExplorerTree);

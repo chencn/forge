@@ -25,6 +25,8 @@ export interface TabItem {
   name: string;
   /** 悬停提示：完整路径、比对的两侧、面板的说明。 */
   title: string;
+  /** 侧边栏里能定位到的绝对路径。比对在工作区没有对应文件时不给。 */
+  filePath?: string;
   /** 有没保存的改动，画成小圆点。 */
   dirty: boolean;
   /** 种类图标；文档按文件名取，和资源管理器同一套。 */
@@ -44,6 +46,8 @@ interface EditorTabsProps {
   onSave: (path: string) => void;
   onSaveAll?: () => void;
   isDirty: (path: string) => boolean;
+  /** 在侧边栏资源管理器里展开并选中这篇文件。 */
+  onRevealInSidebar?: (path: string) => void;
 }
 
 /** 面板标签的关闭动作叫最小化，不叫关闭：任务还在后台跑。 */
@@ -65,6 +69,7 @@ export default function EditorTabs({
   onSave,
   onSaveAll,
   isDirty,
+  onRevealInSidebar,
 }: EditorTabsProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
@@ -117,6 +122,13 @@ export default function EditorTabs({
     items.push({ label: t("menu.closeAll"), onSelect: onCloseAll });
     if (tab.kind === "doc" || tab.kind === "diff") {
       items.push({ label: t("menu.copyPath"), onSelect: () => void navigator.clipboard.writeText(path) });
+    }
+    if (tab.filePath && onRevealInSidebar) {
+      const target = tab.filePath;
+      items.push({
+        label: t("menu.locateInSidebar"),
+        onSelect: () => onRevealInSidebar(target),
+      });
     }
     return items;
   };

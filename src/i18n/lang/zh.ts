@@ -20,6 +20,7 @@ export const zh = {
   "menu.rename": "重命名",
   "menu.copyPath": "复制路径",
   "menu.reveal": "在系统文件管理器中打开",
+  "menu.locateInSidebar": "定位文件位置",
   "menu.cut": "剪切",
   "menu.openWith": "用关联应用打开",
   "menu.compareFiles": "比较文件",
@@ -87,6 +88,7 @@ export const zh = {
   "error.watchStart": "启动文件监听失败：{detail}",
   "error.watchDir": "监听「{path}」失败：{detail}",
   "error.gitSpawn": "无法执行 git 命令：{detail}",
+  "error.gitOutputTooLarge": "这个文件的改动太大，读不进来：{detail}",
   "error.blockSpawn": "后台任务未能启动：{detail}",
   "error.gitBare": "git 命令执行失败",
   "error.noRepo": "找不到仓库目录：{path}",
@@ -279,7 +281,6 @@ export const zh = {
   "run.killed": "进程已被终止",
 
   "explorer.noFolder": "当前未打开文件夹",
-  "explorer.viewOptions": "视图选项",
   "explorer.showIgnored": "显示忽略的文件",
   "explorer.showHidden": "显示隐藏文件",
   "explorer.progressDeleting": "正在删除",

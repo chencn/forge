@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -27,7 +27,7 @@ interface TerminalHostProps {
  * 面板收起只是把画面节点挪进屏幕外的停靠区，shell 和滚屏都留着。
  * 真正显示时再挪进 `TerminalPane` 的插槽，并按插槽尺寸 fit。
  */
-export default function TerminalHost({ dark, cwd }: TerminalHostProps) {
+function TerminalHost({ dark, cwd }: TerminalHostProps) {
   const [sessions, setSessions] = useState(() => termSessionsFor(cwd).sessions);
   useEffect(() => {
     const sync = () => setSessions(termSessionsFor(cwd).sessions);
@@ -245,3 +245,6 @@ function LiveTerm({ session, dark }: { session: TermSession; dark: boolean }) {
 
   return null;
 }
+
+/** 终端只认这两样（配色与工作区根）；App 因敲字重渲染时不该碰 xterm。 */
+export default memo(TerminalHost);

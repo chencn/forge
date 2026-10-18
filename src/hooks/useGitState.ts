@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "../lib/fs";
+import { createCoalescer, type Coalescer } from "../lib/coalesce";
 import { joinPath, nativeSeparators, separator } from "../lib/format";
 import {
   gitAmendTargets,
@@ -15,7 +16,6 @@ import {
   gitDeleteTag,
   gitDeleteRemoteBranch,
   gitFetch,
-  gitIgnored,
   gitInit,
   gitLog,
   gitMerge,
@@ -69,7 +69,12 @@ export function isWorktreeChange(change: GitChange): boolean {
 
 export function useGitState(
   workspaceRoot: string | null,
-  reportError: (message: string, title?: string) => void
+  reportError: (message: string, title?: string) => void,
+  /**
+   * 本地写仓库动作收尾时通知一次，让调用方把紧接着来的 watcher 回声压掉。
+   * 这些命令自己会刷新状态，回声再刷一遍就是白起一个 git 进程。
+   */
+  afterRepoWrite?: () => void
 ) {
   const [probe, setProbe] = useState<GitProbe | null>(null);
   const [status, setStatus] = useState<GitStatus | null>(null);
@@ -107,7 +112,13 @@ export function useGitState(
   // 同步根目录引用，供并发快速路径使用
   repoRootRef.current = root;
 
-  const refresh = useCallback(async () => {
+  /** 整轮 / 轻量两条队列：同一时刻各只跑一趟，多来的请求并成收尾的一次补跑。 */
+  const fullQueueRef = useRef<Coalescer | null>(null);
+  const lightQueueRef = useRef<Coalescer | null>(null);
+  const fullQueue = (fullQueueRef.current ??= createCoalescer());
+  const lightQueue = (lightQueueRef.current ??= createCoalescer());
+
+  const refreshOnce = useCallback(async () => {
     // 监听一起来刷新会叠着跑，五次调用各自的回来顺序不保证。给每次刷新编号，
     // 只有最新那一次允许写状态，否则旧结果会把新结果盖掉，面板停在半路上。
     const ticket = (seqRef.current += 1);
@@ -115,6 +126,9 @@ export function useGitState(
     if (lastWorkspaceRef.current !== workspaceRoot) {
       lastWorkspaceRef.current = workspaceRoot;
       repoRootRef.current = null;
+      // 换工作区时排在后面的那轮补跑作废：旧仓库的状态读回来也不该写进新面板。
+      fullQueue.cancelTrailing();
+      lightQueue.cancelTrailing();
       setProbe(null);
       setStatus(null);
       setBranches([]);
@@ -223,6 +237,15 @@ export function useGitState(
     }
   }, [beginRefresh, endRefresh, reportError, workspaceRoot]);
 
+  /**
+   * 整轮刷新排队：连着来五次，只跑第一次那趟，其余各次并成收尾的一次补跑。
+   *
+   * 四连进程（探根 + 状态 + 分支 + 标签）在 Windows 上是四个 git.exe，
+   * 叠着跑既费进程又让后一次的读数盖不住前一次的写入顺序。补跑那轮读到的一定
+   * 是最后一次请求之后的状态，所以合并丢不了东西。
+   */
+  const refresh = useCallback(() => fullQueue.request(refreshOnce), [fullQueue, refreshOnce]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -231,7 +254,7 @@ export function useGitState(
    * 只重取变更清单的轻量刷新：暂存 / 取消暂存只动索引，分支、标签、最近提交都不会变，
    * 没必要每次都把另外三条 git 命令再跑一遍（Windows 上每条都要起一个进程）。
    */
-  const refreshChanges = useCallback(async () => {
+  const refreshChangesOnce = useCallback(async () => {
     const ticket = (seqRef.current += 1);
     const stale = () => ticket !== seqRef.current;
     if (!root) return;
@@ -247,6 +270,12 @@ export function useGitState(
     }
   }, [beginRefresh, endRefresh, reportError, root]);
 
+  /** 轻量刷新也排队：连点五次暂存只起两次 `git status`（手头那趟 + 收尾补一趟）。 */
+  const refreshChanges = useCallback(
+    () => lightQueue.request(refreshChangesOnce),
+    [lightQueue, refreshChangesOnce]
+  );
+
   /** git 输出的是仓库相对正斜杠路径，界面与后端命令都要绝对路径。 */
   const absoluteOf = useCallback(
     (relative: string) => {
@@ -259,19 +288,21 @@ export function useGitState(
 
   const run = useCallback(
     async (action: () => Promise<unknown>) => {
+      let done = false;
       try {
         await action();
-        await refresh();
-        return true;
+        done = true;
       } catch (cause) {
         reportError(errorText(cause));
-        // 失败不等于仓库没动：合并 / 变基 / 优选 / 还原撞冲突时正是停在了中间，
-        // 不重探一遍就得等人手点刷新才看得到那条横幅。
-        await refresh();
-        return false;
       }
+      // 失败不等于仓库没动：合并 / 变基 / 优选 / 还原撞冲突时正是停在了中间，
+      // 不重探一遍就得等人手点刷新才看得到那条横幅。
+      // 自己已经拉过这一轮，先把 watcher 那次回声压掉，免得同一个仓库被读两遍。
+      afterRepoWrite?.();
+      await refresh();
+      return done;
     },
-    [refresh, reportError]
+    [afterRepoWrite, refresh, reportError]
   );
 
   /** 暂存 / 取消暂存只动索引：失败弹错，成功只重取变更清单，不碰分支标签日志。 */
@@ -279,6 +310,7 @@ export function useGitState(
     async (action: () => Promise<unknown>) => {
       try {
         await action();
+        afterRepoWrite?.();
         await refreshChanges();
         return true;
       } catch (cause) {
@@ -286,7 +318,7 @@ export function useGitState(
         return false;
       }
     },
-    [refreshChanges, reportError]
+    [afterRepoWrite, refreshChanges, reportError]
   );
 
   /**
@@ -462,6 +494,8 @@ export function useGitState(
       }
       try {
         const detail = await action(root);
+        // 抓取 / 拉取会推进远端引用，随后 watcher 那次回声明明是这次网络操作造的。
+        afterRepoWrite?.();
         await refresh();
         return detail;
       } catch (cause) {
@@ -474,7 +508,7 @@ export function useGitState(
         }
       }
     },
-    [refresh, reportError, root]
+    [afterRepoWrite, refresh, reportError, root]
   );
 
   /**
@@ -496,12 +530,13 @@ export function useGitState(
         reportError(errorText(cause), committed ? "push" : undefined);
         return committed;
       } finally {
+        afterRepoWrite?.();
         await refresh();
         pushingCountRef.current = Math.max(0, pushingCountRef.current - 1);
         if (pushingCountRef.current === 0) setPushing(false);
       }
     },
-    [refresh, reportError, root]
+    [afterRepoWrite, refresh, reportError, root]
   );
 
   const fetch = useCallback(() => remote(gitFetch, "fetch"), [remote]);
@@ -520,12 +555,6 @@ export function useGitState(
     (branch: string, revision: string) =>
       remote((repo) => gitPushUpTo(repo, branch, revision), "push"),
     [remote]
-  );
-
-  /** 忽略清单只在开关打开时才要，单独取，不进每次 refresh。 */
-  const loadIgnored = useCallback(
-    () => (root ? gitIgnored(root).catch(() => [] as string[]) : Promise.resolve([])),
-    [root]
   );
 
   /** 修正目标清单：只在打开那颗下拉时去取，取不到就当只有上次提交。 */
@@ -608,7 +637,6 @@ export function useGitState(
       push,
       pushRef,
       pushUpTo,
-      loadIgnored,
       loadAmendTargets,
       stagedChanges,
       worktreeChanges,
@@ -664,7 +692,6 @@ export function useGitState(
       push,
       pushRef,
       pushUpTo,
-      loadIgnored,
       loadAmendTargets,
       stagedChanges,
       worktreeChanges,

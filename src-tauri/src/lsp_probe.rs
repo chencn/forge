@@ -11,6 +11,7 @@ use crate::sys::hide_console;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -224,6 +225,29 @@ fn search_command(program: &str) -> Option<String> {
     None
 }
 
+/// 按块抽干管道，只保留最后 `keep` 字节：超了就丢头保尾，一次结算一批
+/// （攒到两倍再裁回），免得每块都 memmove。全局安装几分钟能吐几十 MB
+/// 进度输出，不该为了截 32KiB 尾巴把整包收进内存。
+fn read_tail(mut reader: impl Read, keep: usize) -> Vec<u8> {
+    let mut tail: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => {
+                tail.extend_from_slice(&chunk[..count]);
+                if tail.len() > keep * 2 {
+                    tail.drain(..tail.len() - keep);
+                }
+            }
+        }
+    }
+    if tail.len() > keep {
+        tail.drain(..tail.len() - keep);
+    }
+    tail
+}
+
 /// 用系统 shell 跑一行安装命令，输出只留尾部，不设超时（全局安装可能跑几分钟）。
 ///
 /// 走 shell 是因为配置里那条本身就是多个包管理器串起来的容错链
@@ -249,11 +273,20 @@ fn run_install(line: &str) -> Result<InstallResult, String> {
         .stderr(std::process::Stdio::piped());
     hide_console(&mut command);
 
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
         .map_err(|error| err_parts("LSP_INSTALL_SPAWN", &[program, error.to_string()]))?;
-    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    // 两条管道各由一个「保尾队列」抽干：stderr 挪去线程免得互相塞满，主线程收 stdout。
+    let mut stderr_pipe = child.stderr.take().expect("install stderr piped");
+    let stderr_task = std::thread::spawn(move || read_tail(&mut stderr_pipe, OUTPUT_TAIL));
+    let mut stdout_pipe = child.stdout.take().expect("install stdout piped");
+    let stdout_bytes = read_tail(&mut stdout_pipe, OUTPUT_TAIL);
+    let stderr_bytes = stderr_task.join().unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(|error| err_parts("LSP_INSTALL_SPAWN", &[error.to_string()]))?;
+    let mut text = String::from_utf8_lossy(&stdout_bytes).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
     if !stderr.trim().is_empty() {
         text.push_str(if text.ends_with('\n') { "" } else { "\n" });
         text.push_str(&stderr);
@@ -265,7 +298,7 @@ fn run_install(line: &str) -> Result<InstallResult, String> {
     Ok(InstallResult {
         command: line.to_string(),
         output: text,
-        exit_code: output.status.code(),
+        exit_code: status.code(),
     })
 }
 
@@ -337,6 +370,39 @@ fn probe_and_reconcile(app: &tauri::AppHandle) -> crate::lsp_config::LspProbeRep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 丢头保尾：只要最后 `keep` 字节，且保持原顺序。
+    #[test]
+    fn read_tail_keeps_the_end_of_the_stream() {
+        let mut data: Vec<u8> = Vec::new();
+        for i in 0..(200 * 1024 / 4) {
+            data.extend_from_slice(&(i as u32).to_le_bytes());
+        }
+        let tail = read_tail(data.as_slice(), 32 * 1024);
+        assert_eq!(tail.len(), 32 * 1024);
+        assert_eq!(tail, data[data.len() - 32 * 1024..]);
+    }
+
+    /// 真起 shell 验证安装输出链（本机有 node 时跑）：
+    /// `cargo test --lib -- --ignored lsp_probe`。
+    /// 走脚本文件而不是 `-e "…"`：cmd 的引号转义规则与 Command 的 MSVCRT 风格不一致，
+    /// 测试要验的是「超大输出只留尾部」，不是引号玄学。
+    #[test]
+    #[ignore = "spawns node; run locally with --ignored"]
+    fn install_output_survives_huge_stream() {
+        let script = std::env::temp_dir().join("forge_install_smoke.js");
+        std::fs::write(
+            &script,
+            "console.log('x'.repeat(300000)); console.error('e'.repeat(100));",
+        )
+        .unwrap();
+        let line = format!("node {}", script.display());
+        let result = run_install(&line).unwrap();
+        let _ = std::fs::remove_file(&script);
+        assert_eq!(result.exit_code, Some(0), "输出: {:?}", result.output);
+        assert!(result.output.len() <= OUTPUT_TAIL + 8, "只留尾部: {}", result.output.len());
+        assert!(result.output.trim_end().ends_with('e') || result.output.contains('x'));
+    }
 
     /// 带路径分隔符的输入按显式路径处理，不去拼扩展名。
     #[test]

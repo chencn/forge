@@ -305,9 +305,11 @@ export function useDepSync(
 
   // 监听同步运行会话的生命周期：当 dep-sync 会话以 exit === 0 完成时，自动晋升该单元 CRC32 基线。
   useEffect(() => {
+    const alive = new Set<string>();
     for (const session of run.allSessions) {
       if (!session.config.id.startsWith("dep-sync::")) continue;
       const itemId = session.config.id.slice("dep-sync::".length);
+      alive.add(String(session.id));
       if (session.status === "running") {
         trackedSessionsRef.current.set(session.id, { root: session.root, itemId });
       } else {
@@ -321,6 +323,10 @@ export function useDepSync(
           }
         }
       }
+    }
+    // 运行中被直接关签的会话不会再以「非 running」出现一次：台账里查无此会话就回收。
+    for (const id of Array.from(trackedSessionsRef.current.keys())) {
+      if (!alive.has(String(id))) trackedSessionsRef.current.delete(id);
     }
   }, [evaluateRoot, run.allSessions]);
 

@@ -35,8 +35,7 @@ macOS 要 AppleScript 喊 Finder，Linux 看桌面环境有没有 `trash-cli`。
 - 设置项在 `settings.explorer`，两项：`showHidden`（默认关）与 `showIgnored`（默认开）。
   `ExplorerSettings` 带 `Default`，`Settings` 上是 `#[serde(default)]`，旧文件缺字段自动补默认值，不做迁移。
   写法照同一文件里的 `BranchSettings`。
-- 开关摆在设置页「通用」那一栏，两条各一个 Select。资源管理器头部的眼睛按钮跳到设置页，
-  不是就地弹层。
+- 开关摆在设置页「通用」那一栏，两条各一个 Select。资源管理器头部不放入口。
 - 过滤在前端：`ExplorerTree` 的 `visible` 先判 `!showHidden && entry.isHidden`，再判忽略项；
   被过滤的目录连整棵子树一起不列。
 - 后端不裁。`list_directory` 照实返回隐藏项，`isHidden` 在 Windows 取 `FILE_ATTRIBUTE_HIDDEN |

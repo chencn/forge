@@ -57,6 +57,8 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
     return detail === "" ? t("error.gitBare") : detail;
   },
   GIT_SPAWN: (p, t) => t("error.gitSpawn", { detail: p[0] ?? "" }),
+  // 超过上限的 git 输出宁可不显示，也不能截半份 diff 给用户看——那是骗人。
+  GIT_OUTPUT_TOO_LARGE: (p, t) => t("error.gitOutputTooLarge", { detail: p[0] ?? "" }),
   BLOCK_SPAWN: (p, t) => t("error.blockSpawn", { detail: p[0] ?? "" }),
   NO_REPO: (p, t) => t("error.noRepo", { path: p[0] ?? "" }),
   NOT_IN_REPO: (p, t) => t("error.notInRepo", { path: p[0] ?? "", root: p[1] ?? "" }),

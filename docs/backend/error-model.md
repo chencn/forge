@@ -75,6 +75,7 @@ stdout（例如 `nothing to commit, working tree clean`），所以后端 `fail(
 | `WATCH_DIR` | `watch.rs:67` | 路径、原因 | `error.watchDir` |
 | `GIT` | `git/mod.rs:175`、`:177` | git 的 stderr（空则 stdout） | 原样，空时才用 `error.gitBare` |
 | `GIT_SPAWN` | `git/mod.rs:160` | 起不了 git 的原因 | `error.gitSpawn` |
+| `GIT_OUTPUT_TOO_LARGE` | `git/mod.rs:291-293` | 哪一路输出超了 64 MiB 上限 | `error.gitOutputTooLarge` |
 | `NO_REPO` | `git/mod.rs:187` | 传入的 root | `error.noRepo` |
 | `NOT_IN_REPO` | `git/mod.rs:218` | 路径、仓库根 | `error.notInRepo` |
 | `BAD_REV` | `git/mod.rs:391`、`:546`、`:739`、`:760`、`:774`、`:857`、`:882`、`:899`、`:929`、`:969`、`:1042`、`:1079`、`:1123`、`:1144`、`:1215`、`:1374`、`:1521` | 引用 | `error.badRev` |

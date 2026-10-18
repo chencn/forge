@@ -8,12 +8,12 @@ import {
   Check,
   CheckCheck,
   Eraser,
-  Eye,
   FilePlus,
   FolderPlus,
   FileDiff,
   GitCommit,
   ListTree,
+  LocateFixed,
   Maximize2,
   Minus,
   PanelBottom,
@@ -61,6 +61,7 @@ import {
 } from "./components/NotificationCenter";
 import DepSyncToast from "./components/DepSyncToast";
 import { isManifestDeclarationFile } from "./lib/depSync";
+import { planWorkspaceFlush, type WorkspaceFlush } from "./lib/watchBatch";
 import { loadNotifications, saveNotifications } from "./lib/notifications";
 import type { AppNotification } from "./lib/notifications";
 import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
@@ -72,6 +73,8 @@ import { useRunConfigs } from "./hooks/useRunConfigs";
 import { useRunSessions } from "./hooks/useRunSessions";
 import { useHistory } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
+import { useStable } from "./hooks/useStable";
+import type { BranchSettings } from "./lib/settings";
 import { installReadyUpdate, relaunchApp, runAutoUpdateFlow } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
 import { shouldCopyDomSelection } from "./lib/copySelection";
@@ -85,6 +88,7 @@ import {
   setOpenTargetHandler,
 } from "./lib/monacoEnv";
 import { EMPTY_TREE_HASH, gitCommitDetail, gitCommitFile, gitDiffText, gitIgnoreRule, gitIndexShow, gitShow } from "./lib/git";
+import { forgetIgnoredUnder } from "./lib/ignoredCache";
 import { lineChangeBaseline } from "./lib/lineChanges";
 import type {
   GitChange,
@@ -280,7 +284,11 @@ const EMPTY_FIND: FindState = {
 };
 const EMPTY_DIFFS: DiffTab[] = [];
 const EMPTY_PICK: FsEntry[] = [];
+/** 目录树在没有仓库状态时拿到的那份空清单：必须是同一个数组，否则 memo 白装。 */
+const EMPTY_CHANGES: GitChange[] = [];
 const EMPTY_TAB_ORDER: string[] = [];
+/** 交给语言服务对齐文档的最小间隔：敲字期间不必每一下都重算整份文档表。 */
+const LSP_SYNC_GAP_MS = 250;
 const DEFAULT_PLACES: Record<BottomPane, Placement> = {
   terminal: "hidden",
   run: "hidden",
@@ -446,13 +454,26 @@ export default function App() {
   }, []);
 
   const docs = useDocuments(reportError, workspaceRoot);
-  const git = useGitState(workspaceRoot, reportError);
+  /**
+   * 本地 git/fs 写操作后的 watcher 回声抑制窗口。
+   * 这些操作完成后都主动刷新过了，`.git/index`、refs、被写文件自身的磁盘回声
+   * 再触发一轮就是纯重复的 git 子进程；短窗口内的回声直接不追，外部改动靠
+   * 聚焦/轮询兜底。
+   */
+  const gitEchoUntilRef = useRef(0);
+  const suppressGitEcho = useCallback(() => {
+    gitEchoUntilRef.current = Date.now() + 800;
+  }, []);
+  const git = useGitState(workspaceRoot, reportError, suppressGitEcho);
   /** 全量存盘并同步刷新 Git 变更列表，供失焦自动保存、退出前保存与保存按钮共用。 */
   const flushDirtyDocs = useCallback(async () => {
     const saved = await docs.saveAll();
-    if (saved > 0) void git.refreshChanges();
+    if (saved > 0) {
+      suppressGitEcho();
+      void git.refreshChanges();
+    }
     return saved;
-  }, [docs, git]);
+  }, [docs, git, suppressGitEcho]);
   /**
    * 挂载期注册的监听要读最新的那份，但绝不能把它写进依赖。
    * 这两个对象每次渲染都是新的（依赖 documents / status），进依赖就等于每次渲染
@@ -466,6 +487,10 @@ export default function App() {
   gitRef.current = git;
   /** 磁盘事件触发的 git 刷新防抖计时器；只留最后一趟，风暴期间不起中间的子进程。 */
   const gitDebounce = useRef<number | null>(null);
+  /** 上一次真的向语言服务对齐的时刻，用来决定这次是立即跑还是排到尾沿。 */
+  const lastLspSyncRef = useRef(0);
+  /** 文档集合的路径签名（开 / 关 / 切根会变）。集合变了就不节流——新文件得马上 didOpen，补全和悬停等不起。 */
+  const lspSetRef = useRef("");
 
   /**
    * 把打开的文档对到语言服务上。
@@ -494,11 +519,33 @@ export default function App() {
   );
 
   useEffect(() => {
-    // 客户端拉得到 monaco，静态引它就把整份编辑器打进启动 chunk；
-    // 这里已经在等文档打开，动态引一次同一片 chunk，加载时机反而更准。
-    void import("./lib/lspClient")
-      .then(({ reconcileLsp }) => reconcileLsp(workspaceRoot, lspConfig, lspDocuments()))
-      .catch(() => {});
+    const run = () => {
+      lastLspSyncRef.current = Date.now();
+      // 客户端拉得到 monaco，静态引它就把整份编辑器打进启动 chunk；
+      // 这里已经在等文档打开，动态引一次同一片 chunk，加载时机反而更准。
+      void import("./lib/lspClient")
+        .then(({ reconcileLsp }) => reconcileLsp(workspaceRoot, lspConfig, lspDocuments()))
+        .catch(() => {});
+    };
+    // 文档集合本身变了（开 / 关 / 切根）必须立刻对齐：补全与悬停要求新文档已经 didOpen，
+    // 晚一秒都是看得见的「这个文件没有智能提示」。
+    const signature = lspDocuments()
+      .map((doc) => doc.path)
+      .join("\n");
+    if (signature !== lspSetRef.current) {
+      lspSetRef.current = signature;
+      run();
+      return;
+    }
+    // 剩下的只是正文变了。正文存在这一层，敲一个字 `lspDocuments` 就换身份、这个 effect
+    // 就重走一趟：整份文档表重算 + 一遍会话分组。猛敲期间把它节流到窗口尾沿，只对齐最后一份。
+    const wait = LSP_SYNC_GAP_MS - (Date.now() - lastLspSyncRef.current);
+    if (wait <= 0) {
+      run();
+      return;
+    }
+    const timer = window.setTimeout(run, wait);
+    return () => window.clearTimeout(timer);
   }, [lspDocuments, lspConfig, workspaceRoot, lspKick]);
 
   /** 设置页的「启动」按钮：让指定 server 立即在当前项目中启动，不等待用户打开其管理的语言文件。 */
@@ -540,6 +587,11 @@ export default function App() {
   const setExplorerPick = useCallback((next: FsEntry[]) => {
     setExplorerPickByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
   }, []);
+  /** 交给目录树的那份选中路径：每次渲染现 map 一个新数组的话，memo 就等于没装。 */
+  const explorerPickedPaths = useMemo(
+    () => explorerPick.map((entry) => entry.path),
+    [explorerPick]
+  );
   /** 剪切 / 复制攒下的那一批，连同它是挪走还是留下。 */
   const [clipboard, setClipboard] = useState<{ entries: FsEntry[]; cut: boolean } | null>(null);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
@@ -717,6 +769,15 @@ export default function App() {
     activeTab && activeTab.startsWith("diff|")
       ? (diffs.find((tab) => tab.id === activeTab.slice(5)) ?? null)
       : null;
+  /**
+   * 侧栏「定位文件位置」对准当前打开的文件；比对则对准工作区里还在的那份。
+   * 没有这样的文件，或路径不在工程根下（外部库、临时打开）时留空，按钮置灰。
+   */
+  const locatePath = useMemo(() => {
+    const path = activeDoc?.path ?? activeDiffTab?.openIn ?? null;
+    if (!workspaceRoot || !path || !pathWithin(workspaceRoot, path)) return null;
+    return path;
+  }, [activeDiffTab, activeDoc, workspaceRoot]);
   const activePane =
     activeTab && activeTab.startsWith("pane|") ? (activeTab.slice(5) as BottomPane) : null;
   const changeCount = git.status?.changes.length ?? 0;
@@ -737,24 +798,32 @@ export default function App() {
     };
   }, [activeDoc?.path, git]);
 
-  /** 切根或切页签后，让 docs.activePath 与当前根正在看的文档对齐，保证目录树高亮与保存落点一致。 */
+  /**
+   * 目录树的激活行只跟着当前正在看的文档。页签换成设置、比对或工具窗口时拿掉高亮。
+   * 树上若只选中了刚离开的那一篇，选中一起清掉；多选或另选的目录不动。
+   */
+  const shownDocRef = useRef<string | null>(null);
   useEffect(() => {
+    const previous = shownDocRef.current;
+    shownDocRef.current = shownDoc;
+
     if (shownDoc) {
       const matched = visibleDocs.find((doc) => samePath(doc.path, shownDoc));
       if (matched) {
-        if (docs.activePath !== matched.path) docs.setActivePath(matched.path);
+        if (!docs.activePath || !samePath(docs.activePath, matched.path)) {
+          docs.setActivePath(matched.path);
+        }
         if (activeTab !== `doc|${matched.path}`) setActiveTab(`doc|${matched.path}`);
-        return;
       }
+    } else if (docs.activePath !== null) {
+      docs.setActivePath(null);
     }
-    if (
-      docs.activePath &&
-      workspaceRoot &&
-      !visibleDocs.some((doc) => samePath(doc.path, docs.activePath!))
-    ) {
-      docs.setActivePath(visibleDocs[0]?.path ?? null);
+
+    const leftFile = previous !== null && (shownDoc === null || !samePath(previous, shownDoc));
+    if (leftFile && explorerPick.length === 1 && samePath(explorerPick[0].path, previous)) {
+      setExplorerPick([]);
     }
-  }, [activeTab, docs, setActiveTab, shownDoc, visibleDocs, workspaceRoot]);
+  }, [activeTab, docs, explorerPick, setActiveTab, setExplorerPick, shownDoc, visibleDocs]);
 
   useEffect(() => {
     patchHistory({
@@ -946,9 +1015,13 @@ export default function App() {
       }
     };
   }, []);
-  /** 包管理安装/清理会话运行期间按工作区根暂存的待刷新路径，待会话结束再统一刷新。 */
+  /**
+   * 包管理安装/清理会话运行期间按工作区根暂存的待刷新路径，待会话结束再统一刷新。
+   * `.git` 里的事件也要一起攒着：安装期间从外部终端来的一次 checkout 若不落地，
+   * 分支名会一直停在旧的那份上。
+   */
   const deferredPathsByRootRef = useRef(
-    new Map<string, { root: string; paths: Set<string>; firstAt: number }>()
+    new Map<string, { root: string; paths: Set<string>; gitPaths: Set<string>; firstAt: number }>()
   );
   const runSessionsRef = useRef(run.allSessions);
   runSessionsRef.current = run.allSessions;
@@ -968,53 +1041,76 @@ export default function App() {
     []
   );
 
-  // 当运行会话（特别是 npm install 等包管理/构建命令）结束时，立即全量刷新文件目录树与 Git 状态，
-  // 并在 600ms 后补刷一次以兜底进程退出后操作系统的延迟落盘事件。
-  useEffect(() => {
-    const currentRunning = new Map<string, string>();
-    for (const s of run.allSessions) {
-      if (s.status === "running") {
-        currentRunning.set(s.id, s.root);
+  // 包管理/构建会话结束的收尾刷新在 `flushWorkspace` 定义之后（收尾要用它，得先声明）。
+
+  /**
+   * 一批工作区变动落地时要做的三件事：作废目录缓存、防抖重扫顶栏运行配置、防抖重取 Git 状态。
+   *
+   * 监听来的批次和安装会话收尾时攒下的那批路径都走这儿。之前收尾那段是自己另写的一套：
+   * 只刷了树和 Git，manifest 重扫整个漏了（安装期间被暂存的那批根本进不了监听那条路），
+   * 而且立即刷完还补一次 600ms 重刷——同一棵树连着作废两轮。
+   */
+  const flushWorkspace = useCallback(
+    (changedRoot: string, flush: WorkspaceFlush) => {
+      const plan = planWorkspaceFlush({
+        ...flush,
+        manifestChanged: flush.workspacePaths.some((p) =>
+          isManifestDeclarationFile(p, changedRoot)
+        ),
+      });
+
+      if (plan.tree === "full") {
+        refreshTree();
+      } else if (plan.tree === "precise") {
+        // 只作废与这批路径相干的目录：构建产物那种整棵重读是白花钱。
+        refreshPaths(flush.workspacePaths);
       }
-    }
 
-    const finishedRoots = new Set<string>();
-    for (const [id, root] of prevRunningSessionsRef.current.entries()) {
-      if (!currentRunning.has(id)) {
-        finishedRoots.add(root);
+      // Git 与顶栏配置只认当前激活根：`rescan` 扫的永远是当前根，后台根白扫一遍，
+      // 那个后台根的配置照样是旧的（切回它时 `useRunConfigs` 自己会重扫）。
+      if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
+
+      // 工程构建声明文件（package.json、pom.xml、Cargo.toml）因保存或 git checkout / pull 变化时，
+      // 防抖重扫顶栏运行配置。
+      if (plan.configs) {
+        if (rescanConfigsTimerRef.current !== null) {
+          window.clearTimeout(rescanConfigsTimerRef.current);
+        }
+        rescanConfigsTimerRef.current = window.setTimeout(() => {
+          rescanConfigsTimerRef.current = null;
+          rescanConfigsRef.current();
+        }, 600);
       }
-    }
-    prevRunningSessionsRef.current = currentRunning;
 
-    for (const [key, entry] of [...deferredPathsByRootRef.current.entries()]) {
-      const stillRunning = run.allSessions.some(
-        (s) =>
-          s.status === "running" &&
-          samePath(s.root, entry.root) &&
-          isBulkInstallSession(s)
-      );
-      if (!stillRunning) {
-        deferredPathsByRootRef.current.delete(key);
-        finishedRoots.add(entry.root);
+      // 防抖 200ms：比原来 500ms 快，改完状态栏与侧栏的反馈就跟得上手感。
+      if (plan.git !== "none") {
+        const run = () => {
+          gitDebounce.current = null;
+          // 刚做过一次本地 git / 保存动作，那一轮状态已经由它自己刷新过了；这次回声是同一次
+          // 写入的尾巴，再刷就是白起一个 git 进程。
+          if (Date.now() < gitEchoUntilRef.current) {
+            // 但引用类变动（HEAD / refs / MERGE_HEAD）不能跟着一起丢：30s 轮询只重取变更清单，
+            // 分支名不会自己回来。这类事件挪到抑制窗口末尾补一次，别把外部 checkout 吞掉。
+            if (plan.git === "full") {
+              const remaining = gitEchoUntilRef.current - Date.now();
+              if (gitDebounce.current !== null) window.clearTimeout(gitDebounce.current);
+              gitDebounce.current = window.setTimeout(run, Math.max(20, remaining) + 20);
+            }
+            return;
+          }
+          if (plan.git === "full") {
+            void gitRef.current.refresh();
+          } else {
+            void gitRef.current.refreshChanges();
+          }
+        };
+        const gitTimer = gitDebounce.current;
+        if (gitTimer) window.clearTimeout(gitTimer);
+        gitDebounce.current = window.setTimeout(run, 200);
       }
-    }
-
-    if (finishedRoots.size === 0) return;
-
-    refreshTree();
-    if (workspaceRoot && [...finishedRoots].some((r) => samePath(r, workspaceRoot))) {
-      void gitRef.current.refreshChanges();
-    }
-
-    const followUpTimer = window.setTimeout(() => {
-      refreshTree();
-      if (workspaceRoot && [...finishedRoots].some((r) => samePath(r, workspaceRoot))) {
-        void gitRef.current.refreshChanges();
-      }
-    }, 600);
-
-    return () => window.clearTimeout(followUpTimer);
-  }, [isBulkInstallSession, refreshTree, run.allSessions, workspaceRoot]);
+    },
+    [refreshPaths, refreshTree, workspaceRoot]
+  );
 
   /**
    * 磁盘上出了事就三处一起补：目录树重读、变更清单重取、打开的文档按干净 / 脏分别处理。
@@ -1023,7 +1119,8 @@ export default function App() {
    * 区分工作区常规文件与 .git 版本控制元数据：
    * - 外部执行 git commit / checkout / branch 等仅变动 .git 核心指针时，精准触发 Git 刷新，
    *   不误触工作区目录树重读，避免无谓的磁盘开销；
-   * - 运行包安装期间，工作区文件暂存防风暴，并带 3000ms 超时上限防饥饿；Git 状态刷新正常响应。
+   * - 运行包安装期间，工作区文件与 Git 刷新一起暂存防风暴，并带 3000ms 超时上限防饥饿；
+   *   会话收尾时攒下的路径改走 `flushWorkspace`，与监听同一套落地。
    */
   const onDiskChange = useCallback(
     (changedRoot: string, paths: string[], bulk = false) => {
@@ -1032,7 +1129,7 @@ export default function App() {
         return norm.includes("/.git/") || norm.endsWith("/.git");
       };
       const workspacePaths = paths.filter((p) => !isGitInternal(p));
-      const hasGitInternal = paths.some(isGitInternal);
+      const gitPaths = paths.filter(isGitInternal);
 
       // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
       if (workspacePaths.length > 0) {
@@ -1061,11 +1158,17 @@ export default function App() {
           const now = Date.now();
           let deferred = deferredPathsByRootRef.current.get(key);
           if (!deferred) {
-            deferred = { root: changedRoot, paths: new Set(workspacePaths), firstAt: now };
+            deferred = {
+              root: changedRoot,
+              paths: new Set(workspacePaths),
+              gitPaths: new Set(gitPaths),
+              firstAt: now,
+            };
             deferredPathsByRootRef.current.set(key, deferred);
             deferWorkspace = true;
           } else if (now - deferred.firstAt < 3000) {
             for (const p of workspacePaths) deferred.paths.add(p);
+            for (const p of gitPaths) deferred.gitPaths.add(p);
             deferWorkspace = true;
           } else {
             // 已超过 3000ms 上限，强制放行并重置积攒计时
@@ -1074,75 +1177,62 @@ export default function App() {
         }
       }
 
-      if (!deferWorkspace && workspacePaths.length > 0) {
-        // 若本批是包管理器/批量风暴静默收尾（如在终端内执行了 npm install），或涉及依赖目录/锁文件，
-        // 直接执行一次全量目录树刷新（无闪烁后台重读），确保顶层与所有展开子目录及忽略态完整同步。
-        const touchesPackageArtifacts =
-          bulk ||
-          workspacePaths.some((p) => {
-            const norm = p.replaceAll("\\", "/").toLowerCase();
-            return (
-              norm.includes("/node_modules") ||
-              norm.includes("/.pnpm") ||
-              norm.includes("/target/") ||
-              norm.includes("/vendor/") ||
-              norm.includes("/.venv/") ||
-              /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|cargo\.lock|go\.sum|poetry\.lock|uv\.lock|composer\.lock)$/.test(
-                norm
-              )
-            );
-          });
-
-        if (touchesPackageArtifacts) {
-          refreshTree();
-        } else {
-          // 目录树缓存跨根常驻保留，后台根的磁盘变动同样按路径作废对应目录缓存，确保切回时展示最新内容。
-          refreshPaths(workspacePaths);
-        }
-
-        // 当工程构建声明文件（如 package.json、pom.xml、Cargo.toml）因保存或 git checkout / git pull 变化时，防抖重扫顶栏运行配置。
-        if (workspacePaths.some((p) => isManifestDeclarationFile(p, changedRoot))) {
-          if (rescanConfigsTimerRef.current !== null) {
-            window.clearTimeout(rescanConfigsTimerRef.current);
-          }
-          rescanConfigsTimerRef.current = window.setTimeout(() => {
-            rescanConfigsTimerRef.current = null;
-            rescanConfigsRef.current();
-          }, 600);
-        }
-      }
-
-      // 只有当前激活根的磁盘事件才触发当前 Git 变更与顶栏运行配置刷新。
-      if (!workspaceRoot || !samePath(changedRoot, workspaceRoot)) return;
-
-      // 判断 Git 指针变动中是否涉及 HEAD、分支引用或合并状态（如果是，需要全量 refresh 分支、提交记录与状态）
-      const hasHeadOrRefChange = paths.some((p) => {
-        const norm = p.replaceAll("\\", "/").toLowerCase();
-        return (
-          norm.includes("/.git/head") ||
-          norm.includes("/.git/refs/") ||
-          norm.includes("/.git/packed-refs") ||
-          norm.includes("/.git/merge_head")
-        );
-      });
-
-      // 只有涉及工作区文件变动或 Git 关键指针变动时才刷新 Git。
-      // 防抖时间从 500ms 缩短至 200ms，大幅提升修改后状态栏与侧栏的反馈速度。
-      if (workspacePaths.length > 0 || hasGitInternal) {
-        const gitTimer = gitDebounce.current;
-        if (gitTimer) window.clearTimeout(gitTimer);
-        gitDebounce.current = window.setTimeout(() => {
-          gitDebounce.current = null;
-          if (hasHeadOrRefChange) {
-            void gitRef.current.refresh();
-          } else {
-            void gitRef.current.refreshChanges();
-          }
-        }, 200);
+      // 安装风暴期间整批按住：树、Git、顶栏配置一起等会话收尾补刷（见 flushWorkspace 与
+      // 上面那个 3000ms 防饥饿上限）。放行时三类落地都走 flushWorkspace 这一条路。
+      if (!deferWorkspace && (workspacePaths.length > 0 || gitPaths.length > 0)) {
+        flushWorkspace(changedRoot, { workspacePaths, gitPaths, bulk });
       }
     },
-    [isBulkInstallSession, refreshPaths, refreshTree, workspaceRoot]
+    [flushWorkspace, isBulkInstallSession]
   );
+
+  // 包管理/构建会话（npm install、cargo build 等）结束时，把安装期间按住的那批路径补刷掉。
+  // 三类落地全走 `flushWorkspace`：以前这里另写了一套「立即刷 + 600ms 再刷一遍」，
+  // 既漏了顶栏运行配置重扫（manifest 正躺在被按住的那批里没送出去），又把同一棵树连续作废了两轮。
+  useEffect(() => {
+    const currentRunning = new Map<string, string>();
+    for (const s of run.allSessions) {
+      if (s.status === "running") {
+        currentRunning.set(s.id, s.root);
+      }
+    }
+
+    const finishedRoots = new Set<string>();
+    for (const [id, root] of prevRunningSessionsRef.current.entries()) {
+      if (!currentRunning.has(id)) {
+        finishedRoots.add(root);
+      }
+    }
+    prevRunningSessionsRef.current = currentRunning;
+
+    // 攒下的路径按根取出来一起补刷：安装期间被按住的写入只有靠这批才落地，
+    // 锁文件也跟着它们触发配置重扫。
+    const deferredByKey = new Map<string, { workspacePaths: string[]; gitPaths: string[] }>();
+    for (const [key, entry] of [...deferredPathsByRootRef.current.entries()]) {
+      const stillRunning = run.allSessions.some(
+        (s) =>
+          s.status === "running" && samePath(s.root, entry.root) && isBulkInstallSession(s)
+      );
+      if (stillRunning) continue;
+      deferredPathsByRootRef.current.delete(key);
+      finishedRoots.add(entry.root);
+      deferredByKey.set(key, {
+        workspacePaths: [...entry.paths],
+        gitPaths: [...entry.gitPaths],
+      });
+    }
+
+    for (const root of finishedRoots) {
+      const deferred = deferredByKey.get(root.replaceAll("\\", "/").toLowerCase());
+      flushWorkspace(root, {
+        workspacePaths: deferred?.workspacePaths ?? [],
+        gitPaths: deferred?.gitPaths ?? [],
+        // 收尾这一趟按批量算：装完依赖树结构整块变了，值得全量重读。
+        bulk: true,
+        finishedInstall: true,
+      });
+    }
+  }, [flushWorkspace, isBulkInstallSession, run.allSessions]);
 
   const watchedRoots = useMemo(
     () => (openFolders.length > 0 ? openFolders : workspaceRoot ? [workspaceRoot] : []),
@@ -1359,9 +1449,21 @@ export default function App() {
     const key = targetRootKey ?? rootKeyRef.current;
     setDiffsByRoot((prev) => {
       const list = prev[key] ?? EMPTY_DIFFS;
-      return { ...prev, [key]: list.filter((item) => item.id !== id) };
+      const next = list.filter((item) => item.id !== id);
+      if (next.length === list.length) return prev;
+      // 提交比对链每次「在新标签中显示差异」都用带序号的唯一键，标签全关后
+      // 那条链连同整份 GitCommitDetail 再没人引用——不回收就只增不减（只在关根时清）。
+      const chainId = list.find((item) => item.id === id)?.chain?.id;
+      if (
+        chainId &&
+        chainId.startsWith("cm|") &&
+        !next.some((item) => item.chain?.id === chainId)
+      ) {
+        getDiffChains(key).delete(chainId);
+      }
+      return { ...prev, [key]: next };
     });
-  }, []);
+  }, [getDiffChains]);
 
   /**
    * 开随处搜索弹层。`query` 是从编辑器选区带过来的词（IDEA 的 `PREDEFINED_TEXT`），
@@ -1559,6 +1661,8 @@ export default function App() {
     (targetRoot: string) => {
       void closeTermsForRoot(targetRoot);
       run.closeSessionsForRoot(targetRoot);
+      // 忽略清单缓存按仓库根存，可能挂在子仓库键上：把该文件夹之下的条目一并回收。
+      forgetIgnoredUnder(targetRoot);
       for (const doc of docs.documents) {
         if (belongsToRoot(doc, targetRoot)) {
           disposeModel(doc.path);
@@ -1648,6 +1752,7 @@ export default function App() {
       if (settings.editor.savePolicy === "blur") {
         const saved = await docs.saveAllForRoot(targetRoot);
         if (saved > 0 && workspaceRoot && samePath(workspaceRoot, targetRoot)) {
+          suppressGitEcho();
           void git.refreshChanges();
         }
       }
@@ -1667,7 +1772,7 @@ export default function App() {
       }
       performCloseRoot(targetRoot);
     },
-    [docs, git, performCloseRoot, run, settings.editor.savePolicy, workspaceRoot]
+    [docs, git, performCloseRoot, run, settings.editor.savePolicy, suppressGitEcho, workspaceRoot]
   );
 
   /** 切换或添加文件夹：多工作区模式下常驻并秒切；单工作区模式下替换当前激活根。 */
@@ -1946,9 +2051,13 @@ export default function App() {
     async (path: string) => {
       const saved = await docs.save(path);
       // 存盘只动工作区内容，取一份变更清单就够；分支/标签/日志那几条留给显式刷新。
-      if (saved) void git.refreshChanges();
+      // 这次刷新和写文件落在同一个仓库上，顺手把随后的 watcher 回声压掉。
+      if (saved) {
+        suppressGitEcho();
+        void git.refreshChanges();
+      }
     },
-    [docs, git]
+    [docs, git, suppressGitEcho]
   );
 
   const saveActive = useCallback(async () => {
@@ -2405,12 +2514,13 @@ export default function App() {
         lines.splice(line - 1, 1);
         await writeFile(source, lines.join("\n"), "lf", false);
         refreshTree();
+        suppressGitEcho();
         await git.refresh();
       } catch (cause) {
         reportError(errorText(cause));
       }
     },
-    [git, refreshTree, reportError, t]
+    [git, refreshTree, reportError, suppressGitEcho, t]
   );
 
   /** 剪切 / 复制攒下这一批，连同它是挪走还是留下。 */
@@ -2455,10 +2565,11 @@ export default function App() {
         // 选中集里那几条已经换到别处去了，留着只会让下一次 Delete / 粘贴落在不存在的路上。
         setExplorerPick([]);
         refreshTree();
+        suppressGitEcho();
         void git.refreshChanges();
       }
     },
-    [clipboard, git, refreshTree, reportError]
+    [clipboard, git, refreshTree, reportError, suppressGitEcho]
   );
 
   /** 恰好选中两个文件才比对，开的是这两份现在的文本。 */
@@ -3187,6 +3298,7 @@ export default function App() {
       kind: "doc" as const,
       name: doc.name,
       title: doc.path,
+      filePath: doc.path,
       dirty: doc.contents !== doc.baseline,
       icon: <EntryIcon name={doc.name} size={13} />,
     })),
@@ -3195,6 +3307,7 @@ export default function App() {
       kind: "diff" as const,
       name: tab.name,
       title: tab.path,
+      filePath: tab.openIn,
       dirty: false,
       icon: <FileDiff size={13} className="entry-icon" aria-hidden="true" />,
     })),
@@ -3374,14 +3487,14 @@ export default function App() {
         key={workspaceRoot ?? ""}
         git={git}
         reportError={reportError}
-        onFileAction={fileAction}
-        onCompareWork={compareWork}
-        onEditSource={editSource}
-        onRefAction={refAction}
-        onCommitAction={(action, commit) => void commitAction(action, commit)}
-        onCompareCommits={(left, right) => void compareCommits(left, right)}
+        onFileAction={logFileAction}
+        onCompareWork={logCompareWork}
+        onEditSource={logEditSource}
+        onRefAction={logRefAction}
+        onCommitAction={logCommitAction}
+        onCompareCommits={logCompareCommits}
         options={settings.branches}
-        onOptions={(next) => patch({ branches: next })}
+        onOptions={logOptions}
         repoName={basenameOf(git.root ?? workspaceRoot ?? "")}
         reference={logReference}
         setReference={setLogReference}
@@ -3695,6 +3808,66 @@ export default function App() {
     [git]
   );
 
+  /**
+   * 递给 memo 过的三块面板（目录树 / 提交 / 日志）的回调。
+   *
+   * 正文就存在这一层的 `docs` 状态里，敲一个字整棵组件树就重渲染一次；那些回调
+   * 每次渲染都是新箭头（或闭住了每次都换身份的 `docs`），直接递过去浅比较第一关
+   * 就过不去，memo 等于没装。`useStable` 把引用钉住，里面照常读最新那份文档与仓库，
+   * 行为一点没变。
+   */
+  const treeOpenFile = useStable(openFile);
+  const treeContextMenu = useStable(requestMenu);
+  const panelOpenChange = useStable(openChange);
+  const panelOpenFile = useStable((path: string) => {
+    setActiveTab(`doc|${path}`);
+    void docs.open(path);
+  });
+  const panelOpenSource = useStable((change: GitChange) => {
+    const absolute = git.absoluteOf(change.path);
+    setActiveTab(`doc|${absolute}`);
+    void docs.open(absolute);
+  });
+  const panelFileAction = useStable(commitFileAction);
+  const panelCommitted = useStable((message: string) => remember("commitMessages", message));
+  const panelUnignore = useStable((relative: string) => void removeFromGitignore(relative));
+  const panelOpenCommitFile = useStable((revision: string, file: GitCommitFile) => {
+    if (!git.root) return;
+    void gitCommitDetail(git.root, revision)
+      .then((detail) => openCommitFile(detail, file, false))
+      .catch((cause: unknown) => reportError(errorText(cause)));
+  });
+  const panelToggleIgnored = useStable(() =>
+    setCommitView((current) => ({ ...current, ignored: !current.ignored }))
+  );
+  const panelToggleByDir = useStable(() =>
+    setCommitView((current) => ({ ...current, byDir: !current.byDir }))
+  );
+  const panelToggleByModule = useStable(() =>
+    setCommitView((current) => ({ ...current, byModule: !current.byModule }))
+  );
+  const panelOpenResolve = useStable(() => setResolveOpen(true));
+  const panelOpenAiSettings = useStable(() => openSettingsTab("aiCommit"));
+  const logFileAction = useStable(fileAction);
+  const logCompareWork = useStable(compareWork);
+  const logEditSource = useStable(editSource);
+  const logRefAction = useStable(refAction);
+  const logCommitAction = useStable((action: CommitAction, commit: GitCommitInfo) =>
+    void commitAction(action, commit)
+  );
+  const logCompareCommits = useStable((left: GitCommitInfo, right: GitCommitInfo) =>
+    void compareCommits(left, right)
+  );
+  const logOptions = useStable((next: BranchSettings) => patch({ branches: next }));
+  const closeActiveDiff = useStable(() => {
+    if (activeDiffTab) closeDiff(activeDiffTab.id);
+  });
+  /** 比对链那一组按钮的容器：每次现造对象同样会顶穿 memo，跟着这一份留住。 */
+  const activeDiffGroup = useMemo(
+    () => (activeDiffTab ? diffGroupOf(activeDiffTab) : undefined),
+    [activeDiffTab, diffGroupOf]
+  );
+
   return (
     <div className="app-shell">
       <TitleBar
@@ -3897,14 +4070,16 @@ export default function App() {
                     >
                       <RefreshCw size={15} />
                     </button>
-                    {/* 视图选项（忽略文件 / 隐藏文件）写在设置页里，这里只是去那儿的近路。 */}
                     <button
                       type="button"
-                      className="icon-button is-inline is-hover"
-                      onClick={openSettingsTab}
-                      title={t("explorer.viewOptions")}
+                      className="icon-button is-inline"
+                      disabled={locatePath === null}
+                      onClick={() => {
+                        if (locatePath) revealInTree(locatePath);
+                      }}
+                      title={t("menu.locateInSidebar")}
                     >
-                      <Eye size={15} />
+                      <LocateFixed size={15} />
                     </button>
                   </>
                 ) : null}
@@ -3991,17 +4166,17 @@ export default function App() {
                       root={workspaceRoot}
                       activePath={docs.activePath}
                       repoRoot={git.root}
-                      changes={git.status?.changes ?? []}
+                      changes={git.status?.changes ?? EMPTY_CHANGES}
                       collapseSignal={collapseSignal}
                       refresh={treeRefresh}
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
                       openRoots={watchedRoots}
-                      picked={explorerPick.map((entry) => entry.path)}
+                      picked={explorerPickedPaths}
                       onPick={setExplorerPick}
-                      onOpenFile={openFile}
-                      onContextMenu={requestMenu}
+                      onOpenFile={treeOpenFile}
+                      onContextMenu={treeContextMenu}
                     />
                   ) : (
                     <div className="tool-window-empty">
@@ -4014,43 +4189,27 @@ export default function App() {
                       key={workspaceRoot}
                       git={git}
                       workspaceRoot={workspaceRoot}
-                      onOpenChange={openChange}
-                      onOpenFile={(path) => {
-                        setActiveTab(`doc|${path}`);
-                        void docs.open(path);
-                      }}
+                      onOpenChange={panelOpenChange}
+                      onOpenFile={panelOpenFile}
                       focusSignal={commitFocus}
                       rewordSignal={rewordSignal}
                       history={history.commitMessages}
-                      onCommitted={(message) => remember("commitMessages", message)}
+                      onCommitted={panelCommitted}
                       groupByDir={commitView.byDir}
                       groupByModule={commitView.byModule}
                       showIgnored={commitView.ignored}
-                      onToggleIgnored={() =>
-                        setCommitView((current) => ({ ...current, ignored: !current.ignored }))
-                      }
+                      onToggleIgnored={panelToggleIgnored}
                       repoName={basenameOf(git.root ?? workspaceRoot)}
-                      onFileAction={commitFileAction}
-                      onUnignore={(relative) => void removeFromGitignore(relative)}
-                      onOpenCommitFile={(revision, file) => {
-                        if (!git.root) return;
-                        void gitCommitDetail(git.root, revision)
-                          .then((detail) => openCommitFile(detail, file, false))
-                          .catch((cause: unknown) => reportError(errorText(cause)));
-                      }}
-                      onToggleByDir={() => setCommitView((c) => ({ ...c, byDir: !c.byDir }))}
-                      onToggleByModule={() =>
-                        setCommitView((c) => ({ ...c, byModule: !c.byModule }))
-                      }
+                      onFileAction={panelFileAction}
+                      onUnignore={panelUnignore}
+                      onOpenCommitFile={panelOpenCommitFile}
+                      onToggleByDir={panelToggleByDir}
+                      onToggleByModule={panelToggleByModule}
                       showOnDoubleClick={settings.commit.showOnDoubleClick}
                       commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged}
-                      onOpenSource={(change) => {
-                        const absolute = git.absoluteOf(change.path);
-                        setActiveTab(`doc|${absolute}`);
-                        void docs.open(absolute);
-                      }}
-                      onOpenResolve={() => setResolveOpen(true)}
-                      onOpenAiSettings={() => openSettingsTab("aiCommit")}
+                      onOpenSource={panelOpenSource}
+                      onOpenResolve={panelOpenResolve}
+                      onOpenAiSettings={panelOpenAiSettings}
                     />
                   </Suspense>
                 ) : (
@@ -4105,6 +4264,7 @@ export default function App() {
                 onSave={(path) => void saveDoc(path)}
                 onSaveAll={() => void flushDirtyDocs()}
                 isDirty={docs.dirty}
+                onRevealInSidebar={revealInTree}
               />
             ) : null}
             {/* 正文区这四块（比对 / 面板 / 设置 / 文档）都在按需取的 chunk 里。
@@ -4122,10 +4282,10 @@ export default function App() {
                   notice={
                     activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined
                   }
-                  group={diffGroupOf(activeDiffTab)}
+                  group={activeDiffGroup}
                   landOn={activeDiffTab.landOn}
                   onOpenFile={diffOpenFile}
-                  onClose={() => closeDiff(activeDiffTab.id)}
+                  onClose={closeActiveDiff}
                 />
               ) : activePane && places[activePane] === "tabbed" ? (
                 paneFrame(activePane, false)
