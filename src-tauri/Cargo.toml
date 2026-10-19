@@ -49,6 +49,7 @@ minisign-verify = "0.3"
 webview2-com = "0.39"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_System_Registry",
@@ -56,6 +57,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_System_Time",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # proc.rs / lsp.rs 停会话时按进程组整树收（libc::kill 给负 pid 发 SIGKILL）；

@@ -82,10 +82,17 @@ export default function TitleBar({
       ) : null}
 
       <div className="titlebar-drag" data-tauri-drag-region>
-        {/* 侧栏一收，标记·工程·分支这一段跟着收掉，只留那颗折叠开关；冲突那对按钮不跟着收。 */}
-        {sidebarOpen ? project : null}
-        {sidebarOpen ? branch : null}
-        {conflict}
+        {/* 侧栏一收，标记·工程·分支这一段跟着收掉，只留那颗折叠开关；冲突那对按钮不跟着收。
+            折叠按钮浮在侧栏右缘、不占流程。这一段的宽度收到按钮之前，长分支名才不会从按钮底下穿过去。
+            按钮左缘相对拖拽内容起点 = 侧栏宽 - 右内边距 6 - 按钮 25 - 拖拽左内边距 10，再留 8px。 */}
+        <div
+          className="titlebar-leading"
+          style={sidebarOpen ? { maxWidth: Math.max(0, sidebarWidth - 49) } : undefined}
+        >
+          {sidebarOpen ? project : null}
+          {sidebarOpen ? branch : null}
+          {conflict}
+        </div>
         <span className="titlebar-gap" data-tauri-drag-region />
         {run}
         {search}

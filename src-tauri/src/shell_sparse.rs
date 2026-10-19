@@ -3,9 +3,10 @@
 //! 经典 `shell\ForgeOpen` 动词进不了新菜单。这里在开启「通过 Forge 打开」时
 //! 签名并注册稀疏包；关掉时卸掉。
 //!
-//! 签名用一张自签证书，放进**当前用户**的 `TrustedPeople` 就够侧载校验，
-//! 不需要提权，也不会把一张可伪造的根证书塞进这台机器的信任根。私钥只在
-//! `CurrentUser\My` 里，不导出成文件。
+//! 签名用一张自签证书。私钥只在 `CurrentUser\My` 里，不导出成文件。
+//! Win11 的 AppX 部署服务按**本机**信任链校验，只放进当前用户的
+//! `TrustedPeople` 会得到 `0x800B0109`（根证书不受信任），稀疏包装不上，
+//! 新菜单就不会出现。公钥必须进 `LocalMachine\Root`；这一步要提权一次。
 
 #![cfg(windows)]
 
@@ -15,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const PACKAGE_NAME: &str = "Forge.ShellOpen";
+/// 用户在证书说明框里点了取消。不当成注册失败，也不要继续弹 UAC。
+const CERT_INSTALL_DECLINED: &str = "CERT_INSTALL_DECLINED";
 /// 文件、文件夹、空白处共用这一个命令。再挂第二个 CLSID 时，
 /// DLL 无法知道当前是哪一条 Verb，两条会同时变成「通过 Forge 打开」。
 const CLSID_FILE: &str = "B8E4F1A2-9C3D-4E5F-A1B2-C3D4E5F60718";
@@ -64,6 +67,13 @@ pub fn sync(
             warning: None,
         }),
         Err(error) => {
+            // 用户在说明框里点了取消：不要接着弹 UAC，也不要把这次选择报成失败。
+            if error == CERT_INSTALL_DECLINED {
+                return Ok(SyncOutcome {
+                    packaged: false,
+                    warning: None,
+                });
+            }
             // 包其实还在（例如只是查版本那步失败）：新菜单照样能出现，
             // 这时再写经典动词会让「显示更多选项」里叠成两条。按已接管处理。
             if matches!(installed_package_version(), Some(Some(_))) {
@@ -224,6 +234,10 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
     }
     let tools = appx_tools_dir(install_dir)?;
     ensure_certificate(&work)?;
+    // 先问用户，再提权。放在打包前面：否则证书还没问，前面的步骤失败了，弹窗永远出不来。
+    let cer = work.join("ForgeShell.cer");
+    let thumb = cert_thumbprint()?;
+    ensure_machine_trust(&cer, &thumb)?;
     let publisher = CERT_SUBJECT.to_string();
     let pkg_dir = work.join("pkg");
     fs::create_dir_all(&pkg_dir).map_err(|e| err("SHELL_REG", e))?;
@@ -246,7 +260,6 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
         ],
     )?;
 
-    let thumb = cert_thumbprint()?;
     run_tool(
         &tools.join("signtool.exe"),
         &tools,
@@ -259,7 +272,7 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
             msix.display().to_string(),
         ],
     )?;
-    trust_certificate(&work.join("ForgeShell.cer"), &thumb)?;
+    trust_certificate(&cer, &thumb)?;
     let backup = work.join("ForgeShell.msix");
     remove_package().ok();
     if let Err(error) = add_package(&msix, install_dir) {
@@ -278,7 +291,7 @@ pub fn clean_work_dir() {
     let _ = remove_package();
     let script = format!(
         r#"
-Get-ChildItem Cert:\LocalMachine\TrustedPeople, Cert:\CurrentUser\TrustedPeople, Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPeople, Cert:\CurrentUser\TrustedPeople, Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
     Where-Object {{ $_.Subject -eq '{CERT_SUBJECT}' }} |
     Remove-Item -Force -ErrorAction SilentlyContinue
 "#
@@ -395,10 +408,7 @@ fn add_package(msix: &Path, external: &Path) -> Result<(), String> {
 }
 
 /// 确保 `CurrentUser\My` 里有一张带私钥的签名证书，并把公钥放进
-/// `CurrentUser\TrustedPeople`。
-///
-/// 侧载/稀疏包校验认的是 `TrustedPeople`。放进当前用户的 `TrustedPeople` 就够侧载校验，
-/// 不需要管理员提权，顺带尝试静默写入 `LocalMachine\TrustedPeople`（若有权限）。
+/// `CurrentUser\TrustedPeople`。本机根证书由 `ensure_machine_trust` 单独处理。
 fn ensure_certificate(work: &Path) -> Result<(), String> {
     let cer = work.join("ForgeShell.cer");
     if cer.is_file() && cert_thumbprint().is_ok() && cert_trusted(&cer) {
@@ -417,7 +427,6 @@ $trusted = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Th
 if (-not $trusted) {{
   Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
 }}
-Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' -ErrorAction SilentlyContinue | Out-Null
 "#,
         escape_ps(&cer)
     );
@@ -469,12 +478,186 @@ $trusted = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Th
 if (-not $trusted) {{
   Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
 }}
-Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' -ErrorAction SilentlyContinue | Out-Null
 "#,
         cer = escape_ps(cer),
         thumb = thumb
     );
     run_powershell(&script)
+}
+
+/// 签名证书是不是已经在本机的受信任根里。
+///
+/// AppX 部署服务不看当前用户的证书库。只查 `LocalMachine\Root`。
+fn machine_root_has(thumb: &str) -> bool {
+    let script = format!(
+        r#"
+$thumb = '{thumb}'
+$c = Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue | Where-Object {{ $_.Thumbprint -eq $thumb }}
+if ($c) {{ 'yes' }} else {{ 'no' }}
+"#
+    );
+    run_powershell_output(&script)
+        .map(|text| text.trim().contains("yes"))
+        .unwrap_or(false)
+}
+
+/// 把公钥证书放进本机受信任根和受信任人。已在根里就什么都不做。
+///
+/// 先用说明框告诉用户为什么要装证书。点确定之后才提权；点取消就停，
+/// 不弹系统权限框。当前进程通常没有写 `LocalMachine` 的权限。
+fn ensure_machine_trust(cer: &Path, thumb: &str) -> Result<(), String> {
+    if machine_root_has(thumb) {
+        return Ok(());
+    }
+    if !confirm_certificate_install() {
+        return Err(CERT_INSTALL_DECLINED.to_string());
+    }
+    let script_path = cer.with_file_name("trust-machine.ps1");
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 '{}'
+foreach ($name in @('Root','TrustedPeople')) {{
+  $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($name, 'LocalMachine')
+  $store.Open('ReadWrite')
+  $store.Add($cert)
+  $store.Close()
+}}
+"#,
+        escape_ps(cer)
+    );
+    fs::write(&script_path, script).map_err(|e| err("SHELL_REG", e))?;
+    let result = if is_elevated() {
+        run_powershell(&format!("& '{}'", escape_ps(&script_path)))
+    } else {
+        run_elevated_file(&script_path)
+    };
+    let _ = fs::remove_file(&script_path);
+    result?;
+    if machine_root_has(thumb) {
+        Ok(())
+    } else {
+        Err(err(
+            "SHELL_REG",
+            "signing certificate is not in LocalMachine\\Root",
+        ))
+    }
+}
+
+/// 安装证书前的说明。系统权限框本身不写原因，直接弹的话用户只会拒绝。
+fn confirm_certificate_install() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, MessageBoxW, IDCANCEL, MB_ICONINFORMATION, MB_OKCANCEL,
+        MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    let (title, body) = cert_prompt_text();
+    let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let body_wide: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
+    let owner = unsafe { GetForegroundWindow() };
+    let answer = unsafe {
+        let flags = MB_OKCANCEL | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST;
+        if owner.0.is_null() {
+            MessageBoxW(None, PCWSTR(body_wide.as_ptr()), PCWSTR(title_wide.as_ptr()), flags)
+        } else {
+            MessageBoxW(
+                Some(owner),
+                PCWSTR(body_wide.as_ptr()),
+                PCWSTR(title_wide.as_ptr()),
+                flags,
+            )
+        }
+    };
+    answer != IDCANCEL
+}
+
+fn cert_prompt_text() -> (&'static str, &'static str) {
+    let lang = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
+    let primary = lang & 0x3FF;
+    let sub = (lang >> 10) & 0x3F;
+    if primary == 0x04 && (sub == 0x01 || sub == 0x03) {
+        return (
+            "安裝簽名憑證",
+            "Windows 11 的新右鍵選單需要信任安裝包的簽章根憑證。\n\n未安裝時，系統會報「應用程式套件或套件組合中的簽章根憑證必須是受信任的憑證」，新選單不會出現。舊版右鍵選單不受影響。\n\n點「確定」後會安裝這台電腦上產生的 Forge 程式碼簽章憑證，接著彈出系統權限確認，請在那個視窗選擇「是」。\n點「取消」則不安裝，只保留舊版右鍵選單。",
+        );
+    }
+    if primary == 0x04 {
+        return (
+            "安装签名证书",
+            "Windows 11 的新右键菜单需要信任安装包的签名根证书。\n\n未安装时，系统会报「应用包或捆绑包中的签名的根证书必须是受信任的证书」，新菜单不会出现。旧版右键菜单不受影响。\n\n点「确定」后会安装这台电脑上生成的 Forge 代码签名证书，接着弹出系统权限确认，请在那个窗口选择「是」。\n点「取消」则不安装，只保留旧版右键菜单。",
+        );
+    }
+    (
+        "Install signing certificate",
+        "The Windows 11 context menu needs the package signing root certificate to be trusted.\n\nWithout it, Windows reports that the root certificate of the signature must be trusted, and the new menu item does not appear. The classic menu is unchanged.\n\nChoose OK to install the Forge code-signing certificate created on this PC. Windows will then ask for administrator approval — choose Yes.\nChoose Cancel to skip installation and keep only the classic menu.",
+    )
+}
+
+fn is_elevated() -> bool {
+    use windows::Win32::UI::Shell::IsUserAnAdmin;
+    unsafe { IsUserAnAdmin().as_bool() }
+}
+
+/// 用 `runas` 跑一份脚本，等它结束。UAC 取消时返回错误，不卸已经装上的包。
+///
+/// 直接提权 `powershell.exe` 会闪出一个控制台。`conhost --headless` 是无窗口的宿主，
+/// 脚本在它里面跑，用户只看到系统权限确认。
+fn run_elevated_file(script: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+
+    let root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let powershell = root
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    let conhost = root.join("System32").join("conhost.exe");
+    let file: Vec<u16> = conhost
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let params = format!(
+        "--headless \"{}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"",
+        powershell.display(),
+        script.display()
+    );
+    let params_wide: Vec<u16> = params.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut sei = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params_wide.as_ptr()),
+        nShow: 0,
+        ..Default::default()
+    };
+    unsafe {
+        ShellExecuteExW(&mut sei).map_err(|error| err("SHELL_REG", error))?;
+        if sei.hProcess.is_invalid() {
+            return Err(err("SHELL_REG", "elevated trust process did not start"));
+        }
+        let wait = WaitForSingleObject(sei.hProcess, 120_000);
+        let mut code = 1u32;
+        if wait == WAIT_OBJECT_0 {
+            let _ = GetExitCodeProcess(sei.hProcess, &mut code);
+        }
+        let _ = CloseHandle(sei.hProcess);
+        if wait != WAIT_OBJECT_0 {
+            return Err(err("SHELL_REG", "elevated trust timed out"));
+        }
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(err("SHELL_REG", format!("elevated trust exit {code}")))
+        }
+    }
 }
 
 fn find_shell_dll(install_dir: &Path) -> Option<PathBuf> {

@@ -85,6 +85,7 @@ button {
   left: 44px;
   top: 0;
   bottom: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -103,6 +104,31 @@ button {
   gap: 6px;
   padding: 0 10px;
   min-width: 0;
+}
+
+/* 工程、分支、冲突挤在折叠按钮左边。按钮不占流程，所以宽度由行内 max-width 钉死。
+   空的时候（侧栏收起且没有冲突）不占间隙。 */
+.titlebar-leading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.titlebar-leading:empty {
+  display: none;
+}
+
+.titlebar-leading > .toolbar-chip-host {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.titlebar-leading .toolbar-chip {
+  max-width: min(260px, 100%);
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* 芯片之间与芯片到运行控件之间的空白才是拖拽区。 */
