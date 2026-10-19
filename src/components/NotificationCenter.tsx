@@ -189,7 +189,7 @@ export function NotificationsView({
   );
 }
 
-/** 状态栏右侧通知铃铛图标：点击激活底部的 Notifications 工具窗口。 */
+/** 状态栏右侧通知铃铛：点开后停在编辑区右侧，和 Maven 同一侧。 */
 export function NotificationBell({
   notifications,
   active,

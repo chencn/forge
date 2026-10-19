@@ -61,8 +61,8 @@ button {
   position: relative;
   display: flex;
   align-items: stretch;
-  background: var(--chrome-bg);
-  border-bottom: 1px solid var(--border-color);
+  height: 100%;
+  background: var(--app-bg);
 }
 
 /* 应用标记那一格与活动栏等宽；右边让出 1px 栏框，就正对着栏里那两颗。 */
@@ -316,11 +316,35 @@ svg.is-spinning,
   }
 }
 
-/* ===== 主体三栏 ===== */
+/* ===== 主体：顶栏、活动条、底栏和缝是同一块底色；侧栏和编辑区是白卡片 ===== */
 .app-body {
   display: flex;
   min-height: 0;
+  min-width: 0;
   position: relative;
+  background: var(--app-bg);
+}
+
+.workbench-column {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.workbench-row {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: var(--app-bg);
+}
+
+.island {
+  border-radius: var(--island-radius);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
 }
 
 .entry-icon {
@@ -741,6 +765,26 @@ span.entry-icon > svg {
   backdrop-filter: blur(6px) saturate(140%);
   -webkit-backdrop-filter: blur(6px) saturate(140%);
   animation: fade-in 140ms ease-out;
+}
+
+/* 模糊层和对话框拆开。模糊画在父级上时，WebView 会把点在输入框上的那一下算到遮罩上。 */
+.dialog-backdrop.is-panel {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.dialog-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(6px) saturate(140%);
+  -webkit-backdrop-filter: blur(6px) saturate(140%);
+}
+
+.dialog-backdrop.is-panel > .dialog {
+  position: relative;
+  z-index: 1;
 }
 
 .dialog {
@@ -1331,6 +1375,319 @@ span.entry-icon > svg {
 .status-lsp-button.is-missing {
   color: var(--accent-red);
 }
+
+/* 右下角的 Maven。只有探测到工程之后才挂上，样式跟旁边的状态格对齐。 */
+.status-maven {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 3px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.status-maven.is-on,
+.status-maven:hover {
+  color: var(--text-primary);
+}
+
+.maven-pane,
+.notify-pane {
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: var(--workbench-gap);
+  border-radius: var(--island-radius);
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
+  overflow: hidden;
+}
+.maven-pane {
+  color: var(--maven-fg);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.maven-pane .tool-window-head {
+  height: 32px;
+  gap: 8px;
+  padding: 0 12px;
+}
+.maven-pane .tool-window-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--maven-fg);
+}
+.maven-brand {
+  flex: none;
+  color: var(--maven-primary);
+}
+.maven-pane .icon-button.is-inline {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--maven-subtle);
+  background: transparent;
+  transition: background-color 150ms ease, color 150ms ease, opacity 150ms ease;
+}
+.maven-pane .icon-button.is-inline:hover:not(:disabled) {
+  background: var(--maven-accent);
+  color: var(--maven-fg);
+}
+.maven-pane .icon-button:disabled {
+  opacity: 0.5;
+}
+.maven-icon-success {
+  color: var(--maven-success);
+}
+.maven-icon-warning {
+  color: var(--maven-warning);
+}
+.maven-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--maven-border) 70%, transparent);
+}
+.maven-skip {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 4px;
+}
+.maven-pane input[type="checkbox"] {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  border: 1px solid var(--maven-checkbox-border);
+  border-radius: 3px;
+  background-color: var(--maven-checkbox-bg);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px 14px;
+  cursor: pointer;
+}
+.maven-pane input[type="checkbox"]:checked {
+  border-color: var(--maven-primary);
+  background-color: var(--maven-primary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.2 8.2 6.3 11.2 12.8 4.6' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.maven-pane input[type="checkbox"]:focus-visible {
+  outline: none;
+  border: 2px solid var(--maven-primary);
+}
+.maven-pane input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.maven-pane .text-input {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid var(--maven-control-border);
+  background: var(--maven-checkbox-bg);
+  color: var(--maven-fg);
+  font-size: 13px;
+}
+.maven-pane .text-input::placeholder {
+  color: var(--maven-subtle);
+}
+.maven-pane .text-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--maven-border) 72%, var(--maven-fg) 28%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--maven-border) 25%, transparent);
+}
+.maven-goal-form {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--maven-border) 70%, transparent);
+}
+.maven-goal-form .text-input {
+  flex: 1;
+  min-width: 0;
+}
+.maven-goal-run {
+  flex: none;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--maven-accent);
+  color: var(--maven-fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.maven-goal-run:hover:not(:disabled) {
+  background: var(--maven-selected);
+}
+.maven-goal-run:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.maven-banner,
+.maven-empty,
+.maven-muted {
+  margin: 0;
+  color: var(--maven-subtle);
+  font-size: 13px;
+}
+.maven-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--maven-border) 70%, transparent);
+  background: color-mix(in srgb, var(--maven-warning) 10%, transparent);
+  color: var(--maven-fg);
+}
+.maven-banner.is-error {
+  background: color-mix(in srgb, var(--maven-destructive) 8%, transparent);
+}
+.maven-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  text-align: center;
+}
+.maven-muted {
+  padding: 6px 8px;
+}
+.maven-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+.maven-children {
+  margin-left: 16px;
+  border-left: 1px solid color-mix(in srgb, var(--maven-border) 60%, transparent);
+  padding-left: 4px;
+}
+.maven-row {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 4px;
+  color: var(--maven-fg);
+}
+.maven-row.is-muted {
+  color: var(--maven-subtle);
+}
+.maven-row.is-selected {
+  background: var(--maven-selected);
+  color: var(--maven-fg);
+}
+.maven-row.is-hoverable:hover {
+  background: var(--maven-accent);
+}
+.maven-twist,
+.maven-main {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.maven-twist {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  justify-content: center;
+  color: var(--maven-subtle);
+  padding: 0;
+}
+.maven-main {
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 8px 4px 0;
+  text-align: left;
+}
+.maven-row.is-plain .maven-main {
+  padding-left: 8px;
+}
+.maven-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--maven-primary);
+}
+.maven-icon.is-success {
+  color: var(--maven-success);
+}
+.maven-icon.is-warning {
+  color: var(--maven-warning);
+}
+.maven-icon.is-subtle {
+  color: var(--maven-subtle);
+}
+.maven-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.maven-main.is-spread .maven-label {
+  flex: 1;
+}
+.maven-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--maven-subtle);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.maven-main.is-spread .maven-sub {
+  flex: none;
+}
+.maven-profile,
+.maven-profile-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: var(--maven-fg);
+  font-size: 13px;
+}
+.maven-profile {
+  cursor: pointer;
+}
+.maven-profile:hover {
+  background: var(--maven-accent);
+}
+.maven-profile-add {
+  gap: 4px;
+  padding: 0 4px;
+}
+.maven-profile-add .text-input {
+  flex: 1;
+  min-width: 0;
+}
 .status-lsp-count {
   font-size: 11px;
 }
@@ -1520,13 +1877,7 @@ span.entry-icon > svg {
   }
 }
 
-/* ===== 侧栏：活动栏 + 工具窗口 ===== */
-.side-panel {
-  flex: none;
-  display: flex;
-  min-height: 0;
-}
-
+/* ===== 侧栏：活动条 + 工具窗口卡片 ===== */
 .activity-rail {
   flex: none;
   width: 44px;
@@ -1535,8 +1886,7 @@ span.entry-icon > svg {
   align-items: center;
   gap: 4px;
   padding: 8px 0;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
+  background: var(--app-bg);
 }
 
 .rail-button {
@@ -1555,7 +1905,8 @@ span.entry-icon > svg {
   color: var(--text-primary);
 }
 
-.rail-button.is-active {
+.rail-button.is-active,
+.rail-button.is-active:hover {
   background: var(--bg-active);
   color: var(--text-primary);
 }
@@ -1610,14 +1961,18 @@ span.entry-icon > svg {
 /* 活动栏「运行」入口右下角的存活绿点（IDEA Execution Live Indicator）。 */
 .rail-dot {
   position: absolute;
-  right: 4px;
-  bottom: 4px;
+  right: 3px;
+  bottom: 3px;
   width: 6px;
   height: 6px;
   border-radius: var(--radius-pill);
   background: var(--run-badge-running);
-  box-shadow: 0 0 0 1.5px var(--bg-secondary);
+  box-shadow: 0 0 0 1.5px var(--app-bg);
   pointer-events: none;
+}
+
+.rail-button.is-active .rail-dot {
+  box-shadow: 0 0 0 1.5px var(--bg-active);
 }
 
 /* 底部工具窗口的入口钉在活动栏下端，和上面的项目 / 提交分开。 */
@@ -1625,14 +1980,18 @@ span.entry-icon > svg {
   flex: 1;
 }
 
-/* 宽度由 App 里的 sidebarWidth 状态给，拖完那条竖分隔条就改它。 */
+/* 宽度由 App 里的 sidebarWidth 状态给，拖完右边那条缝就改它。
+   对照 Lithe ResizablePane：内容是 bg-background 的圆角岛，四周底色才是 surface。 */
 .tool-window {
   flex: none;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
+  margin: var(--workbench-gap) 0 var(--workbench-gap) var(--workbench-gap);
+  border-radius: var(--island-radius);
   background: var(--bg-primary);
-  border-right: 1px solid var(--border-color);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
 }
 
 .tool-window-head {
@@ -1642,6 +2001,7 @@ span.entry-icon > svg {
   gap: 2px;
   height: 32px;
   padding: 0 6px 0 12px;
+  background: transparent;
 }
 
 /* 头部那几颗次要动作只在指针进过这条头部时才现身，位置照旧占着，出来进去都不挪行。 */
@@ -1691,7 +2051,7 @@ span.entry-icon > svg {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  background: var(--bg-primary);
+  background: transparent;
 }
 
 /* 参照 IDEA `ProgressDialogUI.kt` 的居中模态进度框（用于批量删除文件 / 递归删除大目录）。 */
@@ -1770,6 +2130,7 @@ span.entry-icon > svg {
   font-size: 13px;
   /* 铺满面板正文：最后一条下面那片空白也得是树自己的地盘，右键才落在树上。 */
   min-height: 100%;
+  background: transparent;
 }
 
 .tree-row {
@@ -1883,25 +2244,47 @@ span.entry-icon > svg {
 
 /* ===== 底部工具窗口（终端 / 运行 / Git 日志） ===== */
 .panel-splitter {
+  position: relative;
   flex: none;
-  height: 5px;
+  height: var(--workbench-gap);
   cursor: row-resize;
   z-index: 5;
+  background: transparent;
 }
 
 .panel-splitter.is-vertical {
-  width: 5px;
+  width: var(--workbench-gap);
   height: auto;
   flex: none;
   cursor: col-resize;
-  background: var(--border-color);
+  background: transparent;
 }
 
-.panel-splitter:hover {
-  background: var(--accent-blue-bg);
+.panel-splitter::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: transparent;
 }
 
-/* 底部一次只坐一块工具窗口，高度由上面那条横分隔条定；这一层压在空编辑区告示页上面。 */
+.panel-splitter.is-vertical::after {
+  left: 2px;
+  right: auto;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  height: auto;
+}
+
+.panel-splitter:hover::after {
+  background: var(--accent-blue);
+}
+
+/* 底部一次只坐一块工具窗口，高度由上面那条缝定。只占编辑区这一列，侧栏仍接到顶栏和底栏。 */
 .bottom-panel {
   flex: none;
   z-index: 1;
@@ -1909,7 +2292,6 @@ span.entry-icon > svg {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-top: 1px solid var(--border-color);
   background: var(--bg-primary);
   overflow: hidden;
 }
@@ -2136,10 +2518,6 @@ span.entry-icon > svg {
   flex: none;
 }
 
-.run-kind.is-spring {
-  color: var(--accent-green-text);
-}
-
 .run-kind.is-npm {
   color: var(--accent-red-text);
 }
@@ -2148,8 +2526,25 @@ span.entry-icon > svg {
   color: var(--text-tertiary);
 }
 
-.run-kind.is-maven {
-  color: var(--accent-amber-text);
+.run-kind.is-java-file {
+  display: inline-flex;
+  flex: none;
+}
+
+.run-kind.is-java-file svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.run-kind.is-maven,
+.entry-icon.is-maven {
+  color: var(--maven-primary);
+}
+
+.run-kind.is-spring,
+.entry-icon.is-spring {
+  color: var(--accent-green-text);
 }
 
 .run-kind.is-gradle {
@@ -2795,7 +3190,7 @@ span.entry-icon > svg {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .term-tab.is-active .term-tab-label {
@@ -2840,59 +3235,115 @@ span.entry-icon > svg {
 }
 
 /* ===== 编辑器区 ===== */
-.main-column {
-  /* 空编辑区那张告示页钉在这一层，不跟着编辑区的高度走。 */
+/* 编辑区和它下面的工具窗口收成一列，四周留出底色，才不会用一条横线把顶栏底栏切开。 */
+.editor-stack {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: var(--workbench-gap) var(--workbench-gap) var(--workbench-gap) 0;
+}
+
+.workbench-row:not(:has(.tool-window)) .editor-stack {
+  margin-left: var(--workbench-gap);
+}
+
+.editor-stack:has(+ .panel-splitter.is-vertical),
+.editor-stack:has(+ .maven-pane),
+.editor-stack:has(+ .notify-pane) {
+  margin-right: 0;
+}
+
+.panel-splitter.is-vertical + .maven-pane,
+.panel-splitter.is-vertical + .notify-pane {
+  margin-left: 0;
+}
+
+.notify-pane:has(+ .maven-pane) {
+  margin-right: 0;
+}
+
+.editor-region {
+  /* 空编辑区那张告示页钉在这一层。没有这层定位的话，它会飘到整个主体上，侧栏和活动条都点不到。
+     对照 Lithe 编辑区：bg-background 的圆角岛。 */
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.editor-region {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--island-radius);
   background: var(--bg-primary);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
 }
 
+/* 对照 Lithe TabBarSurface：和编辑区同一底色，底下一条淡线，标签是 28px 圆角色块。 */
 .editor-tabs {
   display: flex;
-  align-items: stretch;
-  gap: 1px;
-  height: 34px;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 8px;
+  overflow: hidden;
+  background: var(--bg-primary);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+
+.editor-tabs-scroll {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.editor-tabs-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .editor-tab {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 8px 0 12px;
-  background: var(--bg-secondary);
-  color: var(--text-tertiary);
-  border-right: 1px solid var(--border-color);
+  gap: 6px;
+  height: 28px;
+  min-width: 80px;
+  width: fit-content;
+  padding: 0 24px 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: color-mix(in srgb, var(--text-primary) 75%, transparent);
+  font-size: 13px;
   cursor: default;
   white-space: nowrap;
-  transition: background 120ms ease-out, color 120ms ease-out;
+  transition: background 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
 }
 
 .editor-tab:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
   color: var(--text-primary);
 }
 
 .editor-tab.is-active {
-  background: var(--bg-primary);
+  z-index: 1;
+  border-color: color-mix(in srgb, var(--accent-blue) 55%, var(--bg-primary));
+  background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-primary));
   color: var(--text-primary);
+}
+
+.editor-tab.is-active:hover {
+  background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-primary));
 }
 
 .editor-tab.is-diff .tab-label {
@@ -2900,41 +3351,53 @@ span.entry-icon > svg {
 }
 
 .tab-label {
-  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
 }
 
 .tab-close {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
   display: grid;
   place-items: center;
   width: 18px;
   height: 18px;
   border-radius: 4px;
   color: var(--text-muted);
+  opacity: 0;
+}
+
+.editor-tab.is-active .tab-close,
+.editor-tab:hover .tab-close,
+.tab-close:focus-visible {
+  opacity: 1;
 }
 
 .tab-close:hover {
-  background: var(--bg-active);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
   color: var(--text-primary);
 }
 
 .tab-dot {
-  width: 7px;
-  height: 7px;
+  flex: none;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--accent-blue);
 }
 
-/* 页签栏最右侧常驻操作区：粘性贴右，复用统一的 icon-button is-inline。 */
+/* 页签栏最右侧常驻操作区，不跟标签一起滚。 */
 .editor-tabs-actions {
-  position: sticky;
-  right: 0;
-  margin-left: auto;
   flex: none;
   display: flex;
   align-items: center;
-  padding: 0 6px;
-  background: var(--bg-secondary);
-  z-index: 2;
+  height: 28px;
+  padding-left: 2px;
+  background: var(--bg-primary);
 }
 
 .code-host {
@@ -4281,16 +4744,86 @@ span.entry-icon > svg {
   display: flex;
   align-items: center;
   gap: 14px;
-  min-height: 26px;
-  padding: 0 12px;
-  background: var(--chrome-bg);
-  border-top: 1px solid var(--border-color);
+  min-height: var(--footer-height);
+  padding: 0 8px;
+  background: var(--app-bg);
   color: var(--text-muted);
   font-size: 11.5px;
 }
 
 .global-status > span {
   white-space: nowrap;
+}
+
+/* 底栏左侧的路径条。段可以点：目录弹出这一层，文件段是当前文件。 */
+.status-crumbs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.status-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.status-crumb-pair {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.status-crumb-sep {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.status-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.status-crumb.is-current {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.status-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.status-crumb-menu {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.status-crumb-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-crumb-empty {
+  margin: 0;
+  padding: 6px 9px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .status-dirty {
@@ -4753,13 +5286,21 @@ span.entry-icon > svg {
 
 /* ===== 工作区形态下的窄窗口 ===== */
 @media (max-width: 1000px) {
-  /* 窄窗口里只有工具窗口浮起来，活动栏始终贴在左边。 */
+  /* 窄窗口里只有工具窗口浮在编辑卡片上，活动条始终贴在左边。 */
+  .workbench-row {
+    position: relative;
+  }
+
   .tool-window {
     position: absolute;
     z-index: 30;
-    inset: 0 auto 0 44px;
+    inset: 0 auto 0 0;
     box-shadow: var(--island-shadow);
     animation: slide-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .workbench-row > .tool-window + .panel-splitter.is-vertical {
+    display: none;
   }
 }
 

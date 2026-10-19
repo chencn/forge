@@ -392,7 +392,7 @@ export default function SearchEverywhere({
               onMouseEnter={() => setCaret(index)}
               onClick={() => open(row)}
             >
-              <EntryIcon name={row.name} isDirectory={row.isDir} size={16} />
+              <EntryIcon name={row.name} path={row.isDir ? undefined : row.path} isDirectory={row.isDir} size={16} />
               <span className="search-row-main">
                 {row.kind === "text" ? <MatchSnippet hit={row.hit} /> : row.name}
               </span>

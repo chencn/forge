@@ -487,7 +487,7 @@ function GitPanel({
             onDoubleClick={() => openByDoubleClick(change, isStaged, changes)}
             title={change.path}
           >
-            <EntryIcon name={basenameOf(change.path)} size={13} />
+            <EntryIcon name={basenameOf(change.path)} path={absolute(change.path)} size={13} />
             <span
               className={`change-name ${markClass(changeMark(change))}${
                 isDeletedMark(changeMark(change)) ? " is-deleted" : ""
@@ -586,7 +586,7 @@ function GitPanel({
             onDoubleClick={() => openByDoubleClick(row.change, isStaged, changes)}
             title={row.change.path}
           >
-            <EntryIcon name={basenameOf(row.change.path)} size={13} />
+            <EntryIcon name={basenameOf(row.change.path)} path={absolute(row.change.path)} size={13} />
             <span
               className={`change-name ${markClass(changeMark(row.change))}${
                 isDeletedMark(changeMark(row.change)) ? " is-deleted" : ""
@@ -1107,7 +1107,7 @@ function GitPanel({
                   onClick={() => onOpenFile(absolute(relative))}
                   title={relative}
                 >
-                  <EntryIcon name={basenameOf(relative)} size={13} />
+                  <EntryIcon name={basenameOf(relative)} path={absolute(relative)} size={13} />
                   <span className="change-name">{relative}</span>
                   <span className="change-mark is-empty" aria-hidden="true">
                     <CircleSlash size={12} />
@@ -1159,7 +1159,7 @@ function GitPanel({
                       onClick={() => onOpenCommitFile(amendDetail.hash, file)}
                       title={file.path}
                     >
-                      <EntryIcon name={basenameOf(file.path)} size={13} />
+                      <EntryIcon name={basenameOf(file.path)} path={absolute(file.path)} size={13} />
                       <span
                         className={`change-name${file.status ? ` ${markClass(file.status)}` : ""}${
                           isDeletedMark(file.status) ? " is-deleted" : ""

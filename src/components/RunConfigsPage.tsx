@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Copy, FolderOpen, Plus, Trash } from "lucide-react";
 import Select from "./Select";
-import { RUN_KIND_ORDER, RunKindIcon, runKindLabel } from "../lib/runIcons";
+import { RUN_KIND_ORDER, RunConfigIcon, runKindLabel } from "../lib/runIcons";
 import { newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { EnvVar, RunConfiguration, RunKind } from "../lib/runConfigs";
 import type { RunConfigController } from "../hooks/useRunConfigs";
@@ -238,7 +238,7 @@ function RunConfigGroup({
           title={config.command}
           onClick={() => onPick(config.id)}
         >
-          <RunKindIcon kind={config.kind} />
+          <RunConfigIcon config={config} root={configs.workspace} />
           <span className="run-config-name">{config.name}</span>
         </button>
       ))}

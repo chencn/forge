@@ -4,7 +4,7 @@ import { MoreVertical, Square, X } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
 import { RerunIcon, ScrollToEndIcon } from "./RunIcons";
-import { RunKindIcon } from "../lib/runIcons";
+import { RunConfigIcon } from "../lib/runIcons";
 import type { RunController } from "../hooks/useRunSessions";
 import { useI18n } from "../i18n";
 
@@ -33,7 +33,7 @@ export function RunSessionTabs({ run }: { run: RunController }) {
             title={`${session.name}\n${session.command}`}
             onClick={() => run.setActiveId(session.id)}
           >
-            <RunKindIcon kind={session.kind} />
+            <RunConfigIcon config={session.config} root={session.root} />
             <span className={`run-dot is-${session.status}`} aria-hidden="true" />
             <span className="run-session-name">{session.name}</span>
           </button>

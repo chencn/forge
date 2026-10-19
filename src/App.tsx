@@ -18,6 +18,7 @@ import {
   Minus,
   PanelBottom,
   PanelLeftClose,
+  PanelRight,
   Play,
   RefreshCw,
   Save,
@@ -77,6 +78,9 @@ import { useStable } from "./hooks/useStable";
 import type { BranchSettings } from "./lib/settings";
 import { installReadyUpdate, relaunchApp, runAutoUpdateFlow } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
+import { MavenDock, MavenStatus, RightDockSplitter } from "./components/MavenTool";
+import { closeMaven } from "./hooks/useMavenProject";
+import StatusBreadcrumb from "./components/StatusBreadcrumb";
 import { shouldCopyDomSelection } from "./lib/copySelection";
 import { DoubleShiftDetector } from "./lib/doubleShift";
 import {
@@ -115,6 +119,7 @@ import {
 } from "./lib/fs";
 import { dropHintKey, splitDrop } from "./lib/dropIn";
 import { codedError, describeError } from "./lib/errors";
+import { invalidateJavaIcons } from "./lib/javaKindIcons";
 import { IS_WINDOWS, MOD_LABEL } from "./lib/sys";
 import { applyShellIntegration, takeShellOpen } from "./lib/shellOpen";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
@@ -233,7 +238,7 @@ type DiffChain =
 /** 侧边工具窗口的两种内容，对应活动栏上端的两颗按钮。 */
 type Panel = "explorer" | "git";
 
-/** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。包含 IDEA 的通知工具窗口。 */
+/** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。通知不占底部，停在右侧，并和 Maven 共用这一列。 */
 type BottomPane = "terminal" | "run" | "log" | "find" | "notifications";
 
 /** 一块工具窗口待在哪。底部是排他的，选项卡那边可以并存。 */
@@ -691,6 +696,8 @@ export default function App() {
   const [bottomHeight, setBottomHeight] = useState(260);
   /** 侧边工具窗口宽度，拖动它右缘那条竖分隔条改它。 */
   const [sidebarWidth, setSidebarWidth] = useState(320);
+  /** 右侧通知 / Maven 共用这一列的宽度，拖它左缘那条缝改它。 */
+  const [rightWidth, setRightWidth] = useState(300);
   /** 递增即让提交说明框抢焦点，对应主工具栏那条「提交…」。 */
   const [commitFocus, setCommitFocus] = useState(0);
   /** 递增即让提交面板摊开 HEAD 那一次并勾上修正，对应日志里的「编辑提交消息」。 */
@@ -737,6 +744,8 @@ export default function App() {
   const bottomPanelRef = useRef<HTMLElement | null>(null);
   const splitDrag = useRef<{ startY: number; startHeight: number; live: number } | null>(null);
   const sideDrag = useRef<{ startX: number; startWidth: number; live: number } | null>(null);
+  const rightPanelRef = useRef<HTMLElement | null>(null);
+  const rightDrag = useRef<{ startX: number; startWidth: number; live: number } | null>(null);
   /** 每块工具窗口上次待的位置（按根隔离），最小化后再点活动栏那颗要回原处。 */
   const lastPlaceByRoot = useRef(new Map<string, Record<BottomPane, "docked" | "tabbed">>());
   const getLastPlace = useCallback((targetRootKey?: string) => {
@@ -751,7 +760,8 @@ export default function App() {
   const configs = useRunConfigs(workspaceRoot);
   const run = useRunSessions(configs);
 
-  const dockedPane = BOTTOM_ORDER.find((key) => places[key] === "docked") ?? null;
+  const dockedPane =
+    BOTTOM_ORDER.find((key) => key !== "notifications" && places[key] === "docked") ?? null;
   /** 当前激活根下的打开文档列表（按打开时绑定的所属工作区隔离，支持外部库跳转与父级仓库虚拟文档）。 */
   const visibleDocs = useMemo(
     () =>
@@ -1127,6 +1137,7 @@ export default function App() {
    */
   const onDiskChange = useCallback(
     (changedRoot: string, paths: string[], bulk = false) => {
+      invalidateJavaIcons(paths);
       const isGitInternal = (p: string) => {
         const norm = p.replaceAll("\\", "/");
         return norm.includes("/.git/") || norm.endsWith("/.git");
@@ -1250,10 +1261,17 @@ export default function App() {
       getLastPlace()[key] = "docked";
       setPlaces((current) => {
         const next = { ...current };
-        for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
+        // 通知停在右侧，和底部那一块互不挤占。右侧和 Maven 共用一列，开通知就把 Maven 让出去。
+        if (key !== "notifications") {
+          for (const other of BOTTOM_ORDER) {
+            if (other === "notifications") continue;
+            if (next[other] === "docked") next[other] = "hidden";
+          }
+        }
         next[key] = "docked";
         return next;
       });
+      if (key === "notifications") closeMaven();
       // 日志是三栏并排，太矮就没法看。
       if (key === "log") setBottomHeight((height) => Math.max(height, 380));
     },
@@ -1275,17 +1293,25 @@ export default function App() {
    */
   const revealPane = useCallback(
     (key: BottomPane) => {
+      const wasHidden = places[key] === "hidden";
       setPlaces((current) => {
         // 已经可见（停靠在底部或挪进页签栏）：用户自己摆的位置，原样不动。
         if (current[key] !== "hidden") return current;
-        // 收着才拉起：底部是排他的，原来停靠的那块退回收起。
+        // 收着才拉起：底部是排他的，原来停靠的那块退回收起。通知在右侧，不参与这一轮。
         const next = { ...current };
-        for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
+        if (key !== "notifications") {
+          for (const other of BOTTOM_ORDER) {
+            if (other === "notifications") continue;
+            if (next[other] === "docked") next[other] = "hidden";
+          }
+        }
         next[key] = "docked";
         return next;
       });
+      // 通知从收起变成右侧时才让出 Maven。已经在选项卡里的不动。
+      if (wasHidden && key === "notifications") closeMaven();
     },
-    [setPlaces]
+    [places, setPlaces]
   );
 
   /**
@@ -1408,7 +1434,12 @@ export default function App() {
       getLastPlace()[key] = "tabbed";
       setPlaces((current) => {
         const next = { ...current };
-        for (const other of BOTTOM_ORDER) if (next[other] === "docked") next[other] = "hidden";
+        if (key !== "notifications") {
+          for (const other of BOTTOM_ORDER) {
+            if (other === "notifications") continue;
+            if (next[other] === "docked") next[other] = "hidden";
+          }
+        }
         next[key] = "tabbed";
         return next;
       });
@@ -3303,7 +3334,7 @@ export default function App() {
       title: doc.path,
       filePath: doc.path,
       dirty: doc.contents !== doc.baseline,
-      icon: <EntryIcon name={doc.name} size={13} />,
+      icon: <EntryIcon name={doc.name} path={doc.path} size={13} />,
     })),
     ...diffs.map((tab) => ({
       id: `diff|${tab.id}`,
@@ -3514,7 +3545,7 @@ export default function App() {
    */
   const paneFrame = (key: BottomPane, docked: boolean) => (
     <section
-      className={docked ? "bottom-panel" : "pane-body"}
+      className={docked ? "bottom-panel island" : "pane-body"}
       // 只有停在底部的那块归分割条管，挪进页签栏的那块没有可调的边。
       ref={docked ? bottomPanelRef : null}
       style={docked ? { height: bottomHeight } : undefined}
@@ -3559,9 +3590,21 @@ export default function App() {
           type="button"
           className="icon-button is-inline"
           onClick={() => (docked ? tabPane(key) : dockPane(key))}
-          title={t(docked ? "tool.showAsTab" : "tool.showDocked")}
+          title={t(
+            key === "notifications"
+              ? "tool.showOnSide"
+              : docked
+                ? "tool.showAsTab"
+                : "tool.showDocked",
+          )}
         >
-          {docked ? <Maximize2 size={15} /> : <PanelBottom size={15} />}
+          {docked ? (
+            <Maximize2 size={15} />
+          ) : key === "notifications" ? (
+            <PanelRight size={15} />
+          ) : (
+            <PanelBottom size={15} />
+          )}
         </button>
         <button
           type="button"
@@ -3947,7 +3990,6 @@ export default function App() {
       />
 
       <div className="app-body">
-        <aside className="side-panel">
           <nav className="activity-rail" aria-label={t("panel.explorer")}>
             {(["explorer", "git"] as Panel[]).map((key) => {
               const active = panel === key && sidebarOpen;
@@ -4015,6 +4057,8 @@ export default function App() {
             })}
           </nav>
 
+        <div className="workbench-column">
+          <div className="workbench-row">
           {sidebarOpen ? (
             <section
               className="tool-window"
@@ -4250,11 +4294,8 @@ export default function App() {
               }}
             />
           ) : null}
-        </aside>
-
-        {/* 底部工具窗口只跟着编辑区，不把左边的活动栏和工具窗口截断。 */}
-        <div className="main-column">
-          <main className="editor-region">
+          <div className="editor-stack">
+          <main className="editor-region island">
             {tabs.length > 0 ? (
               <EditorTabs
                 tabs={tabs}
@@ -4348,8 +4389,7 @@ export default function App() {
             </Suspense>
             </ErrorBoundary>
           </main>
-
-          {/* 底部一次只见一块工具窗口；要同时看几块就切到选项卡那边。 */}
+          {/* 底部工具窗口只占编辑区这一列，侧栏继续接到顶栏和底栏上。 */}
           {dockedPane ? (
             <>
               <div
@@ -4380,6 +4420,96 @@ export default function App() {
               {paneFrame(dockedPane, true)}
             </>
           ) : null}
+          </div>
+          {places.notifications === "docked" ? (
+            <>
+            <RightDockSplitter
+              width={rightWidth}
+              panelRef={rightPanelRef}
+              dragRef={rightDrag}
+              onCommit={setRightWidth}
+            />
+            <section
+              ref={rightPanelRef}
+              className="notify-pane island"
+              style={{ width: rightWidth }}
+              aria-label={t("notifications.title")}
+            >
+              <header className="tool-window-head">
+                <span className="tool-window-title">{t("notifications.title")}</span>
+                <button
+                  type="button"
+                  className="icon-button is-inline"
+                  onClick={markAllNotificationsRead}
+                  disabled={notifications.length === 0}
+                  title={t("notifications.markAllRead")}
+                >
+                  <CheckCheck size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button is-inline"
+                  onClick={clearAllNotifications}
+                  disabled={notifications.length === 0}
+                  title={t("notifications.clearAll")}
+                >
+                  <Eraser size={14} />
+                </button>
+                <span className="status-spacer" />
+                <button
+                  type="button"
+                  className="icon-button is-inline"
+                  onClick={() => tabPane("notifications")}
+                  title={t("tool.showAsTab")}
+                >
+                  <Maximize2 size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button is-inline"
+                  onClick={() => hidePane("notifications")}
+                  title={t("tool.minimize")}
+                >
+                  <Minus size={15} />
+                </button>
+              </header>
+              <div className="bottom-body">
+                <NotificationsView
+                  notifications={notifications}
+                  onRemoveItem={removeNotification}
+                />
+              </div>
+            </section>
+            </>
+          ) : null}
+          {places.notifications === "docked" ? null : (
+          <MavenDock
+            workspace={workspaceRoot}
+            width={rightWidth}
+            paneRef={rightPanelRef}
+            dragRef={rightDrag}
+            onWidth={setRightWidth}
+            running={run.sessions.some(
+              (session) => session.status === "running" && session.config.id.startsWith("maven-goal:"),
+            )}
+            onRun={(config) => {
+              run.start(config);
+              focusPane("run");
+            }}
+            onStop={() => {
+              for (const session of run.sessions) {
+                if (session.status === "running" && session.config.id.startsWith("maven-goal:")) {
+                  run.stop(session.id);
+                }
+              }
+            }}
+            onOpenFile={(path) => {
+              setActiveTab(`doc|${path}`);
+              void docs.open(path);
+            }}
+          />
+          )}
+          </div>
         </div>
       </div>
 
@@ -4424,7 +4554,19 @@ export default function App() {
             </span>
           </span>
         ) : null}
-        <span className="status-spacer" />
+        {activeDoc && workspaceRoot ? (
+          <StatusBreadcrumb
+            root={workspaceRoot}
+            file={activeDoc.path}
+            showHidden={settings.explorer.showHidden}
+            onOpenFile={(path) => {
+              setActiveTab(`doc|${path}`);
+              void docs.open(path);
+            }}
+          />
+        ) : (
+          <span className="status-spacer" />
+        )}
         {activeDoc ? (
           <>
             <span>{languageLabel(activeDoc.language)}</span>
@@ -4461,13 +4603,17 @@ export default function App() {
           }
         />
         <MemoryGauge />
+        <MavenStatus
+          workspace={workspaceRoot}
+          onWillOpen={() => {
+            if (places.notifications === "docked") hidePane("notifications");
+          }}
+        />
         <NotificationBell
           notifications={notifications}
-          active={dockedPane === "notifications" || activePane === "notifications"}
+          active={places.notifications !== "hidden"}
           onClick={() => {
-            if (dockedPane !== "notifications" && activePane !== "notifications") {
-              markAllNotificationsRead();
-            }
+            if (places.notifications === "hidden") markAllNotificationsRead();
             railPane("notifications");
           }}
         />

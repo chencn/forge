@@ -635,6 +635,8 @@ function ExplorerTree({
               )}
               <EntryIcon
                 name={displayName}
+                path={isDirectory ? undefined : entry.path}
+                byteSize={entry.size}
                 isDirectory={isDirectory}
                 isPackage={isPackage}
                 excluded={excludedDir}

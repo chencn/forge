@@ -458,8 +458,10 @@ mod registry {
     fn write_ext_progid(exe: &str, ext: &str, icon: Option<&str>) -> Result<(), String> {
         let prog = forge_prog_id(ext);
         let root = format!(r"Software\Classes\{prog}");
-        let key = create_key(&root)?;
-        set_default(&key, APP_NAME)?;
+        {
+            let key = create_key(&root)?;
+            set_default(&key, APP_NAME)?;
+        }
         let icon_path = format!(r"{root}\DefaultIcon");
         if let Some(icon) = icon {
             let icon_key = create_key(&icon_path)?;
@@ -474,12 +476,16 @@ mod registry {
 
     fn write_application(exe: &str, exe_name: &str, exts: &[String]) -> Result<(), String> {
         let root = format!(r"Software\Classes\Applications\{exe_name}");
-        let app = create_key(&root)?;
-        set_named(&app, "FriendlyAppName", APP_NAME)?;
-        let command = create_key(&format!(r"{root}\shell\open\command"))?;
-        set_default(&command, &command_value(exe, "%1"))?;
-        delete_tree(&format!(r"{root}\SupportedTypes"))?;
-        let types = create_key(&format!(r"{root}\SupportedTypes"))?;
+        {
+            let app = create_key(&root)?;
+            set_named(&app, "FriendlyAppName", APP_NAME)?;
+            let command = create_key(&format!(r"{root}\shell\open\command"))?;
+            set_default(&command, &command_value(exe, "%1"))?;
+        }
+        // 父键句柄先关掉再删子键。句柄还开着时，子键会被标成待删除，紧接着重建会得到 1018。
+        let types_path = format!(r"{root}\SupportedTypes");
+        delete_tree(&types_path)?;
+        let types = create_key(&types_path)?;
         for ext in exts {
             set_named(&types, &format!(".{ext}"), "")?;
         }
@@ -487,13 +493,16 @@ mod registry {
     }
 
     fn write_capabilities(exe: &str, exts: &[String]) -> Result<(), String> {
-        let cap = create_key(CAPABILITIES)?;
-        set_named(&cap, "ApplicationName", APP_NAME)?;
-        set_named(&cap, "ApplicationDescription", APP_NAME)?;
-        // 设置页里的应用图标仍用 Forge；文件列表图标见各后缀 ProgId。
-        set_named(&cap, "ApplicationIcon", &format!("\"{exe}\",0"))?;
-        delete_tree(&format!(r"{CAPABILITIES}\FileAssociations"))?;
-        let files = create_key(&format!(r"{CAPABILITIES}\FileAssociations"))?;
+        {
+            let cap = create_key(CAPABILITIES)?;
+            set_named(&cap, "ApplicationName", APP_NAME)?;
+            set_named(&cap, "ApplicationDescription", APP_NAME)?;
+            // 设置页里的应用图标仍用 Forge；文件列表图标见各后缀 ProgId。
+            set_named(&cap, "ApplicationIcon", &format!("\"{exe}\",0"))?;
+        }
+        let files_path = format!(r"{CAPABILITIES}\FileAssociations");
+        delete_tree(&files_path)?;
+        let files = create_key(&files_path)?;
         for ext in exts {
             set_named(&files, &format!(".{ext}"), &forge_prog_id(ext))?;
         }
@@ -1005,12 +1014,34 @@ mod registry {
         Ok(())
     }
 
+    /// 键已被标成删除（资源管理器还握着句柄时常见）。删掉马上重建会撞上它。
+    const KEY_DELETED: u32 = 1018;
+
+    fn pause_for_deleted_key(attempt: u32) {
+        std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt + 1)));
+    }
+
     fn create_key(subkey: &str) -> Result<Key, String> {
         let name = HSTRING::from(subkey);
-        let mut key = HKEY::default();
-        let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, &name, &mut key) };
-        check(status)?;
-        Ok(Key(key))
+        let mut last = WIN32_ERROR(1);
+        for attempt in 0..8 {
+            let mut key = HKEY::default();
+            last = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, &name, &mut key) };
+            if last.0 == 0 {
+                return Ok(Key(key));
+            }
+            // 失败时如果仍交回了句柄，留着它会把「待删除」钉死，后面的重试永远 1018。
+            if !key.is_invalid() {
+                unsafe {
+                    let _ = RegCloseKey(key);
+                }
+            }
+            if last.0 != KEY_DELETED {
+                break;
+            }
+            pause_for_deleted_key(attempt);
+        }
+        Err(err("SHELL_REG", last.0.to_string()))
     }
 
     fn open_key(subkey: &str) -> Result<Key, String> {
@@ -1109,13 +1140,19 @@ mod registry {
 
     fn delete_tree(subkey: &str) -> Result<(), String> {
         let name = HSTRING::from(subkey);
-        let status = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &name) };
-        // 2 = 找不到键，3 = 找不到路径。本来就没有，删掉这一步算成功。
-        if status.0 == 0 || status.0 == 2 || status.0 == 3 {
-            Ok(())
-        } else {
-            Err(err("SHELL_REG", status.0.to_string()))
+        let mut last = WIN32_ERROR(0);
+        for attempt in 0..8 {
+            last = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &name) };
+            // 2 = 找不到键，3 = 找不到路径。本来就没有，删掉这一步算成功。
+            if last.0 == 0 || last.0 == 2 || last.0 == 3 {
+                return Ok(());
+            }
+            if last.0 != KEY_DELETED {
+                break;
+            }
+            pause_for_deleted_key(attempt);
         }
+        Err(err("SHELL_REG", last.0.to_string()))
     }
 
     fn check(status: WIN32_ERROR) -> Result<(), String> {
@@ -1130,6 +1167,26 @@ mod registry {
         let mut units: Vec<u16> = value.encode_utf16().collect();
         units.push(0);
         units.iter().flat_map(|unit| unit.to_le_bytes()).collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn recreates_a_key_right_after_deleting_it() {
+            let path = format!(r"Software\Forge\ShellRegProbe\{}", std::process::id());
+            let child = format!(r"{path}\child");
+            let _ = delete_tree(&path);
+            {
+                let parent = create_key(&path).expect("parent");
+                drop(create_key(&child).expect("child"));
+                drop(parent);
+            }
+            delete_tree(&child).expect("delete");
+            create_key(&child).expect("recreate");
+            delete_tree(&path).expect("cleanup");
+        }
     }
 }
 

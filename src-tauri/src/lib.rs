@@ -5,6 +5,7 @@ mod fs;
 mod git;
 mod history;
 mod lsp;
+mod maven;
 mod lsp_config;
 mod lsp_detect;
 mod lsp_probe;
@@ -138,6 +139,7 @@ pub fn run() {
             run::detect::run_tools,
             run::store::run_state_load,
             run::store::run_state_save,
+            maven::maven_scan,
             lsp::lsp_start,
             lsp::lsp_write,
             lsp::lsp_stop,

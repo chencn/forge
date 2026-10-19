@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ReactNode } from "react";
 import { Save, X } from "lucide-react";
@@ -75,6 +75,39 @@ export default function EditorTabs({
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   /** 正在拖的那颗标签；dragover 落到别的标签上就换序。 */
   const dragId = useRef<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Lithe `useTabWheelScroll`：条藏掉之后，竖着滚轮也改成左右挪标签。
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.defaultPrevented || !event.cancelable || event.ctrlKey || event.metaKey) return;
+      const maxScrollLeft = container.scrollWidth - container.clientWidth;
+      if (maxScrollLeft <= 0) return;
+      const delta = event.deltaX || event.deltaY;
+      const nextScrollLeft = Math.max(0, Math.min(container.scrollLeft + delta, maxScrollLeft));
+      if (nextScrollLeft === container.scrollLeft) return;
+      event.preventDefault();
+      container.scrollLeft = nextScrollLeft;
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, [tabs.length]);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    const activeTab = container?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!container || !activeTab) return;
+    const tabRect = activeTab.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    if (tabRect.left < containerRect.left || tabRect.right > containerRect.right) {
+      activeTab.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    }
+  }, [activeId, tabs.length]);
+
   if (tabs.length === 0) return null;
 
   const docTabs = tabs.filter((tab) => tab.kind === "doc");
@@ -136,6 +169,7 @@ export default function EditorTabs({
   return (
     <>
       <div className="editor-tabs" role="tablist">
+        <div className="editor-tabs-scroll" ref={scrollRef}>
         {tabs.map((tab) => {
           const active = tab.id === activeId;
           return (
@@ -171,20 +205,22 @@ export default function EditorTabs({
             >
               {tab.icon}
               <span className="tab-label">{tab.name}</span>
+              {tab.dirty ? <span className="tab-dot" title={t("editor.dirty")} /> : null}
               <button
                 type="button"
-                className="tab-close"
+                className={`tab-close${active ? " is-visible" : ""}`}
                 aria-label={t(CLOSE_LABEL[tab.kind])}
                 onClick={(event) => {
                   event.stopPropagation();
                   onClose(tab.id, tab.kind);
                 }}
               >
-                {tab.dirty ? <span className="tab-dot" /> : <X size={13} />}
+                <X size={13} />
               </button>
             </div>
           );
         })}
+        </div>
         {docTabs.length > 0 ? (
           <div className="editor-tabs-actions">
             <button

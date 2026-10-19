@@ -160,7 +160,22 @@ fn write_dll_settings(
     unsafe {
         let mut key = HKEY::default();
         let name = HSTRING::from(MENU_KEY);
-        let status = RegCreateKeyW(HKEY_CURRENT_USER, &name, &mut key);
+        // 1018：这个键刚被删掉、还标着待删除。资源管理器松手之前不能立刻建回来。
+        let mut status = windows::Win32::Foundation::WIN32_ERROR(1);
+        for attempt in 0u32..8 {
+            status = RegCreateKeyW(HKEY_CURRENT_USER, &name, &mut key);
+            if status.0 == 0 {
+                break;
+            }
+            if !key.is_invalid() {
+                let _ = RegCloseKey(key);
+                key = HKEY::default();
+            }
+            if status.0 != 1018 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt + 1)));
+        }
         if status.0 != 0 {
             return Err(err("SHELL_REG", status.0.to_string()));
         }

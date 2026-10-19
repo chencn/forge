@@ -25,9 +25,8 @@ interface TitleBarProps {
 }
 
 /**
- * IDEA 的主工具栏：最左那格是应用标记，工程与分支芯片紧跟其后，运行控件在右，
- * 中间整条都是可拖拽区。收起侧栏的那颗浮在侧栏右边缘；侧栏一收，它搬回应用标记
- * 那一格，标记跟着让位。窗口控件固定在最右。
+ * 收起侧栏的那颗浮在侧栏右边缘；侧栏一收，它搬回应用标记那一格，标记跟着让位。
+ * 工程和分支只在侧栏开着时留在这一行。
  */
 export default function TitleBar({
   sidebarOpen,
@@ -57,7 +56,7 @@ export default function TitleBar({
 
   return (
     <header className="titlebar">
-      {/* 44px 与活动栏等宽：开着是应用标记，收起后这一格让给折叠那颗。 */}
+      {/* 44px 与活动条加缝等宽：开着是应用标记，收起后这一格让给折叠那颗。 */}
       <span className="titlebar-app" data-tauri-drag-region>
         {sidebarOpen ? (
           <img
@@ -82,8 +81,8 @@ export default function TitleBar({
       ) : null}
 
       <div className="titlebar-drag" data-tauri-drag-region>
-        {/* 侧栏一收，标记·工程·分支这一段跟着收掉，只留那颗折叠开关；冲突那对按钮不跟着收。
-            折叠按钮浮在侧栏右缘、不占流程。这一段的宽度收到按钮之前，长分支名才不会从按钮底下穿过去。
+        {/* 侧栏一收，工程和分支跟着收掉，只留那颗折叠开关；冲突那对按钮不跟着收。
+            按钮不占流程，这一段的宽度收到按钮之前，长分支名才不会从按钮底下穿过去。
             按钮左缘相对拖拽内容起点 = 侧栏宽 - 右内边距 6 - 按钮 25 - 拖拽左内边距 10，再留 8px。 */}
         <div
           className="titlebar-leading"

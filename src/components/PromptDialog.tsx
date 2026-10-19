@@ -195,20 +195,29 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
     onSubmit(next || request.name, extra.trim());
   };
 
+  // 重命名只能点取消关掉。点遮罩、点输入框都会把同一次点击送到遮罩上，对话框刚出来就被收掉。
+  const sticky = request.kind === "rename";
+
   return (
     <div
-      className="dialog-backdrop"
-      onClick={onCancel}
+      className="dialog-backdrop is-panel"
       onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
+        if (event.key === "Escape" && !sticky) onCancel();
       }}
     >
+      <div
+        className="dialog-scrim"
+        onMouseDown={(event) => {
+          event.preventDefault();
+          if (sticky) return;
+          onCancel();
+        }}
+      />
       <div
         className={`dialog${danger ? " is-danger" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={t(TITLE_KEY[request.kind])}
-        onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !withInput) {
             event.preventDefault();

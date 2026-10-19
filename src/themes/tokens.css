@@ -80,14 +80,31 @@
   --radius-pill: 999px;
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 0px;
-  --right-panel-width: 380px;
-  --header-height: 52px;
+  --header-height: 40px;
+  --footer-height: 24px;
+  --island-radius: 10px;
+  --workbench-gap: 6px;
+  --rail-width: 44px;
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;
   --font-mono:
     "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
     monospace;
+  /* Lithe Light 的 Maven 工具窗：primary / success / warning / subtle-foreground。 */
+  --maven-fg: #000000;
+  --maven-subtle: #73767c;
+  --maven-primary: #3871e1;
+  --maven-success: #27864f;
+  --maven-warning: #a86400;
+  --maven-destructive: #cf3f4f;
+  --maven-accent: #e7e8ec;
+  --maven-selected: #d0dffe;
+  --maven-chevron: #818594;
+  --maven-border: #dddfe4;
+  --maven-control-border: #d1d3d9;
+  --maven-checkbox-border: #b5b7bd;
+  --maven-checkbox-bg: #ffffff;
 }
 
 :root[data-theme="dark"] {
@@ -159,5 +176,18 @@
   --scrollbar-thumb-hover: rgba(161, 161, 170, 0.82);
   --scrollbar-thumb-active: rgba(212, 212, 216, 0.9);
   --selection-bg: rgba(88, 166, 255, 0.28);
+  --maven-fg: #d1d3d9;
+  --maven-subtle: #8b8e94;
+  --maven-primary: #3871e1;
+  --maven-success: #57965c;
+  --maven-warning: #d6ae58;
+  --maven-destructive: #db5c5c;
+  --maven-accent: #33353b;
+  --maven-selected: #2a4371;
+  --maven-chevron: #b4b8bf;
+  --maven-border: #33353b;
+  --maven-control-border: #40434a;
+  --maven-checkbox-border: #5f6269;
+  --maven-checkbox-bg: #191a1c;
   --on-solid: #0a0a0a;
 }

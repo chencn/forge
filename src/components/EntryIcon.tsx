@@ -1,6 +1,10 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { File, Folder } from "lucide-react";
+import MavenIcon from "./MavenIcon";
+import SpringIcon from "./SpringIcon";
+import { useMavenProject } from "../hooks/useMavenProject";
 import { useSettings } from "../hooks/useSettings";
+import { javaKindSvg, useJavaFileIcon } from "../lib/javaKindIcons";
 import {
   ensureFileIcons,
   fileIconsReady,
@@ -29,6 +33,10 @@ interface EntryIconProps {
    * 不再按名字去取普通文件夹图标。
    */
   excluded?: boolean;
+  /** 绝对路径。`.java` 靠它读源码，按顶层声明换成类 / 接口 / 枚举 / 注解 / record / 异常图标。 */
+  path?: string;
+  /** 字节数。超过 256KB 的不读，继续用普通 Java 图标。 */
+  byteSize?: number;
   size?: number;
 }
 
@@ -44,15 +52,51 @@ export default function EntryIcon({
   isDirectory = false,
   isPackage = false,
   excluded = false,
+  path,
+  byteSize,
   size = 18,
 }: EntryIconProps) {
   const ready = useSyncExternalStore(subscribeFileIcons, fileIconsReady);
   const { applied } = useSettings();
+  const maven = useMavenProject();
   const className = isDirectory || isPackage ? "entry-icon is-folder" : "entry-icon";
+  const baseName = name.split(/[\\/]/).pop() ?? name;
+  const javaKind = useJavaFileIcon(
+    isDirectory || isPackage || excluded ? undefined : path,
+    baseName,
+    byteSize,
+  );
 
   useEffect(() => {
     void ensureFileIcons();
   }, []);
+
+  if (javaKind) {
+    return (
+      <span
+        className={className}
+        style={{ width: size, height: size }}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: javaKindSvg(javaKind, applied === "dark") }}
+      />
+    );
+  }
+
+  // pom.xml 用侧边栏那枚 Maven 的 M，不走通用文件图标。
+  if (!isDirectory && !isPackage && !excluded && baseName.toLowerCase() === "pom.xml") {
+    return <MavenIcon size={size} className="entry-icon is-maven" />;
+  }
+
+  // Java（Maven）工程里的 Spring 配置：application.yml / application-dev.yaml 这一族。
+  if (
+    !isDirectory &&
+    !isPackage &&
+    !excluded &&
+    maven.project &&
+    /^application(?:-[^.]+)?\.ya?ml$/i.test(baseName)
+  ) {
+    return <SpringIcon size={size} className="entry-icon is-spring" />;
+  }
 
   if (excluded) {
     return (

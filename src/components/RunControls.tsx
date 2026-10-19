@@ -5,7 +5,7 @@ import ContextMenu from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import Popover from "./Popover";
 import { RerunIcon, RunIcon, StopIcon } from "./RunIcons";
-import { RunKindIcon, RUN_KIND_ORDER, runKindLabel } from "../lib/runIcons";
+import { RunConfigIcon, RUN_KIND_ORDER, runKindLabel } from "../lib/runIcons";
 import { codedError, describeError } from "../lib/errors";
 import { missingTool, newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
@@ -203,7 +203,7 @@ export default function RunControls({
         title={t("run.chooseConfig")}
         onClick={() => setOpen((state) => !state)}
       >
-        {selected ? <RunKindIcon kind={selected.kind} /> : null}
+        {selected ? <RunConfigIcon config={selected} root={configs.workspace} /> : null}
         {selectedRunCount > 0 ? <span className="run-dot is-running" aria-hidden="true" /> : null}
         <span className={`run-selector-name${selected ? "" : " is-empty"}`}>
           {selected ? selected.name : t("run.none")}
@@ -268,7 +268,7 @@ export default function RunControls({
                           }}
                           onContextMenu={(event) => rowMenu(event, config)}
                         >
-                          <RunKindIcon kind={config.kind} />
+                          <RunConfigIcon config={config} root={configs.workspace} />
                           <span className="run-row-name">{config.name}</span>
                           {running ? (
                             <span className="run-dot is-running" aria-hidden="true" />
