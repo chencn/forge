@@ -366,10 +366,29 @@ fn flag_on(name: &str, default: bool) -> bool {
 }
 
 fn launch(exe: &Path, paths: &[PathBuf]) {
+    // 1. 终极方案：通过桌面 Explorer 的 COM 接口启动。
+    // 这将把创建进程的任务直接交给交互式桌面的 explorer.exe，启动出的进程
+    // 父进程为 explorer.exe，完全无包身份，任务栏直接展示 native 图标且与快捷方式合并。
+    if launch_via_explorer_shell(exe, paths) {
+        return;
+    }
+
+    // 2. 备选方案：ShellExecuteEx
+    if launch_shell_execute(exe, paths) {
+        return;
+    }
+
     let mut args: Vec<String> = Vec::with_capacity(paths.len() + 1);
     args.push(exe.display().to_string());
     args.extend(paths.iter().map(|path| path.display().to_string()));
     let mut cmd_wide = command_line(&args);
+
+    // 3. 备选方案：带 Breakaway 策略的 CreateProcess
+    if launch_with_breakaway(cmd_wide.as_mut_slice()) {
+        return;
+    }
+
+    // 4. 最终兜底：普通 CreateProcessW
     let si = STARTUPINFOW {
         cb: std::mem::size_of::<STARTUPINFOW>() as u32,
         ..Default::default()
@@ -393,6 +412,211 @@ fn launch(exe: &Path, paths: &[PathBuf]) {
         unsafe {
             let _ = CloseHandle(pi.hThread);
             let _ = CloseHandle(pi.hProcess);
+        }
+    }
+}
+
+/// 通过 Windows 桌面外壳（explorer.exe）启动程序。
+///
+/// 当在拥有包身份的 COM 宿主（如 `dllhost.exe`）内拉起普通桌面程序时，如果直接用 CreateProcess
+/// 或直接调用 ShellExecuteEx，新进程会被系统强制赋予稀疏包身份，导致任务栏无法识别其为 Win32 程序
+/// 并渲染出灰色的空方块。
+/// 通过 `IShellWindows` 找到桌面的 `ShellWindows` 并调用 `IShellDispatch2::ShellExecute`，真正的
+/// 执行者是处于交互式桌面的 `explorer.exe`，启动出的主程序与桌面快捷方式双击完全一致（无包身份）。
+fn launch_via_explorer_shell(exe: &Path, paths: &[PathBuf]) -> bool {
+    use windows::core::{Interface, BSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, IDispatch, IServiceProvider, CLSCTX_LOCAL_SERVER,
+    };
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Shell::{
+        IShellBrowser, IShellDispatch2, IShellView, IShellWindows, ShellWindows,
+        SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH,
+    };
+
+    unsafe {
+        let shell_windows: IShellWindows =
+            match CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER) {
+                Ok(w) => w,
+                Err(_) => return false,
+            };
+
+        let mut loc = VARIANT::from(0i32); // CSIDL_DESKTOP
+        let mut loc_root = VARIANT::default();
+        let mut hwnd = 0i32;
+
+        let disp: IDispatch = match shell_windows.FindWindowSW(
+            &mut loc,
+            &mut loc_root,
+            SWC_DESKTOP,
+            &mut hwnd,
+            SWFO_NEEDDISPATCH,
+        ) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        let sp: IServiceProvider = match disp.cast() {
+            Ok(sp) => sp,
+            Err(_) => return false,
+        };
+
+        let browser: IShellBrowser = match sp.QueryService(&SID_STopLevelBrowser) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+
+        let view: IShellView = match browser.QueryActiveShellView() {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        let app_disp: IDispatch = match view.GetItemObject(SVGIO_BACKGROUND) {
+            Ok(obj) => obj,
+            Err(_) => return false,
+        };
+
+        let shell_dispatch: IShellDispatch2 = match app_disp.cast() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        let file = BSTR::from(exe.to_string_lossy().as_ref());
+        let params_str: String = paths
+            .iter()
+            .map(|p| format!("\"{}\"", p.display()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let args = VARIANT::from(BSTR::from(params_str.as_str()));
+        let dir = VARIANT::default();
+        let op = VARIANT::from(BSTR::from("open"));
+        let show = VARIANT::from(1i32); // SW_SHOWNORMAL
+
+        shell_dispatch
+            .ShellExecute(&file, &args, &dir, &op, &show)
+            .is_ok()
+    }
+}
+
+/// 通过 ShellExecuteEx 启动主程序，作为非打包的普通桌面进程运行。
+fn launch_shell_execute(exe: &Path, paths: &[PathBuf]) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NOZONECHECKS,
+        SHELLEXECUTEINFOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let exe_wide: Vec<u16> = exe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let params_owned: Vec<String> = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    let params_line = command_line(&params_owned);
+
+    let mut sei = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOZONECHECKS | SEE_MASK_FLAG_NO_UI,
+        lpVerb: windows::core::w!("open"),
+        lpFile: PCWSTR(exe_wide.as_ptr()),
+        lpParameters: PCWSTR(params_line.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+
+    unsafe {
+        if ShellExecuteExW(&mut sei).is_ok() {
+            if !sei.hProcess.is_invalid() {
+                let _ = CloseHandle(sei.hProcess);
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// 以脱离包环境（Breakaway）的方式启动主程序。
+///
+/// 本 DLL 运行在稀疏包的 COM 宿主（如 `dllhost.exe`）上下文内，直接 `CreateProcessW` 会
+/// 让子进程继承 `Forge.ShellOpen` 的包身份，导致 Windows 任务栏无法识别其为普通桌面应用、
+/// 任务栏图标变灰且无法与常规快捷方式合并。设置脱离策略后，主程序作为独立的普通 Win32 进程运行。
+fn launch_with_breakaway(cmd: &mut [u16]) -> bool {
+    use windows::Win32::System::Threading::{
+        DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY, STARTUPINFOEXW,
+    };
+
+    const PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_OVERRIDE: u32 = 4;
+    const PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE: u32 = 1;
+
+    unsafe {
+        let mut size = 0usize;
+        let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
+        if size == 0 {
+            return false;
+        }
+
+        let mut buf = vec![0u8; size];
+        let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(buf.as_mut_ptr() as *mut _);
+        if InitializeProcThreadAttributeList(Some(attr_list), 1, None, &mut size).is_err() {
+            return false;
+        }
+
+        let mut policy = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_OVERRIDE
+            | PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
+        let update_res = UpdateProcThreadAttribute(
+            attr_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY as usize,
+            Some(&mut policy as *mut u32 as *const _),
+            std::mem::size_of::<u32>(),
+            None,
+            None,
+        );
+
+        if update_res.is_err() {
+            DeleteProcThreadAttributeList(attr_list);
+            return false;
+        }
+
+        let siex = STARTUPINFOEXW {
+            StartupInfo: STARTUPINFOW {
+                cb: std::mem::size_of::<STARTUPINFOEXW>() as u32,
+                ..Default::default()
+            },
+            lpAttributeList: attr_list,
+        };
+
+        let mut pi = PROCESS_INFORMATION::default();
+        let ok = CreateProcessW(
+            None,
+            Some(PWSTR(cmd.as_mut_ptr())),
+            None,
+            None,
+            false,
+            EXTENDED_STARTUPINFO_PRESENT,
+            None,
+            None,
+            &siex.StartupInfo,
+            &mut pi,
+        );
+
+        DeleteProcThreadAttributeList(attr_list);
+
+        if ok.is_ok() {
+            let _ = CloseHandle(pi.hThread);
+            let _ = CloseHandle(pi.hProcess);
+            true
+        } else {
+            false
         }
     }
 }

@@ -307,7 +307,7 @@ const DEFAULT_LAST_PLACE: Record<BottomPane, "docked" | "tabbed"> = {
 export default function App() {
   const { t } = useI18n();
   const { settings, patch, applied: resolved } = useSettings();
-  const { history, patch: patchHistory, remember } = useHistory();
+  const { history, patch: patchHistory, remember, forget } = useHistory();
   const { config: lspConfig } = useLspConfig();
   /** 终端会话增删或退出时递增，触发常驻文件夹运行态绿点重算。 */
   const [termRev, setTermRev] = useState(0);
@@ -3886,6 +3886,7 @@ export default function App() {
             onOpenFolder={() => void openFolder()}
             onPick={switchOrAddFolder}
             onCloseFolder={(path) => void requestCloseRoot(path)}
+            onRemoveRecent={(path) => forget("recentFolders", path)}
             onCloseProject={closeFolder}
           />
         }

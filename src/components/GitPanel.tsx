@@ -42,6 +42,7 @@ import {
   formatAiCommitError,
   generateAiCommitMessage,
   loadAiCommitConfig,
+  useAiCommitEnabled,
 } from "../lib/aiCommit";
 import type { GitState } from "../hooks/useGitState";
 import { basenameOf } from "../lib/format";
@@ -246,11 +247,23 @@ function GitPanel({
   const viewRef = useRef<HTMLButtonElement>(null);
   const [viewAnchor, setViewAnchor] = useState<HTMLElement | null>(null);
   const [message, setMessage] = useState("");
+  const aiCommitEnabled = useAiCommitEnabled();
   /** AI 生成相关状态 */
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
   const generationIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!aiCommitEnabled) {
+      setAiError(null);
+      if (generationIdRef.current) {
+        void cancelAiCommit(generationIdRef.current);
+        generationIdRef.current = null;
+        setIsGenerating(false);
+      }
+    }
+  }, [aiCommitEnabled]);
   /** 修正上次提交：勾上后不带新说明也能按提交。 */
   const [amend, setAmend] = useState(false);
   /** 忽略文件清单，勾上视图选项那项才去拉。 */
@@ -1290,7 +1303,7 @@ function GitPanel({
               </p>
             ) : null}
 
-            {aiError ? (
+            {aiCommitEnabled && aiError ? (
               <p className="commit-note is-conflict" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span>
                   <AlertTriangle size={13} aria-hidden="true" style={{ verticalAlign: -2, marginRight: 4 }} />
@@ -1346,58 +1359,60 @@ function GitPanel({
                 <span>{t("git.commitAndPush")}</span>
               </button>
 
-              <div
-                className="commit-buttons-right"
-                style={{
-                  marginLeft: "auto",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 3,
-                }}
-              >
-                <button
-                  type="button"
-                  className="button is-small"
-                  disabled={committingAction !== null}
-                  onClick={isGenerating ? handleCancelAiCommit : () => void handleGenerateAiCommit()}
-                  title={t(isGenerating ? "aiCommit.cancel" : "aiCommit.generate")}
+              {aiCommitEnabled ? (
+                <div
+                  className="commit-buttons-right"
                   style={{
-                    height: 24,
-                    padding: "0 8px",
-                    fontSize: 11.5,
+                    marginLeft: "auto",
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 4,
+                    gap: 3,
                   }}
                 >
-                  {isGenerating ? (
-                    <Loader2
-                      size={12}
-                      className="is-spinning"
-                      data-spin="true"
-                      style={{
-                        display: "inline-block",
-                        transformOrigin: "50% 50%",
-                        animation: "spin 1.4s linear infinite",
-                      }}
-                    />
-                  ) : (
-                    <Sparkles size={12} />
-                  )}
-                  <span>AI</span>
-                </button>
-                {onOpenAiSettings ? (
                   <button
                     type="button"
-                    className="icon-button is-inline"
-                    onClick={onOpenAiSettings}
-                    title={t("aiCommit.settings")}
-                    style={{ width: 24, height: 24 }}
+                    className="button is-small"
+                    disabled={committingAction !== null}
+                    onClick={isGenerating ? handleCancelAiCommit : () => void handleGenerateAiCommit()}
+                    title={t(isGenerating ? "aiCommit.cancel" : "aiCommit.generate")}
+                    style={{
+                      height: 24,
+                      padding: "0 8px",
+                      fontSize: 11.5,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
                   >
-                    <Settings size={13} />
+                    {isGenerating ? (
+                      <Loader2
+                        size={12}
+                        className="is-spinning"
+                        data-spin="true"
+                        style={{
+                          display: "inline-block",
+                          transformOrigin: "50% 50%",
+                          animation: "spin 1.4s linear infinite",
+                        }}
+                      />
+                    ) : (
+                      <Sparkles size={12} />
+                    )}
+                    <span>AI</span>
                   </button>
-                ) : null}
-              </div>
+                  {onOpenAiSettings ? (
+                    <button
+                      type="button"
+                      className="icon-button is-inline"
+                      onClick={onOpenAiSettings}
+                      title={t("aiCommit.settings")}
+                      style={{ width: 24, height: 24 }}
+                    >
+                      <Settings size={13} />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </>
         )}

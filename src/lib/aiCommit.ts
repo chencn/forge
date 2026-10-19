@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
 import type { GitChange } from "./git";
 import { gitIndexShow, gitShow } from "./git";
 import { readFile } from "./fs";
@@ -79,6 +80,10 @@ export function newAiCommitProvider(name = "OpenAI Compatible"): AiCommitProvide
   };
 }
 
+export const AI_COMMIT_CONFIG_CHANGED_EVENT = "forge:ai-commit-config-changed";
+
+let cachedAiCommitConfig: AiCommitConfig | null = null;
+
 /** 读取保存在 ai-commit.json 的配置 */
 export async function loadAiCommitConfig(): Promise<AiCommitConfig> {
   const loaded = await invoke<AiCommitConfig>("ai_commit_config_load");
@@ -92,16 +97,57 @@ export async function loadAiCommitConfig(): Promise<AiCommitConfig> {
   } else if (!activeId && filteredProviders.length > 0) {
     activeId = filteredProviders[0].id;
   }
-  return {
+  const config: AiCommitConfig = {
     ...loaded,
     providers: filteredProviders,
     activeProviderId: activeId,
   };
+  cachedAiCommitConfig = config;
+  return config;
 }
 
-/** 保存配置到单独的 ai-commit.json */
-export function saveAiCommitConfig(config: AiCommitConfig): Promise<void> {
-  return invoke<void>("ai_commit_config_save", { config });
+/** 保存配置到单独的 ai-commit.json 并触发变更事件 */
+export async function saveAiCommitConfig(config: AiCommitConfig): Promise<void> {
+  cachedAiCommitConfig = config;
+  await invoke<void>("ai_commit_config_save", { config });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(AI_COMMIT_CONFIG_CHANGED_EVENT, { detail: config }));
+  }
+}
+
+/** 监听 AI 提交说明是否启用的 hook */
+export function useAiCommitEnabled(): boolean {
+  const [enabled, setEnabled] = useState<boolean>(() => cachedAiCommitConfig?.enabled ?? true);
+
+  useEffect(() => {
+    let alive = true;
+    loadAiCommitConfig()
+      .then((cfg) => {
+        if (alive) setEnabled(cfg.enabled);
+      })
+      .catch(() => {});
+
+    const handler = (e: Event) => {
+      const customEvent = e as CustomEvent<AiCommitConfig>;
+      if (customEvent.detail && typeof customEvent.detail.enabled === "boolean") {
+        setEnabled(customEvent.detail.enabled);
+      } else {
+        loadAiCommitConfig()
+          .then((cfg) => {
+            if (alive) setEnabled(cfg.enabled);
+          })
+          .catch(() => {});
+      }
+    };
+
+    window.addEventListener(AI_COMMIT_CONFIG_CHANGED_EVENT, handler);
+    return () => {
+      alive = false;
+      window.removeEventListener(AI_COMMIT_CONFIG_CHANGED_EVENT, handler);
+    };
+  }, []);
+
+  return enabled;
 }
 
 /** 取消某次生成 */

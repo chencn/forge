@@ -161,6 +161,7 @@ export const en: Record<TranslationKey, string> = {
   "project.openOther": "Open folder…",
   "project.addFolder": "Add folder…",
   "project.closeNamed": "Close “{name}”",
+  "project.removeRecentNamed": "Remove “{name}” from recent",
   "project.runningDot": "Background tasks or terminals running",
   "project.dirtyDot": "Has unsaved changes",
 

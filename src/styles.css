@@ -507,8 +507,14 @@ span.entry-icon > svg {
   place-items: center;
   color: var(--text-muted);
   flex: none;
-  margin-left: 2px;
+  margin-left: auto;
   margin-right: -3px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ws-open-row:hover .ws-row-close,
+.ws-open-row:focus-within .ws-row-close {
   opacity: 0.72;
 }
 

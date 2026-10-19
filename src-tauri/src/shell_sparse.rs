@@ -241,6 +241,7 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
             pkg_dir.display().to_string(),
             "/p".into(),
             msix.display().to_string(),
+            "/o".into(),
             "/nv".into(),
         ],
     )?;
@@ -254,11 +255,11 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
             "/fd".into(),
             "SHA256".into(),
             "/sha1".into(),
-            thumb,
+            thumb.clone(),
             msix.display().to_string(),
         ],
     )?;
-    trust_certificate(&work.join("ForgeShell.cer"))?;
+    trust_certificate(&work.join("ForgeShell.cer"), &thumb)?;
     let backup = work.join("ForgeShell.msix");
     remove_package().ok();
     if let Err(error) = add_package(&msix, install_dir) {
@@ -272,8 +273,17 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 卸载时彻底移除稀疏包的临时构建目录。
+/// 卸载时彻底移除稀疏包与临时构建目录、证书残留。
 pub fn clean_work_dir() {
+    let _ = remove_package();
+    let script = format!(
+        r#"
+Get-ChildItem Cert:\LocalMachine\TrustedPeople, Cert:\CurrentUser\TrustedPeople, Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.Subject -eq '{CERT_SUBJECT}' }} |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+"#
+    );
+    let _ = run_powershell(&script);
     if let Some(base) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
         let work = base.join("Forge").join("shell-package");
         let _ = fs::remove_dir_all(work);
@@ -307,7 +317,7 @@ fn package_marker(install_dir: &Path, dll_rel: &str) -> String {
         .map(|time| time.as_secs())
         .unwrap_or(0);
     format!(
-        "on\n5\n{}\n{}\n{dll_rel}\n{len}\n{secs}\n",
+        "on\n7\n{}\n{}\n{dll_rel}\n{len}\n{secs}\n",
         env!("CARGO_PKG_VERSION"),
         install_dir.display()
     )
@@ -355,7 +365,22 @@ fn stop_shell_host() {
 
 fn remove_package() -> Result<(), String> {
     let script = format!(
-        "$p = Get-AppxPackage -Name '{PACKAGE_NAME}' -ErrorAction SilentlyContinue; if ($p) {{ Remove-AppxPackage -Package $p.PackageFullName }}"
+        r#"
+Get-AppxPackage -Name '{PACKAGE_NAME}' -ErrorAction SilentlyContinue | ForEach-Object {{
+    Remove-AppxPackage -Package $_.PackageFullName -ErrorAction SilentlyContinue
+}}
+try {{
+    Get-AppxPackage -Name '{PACKAGE_NAME}' -AllUsers -ErrorAction Stop | ForEach-Object {{
+        $pkg = $_.PackageFullName
+        if ($_.PackageUserInformation) {{
+            foreach ($u in $_.PackageUserInformation) {{
+                Remove-AppxPackage -Package $pkg -User $u.UserSecurityId.Value -ErrorAction SilentlyContinue
+            }}
+        }}
+        Remove-AppxPackage -Package $pkg -AllUsers -ErrorAction SilentlyContinue
+    }}
+}} catch {{}}
+"#
     );
     run_powershell(&script)
 }
@@ -372,9 +397,8 @@ fn add_package(msix: &Path, external: &Path) -> Result<(), String> {
 /// 确保 `CurrentUser\My` 里有一张带私钥的签名证书，并把公钥放进
 /// `CurrentUser\TrustedPeople`。
 ///
-/// 侧载/稀疏包校验认的是 `TrustedPeople`，这个位置不需要管理员权限。
-/// 私钥不导出成文件：导出的 pfx 无论加什么口令，口令都得写在程序里，
-/// 等于把签名能力交给本机任何进程。
+/// 侧载/稀疏包校验认的是 `TrustedPeople`。放进当前用户的 `TrustedPeople` 就够侧载校验，
+/// 不需要管理员提权，顺带尝试静默写入 `LocalMachine\TrustedPeople`（若有权限）。
 fn ensure_certificate(work: &Path) -> Result<(), String> {
     let cer = work.join("ForgeShell.cer");
     if cer.is_file() && cert_thumbprint().is_ok() && cert_trusted(&cer) {
@@ -386,14 +410,14 @@ $ErrorActionPreference = 'Stop'
 $cer = '{}'
 $existing = Get-ChildItem Cert:\CurrentUser\My | Where-Object {{ $_.Subject -eq '{CERT_SUBJECT}' -and $_.HasPrivateKey }} | Select-Object -First 1
 if (-not $existing) {{
-  $existing = New-SelfSignedCertificate -Type CodeSigningCert -Subject '{CERT_SUBJECT}' -CertStoreLocation 'Cert:\CurrentUser\My' -KeySpec Signature -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(15)
+  $existing = New-SelfSignedCertificate -Type Custom -KeyUsage DigitalSignature -CertStoreLocation 'Cert:\CurrentUser\My' -TextExtension @('2.5.29.37={{text}}1.3.6.1.5.5.7.3.3', '2.5.29.19={{text}}') -Subject '{CERT_SUBJECT}' -FriendlyName 'Forge Shell Open' -NotAfter (Get-Date).AddYears(15)
 }}
 Export-Certificate -Cert $existing -FilePath $cer -Force | Out-Null
-# TrustedPeople：当前用户的受信任发布者，侧载校验看这里，不需要提权。
 $trusted = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Thumbprint -eq $existing.Thumbprint }}
 if (-not $trusted) {{
   Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
 }}
+Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' -ErrorAction SilentlyContinue | Out-Null
 "#,
         escape_ps(&cer)
     );
@@ -404,7 +428,9 @@ if (-not $trusted) {{
 fn cert_trusted(cer: &Path) -> bool {
     let script = format!(
         r#"
-$c = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Subject -eq '{CERT_SUBJECT}' }}
+$thumb = (Get-ChildItem Cert:\CurrentUser\My | Where-Object {{ $_.Subject -eq '{CERT_SUBJECT}' -and $_.HasPrivateKey }} | Select-Object -First 1).Thumbprint
+if (-not $thumb) {{ Write-Output 'no'; exit }}
+$c = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Thumbprint -eq $thumb }}
 if ($c) {{ Write-Output 'yes' }} else {{ Write-Output 'no' }}
 "#
     );
@@ -432,21 +458,21 @@ Write-Output $c.Thumbprint
     Ok(thumb)
 }
 
-/// 把公钥证书放进当前用户的受信任发布者。
-///
-/// 用 `CurrentUser\TrustedPeople` 而不是 `LocalMachine\Root`：侧载校验只要求前者，
-/// 而后者会让整台机器信任一张自签根，任何拿到这把私钥的程序都能冒充可信发布者。
-fn trust_certificate(cer: &Path) -> Result<(), String> {
+/// 把公钥证书放进受信任发布者（当前用户存储）。
+fn trust_certificate(cer: &Path, thumb: &str) -> Result<(), String> {
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
-$cer = '{}'
-$trusted = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Subject -eq '{CERT_SUBJECT}' }}
+$cer = '{cer}'
+$thumb = '{thumb}'
+$trusted = Get-ChildItem Cert:\CurrentUser\TrustedPeople | Where-Object {{ $_.Thumbprint -eq $thumb }}
 if (-not $trusted) {{
   Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
 }}
+Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' -ErrorAction SilentlyContinue | Out-Null
 "#,
-        escape_ps(cer)
+        cer = escape_ps(cer),
+        thumb = thumb
     );
     run_powershell(&script)
 }
@@ -497,7 +523,7 @@ fn write_manifest(pkg_dir: &Path, publisher: &str, dll_rel: &str) -> Result<(), 
   <Applications>
     <Application Id="Forge" Executable="forge.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements DisplayName="Forge" Description="Forge" BackgroundColor="transparent"
-        Square150x150Logo="StoreLogo.png" Square44x44Logo="StoreLogo.png" />
+        Square150x150Logo="Square150x150Logo.png" Square44x44Logo="Square44x44Logo.png" />
       <Extensions>
         <com:Extension Category="windows.comServer">
           <com:ComServer>
@@ -549,16 +575,18 @@ fn package_version() -> String {
         .join(".")
 }
 
+/// 稀疏包规范尺寸的彩色图标。
+///
+/// 避免使用 1x1 占位图导致 Windows 任务栏、Alt+Tab 或应用列表显示为灰色方块。
+const LOGO_44: &[u8] = include_bytes!("../icons/Square44x44Logo.png");
+const LOGO_150: &[u8] = include_bytes!("../icons/Square150x150Logo.png");
+const LOGO_STORE: &[u8] = include_bytes!("../icons/Square50x50Logo.png");
+
 fn write_logo(dir: &Path) -> Result<(), String> {
-    // 1x1 PNG
-    const PNG: &[u8] = &[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
-        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
-        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
-        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
-        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-    ];
-    fs::write(dir.join("StoreLogo.png"), PNG).map_err(|e| err("SHELL_REG", e))
+    fs::write(dir.join("Square44x44Logo.png"), LOGO_44).map_err(|e| err("SHELL_REG", e))?;
+    fs::write(dir.join("Square150x150Logo.png"), LOGO_150).map_err(|e| err("SHELL_REG", e))?;
+    fs::write(dir.join("StoreLogo.png"), LOGO_STORE).map_err(|e| err("SHELL_REG", e))?;
+    Ok(())
 }
 
 fn package_work_dir() -> Result<PathBuf, String> {

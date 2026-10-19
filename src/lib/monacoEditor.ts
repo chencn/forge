@@ -519,6 +519,194 @@ monaco.languages.setMonarchTokensProvider("shell", {
   },
 });
 
+// NSIS 安装脚本 (.nsi / .nsh)
+monaco.languages.register({
+  id: "nsis",
+  extensions: [".nsi", ".nsh"],
+  aliases: ["NSIS", "nsis"],
+  mimetypes: ["text/x-nsis"],
+});
+
+monaco.languages.setLanguageConfiguration("nsis", {
+  comments: {
+    lineComment: ";",
+    blockComment: ["/*", "*/"],
+  },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+    { open: "`", close: "`" },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+    { open: "'", close: "'" },
+    { open: "`", close: "`" },
+  ],
+  folding: {
+    markers: {
+      start: /^\s*(?:!(?:macro|if|ifdef|ifndef)\b|Section(?:Group)?\b|Function\b|PageEx\b|\${(?:If|Unless|While|Do|Select|Switch)\b)/i,
+      end: /^\s*(?:!(?:macroend|endif)\b|Section(?:Group)?End\b|FunctionEnd\b|PageExEnd\b|\${(?:EndIf|EndUnless|EndWhile|Loop|EndSelect|EndSwitch)\b)/i,
+    },
+  },
+});
+
+monaco.languages.setMonarchTokensProvider("nsis", {
+  defaultToken: "",
+  ignoreCase: true,
+  tokenPostfix: ".nsi",
+
+  keywords: [
+    "Section", "SectionEnd", "SectionGroup", "SectionGroupEnd", "SectionIn",
+    "SubSection", "SubSectionEnd", "Function", "FunctionEnd",
+    "Page", "UninstPage", "PageEx", "PageExEnd", "PageCallbacks",
+    "Var", "Goto", "Call", "Return", "Abort", "Quit",
+    "If", "Else", "ElseIf", "EndIf", "Unless", "EndUnless",
+    "While", "EndWhile", "Do", "Loop", "Break", "Continue",
+    "Select", "Case", "Default", "EndSelect", "Switch", "EndSwitch",
+  ],
+
+  preprocessor: [
+    "!define", "!undef", "!ifdef", "!ifndef", "!if", "!else", "!endif",
+    "!insertmacro", "!macro", "!macroend", "!include", "!addincludedir",
+    "!addplugindir", "!appendfile", "!cd", "!delfile", "!echo", "!error",
+    "!execute", "!system", "!packhdr", "!finalize", "!tempfile", "!warning",
+    "!verbose", "!ifmacrodef", "!ifmacrondef", "!searchparse", "!searchreplace",
+  ],
+
+  commands: [
+    "OutFile", "Name", "Caption", "Icon", "UninstallIcon", "HeaderImage",
+    "InstallDir", "InstallDirRegKey", "RequestExecutionLevel", "SetCompressor",
+    "SetCompress", "CRCCheck", "AutoCloseWindow", "ShowInstDetails",
+    "ShowUninstDetails", "SetOverwrite", "SetOutPath", "File", "Delete",
+    "RMDir", "CreateDirectory", "CreateShortCut", "CopyFiles", "Rename",
+    "Exec", "ExecWait", "ExecShell", "ExecShellWait", "Sleep", "BringToFront",
+    "HideWindow", "ShowWindow", "SendMessage", "FindWindow", "IsWindow",
+    "WriteRegStr", "WriteRegDWORD", "WriteRegBin", "WriteRegExpandStr",
+    "ReadRegStr", "ReadRegDWORD", "DeleteRegKey", "DeleteRegValue",
+    "EnumRegKey", "EnumRegValue", "WriteINIStr", "ReadINIStr", "FlushINI",
+    "DeleteINISec", "DeleteINIStr", "StrCmp", "StrCmpS", "IntCmp", "IntCmpU",
+    "IntOp", "IntFmt", "StrCpy", "StrLen", "Push", "Pop", "Exch",
+    "ClearErrors", "SetErrors", "IfErrors", "IfFileExists", "IfRebootFlag",
+    "SetRebootFlag", "IfSilent", "SetSilent", "DetailPrint", "MessageBox",
+    "FindFirst", "FindNext", "FindClose", "FileOpen", "FileClose", "FileRead",
+    "FileWrite", "FileSeek", "FileReadByte", "FileWriteByte", "GetTempFileName",
+    "GetFullPathName", "GetFileTime", "GetFileTimeLocal", "GetFileAttributes",
+    "SetFileAttributes", "GetSize", "GetDiskFreeSpace", "RegDLL", "UnRegDLL",
+    "PluginDir", "InitPluginsDir", "EnableWindow", "GetDlgItem", "SetCtlColors",
+    "CreateFont", "SetBrandingImage", "Unicode", "ManifestDPIAware", "ManifestDPIAwareness",
+  ],
+
+  tokenizer: {
+    root: [
+      // 单行注释：; 或 #
+      [/^[ \t]*[;#].*$/, "comment"],
+      [/[ \t]+[;#].*$/, "comment"],
+
+      // 多行注释
+      [/\/\*/, "comment", "@comment"],
+
+      // Handlebars 模板标签（本项目安装脚本模板中包含 {{#if}} 等）
+      [/\{\{[#\/]?[\w\-.]+\}\}/, "tag"],
+      [/\{\{\{?[\w\-.]+?\}\}\}?/, "tag"],
+
+      // 预处理指令（!define, !include 等）
+      [
+        /!\w+/,
+        {
+          cases: {
+            "@preprocessor": "keyword.control",
+            "@default": "keyword",
+          },
+        },
+      ],
+
+      // 宏引用与常量展开：${...}
+      [/\$\{[^}]+\}/, "variable.other.constant"],
+
+      // 寄存器与内置系统变量：$0-$9, $R0-$R9, $INSTDIR 等
+      [
+        /\$(?:[0-9]|R[0-9]|INSTDIR|OUTDIR|SYSDIR|WINDIR|PROGRAMFILES64|PROGRAMFILES|COMMONFILES|DESKTOP|STARTMENU|SMPROGRAMS|SENDTO|RECENT|FAVORITES|MUSIC|PICTURES|VIDEOS|NETHOOD|FONTS|TEMPLATES|APPDATA|LOCALAPPDATA|PRINTHOOD|INTERNET_CACHE|COOKIES|HISTORY|PROFILE|ADMINTOOLS|RESOURCES_LOCALIZED|RESOURCES|EXEFILE|EXEDIR|EXEPATH|HWNDPARENT|PLUGINSDIR|CMDLINE|LANGUAGE)\b/i,
+        "variable.predefined",
+      ],
+
+      // 转义符：$$\r, $$\n, $$\t, $$\", $$\$, etc.
+      [/\$(?:\\(?:[rnt"'\`$])|\$)/, "constant.character.escape"],
+
+      // 用户变量：$VarName
+      [/\$[a-zA-Z_]\w*/, "variable"],
+
+      // 字符串字面量
+      [/"/, "string", "@string_double"],
+      [/'/, "string", "@string_single"],
+      [/`/, "string", "@string_backtick"],
+
+      // 标识符与关键字
+      [
+        /[a-zA-Z_]\w*/,
+        {
+          cases: {
+            "@keywords": "keyword",
+            "@commands": "type.identifier",
+            "@default": "identifier",
+          },
+        },
+      ],
+
+      // 十六进制数与十进制数
+      [/0x[0-9a-fA-F]+\b/, "number.hex"],
+      [/\b\d+\b/, "number"],
+
+      // 括号与标点
+      [/[{}()\[\]]/, "@brackets"],
+      [/[=><!|&+\-*\/^,:]/, "delimiter"],
+    ],
+
+    comment: [
+      [/[^\/*]+/, "comment"],
+      [/\*\//, "comment", "@pop"],
+      [/[\/*]/, "comment"],
+    ],
+
+    string_double: [
+      [/[^"\\$]+/, "string"],
+      [/\$\{[^}]+\}/, "variable.other.constant"],
+      [/\$(?:[0-9]|R[0-9]|[a-zA-Z_]\w*)/, "variable"],
+      [/\$(?:\\(?:[rnt"'\`$])|\$)/, "constant.character.escape"],
+      [/\\./, "string.escape"],
+      [/"/, "string", "@pop"],
+    ],
+
+    string_single: [
+      [/[^'\\$]+/, "string"],
+      [/\$\{[^}]+\}/, "variable.other.constant"],
+      [/\$(?:[0-9]|R[0-9]|[a-zA-Z_]\w*)/, "variable"],
+      [/\$(?:\\(?:[rnt"'\`$])|\$)/, "constant.character.escape"],
+      [/\\./, "string.escape"],
+      [/'/, "string", "@pop"],
+    ],
+
+    string_backtick: [
+      [/[^`\\$]+/, "string"],
+      [/\$\{[^}]+\}/, "variable.other.constant"],
+      [/\$(?:[0-9]|R[0-9]|[a-zA-Z_]\w*)/, "variable"],
+      [/\$(?:\\(?:[rnt"'\`$])|\$)/, "constant.character.escape"],
+      [/\\./, "string.escape"],
+      [/`/, "string", "@pop"],
+    ],
+  },
+});
+
 /**
  * 跳到别的文件时的打开处理。
  *

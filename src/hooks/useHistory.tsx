@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { saveHistory, withRemembered } from "../lib/history";
+import { saveHistory, withRemembered, withoutRemembered } from "../lib/history";
 import type { History } from "../lib/history";
 
 /** 那三份「最近」列表的键；`lastFolder` 是单值，不走 `remember`。 */
@@ -13,6 +13,8 @@ interface HistoryValue {
   patch: (next: Partial<History>) => void;
   /** 往一份「最近」列表前面插一条，重复的挪到最前，超出上限截掉。 */
   remember: (key: RecentKey, value: string) => void;
+  /** 从一份「最近」列表中移除某一项。 */
+  forget: (key: RecentKey, value: string) => void;
 }
 
 const HistoryContext = createContext<HistoryValue | null>(null);
@@ -45,12 +47,20 @@ export function HistoryProvider({ initial, children }: HistoryProviderProps) {
     []
   );
 
+  const forget = useCallback(
+    (key: RecentKey, value: string) => {
+      if (!value) return;
+      setHistory((current) => ({ ...current, [key]: withoutRemembered(current[key], value) }));
+    },
+    []
+  );
+
   // 任何一处改动都整份落盘，文件始终是最新状态。
   useEffect(() => {
     void saveHistory(history);
   }, [history]);
 
   return (
-    <HistoryContext.Provider value={{ history, patch, remember }}>{children}</HistoryContext.Provider>
+    <HistoryContext.Provider value={{ history, patch, remember, forget }}>{children}</HistoryContext.Provider>
   );
 }

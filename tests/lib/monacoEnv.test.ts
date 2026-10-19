@@ -85,8 +85,15 @@ describe("languageForPath 路径到 Monaco 语言映射", () => {
     expect(languageForPath("Directory.Build.props")).toBe("xml");
     expect(languageForPath("Index.cshtml")).toBe("razor");
 
+    // NSIS 安装脚本
+    expect(languageForPath("installer.nsi")).toBe("nsis");
+    expect(languageForPath("windows/nsis/installer.nsi")).toBe("nsis");
+    expect(languageForPath("utils.nsh")).toBe("nsis");
+    expect(languageForPath("C:\\project\\FileAssociation.NSH")).toBe("nsis");
+
     // 语言展示名
     expect(languageLabel("proto")).toBe("Protobuf");
+    expect(languageLabel("nsis")).toBe("NSIS");
     expect(languageLabel("hcl")).toBe("HCL");
     expect(languageLabel("scala")).toBe("Scala");
     expect(languageLabel("sol")).toBe("Solidity");

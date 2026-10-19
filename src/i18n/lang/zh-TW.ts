@@ -148,6 +148,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "project.openOther": "開啟資料夾…",
   "project.addFolder": "新增資料夾…",
   "project.closeNamed": "關閉「{name}」",
+  "project.removeRecentNamed": "從最近記錄移除「{name}」",
   "project.runningDot": "後臺任務或終端執行中",
   "project.dirtyDot": "有未儲存的修改",
   "panel.explorer": "資源管理器",

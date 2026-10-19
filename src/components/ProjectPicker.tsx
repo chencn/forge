@@ -27,6 +27,8 @@ interface ProjectPickerProps {
   onPick: (path: string) => void;
   /** 关闭某一个常驻文件夹（多工作区弹层行尾 × 使用）。 */
   onCloseFolder?: (path: string) => void;
+  /** 从「最近项目」历史列表中移除某一项。 */
+  onRemoveRecent?: (path: string) => void;
   onCloseProject: () => void;
 }
 
@@ -39,6 +41,7 @@ export default function ProjectPicker({
   onOpenFolder,
   onPick,
   onCloseFolder,
+  onRemoveRecent,
   onCloseProject,
 }: ProjectPickerProps) {
   const { t } = useI18n();
@@ -85,7 +88,7 @@ export default function ProjectPicker({
       </button>
 
       {pickable ? (
-        <Popover anchor={anchor} onClose={() => setAnchor(null)} minWidth={290}>
+        <Popover anchor={anchor} onClose={() => setAnchor(null)} minWidth={220} maxWidth={320}>
           {showOpenGroup ? (
             <>
               <p className="popover-label">
@@ -100,6 +103,7 @@ export default function ProjectPicker({
                     role="button"
                     tabIndex={0}
                     className={`popover-item ws-open-row${isCurrent ? " is-current" : ""}`}
+                    title={item.path}
                     onClick={() => {
                       setAnchor(null);
                       if (!isCurrent) onPick(item.path);
@@ -128,9 +132,6 @@ export default function ProjectPicker({
                         aria-label={t("project.dirtyDot")}
                       />
                     ) : null}
-                    <span className="popover-item-detail" title={item.path}>
-                      {item.path}
-                    </span>
                     <button
                       type="button"
                       className="ws-row-close"
@@ -140,6 +141,9 @@ export default function ProjectPicker({
                         event.stopPropagation();
                         setAnchor(null);
                         onCloseFolder?.(item.path);
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
                       }}
                     >
                       <X size={12} aria-hidden="true" />
@@ -157,22 +161,44 @@ export default function ProjectPicker({
           ) : (
             visibleRecent.map((path) => {
               const isCurrent = root !== null && samePath(path, root);
+              const folderName = basenameOf(path);
               return (
-                <button
+                <div
                   key={path}
-                  type="button"
-                  className={`popover-item${isCurrent ? " is-current" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  className={`popover-item ws-open-row${isCurrent ? " is-current" : ""}`}
+                  title={path}
                   onClick={() => {
                     setAnchor(null);
                     if (!isCurrent) onPick(path);
                   }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setAnchor(null);
+                      if (!isCurrent) onPick(path);
+                    }
+                  }}
                 >
                   <FolderOpen size={14} aria-hidden="true" />
-                  <span className="popover-item-label">{basenameOf(path)}</span>
-                  <span className="popover-item-detail" title={path}>
-                    {path}
-                  </span>
-                </button>
+                  <span className="popover-item-label">{folderName}</span>
+                  <button
+                    type="button"
+                    className="ws-row-close"
+                    title={t("project.removeRecentNamed", { name: folderName })}
+                    aria-label={t("project.removeRecentNamed", { name: folderName })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRemoveRecent?.(path);
+                    }}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </div>
               );
             })
           )}

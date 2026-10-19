@@ -24,6 +24,9 @@ mod watch;
 use tauri::Manager;
 
 pub fn run() {
+    #[cfg(windows)]
+    init_app_user_model_id();
+
     // 卸载器在删文件之前调一次：把双击默认、ProgId、右键动词一并交还，
     // 否则卸载后双击 .txt 还会去找已经不存在的 forge.exe。
     if std::env::args().skip(1).any(|arg| arg == "--uninstall-clean") {
@@ -230,3 +233,18 @@ fn disable_default_context_menu(app: &tauri::AppHandle) {
 /// 非 Windows 平台没有 WebView2，这条设置不存在，空实现。
 #[cfg(not(windows))]
 fn disable_default_context_menu(_app: &tauri::AppHandle) {}
+
+/// 显式设置进程的 Application User Model ID。
+///
+/// Windows 任务栏根据 AppUserModelID 对窗口进行分组和绑定快捷方式图标。
+/// 安装包给开始菜单和桌面快捷方式写入了 `app.forge.desktop`，这里在主窗口创建前
+/// 显式设置相同 ID，确保无论是从快捷方式、右键菜单、文件关联还是命令行启动，
+/// 任务栏始终展示相同的彩色图标，并正确归组到固定快捷方式中。
+#[cfg(windows)]
+fn init_app_user_model_id() {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from("app.forge.desktop"));
+    }
+}

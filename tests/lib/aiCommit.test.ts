@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AI_COMMIT_CONFIG_CHANGED_EVENT,
   DEFAULT_AI_COMMIT_CONFIG,
   formatAiCommitError,
   getCommitFormatPreview,
@@ -73,5 +74,9 @@ describe("aiCommit", () => {
     expect(formatAiCommitError("AI_COMMIT_HTTP_401", mockT)).toBe("HTTP 401");
     expect(formatAiCommitError("AI_COMMIT_TIMEOUT", mockT)).toBe("Timeout Error");
     expect(formatAiCommitError("UNKNOWN_CODE", mockT)).toBe("Default Failed");
+  });
+
+  it("exports AI_COMMIT_CONFIG_CHANGED_EVENT event name", () => {
+    expect(AI_COMMIT_CONFIG_CHANGED_EVENT).toBe("forge:ai-commit-config-changed");
   });
 });

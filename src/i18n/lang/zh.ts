@@ -157,6 +157,7 @@ export const zh = {
   "project.openOther": "打开文件夹…",
   "project.addFolder": "添加文件夹…",
   "project.closeNamed": "关闭「{name}」",
+  "project.removeRecentNamed": "从最近记录移除「{name}」",
   "project.runningDot": "后台任务或终端运行中",
   "project.dirtyDot": "有未保存的修改",
 

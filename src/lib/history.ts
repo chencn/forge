@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { samePath } from "./format";
 
 /**
  * 用户做过的那些事，落在系统配置目录的 history.json。
@@ -36,6 +37,11 @@ export const RECENT_CAP = 8;
 /** 往一份「最近」列表前面插一条：重复的挪到最前，超出上限的尾部截掉。 */
 export function withRemembered(list: string[], value: string): string[] {
   return [value, ...list.filter((item) => item !== value)].slice(0, RECENT_CAP);
+}
+
+/** 从一份「最近」列表中移除某一项。兼容普通字符串与跨平台路径匹配。 */
+export function withoutRemembered(list: string[], value: string): string[] {
+  return list.filter((item) => item !== value && !samePath(item, value));
 }
 
 /** 老文件缺字段时逐层补默认值，改结构不用迁移。 */

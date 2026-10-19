@@ -69,6 +69,8 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   lua: "lua",
   r: "r",
   dart: "dart",
+  nsi: "nsis",
+  nsh: "nsis",
 
   // 云原生与基础设施（Protobuf / Terraform HCL / Bicep）
   proto: "proto",
@@ -304,6 +306,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   lua: "Lua",
   r: "R",
   dart: "Dart",
+  nsis: "NSIS",
   makefile: "Makefile",
   diff: "Diff",
 
