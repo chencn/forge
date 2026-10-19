@@ -7,7 +7,10 @@ import type { RunConfiguration } from "../lib/runConfigs";
 import { joinPath, samePath } from "../lib/format";
 import { ChunkBuffer } from "../lib/chunkBuffer";
 import { decodeChunk } from "../lib/term";
+import { formatStamp, stampBytes } from "../lib/runStamps";
+import type { StampState } from "../lib/runStamps";
 import { useI18n } from "../i18n";
+import { useSettings } from "./useSettings";
 import { codedError, describeError } from "../lib/errors";
 import type { RunConfigController } from "./useRunConfigs";
 
@@ -25,6 +28,8 @@ export interface RunSession {
   command: string;
   /** 是哪条配置跑出来的；页签上的「重新运行」要拿它重发一次。 */
   config: RunConfiguration;
+  /** 进程实际跑在哪个目录（相对工作目录已按根展开）。运行输出里的相对路径按它解析。 */
+  dir: string;
   status: SessionStatus;
   /** 结束时的退出码；被终止时拿不到码为 null。 */
   exit: number | null;
@@ -60,10 +65,18 @@ function rootKey(root: string | null): string {
  */
 export function useRunSessions(configs: RunConfigController) {
   const { t } = useI18n();
+  const { settings } = useSettings();
   const cwd = configs.workspace;
   // 事件回调只在挂载时注册一次，取文案要走最新的翻译。
   const tRef = useRef(t);
   tRef.current = t;
+  /** 每块输出收到时刻的盖章开关，跟着设置走；读最新值不重挂 effect。 */
+  const stampsOnRef = useRef(settings.run.timestamps);
+  stampsOnRef.current = settings.run.timestamps;
+  /** 每个会话盖到第几行了（块边界落在行中间时靠它续上）。见 `stampBytes`。 */
+  const stampsRef = useRef(new Map<ProcSessionId, StampState>());
+  /** 「输出被清空」的订阅者：面板擦画面上那份，控制器管的是缓冲。 */
+  const clearedListenersRef = useRef(new Set<(id: ProcSessionId) => void>());
   /** 每个会话收到过的原始字节，切会话时整体重放进唯一的终端。按字节封顶，见 `ChunkBuffer`。 */
   const buffersRef = useRef(new Map<ProcSessionId, ChunkBuffer>());
   const listenersRef = useRef(new Set<AppendListener>());
@@ -76,7 +89,17 @@ export function useRunSessions(configs: RunConfigController) {
   /** 启动失败的原因，按根存放；跑起来后清空。 */
   const [errorByRoot, setErrorByRoot] = useState<Record<string, string | null>>({});
 
-  const append = useCallback((id: ProcSessionId, chunk: Uint8Array) => {
+  const append = useCallback((id: ProcSessionId, raw: Uint8Array) => {
+    // 收到时刻先盖章再入缓冲：缓冲和画面看到的是同一份字节，切会话重放也不掉戳。
+    let chunk = raw;
+    if (stampsOnRef.current) {
+      let state = stampsRef.current.get(id);
+      if (!state) {
+        state = { atLineStart: true };
+        stampsRef.current.set(id, state);
+      }
+      chunk = stampBytes(raw, state, formatStamp(new Date()));
+    }
     const buffer = buffersRef.current.get(id);
     if (buffer) {
       // 上限淘汰最老的块：切会话时重放的是"最近一段"而不是全部历史。
@@ -93,10 +116,24 @@ export function useRunSessions(configs: RunConfigController) {
     [append]
   );
 
+  /** 会话没了：输出缓冲和盖章状态一起丢，别在 map 里留空壳。 */
+  const dropBuffer = useCallback((id: ProcSessionId) => {
+    buffersRef.current.delete(id);
+    stampsRef.current.delete(id);
+  }, []);
+
   const onAppend = useCallback((listener: AppendListener) => {
     listenersRef.current.add(listener);
     return () => {
       listenersRef.current.delete(listener);
+    };
+  }, []);
+
+  /** 订阅「某条会话的输出被清空」；返回退订函数。 */
+  const onClear = useCallback((listener: (id: ProcSessionId) => void) => {
+    clearedListenersRef.current.add(listener);
+    return () => {
+      clearedListenersRef.current.delete(listener);
     };
   }, []);
 
@@ -197,6 +234,7 @@ export function useRunSessions(configs: RunConfigController) {
             kind: config.kind,
             command,
             config,
+            dir,
             status: "running",
             exit: null,
           };
@@ -221,11 +259,11 @@ export function useRunSessions(configs: RunConfigController) {
                   replaced = true;
                   // 新实例成功上屏后，再安全清理旧会话的终端缓存
                   if (item.id !== id) {
-                    buffersRef.current.delete(item.id);
+                    dropBuffer(item.id);
                   }
                 } else {
                   if (item.status === "running") stop(item.id);
-                  buffersRef.current.delete(item.id);
+                  dropBuffer(item.id);
                 }
               } else {
                 next.push(item);
@@ -242,7 +280,7 @@ export function useRunSessions(configs: RunConfigController) {
           }))
       );
     },
-    [configs, cwd, stop, t]
+    [configs, cwd, dropBuffer, stop, t]
   );
 
   const start = useCallback(
@@ -260,10 +298,10 @@ export function useRunSessions(configs: RunConfigController) {
       const session = sessionsRef.current.find((item) => item.id === id);
       if (!session) return;
       if (session.status === "running") stop(id);
-      buffersRef.current.delete(id);
+      dropBuffer(id);
       startInto(session.config, id, session.root);
     },
-    [startInto, stop]
+    [dropBuffer, startInto, stop]
   );
 
   const closeSession = useCallback(
@@ -272,7 +310,7 @@ export function useRunSessions(configs: RunConfigController) {
       const session = list.find((item) => item.id === id);
       if (!session) return;
       if (session.status === "running") stop(id);
-      buffersRef.current.delete(id);
+      dropBuffer(id);
       // kill 标记也要跟着会话走，不然手动关签后这条 id 永久留在集合里。
       killedRef.current.delete(id);
       const rest = list.filter((item) => item.id !== id);
@@ -288,7 +326,7 @@ export function useRunSessions(configs: RunConfigController) {
           : prev
       );
     },
-    [stop]
+    [dropBuffer, stop]
   );
 
   /** 清空指定工作区根下的全部运行会话（关闭文件夹或点击当前根「清空全部」时调用）。 */
@@ -297,7 +335,7 @@ export function useRunSessions(configs: RunConfigController) {
       const doomed = sessionsRef.current.filter((item) => samePath(item.root, targetRoot));
       for (const session of doomed) {
         if (session.status === "running") stop(session.id);
-        buffersRef.current.delete(session.id);
+        dropBuffer(session.id);
         killedRef.current.delete(session.id);
       }
       const key = rootKey(targetRoot);
@@ -313,13 +351,26 @@ export function useRunSessions(configs: RunConfigController) {
         return next;
       });
     },
-    [stop]
+    [dropBuffer, stop]
   );
 
   const clearAll = useCallback(() => {
     if (!cwd) return;
     closeSessionsForRoot(cwd);
   }, [closeSessionsForRoot, cwd]);
+
+  /**
+   * 清空某条会话已经攒下的输出，会话本身留着继续跑（照 IDEA 的「Clear run output」）。
+   * 缓冲整个丢掉，下一条输出来了从头记；面板订阅 `onClear` 把画面上那份也擦掉。
+   */
+  const clearOutput = useCallback(
+    (id: ProcSessionId) => {
+      buffersRef.current.delete(id);
+      stampsRef.current.set(id, { atLineStart: true });
+      for (const listener of clearedListenersRef.current) listener(id);
+    },
+    []
+  );
 
   /** 指定工作区根下是否有正在运行的任务（供顶栏工程切换器绿点与关闭前确认使用）。 */
   const hasRunningSessionsForRoot = useCallback(
@@ -388,10 +439,12 @@ export function useRunSessions(configs: RunConfigController) {
       stop,
       restartSession,
       clearAll,
+      clearOutput,
       closeSession,
       closeSessionsForRoot,
       hasRunningSessionsForRoot,
       onAppend,
+      onClear,
       bufferOf,
     }),
     [
@@ -401,12 +454,14 @@ export function useRunSessions(configs: RunConfigController) {
       allSessions,
       bufferOf,
       clearAll,
+      clearOutput,
       closeSession,
       closeSessionsForRoot,
       error,
       hasRunningSessionsForRoot,
       notice,
       onAppend,
+      onClear,
       restartSession,
       sessions,
       setActiveId,

@@ -70,8 +70,9 @@ export const PACKAGE_ICON = "expui/nodes/package.svg";
  *
  * 顺序同 VS Code 的 fileIconTheme，从具体到笼统：
  *   1. 完整文件名（package.json、pom.xml）
- *   2. 多段后缀（foo.d.ts 命中 d.ts、x.schema.json 命中 schema.json）
- *   3. 单段扩展名（foo.rs 命中 rs）
+ *   2. 以 docker 开头的文件名（docker-compose.rustfs.yml）
+ *   3. 多段后缀（foo.d.ts 命中 d.ts、x.schema.json 命中 schema.json）
+ *   4. 单段扩展名（foo.rs 命中 rs）
  * 名字比后缀具体，后缀比扩展名具体——`package.json` 不该跟普通 `.json` 一个图标。
  */
 export function resolveIconPath(name: string, isDirectory: boolean, isPackage = false): string {
@@ -96,6 +97,12 @@ function resolveIconPathInner(name: string, isDirectory: boolean, isPackage: boo
 
   const byName = data.FILE_NAME_ICONS[lower];
   if (byName) return byName;
+
+  // docker-compose.rustfs.yml 这类带额外片段的名字不在精确表里，
+  // 仍和 docker-compose.yml 共用 Docker 图标，而不是按 yml 退回 YAML。
+  if (lower.startsWith("docker")) {
+    return data.FILE_NAME_ICONS["docker-compose.yml"] ?? data.DEFAULT_FILE;
+  }
 
   // 多段后缀：键已按长度降序排好，第一个 endsWith 命中的就是最长那个。
   // `d.ts` 与 `ts` 同时存在时要取前者，它更具体。

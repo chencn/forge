@@ -34,15 +34,119 @@ export interface EditorSettings {
   saveOnExit: boolean;
 }
 
+/** 终端光标形状。 */
+export type TerminalCursorStyle = "bar" | "block" | "underline";
+
 /** 终端偏好，对应 Rust `TerminalSettings`。 */
 export interface TerminalSettings {
-  /** 起终端用的 shell 程序路径；空串表示用 `shell_probe` 排在第一的那个。 */
+  /** 起终端用的 shell：`ShellInfo.id`（多数就是路径）；空串表示用 `shell_probe` 排在第一的那个。 */
   shell: string;
+  /** 字号（px），和编辑器字号分开。 */
+  fontSize: number;
+  /** 字体；空串表示跟编辑器同一套等宽字体。 */
+  fontFamily: string;
+  /** 回滚行数。 */
+  scrollback: number;
+  cursorStyle: TerminalCursorStyle;
+  /** 页签放标题行里，还是终端左侧一列。 */
+  tabLayout: TerminalTabLayout;
+  bell: TerminalBell;
+  profiles: TerminalProfile[];
+}
+
+export type TerminalTabLayout = "horizontal" | "vertical";
+/** 程序响铃时：闪一下并在页签上挂铃铛、再加一声提示音、或什么都不做。 */
+export type TerminalBell = "visual" | "sound" | "none";
+
+export interface TerminalEnvVar {
+  key: string;
+  value: string;
+}
+
+/** 终端配置档，对应 Rust `TerminalProfile`。 */
+export interface TerminalProfile {
+  id: string;
+  name: string;
+  /** `ShellInfo.id`；空串表示默认 shell。 */
+  shell: string;
+  /** 追加在 shell 自带参数后面。 */
+  args: string[];
+  /** 值为空表示把这个变量从继承的环境里摘掉。 */
+  env: TerminalEnvVar[];
+  /** 起始目录；相对路径按工作区根解析，空串就是工作区根。 */
+  dir: string;
+  /** shell 起来后自动敲进去的命令。 */
+  command: string;
+}
+
+export const TERMINAL_FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
+export const TERMINAL_SCROLLBACK_RANGE = { min: 1_000, max: 100_000 } as const;
+export const TERMINAL_CURSOR_STYLES: readonly TerminalCursorStyle[] = ["bar", "block", "underline"];
+export const TERMINAL_TAB_LAYOUTS: readonly TerminalTabLayout[] = ["horizontal", "vertical"];
+export const TERMINAL_BELLS: readonly TerminalBell[] = ["visual", "sound", "none"];
+
+function normalizeProfile(raw: Partial<TerminalProfile> | null | undefined, index: number): TerminalProfile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return {
+    id: text(raw.id) || `profile-${index + 1}`,
+    name: text(raw.name).trim() || `Profile ${index + 1}`,
+    shell: text(raw.shell),
+    args: Array.isArray(raw.args) ? raw.args.filter((arg): arg is string => typeof arg === "string") : [],
+    env: Array.isArray(raw.env)
+      ? raw.env
+          .filter((entry) => entry && typeof entry.key === "string")
+          .map((entry) => ({ key: entry.key.trim(), value: text(entry.value) }))
+          .filter((entry) => entry.key && !entry.key.includes("="))
+      : [],
+    dir: text(raw.dir).trim(),
+    command: text(raw.command),
+  };
+}
+
+function normalizeProfiles(raw: unknown): TerminalProfile[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: TerminalProfile[] = [];
+  raw.forEach((item, index) => {
+    const profile = normalizeProfile(item as Partial<TerminalProfile>, index);
+    if (!profile || seen.has(profile.id)) return;
+    seen.add(profile.id);
+    out.push(profile);
+  });
+  return out;
+}
+
+function clampInt(value: unknown, range: { min: number; max: number }, fallback: number): number {
+  const number = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.min(range.max, Math.max(range.min, number));
+}
+
+/** 读进来的终端设置：越界的数值夹回范围，认不得的光标退回默认。 */
+function normalizeTerminal(raw: Partial<TerminalSettings> | undefined): TerminalSettings {
+  const base = DEFAULT_SETTINGS.terminal;
+  return {
+    shell: typeof raw?.shell === "string" ? raw.shell : base.shell,
+    fontSize: clampInt(raw?.fontSize, TERMINAL_FONT_SIZE_RANGE, base.fontSize),
+    fontFamily: typeof raw?.fontFamily === "string" ? raw.fontFamily.trim() : base.fontFamily,
+    scrollback: clampInt(raw?.scrollback, TERMINAL_SCROLLBACK_RANGE, base.scrollback),
+    cursorStyle: TERMINAL_CURSOR_STYLES.includes(raw?.cursorStyle as TerminalCursorStyle)
+      ? (raw?.cursorStyle as TerminalCursorStyle)
+      : base.cursorStyle,
+    tabLayout: raw?.tabLayout === "vertical" ? "vertical" : "horizontal",
+    bell: TERMINAL_BELLS.includes(raw?.bell as TerminalBell) ? (raw?.bell as TerminalBell) : base.bell,
+    profiles: normalizeProfiles(raw?.profiles),
+  };
+}
+
+/** 运行工具窗口偏好，对应 Rust `RunSettings`。 */
+export interface RunSettings {
+  /** 给每行输出盖一个收到时刻的时间戳；本来就带时间的行不动。 */
+  timestamps: boolean;
 }
 
 /** 双击变更行打开什么：比对还是源文件。 */
 export type DoubleClickTarget = "preview" | "source";
-
 /** 提交工具窗口偏好，对应 Rust `CommitSettings`。 */
 export interface CommitSettings {
   /** 双击变更行打开什么。 */
@@ -133,6 +237,8 @@ export interface Settings {
   notificationPosition: NotificationPosition;
   /** 应用内更新。 */
   updates: UpdateSettings;
+  /** 运行工具窗口。 */
+  run: RunSettings;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -149,7 +255,16 @@ export const DEFAULT_SETTINGS: Settings = {
     savePolicy: "blur",
     saveOnExit: true,
   },
-  terminal: { shell: "" },
+  terminal: {
+    shell: "",
+    fontSize: 12,
+    fontFamily: "",
+    scrollback: 10_000,
+    cursorStyle: "bar",
+    tabLayout: "horizontal",
+    bell: "visual",
+    profiles: [],
+  },
   commit: { showOnDoubleClick: "preview", commitAllWhenNothingStaged: true },
   branches: {
     actionsInSearch: true,
@@ -168,6 +283,7 @@ export const DEFAULT_SETTINGS: Settings = {
     proxyEnabled: false,
     proxyUrl: "https://gh-proxy.com/",
   },
+  run: { timestamps: true },
 };
 
 /** 翻一条引用的收藏标记：名单按引用全名存，日志的分支树和顶栏的分支弹层共用这一份。 */
@@ -194,7 +310,7 @@ function merge(raw: Partial<Settings> | null): Settings {
       // 只认列出来的那两档，文件里写了别的值就退回默认。
       savePolicy: raw?.editor?.savePolicy === "manual" ? "manual" : "blur",
     },
-    terminal: { ...DEFAULT_SETTINGS.terminal, ...raw?.terminal },
+    terminal: normalizeTerminal(raw?.terminal),
     commit: { ...DEFAULT_SETTINGS.commit, ...raw?.commit },
     branches: { ...DEFAULT_SETTINGS.branches, ...raw?.branches },
     explorer: { ...DEFAULT_SETTINGS.explorer, ...raw?.explorer },
@@ -206,6 +322,7 @@ function merge(raw: Partial<Settings> | null): Settings {
       extraExtensions: normalizeExtraExtensions(raw?.shell?.extraExtensions),
     },
     updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },
+    run: { ...DEFAULT_SETTINGS.run, ...raw?.run },
     notificationPosition:
       raw?.notificationPosition === "top-right" ||
       raw?.notificationPosition === "bottom-left" ||

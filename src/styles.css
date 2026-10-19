@@ -52,24 +52,78 @@ button {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--header-height) minmax(0, 1fr) auto;
   height: 100%;
-  background: var(--app-bg);
+  background-color: var(--app-bg);
 }
 
 /* ===== 标题栏 ===== */
 .titlebar {
-  /* 折叠那颗浮在侧栏那一段的上方，以这一行为定位父级。 */
+  /* 折叠那颗浮在侧栏那一段的上方，以这一行为定位父级。
+     高度是 2.5rem。有项目时，颜色从项目头像那一点晕开。 */
   position: relative;
   display: flex;
   align-items: stretch;
   height: 100%;
-  background: var(--app-bg);
+  background-color: var(--app-bg);
 }
 
-/* 应用标记那一格与活动栏等宽；右边让出 1px 栏框，就正对着栏里那两颗。 */
+:root[data-project-color="1"] { --project-gradient-color: #f7d7cb; }
+:root[data-project-color="2"] { --project-gradient-color: #f5e6b8; }
+:root[data-project-color="3"] { --project-gradient-color: #e2f2c9; }
+:root[data-project-color="4"] { --project-gradient-color: #cbe4f7; }
+:root[data-project-color="5"] { --project-gradient-color: #d4d2fc; }
+:root[data-project-color="6"] { --project-gradient-color: #ecd3f5; }
+:root[data-project-color="7"] { --project-gradient-color: #e4d3f5; }
+:root[data-project-color="8"] { --project-gradient-color: #cef0e9; }
+:root[data-project-color="9"] { --project-gradient-color: #ceedd4; }
+
+:root[data-theme="dark"][data-project-color="1"] { --project-gradient-color: #664832; }
+:root[data-theme="dark"][data-project-color="2"] { --project-gradient-color: #5e4724; }
+:root[data-theme="dark"][data-project-color="3"] { --project-gradient-color: #45522f; }
+:root[data-theme="dark"][data-project-color="4"] { --project-gradient-color: #335661; }
+:root[data-theme="dark"][data-project-color="5"] { --project-gradient-color: #394773; }
+:root[data-theme="dark"][data-project-color="6"] { --project-gradient-color: #613861; }
+:root[data-theme="dark"][data-project-color="7"] { --project-gradient-color: #503d70; }
+:root[data-theme="dark"][data-project-color="8"] { --project-gradient-color: #325959; }
+:root[data-theme="dark"][data-project-color="9"] { --project-gradient-color: #365439; }
+
+/* 项目色只铺在主窗口底色上，白卡片不吃这层。fixed 把顶栏、活动条和缝
+   钉成同一张渐变：从项目名那一点向右 600px、向下 300px 淡回底色，交界不再被顶栏裁断。
+   底栏不挂这层：它在网格里按内容定高，fixed 会按视口把这一行撑高。300px 处已经淡回底色。 */
+:root[data-project-color] :is(
+  .app-shell,
+  .titlebar,
+  .app-body,
+  .workbench-row,
+  .activity-rail
+) {
+  --project-gradient-peak: color-mix(in srgb, var(--project-gradient-color) 85%, var(--app-bg));
+  background-image:
+    linear-gradient(to bottom, transparent 0, var(--app-bg) 300px),
+    linear-gradient(
+      to right,
+      var(--app-bg) 0,
+      var(--project-gradient-peak) var(--project-gradient-x, 150px),
+      var(--app-bg) calc(var(--project-gradient-x, 150px) + 600px)
+    );
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+.project-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+
+/* 应用标记那一格与活动栏等宽，都是 38px。 */
 .titlebar-app {
   flex: none;
-  width: 44px;
-  padding-right: 1px;
+  width: var(--rail-width);
   display: grid;
   place-items: center;
 }
@@ -82,7 +136,7 @@ button {
    芯片紧跟在标记后面，不会被它顶走。 */
 .titlebar-sideband {
   position: absolute;
-  left: 44px;
+  left: var(--rail-width);
   top: 0;
   bottom: 0;
   z-index: 2;
@@ -147,13 +201,13 @@ button {
 .toolbar-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 25px;
-  padding: 0 7px;
-  border-radius: var(--radius-sm);
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-radius: 6px;
   border: 1px solid transparent;
-  color: var(--text-secondary);
-  font-size: 12.5px;
+  color: var(--text-primary);
+  font-size: 13px;
   max-width: 260px;
   transition:
     background 110ms ease-out,
@@ -211,8 +265,8 @@ button {
 .titlebar-actions {
   display: flex;
   align-items: center;
+  height: 100%;
   gap: 2px;
-  padding-right: 4px;
 }
 
 .titlebar-divider {
@@ -222,13 +276,31 @@ button {
   background: var(--border-color);
 }
 
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+
 .window-control {
-  width: 44px;
+  width: 3.5rem;
   height: 100%;
   display: grid;
   place-items: center;
+  border-radius: 0;
   color: var(--text-secondary);
   transition: background 120ms ease-out, color 120ms ease-out;
+}
+
+.window-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+  font-size: 10px;
+  line-height: 1;
 }
 
 .window-control:hover {
@@ -322,7 +394,7 @@ svg.is-spinning,
   min-height: 0;
   min-width: 0;
   position: relative;
-  background: var(--app-bg);
+  background-color: var(--app-bg);
 }
 
 .workbench-column {
@@ -339,7 +411,7 @@ svg.is-spinning,
   min-width: 0;
   min-height: 0;
   display: flex;
-  background: var(--app-bg);
+  background-color: var(--app-bg);
 }
 
 .island {
@@ -754,6 +826,27 @@ span.entry-icon > svg {
   opacity: 0.8;
 }
 
+/*
+ * 下拉里被列宽截断的路径/命令，悬停浮一层显示完整文本。
+ * 用 fixed 定位到那一段的正上方，脱离列表的 overflow 裁剪；不吃指针事件，免得挡住 hover 造成闪烁。
+ */
+.select-tooltip {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-all;
+  box-shadow: var(--island-shadow, 0 6px 18px rgb(0 0 0 / 0.18));
+}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -1049,11 +1142,22 @@ span.entry-icon > svg {
 }
 
 .settings-rows {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 18px;
   overflow-y: auto;
+}
+
+/* 表单限宽，滚动仍交给铺满的 .settings-rows，滑块才贴在面板右缘。 */
+.settings-rows-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 840px;
 }
 
 .settings-row {
@@ -1880,22 +1984,22 @@ span.entry-icon > svg {
 /* ===== 侧栏：活动条 + 工具窗口卡片 ===== */
 .activity-rail {
   flex: none;
-  width: 44px;
+  width: var(--rail-width);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding: 8px 0;
-  background: var(--app-bg);
+  padding: 6px 0;
+  background-color: var(--app-bg);
 }
 
 .rail-button {
   position: relative;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   color: var(--text-muted);
   transition: background 120ms ease-out, color 120ms ease-out;
 }
@@ -2002,6 +2106,33 @@ span.entry-icon > svg {
   height: 32px;
   padding: 0 6px 0 12px;
   background: transparent;
+}
+
+/* 左侧项目岛的头部：32px、13px 标题、底下一道 72% 边，图标按钮 24px。 */
+.workbench-row > .tool-window .tool-window-head {
+  gap: 4px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--sidebar-border) 72%, transparent);
+}
+
+.workbench-row > .tool-window .tool-window-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--sidebar-fg);
+}
+
+.workbench-row > .tool-window .tool-window-head .icon-button.is-inline {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--sidebar-subtle);
+}
+
+.workbench-row > .tool-window .tool-window-head .icon-button.is-inline:hover:not(:disabled),
+.workbench-row > .tool-window .tool-window-head .icon-button.is-on {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-fg);
 }
 
 /* 头部那几颗次要动作只在指针进过这条头部时才现身，位置照旧占着，出来进去都不挪行。 */
@@ -2126,31 +2257,44 @@ span.entry-icon > svg {
 
 /* ===== 目录树 ===== */
 .tree {
-  padding: 6px 0 14px;
+  padding: 4px 0 14px;
   font-size: 13px;
-  /* 铺满面板正文：最后一条下面那片空白也得是树自己的地盘，右键才落在树上。 */
+  /* 铺满面板正文：行本身拉到卡片右缘，最后一条下面那片空白也是树的地盘。 */
   min-height: 100%;
   background: transparent;
+  outline: none;
+}
+
+.tree > [role="none"] {
+  width: 100%;
 }
 
 .tree-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 25px;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  height: 24px;
   padding-right: 8px;
   cursor: default;
-  color: var(--text-secondary);
-  transition: background 110ms ease-out;
+  color: var(--sidebar-fg);
+  transition: background 150ms ease-out;
 }
 
 .tree-row:hover {
-  background: var(--bg-hover);
+  background: var(--sidebar-hover);
 }
 
-/* 选中行。打开的文件不再另涂一档，避免切页签后颜色还留在当前文档上。 */
+/* 选中行。树还握着焦点时是 Lithe 的 selected，点到编辑区后落回 idle。 */
 .tree-row.is-picked {
-  background: var(--accent-blue-bg);
+  background: var(--sidebar-selected-idle);
+}
+
+.tree:focus-within .tree-row.is-picked,
+.tree:focus-within .tree-row.is-picked:hover {
+  background: var(--sidebar-selected);
 }
 
 .tree-row.is-hidden-item:not(.is-active):not(.is-picked) {
@@ -2184,7 +2328,12 @@ span.entry-icon > svg {
   flex: none;
   display: grid;
   place-items: center;
-  color: var(--text-muted);
+  color: var(--sidebar-chevron);
+}
+
+.tree .tree-chevron {
+  width: 16px;
+  height: 16px;
 }
 
 .tree-name {
@@ -2193,6 +2342,10 @@ span.entry-icon > svg {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tree-row.is-root .tree-name {
+  font-weight: 600;
 }
 
 .tree-mark {
@@ -2969,6 +3122,49 @@ span.entry-icon > svg {
   align-items: flex-start;
 }
 
+.term-profiles {
+  flex: 1;
+  min-width: 0;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.term-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-secondary);
+}
+
+.term-profile .settings-label {
+  width: 96px;
+}
+
+.term-profile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.term-profile-name.settings-input {
+  flex: 1;
+  width: auto;
+  font-weight: 600;
+  background: var(--bg-primary);
+}
+
+.term-profile-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .settings-row.is-stack .settings-label {
   padding-top: 5px;
 }
@@ -3065,12 +3261,112 @@ span.entry-icon > svg {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
   overflow: hidden;
   background: var(--bg-primary);
 }
 
-.term-live > .term-host {
+.term-live .term-host {
   background: transparent;
+}
+
+.term-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.term-side {
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.term-side-resizer {
+  flex: none;
+  width: 4px;
+  margin-left: -2px;
+  margin-right: -2px;
+  z-index: 2;
+  cursor: col-resize;
+}
+
+.term-side-resizer:hover,
+.term-pane-resizer:hover {
+  background: color-mix(in srgb, var(--accent-blue) 40%, transparent);
+}
+
+.term-panes {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.term-panes.is-column {
+  flex-direction: column;
+}
+
+.term-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+/* 分屏时给有焦点的那一格一道细边，看得出键盘在敲哪一格。 */
+.term-panes > .term-pane + .term-pane-resizer + .term-pane,
+.term-panes > .term-pane:first-child {
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.term-pane.is-focused {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 45%, transparent);
+}
+
+.term-pane-resizer {
+  flex: none;
+  width: 4px;
+  cursor: col-resize;
+  background: var(--border-color);
+  background-clip: content-box;
+  padding: 0 1.5px;
+}
+
+.term-panes.is-column > .term-pane-resizer {
+  width: auto;
+  height: 4px;
+  padding: 1.5px 0;
+  cursor: row-resize;
+}
+
+/* 响铃：整块终端闪一下浅色。 */
+.term-live-surface.is-bell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--text-primary);
+  animation: forge-term-bell 220ms ease-out;
+}
+
+@keyframes forge-term-bell {
+  from {
+    opacity: 0.12;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term-live-surface.is-bell::after {
+    animation-duration: 1ms;
+  }
 }
 
 .term-host .term-sticky > .term-slot {
@@ -3125,17 +3421,133 @@ span.entry-icon > svg {
   overflow: hidden;
 }
 
-.term-search {
+/* 查找浮在终端右上角，不挤占终端行数：开关一次查找不该让整屏重排。 */
+.term-find {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  z-index: 5;
   display: flex;
-  gap: 6px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px 3px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-secondary);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.18);
 }
 
-.term-search .settings-input {
+.term-find-input {
+  width: 200px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.term-find-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.term-find-count {
+  min-width: 48px;
+  padding: 0 6px;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.term-find-count.is-empty {
+  color: var(--text-danger, #f87171);
+}
+
+.term-find .switch-chip {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 5px;
+}
+
+.term-find-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border-color);
+}
+
+.term-empty {
   flex: 1;
-  width: auto;
-  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.term-empty p {
+  margin: 0;
+}
+
+.term-empty-action,
+.term-exit-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  transition: background 110ms ease-out, border-color 110ms ease-out;
+}
+
+.term-empty-action:hover,
+.term-exit-action:hover {
+  background: var(--bg-hover);
+}
+
+.term-empty-action:focus-visible,
+.term-exit-action:focus-visible {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.term-exit-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 12.5px;
+}
+
+.term-exit-text {
+  color: var(--text-secondary);
+}
+
+.term-exit-action {
+  height: 22px;
+  padding: 0 8px;
+}
+
+.term-exit-action kbd {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
 }
 
 .term-fault {
@@ -3160,26 +3572,114 @@ span.entry-icon > svg {
   min-width: 0;
   display: flex;
   align-items: center;
+  gap: 2px;
+}
+
+/* 页签多了横着滚（滚轮也能滚），滚动条不画；新建、选 shell、查找三颗钉在右边。 */
+.term-tabs-scroll {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 4px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.term-tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.term-tabs-scroll.is-vertical {
+  flex: 1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.term-tabs-scroll.is-vertical .term-tab {
+  height: 24px;
+}
+
+.term-tabs-scroll.is-vertical .term-tab-label {
+  flex: 1;
+  max-width: none;
+}
+
+/* 同一屏（分屏）的几个页签包在一个框里。 */
+.term-tab-group {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
+  border: 1px dashed var(--border-color);
+  border-radius: calc(var(--radius-sm) + 1px);
+}
+
+.term-tabs-scroll.is-vertical .term-tab-group {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.term-tab-bell {
+  flex: none;
+  margin-left: 7px;
+  color: var(--accent-orange, #f59e0b);
+}
+
+.term-tab-bell + .term-tab-label {
+  padding-left: 4px;
+}
+
+.term-tabs-scroll.is-vertical .term-tab.drop-before::before,
+.term-tabs-scroll.is-vertical .term-tab.drop-after::after {
+  left: 4px;
+  right: 4px;
+  top: auto;
+  bottom: auto;
+  width: auto;
+  height: 2px;
+}
+
+.term-tabs-scroll.is-vertical .term-tab.drop-before::before {
+  top: -2px;
+}
+
+.term-tabs-scroll.is-vertical .term-tab.drop-after::after {
+  bottom: -2px;
 }
 
 .term-tab {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
   height: 22px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  cursor: default;
   transition: background 110ms ease-out, border-color 110ms ease-out;
 }
 
 .term-tab:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 
-.term-tab.is-active {
-  background: var(--accent-blue-bg);
+/* 和编辑器页签同一套：浅底加淡边，不用整条亮蓝框。 */
+.term-tab.is-active,
+.term-tab.is-active:hover {
+  background: color-mix(in srgb, var(--accent-blue) 14%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--bg-primary));
+}
+
+.term-tab:focus-visible {
+  outline: none;
   border-color: var(--accent-blue);
 }
 
@@ -3193,8 +3693,72 @@ span.entry-icon > svg {
   font-size: 12.5px;
 }
 
+.term-tab-dot + .term-tab-label {
+  padding-left: 4px;
+}
+
 .term-tab.is-active .term-tab-label {
   color: var(--text-primary);
+}
+
+/* shell 非零退出后留着的页签：画面还在，但已经不能再输入。 */
+.term-tab.is-exited .term-tab-label {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.term-tab-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 7px;
+  border-radius: 50%;
+}
+
+.term-tab-dot.is-unread {
+  background: var(--accent-blue);
+}
+
+.term-tab-dot.is-failed {
+  background: var(--text-danger, #f87171);
+}
+
+.term-tab-rename {
+  min-width: 48px;
+  max-width: 200px;
+  height: 18px;
+  margin: 0 4px 0 6px;
+  padding: 0 4px;
+  border: 1px solid var(--accent-blue);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  outline: none;
+}
+
+/* 拖拽落点：落在左半边插到前面，右半边插到后面。 */
+.term-tab.drop-before::before,
+.term-tab.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent-blue);
+}
+
+.term-tab.drop-before::before {
+  left: -4px;
+}
+
+.term-tab.drop-after::after {
+  right: -4px;
+}
+
+.term-tab-close.is-pin {
+  color: var(--accent-blue);
 }
 
 .term-tab-close {
@@ -3450,6 +4014,76 @@ span.entry-icon > svg {
 
 /* monaco 把 --vscode-* 只写在 .monaco-editor 上，而它的浮层宿主是这条链的兄弟节点，
    右键菜单在 shadow root 里取不到变量就成了透明底。自定义属性能穿进 shadow tree，补齐即可。 */
+/* Lithe monaco-editor.css 查找条原样：卡片 surface，输入框白底、字用 foreground（#000）。
+   Monaco 用内联样式写颜色，这里必须 !important。 */
+.monaco-editor .find-widget {
+  margin-top: 6px;
+  padding: 0 0.375rem;
+  border: 1px solid color-mix(in srgb, var(--sidebar-border) 78%, transparent);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--sidebar-rail) 94%, var(--bg-primary)) !important;
+  color: var(--sidebar-fg) !important;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.monaco-editor .find-widget > .find-part,
+.monaco-editor .find-widget > .replace-part {
+  font-size: 13px;
+}
+
+/* 页面的 .button 是白底带边。查找条的图标也叫 button，这里把那层底和边去掉。 */
+.monaco-editor .find-widget .button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--sidebar-fg);
+}
+
+.monaco-editor .find-widget .monaco-inputbox,
+.monaco-editor .find-widget .monaco-inputbox .input,
+.monaco-editor .find-widget .monaco-inputbox .mirror {
+  border-radius: 6px;
+  background-color: var(--bg-primary) !important;
+  color: var(--sidebar-fg) !important;
+  -webkit-text-fill-color: var(--sidebar-fg);
+}
+
+.monaco-editor .find-widget .monaco-inputbox .input::placeholder {
+  color: var(--sidebar-subtle) !important;
+  -webkit-text-fill-color: var(--sidebar-subtle);
+  opacity: 1;
+}
+
+.monaco-editor .findMatch {
+  background-color: var(--sidebar-selected) !important;
+}
+
+.monaco-editor .currentFindMatch {
+  background-color: var(--selection-bg) !important;
+  border: 2px solid #3871e1 !important;
+}
+
+.monaco-editor .find-widget .matchesCount,
+.monaco-editor .find-widget.no-results .matchesCount {
+  color: var(--sidebar-subtle) !important;
+}
+
+.monaco-editor .find-widget .button:not(.disabled):hover,
+.monaco-editor .find-widget .codicon-find-selection:hover {
+  background: var(--sidebar-hover) !important;
+  color: var(--sidebar-fg) !important;
+}
+
+.monaco-editor .find-widget .button:focus-visible,
+.monaco-editor .find-widget .monaco-inputbox.synthetic-focus {
+  outline: 1px solid #3871e1;
+  outline-offset: -1px;
+}
+
+:root[data-theme="dark"] .monaco-editor .find-widget {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
 .shadow-root-host {
   --vscode-menu-background: var(--bg-tertiary);
   --vscode-menu-foreground: var(--text-primary);
@@ -3524,6 +4158,82 @@ span.entry-icon > svg {
 .doc-view-button.is-active {
   background: var(--bg-active);
   color: var(--text-primary);
+}
+
+/*
+ * markdown 只读预览里的页内查找条：源码那侧靠 Monaco 自带 Ctrl+F，这一侧没有编辑器，
+ * 就自己浮一枚在预览右上角，压在正文之上、视图切换栏的左边，不挤占正文高度。
+ */
+.md-find {
+  position: absolute;
+  top: 6px;
+  right: 128px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px 3px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-secondary);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.18);
+}
+
+.md-find-input {
+  width: 180px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.md-find-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.md-find-count {
+  min-width: 44px;
+  padding: 0 6px;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-find-count.is-empty {
+  color: var(--text-danger, #f87171);
+}
+
+.md-find .switch-chip {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 5px;
+}
+
+.md-find-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border-color);
+}
+
+/* 命中的片段：与底部查找窗口同一档琥珀底；当前那一处加深并描一圈，好一眼定位。 */
+.markdown-body mark.md-find-mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--accent-amber-bg);
+  color: var(--accent-amber-text);
+}
+
+.markdown-body mark.md-find-mark.is-active {
+  background: var(--accent-amber-text);
+  color: var(--bg-primary);
+  box-shadow: 0 0 0 1px var(--accent-amber-text);
 }
 
 .doc-body {
@@ -4589,6 +5299,11 @@ span.entry-icon > svg {
   color: var(--text-primary);
 }
 
+.workbench-row > .tool-window .change-group-head,
+.workbench-row > .tool-window .change-row.is-module .change-name {
+  color: var(--sidebar-fg);
+}
+
 .change-count {
   color: var(--text-tertiary);
   /* 组标题整条是大写档，计数里的「N files」跟着大写就成了错语法。 */
@@ -4652,9 +5367,23 @@ span.entry-icon > svg {
   text-align: left;
 }
 
+.workbench-row > .tool-window .change-row {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.workbench-row > .tool-window .change-main {
+  height: 24px;
+  color: var(--sidebar-fg);
+}
+
 /* hover 底色挂在整行上：暂存按钮是 change-main 的兄弟，挂在 main 上时按钮那一段盖不到。 */
 .change-row:hover {
   background: var(--bg-hover);
+}
+
+.workbench-row > .tool-window .change-row:hover {
+  background: var(--sidebar-hover);
 }
 
 .change-name {
@@ -4744,9 +5473,9 @@ span.entry-icon > svg {
   display: flex;
   align-items: center;
   gap: 14px;
-  min-height: var(--footer-height);
+  height: var(--footer-height);
   padding: 0 8px;
-  background: var(--app-bg);
+  background-color: var(--app-bg);
   color: var(--text-muted);
   font-size: 11.5px;
 }
@@ -4834,7 +5563,7 @@ span.entry-icon > svg {
   color: var(--accent-amber-bg);
 }
 
-/* 左端那条检查消息是可点的：点一下跳到提交窗口。 */
+/* 右侧那条未提交数量是可点的：点一下跳到提交窗口。 */
 .status-note {
   display: inline-flex;
   align-items: center;

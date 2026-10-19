@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
 export interface SelectOption<T extends string | number> {
@@ -30,6 +30,15 @@ const VIEWPORT_PADDING = 8;
 /** 列表里一行的实际高度：上下内边距 12 + 行高约 20。 */
 const ITEM_HEIGHT = 32;
 
+/** 悬停提示的位置与内容；只在文本被截断时出现。 */
+interface Tip {
+  text: string;
+  left: number;
+  top: number;
+  maxWidth: number;
+  below: boolean;
+}
+
 /** 展开列表自己定位，原生 select 的弹层由系统绘制，配色跟应用主题对不上。 */
 export default function Select<T extends string | number>({
   value,
@@ -46,8 +55,31 @@ export default function Select<T extends string | number>({
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState({ left: 0, top: 0, width: 0 });
   const [cursor, setCursor] = useState(0);
+  const [tip, setTip] = useState<Tip | null>(null);
 
   const current = options.find((option) => option.value === value) ?? null;
+
+  // 路径/命令这类次级文案常被列宽截断，靠原生 title 在 WebView 里几乎弹不出来
+  // （每次 hover 换光标行会重渲染整列，打断系统 tooltip 的计时）。这里自己浮一层：
+  // 仅当这一列确实被截断（scrollWidth 超出 clientWidth）才显示完整文本。
+  const showTip = (event: ReactMouseEvent<HTMLElement>, text: string | undefined) => {
+    if (!text) return;
+    const el = event.currentTarget;
+    if (el.scrollWidth <= el.clientWidth + 1) {
+      setTip(null);
+      return;
+    }
+    const box = el.getBoundingClientRect();
+    const below = box.top < 40;
+    setTip({
+      text,
+      left: box.left,
+      top: below ? box.bottom + 6 : box.top - 6,
+      maxWidth: Math.max(160, window.innerWidth - box.left - VIEWPORT_PADDING),
+      below,
+    });
+  };
+  const hideTip = () => setTip(null);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -75,6 +107,11 @@ export default function Select<T extends string | number>({
     };
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
+
+  // 列表收起时提示层跟着没了，但状态留着无害；这里顺手清掉，避免下次展开前残留。
+  useEffect(() => {
+    if (!open) setTip(null);
   }, [open]);
 
   const pick = (option: SelectOption<T>) => {
@@ -120,7 +157,13 @@ export default function Select<T extends string | number>({
           }
         }}
       >
-        <span className="select-value">{current ? current.label : placeholder}</span>
+        <span
+          className="select-value"
+          onMouseEnter={(event) => showTip(event, current ? current.label : undefined)}
+          onMouseLeave={hideTip}
+        >
+          {current ? current.label : placeholder}
+        </span>
         <ChevronDown size={13} aria-hidden="true" />
       </button>
 
@@ -132,6 +175,7 @@ export default function Select<T extends string | number>({
           aria-label={label}
           tabIndex={-1}
           onKeyDown={onListKey}
+          onScroll={hideTip}
           style={{ left: rect.left, top: rect.top, width: rect.width }}
         >
           {options.map((option, index) => {
@@ -149,11 +193,40 @@ export default function Select<T extends string | number>({
                 <span className="select-option-mark">
                   {selected ? <Check size={13} aria-hidden="true" /> : null}
                 </span>
-                <span className="select-option-label">{option.label}</span>
-                {option.detail ? <span className="select-option-detail">{option.detail}</span> : null}
+                <span
+                  className="select-option-label"
+                  onMouseEnter={(event) => showTip(event, option.label)}
+                  onMouseLeave={hideTip}
+                >
+                  {option.label}
+                </span>
+                {option.detail ? (
+                  <span
+                    className="select-option-detail"
+                    onMouseEnter={(event) => showTip(event, option.detail)}
+                    onMouseLeave={hideTip}
+                  >
+                    {option.detail}
+                  </span>
+                ) : null}
               </button>
             );
           })}
+        </div>
+      ) : null}
+
+      {tip ? (
+        <div
+          className="select-tooltip"
+          role="tooltip"
+          style={{
+            left: tip.left,
+            top: tip.top,
+            maxWidth: tip.maxWidth,
+            transform: tip.below ? "none" : "translateY(-100%)",
+          }}
+        >
+          {tip.text}
         </div>
       ) : null}
     </div>

@@ -44,9 +44,42 @@ function sourceRootPosition(path: string): { isRoot: boolean; underRoot: boolean
   return null;
 }
 
+/** JVM 源码根目录名，和同名源文件的图标颜色一一对应。 */
+export type JvmSourceLanguage = (typeof JVM_LANGUAGES)[number];
+
 /** 当前目录是不是 JVM 源码根本身（`.../src/main/java`）。 */
 function isJvmSourceRoot(path: string): boolean {
   return sourceRootPosition(path)?.isRoot ?? false;
+}
+
+/**
+ * 这条路径如果正好是源码根，返回它的语言目录名（`java` / `kotlin` / …）。
+ * 源码根之下的包目录、以及普通同名文件夹都返回 null。
+ */
+export function jvmSourceRootLanguage(path: string): JvmSourceLanguage | null {
+  if (!isJvmSourceRoot(path)) return null;
+  const parts = normalizePath(path).split("/");
+  const language = parts[parts.length - 1];
+  return JVM_LANGUAGES.includes(language) ? language : null;
+}
+
+/** `src/main/resources` 与 `src/test/resources` 本身。子目录不算。 */
+export type ResourcesRootKind = "main" | "test";
+
+/**
+ * 这条路径如果正好是资源根，返回 main 或 test。
+ * 照 Lithe：只有 `src/{main,test}/resources` 这一层换资源根图标。
+ */
+export function resourcesRootKind(path: string): ResourcesRootKind | null {
+  const parts = normalizePath(path).split("/");
+  for (let i = 0; i + 2 < parts.length; i += 1) {
+    if (parts[i] !== "src") continue;
+    if (parts[i + 1] !== "main" && parts[i + 1] !== "test") continue;
+    if (parts[i + 2] !== "resources") continue;
+    if (parts.length !== i + 3) return null;
+    return parts[i + 1] === "test" ? "test" : "main";
+  }
+  return null;
 }
 
 /** 当前目录是不是严格在 JVM 源码根之下。 */

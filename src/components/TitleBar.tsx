@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Maximize, Minimize, Minus, PanelLeft, X } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { useWindowControls } from "../lib/window";
 import { useI18n } from "../i18n";
 import appMark from "../../src-tauri/icons/icon.svg";
@@ -56,7 +56,7 @@ export default function TitleBar({
 
   return (
     <header className="titlebar">
-      {/* 44px 与活动条加缝等宽：开着是应用标记，收起后这一格让给折叠那颗。 */}
+      {/* 38px 与活动条等宽：开着是应用标记，收起后这一格让给折叠那颗。 */}
       <span className="titlebar-app" data-tauri-drag-region>
         {sidebarOpen ? (
           <img
@@ -102,31 +102,49 @@ export default function TitleBar({
 
         <span className="titlebar-divider" />
 
-        <button
-          type="button"
-          className="window-control"
-          onClick={minimize}
-          title={t("window.minimize")}
-        >
-          <Minus size={15} />
-        </button>
-        <button
-          type="button"
-          className="window-control"
-          onClick={toggleMaximize}
-          title={t(maximized ? "window.restore" : "window.maximize")}
-        >
-          {maximized ? <Minimize size={13} /> : <Maximize size={13} />}
-        </button>
-        <button
-          type="button"
-          className="window-control is-close"
-          onClick={dismiss}
-          title={t("window.close")}
-        >
-          <X size={16} />
-        </button>
+        <div className="window-controls">
+          <button
+            type="button"
+            className="window-control"
+            onClick={minimize}
+            title={t("window.minimize")}
+          >
+            <WindowGlyph kind="minimize" />
+          </button>
+          <button
+            type="button"
+            className="window-control"
+            onClick={toggleMaximize}
+            title={t(maximized ? "window.restore" : "window.maximize")}
+          >
+            <WindowGlyph kind={maximized ? "restore" : "maximize"} />
+          </button>
+          <button
+            type="button"
+            className="window-control is-close"
+            onClick={dismiss}
+            title={t("window.close")}
+          >
+            <WindowGlyph kind="close" />
+          </button>
+        </div>
       </div>
     </header>
+  );
+}
+
+const WINDOW_GLYPHS = {
+  minimize: "\uE921",
+  maximize: "\uE922",
+  restore: "\uE923",
+  close: "\uE8BB",
+} as const;
+
+/** Windows 标题栏那套 Segoe 字形，和 Lithe 的窗口按钮同一套。 */
+function WindowGlyph({ kind }: { kind: keyof typeof WINDOW_GLYPHS }) {
+  return (
+    <span className="window-glyph" aria-hidden="true">
+      {WINDOW_GLYPHS[kind]}
+    </span>
   );
 }

@@ -27,7 +27,15 @@ import type { ThemeMode } from "../lib/window";
 import { IS_WINDOWS } from "../lib/sys";
 import { builtinShellExtensions } from "../lib/shellOpen";
 import { appendExtraExtension, normalizeExtraExtensions } from "../lib/shellWhitelist";
-import { DEFAULT_SETTINGS } from "../lib/settings";
+import {
+  DEFAULT_SETTINGS,
+  TERMINAL_BELLS,
+  TERMINAL_CURSOR_STYLES,
+  TERMINAL_FONT_SIZE_RANGE,
+  TERMINAL_SCROLLBACK_RANGE,
+  TERMINAL_TAB_LAYOUTS,
+} from "../lib/settings";
+import TerminalProfilesEditor from "./TerminalProfilesEditor";
 import { clearLspLogs, lspLogs, watchLspLogs, watchLspStatus } from "../lib/lspClient";
 import type { WakeResult } from "../lib/lspClient";
 import type {
@@ -36,6 +44,9 @@ import type {
   KeymapScheme,
   NotificationPosition,
   SavePolicy,
+  TerminalBell,
+  TerminalCursorStyle,
+  TerminalTabLayout,
 } from "../lib/settings";
 import { shellProbe } from "../lib/term";
 import type { ShellInfo } from "../lib/term";
@@ -67,6 +78,23 @@ const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   lsp: "settings.lsp",
   aiCommit: "settings.aiCommit",
   about: "settings.about",
+};
+
+const CURSOR_STYLE_LABEL: Record<TerminalCursorStyle, TranslationKey> = {
+  bar: "settings.terminalCursor.bar",
+  block: "settings.terminalCursor.block",
+  underline: "settings.terminalCursor.underline",
+};
+
+const TAB_LAYOUT_LABEL: Record<TerminalTabLayout, TranslationKey> = {
+  horizontal: "settings.terminalTabLayout.horizontal",
+  vertical: "settings.terminalTabLayout.vertical",
+};
+
+const BELL_LABEL: Record<TerminalBell, TranslationKey> = {
+  visual: "settings.terminalBell.visual",
+  sound: "settings.terminalBell.sound",
+  none: "settings.terminalBell.none",
 };
 
 const THEME_OPTIONS: ThemeMode[] = ["light", "dark", "system"];
@@ -834,15 +862,145 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
                   className="is-wide"
                   label={t("settings.shell")}
                   placeholder="—"
-                  value={settings.terminal.shell || shells[0]?.path || ""}
+                  value={
+                    shells.find(
+                      (shell) =>
+                        shell.id === settings.terminal.shell ||
+                        shell.path === settings.terminal.shell,
+                    )?.id ??
+                    (settings.terminal.shell || shells[0]?.id || "")
+                  }
                   options={shells.map((shell) => ({
-                    value: shell.path,
+                    value: shell.id,
                     label: shell.name,
-                    detail: shell.path,
+                    detail: [shell.path, ...shell.args].join(" "),
                   }))}
                   onChange={(shell) => patch({ terminal: { ...settings.terminal, shell } })}
                 />
               </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.terminalFontSize")}</span>
+                <input
+                  className="settings-input"
+                  type="number"
+                  min={TERMINAL_FONT_SIZE_RANGE.min}
+                  max={TERMINAL_FONT_SIZE_RANGE.max}
+                  value={settings.terminal.fontSize}
+                  onChange={(event) =>
+                    patch({
+                      terminal: {
+                        ...settings.terminal,
+                        fontSize: Math.min(
+                          TERMINAL_FONT_SIZE_RANGE.max,
+                          Math.max(
+                            TERMINAL_FONT_SIZE_RANGE.min,
+                            Number(event.target.value) || DEFAULT_SETTINGS.terminal.fontSize,
+                          ),
+                        ),
+                      },
+                    })
+                  }
+                />
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.terminalFontFamily")}</span>
+                {/* 敲一个字母就换一次字体会让终端反复重排，失焦或回车才生效。 */}
+                <input
+                  key={settings.terminal.fontFamily}
+                  className="settings-input is-wide"
+                  defaultValue={settings.terminal.fontFamily}
+                  placeholder={t("settings.terminalFontFamilyPlaceholder")}
+                  onBlur={(event) => {
+                    const fontFamily = event.target.value.trim();
+                    if (fontFamily !== settings.terminal.fontFamily) {
+                      patch({ terminal: { ...settings.terminal, fontFamily } });
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                />
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.terminalScrollback")}</span>
+                {/* 一位一位敲到 1000 之前每一步都低于下限，边敲边夹会把输入改掉，所以失焦再夹。 */}
+                <input
+                  key={settings.terminal.scrollback}
+                  className="settings-input"
+                  type="number"
+                  min={TERMINAL_SCROLLBACK_RANGE.min}
+                  max={TERMINAL_SCROLLBACK_RANGE.max}
+                  step={1000}
+                  defaultValue={settings.terminal.scrollback}
+                  onBlur={(event) => {
+                    const scrollback = Math.min(
+                      TERMINAL_SCROLLBACK_RANGE.max,
+                      Math.max(
+                        TERMINAL_SCROLLBACK_RANGE.min,
+                        Math.round(Number(event.target.value) || DEFAULT_SETTINGS.terminal.scrollback),
+                      ),
+                    );
+                    if (scrollback !== settings.terminal.scrollback) {
+                      patch({ terminal: { ...settings.terminal, scrollback } });
+                    } else {
+                      event.target.value = String(scrollback);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                />
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.terminalCursor")}</span>
+                <Select
+                  label={t("settings.terminalCursor")}
+                  placeholder="—"
+                  value={settings.terminal.cursorStyle}
+                  options={TERMINAL_CURSOR_STYLES.map((style) => ({
+                    value: style,
+                    label: t(CURSOR_STYLE_LABEL[style]),
+                  }))}
+                  onChange={(cursorStyle) =>
+                    patch({ terminal: { ...settings.terminal, cursorStyle } })
+                  }
+                />
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.terminalTabLayout")}</span>
+                <Select
+                  label={t("settings.terminalTabLayout")}
+                  placeholder="—"
+                  value={settings.terminal.tabLayout}
+                  options={TERMINAL_TAB_LAYOUTS.map((layout) => ({
+                    value: layout,
+                    label: t(TAB_LAYOUT_LABEL[layout]),
+                  }))}
+                  onChange={(tabLayout) => patch({ terminal: { ...settings.terminal, tabLayout } })}
+                />
+              </div>
+
+              <div className="settings-row">
+                <span className="settings-label">{t("settings.terminalBell")}</span>
+                <Select
+                  label={t("settings.terminalBell")}
+                  placeholder="—"
+                  value={settings.terminal.bell}
+                  options={TERMINAL_BELLS.map((bell) => ({ value: bell, label: t(BELL_LABEL[bell]) }))}
+                  onChange={(bell) => patch({ terminal: { ...settings.terminal, bell } })}
+                />
+              </div>
+
+              <TerminalProfilesEditor
+                profiles={settings.terminal.profiles}
+                shells={shells}
+                onChange={(profiles) => patch({ terminal: { ...settings.terminal, profiles } })}
+              />
             </div>
           ) : null}
 

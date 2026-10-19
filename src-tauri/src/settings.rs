@@ -40,12 +40,79 @@ impl Default for EditorSettings {
     }
 }
 
+/// 运行工具窗口的偏好。
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RunSettings {
+    /// 给每行输出盖一个收到时刻的时间戳；本来就带时间的行不动。
+    pub timestamps: bool,
+}
+
+impl Default for RunSettings {
+    fn default() -> Self {
+        Self { timestamps: true }
+    }
+}
+
 /// 终端相关的偏好。
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TerminalSettings {
-    /// 起终端用的 shell 程序路径；空串表示用 `shell_probe` 排在第一的那个。
+    /// 起终端用的 shell：`shell_probe` 那条的 id（多数就是路径）；空串表示用排在第一的那个。
     pub shell: String,
+    /// 字号（px），和编辑器字号分开。
+    pub font_size: u32,
+    /// 字体；空串表示跟编辑器同一套等宽字体。
+    pub font_family: String,
+    /// 回滚行数。
+    pub scrollback: u32,
+    /// 光标：bar / block / underline。
+    pub cursor_style: String,
+    /// 页签排法：horizontal（标题行里）/ vertical（终端左侧一列）。
+    pub tab_layout: String,
+    /// 响铃：visual（闪一下、页签挂铃铛）/ sound（再响一声）/ none。
+    pub bell: String,
+    /// 用户自己配的启动方案。
+    pub profiles: Vec<TerminalProfile>,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            shell: String::new(),
+            font_size: 12,
+            font_family: String::new(),
+            scrollback: 10_000,
+            cursor_style: "bar".to_string(),
+            tab_layout: "horizontal".to_string(),
+            bell: "visual".to_string(),
+            profiles: Vec::new(),
+        }
+    }
+}
+
+/// 终端配置档：在某个 shell 上加参数、环境变量、起始目录和启动命令。
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TerminalProfile {
+    pub id: String,
+    pub name: String,
+    /// `ShellInfo.id`；空串表示默认 shell。
+    pub shell: String,
+    pub args: Vec<String>,
+    /// 按插入顺序存成键值对，界面上逐行编辑。
+    pub env: Vec<TerminalEnvVar>,
+    /// 起始目录；相对路径按工作区根解析，空串就是工作区根。
+    pub dir: String,
+    /// shell 起来后自动敲进去的命令。
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TerminalEnvVar {
+    pub key: String,
+    pub value: String,
 }
 
 /// 提交工具窗口的偏好，对应 IDEA 的 CommitView.GearActions 那两项。
@@ -199,6 +266,8 @@ pub struct Settings {
     pub notification_position: String,
     /// 应用内更新：自动下载与安装前是否询问。
     pub updates: UpdateSettings,
+    /// 运行工具窗口。
+    pub run: RunSettings,
 }
 
 impl Default for Settings {
@@ -217,6 +286,7 @@ impl Default for Settings {
             shell: ShellSettings::default(),
             notification_position: "bottom-right".to_string(),
             updates: UpdateSettings::default(),
+            run: RunSettings::default(),
         }
     }
 }

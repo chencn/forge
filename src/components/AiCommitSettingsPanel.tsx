@@ -227,7 +227,8 @@ export default function AiCommitSettingsPanel() {
   );
 
   return (
-    <div className="settings-rows" style={{ maxWidth: 840 }}>
+    <div className="settings-rows">
+      <div className="settings-rows-limit">
       {/* 全局开关 */}
       <div className="settings-row">
         <span className="settings-label">{t("aiCommit.enabled")}</span>
@@ -947,6 +948,7 @@ export default function AiCommitSettingsPanel() {
           </div>
         </div>
       ) : null}
+      </div>
     </div>
   );
 }

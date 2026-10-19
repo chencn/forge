@@ -785,6 +785,11 @@ export function applyMonacoTheme(dark: boolean): void {
   const selection = tokenColor("--selection-bg") || "#3b82f633";
   const lineHighlight = dark ? "#1a1a1a" : "#f3f4f6";
   const widgetBorder = tokenColor("--border-color") || "#e5e7eb";
+  // Lithe：查找条 surface，输入框 background，字是 foreground（浅色 #000）。
+  const surface = tokenColor("--sidebar-rail") || (dark ? "#26282c" : "#e9eaee");
+  const widgetForeground = tokenColor("--sidebar-fg") || (dark ? "#d1d3d9" : "#000000");
+  const subtle = tokenColor("--sidebar-subtle") || (dark ? "#8b8e94" : "#73767c");
+  const selected = tokenColor("--sidebar-selected") || (dark ? "#2a4371" : "#d0dffe");
   const island = tokenColor("--surface-island-strong") || (dark ? "#181818" : "#ffffff");
   const highlightBg = tokenColor("--accent-blue-bg");
   const highlightText = tokenColor("--accent-blue-text");
@@ -800,8 +805,17 @@ export function applyMonacoTheme(dark: boolean): void {
       "editorLineNumber.activeForeground": foreground,
       "editor.selectionBackground": selection,
       "editor.lineHighlightBackground": lineHighlight,
-      "editorWidget.background": background,
+      "editorWidget.background": surface,
+      "editorWidget.foreground": widgetForeground,
       "editorWidget.border": widgetBorder,
+      "input.background": background,
+      "input.foreground": widgetForeground,
+      "input.placeholderForeground": subtle,
+      "input.border": widgetBorder,
+      "editor.findMatchBackground": selection,
+      "editor.findMatchBorder": "#3871e1",
+      "editor.findMatchHighlightBackground": selected,
+      "editor.findMatchHighlightBorder": selected,
       "editorSuggestWidget.background": island,
       "editorSuggestWidget.border": widgetBorder,
       "editorSuggestWidget.selectedBackground": highlightBg,

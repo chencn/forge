@@ -1,5 +1,7 @@
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import { openExternal } from "./fs";
+import { parseTermFileLinks } from "./termFileLinks";
+import type { TermFileLink } from "./termFileLinks";
 
 /** 匹配行内常见 http/https 链接候选串 */
 const URL_PATTERN = /https?:\/\/[^\s<>"'{}|\\^`[\]]+/gi;
@@ -139,15 +141,17 @@ export function isHttpUrl(text: string): boolean {
 export interface TerminalUrlOptions {
   /** 自定义打开链接的处理函数，默认调用系统外部浏览器打开 */
   onOpenUrl?: (url: string) => void;
+  /** 点中文件路径时调用；不给就不认文件路径。 */
+  onOpenFile?: (link: TermFileLink) => void;
+  /** 相对路径按哪个目录解析：shell 报过当前目录就用它，否则用会话的起始目录。 */
+  fileBaseDir?: () => string | null;
 }
 
 /**
- * 为 xterm 实例装配 URL 链接识别与交互系统：
- * 1. 自动高亮识别行内的 URL 并在鼠标悬停时展示手型与下划线；
- * 2. 直接单击时在系统默认浏览器中打开该 URL；
- * 3. 鼠标划选、拖拽时禁止触发打开，保障用户选区完整；
- * 4. 选中文本后按 Ctrl+C (Windows/Linux) 或 Cmd+C (macOS) 自动复制选中文本到剪贴板，
- *    避免误发中断信号终止前台进程。
+ * 为 xterm 实例装配链接识别与交互系统：
+ * 1. 自动高亮识别行内的 URL 与文件路径，并在鼠标悬停时展示手型与下划线；
+ * 2. 直接单击时 URL 交给系统默认浏览器，文件路径交给 `onOpenFile`；
+ * 3. 鼠标划选、拖拽时禁止触发打开，保障用户选区完整。
  */
 export function attachTerminalUrls(
   term: Terminal,
@@ -156,6 +160,8 @@ export function attachTerminalUrls(
   const openUrl = options?.onOpenUrl ?? ((url: string) => {
     void openExternal(url).catch(() => {});
   });
+  const openFile = options?.onOpenFile;
+  const fileBaseDir = options?.fileBaseDir ?? (() => null);
 
   // 记录鼠标按下时的坐标，用于区分“纯点击”与“划选拖拽”
   let lastMouseDownX = 0;
@@ -178,6 +184,18 @@ export function attachTerminalUrls(
     element.addEventListener("mousedown", onMouseDown, true);
   }
 
+  /** 纯左键单击才算打开：有选区、或按下后拖开超过 4px，都是在划选。 */
+  const isPlainClick = (event: MouseEvent): boolean => {
+    if (event.button !== 0) return false;
+    if (term.hasSelection() && term.getSelection().length > 0) return false;
+    const selection = window.getSelection()?.toString() ?? "";
+    if (selection.trim().length > 0) return false;
+    const moved = Math.hypot(event.clientX - lastMouseDownX, event.clientY - lastMouseDownY);
+    return moved <= 4;
+  };
+
+  const decorations = { pointerCursor: true, underline: true };
+
   // 注册 xterm 链接提供器
   const linkProvider: ILinkProvider = {
     provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
@@ -190,82 +208,50 @@ export function attachTerminalUrls(
       }
 
       const { text, charToCol } = extractLineWithColMapping(line);
-      if (!text.includes("http://") && !text.includes("https://")) {
-        callback(undefined);
-        return;
+      const links: ILink[] = [];
+      const hasUrl = text.includes("http://") || text.includes("https://");
+      const foundUrls = hasUrl ? findUrlsInText(text, charToCol) : [];
+      for (const item of foundUrls) {
+        links.push({
+          text: item.url,
+          range: {
+            start: { x: item.startCol, y: bufferLineNumber },
+            end: { x: item.endCol, y: bufferLineNumber },
+          },
+          decorations,
+          activate(event: MouseEvent, url: string) {
+            if (isPlainClick(event)) openUrl(url);
+          },
+        });
       }
 
-      const foundUrls = findUrlsInText(text, charToCol);
-      if (foundUrls.length === 0) {
-        callback(undefined);
-        return;
+      if (openFile) {
+        for (const file of parseTermFileLinks(text, fileBaseDir())) {
+          const lastChar = file.endIndex - 1;
+          if (file.startIndex >= charToCol.length || lastChar >= charToCol.length) continue;
+          const startCol = charToCol[file.startIndex];
+          const endCol = charToCol[lastChar];
+          // 和网址重叠的不算：`https://x/a.ts` 里的那段已经是网址了。
+          if (foundUrls.some((url) => startCol <= url.endCol && endCol >= url.startCol)) continue;
+          links.push({
+            text: file.text,
+            range: {
+              start: { x: startCol, y: bufferLineNumber },
+              end: { x: endCol, y: bufferLineNumber },
+            },
+            decorations,
+            activate(event: MouseEvent) {
+              if (isPlainClick(event)) openFile(file);
+            },
+          });
+        }
       }
 
-      const links: ILink[] = foundUrls.map((item) => ({
-        text: item.url,
-        range: {
-          start: { x: item.startCol, y: bufferLineNumber },
-          end: { x: item.endCol, y: bufferLineNumber },
-        },
-        decorations: {
-          pointerCursor: true,
-          underline: true,
-        },
-        activate(event: MouseEvent, text: string) {
-          // 只允许鼠标左键点击打开
-          if (event.button !== 0) return;
-
-          // 若终端当前存在非空选区，说明用户正在进行选择操作，绝不触发打开
-          if (term.hasSelection() && term.getSelection().length > 0) {
-            return;
-          }
-
-          // 若页面有全局选区，同样视为选择操作
-          const selection = window.getSelection()?.toString() ?? "";
-          if (selection.trim().length > 0) {
-            return;
-          }
-
-          // 鼠标拖拽位移超过 4px 视为划选，不触发打开
-          const moved = Math.hypot(
-            event.clientX - lastMouseDownX,
-            event.clientY - lastMouseDownY
-          );
-          if (moved > 4) {
-            return;
-          }
-
-          // 纯单击：唤起默认浏览器打开链接
-          openUrl(text);
-        },
-      }));
-
-      callback(links);
+      callback(links.length > 0 ? links : undefined);
     },
   };
 
   const linkDisposable = term.registerLinkProvider(linkProvider);
-
-  // 选中文本时按 Ctrl+C / Cmd+C 自动复制选中文本
-  term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-    const isCopyKey =
-      (event.ctrlKey || event.metaKey) &&
-      !event.altKey &&
-      !event.shiftKey &&
-      event.key.toLowerCase() === "c";
-
-    if (isCopyKey && event.type === "keydown") {
-      if (term.hasSelection()) {
-        const text = term.getSelection();
-        if (text) {
-          void navigator.clipboard.writeText(text).catch(() => {});
-          // 拦截该按键事件，防止向 shell 发送 SIGINT 中断字符，并保留当前选区
-          return false;
-        }
-      }
-    }
-    return true;
-  });
 
   return {
     dispose: () => {

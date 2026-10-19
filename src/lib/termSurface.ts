@@ -42,15 +42,34 @@ export function termPark(): HTMLElement {
   return park;
 }
 
+export interface TermFindOptions {
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+}
+
+/** 当前匹配是第几个（从 1 起，0 表示没有当前项）、一共几个。 */
+export interface TermFindResults {
+  index: number;
+  count: number;
+}
+
 /** 面板能对一条已经建好的终端下的命令。实例本身留在宿主里。 */
 export interface TermControl {
   clear: () => void;
-  findNext: (query: string) => void;
-  findPrevious: (query: string) => void;
+  /** `incremental` 时从当前匹配原地重找，边打字边找用它，免得每敲一个字跳到下一个。 */
+  findNext: (query: string, options: TermFindOptions, incremental?: boolean) => void;
+  findPrevious: (query: string, options: TermFindOptions) => void;
+  /** 关掉查找：去掉全部高亮。 */
+  clearFind: () => void;
+  /** 订阅匹配计数；返回退订函数。 */
+  watchFind: (watch: (results: TermFindResults) => void) => () => void;
   focus: () => void;
   selection: () => string;
   hasSelection: () => boolean;
   paste: (text: string) => void;
+  /** 整段滚屏的纯文本，软换行接回成一行。 */
+  text: () => string;
 }
 
 const controls = new Map<TermSessionId, TermControl>();
@@ -64,4 +83,18 @@ export function registerTermControl(id: TermSessionId, control: TermControl): ()
 
 export function termControl(id: TermSessionId): TermControl | null {
   return controls.get(id) ?? null;
+}
+
+/** 页签栏上的放大镜和面板里的 Ctrl+F 是两个组件，靠这个通知面板打开查找框。 */
+const findRequests = new Set<() => void>();
+
+export function requestTermFind(): void {
+  for (const open of findRequests) open();
+}
+
+export function watchTermFindRequests(open: () => void): () => void {
+  findRequests.add(open);
+  return () => {
+    findRequests.delete(open);
+  };
 }

@@ -90,12 +90,14 @@ export default function RunConfigsPage({ configs }: RunConfigsPageProps) {
           title={t("run.sectionCustom")}
           items={configs.custom}
           picked={picked}
+          root={configs.workspace}
           onPick={setPicked}
         />
         <RunConfigGroup
           title={t("run.sectionDetected")}
           items={configs.detected}
           picked={picked}
+          root={configs.workspace}
           onPick={setPicked}
         />
       </nav>
@@ -219,11 +221,13 @@ function RunConfigGroup({
   title,
   items,
   picked,
+  root,
   onPick,
 }: {
   title: string;
   items: RunConfiguration[];
   picked: string;
+  root: string | null;
   onPick: (id: string) => void;
 }) {
   if (items.length === 0) return null;
@@ -238,7 +242,7 @@ function RunConfigGroup({
           title={config.command}
           onClick={() => onPick(config.id)}
         >
-          <RunConfigIcon config={config} root={configs.workspace} />
+          <RunConfigIcon config={config} root={root} />
           <span className="run-config-name">{config.name}</span>
         </button>
       ))}

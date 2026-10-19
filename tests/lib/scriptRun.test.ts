@@ -4,7 +4,8 @@ import type { ShellInfo } from "../../src/lib/term";
 
 // ShellInfo 只要 name 参与打分；type import 运行时擦除，不需要 mock term 模块。
 function shell(name: string): ShellInfo {
-  return { name, path: `C:\\shells\\${name}.exe`, args: [] } as ShellInfo;
+  const path = `C:\\shells\\${name}.exe`;
+  return { id: path, name, path, args: [] };
 }
 
 describe("scriptKindOf 按扩展名认脚本", () => {

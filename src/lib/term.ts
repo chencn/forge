@@ -20,12 +20,16 @@ export interface TermExit {
   code: number | null;
 }
 
-/** 后端扫出来的一个 shell：真实路径 + 界面上显示的名字。 */
+/** 后端扫出来的一个 shell。 */
 export interface ShellInfo {
-  /** 写回设置的值，也是起进程时真正执行的那条。 */
+  /** 写回设置、会话记着的值。多数就是路径；WSL 发行版共用 wsl.exe，写成 `wsl:<发行版>`。 */
+  id: string;
+  /** 起进程时真正执行的那条。 */
   path: string;
-  /** 界面上的名字，例如 PowerShell、Git Bash。 */
+  /** 界面上的名字，例如 PowerShell、Git Bash、WSL: Ubuntu。 */
   name: string;
+  /** 起进程时附带的参数。 */
+  args: string[];
 }
 
 /** 扫这台机器上装着的 shell；排在第一的就是没另行设置时起的那个。 */
@@ -34,13 +38,29 @@ export function shellProbe(): Promise<ShellInfo[]> {
 }
 
 /** 起一个终端；cwd 为 null 时落在后端进程的当前目录，shell 为空时用系统默认。 */
+/** 配置档带来的额外参数与环境变量；值为空串的变量会被摘掉。 */
+export interface TermLaunch {
+  args: string[];
+  env: Record<string, string>;
+}
+
 export function termOpen(
   cwd: string | null,
   shell: string,
   cols: number,
-  rows: number
+  rows: number,
+  launch?: TermLaunch
 ): Promise<TermSessionId> {
-  return invoke<TermSessionId>("term_open", { cwd, shell, cols, rows });
+  return invoke<TermSessionId>("term_open", { cwd, shell, cols, rows, launch: launch ?? null });
+}
+
+/** 各工作区根的页签布局，内容由 `termLayout.ts` 定义。读不到给空表。 */
+export function termLayoutLoad(): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("term_layout_load").catch(() => ({}));
+}
+
+export function termLayoutSave(layout: Record<string, unknown>): Promise<void> {
+  return invoke<void>("term_layout_save", { layout }).catch(() => {});
 }
 
 /** 键盘输入原样交给 PTY，行编辑由 shell 负责。 */
@@ -48,9 +68,29 @@ export function termWrite(id: TermSessionId, data: string): Promise<void> {
   return invoke<void>("term_write", { id, data });
 }
 
-/** 视口尺寸变了要同步给 PTY，否则 shell 的换行位置按旧列数算。 */
-export function termResize(id: TermSessionId, cols: number, rows: number): Promise<void> {
-  return invoke<void>("term_resize", { id, cols, rows });
+/** 不是 UTF-8 的输入（老式鼠标上报）按字节原样写进 PTY。 */
+export function termWriteBytes(id: TermSessionId, data: string): Promise<void> {
+  const bytes = Array.from(data, (char) => char.charCodeAt(0) & 0xff);
+  return invoke<void>("term_write_bytes", { id, data: bytes });
+}
+
+/** 画不过来时让后端停读，追上了再放开。 */
+export function termSetPaused(id: TermSessionId, paused: boolean): Promise<void> {
+  return invoke<void>("term_set_paused", { id, paused });
+}
+
+/**
+ * 视口尺寸变了要同步给 PTY，否则 shell 的换行位置按旧列数算。
+ * 像素尺寸给按像素排版的程序（图片协议、部分 TUI）用，不知道时传 0。
+ */
+export function termResize(
+  id: TermSessionId,
+  cols: number,
+  rows: number,
+  pixelWidth = 0,
+  pixelHeight = 0
+): Promise<void> {
+  return invoke<void>("term_resize", { id, cols, rows, pixelWidth, pixelHeight });
 }
 
 export function termClose(id: TermSessionId): Promise<void> {
@@ -169,6 +209,8 @@ export type NativeScrollBinding = {
   sync: () => void;
   /** 回到最底，并继续让新输出带着画面和滚动条走。 */
   follow: () => void;
+  /** 现在是否跟着尾部（新输出会带着画面走）。 */
+  following: () => boolean;
   /** 解绑滚动 / 滚轮监听与 xterm 订阅。 */
   dispose: () => void;
 };
@@ -196,12 +238,21 @@ export function mountNativeScrollPort(host: HTMLElement): NativeScrollPort {
 export function bindNativeScroll(
   host: HTMLElement,
   spacer: HTMLElement,
-  term: Terminal
+  term: Terminal,
+  /** 跟随状态变了就说一声：面板靠它决定要不要显示「跳到最新」。 */
+  onFollowChange?: (following: boolean) => void
 ): NativeScrollBinding {
   let applying = false;
   let queued: number | ReturnType<typeof setTimeout> = 0;
   /** 用户把滚动条离开底部之后，新输出不再改画面，也不改滚动条位置。 */
   let awayFromTail = false;
+
+  /** 改「是否离开尾部」只走这一处，顺带把变化报给面板。 */
+  const setAway = (value: boolean): void => {
+    if (awayFromTail === value) return;
+    awayFromTail = value;
+    onFollowChange?.(!value);
+  };
 
   const boxHeight = (el: HTMLElement | null): number => {
     if (!el) return 0;
@@ -253,7 +304,7 @@ export function bindNativeScroll(
     const lines = readBuffer();
     if (!lines) return;
     // 滚轮已经记了「离开底部」，但这一下其实没滚开（人还停在尾部）。继续跟随。
-    if (awayFromTail && atBottom()) awayFromTail = false;
+    if (awayFromTail && atBottom()) setAway(false);
     // 撑高会同步触发 scroll。这段里挡住，避免宿主还停在旧位置时把画面拉走。
     applying = true;
     try {
@@ -285,7 +336,7 @@ export function bindNativeScroll(
   };
 
   const follow = (): void => {
-    awayFromTail = false;
+    setAway(false);
     try {
       term.scrollToBottom();
     } catch {
@@ -301,7 +352,7 @@ export function bindNativeScroll(
     const lines = readBuffer();
     if (!lines) return;
     if (atBottom()) {
-      awayFromTail = false;
+      setAway(false);
       if (lines.viewportY >= lines.maxLine) return;
       applying = true;
       try {
@@ -312,7 +363,7 @@ export function bindNativeScroll(
       applying = false;
       return;
     }
-    awayFromTail = true;
+    setAway(true);
     const line = Math.min(lines.maxLine, Math.max(0, Math.round(host.scrollTop / cell)));
     if (Math.abs(line - lines.viewportY) <= 1) return;
     applying = true;
@@ -336,7 +387,7 @@ export function bindNativeScroll(
     if (passThrough) return;
     // 往上翻要在滚动事件之前记下来。输出回调若先跑，不能把视口拽回底部。
     // 已经在最上面时再往上滑不会动滚动条，不能因此停掉跟随。
-    if (event.deltaY < 0 && host.scrollTop > 1) awayFromTail = true;
+    if (event.deltaY < 0 && host.scrollTop > 1) setAway(true);
     // 不 preventDefault：浏览器才能对这条宿主原生滚动条做平滑惯性滑动。
     // stopImmediatePropagation 阻止 xterm 内部截获并吞噬滚轮。
     event.stopImmediatePropagation();
@@ -350,6 +401,7 @@ export function bindNativeScroll(
   return {
     sync,
     follow,
+    following: () => !awayFromTail,
     dispose() {
       if (queued) {
         if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(queued as number);

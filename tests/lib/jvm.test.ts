@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { collapsePackageDirs, isPackageSegment, isUnderJvmSourceRoot } from "../../src/lib/jvm";
+import {
+  collapsePackageDirs,
+  isPackageSegment,
+  isUnderJvmSourceRoot,
+  jvmSourceRootLanguage,
+  resourcesRootKind,
+} from "../../src/lib/jvm";
 
 describe("isPackageSegment 合法包名段", () => {
   it("标识符规则：字母/下划线/$ 开头", () => {
@@ -26,6 +32,20 @@ describe("isUnderJvmSourceRoot 源码根识别", () => {
 
   it("源码根本身不算 under（它是包链的硬边界）", () => {
     expect(isUnderJvmSourceRoot("D:/proj/src/main/java")).toBe(false);
+  });
+
+  it("源码根返回语言名，包目录和普通同名文件夹不算", () => {
+    expect(jvmSourceRootLanguage("D:/proj/src/main/java")).toBe("java");
+    expect(jvmSourceRootLanguage("D:\\proj\\src\\test\\kotlin")).toBe("kotlin");
+    expect(jvmSourceRootLanguage("D:/proj/src/main/java/com")).toBe(null);
+    expect(jvmSourceRootLanguage("D:/proj/notes/java")).toBe(null);
+  });
+
+  it("资源根只认 src/main/resources 与 src/test/resources 这一层", () => {
+    expect(resourcesRootKind("D:/proj/src/main/resources")).toBe("main");
+    expect(resourcesRootKind("D:\\mod\\src\\test\\resources")).toBe("test");
+    expect(resourcesRootKind("D:/proj/src/main/resources/mapper")).toBe(null);
+    expect(resourcesRootKind("D:/proj/notes/resources")).toBe(null);
   });
 
   it("非 JVM 布局与未知语言不认", () => {

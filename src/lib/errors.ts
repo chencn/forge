@@ -85,6 +85,8 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   TERM_OPEN: (p, t) => t("error.termOpen", { detail: p[0] ?? "" }),
   TERM_GONE: (_p, t) => t("error.termGone"),
   TERM_IO: (p, t) => t("error.termIo", { detail: p[0] ?? "" }),
+  TERM_LONG_INPUT: (p, t) => t("error.termLongInput", { limit: p[0] ?? "" }),
+  TERM_LONG_INPUT_ENCODING: (_p, t) => t("error.termLongInputEncoding"),
   CONFIG_DIR: (p, t) => t("error.configDir", { detail: p[0] ?? "" }),
   BAD_JSON: (p, t) => t("error.badJson", { path: p[0] ?? "", detail: p[1] ?? "" }),
   LSP_NOT_FOUND: (p, t) => t("error.lspNotFound", { program: p[0] ?? "" }),

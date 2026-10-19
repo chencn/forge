@@ -545,6 +545,7 @@ function GitPanel({
             </span>
             <EntryIcon
               name={row.node.name}
+              path={row.node.path}
               isDirectory
               isPackage={isUnderJvmSourceRoot(row.node.path)}
               size={13}

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Code2, Columns2, Eye } from "lucide-react";
+import { Code2, Columns2, Eye, Search } from "lucide-react";
 import CodeEditor, { type CodeEditorHandle } from "./CodeEditor";
 import ImagePreview from "./ImagePreview";
 import PaneNotice from "./PaneNotice";
@@ -359,6 +359,17 @@ export default function DocPane({
           >
             <Eye size={15} aria-hidden="true" />
           </button>
+          {showPreview && doc.kind === "markdown" ? (
+            <button
+              type="button"
+              className="doc-view-button"
+              onClick={() => previewHandleRef.current?.openFind()}
+              title={`${t("preview.find")} (Ctrl+F)`}
+              aria-label={t("preview.find")}
+            >
+              <Search size={15} aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

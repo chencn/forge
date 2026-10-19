@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { MoreVertical, Square, X } from "lucide-react";
+import { MoreVertical, Search, Square, X } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
 import { RerunIcon, ScrollToEndIcon } from "./RunIcons";
@@ -116,6 +116,15 @@ export function RunPaneToolbar({ run }: { run: RunController }) {
         onClick={() => window.dispatchEvent(new Event("forge:run-scroll-end"))}
       >
         <ScrollToEndIcon size={14} />
+      </button>
+      <button
+        type="button"
+        className="icon-button is-inline"
+        disabled={!run.activeId}
+        title={`${t("terminal.find")} (Ctrl+F)`}
+        onClick={() => window.dispatchEvent(new Event("forge:run-find"))}
+      >
+        <Search size={14} />
       </button>
       <button
         type="button"

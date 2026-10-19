@@ -1367,7 +1367,7 @@ export default function App() {
       // 脚本真正的工作目录由命令里的 cd 落地。
       const dir = parentPath(path) ?? workspaceRoot ?? "";
       void runInTerminal(
-        shell.path,
+        shell.id,
         workspaceRoot,
         buildScriptCommand(kind, path, dir),
         // 会话进表之后再把它弄到眼前：否则面板先挂载，needTermSession 找不到会话会另开一条空的。
@@ -3497,11 +3497,21 @@ export default function App() {
     setActiveTab("run-configs");
   }, []);
 
-  const paneBody = (key: BottomPane) =>
+  const terminalPlacement = (docked: boolean) => ({
+    docked,
+    toggle: () => (docked ? tabPane("terminal") : dockPane("terminal")),
+  });
+
+  const paneBody = (key: BottomPane, docked: boolean) =>
     key === "terminal" ? (
-      <TerminalPane ref={terminalApi} cwd={workspaceRoot} dark={resolved === "dark"} />
+      <TerminalPane
+        ref={terminalApi}
+        cwd={workspaceRoot}
+        dark={resolved === "dark"}
+        placement={terminalPlacement(docked)}
+      />
     ) : key === "run" ? (
-      <RunPane run={run} dark={resolved === "dark"} />
+      <RunPane run={run} dark={resolved === "dark"} onOpenFile={terminalOpenFile} />
     ) : key === "find" ? (
       <FindPane
         query={find.query}
@@ -3555,7 +3565,9 @@ export default function App() {
         {/* 运行面板照 IDEA：会话页签跟在标题同一行，动作另起第二行。 */}
         {key === "run" ? <RunSessionTabs run={run} /> : null}
         {/* 终端同理：页签 + `+` + `⌄` 都在标题行里。 */}
-        {key === "terminal" ? <TerminalTabs cwd={workspaceRoot} /> : null}
+        {key === "terminal" ? (
+          <TerminalTabs cwd={workspaceRoot} placement={terminalPlacement(docked)} />
+        ) : null}
         {key === "notifications" ? (
           <>
             <button
@@ -3619,7 +3631,7 @@ export default function App() {
       {key === "run" ? <RunPaneToolbar run={run} /> : null}
       <div className="bottom-body">
         <ErrorBoundary label={t(BOTTOM_LABEL[key])} onError={reportError}>
-          <Suspense fallback={null}>{paneBody(key)}</Suspense>
+          <Suspense fallback={null}>{paneBody(key, docked)}</Suspense>
         </ErrorBoundary>
       </div>
     </section>
@@ -3869,6 +3881,12 @@ export default function App() {
     setActiveTab(`doc|${path}`);
     void docs.open(path);
   });
+  /** 终端里点中的文件路径：带行号就跳过去，和搜索命中同一条路。 */
+  const terminalOpenFile = useStable((path: string, line?: number, column?: number) => {
+    setActiveTab(`doc|${path}`);
+    const opened = line ? docs.openHit(path, line, column) : docs.open(path);
+    void opened.catch((cause: unknown) => reportError(errorText(cause)));
+  });
   const panelOpenSource = useStable((change: GitChange) => {
     const absolute = git.absoluteOf(change.path);
     setActiveTab(`doc|${absolute}`);
@@ -4066,12 +4084,8 @@ export default function App() {
               style={{ width: sidebarWidth }}
             >
               <header className="tool-window-head">
-                <span className="tool-window-title" title={workspaceRoot ?? undefined}>
-                  {panel === "explorer"
-                    ? workspaceRoot
-                      ? basenameOf(workspaceRoot).toUpperCase()
-                      : t("panel.explorer")
-                    : t("panel.commit")}
+                <span className="tool-window-title">
+                  {panel === "explorer" ? t("panel.project") : t("panel.commit")}
                 </span>
                 <span className="status-spacer" />
                 {panel === "explorer" && workspaceRoot ? (
@@ -4082,7 +4096,7 @@ export default function App() {
                       onClick={() => setDialog({ kind: "newFile", name: "untitled.txt", dir: workspaceRoot, entry: null })}
                       title={t("action.newFile")}
                     >
-                      <FilePlus size={15} />
+                      <FilePlus size={16} />
                     </button>
                     <button
                       type="button"
@@ -4097,7 +4111,7 @@ export default function App() {
                       }
                       title={t("action.newFolder")}
                     >
-                      <FolderPlus size={15} />
+                      <FolderPlus size={16} />
                     </button>
                     <button
                       type="button"
@@ -4105,7 +4119,7 @@ export default function App() {
                       onClick={() => setCollapseSignal((signal) => signal + 1)}
                       title={t("tool.collapseAll")}
                     >
-                      <ListTree size={15} />
+                      <ListTree size={16} />
                     </button>
                     <button
                       type="button"
@@ -4116,7 +4130,7 @@ export default function App() {
                       }}
                       title={t("tool.refresh")}
                     >
-                      <RefreshCw size={15} />
+                      <RefreshCw size={16} />
                     </button>
                     <button
                       type="button"
@@ -4127,7 +4141,7 @@ export default function App() {
                       }}
                       title={t("menu.locateInSidebar")}
                     >
-                      <LocateFixed size={15} />
+                      <LocateFixed size={16} />
                     </button>
                   </>
                 ) : null}
@@ -4191,7 +4205,7 @@ export default function App() {
                       aria-haspopup="menu"
                       title={t("git.commitOptions")}
                     >
-                      <Settings size={15} />
+                      <Settings size={16} />
                     </button>
                   </>
                 ) : null}
@@ -4202,7 +4216,7 @@ export default function App() {
                   onClick={() => setSidebarOpen(false)}
                   title={t("tool.closePanel")}
                 >
-                  <PanelLeftClose size={15} />
+                  <PanelLeftClose size={16} />
                 </button>
               </header>
 
@@ -4514,22 +4528,6 @@ export default function App() {
       </div>
 
       <footer className="global-status">
-        {(git.status?.changes.length ?? 0) > 0 ? (
-          /* IDEA 左端那条是可点的检查消息，这里对应到「还有改动没提交」。 */
-          <button
-            type="button"
-            className="status-note"
-            onClick={() => {
-              setPanel("git");
-              setSidebarOpen(true);
-              setCommitFocus((value) => value + 1);
-            }}
-            title={t("status.openCommit")}
-          >
-            <GitCommit size={12} aria-hidden="true" />
-            {t("status.changes", { count: git.status?.changes.length ?? 0 })}
-          </button>
-        ) : null}
         {deleteStatus ? (
           <span
             className={`status-note is-delete-status is-${deleteStatus.phase}`}
@@ -4603,6 +4601,21 @@ export default function App() {
           }
         />
         <MemoryGauge />
+        {(git.status?.changes.length ?? 0) > 0 ? (
+          <button
+            type="button"
+            className="status-note"
+            onClick={() => {
+              setPanel("git");
+              setSidebarOpen(true);
+              setCommitFocus((value) => value + 1);
+            }}
+            title={t("status.openCommit")}
+          >
+            <GitCommit size={12} aria-hidden="true" />
+            {t("status.changes", { count: git.status?.changes.length ?? 0 })}
+          </button>
+        ) : null}
         <MavenStatus
           workspace={workspaceRoot}
           onWillOpen={() => {
@@ -4656,7 +4669,11 @@ export default function App() {
       places.terminal !== "hidden" ||
       activePane === "terminal" ? (
         <Suspense fallback={null}>
-          <TerminalHost dark={resolved === "dark"} cwd={workspaceRoot} />
+          <TerminalHost
+            dark={resolved === "dark"}
+            cwd={workspaceRoot}
+            onOpenFile={terminalOpenFile}
+          />
         </Suspense>
       ) : null}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}

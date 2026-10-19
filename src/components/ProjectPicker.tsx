@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
-import { ChevronDown, FolderOpen, LogOut, PanelTop, X } from "lucide-react";
+import { ChevronDown, FolderOpen, LogOut, X } from "lucide-react";
 import Popover from "./Popover";
+import ProjectAvatar from "./ProjectAvatar";
 import { basenameOf, samePath } from "../lib/format";
 import type { WorkspaceMode } from "../lib/settings";
 import { useI18n } from "../i18n";
@@ -81,7 +82,11 @@ export default function ProjectPicker({
           setAnchor((current) => (current ? null : chipRef.current));
         }}
       >
-        <PanelTop size={14} aria-hidden="true" />
+        {name && root ? (
+          <ProjectAvatar name={name} path={root} anchorGradient />
+        ) : (
+          <FolderOpen size={16} aria-hidden="true" />
+        )}
         <span className="toolbar-chip-label">{name ?? t("workspace.openFolder")}</span>
         {showCountBadge ? <span className="ws-count">{openFolders.length}</span> : null}
         {pickable ? <ChevronDown size={13} aria-hidden="true" /> : null}
@@ -116,7 +121,7 @@ export default function ProjectPicker({
                       }
                     }}
                   >
-                    <FolderOpen size={14} aria-hidden="true" />
+                    <ProjectAvatar name={folderName} path={item.path} size={20} />
                     <span className="popover-item-label">{folderName}</span>
                     {item.running ? (
                       <span
@@ -181,7 +186,7 @@ export default function ProjectPicker({
                     }
                   }}
                 >
-                  <FolderOpen size={14} aria-hidden="true" />
+                  <ProjectAvatar name={folderName} path={path} size={20} />
                   <span className="popover-item-label">{folderName}</span>
                   <button
                     type="button"

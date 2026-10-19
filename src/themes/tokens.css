@@ -69,8 +69,8 @@
   --idea-notification-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.06);
   --focus-ring: rgba(17, 24, 39, 0.06);
   --scrollbar-thumb: rgba(148, 163, 184, 0.58);
-  --scrollbar-thumb-hover: rgba(100, 116, 139, 0.78);
-  --scrollbar-thumb-active: rgba(71, 85, 105, 0.9);
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.72);
+  --scrollbar-thumb-active: rgba(100, 116, 139, 0.58);
   --selection-bg: rgba(59, 130, 246, 0.2);
   --on-solid: #ffffff;
   --radius-sm: 6px;
@@ -80,11 +80,22 @@
   --radius-pill: 999px;
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 0px;
-  --header-height: 40px;
+  --header-height: 2.5rem;
   --footer-height: 24px;
   --island-radius: 10px;
   --workbench-gap: 6px;
-  --rail-width: 44px;
+  --rail-width: 38px;
+  /* Lithe Light 项目侧栏：surface 活动条、accent 悬停、selected 选中、stripe 蓝。 */
+  --sidebar-rail: #e9eaee;
+  --sidebar-fg: #000000;
+  --sidebar-subtle: #73767c;
+  --sidebar-hover: #e7e8ec;
+  --sidebar-selected: #d0dffe;
+  --sidebar-selected-idle: #dddfe4;
+  --sidebar-chevron: #818594;
+  --sidebar-border: #dddfe4;
+  --sidebar-stripe: #3871e1;
+  --sidebar-stripe-fg: #ffffff;
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;
@@ -189,5 +200,15 @@
   --maven-control-border: #40434a;
   --maven-checkbox-border: #5f6269;
   --maven-checkbox-bg: #191a1c;
+  --sidebar-rail: #26282c;
+  --sidebar-fg: #d1d3d9;
+  --sidebar-subtle: #8b8e94;
+  --sidebar-hover: #33353b;
+  --sidebar-selected: #2a4371;
+  --sidebar-selected-idle: #33353b;
+  --sidebar-chevron: #b4b8bf;
+  --sidebar-border: #33353b;
+  --sidebar-stripe: #3871e1;
+  --sidebar-stripe-fg: #ffffff;
   --on-solid: #0a0a0a;
 }

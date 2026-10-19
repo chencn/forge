@@ -18,6 +18,8 @@ mod shell_open;
 mod shell_sparse;
 mod sys;
 mod term;
+mod term_layout;
+mod term_long_input;
 mod tray;
 mod update;
 mod watch;
@@ -128,10 +130,14 @@ pub fn run() {
             term::term_open,
             term::shell_probe,
             term::term_write,
+            term::term_write_bytes,
+            term::term_set_paused,
             term::term_resize,
             term::term_close,
             term::term_reap,
             term::term_windows_build,
+            term_layout::term_layout_load,
+            term_layout::term_layout_save,
             proc::proc_start,
             proc::proc_kill,
             run::dep_sync::dep_sync_probe,
@@ -194,12 +200,14 @@ pub fn run() {
     });
 }
 
-/// 关掉 WebView2 自带的右键菜单（返回 / 刷新 / 另存为 / 打印 / 检查）。
+/// 关掉 WebView2 自带的浏览器界面：右键菜单，以及 Ctrl+F 那条页面查找。
 ///
 /// 前端在 `App.tsx` 里也拦了 `contextmenu`，但那道拦在页面 JS 里：页面一旦挂了
 /// （白屏），监听器随之消失，原生菜单就冒出来了——而这恰恰是最不该看见它的时候。
-/// 所以从 WebView2 设置上关掉，不依赖页面存活。设置挂在 `ICoreWebView2Settings` 上，
-/// 要在 webview 线程里拿 controller 改。
+/// Ctrl+F 同理：浏览器查找在快捷键到达页面前就画出来，`preventDefault` 拦不住。
+/// `AreBrowserAcceleratorKeysEnabled` 是 WebView2 给这类快捷键的总开关，关掉之后
+/// Ctrl+F / F3、刷新、打印、缩放不再由浏览器吃掉，按键交给页面自己的查找。
+/// 设置挂在 `ICoreWebView2Settings` 上，要在 webview 线程里拿 controller 改。
 ///
 /// 失败不当回事：拿不到 controller 只说明这条优化没生效，界面照常可用。
 #[cfg(windows)]
@@ -227,6 +235,8 @@ fn disable_default_context_menu(app: &tauri::AppHandle) {
             };
             if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
                 let _ = settings3.SetAreDefaultContextMenusEnabled(false);
+                // 浏览器查找、刷新、打印、缩放。复制粘贴这类编辑键不在这张表里。
+                let _ = settings3.SetAreBrowserAcceleratorKeysEnabled(false);
             }
         }
     });

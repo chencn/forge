@@ -9,8 +9,12 @@ import type { GitChange } from "../lib/git";
 import { changeMark, folderMarks, ignoredRoots, markClass } from "../lib/git";
 import { invalidateIgnored, loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
 import { isPackageSegment, isUnderJvmSourceRoot } from "../lib/jvm";
-import { pathWithin, samePath } from "../lib/format";
+import { basenameOf, pathWithin, samePath } from "../lib/format";
 import EntryIcon from "./EntryIcon";
+
+/** Lithe 文件树：基础缩进 10，每层 16。 */
+const TREE_BASE_INDENT = 10;
+const TREE_INDENT = 16;
 
 interface ExplorerTreeProps {
   /** 工作区根目录，树的顶层。 */
@@ -299,7 +303,7 @@ function ExplorerTree({
   /** 每个工作区根各自记住自己展开了哪些目录，切根回来时恢复原状。 */
   const expandedByRootRef = useRef<Map<string, Set<string>>>(new Map());
   const [expanded, setExpandedState] = useState<Set<string>>(
-    () => expandedByRootRef.current.get(pathKey(root)) ?? new Set()
+    () => expandedByRootRef.current.get(pathKey(root)) ?? new Set([root])
   );
   const setExpanded = useCallback(
     (updater: Set<string> | ((current: Set<string>) => Set<string>)) => {
@@ -320,7 +324,7 @@ function ExplorerTree({
   // 切换工作区根时恢复该根已有的展开集，并清除上一项目遗留的顶层错误提示。
   useEffect(() => {
     setError(null);
-    setExpandedState(expandedByRootRef.current.get(pathKey(root)) ?? new Set());
+    setExpandedState(expandedByRootRef.current.get(pathKey(root)) ?? new Set([root]));
   }, [root]);
 
   /**
@@ -396,7 +400,19 @@ function ExplorerTree({
     return { displayName: name, deepest };
   };
 
-  const rows: Row[] = [];
+  const rootName = basenameOf(root);
+  const rootEntry: FsEntry = {
+    name: rootName,
+    path: root,
+    kind: "directory",
+    extension: null,
+    size: 0,
+    modifiedMs: 0,
+    isSymlink: false,
+    isHidden: false,
+    isReadonly: false,
+  };
+  const rows: Row[] = [{ entry: rootEntry, displayName: rootName, deepest: root, depth: 0 }];
   const walk = (path: string, depth: number) => {
     for (const entry of children.get(path) ?? []) {
       // 过滤掉的目录连整棵子树一起藏，不然会看见孤零零的子项。
@@ -412,7 +428,7 @@ function ExplorerTree({
       }
     }
   };
-  walk(root, 0);
+  if (expanded.has(root)) walk(root, 1);
 
   /**
    * 预读包链：可见目录若在源码根之下，沿单子目录链逐层读下去，直到分叉或读到文件。
@@ -566,7 +582,12 @@ function ExplorerTree({
       className="tree"
       ref={treeRef}
       role="tree"
+      tabIndex={0}
       aria-label="Explorer"
+      onMouseDown={(event) => {
+        if (event.target instanceof Element && event.target.closest("input, textarea")) return;
+        event.currentTarget.focus({ preventScroll: true });
+      }}
       onContextMenu={(event) => {
         // 落在任何一行上都不管，那一行自己的处理器会带着选中集来。
         // 判据用 closest 而不是「是不是这个容器本身」：行外面还套着 role=none 的包装层，
@@ -604,10 +625,11 @@ function ExplorerTree({
                 entry.isHidden ? "is-hidden-item" : "",
                 ignored && !excludedDir ? "is-ignored-item" : "",
                 excludedDir ? "is-excluded-dir" : "",
+                samePath(entry.path, root) ? "is-root" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
-              style={{ paddingLeft: 6 + depth * 13 }}
+              style={{ paddingLeft: TREE_BASE_INDENT + depth * TREE_INDENT }}
               onClick={(event) => {
                 const selection = pick(entry, event);
                 // 目录用链末路径做展开键，包链整体当作一个可展开节点。
@@ -626,16 +648,16 @@ function ExplorerTree({
             >
               {isDirectory ? (
                 open ? (
-                  <ChevronDown size={13} className="tree-chevron" aria-hidden="true" />
+                  <ChevronDown size={16} className="tree-chevron" aria-hidden="true" />
                 ) : (
-                  <ChevronRight size={13} className="tree-chevron" aria-hidden="true" />
+                  <ChevronRight size={16} className="tree-chevron" aria-hidden="true" />
                 )
               ) : (
                 <span className="tree-chevron" />
               )}
               <EntryIcon
                 name={displayName}
-                path={isDirectory ? undefined : entry.path}
+                path={entry.path}
                 byteSize={entry.size}
                 isDirectory={isDirectory}
                 isPackage={isPackage}
@@ -652,7 +674,7 @@ function ExplorerTree({
               ) : null}
             </div>
             {isDirectory && open && failed.has(entry.path) ? (
-              <p className="tree-error" style={{ paddingLeft: 24 + depth * 13 }}>
+              <p className="tree-error" style={{ paddingLeft: TREE_BASE_INDENT + 16 + depth * TREE_INDENT }}>
                 {describeError(failed.get(entry.path) ?? "", t)}
               </p>
             ) : null}
