@@ -96,8 +96,13 @@ interface GitPanelProps {
   onOpenResolve: () => void;
   /** 仓库根那一行显示的名字。 */
   repoName: string;
-  /** 文件行菜单里那几项要动编辑器 / 对话框 / 日志的，落给 App。 */
-  onFileAction: (action: CommitFileAction, change: GitChange, staged: boolean) => void;
+  /** 文件与目录菜单里需要动编辑器、对话框或日志的动作，落给 App。 */
+  onFileAction: (
+    action: CommitFileAction,
+    path: string,
+    staged: boolean,
+    isDirectory?: boolean
+  ) => void;
   /** 已忽略那一行的「从忽略列表移除」：动的是盖住它的那条规则，落给 App。 */
   onUnignore: (relative: string) => void;
   /** 修正那一节里的文件：点开看的是那次提交里这一份的差异，不是工作区比对。 */
@@ -390,6 +395,9 @@ function GitPanel({
   const toggleGroup = (key: string) => setCollapsedGroups((current) => flip(current, key));
 
   const absolute = (relative: string) => git.absoluteOf(relative);
+  /** 未跟踪和冲突文件没有可安全恢复的索引版本，不参与文件夹回滚。 */
+  const hasRollbackable = (changes: GitChange[]) =>
+    changes.some((change) => !change.untracked && !change.conflicted);
 
   const openMenu = (event: ReactMouseEvent, items: MenuItem[]) => {
     event.preventDefault();
@@ -405,6 +413,9 @@ function GitPanel({
       const pathsAbsolute = paths.map(absolute);
       void (isStaged ? git.unstage(pathsAbsolute) : git.stage(pathsAbsolute));
     };
+    /** 回滚只适用于未暂存的已跟踪文件；未跟踪文件没有索引版本可恢复。 */
+    const canRollback = (targets: GitChange[]) => !isStaged && hasRollbackable(targets);
+    const rollback = (relative: string) => void git.restoreFile("", absolute(relative));
     const copyPath = (relative: string) => () => void navigator.clipboard.writeText(absolute(relative));
     /**
      * IDEA 的暂存树菜单（组 Git.Stage.Tree.Menu）。哪几项出现看这一行是什么状态：
@@ -448,29 +459,105 @@ function GitPanel({
                 label: t("git.rollback"),
                 icon: Undo2,
                 // 回滚未暂存的修改到暂存区索引，空 revision 表示恢复至 index
-                onSelect: () => void git.restoreFile("", absolute(change.path)),
+                onSelect: () => rollback(change.path),
               },
             ]),
         ...(change.untracked
-          ? [{ label: t("menu.delete"), icon: Trash2, onSelect: () => onFileAction("delete", change, isStaged) }]
+          ? [{ label: t("menu.delete"), icon: Trash2, onSelect: () => onFileAction("delete", change.path, isStaged) }]
           : [{ label: t("git.removeVcs"), icon: Minus, disabled: true }]),
-        { label: t("git.ignoreFile"), icon: CircleSlash, onSelect: () => onFileAction("ignore", change, isStaged) },
+        { label: t("git.ignoreFile"), icon: CircleSlash, onSelect: () => onFileAction("ignore", change.path, isStaged) },
       ],
       [
         { label: t("log.diffShow"), icon: FileDiff, onSelect: () => onOpenChange(change, isStaged, changes) },
         { label: t("git.standaloneDiff"), icon: FileDiff, disabled: true },
         { label: t("git.threeSideDiff"), icon: FileDiff, disabled: true },
-        { label: t("log.editSource"), icon: Pencil, onSelect: () => onFileAction("editSource", change, isStaged) },
-        { label: t("log.createPatch"), icon: SquarePlus, onSelect: () => onFileAction("patch", change, isStaged) },
+        { label: t("log.editSource"), icon: Pencil, onSelect: () => onFileAction("editSource", change.path, isStaged) },
+        { label: t("log.createPatch"), icon: SquarePlus, onSelect: () => onFileAction("patch", change.path, isStaged) },
         {
           label: t("git.patchToClipboard"),
           icon: ClipboardCopy,
-          onSelect: () => onFileAction("patchClipboard", change, isStaged),
+          onSelect: () => onFileAction("patchClipboard", change.path, isStaged),
         },
-        { label: t("menu.copyPath"), onSelect: copyPath(change.path) },
+        { label: t("menu.copyPath"), icon: ClipboardCopy, onSelect: copyPath(change.path) },
       ],
-      [{ label: t("git.history"), icon: History, onSelect: () => onFileAction("history", change, isStaged) }],
+      [{ label: t("git.history"), icon: History, onSelect: () => onFileAction("history", change.path, isStaged) }],
     ];
+
+    /**
+     * 文件夹菜单与文件菜单保持同一组序，只排除“编辑源文件”这类目录没有定义的动作。
+     * 显示差异把目录下的变更作为一组打开；删除只在整棵子树均未跟踪时出现，避免误删已跟踪文件。
+     */
+    const directoryMenu = (node: DirNode): MenuItem[] => {
+      const descendants = filesUnder(node);
+      const first = descendants[0];
+      const hasUntracked = descendants.some((change) => change.untracked);
+      const allUntracked = descendants.every((change) => change.untracked);
+      return flatMenu([
+        [
+          {
+            label: stageLabel,
+            icon: isStaged ? Minus : Plus,
+            onSelect: () => move(descendants.map((change) => change.path)),
+          },
+          ...(!isStaged && hasUntracked
+            ? [{ label: t("git.stageNoContent"), icon: Plus, disabled: true }]
+            : []),
+          { label: t("git.stashFiles"), icon: Archive, disabled: true },
+          ...(canRollback(descendants)
+            ? [
+                {
+                  label: t("git.rollback"),
+                  icon: Undo2,
+                  // 目录 pathspec 会一次恢复其下全部已跟踪文件，并保留未跟踪文件。
+                  onSelect: () => rollback(node.path),
+                },
+              ]
+            : []),
+          ...(allUntracked
+            ? [
+                {
+                  label: t("menu.delete"),
+                  icon: Trash2,
+                  onSelect: () => onFileAction("delete", node.path, isStaged, true),
+                },
+              ]
+            : [{ label: t("git.removeVcs"), icon: Minus, disabled: true }]),
+          {
+            label: t("git.ignoreDirectory"),
+            icon: CircleSlash,
+            onSelect: () => onFileAction("ignore", node.path, isStaged, true),
+          },
+        ],
+        [
+          {
+            label: t("log.diffShow"),
+            icon: FileDiff,
+            disabled: !first,
+            onSelect: first ? () => onOpenChange(first, isStaged, descendants) : undefined,
+          },
+          { label: t("git.standaloneDiff"), icon: FileDiff, disabled: true },
+          { label: t("git.threeSideDiff"), icon: FileDiff, disabled: true },
+          {
+            label: t("log.createPatch"),
+            icon: SquarePlus,
+            onSelect: () => onFileAction("patch", node.path, isStaged, true),
+          },
+          {
+            label: t("git.patchToClipboard"),
+            icon: ClipboardCopy,
+            onSelect: () => onFileAction("patchClipboard", node.path, isStaged, true),
+          },
+          { label: t("menu.copyPath"), icon: ClipboardCopy, onSelect: copyPath(node.path) },
+        ],
+        [
+          {
+            label: t("git.history"),
+            icon: History,
+            onSelect: () => onFileAction("history", node.path, isStaged, true),
+          },
+        ],
+      ]);
+    };
 
     if (!groupByDir) {
       return changes.map((change) => (
@@ -522,15 +609,7 @@ function GitPanel({
         <div
           key={row.key}
           className="change-row"
-          onContextMenu={(event) =>
-            openMenu(event, [
-              {
-                label: stageLabel,
-                onSelect: () => move(filesUnder(row.node).map((change) => change.path)),
-              },
-              { label: t("menu.copyPath"), onSelect: copyPath(row.node.path) },
-            ])
-          }
+          onContextMenu={(event) => openMenu(event, directoryMenu(row.node))}
         >
           <button
             type="button"
@@ -778,20 +857,67 @@ function GitPanel({
               <div
                 className="change-row is-module"
                 onContextMenu={(event) =>
-                  openMenu(event, [
-                    {
-                      label: isStaged ? t("git.unstage") : t("git.stage"),
-                      onSelect: () =>
-                        void (isStaged
-                          ? git.unstage(changes.map((change) => absolute(change.path)))
-                          : git.stage(changes.map((change) => absolute(change.path)))),
-                    },
-                    {
-                      label: t("menu.copyPath"),
-                      onSelect: () =>
-                        void navigator.clipboard.writeText(git.root ?? workspaceRoot ?? ""),
-                    },
-                  ])
+                  openMenu(
+                    event,
+                    flatMenu([
+                      [
+                        {
+                          label: isStaged ? t("git.unstage") : t("git.stage"),
+                          icon: isStaged ? Minus : Plus,
+                          onSelect: () =>
+                            void (isStaged
+                              ? git.unstage(changes.map((change) => absolute(change.path)))
+                              : git.stage(changes.map((change) => absolute(change.path)))),
+                        },
+                        ...(!isStaged && changes.some((change) => change.untracked)
+                          ? [{ label: t("git.stageNoContent"), icon: Plus, disabled: true }]
+                          : []),
+                        { label: t("git.stashFiles"), icon: Archive, disabled: true },
+                        ...(!isStaged && hasRollbackable(changes)
+                          ? [
+                              {
+                                label: t("git.rollback"),
+                                icon: Undo2,
+                                // 模块节点代表仓库根；`.` 让 Git 一次恢复全部已跟踪的未暂存改动。
+                                onSelect: () => void git.restoreFile("", "."),
+                              },
+                            ]
+                          : []),
+                      ],
+                      [
+                        {
+                          label: t("log.diffShow"),
+                          icon: FileDiff,
+                          onSelect: () => onOpenChange(changes[0]!, isStaged, changes),
+                        },
+                        { label: t("git.standaloneDiff"), icon: FileDiff, disabled: true },
+                        { label: t("git.threeSideDiff"), icon: FileDiff, disabled: true },
+                        {
+                          label: t("log.createPatch"),
+                          icon: SquarePlus,
+                          onSelect: () => onFileAction("patch", "", isStaged, true),
+                        },
+                        {
+                          label: t("git.patchToClipboard"),
+                          icon: ClipboardCopy,
+                          onSelect: () => onFileAction("patchClipboard", "", isStaged, true),
+                        },
+                        {
+                          label: t("menu.copyPath"),
+                          icon: ClipboardCopy,
+                          onSelect: () =>
+                            void navigator.clipboard.writeText(git.root ?? workspaceRoot ?? ""),
+                        },
+                      ],
+                      [
+                        {
+                          label: t("git.history"),
+                          icon: History,
+                          onSelect: () => onFileAction("history", "", isStaged, true),
+                        },
+                      ],
+                    ])
+                  )
                 }
               >
                 <button

@@ -104,6 +104,8 @@ pub struct FileContent {
     /// 这份内容在磁盘上的修改时间（unix 毫秒）。前端用它认出「只是被 touch 了一下」，
     /// 那种不用重载，也不该动光标。文件不存在时为 0。
     pub modified_ms: i64,
+    /// 文本编码标签：`utf-8` 或 `gb18030`。保存时按它回写，中文老项目不再乱码。
+    pub encoding: String,
 }
 
 /// 取修改时间的毫秒值；读不到（文件没了、权限）按 0 算。
@@ -286,60 +288,125 @@ fn read_file_impl(path: String) -> Result<FileContent, String> {
         Some(rest) => (true, rest),
         None => (false, bytes.as_slice()),
     };
-    let text = std::str::from_utf8(body).map_err(|_| {
-        // 解不成 UTF-8 时再分一层：正文里有 NUL 就当二进制，其余算「别的编码的文本」。
-        // 前端据此决定说「二进制，打不开」还是「不是 UTF-8 文本」。
-        if body.contains(&0) {
-            err("BINARY", &path)
-        } else {
-            err("NOT_UTF8", &path)
+    // 先按 UTF-8 解；解不动时再分三层：有 NUL 当二进制，能按 GB18030 干净解出的
+    // 当中文老编码，其余算「不是可识别的文本编码」。BOM 只可能配 UTF-8。
+    let (text, encoding) = match std::str::from_utf8(body) {
+        Ok(text) => (text.to_string(), "utf-8".to_string()),
+        Err(_) if body.contains(&0) => return Err(err("BINARY", &path)),
+        Err(_) if has_bom => return Err(err("NOT_UTF8", &path)),
+        // UTF-16 的 BOM（FF FE / FE FF）不是 GB18030 该认的东西：GB18030 太宽松，
+        // 会让 encoding_rs 把这类字节硬解成乱码中文。显式挡在解码前，仍报 NOT_UTF8。
+        Err(_) if matches!(body.first(), Some(0xFF) | Some(0xFE)) => {
+            return Err(err("NOT_UTF8", &path))
         }
-    })?;
+        Err(_) => {
+            let (decoded, _, had_errors) = encoding_rs::GB18030.decode(body);
+            if had_errors {
+                return Err(err("NOT_UTF8", &path));
+            }
+            (decoded.into_owned(), "gb18030".to_string())
+        }
+    };
     let line_ending = if text.contains("\r\n") { "crlf" } else { "lf" }.to_string();
     Ok(FileContent {
-        contents: text.to_string(),
+        contents: text,
         path,
         size: meta.len(),
         line_ending,
         has_bom,
         modified_ms: modified_ms(&meta),
+        encoding,
     })
 }
 
 /// 保存走这里：正文按 line_ending 归一，BOM 按原文件保留，字节由 Rust 侧统一组装。
+///
+/// `expect_modified_ms` 是乐观锁：给了就在写之前 `metadata()` 一比磁盘当前 mtime，
+/// 不等说明打开之后磁盘被别处改过（AI 工具、别的编辑器、git 切分支），直接拒写并回
+/// `CONFLICT_ON_WRITE{path, diskMs, baseMs}`，让前端开三向合并，而不是静默覆盖。
+/// 不给（None）时保持旧行为：无条件覆盖，供 `saveAll` 之外的批量与非编辑器写入用。
 #[tauri::command]
 pub async fn write_file(
     path: String,
     contents: String,
     line_ending: Option<String>,
     has_bom: Option<bool>,
+    expect_modified_ms: Option<i64>,
+    encoding: Option<String>,
 ) -> Result<FileContent, String> {
     block(move || {
-        let _queued = fs_write_lock();
-        write_file_impl(path, contents, line_ending, has_bom)
+        write_file_locked_impl(path, contents, line_ending, has_bom, expect_modified_ms, encoding)
     })
     .await
 }
 
+/// 供本地历史恢复等内部写入复用：与普通保存共用全局文件写锁。
+pub(crate) fn write_file_locked_impl(
+    path: String,
+    contents: String,
+    line_ending: Option<String>,
+    has_bom: Option<bool>,
+    expect_modified_ms: Option<i64>,
+    encoding: Option<String>,
+) -> Result<FileContent, String> {
+    let _queued = fs_write_lock();
+    write_file_impl(path, contents, line_ending, has_bom, expect_modified_ms, encoding)
+}
+
+/// 实际原子写入实现。调用者必须先取得 [`fs_write_lock`]。
 fn write_file_impl(
     path: String,
     contents: String,
     line_ending: Option<String>,
     has_bom: Option<bool>,
+    expect_modified_ms: Option<i64>,
+    encoding: Option<String>,
 ) -> Result<FileContent, String> {
     let target = Path::new(&path);
     if target.is_dir() {
         return Err(err("TARGET_DIR", &path));
     }
+    // 乐观锁：磁盘 mtime 与打开时认下的那份对不上，就是两边都改了，拒写交回三向合并。
+    // mtime 取不到（0，网络盘/权限）时不拦——宁可少报一次冲突，也不能把正常保存卡死。
+    if let Some(base) = expect_modified_ms {
+        if let Ok(meta) = fs::metadata(target) {
+            let disk = modified_ms(&meta);
+            if disk != 0 && disk != base {
+                return Err(err_parts(
+                    "CONFLICT_ON_WRITE",
+                    &[path.clone(), disk.to_string(), base.to_string()],
+                ));
+            }
+        }
+    }
     let crlf = line_ending.as_deref() == Some("crlf");
     let body = normalize_endings(contents, crlf);
     let keep_bom = has_bom.unwrap_or(false);
+    let encoding = encoding.unwrap_or_else(|| "utf-8".to_string());
 
+    // 按原编码回写：GBK 那份不能悄悄存成 UTF-8，否则老工程里别的工具读它就乱码。
+    // BOM 只配 UTF-8；GB18030 编码失败（极少数不可表示字符）时退 UTF-8 保存并如实回标签。
     let mut bytes = Vec::with_capacity(body.len() + 3);
-    if keep_bom {
-        bytes.extend_from_slice(&UTF8_BOM);
+    let written_encoding;
+    if encoding == "gb18030" {
+        let (encoded, _, had_errors) = encoding_rs::GB18030.encode(&body);
+        if had_errors {
+            if keep_bom {
+                bytes.extend_from_slice(&UTF8_BOM);
+            }
+            bytes.extend_from_slice(body.as_bytes());
+            written_encoding = "utf-8".to_string();
+        } else {
+            bytes.extend_from_slice(&encoded);
+            written_encoding = "gb18030".to_string();
+        }
+    } else {
+        if keep_bom {
+            bytes.extend_from_slice(&UTF8_BOM);
+        }
+        bytes.extend_from_slice(body.as_bytes());
+        written_encoding = "utf-8".to_string();
     }
-    bytes.extend_from_slice(body.as_bytes());
     write_bytes_atomic(target, &bytes)?;
 
     let written_ms = fs::metadata(target).map(|meta| modified_ms(&meta)).unwrap_or(0);
@@ -348,8 +415,9 @@ fn write_file_impl(
         path,
         size: bytes.len() as u64,
         line_ending: if crlf { "crlf".to_string() } else { "lf".to_string() },
-        has_bom: keep_bom,
+        has_bom: keep_bom && written_encoding == "utf-8",
         modified_ms: written_ms,
+        encoding: written_encoding,
     })
 }
 
@@ -1029,6 +1097,8 @@ mod tests {
             "new body".to_string(),
             Some("lf".to_string()),
             Some(false),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(written.contents, "new body");
@@ -1043,6 +1113,51 @@ mod tests {
             .filter(|name| name.contains("forge-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "不该有临时文件残留：{:?}", leftovers);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_refuses_when_disk_moved_since_base() {
+        let dir = sandbox("conflict");
+        let note = touch(&dir, "note.txt", b"disk body");
+        let disk_ms = fs::metadata(&note).map(|m| modified_ms(&m)).unwrap_or(0);
+
+        // 基线对不上（这里给个明显更早的 1）：磁盘被别处改过，拒写并回三向合并要的那三个值。
+        let rejected = write_file_impl(
+            lossy(&note),
+            "my body".to_string(),
+            Some("lf".to_string()),
+            Some(false),
+            Some(1),
+            None,
+        );
+        assert!(
+            matches!(&rejected, Err(message) if message.starts_with("CONFLICT_ON_WRITE")),
+            "mtime 对不上要报 CONFLICT_ON_WRITE：{:?}",
+            rejected.as_ref().err()
+        );
+        assert_eq!(fs::read(&note).unwrap(), b"disk body", "被拒的保存不能动磁盘那份");
+        // 错误里带磁盘当前 mtime 与基线，前端三向视图与文案要用。
+        if let Err(message) = rejected {
+            let parts: Vec<&str> = message.split('\u{1}').collect();
+            assert_eq!(parts.len(), 4, "应为 代码+路径+diskMs+baseMs");
+            assert_eq!(parts[2], disk_ms.to_string(), "回的是磁盘当前 mtime");
+            assert_eq!(parts[3], "1", "回的是传进去的基线");
+        }
+
+        // 基线对得上：正常写，且写回的是手里这份。
+        let ok = write_file_impl(
+            lossy(&note),
+            "my body".to_string(),
+            Some("lf".to_string()),
+            Some(false),
+            Some(disk_ms),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ok.contents, "my body");
+        assert_eq!(fs::read(&note).unwrap(), b"my body");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1071,6 +1186,8 @@ mod tests {
             "one\ntwo\n".to_string(),
             Some("crlf".to_string()),
             Some(true),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(written.contents, "one\r\ntwo\r\n");
@@ -1095,6 +1212,37 @@ mod tests {
             matches!(read_file_impl(lossy(&binary)), Err(message) if message.starts_with("BINARY")),
             "带 NUL 的非 UTF-8 要报 BINARY"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gb18030_round_trip_keeps_chinese_and_encoding() {
+        let dir = sandbox("gb18030");
+        // 「中文测试」按 GB18030 编码的字节，不带 BOM、不含 NUL，旧版会当 NOT_UTF8 拒开。
+        let (gb, _, _) = encoding_rs::GB18030.encode("中文测试\n第二行");
+        let note = touch(&dir, "gbk.txt", &gb);
+
+        let read = read_file_impl(lossy(&note)).unwrap();
+        assert_eq!(read.encoding, "gb18030", "要认出 GB18030");
+        assert_eq!(read.contents, "中文测试\n第二行", "解码回来是对的中文");
+        assert!(!read.has_bom);
+
+        // 改一个字，按原编码回写：磁盘上仍是 GB18030 字节，不是悄悄存成 UTF-8。
+        let written = write_file_impl(
+            lossy(&note),
+            "中文改过\n第二行".to_string(),
+            Some("lf".to_string()),
+            Some(false),
+            Some(read.modified_ms),
+            Some("gb18030".to_string()),
+        )
+        .unwrap();
+        assert_eq!(written.encoding, "gb18030");
+        let raw = fs::read(&note).unwrap();
+        let (back, _, _) = encoding_rs::GB18030.decode(&raw);
+        assert_eq!(back, "中文改过\n第二行", "回写再解码要一致");
+        assert!(!raw.starts_with(&UTF8_BOM), "GB18030 不带 UTF-8 BOM");
 
         let _ = fs::remove_dir_all(&dir);
     }

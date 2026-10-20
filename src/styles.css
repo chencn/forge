@@ -991,6 +991,264 @@ span.entry-icon > svg {
   text-decoration: underline;
 }
 
+/* 保存冲突的三向合并框：比问答框宽，上面两格并排、下面一整格结果。 */
+.dialog-merge {
+  display: flex;
+  flex-direction: column;
+  width: min(960px, 96vw);
+  max-height: 90vh;
+}
+
+.dialog-merge-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dialog-merge-head .dialog-title {
+  margin-bottom: 8px;
+}
+
+.dialog-merge .dialog-note {
+  white-space: normal;
+}
+
+.dialog-merge-sides {
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+}
+
+.dialog-merge-side {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-merge-side-title {
+  margin: 0 0 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.dialog-merge-when {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.dialog-merge-editor {
+  width: 100%;
+  height: 220px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.dialog-merge-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.dialog-merge-actions .button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.dialog-merge-result {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.dialog-merge-editor-tall {
+  height: min(40vh, 360px);
+  flex: 1 1 auto;
+}
+
+/* 本地历史（Local History）对话框 */
+.dialog-local-history {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 96vw);
+  height: min(84vh, 720px);
+  padding: 16px 20px 14px;
+}
+
+.dialog-local-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.dialog-local-history-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
+.dialog-local-history-title-wrap .dialog-title {
+  margin: 0;
+}
+
+.dialog-local-history-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 14px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.dialog-local-history-sidebar {
+  width: 250px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.dialog-local-history-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.dialog-local-history-count {
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--border-color);
+  font-size: 11px;
+}
+
+.dialog-local-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dialog-local-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 10px;
+  border-radius: var(--radius-xs);
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background 100ms ease-out;
+}
+
+.dialog-local-history-item:hover {
+  background: var(--bg-hover);
+}
+
+.dialog-local-history-item.is-active {
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
+.dialog-local-history-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.dialog-local-history-time {
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+}
+
+.dialog-local-history-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--accent-amber-bg);
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+.dialog-local-history-item-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.dialog-local-history-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.dialog-local-history-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.dialog-local-history-diff-header {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  padding: 4px 12px;
+}
+
+.dialog-local-history-diff-label {
+  flex: 1;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.dialog-local-history-diff-host {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.dialog-local-history-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .button {
   height: 32px;
   padding: 0 14px;
@@ -4333,6 +4591,77 @@ span.entry-icon > svg {
 
 .doc-split-divider:hover,
 .doc-split-divider:active {
+  background: var(--accent-blue-bg);
+}
+
+/* 编辑区双栏并排拆分布局（Split Right / Split Down） */
+.editor-split-container {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.editor-split-container.is-horizontal {
+  flex-direction: row;
+}
+
+.editor-split-container.is-vertical {
+  flex-direction: column;
+}
+
+.editor-split-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.editor-split-pane.is-secondary {
+  border-left: 1px solid var(--border-color);
+}
+
+.editor-split-container.is-vertical .editor-split-pane.is-secondary {
+  border-left: none;
+  border-top: 1px solid var(--border-color);
+}
+
+.editor-pane-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.editor-split-divider {
+  flex: none;
+  background: var(--border-color);
+  transition: background 150ms ease-out;
+  z-index: 2;
+}
+
+.editor-split-divider.is-horizontal {
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.editor-split-divider.is-vertical {
+  height: 5px;
+  width: 100%;
+  cursor: row-resize;
+}
+
+.editor-split-divider:hover,
+.editor-split-divider:active {
   background: var(--accent-blue-bg);
 }
 

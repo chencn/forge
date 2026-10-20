@@ -6,7 +6,7 @@
 //! 菜单文字由前端推进来（`tray_labels`）。Rust 里写死中文的话，切到英文界面后
 //! 托盘菜单还是中文，和刚清理过的错误文案是同一回事。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ use crate::settings;
 /// 关掉窗口要先存盘，就得先拦住这次关闭、等前端回话；可前端要是回不来
 /// （页面挂了），应用就永远关不掉了，所以配一条看门狗兜底。
 static FLUSHING: AtomicBool = AtomicBool::new(false);
+
+/// 退出保存轮次。每次开始、取消或完成握手都会推进，旧看门狗只能结束自己启动的那一轮。
+static FLUSH_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// 等前端存盘的上限。一次写盘是毫秒级的事，留 5 秒是给大文件和不快的磁盘余量。
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -66,13 +69,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 
 /// 托盘菜单的文字，跟着界面语言走。
 #[tauri::command]
-pub fn tray_labels(menu: tauri::State<'_, TrayMenu>, show: String, quit: String) -> Result<(), String> {
+pub fn tray_labels(
+    menu: tauri::State<'_, TrayMenu>,
+    show: String,
+    quit: String,
+) -> Result<(), String> {
     menu.show
         .set_text(show)
         .map_err(|error| error.to_string())?;
-    menu.quit
-        .set_text(quit)
-        .map_err(|error| error.to_string())
+    menu.quit.set_text(quit).map_err(|error| error.to_string())
 }
 
 /// 点关闭：按设置收进托盘，或者先让前端存盘再退。
@@ -102,27 +107,40 @@ fn wants_flush(current: &settings::Settings) -> bool {
     current.editor.save_on_exit
 }
 
-/// 叫前端存盘。它存完会调 `app_exit`；那时限内没回音就自己走，别把应用关不掉。
+/// 叫前端存盘。它存完会调 `app_exit`；若仍有冲突则调 `app_cancel_exit`。
+/// 时限内没回音才由本轮看门狗退出，旧轮次的看门狗不能误杀后来重新发起的退出。
 fn request_flush(app: &AppHandle) {
     if FLUSHING.swap(true, Ordering::SeqCst) {
         // 上一轮还没回来，说明事件已经发出去了，别重复发。
         return;
     }
+    let generation = FLUSH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let _ = app.emit("app://flush", ());
     let watchdog = app.clone();
     thread::spawn(move || {
         thread::sleep(FLUSH_TIMEOUT);
-        if FLUSHING.load(Ordering::SeqCst) {
+        if FLUSHING.load(Ordering::SeqCst) && FLUSH_GENERATION.load(Ordering::SeqCst) == generation
+        {
             watchdog.exit(0);
         }
     });
 }
 
-/// 前端存完盘（或不打算存）之后的真正退出。
+/// 前端确认所有脏文档都已存盘后的真正退出。
 #[tauri::command]
 pub fn app_exit(app: AppHandle) {
+    FLUSH_GENERATION.fetch_add(1, Ordering::SeqCst);
     FLUSHING.store(false, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// 保存遇到冲突或失败时取消本轮退出，让窗口留下来供用户处理。
+#[tauri::command]
+pub fn app_cancel_exit(app: AppHandle) {
+    // 先让旧看门狗失效，再清 flushing；这样即便它刚读到 true，也会在代次校验处停下。
+    FLUSH_GENERATION.fetch_add(1, Ordering::SeqCst);
+    FLUSHING.store(false, Ordering::SeqCst);
+    reveal(&app);
 }
 
 pub(crate) fn show_main(app: &AppHandle) {

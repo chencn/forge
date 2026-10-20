@@ -26,7 +26,6 @@
 | [git-rebase-todo/](./git-rebase-todo/README.md) | 变基待办通道：修补 / 压缩到 / 删除提交 / 压缩提交 / 交互式变基 | 设计中 | 没有把 todo 清单交给界面再写回的通道；`sequence.editor` 那个钩子怎么回到应用 |
 | [change-selection-actions/](./change-selection-actions/README.md) | 选中更改的动作：优选 / 提取到单独提交 / 删除所选 / 不带内容暂存 / 搁置 / 从版本控制移除 | 设计中 | 后端只有整文件粒度，没有按段 apply 与 intent-to-add |
 | [ref-actions-gap/](./ref-actions-gap/README.md) | 引用侧四样：打开工作树、远端分支 Pull into Selected、「在修订版中显示仓库」、推送标签的逐远端子项 | 待做 | `git worktree list` 与 `git remote get-url` 都没有；远端网页地址认不出托管方 |
-| [disk-editor-merge/](./disk-editor-merge/README.md) | 磁盘与编辑器双向改动的三路合并 | 设计中 | 合并结果的编辑权在谁手上；冲突在哪一刻才算发生 |
 | [fs-and-watch-boundaries/](./fs-and-watch-boundaries/README.md) | 文件侧与监听侧四条边界：回收站、隐藏项开关、新建重名截空、监听排除 | 待做 | 隐藏项那一条已落地，回收站与排除规则两条还没定取舍 |
 | [run-and-debug/](./run-and-debug/README.md) | 运行配置与 IDEA 的对账，以及 Debug(DAP) | 方案一已落地 | Debug 那半边的 DAP 适配层完全没有；adapter 可执行文件从哪来没定。cargo 那条识别还没加 |
 | [global-search/](./global-search/README.md) | 搜索剩下的几件：替换、扫描中断、历史与作用域记忆、多趟结果并存、文件名高亮 | 进行中 | 替换要一条能写盘的后端命令，而写盘和「编辑器那份赢」这条规矩正面冲突，取舍未拍 |
@@ -35,14 +34,13 @@
 
 ## 不进这里的那些
 
-这几样不是没做完，是没有落点：要么需要另一个后端（全局索引、本地历史存储），要么在别的产品边界之外
+这几样不是没做完，是没有落点：要么需要另一个后端（全局索引），要么在别的产品边界之外
 （插件）。这类只写边界陈述，归 `docs/features/<模块>/` 各自主文档的边界段落。在 plans 里立文档，
 攒下的是不会动的计划。
 
 - 查找用法 / 检查代码：要符号索引加一整条分析后端，还要结果面板这块界面，两头都没有。
   「按名字找文件」和「在正文里找词」不属于这里：后端两条只读命令已注册（`src-tauri/src/fs/search.rs`），
   前端已有调用点，挂在 [global-search/](./global-search/README.md)。
-- 本地历史记录：要 IDEA 自己那份版本库，也就是不进 git 的历史存储。
 - 标记目录为源根 / 测试根 / 已排除：要工程模型。forge 现在只有一个打开的文件夹。
 - git bisect：没有 UI 挂点，也没人认领。
 - 书签、便签文件、外部工具、文件类型关联：IDEA 那边由插件提供，不属于这层。
@@ -51,7 +49,7 @@
 
 | 文件 | 置灰项 | 归属 |
 | --- | --- | --- |
-| `src/components/GitPanel.tsx` | 不带内容暂存、搁置、从版本控制移除、在独立窗口显示差异、三向比对 | 前四条 [change-selection-actions/](./change-selection-actions/README.md)；三向比对 [disk-editor-merge/](./disk-editor-merge/README.md) |
+| `src/components/GitPanel.tsx` | 不带内容暂存、搁置、从版本控制移除、在独立窗口显示差异、三向比对 | 前四条 [change-selection-actions/](./change-selection-actions/README.md)；保存冲突的三向合并见 [code-editor/merge-and-local-history](../features/code-editor/merge-and-local-history.md)，Git 菜单里的三向比对仍是独立入口 |
 | `src/components/GitLogPane.tsx` | 优选所选更改、将所选更改提取到单独的提交、删除所选更改 | [change-selection-actions/](./change-selection-actions/README.md) |
 | `src/lib/refMenu.ts` | 远端分支的 Pull into Selected Using Merge / Rebase | [ref-actions-gap/](./ref-actions-gap/README.md) |
 

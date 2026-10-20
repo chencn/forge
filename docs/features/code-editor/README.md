@@ -4,7 +4,8 @@
 这一份管五件事：worker 与语言映射、颜色怎么从 CSS 令牌喂进去、三套快捷键方案、编辑器自带浮层（右键菜单）怎么同时拿到
 中文文案和应用配色、搜索命中怎么落成光标与选区。页签栏见 [../shell-layout/](../shell-layout/)，视图按扩展名分派见
 [../documents-preview/](../documents-preview/)，语言那侧见 [../localization/](../localization/)，谁来触发这些命中见
-[../search/](../search/)。
+[../search/](../search/)。保存冲突的三向结果编辑器与不进 Git 的文件快照见
+[三向合并与本地历史](./merge-and-local-history.md)。
 
 ## 启动路径上的模块拆分
 

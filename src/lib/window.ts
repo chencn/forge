@@ -28,6 +28,11 @@ export function appExit(): Promise<void> {
   return invoke<void>("app_exit");
 }
 
+/** 保存仍有冲突或失败，取消后端本轮退出看门狗。 */
+export function cancelAppExit(): Promise<void> {
+  return invoke<void>("app_cancel_exit");
+}
+
 /**
  * 监听原生窗口失去焦点（Tauri 窗口切到后台或其它程序时触发；纯浏览器下静默忽略）。
  *

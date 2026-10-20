@@ -145,9 +145,9 @@ import {
   httpResponsePath,
   parseHttpFile,
 } from "./lib/httpFile";
-import type { FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
+import type { FileContent, FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
-import { appExit, onWindowBlur, onWindowFocus, setTrayLabels } from "./lib/window";
+import { appExit, cancelAppExit, onWindowBlur, onWindowFocus, setTrayLabels } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
 import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
@@ -162,6 +162,8 @@ import TerminalTabs from "./components/TerminalTabs";
  */
 const DocPane = lazy(() => import("./components/DocPane"));
 const DiffPane = lazy(() => import("./components/DiffPane"));
+const MergeConflictDialog = lazy(() => import("./components/MergeConflictDialog"));
+const LocalHistoryDialog = lazy(() => import("./components/LocalHistoryDialog"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const GitLogPane = lazy(() => import("./components/GitLogPane"));
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
@@ -709,6 +711,24 @@ export default function App() {
   const [commitGearAnchor, setCommitGearAnchor] = useState<HTMLElement | null>(null);
   /** 未合并那一节的 Resolve 链接与冲突行菜单开的是同一层弹层。 */
   const [resolveOpen, setResolveOpen] = useState(false);
+  /** 双栏拆分编辑器（IDEA 的 Split Right / Split Down） */
+  const [editorSplit, setEditorSplit] = useState<{ direction: "horizontal" | "vertical"; ratio: number } | null>(null);
+  const [secondaryTab, setSecondaryTab] = useState<string | null>(null);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const splitDragRef = useRef<{
+    startX: number;
+    startY: number;
+    startRatio: number;
+    totalWidth: number;
+    totalHeight: number;
+  } | null>(null);
+  /** 本地历史时间线弹窗当前查看的文件 */
+  const [historyFile, setHistoryFile] = useState<{
+    path: string;
+    name: string;
+    language: string;
+    currentContent: string;
+  } | null>(null);
   /**
    * 日志的两处筛选状态提在这一层：分支弹层里的「与当前比较」和「显示与工作树的差异」
    * 也要改它们，改完顺手把日志窗口叫出来。
@@ -779,6 +799,16 @@ export default function App() {
     activeTab && activeTab.startsWith("diff|")
       ? (diffs.find((tab) => tab.id === activeTab.slice(5)) ?? null)
       : null;
+  /** 副栏文档解析：拆分模式下副栏选中的文档或比对 */
+  const secondaryShownDoc =
+    secondaryTab && secondaryTab.startsWith("doc|") ? secondaryTab.slice(4) : null;
+  const secondaryActiveDoc = secondaryShownDoc
+    ? (visibleDocs.find((doc) => samePath(doc.path, secondaryShownDoc)) ?? null)
+    : null;
+  const secondaryActiveDiffTab =
+    secondaryTab && secondaryTab.startsWith("diff|")
+      ? (diffs.find((tab) => tab.id === secondaryTab.slice(5)) ?? null)
+      : null;
   /**
    * 侧栏「定位文件位置」对准当前打开的文件；比对则对准工作区里还在的那份。
    * 没有这样的文件，或路径不在工程根下（外部库、临时打开）时留空，按钮置灰。
@@ -807,6 +837,20 @@ export default function App() {
       allowEmpty: request.allowEmpty,
     };
   }, [activeDoc?.path, git]);
+
+  /** 副编辑器必须按自己的文档计算行变更基线，不能复用主栏当前文件。 */
+  const secondaryChangeBaseline = useMemo(() => {
+    const path = secondaryActiveDoc?.path;
+    if (!path || !git.root) return null;
+    const request = lineChangeBaseline(git.root, path, git.status?.changes ?? []);
+    if (!request) return null;
+    return {
+      root: git.root,
+      head: git.lastCommit?.hash ?? "",
+      path: git.absoluteOf(request.relativePath),
+      allowEmpty: request.allowEmpty,
+    };
+  }, [secondaryActiveDoc?.path, git]);
 
   /**
    * 侧栏蓝底只来自选中，不因「这篇正开着」再涂一档。
@@ -888,15 +932,16 @@ export default function App() {
     void saveAllRef.current();
   }, [activeTab, settings.editor.savePolicy]);
 
-  // 退出前强制保存：后端拦下关闭发出这条事件，这边存完再让它真退。
-  // 后端那条 5 秒看门狗兜住「前端没回音」，所以这里只管存，不用回话确认。
+  // 退出前强制保存：只有所有可写文档都已变干净才确认退出。
+  // 冲突或其它保存失败会让文档保持脏状态，此时显式取消后端看门狗并留下窗口供用户处理。
   useEffect(() => {
     const unlisten = listen("app://flush", async () => {
       await saveAllRef.current();
-      await appExit().catch(() => {});
+      if (docs.hasDirty()) await cancelAppExit().catch(() => {});
+      else await appExit().catch(() => {});
     });
     return () => void unlisten.then((off) => off()).catch(() => {});
-  }, []);
+  }, [docs.hasDirty]);
 
   // 齿轮弹层里那两条分组依据带着快捷键，菜单项画了就必须真能用。
   useEffect(() => {
@@ -2103,6 +2148,47 @@ export default function App() {
     await flushDirtyDocs();
   }, [docs, flushDirtyDocs, saveDoc]);
 
+  /** 双栏拆分操作：支持向右拆分或向下拆分。 */
+  const splitEditor = useCallback((id: string, direction: "horizontal" | "vertical") => {
+    setEditorSplit({ direction, ratio: 50 });
+    setSecondaryTab(id);
+  }, []);
+
+  const closeSplit = useCallback(() => {
+    setEditorSplit(null);
+    setSecondaryTab(null);
+  }, []);
+
+  /** 查看某文件的本地历史快照。 */
+  const showLocalHistory = useCallback((path: string) => {
+    const openDoc = docs.documents.find((d) => samePath(d.path, path));
+    const name = path.split(/[\\/]/).pop() ?? path;
+    if (openDoc) {
+      setHistoryFile({
+        path,
+        name,
+        language: openDoc.language,
+        currentContent: openDoc.contents,
+      });
+    } else {
+      void readFile(path)
+        .then((fc) => {
+          setHistoryFile({
+            path,
+            name,
+            language: languageForPath(path, fc.contents),
+            currentContent: fc.contents,
+          });
+        })
+        .catch((cause: unknown) => reportError(errorText(cause)));
+    }
+  }, [docs.documents, reportError]);
+
+  const onLocalHistoryRestored = useCallback((fc: FileContent) => {
+    docs.applyDiskVersion(fc.path, fc);
+    pushUpdateNotice("info", t("menu.localHistory"), t("history.reverted"));
+  }, [docs, pushUpdateNotice, t]);
+
   // 窗口级 Ctrl+S / Cmd+S：焦点不在 Monaco 内（例如正看预览或点在侧栏/页签栏）时也能保存。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -2737,22 +2823,22 @@ export default function App() {
   );
 
   /**
-   * 提交树文件行菜单里要动编辑器、对话框或日志的那几项。
-   * 补丁取 HEAD 到工作区这一段：暂存过的那一行工作区与索引同内容，范围一致。
+   * 提交树文件或目录菜单里要动编辑器、对话框或日志的动作。
+   * 补丁取 HEAD 到工作区这一段：暂存过的路径工作区与索引同内容，范围一致。
    */
   const commitFileAction = useCallback(
-    async (action: CommitFileAction, change: GitChange) => {
+    async (action: CommitFileAction, path: string, _staged: boolean, isDirectory = false) => {
       if (!git.root) return;
-      const absolute = git.absoluteOf(change.path);
+      const absolute = path ? git.absoluteOf(path) : "";
       switch (action) {
         case "editSource":
-          editSource(change.path);
+          editSource(path);
           break;
         case "patch":
           setDialog({
             kind: "patch",
-            name: `${patchStem(change.path)}-worktree.patch`,
-            path: change.path,
+            name: `${path ? patchStem(path) : basenameOf(git.root)}-worktree.patch`,
+            path,
             revision: "",
             from: "HEAD",
             dir: workspaceRoot,
@@ -2768,20 +2854,20 @@ export default function App() {
           }
           break;
         case "history":
-          showFileHistory(change.path);
+          showFileHistory(path);
           break;
         case "delete":
           setDialog({
             kind: "delete",
             name: basenameOf(absolute),
             path: absolute,
-            isDirectory: false,
+            isDirectory,
             entry: null,
             dir: null,
           });
           break;
         case "ignore":
-          await addToGitignore([change.path]);
+          await addToGitignore([isDirectory ? `${path.replace(/\/$/, "")}/` : path]);
           break;
       }
     },
@@ -2923,6 +3009,7 @@ export default function App() {
               : []),
           ],
           gitGroup,
+          sole ? [{ label: t("menu.localHistory"), onSelect: () => showLocalHistory(sole.path) }] : [],
           // IDEA 把 Find in Path 紧跟在 Git 组后面。作用层照 `setDirectoryName` 那套取：
           // 目录取自身，文件取父目录，空白处取工程根，`targetDirOf` 已是这个口径。
           // 落在工程根时传 null，弹层底部那句作用域才不会出现「整个工程里再搜一个子目录」的怪话。
@@ -4310,98 +4397,345 @@ export default function App() {
           ) : null}
           <div className="editor-stack">
           <main className="editor-region island">
-            {tabs.length > 0 ? (
-              <EditorTabs
-                tabs={tabs}
-                activeId={activeTab}
-                onSelect={selectTab}
-                onReorder={reorderTab}
-                onClose={closeTab}
-                onCloseOthers={closeOtherTabs}
-                onCloseAll={closeAllTabs}
-                onSave={(path) => void saveDoc(path)}
-                onSaveAll={() => void flushDirtyDocs()}
-                isDirty={docs.dirty}
-                onRevealInSidebar={revealInTree}
-              />
-            ) : null}
-            {/* 正文区这四块（比对 / 面板 / 设置 / 文档）都在按需取的 chunk 里。
-                边界只包正文、不包上面的标签栏：文档渲染崩了标签还在，关掉这一篇就能自愈。 */}
-            <ErrorBoundary label={t("editor.region")} onError={reportError}>
-            <Suspense fallback={null}>
-              {activeDiffTab ? (
-                <DiffPane
-                  leftLabel={activeDiffTab.leftLabel}
-                  rightLabel={activeDiffTab.rightLabel}
-                  path={activeDiffTab.path}
-                  original={activeDiffTab.original}
-                  modified={activeDiffTab.modified}
-                  language={activeDiffTab.language}
-                  notice={
-                    activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined
+            {editorSplit ? (
+              <div
+                className={`editor-split-container is-${editorSplit.direction}`}
+                ref={splitContainerRef}
+              >
+                <div
+                  className="editor-split-pane is-primary"
+                  style={
+                    editorSplit.direction === "horizontal"
+                      ? { width: `${editorSplit.ratio}%`, flex: "none" }
+                      : { height: `${editorSplit.ratio}%`, flex: "none" }
                   }
-                  group={activeDiffGroup}
-                  landOn={activeDiffTab.landOn}
-                  onOpenFile={diffOpenFile}
-                  onClose={closeActiveDiff}
-                />
-              ) : activePane && places[activePane] === "tabbed" ? (
-                paneFrame(activePane, false)
-              ) : activeTab === "run-configs" ? (
-                <RunConfigsPage configs={configs} />
-              ) : activeTab === "settings" ? (
-                <SettingsPage
-                  workspace={workspaceRoot}
-                  initialModule={settingsModule}
-                  onLspKick={() => setLspKick((value) => value + 1)}
-                  onLspWake={wakeLspServer}
-                />
-              ) : activeDoc ? (
-                <DocPane
-                  document={activeDoc}
-                  onChange={docs.update}
-                  onSave={() => void saveActive()}
-                  onBlur={() => {
-                    if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+                >
+                  {tabs.length > 0 ? (
+                    <EditorTabs
+                      tabs={tabs}
+                      activeId={activeTab}
+                      onSelect={selectTab}
+                      onReorder={reorderTab}
+                      onClose={closeTab}
+                      onCloseOthers={closeOtherTabs}
+                      onCloseAll={closeAllTabs}
+                      onSave={(path) => void saveDoc(path)}
+                      onSaveAll={() => void flushDirtyDocs()}
+                      isDirty={docs.dirty}
+                      onRevealInSidebar={revealInTree}
+                      onSplitRight={(id) => splitEditor(id, "horizontal")}
+                      onSplitDown={(id) => splitEditor(id, "vertical")}
+                      onCloseSplit={closeSplit}
+                      isSplit={true}
+                      onShowLocalHistory={showLocalHistory}
+                    />
+                  ) : null}
+                  <div className="editor-pane-body">
+                    <ErrorBoundary label={t("editor.region")} onError={reportError}>
+                      <Suspense fallback={null}>
+                        {activeDiffTab ? (
+                          <DiffPane
+                            leftLabel={activeDiffTab.leftLabel}
+                            rightLabel={activeDiffTab.rightLabel}
+                            path={activeDiffTab.path}
+                            original={activeDiffTab.original}
+                            modified={activeDiffTab.modified}
+                            language={activeDiffTab.language}
+                            notice={
+                              activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined
+                            }
+                            group={activeDiffGroup}
+                            landOn={activeDiffTab.landOn}
+                            onOpenFile={diffOpenFile}
+                            onClose={closeActiveDiff}
+                          />
+                        ) : activePane && places[activePane] === "tabbed" ? (
+                          paneFrame(activePane, false)
+                        ) : activeTab === "run-configs" ? (
+                          <RunConfigsPage configs={configs} />
+                        ) : activeTab === "settings" ? (
+                          <SettingsPage
+                            workspace={workspaceRoot}
+                            initialModule={settingsModule}
+                            onLspKick={() => setLspKick((value) => value + 1)}
+                            onLspWake={wakeLspServer}
+                          />
+                        ) : activeDoc ? (
+                          <DocPane
+                            document={activeDoc}
+                            onChange={docs.update}
+                            onSave={() => void saveActive()}
+                            onBlur={() => {
+                              if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+                            }}
+                            onView={docs.setView}
+                            onOpenLocal={openLocalFile}
+                            reveal={docs.reveal}
+                            onRevealDone={docs.revealDone}
+                            runConfigs={configs.configs}
+                            projectRoot={workspaceRoot ?? ""}
+                            openPaths={docs.documents.map((item) => item.path)}
+                            onRunConfig={(picked) => {
+                              if (picked.length > 1) {
+                                configs.select(picked[0].id);
+                                setRunChooser((signal) => signal + 1);
+                                return;
+                              }
+                              configs.select(picked[0].id);
+                              run.start(picked[0]);
+                              focusPane("run");
+                            }}
+                            onRunScript={runScript}
+                            onRunHttp={runHttp}
+                            httpResponse={
+                              settings.httpResponse === "split" &&
+                              httpSide !== null &&
+                              samePath(httpSide.path, activeDoc.path)
+                                ? httpSide.text
+                                : null
+                            }
+                            changeBaseline={changeBaseline}
+                          />
+                        ) : (
+                          <WelcomeScreen
+                            keymap={settings.editor.keymap}
+                            workspace={workspaceRoot !== null}
+                          />
+                        )}
+                      </Suspense>
+                    </ErrorBoundary>
+                  </div>
+                </div>
+
+                <div
+                  role="separator"
+                  aria-orientation={editorSplit.direction === "horizontal" ? "vertical" : "horizontal"}
+                  className={`editor-split-divider is-${editorSplit.direction}`}
+                  title={t("preview.splitResetTip")}
+                  onDoubleClick={() => setEditorSplit((prev) => prev ? { ...prev, ratio: 50 } : null)}
+                  onPointerDown={(event) => {
+                    if (!splitContainerRef.current) return;
+                    const rect = splitContainerRef.current.getBoundingClientRect();
+                    splitDragRef.current = {
+                      startX: event.clientX,
+                      startY: event.clientY,
+                      startRatio: editorSplit.ratio,
+                      totalWidth: rect.width,
+                      totalHeight: rect.height,
+                    };
+                    event.currentTarget.setPointerCapture(event.pointerId);
                   }}
-                  onView={docs.setView}
-                  onOpenLocal={openLocalFile}
-                  reveal={docs.reveal}
-                  onRevealDone={docs.revealDone}
-                  runConfigs={configs.configs}
-                  projectRoot={workspaceRoot ?? ""}
-                  openPaths={docs.documents.map((item) => item.path)}
-                  onRunConfig={(picked) => {
-                    if (picked.length > 1) {
-                      // 这一行落进好几条：选中位次最靠前的那条，再把下拉打开让他改。
-                      configs.select(picked[0].id);
-                      setRunChooser((signal) => signal + 1);
-                      return;
+                  onPointerMove={(event) => {
+                    const drag = splitDragRef.current;
+                    if (!drag) return;
+                    if (editorSplit.direction === "horizontal") {
+                      if (drag.totalWidth <= 0) return;
+                      const deltaRatio = ((event.clientX - drag.startX) / drag.totalWidth) * 100;
+                      const next = Math.max(20, Math.min(80, drag.startRatio + deltaRatio));
+                      setEditorSplit((prev) => prev ? { ...prev, ratio: next } : null);
+                    } else {
+                      if (drag.totalHeight <= 0) return;
+                      const deltaRatio = ((event.clientY - drag.startY) / drag.totalHeight) * 100;
+                      const next = Math.max(20, Math.min(80, drag.startRatio + deltaRatio));
+                      setEditorSplit((prev) => prev ? { ...prev, ratio: next } : null);
                     }
-                    // 装订线直接运行单条启动项时同步选中它，并复用已有运行会话页签。
-                    configs.select(picked[0].id);
-                    run.start(picked[0]);
-                    focusPane("run");
                   }}
-                  onRunScript={runScript}
-                  onRunHttp={runHttp}
-                  httpResponse={
-                    settings.httpResponse === "split" &&
-                    httpSide !== null &&
-                    samePath(httpSide.path, activeDoc.path)
-                      ? httpSide.text
-                      : null
+                  onPointerUp={() => {
+                    splitDragRef.current = null;
+                  }}
+                />
+
+                <div
+                  className="editor-split-pane is-secondary"
+                  style={
+                    editorSplit.direction === "horizontal"
+                      ? { width: `${100 - editorSplit.ratio}%`, flex: "none" }
+                      : { height: `${100 - editorSplit.ratio}%`, flex: "none" }
                   }
-                  changeBaseline={changeBaseline}
-                />
-              ) : (
-                <WelcomeScreen
-                  keymap={settings.editor.keymap}
-                  workspace={workspaceRoot !== null}
-                />
-              )}
-            </Suspense>
-            </ErrorBoundary>
+                >
+                  {tabs.length > 0 ? (
+                    <EditorTabs
+                      tabs={tabs}
+                      activeId={secondaryTab}
+                      onSelect={(id) => setSecondaryTab(id)}
+                      onReorder={reorderTab}
+                      onClose={(id, kind) => {
+                        if (id === secondaryTab) closeSplit();
+                        else closeTab(id, kind);
+                      }}
+                      onCloseOthers={closeOtherTabs}
+                      onCloseAll={closeAllTabs}
+                      onSave={(path) => void saveDoc(path)}
+                      onSaveAll={() => void flushDirtyDocs()}
+                      isDirty={docs.dirty}
+                      onRevealInSidebar={revealInTree}
+                      onCloseSplit={closeSplit}
+                      isSplit={true}
+                      onShowLocalHistory={showLocalHistory}
+                    />
+                  ) : null}
+                  <div className="editor-pane-body">
+                    <ErrorBoundary label={t("editor.region")} onError={reportError}>
+                      <Suspense fallback={null}>
+                        {secondaryActiveDiffTab ? (
+                          <DiffPane
+                            leftLabel={secondaryActiveDiffTab.leftLabel}
+                            rightLabel={secondaryActiveDiffTab.rightLabel}
+                            path={secondaryActiveDiffTab.path}
+                            original={secondaryActiveDiffTab.original}
+                            modified={secondaryActiveDiffTab.modified}
+                            language={secondaryActiveDiffTab.language}
+                            notice={
+                              secondaryActiveDiffTab.notice
+                                ? describeError(secondaryActiveDiffTab.notice, t)
+                                : undefined
+                            }
+                            group={activeDiffGroup}
+                            landOn={secondaryActiveDiffTab.landOn}
+                            onOpenFile={diffOpenFile}
+                            onClose={closeSplit}
+                          />
+                        ) : secondaryActiveDoc ? (
+                          <DocPane
+                            document={secondaryActiveDoc}
+                            onChange={docs.update}
+                            onSave={() => void saveDoc(secondaryActiveDoc.path)}
+                            onBlur={() => {
+                              if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+                            }}
+                            onView={docs.setView}
+                            onOpenLocal={openLocalFile}
+                            reveal={null}
+                            onRevealDone={() => {}}
+                            runConfigs={configs.configs}
+                            projectRoot={workspaceRoot ?? ""}
+                            openPaths={docs.documents.map((item) => item.path)}
+                            onRunConfig={(picked) => {
+                              if (picked.length > 1) {
+                                configs.select(picked[0].id);
+                                setRunChooser((signal) => signal + 1);
+                                return;
+                              }
+                              configs.select(picked[0].id);
+                              run.start(picked[0]);
+                              focusPane("run");
+                            }}
+                            onRunScript={runScript}
+                            onRunHttp={runHttp}
+                            httpResponse={
+                              settings.httpResponse === "split" &&
+                              httpSide !== null &&
+                              samePath(httpSide.path, secondaryActiveDoc.path)
+                                ? httpSide.text
+                                : null
+                            }
+                            changeBaseline={secondaryChangeBaseline}
+                          />
+                        ) : (
+                          <div className="tool-window-empty">
+                            <p>{t("editor.selectToView")}</p>
+                          </div>
+                        )}
+                      </Suspense>
+                    </ErrorBoundary>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                {tabs.length > 0 ? (
+                  <EditorTabs
+                    tabs={tabs}
+                    activeId={activeTab}
+                    onSelect={selectTab}
+                    onReorder={reorderTab}
+                    onClose={closeTab}
+                    onCloseOthers={closeOtherTabs}
+                    onCloseAll={closeAllTabs}
+                    onSave={(path) => void saveDoc(path)}
+                    onSaveAll={() => void flushDirtyDocs()}
+                    isDirty={docs.dirty}
+                    onRevealInSidebar={revealInTree}
+                    onSplitRight={(id) => splitEditor(id, "horizontal")}
+                    onSplitDown={(id) => splitEditor(id, "vertical")}
+                    onShowLocalHistory={showLocalHistory}
+                  />
+                ) : null}
+                <ErrorBoundary label={t("editor.region")} onError={reportError}>
+                  <Suspense fallback={null}>
+                    {activeDiffTab ? (
+                      <DiffPane
+                        leftLabel={activeDiffTab.leftLabel}
+                        rightLabel={activeDiffTab.rightLabel}
+                        path={activeDiffTab.path}
+                        original={activeDiffTab.original}
+                        modified={activeDiffTab.modified}
+                        language={activeDiffTab.language}
+                        notice={
+                          activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined
+                        }
+                        group={activeDiffGroup}
+                        landOn={activeDiffTab.landOn}
+                        onOpenFile={diffOpenFile}
+                        onClose={closeActiveDiff}
+                      />
+                    ) : activePane && places[activePane] === "tabbed" ? (
+                      paneFrame(activePane, false)
+                    ) : activeTab === "run-configs" ? (
+                      <RunConfigsPage configs={configs} />
+                    ) : activeTab === "settings" ? (
+                      <SettingsPage
+                        workspace={workspaceRoot}
+                        initialModule={settingsModule}
+                        onLspKick={() => setLspKick((value) => value + 1)}
+                        onLspWake={wakeLspServer}
+                      />
+                    ) : activeDoc ? (
+                      <DocPane
+                        document={activeDoc}
+                        onChange={docs.update}
+                        onSave={() => void saveActive()}
+                        onBlur={() => {
+                          if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+                        }}
+                        onView={docs.setView}
+                        onOpenLocal={openLocalFile}
+                        reveal={docs.reveal}
+                        onRevealDone={docs.revealDone}
+                        runConfigs={configs.configs}
+                        projectRoot={workspaceRoot ?? ""}
+                        openPaths={docs.documents.map((item) => item.path)}
+                        onRunConfig={(picked) => {
+                          if (picked.length > 1) {
+                            configs.select(picked[0].id);
+                            setRunChooser((signal) => signal + 1);
+                            return;
+                          }
+                          configs.select(picked[0].id);
+                          run.start(picked[0]);
+                          focusPane("run");
+                        }}
+                        onRunScript={runScript}
+                        onRunHttp={runHttp}
+                        httpResponse={
+                          settings.httpResponse === "split" &&
+                          httpSide !== null &&
+                          samePath(httpSide.path, activeDoc.path)
+                            ? httpSide.text
+                            : null
+                        }
+                        changeBaseline={changeBaseline}
+                      />
+                    ) : (
+                      <WelcomeScreen
+                        keymap={settings.editor.keymap}
+                        workspace={workspaceRoot !== null}
+                      />
+                    )}
+                  </Suspense>
+                </ErrorBoundary>
+              </>
+            )}
           </main>
           {/* 底部工具窗口只占编辑区这一列，侧栏继续接到顶栏和底栏上。 */}
           {dockedPane ? (
@@ -4574,6 +4908,10 @@ export default function App() {
             ) : (
               <span>{activeDoc.lineEnding.toUpperCase()}</span>
             )}
+            {/* 不是 UTF-8 才占一格：中文老工程的 GBK 文件要让人看见存回什么编码。 */}
+            {activeDoc.encoding === "gb18030" ? (
+              <span title={t("status.encodingTip")}>{t("status.encoding")}</span>
+            ) : null}
             {docs.dirty(activeDoc.path) ? (
               <button
                 type="button"
@@ -4730,6 +5068,32 @@ export default function App() {
           onOpen={(change) => editSource(change.path)}
           onClose={() => setResolveOpen(false)}
         />
+      ) : null}
+      {/* 保存撞上「磁盘被别处改过」时开这一层：本地 / 磁盘两份对着共同祖先摆，底下结果格可编辑。 */}
+      {docs.conflict ? (
+        <Suspense fallback={null}>
+          <MergeConflictDialog
+            key={`${docs.conflict.path}-${docs.conflict.diskMs}`}
+            conflict={docs.conflict}
+            onAcceptDisk={(disk) => docs.applyDiskVersion(docs.conflict!.path, disk)}
+            onResolve={(result, disk) => void docs.resolveConflict(docs.conflict!.path, result, disk)}
+            onCancel={docs.dismissConflict}
+          />
+        </Suspense>
+      ) : null}
+      {/* 本地历史时间线对话框 */}
+      {historyFile && workspaceRoot ? (
+        <Suspense fallback={null}>
+          <LocalHistoryDialog
+            root={workspaceRoot}
+            path={historyFile.path}
+            name={historyFile.name}
+            language={historyFile.language}
+            currentContent={historyFile.currentContent}
+            onRestored={onLocalHistoryRestored}
+            onClose={() => setHistoryFile(null)}
+          />
+        </Suspense>
       ) : null}
       {dropHover ? (
         <div className="drop-overlay" role="status">

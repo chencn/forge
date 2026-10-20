@@ -16,7 +16,7 @@
 | 提交窗口文件行 | 搁置 |
 | 提交窗口文件行 | 从版本控制移除 |
 | 提交窗口文件行 | 在独立窗口显示差异 |
-| 提交窗口文件行 | 三向比对（另见 [../disk-editor-merge/README.md](../disk-editor-merge/README.md)） |
+| 提交窗口文件行 | 三向比对（保存冲突的三向合并已落地，见 [../../features/code-editor/merge-and-local-history.md](../../features/code-editor/merge-and-local-history.md)；此处 Git 变更入口另议） |
 | 日志文件行 | 优选所选更改、将所选更改提取到单独的提交、删除所选更改 |
 
 日志那三项旁边的注释说的是同一件事：它们是 IDEA 变更清单侧的动作，日志里对着一次提交没有对应落点。

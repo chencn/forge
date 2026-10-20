@@ -51,9 +51,16 @@ export interface FileContent {
   hasBom: boolean;
   /** 这份内容在磁盘上的修改时间（unix 毫秒），用来认出「只是被 touch 了一下」。 */
   modifiedMs: number;
+  /**
+   * 文本编码标签：`utf-8` 或 `gb18030`。
+   *
+   * 读时由后端判定（UTF-8 解不动且无 NUL、能按 GB18030 干净解出的就是 `gb18030`），
+   * 保存时原样带回，后端按它回写；不给时后端按 `utf-8`。
+   */
+  encoding: "utf-8" | "gb18030";
 }
 
-/** 超过 8 MiB 或非 UTF-8 时后端直接报错，不会给半份内容。 */
+/** 超过 8 MiB、含 NUL 的二进制、或既非 UTF-8 又非 GB18030 的文本时后端报错，不会给半份内容。 */
 export function readFile(path: string): Promise<FileContent> {
   return invoke<FileContent>("read_file", { path });
 }
@@ -62,9 +69,20 @@ export function writeFile(
   path: string,
   contents: string,
   lineEnding: "crlf" | "lf",
-  hasBom: boolean
+  hasBom: boolean,
+  /** 按打开时认下的编码回写；缺省后端按 utf-8。 */
+  encoding?: "utf-8" | "gb18030",
+  /** 乐观锁：传打开时认下的 `modifiedMs`，磁盘被别处改过时后端拒写并报 `CONFLICT_ON_WRITE`。 */
+  expectModifiedMs?: number
 ): Promise<FileContent> {
-  return invoke<FileContent>("write_file", { path, contents, lineEnding, hasBom });
+  return invoke<FileContent>("write_file", {
+    path,
+    contents,
+    lineEnding,
+    hasBom,
+    encoding,
+    expectModifiedMs,
+  });
 }
 
 /**

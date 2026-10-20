@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { errorText, fileStamp, readFile, writeFile } from "../lib/fs";
-import { codedError } from "../lib/errors";
+import { errorText, fileStamp, readFile, writeFile, type FileContent } from "../lib/fs";
+import { codedError, parseSaveConflict } from "../lib/errors";
+import { recordSnapshot } from "../lib/localHistory";
 import { canonicalPath, pathWithin, samePath } from "../lib/format";
 import { languageForPath } from "../lib/monacoEnv";
 import { docKindOf, hasTextContent, previewsFromDisk } from "../lib/docKind";
@@ -47,6 +48,8 @@ export interface OpenDocument {
   lineEnding: "crlf" | "lf";
   /** 原文件的 UTF-8 BOM，保存时保留。 */
   hasBom: boolean;
+  /** 文本编码标签（`utf-8` / `gb18030`），打开时认下，保存时按它回写。 */
+  encoding: "utf-8" | "gb18030";
   /** Monaco 语言 id。 */
   language: string;
   /** 只读预览：二进制、超大或带只读属性的文件。 */
@@ -68,9 +71,29 @@ export interface OpenDocument {
   onDisk: boolean;
 }
 
+/**
+ * 保存被乐观锁拒掉时挂出来的一份冲突现场。
+ *
+ * 除了后端回的路径与两个 mtime，还带上编辑器手里那份（`ours`）与共同祖先（`baseline`）——
+ * 三向视图拿这三份加「读回来的磁盘那份」就够了，不必再让对话框去猜当前文档。
+ */
+export interface SaveConflictInfo {
+  path: string;
+  diskMs: number;
+  baseMs: number;
+  name: string;
+  language: string;
+  /** 编辑器手里那份（未保存改动）。 */
+  ours: string;
+  /** 上次与磁盘一致的那份，三路合并的共同祖先。 */
+  base: string;
+  lineEnding: "crlf" | "lf";
+  hasBom: boolean;
+  encoding: "utf-8" | "gb18030";
+}
+
 /** 这份文档能不能在源码与预览之间切。 */
-export function canPreview(doc: OpenDocument): boolean {
-  // markdown 的预览渲染的是手里的文本，虚拟文档照样能看；
+export function canPreview(doc: OpenDocument): boolean {  // markdown 的预览渲染的是手里的文本，虚拟文档照样能看；
   // svg 的图片视图要经 asset 协议读磁盘，只有真在磁盘上的才行。
   return doc.kind === "markdown" || (doc.kind === "svg" && doc.onDisk);
 }
@@ -126,6 +149,9 @@ export function useDocuments(
    * 纯属白读一趟 IPC；这一串时间戳就是让回声认出「这是我自己刚写的」。窗口外自然过期。
    */
   const savedAtRef = useRef<Map<string, number>>(new Map());
+
+  /** 保存被乐观锁拒掉时挂在这：三向合并对话框消费它，解决或取消后清掉。 */
+  const [conflict, setConflict] = useState<SaveConflictInfo | null>(null);
 
   /**
    * 改列表只走这一条：先记进 ref 再交给 React。同一个事件里连着写两次（批量关闭
@@ -240,6 +266,7 @@ export function useDocuments(
           baseline: content.contents,
           lineEnding: content.lineEnding,
           hasBom: content.hasBom,
+          encoding: content.encoding,
           language: languageForPath(targetPath, content.contents),
           readOnly: false,
           loading: false,
@@ -331,6 +358,7 @@ export function useDocuments(
         baseline: contents,
         lineEnding: "lf",
         hasBom: false,
+        encoding: "utf-8",
         language,
         readOnly: true,
         loading: false,
@@ -371,7 +399,16 @@ export function useDocuments(
 
       const task = (async () => {
         try {
-          const written = await writeFile(path, doc.contents, doc.lineEnding, doc.hasBom);
+          // 乐观锁：把打开时认下的 mtime 交给后端，写之前一比。对不上就拒写、报 CONFLICT_ON_WRITE，
+          // 交回三向合并，而不是静默覆盖磁盘上别处（AI 工具 / 别的编辑器 / git）改的那一份。
+          const written = await writeFile(
+            path,
+            doc.contents,
+            doc.lineEnding,
+            doc.hasBom,
+            doc.encoding,
+            doc.diskMs
+          );
           // 写盘要跨一次 IPC，期间用户可能已经在敲下一个字：回写前重读当前条目，
           // 有新编辑就保留手里那份正文，只认领磁盘基线——否则刚敲的内容会被
           // 保存前的快照整段抹掉（还不进撤销栈）。
@@ -383,6 +420,8 @@ export function useDocuments(
             baseline: written.contents,
             contents: editedDuringSave ? fresh.contents : written.contents,
             diskMs: written.modifiedMs,
+            // 后端可能把 GB18030 里少数不可表示的字退回存成 UTF-8，以它回的编码为准。
+            encoding: written.encoding,
             // svg 图片视图经 asset 协议读盘，保存后刷新指纹才能让 <img> 立即重取新图。
             stamp: previewsFromDisk(fresh.kind)
               ? written.modifiedMs || fresh.stamp
@@ -390,9 +429,33 @@ export function useDocuments(
           });
           // 认领这份磁盘现状：紧随其后的监听回声不必再 readFile 一遍。
           savedAtRef.current.set(canonicalPath(path), Date.now());
+          // 顺手打一条本地历史：按刚写盘这份（正文、行尾、编码、BOM）留一份，供事后回滚。
+          void recordSnapshot(fresh.root, path, {
+            savedAt: written.modifiedMs || Date.now(),
+            contents: written.contents,
+            lineEnding: written.lineEnding,
+            hasBom: written.hasBom,
+            encoding: written.encoding,
+          });
           return true;
         } catch (cause) {
-          reportError(errorText(cause));
+          const conflictInfo = parseSaveConflict(errorText(cause));
+          if (conflictInfo) {
+            // 磁盘被别处改过：把现场挂出来，交三向合并对话框处理，这里当「没存成」返回。
+            const current = listRef.current.find((item) => samePath(item.path, path));
+            setConflict({
+              ...conflictInfo,
+              name: current?.name ?? path.split(/[\\/]/).pop() ?? path,
+              language: current?.language ?? "plaintext",
+              ours: current?.contents ?? doc.contents,
+              base: current?.baseline ?? doc.baseline,
+              lineEnding: doc.lineEnding,
+              hasBom: doc.hasBom,
+              encoding: doc.encoding,
+            });
+          } else {
+            reportError(errorText(cause));
+          }
           return false;
         } finally {
           savingRef.current.delete(path);
@@ -401,6 +464,101 @@ export function useDocuments(
 
       savingRef.current.set(path, task);
       return task;
+    },
+    [reportError, upsert]
+  );
+
+  /** 收掉冲突现场（对话框取消 / 已解决），不改磁盘也不改文档。 */
+  const dismissConflict = useCallback(() => setConflict(null), []);
+
+  /**
+   * 接受磁盘那份：把编辑器文档刷成磁盘现在的内容并认领为基线，不写盘。
+   *
+   * 用户选了「以磁盘为准」，手里那份就丢了（他已在三向视图里看过），这里只让文档变干净、
+   * 更新 `diskMs`，下次保存不会再撞同一处冲突。
+   */
+  const applyDiskVersion = useCallback(
+    (path: string, disk: FileContent) => {
+      const fresh = listRef.current.find((item) => samePath(item.path, path));
+      if (!fresh) return;
+      upsert({
+        ...fresh,
+        contents: disk.contents,
+        baseline: disk.contents,
+        lineEnding: disk.lineEnding,
+        hasBom: disk.hasBom,
+        encoding: disk.encoding,
+        diskMs: disk.modifiedMs,
+        error: null,
+        loading: false,
+        readOnly: false,
+      });
+      savedAtRef.current.set(canonicalPath(path), Date.now());
+      setConflict(null);
+    },
+    [upsert]
+  );
+
+  /**
+   * 三向合并定了结果（或选了「保留我的」直接用手里这份）后落盘。
+   *
+   * 仍以对话框实际读到的磁盘版本做乐观锁：对话框打开后若磁盘再次变化，本次写入也必须拒绝。
+   * 新冲突以用户刚整理出的结果为本地版本、以上次看过的磁盘正文为共同祖先，避免丢掉合并工作。
+   */
+  const resolveConflict = useCallback(
+    async (path: string, result: string, comparedDisk: FileContent): Promise<boolean> => {
+      const doc = listRef.current.find((item) => samePath(item.path, path));
+      if (!doc) return false;
+      try {
+        const written = await writeFile(
+          path,
+          result,
+          doc.lineEnding,
+          doc.hasBom,
+          doc.encoding,
+          comparedDisk.modifiedMs
+        );
+        const fresh = listRef.current.find((item) => samePath(item.path, path));
+        if (!fresh) return false;
+        upsert({
+          ...fresh,
+          contents: written.contents,
+          baseline: written.contents,
+          lineEnding: written.lineEnding,
+          hasBom: written.hasBom,
+          diskMs: written.modifiedMs,
+          encoding: written.encoding,
+        });
+        savedAtRef.current.set(canonicalPath(path), Date.now());
+        void recordSnapshot(fresh.root, path, {
+          savedAt: written.modifiedMs || Date.now(),
+          contents: written.contents,
+          lineEnding: written.lineEnding,
+          hasBom: written.hasBom,
+          encoding: written.encoding,
+        });
+        setConflict(null);
+        return true;
+      } catch (cause) {
+        const message = errorText(cause);
+        const nextConflict = parseSaveConflict(message);
+        if (nextConflict) {
+          const fresh = listRef.current.find((item) => samePath(item.path, path));
+          setConflict({
+            ...nextConflict,
+            name: fresh?.name ?? doc.name,
+            language: fresh?.language ?? doc.language,
+            ours: result,
+            base: comparedDisk.contents,
+            lineEnding: fresh?.lineEnding ?? doc.lineEnding,
+            hasBom: fresh?.hasBom ?? doc.hasBom,
+            encoding: fresh?.encoding ?? doc.encoding,
+          });
+        } else {
+          reportError(message);
+        }
+        return false;
+      }
     },
     [reportError, upsert]
   );
@@ -507,6 +665,7 @@ export function useDocuments(
             baseline: content.contents,
             lineEnding: content.lineEnding,
             hasBom: content.hasBom,
+            encoding: content.encoding,
             diskMs: content.modifiedMs,
             stamp: stamp ? stamp.modifiedMs || stamp.size : fresh.stamp,
             error: null,
@@ -588,6 +747,12 @@ export function useDocuments(
     [documents]
   );
 
+  /** 当前是否仍有可写的脏文档；从 ref 同步读取，供退出保存完成后立即判定。 */
+  const hasDirty = useCallback(
+    () => listRef.current.some((doc) => !doc.readOnly && doc.contents !== doc.baseline),
+    []
+  );
+
   /** 指定工作区根下是否存在尚未保存的脏文档（供顶栏工程切换器蓝点与关闭根前询问判定）。 */
   const hasDirtyForRoot = useCallback(
     (root: string) =>
@@ -621,23 +786,33 @@ export function useDocuments(
       closeForRoot,
       closeAll,
       dirty,
+      hasDirty,
       hasDirtyForRoot,
+      conflict,
+      dismissConflict,
+      resolveConflict,
+      applyDiskVersion,
     }),
     [
       activate,
       activePath,
+      applyDiskVersion,
       close,
       closeAll,
       closeForRoot,
       closeMany,
+      conflict,
       dirty,
+      dismissConflict,
       documents,
+      hasDirty,
       hasDirtyForRoot,
       noteExternalChange,
       open,
       openHit,
       openNotice,
       openVirtual,
+      resolveConflict,
       reveal,
       revealDone,
       save,
@@ -662,6 +837,7 @@ function placeholder(path: string, root: string): OpenDocument {
     baseline: "",
     lineEnding: "lf",
     hasBom: false,
+    encoding: "utf-8",
     language: languageForPath(path),
     readOnly: true,
     loading: true,

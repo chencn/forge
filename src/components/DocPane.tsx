@@ -112,6 +112,7 @@ export default function DocPane({
       baseline: httpResponse,
       lineEnding: "lf",
       hasBom: false,
+      encoding: "utf-8",
       language: "http",
       readOnly: true,
       loading: false,

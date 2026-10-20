@@ -56,6 +56,7 @@ describe("视图能力判定", () => {
       baseline: "# Hello",
       lineEnding: "lf" as const,
       hasBom: false,
+      encoding: "utf-8" as const,
       language: "markdown",
       readOnly: false,
       loading: false,

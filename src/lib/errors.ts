@@ -37,6 +37,9 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   IS_DIR: (p, t) => t("error.isDir", { path: p[0] ?? "" }),
   TOO_LARGE: (p, t) => t("error.tooLarge", { size: humanBytes(p[0]), max: humanBytes(p[1]) }),
   NOT_UTF8: (p, t) => t("error.notUtf8", { path: p[0] ?? "" }),
+  // 保存那一刻磁盘 mtime 对不上基线：编辑器手里这份和磁盘那份都改过，拒写交回三向合并。
+  CONFLICT_ON_WRITE: (p, t) =>
+    t("error.conflictOnWrite", { path: p[0] ?? "", disk: p[1] ?? "", base: p[2] ?? "" }),
   // 已知的二进制格式：打开前就判出来了，说明放在正文里，不是一闪而过的横幅。
   BINARY: (p, t) => t("error.binary", { path: p[0] ?? "" }),
   // 没有可逐行比对的文本：图片是能打开但不能比对，其余二进制两样都不行。
@@ -118,4 +121,27 @@ export function describeError(text: string, t: Translate): string {
   const build = CODES[code];
   if (build) return build(parts, t);
   return parts.join(" ");
+}
+
+/** `CONFLICT_ON_WRITE` 拆出来的三段，供三向合并取磁盘那份。 */
+export interface SaveConflict {
+  path: string;
+  diskMs: number;
+  baseMs: number;
+}
+
+/**
+ * 从一条保存失败的错误文本里认出「磁盘被别处改过」这一种。
+ *
+ * 保存被乐观锁拒掉时后端回 `CONFLICT_ON_WRITE\u0001path\u0001diskMs\u0001baseMs`。
+ * 命中就给出三段（diskMs/baseMs 已是数字），不是这一种或数值坏掉时回 null，交回普通报错。
+ */
+export function parseSaveConflict(text: string): SaveConflict | null {
+  if (!text.includes(SEP)) return null;
+  const [code = "", path = "", disk = "", base = ""] = text.split(SEP);
+  if (code !== "CONFLICT_ON_WRITE") return null;
+  const diskMs = Number(disk);
+  const baseMs = Number(base);
+  if (!Number.isFinite(diskMs) || !Number.isFinite(baseMs)) return null;
+  return { path, diskMs, baseMs };
 }

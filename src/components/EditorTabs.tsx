@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ReactNode } from "react";
-import { Save, X } from "lucide-react";
+import { Columns2, Save, X } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useI18n } from "../i18n";
@@ -48,6 +48,16 @@ interface EditorTabsProps {
   isDirty: (path: string) => boolean;
   /** 在侧边栏资源管理器里展开并选中这篇文件。 */
   onRevealInSidebar?: (path: string) => void;
+  /** 向右拆分编辑器。 */
+  onSplitRight?: (id: string) => void;
+  /** 向下拆分编辑器。 */
+  onSplitDown?: (id: string) => void;
+  /** 关闭当前拆分栏。 */
+  onCloseSplit?: () => void;
+  /** 当前是否处于拆分视图。 */
+  isSplit?: boolean;
+  /** 打开文件的本地历史时间线。 */
+  onShowLocalHistory?: (path: string) => void;
 }
 
 /** 面板标签的关闭动作叫最小化，不叫关闭：任务还在后台跑。 */
@@ -70,6 +80,11 @@ export default function EditorTabs({
   onSaveAll,
   isDirty,
   onRevealInSidebar,
+  onSplitRight,
+  onSplitDown,
+  onCloseSplit,
+  isSplit,
+  onShowLocalHistory,
 }: EditorTabsProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
@@ -163,6 +178,32 @@ export default function EditorTabs({
         onSelect: () => onRevealInSidebar(target),
       });
     }
+    if (tab.kind === "doc" || tab.kind === "diff") {
+      if (onSplitRight) {
+        items.push({
+          label: t("menu.splitRight"),
+          onSelect: () => onSplitRight(tab.id),
+        });
+      }
+      if (onSplitDown) {
+        items.push({
+          label: t("menu.splitDown"),
+          onSelect: () => onSplitDown(tab.id),
+        });
+      }
+      if (isSplit && onCloseSplit) {
+        items.push({
+          label: t("menu.unsplit"),
+          onSelect: () => onCloseSplit(),
+        });
+      }
+    }
+    if (tab.kind === "doc" && onShowLocalHistory) {
+      items.push({
+        label: t("menu.localHistory"),
+        onSelect: () => onShowLocalHistory(path),
+      });
+    }
     return items;
   };
 
@@ -221,18 +262,31 @@ export default function EditorTabs({
           );
         })}
         </div>
-        {docTabs.length > 0 ? (
+        {docTabs.length > 0 || (isSplit && onCloseSplit) ? (
           <div className="editor-tabs-actions">
-            <button
-              type="button"
-              className="icon-button is-inline"
-              disabled={!canSave}
-              onClick={handleSaveButton}
-              title={`${t("editor.save")} (${SAVE_SHORTCUT})`}
-              aria-label={t("editor.save")}
-            >
-              <Save size={15} aria-hidden="true" />
-            </button>
+            {docTabs.length > 0 ? (
+              <button
+                type="button"
+                className="icon-button is-inline"
+                disabled={!canSave}
+                onClick={handleSaveButton}
+                title={`${t("editor.save")} (${SAVE_SHORTCUT})`}
+                aria-label={t("editor.save")}
+              >
+                <Save size={15} aria-hidden="true" />
+              </button>
+            ) : null}
+            {isSplit && onCloseSplit ? (
+              <button
+                type="button"
+                className="icon-button is-inline"
+                onClick={onCloseSplit}
+                title={t("menu.unsplitTip")}
+                aria-label={t("menu.unsplitTip")}
+              >
+                <Columns2 size={15} aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>

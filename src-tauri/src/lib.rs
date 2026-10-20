@@ -9,6 +9,7 @@ mod maven;
 mod lsp_config;
 mod lsp_detect;
 mod lsp_probe;
+mod local_history;
 mod offload;
 mod proc;
 mod run;
@@ -75,6 +76,10 @@ pub fn run() {
             fs::stat_entries,
             fs::find_files,
             fs::search_text,
+            local_history::local_history_record,
+            local_history::local_history_list,
+            local_history::local_history_get,
+            local_history::local_history_restore,
             fs::fs_allow_asset,
             fs::open_external,
             watch::fs_watch_start,
@@ -167,6 +172,7 @@ pub fn run() {
             shell_open::shell_open_take,
             tray::tray_labels,
             tray::app_exit,
+            tray::app_cancel_exit,
             sys::sys_memory,
             update::update_pending_load,
             update::update_pending_save,
