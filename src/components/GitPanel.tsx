@@ -25,7 +25,6 @@ import {
   Settings,
   Sparkles,
   SquarePlus,
-  Trash2,
   Undo2,
 } from "lucide-react";
 import ContextMenu from "./ContextMenu";
@@ -58,13 +57,13 @@ import { RECOVERY_MESSAGE } from "../lib/recovery";
 import { MOD_LABEL } from "../lib/sys";
 import { useI18n } from "../i18n";
 
-/** 提交树里要交给 App 落地的动作：开文件、写补丁、删文件、加忽略、看历史。 */
+/** 提交树里要交给 App 落地的动作：开文件、写补丁、回滚（未暂存改动恢复、新文件删除）、加忽略、看历史。 */
 export type CommitFileAction =
   | "editSource"
   | "patch"
   | "patchClipboard"
   | "history"
-  | "delete"
+  | "rollback"
   | "ignore";
 
 interface GitPanelProps {
@@ -104,14 +103,7 @@ interface GitPanelProps {
   /** 仓库根那一行显示的名字。 */
   repoName: string;
   /** 文件与目录菜单里需要动编辑器、对话框或日志的动作，落给 App。 */
-  onFileAction: (
-    action: CommitFileAction,
-    path: string,
-    staged: boolean,
-    isDirectory?: boolean,
-    /** 聚合目录动作对应的精确变更文件；删除时不得退回使用目录本身。 */
-    childPaths?: string[]
-  ) => void;
+  onFileAction: (action: CommitFileAction, path: string, staged: boolean, isDirectory?: boolean) => void;
   /** 已忽略那一行的「从忽略列表移除」：动的是盖住它的那条规则，落给 App。 */
   onUnignore: (relative: string) => void;
   /** 修正那一节里的文件：点开看的是那次提交里这一份的差异，不是工作区比对。 */
@@ -404,9 +396,6 @@ function GitPanel({
   const toggleGroup = (key: string) => setCollapsedGroups((current) => flip(current, key));
 
   const absolute = (relative: string) => git.absoluteOf(relative);
-  /** 未跟踪和冲突文件没有可安全恢复的索引版本，不参与文件夹回滚。 */
-  const hasRollbackable = (changes: GitChange[]) =>
-    changes.some((change) => !change.untracked && !change.conflicted);
 
   const openMenu = (event: ReactMouseEvent, items: MenuItem[]) => {
     event.preventDefault();
@@ -422,9 +411,6 @@ function GitPanel({
       const pathsAbsolute = paths.map(absolute);
       void (isStaged ? git.unstage(pathsAbsolute) : git.stage(pathsAbsolute));
     };
-    /** 回滚只适用于未暂存的已跟踪文件；未跟踪文件没有索引版本可恢复。 */
-    const canRollback = (targets: GitChange[]) => !isStaged && hasRollbackable(targets);
-    const rollback = (relative: string) => void git.restoreFile("", absolute(relative));
     const copyPath = (relative: string) => () => void navigator.clipboard.writeText(absolute(relative));
     /**
      * IDEA 的暂存树菜单（组 Git.Stage.Tree.Menu）。哪几项出现看这一行是什么状态：
@@ -461,19 +447,22 @@ function GitPanel({
                   : []),
               ]),
         { label: t("git.stashFiles"), icon: Archive, disabled: true },
-        ...(isStaged || change.untracked || change.conflicted
+        /*
+         * 未暂存这一侧只有「回滚」一个破坏性入口，不再另摆「删除」：新建文件没进过索引，
+         * 它的回滚本来就是把它删掉，两件事是同一件事。已跟踪的改动恢复索引内容、
+         * 未跟踪的新文件移入回收站，由 App 按文件当前状态分头落地。
+         */
+        ...(isStaged || change.conflicted
           ? []
           : [
               {
                 label: t("git.rollback"),
                 icon: Undo2,
-                // 回滚未暂存的修改到暂存区索引，空 revision 表示恢复至 index
-                onSelect: () => rollback(change.path),
+                onSelect: () => onFileAction("rollback", change.path, isStaged),
               },
             ]),
-        ...(change.untracked
-          ? [{ label: t("menu.delete"), icon: Trash2, onSelect: () => onFileAction("delete", change.path, isStaged) }]
-          : [{ label: t("git.removeVcs"), icon: Minus, disabled: true }]),
+        // 「从版本控制移除」只对已跟踪的文件有意义，未跟踪文件上不再摆这一格。
+        ...(change.untracked ? [] : [{ label: t("git.removeVcs"), icon: Minus, disabled: true }]),
         { label: t("git.ignoreFile"), icon: CircleSlash, onSelect: () => onFileAction("ignore", change.path, isStaged) },
       ],
       [
@@ -494,14 +483,15 @@ function GitPanel({
 
     /**
      * 文件夹菜单与文件菜单保持同一组序，只排除“编辑源文件”这类目录没有定义的动作。
-     * 显示差异把目录下的变更作为一组打开；删除只在整棵子树均未跟踪时出现，避免误删已跟踪文件。
+     * 显示差异把目录下的变更作为一组打开；回滚落在整棵子树上，不区分里面是已跟踪的改动还是新文件。
      */
     const directoryMenu = (node: DirNode): MenuItem[] => {
       const descendants = filesUnder(node);
       const first = descendants[0];
+      /* 子树里新文件与已跟踪改动的构成：决定「不带内容暂存」和「从版本控制移除」摆不摆。 */
       const deletePaths = folderDeletePaths(descendants);
       const hasUntracked = deletePaths.length > 0;
-      const allUntracked = deletePaths.length === descendants.length;
+      const hasTracked = deletePaths.length < descendants.length;
       return flatMenu([
         [
           {
@@ -513,27 +503,21 @@ function GitPanel({
             ? [{ label: t("git.stageNoContent"), icon: Plus, disabled: true }]
             : []),
           { label: t("git.stashFiles"), icon: Archive, disabled: true },
-          ...(canRollback(descendants)
-            ? [
+          /*
+           * 目录行是变更聚合节点，回滚把两件事一起做完：其下已跟踪文件的改动恢复索引内容，
+           * 未跟踪的新文件移入回收站（目录 pathspec 动不到它们，得按文件删）。删除与回滚
+           * 在这里是同一个动作，所以只有这一项，删之前 App 会把要删的文件列出来确认。
+           */
+          ...(isStaged
+            ? []
+            : [
                 {
                   label: t("git.rollback"),
                   icon: Undo2,
-                  // 目录 pathspec 会一次恢复其下全部已跟踪文件，并保留未跟踪文件。
-                  onSelect: () => rollback(node.path),
+                  onSelect: () => onFileAction("rollback", node.path, isStaged, true),
                 },
-              ]
-            : []),
-          ...(allUntracked
-            ? [
-                {
-                  label: t("menu.delete"),
-                  icon: Trash2,
-                  // 目录行是变更聚合节点：只删除这一组里实际列出的未跟踪文件，绝不删除物理目录。
-                  onSelect: () =>
-                    onFileAction("delete", node.path, isStaged, true, deletePaths),
-                },
-              ]
-            : [{ label: t("git.removeVcs"), icon: Minus, disabled: true }]),
+              ]),
+          ...(hasTracked ? [{ label: t("git.removeVcs"), icon: Minus, disabled: true }] : []),
           {
             label: t("git.ignoreDirectory"),
             icon: CircleSlash,
@@ -885,16 +869,16 @@ function GitPanel({
                           ? [{ label: t("git.stageNoContent"), icon: Plus, disabled: true }]
                           : []),
                         { label: t("git.stashFiles"), icon: Archive, disabled: true },
-                        ...(!isStaged && hasRollbackable(changes)
-                          ? [
+                        // 模块节点代表仓库根：已跟踪的改动一次全部恢复，其下的新文件同样移入回收站。
+                        ...(isStaged
+                          ? []
+                          : [
                               {
                                 label: t("git.rollback"),
                                 icon: Undo2,
-                                // 模块节点代表仓库根；`.` 让 Git 一次恢复全部已跟踪的未暂存改动。
-                                onSelect: () => void git.restoreFile("", "."),
+                                onSelect: () => onFileAction("rollback", "", isStaged, true),
                               },
-                            ]
-                          : []),
+                            ]),
                       ],
                       [
                         {

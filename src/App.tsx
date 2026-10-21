@@ -99,7 +99,7 @@ import {
   gitIgnoreRule,
   gitIndexShow,
   gitShow,
-  safeFolderDeletePaths,
+  rollbackTargets,
 } from "./lib/git";
 import { forgetIgnoredUnder } from "./lib/ignoredCache";
 import { lineChangeBaseline } from "./lib/lineChanges";
@@ -188,6 +188,8 @@ type PendingDialog = DialogRequest & {
   dir: string | null;
   /** 删除可以一次作用在一批路径上；缺省时只删 `entry` / `path` 那一条。 */
   many?: string[];
+  /** 回滚：删完新建文件之后再恢复的已跟踪改动，存交给 git 的 pathspec（`.` 表示仓库根）。 */
+  restore?: string;
 };
 
 /** 标签页里的一份比对：来源可以是工作区改动，也可以是某次提交里的文件。 */
@@ -2836,13 +2838,7 @@ export default function App() {
    * 补丁取 HEAD 到工作区这一段：暂存过的路径工作区与索引同内容，范围一致。
    */
   const commitFileAction = useCallback(
-    async (
-      action: CommitFileAction,
-      path: string,
-      _staged: boolean,
-      isDirectory = false,
-      childPaths: string[] = []
-    ) => {
+    async (action: CommitFileAction, path: string, _staged: boolean, isDirectory = false) => {
       if (!git.root) return;
       const absolute = path ? git.absoluteOf(path) : "";
       switch (action) {
@@ -2871,30 +2867,27 @@ export default function App() {
         case "history":
           showFileHistory(path);
           break;
-        case "delete": {
-          if (isDirectory) {
-            // Git 面板里的目录是聚合节点，不是磁盘删除目标。只接受仍处于未跟踪状态、
-            // 且确实位于该节点下的精确文件路径；空清单直接拒绝，绝不回退到递归删目录。
-            const relatives = safeFolderDeletePaths(path, childPaths, git.untrackedChanges);
-            if (relatives.length === 0) return;
-            const many = relatives.map((child) => git.absoluteOf(child));
-            setDialog({
-              kind: "delete",
-              name: basenameOf(relatives.length === 1 ? relatives[0] : path),
-              path: many[0],
-              isDirectory: false,
-              count: many.length,
-              many,
-              entry: null,
-              dir: null,
-            });
+        /*
+         * 回滚把两件事合到一起：已跟踪文件的改动恢复成索引内容；新建、还没进过暂存区的新文件
+         * 没有索引版本可恢复，它的回滚就是把这个文件移入回收站。后者会丢文件，所以先列成清单
+         * 让用户确认一次，确认后删文件与恢复改动一起做完。
+         */
+        case "rollback": {
+          const targets = rollbackTargets(path, isDirectory, git.trackedChanges, git.untrackedChanges);
+          // 目录节点与仓库根都是聚合出来的，交给 git 的 pathspec 用 `.` 表示整个仓库根。
+          const restore = path === "" ? "." : absolute;
+          if (targets.delete.length === 0) {
+            if (targets.restore) await git.restoreFile("", restore);
             break;
           }
           setDialog({
-            kind: "delete",
-            name: basenameOf(absolute),
-            path: absolute,
-            isDirectory: false,
+            kind: "rollback",
+            name: basenameOf(targets.delete[0]),
+            count: targets.delete.length,
+            many: targets.delete.map((relative) => git.absoluteOf(relative)),
+            fileList: targets.delete,
+            restoreTracked: targets.restore,
+            restore: targets.restore ? restore : undefined,
             entry: null,
             dir: null,
           });
@@ -3219,6 +3212,101 @@ export default function App() {
     [docs]
   );
 
+  /**
+   * 一次删一批路径：去重、剔掉被父目录覆盖的子项，再走一遍带进度的删除，最后刷新文件树与变更清单。
+   * 目录树的删除与 Git 面板「回滚」（未跟踪新文件的回滚就是删除）都落在这里。
+   */
+  const deleteTargets = useCallback(
+    async (rawTargets: string[]) => {
+      // 若多选中同时包含父目录与该目录下的子项，过滤掉已被父目录覆盖的子路径，避免父目录删完后再删子项报 NotFound。
+      // 注意：去重与父子包含判断必须使用 samePath，避免 Windows 大小写异构导致同一路径互相排除变为空数组。
+      const targets = rawTargets.filter(
+        (target, idx) =>
+          rawTargets.findIndex((t) => samePath(t, target)) === idx &&
+          !rawTargets.some((other) => !samePath(other, target) && pathWithin(other, target))
+      );
+      if (targets.length === 0) return;
+      if (deleteStatusTimerRef.current !== null) {
+        window.clearTimeout(deleteStatusTimerRef.current);
+        deleteStatusTimerRef.current = null;
+      }
+      if (deleteModalDelayRef.current !== null) {
+        window.clearTimeout(deleteModalDelayRef.current);
+        deleteModalDelayRef.current = null;
+      }
+      fsDeletingRef.current = true;
+      deleteBaseCountRef.current = 0;
+      deleteCurrentTargetCountRef.current = 0;
+      const showModalImmediately = targets.length > 1;
+      setDeleteStatus({
+        phase: "deleting",
+        name: basenameOf(targets[0]),
+        deletedCount: 0,
+        current: 1,
+        total: targets.length,
+        modalVisible: showModalImmediately,
+      });
+      // 参照 IDEA `ProgressWindow.DEFAULT_PROGRESS_DELAY_MILLIS`：单条目若在 180ms 内秒删完则不闪模态框，
+      // 删大目录耗时超过阈值时自动弹出居中模态进度框。
+      if (!showModalImmediately) {
+        deleteModalDelayRef.current = window.setTimeout(() => {
+          deleteModalDelayRef.current = null;
+          setDeleteStatus((prev) =>
+            prev && prev.phase === "deleting" ? { ...prev, modalVisible: true } : prev
+          );
+        }, 180);
+      }
+      let completed = false;
+      try {
+        for (let i = 0; i < targets.length; i++) {
+          const target = targets[i];
+          deleteCurrentTargetCountRef.current = 0;
+          setDeleteStatus((prev) => ({
+            phase: "deleting",
+            name: basenameOf(target),
+            deletedCount: deleteBaseCountRef.current,
+            current: i + 1,
+            total: targets.length,
+            modalVisible: prev?.modalVisible ?? showModalImmediately,
+          }));
+          await deleteEntry(target);
+          deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
+          dropDocument(target);
+        }
+        setExplorerPick([]);
+        completed = true;
+      } finally {
+        fsDeletingRef.current = false;
+        suppressWatchUntilRef.current = Date.now() + 500;
+        if (deleteModalDelayRef.current !== null) {
+          window.clearTimeout(deleteModalDelayRef.current);
+          deleteModalDelayRef.current = null;
+        }
+        if (!completed) {
+          setDeleteStatus(null);
+        }
+      }
+      refreshTree();
+      void git.refreshChanges();
+      if (completed) {
+        const finalDeletedCount = Math.max(targets.length, deleteBaseCountRef.current);
+        setDeleteStatus({
+          phase: "done",
+          name: basenameOf(targets[0]),
+          deletedCount: finalDeletedCount,
+          current: targets.length,
+          total: targets.length,
+          modalVisible: false,
+        });
+        deleteStatusTimerRef.current = window.setTimeout(() => {
+          deleteStatusTimerRef.current = null;
+          setDeleteStatus(null);
+        }, 2400);
+      }
+    },
+    [deleteEntry, dropDocument, git.refreshChanges, refreshTree]
+  );
+
   const submitDialog = useCallback(
     async (name: string, extra: string) => {
       if (!dialog) return;
@@ -3290,95 +3378,18 @@ export default function App() {
           refreshTree();
         }
         if (kind === "delete") {
-          // 目录树可以多选一起删，提交树那边只给一条绝对路径；删除期间挂起磁盘监听刷新，删完一次性刷新。
-          const rawTargets =
-            dialog.many ?? [entry?.path ?? path].filter((held): held is string => held !== undefined);
-          // 若多选中同时包含父目录与该目录下的子项，过滤掉已被父目录覆盖的子路径，避免父目录删完后再删子项报 NotFound。
-          // 注意：去重与父子包含判断必须使用 samePath，避免 Windows 大小写异构导致同一路径互相排除变为空数组。
-          const targets = rawTargets.filter(
-            (target, idx) =>
-              rawTargets.findIndex((t) => samePath(t, target)) === idx &&
-              !rawTargets.some((other) => !samePath(other, target) && pathWithin(other, target))
+          // 目录树可以多选一起删，提交树那边只给一条绝对路径。
+          await deleteTargets(
+            dialog.many ?? [entry?.path ?? path].filter((held): held is string => held !== undefined)
           );
-          if (targets.length > 0) {
-            if (deleteStatusTimerRef.current !== null) {
-              window.clearTimeout(deleteStatusTimerRef.current);
-              deleteStatusTimerRef.current = null;
-            }
-            if (deleteModalDelayRef.current !== null) {
-              window.clearTimeout(deleteModalDelayRef.current);
-              deleteModalDelayRef.current = null;
-            }
-            fsDeletingRef.current = true;
-            deleteBaseCountRef.current = 0;
-            deleteCurrentTargetCountRef.current = 0;
-            const showModalImmediately = targets.length > 1;
-            setDeleteStatus({
-              phase: "deleting",
-              name: basenameOf(targets[0]),
-              deletedCount: 0,
-              current: 1,
-              total: targets.length,
-              modalVisible: showModalImmediately,
-            });
-            // 参照 IDEA `ProgressWindow.DEFAULT_PROGRESS_DELAY_MILLIS`：单条目若在 180ms 内秒删完则不闪模态框，
-            // 删大目录耗时超过阈值时自动弹出居中模态进度框。
-            if (!showModalImmediately) {
-              deleteModalDelayRef.current = window.setTimeout(() => {
-                deleteModalDelayRef.current = null;
-                setDeleteStatus((prev) =>
-                  prev && prev.phase === "deleting" ? { ...prev, modalVisible: true } : prev
-                );
-              }, 180);
-            }
-            let completed = false;
-            try {
-              for (let i = 0; i < targets.length; i++) {
-                const target = targets[i];
-                deleteCurrentTargetCountRef.current = 0;
-                setDeleteStatus((prev) => ({
-                  phase: "deleting",
-                  name: basenameOf(target),
-                  deletedCount: deleteBaseCountRef.current,
-                  current: i + 1,
-                  total: targets.length,
-                  modalVisible: prev?.modalVisible ?? showModalImmediately,
-                }));
-                await deleteEntry(target);
-                deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
-                dropDocument(target);
-              }
-              setExplorerPick([]);
-              completed = true;
-            } finally {
-              fsDeletingRef.current = false;
-              suppressWatchUntilRef.current = Date.now() + 500;
-              if (deleteModalDelayRef.current !== null) {
-                window.clearTimeout(deleteModalDelayRef.current);
-                deleteModalDelayRef.current = null;
-              }
-              if (!completed) {
-                setDeleteStatus(null);
-              }
-            }
-            refreshTree();
-            void git.refreshChanges();
-            if (completed) {
-              const finalDeletedCount = Math.max(targets.length, deleteBaseCountRef.current);
-              setDeleteStatus({
-                phase: "done",
-                name: basenameOf(targets[0]),
-                deletedCount: finalDeletedCount,
-                current: targets.length,
-                total: targets.length,
-                modalVisible: false,
-              });
-              deleteStatusTimerRef.current = window.setTimeout(() => {
-                deleteStatusTimerRef.current = null;
-                setDeleteStatus(null);
-              }, 2400);
-            }
-          }
+        }
+        /*
+         * 回滚：先删掉未跟踪的新文件（走同一套删除流程，进系统回收站），再恢复已跟踪的改动。
+         * 用户取消确认框的话，两件事都不做——半途恢复改动会让「取消」变得说不清。
+         */
+        if (kind === "rollback") {
+          await deleteTargets(dialog.many ?? []);
+          if (dialog.restore) await git.restoreFile("", dialog.restore);
         }
         if (kind === "discard" && path) {
           disposeModel(path);
@@ -3425,6 +3436,7 @@ export default function App() {
     },
     [
       closeBatch,
+      deleteTargets,
       dialog,
       docs,
       dropDocument,

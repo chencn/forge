@@ -522,21 +522,32 @@ export function folderDeletePaths(changes: GitChange[]): string[] {
   return [...new Set(changes.filter((change) => change.untracked).map((change) => change.path))];
 }
 
+/** 仓库相对路径是否落在某个目录节点下；`folder` 为空表示仓库根，任何路径都在它下面。 */
+export function underFolder(relative: string, folder: string): boolean {
+  if (folder === "") return true;
+  return relative.startsWith(`${folder.replace(/\/+$/, "")}/`);
+}
+
 /**
- * 在执行层再次收窄聚合目录的删除清单：路径必须仍是未跟踪文件，并位于该目录之下。
- * 即使调用方误传目录节点自身或过期/越界路径，也不会把它交给磁盘删除。
+ * 一条文件路径或一个目录节点上「回滚」要处理的两类目标：
+ * 已跟踪的改动有索引版本，恢复成索引内容即可；未跟踪的新文件没进过索引，
+ * 它的回滚就是把文件删掉，两者合并成一次动作。
+ * @param folder 仓库相对路径，空串表示仓库根
+ * @param isDirectory 为假时只看 `folder` 这一条路径本身
+ * @returns `delete`：要移入回收站的新文件（仓库相对路径）；`restore`：是否有已跟踪改动要恢复
  */
-export function safeFolderDeletePaths(
+export function rollbackTargets(
   folder: string,
-  requested: string[],
-  currentChanges: GitChange[]
-): string[] {
-  const base = folder.replace(/\/+$/, "");
-  const prefix = base ? `${base}/` : "";
-  const allowed = new Set(folderDeletePaths(currentChanges));
-  return [...new Set(requested)].filter(
-    (path) => path !== base && (prefix === "" || path.startsWith(prefix)) && allowed.has(path)
-  );
+  isDirectory: boolean,
+  tracked: GitChange[],
+  untracked: GitChange[]
+): { delete: string[]; restore: boolean } {
+  const inScope = (change: GitChange) =>
+    isDirectory ? underFolder(change.path, folder) : change.path === folder;
+  return {
+    delete: untracked.filter(inScope).map((change) => change.path),
+    restore: tracked.some(inScope),
+  };
 }
 
 /**

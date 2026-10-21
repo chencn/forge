@@ -13,6 +13,7 @@ export type DialogKind =
   | "patch"
   | "rename"
   | "delete"
+  | "rollback"
   | "deleteRef"
   | "resetHard"
   | "pushUpTo"
@@ -28,6 +29,13 @@ export interface DialogRequest {
   name: string;
   /** 删除确认里显示的完整路径；创建补丁时是要落进补丁的那个文件。 */
   path?: string;
+  /**
+   * 回滚确认里要移入回收站的新文件清单（仓库相对路径）：删除与回滚在 Git 面板是同一个动作，
+   * 用户得先看见这一次会带走哪些文件。
+   */
+  fileList?: string[];
+  /** 回滚时除了删新文件，还有已跟踪的改动要恢复成索引内容，确认框里多提一句。 */
+  restoreTracked?: boolean;
   /** 删除对象是否为目录，决定用哪句告警文案。 */
   isDirectory?: boolean;
   /** 一次删一批时的条数；大于 1 时文案改成「某某 等 N 项」。 */
@@ -61,6 +69,7 @@ const TITLE_KEY: Record<DialogKind, TranslationKey> = {
   patch: "git.dialogPatch",
   rename: "dialog.rename",
   delete: "dialog.delete",
+  rollback: "git.rollback",
   deleteRef: "git.dialogDeleteRef",
   resetHard: "git.dialogResetHard",
   pushUpTo: "git.dialogPushUpTo",
@@ -107,6 +116,7 @@ const UPDATE_KINDS: DialogKind[] = ["installUpdate", "restartUpdate"];
  */
 const CONFIRM_KEY: Partial<Record<DialogKind, TranslationKey>> = {
   delete: "dialog.confirm",
+  rollback: "dialog.confirm",
   deleteRef: "dialog.confirm",
   resetHard: "dialog.confirm",
   pushUpTo: "dialog.confirm",
@@ -140,6 +150,7 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
   const secondField = SECOND_FIELD[request.kind];
   const danger =
     request.kind === "delete" ||
+    request.kind === "rollback" ||
     request.kind === "deleteRef" ||
     request.kind === "resetHard" ||
     request.kind === "discard" ||
@@ -170,6 +181,11 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
       return request.refKind === "remote"
         ? t("git.deleteRemoteWarning", { name: request.name })
         : t("git.deleteRefWarning", { name: request.name });
+    }
+    if (request.kind === "rollback") {
+      return (request.count ?? 0) > 1
+        ? t("git.rollbackNewFilesWarning", { name: request.name, count: request.count ?? 0 })
+        : t("git.rollbackNewFileWarning", { name: request.name });
     }
     if (request.kind === "delete" && request.count !== undefined && request.count > 1) {
       return t("dialog.deleteManyWarning", { name: request.name, count: request.count });
@@ -230,6 +246,18 @@ export default function PromptDialog({ request, onSubmit, onCancel }: PromptDial
         {!withInput ? (
           <>
             <p className="dialog-body">{bodyText()}</p>
+            {request.fileList && request.fileList.length > 0 ? (
+              <ul className="dialog-file-list">
+                {request.fileList.map((item) => (
+                  <li key={item} title={item}>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {request.restoreTracked ? (
+              <p className="dialog-body">{t("git.rollbackTrackedNote")}</p>
+            ) : null}
             {request.path ? (
               <p className="dialog-note" title={request.path}>
                 {request.path}

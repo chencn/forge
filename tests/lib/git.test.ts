@@ -8,7 +8,7 @@ import {
   isDeletedMark,
   markClass,
   recoveryOf,
-  safeFolderDeletePaths,
+  rollbackTargets,
 } from "../../src/lib/git";
 import type { GitChange, GitProbe } from "../../src/lib/git";
 
@@ -121,21 +121,37 @@ describe("folderDeletePaths Git 文件夹删除范围", () => {
     expect(targets).toEqual(["src/new-a.ts", "src/nested/new-b.ts"]);
     expect(targets).not.toContain("src");
   });
+});
 
-  it("执行层拒绝目录自身、目录外路径和已不再未跟踪的过期路径", () => {
-    const current = [
-      change({ path: "src/new-a.ts", untracked: true, workStatus: "?" }),
-      change({ path: "src/nested/new-b.ts", untracked: true, workStatus: "?" }),
-      change({ path: "other/outside.ts", untracked: true, workStatus: "?" }),
-    ];
+describe("rollbackTargets Git 回滚范围", () => {
+  const tracked = change({ path: "src/tracked.ts", workStatus: "M" });
+  const inside = change({ path: "src/nested/new-b.ts", untracked: true, workStatus: "?" });
+  const outside = change({ path: "other/outside.ts", untracked: true, workStatus: "?" });
 
-    expect(
-      safeFolderDeletePaths(
-        "src",
-        ["src", "src/new-a.ts", "src/nested/new-b.ts", "src/stale.ts", "other/outside.ts"],
-        current
-      )
-    ).toEqual(["src/new-a.ts", "src/nested/new-b.ts"]);
+  it("目录节点覆盖其下全部新文件，并把仓库根交给 git 用 `.` 表示", () => {
+    expect(rollbackTargets("src", true, [tracked], [inside, outside])).toEqual({
+      delete: ["src/nested/new-b.ts"],
+      restore: true,
+    });
+    // 仓库根（空路径）回滚带走全部未跟踪文件，聚合目录自身永远不进清单。
+    expect(rollbackTargets("", true, [tracked], [inside, outside])).toEqual({
+      delete: ["src/nested/new-b.ts", "other/outside.ts"],
+      restore: true,
+    });
+  });
+
+  it("只看这一条文件路径时不带上同目录的邻居", () => {
+    expect(rollbackTargets("src/nested/new-b.ts", false, [tracked], [inside, outside])).toEqual({
+      delete: ["src/nested/new-b.ts"],
+      restore: false,
+    });
+  });
+
+  it("都是新文件时没有已跟踪改动要恢复", () => {
+    expect(rollbackTargets("src", true, [], [inside])).toEqual({
+      delete: ["src/nested/new-b.ts"],
+      restore: false,
+    });
   });
 });
 
