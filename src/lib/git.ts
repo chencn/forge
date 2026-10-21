@@ -515,6 +515,31 @@ export function aggregateMark(changes: GitChange[]): string | null {
 }
 
 /**
+ * Git 变更树中的目录只是聚合节点；删除时只能落到其中实际列出的未跟踪文件。
+ * 返回精确文件路径而不是目录 pathspec，避免递归删除目录内未显示的正常或忽略文件。
+ */
+export function folderDeletePaths(changes: GitChange[]): string[] {
+  return [...new Set(changes.filter((change) => change.untracked).map((change) => change.path))];
+}
+
+/**
+ * 在执行层再次收窄聚合目录的删除清单：路径必须仍是未跟踪文件，并位于该目录之下。
+ * 即使调用方误传目录节点自身或过期/越界路径，也不会把它交给磁盘删除。
+ */
+export function safeFolderDeletePaths(
+  folder: string,
+  requested: string[],
+  currentChanges: GitChange[]
+): string[] {
+  const base = folder.replace(/\/+$/, "");
+  const prefix = base ? `${base}/` : "";
+  const allowed = new Set(folderDeletePaths(currentChanges));
+  return [...new Set(requested)].filter(
+    (path) => path !== base && (prefix === "" || path.startsWith(prefix)) && allowed.has(path)
+  );
+}
+
+/**
  * 目录聚合标记表：键为仓库相对路径（正斜杠），值为聚合字母，供目录名和圆点染色。
  * 每个变更沿祖先链向上累加，规则同 {@link aggregateMark}。
  * @param changes 变更清单

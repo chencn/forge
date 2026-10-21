@@ -767,10 +767,24 @@ impl Detector {
         };
         let workdir = self.workdir(dir);
         let file = slashes(&rel_path(&self.root, &path));
-        // 脚本键各占一行，装订线就指着它主张所在的那一行。
-        let lines = object_key_lines(&text, "scripts")
-            .into_iter()
-            .collect::<HashMap<_, _>>();
+        // 脚本键各占一行，装订线就指着它主张所在的那一行。这一遍还带着键在文件里的出现次序，
+        // 条目就按它排：`serde_json::Map` 底下是 BTreeMap，直接迭代 `scripts` 出来的是字母序，
+        // 和 `package.json` 里写的对不上。
+        let keyed = object_key_lines(&text, "scripts");
+        let lines = keyed.iter().cloned().collect::<HashMap<_, _>>();
+        let mut order: Vec<&str> = Vec::new();
+        for (name, _) in &keyed {
+            // 成员资格以解析出来的 `scripts` 为准；重复的键（JSON 允许）只留头一次。
+            if scripts.contains_key(name) && !order.contains(&name.as_str()) {
+                order.push(name);
+            }
+        }
+        // 文本扫描理论上不会漏键，真漏了也不能把脚本吞掉：补在末尾，次序差一条比少一条强。
+        for name in scripts.keys() {
+            if !order.contains(&name.as_str()) {
+                order.push(name);
+            }
+        }
         // 必须经包管理器跑，不能把脚本正文直接丢给 cmd：`vue-cli-service`、`vite` 这些装在
         // `node_modules/.bin`，只有 npm 会给子进程加上这一条 PATH，裸 cmd 找不到程序就是退出码 1。
         let client = npm_client(dir, &self.root);
@@ -782,7 +796,7 @@ impl Detector {
         } else {
             None
         };
-        for (name, _) in scripts {
+        for name in order {
             // 脚本键是 package.json 里的任意 JSON 字符串，先过白名单再拼命令行。
             if !safe_component(name) {
                 continue;
@@ -793,7 +807,7 @@ impl Detector {
             };
             self.push(RunConfiguration {
                 id: format!("npm:{workdir}:{name}"),
-                name: name.clone(),
+                name: name.to_string(),
                 kind: RunKind::Npm,
                 command: line(&[client, "run", name]),
                 working_dir: workdir.clone(),
@@ -2093,10 +2107,15 @@ fn run_detect_impl(root: String) -> Result<RunDetectOutcome, String> {
         detector.bare_python();
         detector.bare_shell();
     }
+    // 只比到体系这一层，组内保持识别顺序：一份 `package.json` 的脚本是连着 push 进来的，
+    // 次序就是它在文件里写的次序。以前在同体系里再按脚本名比一次，两个子项目的 `dev` 会被
+    // 凑到一起，同一份 `package.json` 的条目反倒被拆散；名字序也不是文件里的书写顺序。
+    // 体系内按运行目录分块（不比大小写，工程根那个空串排最前），这样一眼看得出来是哪几个
+    // 子项目；块内仍是识别顺序，因为 `sort_by` 是稳定排序。
     detector.configs.sort_by(|a, b| {
         kind_rank(a.kind)
             .cmp(&kind_rank(b.kind))
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.working_dir.to_lowercase().cmp(&b.working_dir.to_lowercase()))
     });
     Ok(RunDetectOutcome {
         configs: detector.configs,
@@ -2163,6 +2182,43 @@ mod tests {
         let build = find(&outcome, "build");
         assert_eq!(build.working_dir, "web");
         assert_eq!(build.kind, RunKind::Npm);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 一份 `package.json` 的脚本要连着排，次序就是文件里的书写顺序。
+    ///
+    /// 排序只比到体系这一层就够，再按脚本名比一次会把两个子项目的 `dev` 凑到一起、
+    /// 把同一份 `package.json` 的条目拆散。两个包里的脚本都故意不按字母序写：按名字排
+    /// 会得到 api / build / dev / zebra，那正是这条要拦住的。
+    #[test]
+    fn scripts_of_one_package_json_stay_adjacent_in_file_order() {
+        let dir = temp_project("npm-order");
+        write(
+            &dir,
+            "mobile/package.json",
+            r#"{"scripts":{"dev":"vite","zebra":"echo z","api":"node ."}}"#,
+        );
+        write(
+            &dir,
+            "desktop/package.json",
+            r#"{"scripts":{"build":"vite build","dev":"vite"}}"#,
+        );
+        let outcome = run_detect_impl(dir.to_string_lossy().into_owned()).unwrap();
+        let order = outcome
+            .configs
+            .iter()
+            .map(|config| (config.working_dir.as_str(), config.name.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                ("desktop", "build"),
+                ("desktop", "dev"),
+                ("mobile", "dev"),
+                ("mobile", "zebra"),
+                ("mobile", "api"),
+            ]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

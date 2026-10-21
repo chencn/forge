@@ -7,7 +7,7 @@ import Popover from "./Popover";
 import { RerunIcon, RunIcon, StopIcon } from "./RunIcons";
 import { RunConfigIcon, RUN_KIND_ORDER, runKindLabel } from "../lib/runIcons";
 import { codedError, describeError } from "../lib/errors";
-import { missingTool, newShellConfig, resolveCommand } from "../lib/runConfigs";
+import { configLabel, missingTool, newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
 import type { RunConfigController } from "../hooks/useRunConfigs";
 import type { RunController } from "../hooks/useRunSessions";
@@ -80,9 +80,10 @@ export default function RunControls({
 
   const sections = useMemo(() => {
     const needle = filter.trim().toLowerCase();
+    // 展示名含工作目录，输 `mobile` 也能命中的是 frontend-mobile 那几条脚本。
     const matches = (config: RunConfiguration) =>
       !needle ||
-      config.name.toLowerCase().includes(needle) ||
+      configLabel(config).toLowerCase().includes(needle) ||
       config.command.toLowerCase().includes(needle);
     const pool = configs.configs.filter(matches);
     const pinned = pool.filter((config) => config.pinned);
@@ -206,7 +207,7 @@ export default function RunControls({
         {selected ? <RunConfigIcon config={selected} root={configs.workspace} /> : null}
         {selectedRunCount > 0 ? <span className="run-dot is-running" aria-hidden="true" /> : null}
         <span className={`run-selector-name${selected ? "" : " is-empty"}`}>
-          {selected ? selected.name : t("run.none")}
+          {selected ? configLabel(selected) : t("run.none")}
         </span>
         <ChevronDown size={12} aria-hidden="true" />
       </button>
@@ -256,7 +257,7 @@ export default function RunControls({
                           role="menuitem"
                           className={`run-row-main${config.id === selected?.id ? " is-selected" : ""}${blocked ? " is-blocked" : ""}`}
                           // 名字到上限就省略号，完整名字和命令行都收在这条悬停里。
-                          title={`${config.name}\n${blocked ?? resolveCommand(config.command, configs.tools)}`}
+                          title={`${configLabel(config)}\n${blocked ?? resolveCommand(config.command, configs.tools)}`}
                           onClick={() => {
                             if (blocked) return;
                             // 点条目本身选中该配置并收起下拉面板；要直接跑就点右边那颗三角，和 IDEA 一样分两件事。
@@ -269,7 +270,7 @@ export default function RunControls({
                           onContextMenu={(event) => rowMenu(event, config)}
                         >
                           <RunConfigIcon config={config} root={configs.workspace} />
-                          <span className="run-row-name">{config.name}</span>
+                          <span className="run-row-name">{configLabel(config)}</span>
                           {running ? (
                             <span className="run-dot is-running" aria-hidden="true" />
                           ) : null}
@@ -279,7 +280,7 @@ export default function RunControls({
                           <button
                             type="button"
                             className="icon-button is-inline run-row-action is-stop"
-                            title={t("run.stopNamed", { name: config.name })}
+                            title={t("run.stopNamed", { name: configLabel(config) })}
                             onClick={() => stopOf(config)}
                           >
                             <Square size={10} aria-hidden="true" />
@@ -288,7 +289,7 @@ export default function RunControls({
                           <button
                             type="button"
                             className="icon-button is-inline run-row-action is-run"
-                            title={t("run.startNamed", { name: config.name })}
+                            title={t("run.startNamed", { name: configLabel(config) })}
                             disabled={blocked !== null}
                             onClick={() => {
                               if (blocked) return;
@@ -359,8 +360,8 @@ export default function RunControls({
           selected
             ? blockedOf(selected) ??
               (selectedRunCount > 0
-                ? t("run.rerunNamed", { name: selected.name })
-                : t("run.startNamed", { name: selected.name }))
+                ? t("run.rerunNamed", { name: configLabel(selected) })
+                : t("run.startNamed", { name: configLabel(selected) }))
             : t("run.addCustom")
         }
         onClick={() => {

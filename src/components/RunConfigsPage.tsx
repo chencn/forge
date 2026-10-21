@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Copy, FolderOpen, Plus, Trash } from "lucide-react";
 import Select from "./Select";
 import { RUN_KIND_ORDER, RunConfigIcon, runKindLabel } from "../lib/runIcons";
-import { newShellConfig, resolveCommand } from "../lib/runConfigs";
+import { configLabel, newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { EnvVar, RunConfiguration, RunKind } from "../lib/runConfigs";
 import type { RunConfigController } from "../hooks/useRunConfigs";
 import { basenameOf, joinPath } from "../lib/format";
@@ -243,7 +243,7 @@ function RunConfigGroup({
           onClick={() => onPick(config.id)}
         >
           <RunConfigIcon config={config} root={root} />
-          <span className="run-config-name">{config.name}</span>
+          <span className="run-config-name">{configLabel(config)}</span>
         </button>
       ))}
     </div>

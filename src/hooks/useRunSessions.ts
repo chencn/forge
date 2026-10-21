@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { procKill, procStart } from "../lib/proc";
 import type { ProcChunk, ProcExit, ProcSessionId } from "../lib/proc";
-import { ensureHelper, missingTool, resolveCommand } from "../lib/runConfigs";
+import { configLabel, ensureHelper, missingTool, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { joinPath, samePath } from "../lib/format";
 import { ChunkBuffer } from "../lib/chunkBuffer";
@@ -21,7 +21,7 @@ export interface RunSession {
   id: ProcSessionId;
   /** 所属的工作区根目录。 */
   root: string;
-  /** 配置名，会话标签上显示的就是它。 */
+  /** 会话标签上显示的名字：带工作目录的展示名，几个子项目都有 `dev` 时靠它区分。 */
   name: string;
   kind: RunConfiguration["kind"];
   /** 实际跑的那一行：占位已经按本机展开过。 */
@@ -230,7 +230,7 @@ export function useRunSessions(configs: RunConfigController) {
           const entry: RunSession = {
             id,
             root: targetRoot,
-            name: config.name,
+            name: configLabel(config),
             kind: config.kind,
             command,
             config,

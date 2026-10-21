@@ -176,3 +176,16 @@ export function newShellConfig(id: string, name: string): RunConfiguration {
     helper: null,
   };
 }
+
+/**
+ * 一条配置在界面上该显示的名字。
+ *
+ * 一个工程里常有几个 npm 子项目各带一个 `dev` 脚本，光看脚本名认不出是哪一份（id 里
+ * 本来就带了工作目录，只是没显示出来）。所以把工作目录缀在前面：`frontend-mobile: dev`；
+ * 跑在工程根的那条没有工作目录，照旧只有脚本名。
+ *
+ * 只用于显示与搜索：`name` 仍是脚本名本身，落盘和按 `id` 认人都照旧。
+ */
+export function configLabel(config: RunConfiguration): string {
+  return config.workingDir ? `${config.workingDir}: ${config.name}` : config.name;
+}

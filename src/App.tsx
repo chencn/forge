@@ -91,7 +91,16 @@ import {
   setKeymapScheme,
   setOpenTargetHandler,
 } from "./lib/monacoEnv";
-import { EMPTY_TREE_HASH, gitCommitDetail, gitCommitFile, gitDiffText, gitIgnoreRule, gitIndexShow, gitShow } from "./lib/git";
+import {
+  EMPTY_TREE_HASH,
+  gitCommitDetail,
+  gitCommitFile,
+  gitDiffText,
+  gitIgnoreRule,
+  gitIndexShow,
+  gitShow,
+  safeFolderDeletePaths,
+} from "./lib/git";
 import { forgetIgnoredUnder } from "./lib/ignoredCache";
 import { lineChangeBaseline } from "./lib/lineChanges";
 import type {
@@ -2827,7 +2836,13 @@ export default function App() {
    * 补丁取 HEAD 到工作区这一段：暂存过的路径工作区与索引同内容，范围一致。
    */
   const commitFileAction = useCallback(
-    async (action: CommitFileAction, path: string, _staged: boolean, isDirectory = false) => {
+    async (
+      action: CommitFileAction,
+      path: string,
+      _staged: boolean,
+      isDirectory = false,
+      childPaths: string[] = []
+    ) => {
       if (!git.root) return;
       const absolute = path ? git.absoluteOf(path) : "";
       switch (action) {
@@ -2856,16 +2871,35 @@ export default function App() {
         case "history":
           showFileHistory(path);
           break;
-        case "delete":
+        case "delete": {
+          if (isDirectory) {
+            // Git 面板里的目录是聚合节点，不是磁盘删除目标。只接受仍处于未跟踪状态、
+            // 且确实位于该节点下的精确文件路径；空清单直接拒绝，绝不回退到递归删目录。
+            const relatives = safeFolderDeletePaths(path, childPaths, git.untrackedChanges);
+            if (relatives.length === 0) return;
+            const many = relatives.map((child) => git.absoluteOf(child));
+            setDialog({
+              kind: "delete",
+              name: basenameOf(relatives.length === 1 ? relatives[0] : path),
+              path: many[0],
+              isDirectory: false,
+              count: many.length,
+              many,
+              entry: null,
+              dir: null,
+            });
+            break;
+          }
           setDialog({
             kind: "delete",
             name: basenameOf(absolute),
             path: absolute,
-            isDirectory,
+            isDirectory: false,
             entry: null,
             dir: null,
           });
           break;
+        }
         case "ignore":
           await addToGitignore([isDirectory ? `${path.replace(/\/$/, "")}/` : path]);
           break;

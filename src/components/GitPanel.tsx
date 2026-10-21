@@ -34,7 +34,14 @@ import { flatMenu } from "./ContextMenu";
 import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import type { GitChange, GitCommitDetail, GitCommitFile } from "../lib/git";
-import { changeMark, folderMarks, gitCommitDetail, isDeletedMark, markClass } from "../lib/git";
+import {
+  changeMark,
+  folderDeletePaths,
+  folderMarks,
+  gitCommitDetail,
+  isDeletedMark,
+  markClass,
+} from "../lib/git";
 import { loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
 import {
   cancelAiCommit,
@@ -101,7 +108,9 @@ interface GitPanelProps {
     action: CommitFileAction,
     path: string,
     staged: boolean,
-    isDirectory?: boolean
+    isDirectory?: boolean,
+    /** 聚合目录动作对应的精确变更文件；删除时不得退回使用目录本身。 */
+    childPaths?: string[]
   ) => void;
   /** 已忽略那一行的「从忽略列表移除」：动的是盖住它的那条规则，落给 App。 */
   onUnignore: (relative: string) => void;
@@ -490,8 +499,9 @@ function GitPanel({
     const directoryMenu = (node: DirNode): MenuItem[] => {
       const descendants = filesUnder(node);
       const first = descendants[0];
-      const hasUntracked = descendants.some((change) => change.untracked);
-      const allUntracked = descendants.every((change) => change.untracked);
+      const deletePaths = folderDeletePaths(descendants);
+      const hasUntracked = deletePaths.length > 0;
+      const allUntracked = deletePaths.length === descendants.length;
       return flatMenu([
         [
           {
@@ -518,7 +528,9 @@ function GitPanel({
                 {
                   label: t("menu.delete"),
                   icon: Trash2,
-                  onSelect: () => onFileAction("delete", node.path, isStaged, true),
+                  // 目录行是变更聚合节点：只删除这一组里实际列出的未跟踪文件，绝不删除物理目录。
+                  onSelect: () =>
+                    onFileAction("delete", node.path, isStaged, true, deletePaths),
                 },
               ]
             : [{ label: t("git.removeVcs"), icon: Minus, disabled: true }]),

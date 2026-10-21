@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   aggregateMark,
   changeMark,
+  folderDeletePaths,
   folderMarks,
   ignoredRoots,
   isDeletedMark,
   markClass,
   recoveryOf,
+  safeFolderDeletePaths,
 } from "../../src/lib/git";
 import type { GitChange, GitProbe } from "../../src/lib/git";
 
@@ -105,6 +107,35 @@ describe("folderMarks 目录圆点表", () => {
       change({ path: "src/b.ts", conflicted: true }),
     ]);
     expect(marks.get("src")).toBe("!");
+  });
+});
+
+describe("folderDeletePaths Git 文件夹删除范围", () => {
+  it("只返回节点下未跟踪的变更文件，不把聚合文件夹本身当成删除目标", () => {
+    const targets = folderDeletePaths([
+      change({ path: "src/new-a.ts", untracked: true, workStatus: "?" }),
+      change({ path: "src/nested/new-b.ts", untracked: true, workStatus: "?" }),
+      change({ path: "src/tracked.ts", workStatus: "M" }),
+    ]);
+
+    expect(targets).toEqual(["src/new-a.ts", "src/nested/new-b.ts"]);
+    expect(targets).not.toContain("src");
+  });
+
+  it("执行层拒绝目录自身、目录外路径和已不再未跟踪的过期路径", () => {
+    const current = [
+      change({ path: "src/new-a.ts", untracked: true, workStatus: "?" }),
+      change({ path: "src/nested/new-b.ts", untracked: true, workStatus: "?" }),
+      change({ path: "other/outside.ts", untracked: true, workStatus: "?" }),
+    ];
+
+    expect(
+      safeFolderDeletePaths(
+        "src",
+        ["src", "src/new-a.ts", "src/nested/new-b.ts", "src/stale.ts", "other/outside.ts"],
+        current
+      )
+    ).toEqual(["src/new-a.ts", "src/nested/new-b.ts"]);
   });
 });
 

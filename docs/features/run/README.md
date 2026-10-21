@@ -17,11 +17,17 @@
 识别出来的每一条都带 `generated: true`，界面上不给改本体——构建文件一动它就变，改一份存盘的副本
 （「存成自己的一份」）才不会和识别结果打架。
 
+下拉里的次序在识别那一次就定死了，界面只做钉选与体系分组：先按体系（`kind_rank`，前端
+`RUN_KIND_ORDER` 必须同序），体系内按运行目录分块（根目录那个空串在最前），块内保持构建文件里的
+书写顺序。所以一份 `package.json` 的脚本是连着的一段，次序就是它在文件里写的次序——`npm()` 用文本
+扫描那一遍的出现次序定序，不迭代解析出来的 `scripts`：`serde_json::Map` 底下是 BTreeMap，按它迭代
+出来的是字母序，两个子项目的 `dev` 会被凑到一起，同一份 `package.json` 的条目反被拆散。
+
 ### 各构建体系出什么
 
 | 认到 | 出什么条目 |
 | --- | --- |
-| `package.json` 的 `scripts` | 每个脚本一条（`npm`），命令是 `<包管理器> run <脚本>`，客户端按 `bun.lock` / `pnpm-lock.yaml` / `yarn.lock` / `package-lock.json` 认，认不出来用 npm；不跑脚本正文，因为 `vite`、`vue-cli-service` 只装在 `node_modules/.bin`，那条 PATH 是包管理器加的。嵌套目录里的 `package.json` 也算 |
+| `package.json` 的 `scripts` | 每个脚本一条（`npm`），命令是 `<包管理器> run <脚本>`，客户端按 `bun.lock` / `pnpm-lock.yaml` / `yarn.lock` / `package-lock.json` 认，认不出来用 npm；不跑脚本正文，因为 `vite`、`vue-cli-service` 只装在 `node_modules/.bin`，那条 PATH 是包管理器加的。嵌套目录里的 `package.json` 也算；几个子项目都有同名脚本时，界面上按 `<工作目录>: <脚本>` 显示（`configLabel`），条目的 `name` 仍是脚本名 |
 | `pom.xml` | 有 `spring-boot-maven-plugin` 时一条 `spring-boot:run`（`spring`），否则一条 `clean package`（`maven`）；再给每个带 `main` 方法的类一条 `compile exec:java -Dexec.mainClass=…`（`java`） |
 | `build.gradle` / `build.gradle.kts` | 应用插件在时一条 `bootRun` 或 `run`（`spring` / `gradle`），另加一条 `build`；每个主类一条 `--init-script` 起的 `JavaExec`（`java`） |
 | `go.mod` | 每个「`package main` + `func main(`」的目录一条 `go run ./<相对包路径>`（`go`），模块根那条用模块路径末段当名字；库包、`_test.go` 不出条目。嵌在另一份 `go.mod` 下面的目录归那份模块自己管 |
@@ -271,7 +277,7 @@ scripts 写成了一行内联对象，`gen.mjs` 已经改成落盘时摊开，�
 | `src/components/RunPane.tsx` | 只读 xterm、切会话重放、会话标签行与类型图标、右键菜单 |
 | `src/hooks/useRunConfigs.ts` | 两层状态的分界 `:22`、`rescan` `:45`、合并与排序 `:89`、`selected` `:108`、写盘 `:115`、钉选与两份增删 `:136-206` |
 | `src/hooks/useRunSessions.ts` | `RunSession` 带配置 `:16`、两个事件监听、`stop` `:118`、`start`（占位符展开、helper 落盘、`$ <命令>` 头行）`:140`、`rerun` `:214`、`rerunSession` `:224`、状态行文案 `:235` |
-| `src/lib/runConfigs.ts` | 类型镜像与四个命令、`resolveCommand` `:96`、`displayCommand` `:119`、`missingTool` `:109`、`ensureHelper` `:125`、`newShellConfig` `:132` |
+| `src/lib/runConfigs.ts` | 类型镜像与四个命令、`resolveCommand` `:129`、`displayCommand` `:137`、`missingTool` `:142`、`ensureHelper` `:158`、`newShellConfig` `:165`、`configLabel` `:189` |
 | `src/components/CodeEditor.tsx` | 浮层那颗 ▶：`PIN_WIDTH :12`、`RunGutterPin :15`、换实例时清挂接记录 `:117`、四个重算时机 `:132-137`、落点算 `:241`、换算屏幕坐标 `:260-287`、浮层渲染 `:324` |
 | `src/lib/runMarkers.ts` | 一行归哪条配置、同一行的取舍、跑不了的不给图标 |
 | `src/lib/runIcons.tsx` | 六种类型的图标与分组次序 |
