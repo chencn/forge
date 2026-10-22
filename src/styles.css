@@ -2290,8 +2290,9 @@ span.entry-icon > svg {
 
 .rail-button.is-active,
 .rail-button.is-active:hover {
-  background: var(--bg-active);
+  background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-primary));
   color: var(--text-primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 55%, var(--bg-primary));
 }
 
 /* 悬停提示：气泡出在按钮右侧、压住下面的内容，文字取 data-tip。
@@ -2355,7 +2356,7 @@ span.entry-icon > svg {
 }
 
 .rail-button.is-active .rail-dot {
-  box-shadow: 0 0 0 1.5px var(--bg-active);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent-blue) 18%, var(--bg-primary));
 }
 
 /* 底部工具窗口的入口钉在活动栏下端，和上面的项目 / 提交分开。 */
