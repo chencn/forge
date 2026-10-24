@@ -763,6 +763,8 @@ span.entry-icon > svg {
 .select-list {
   position: fixed;
   z-index: 60;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
   max-height: 288px;
   overflow-y: auto;
   padding: 6px;
@@ -789,6 +791,8 @@ span.entry-icon > svg {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .select-option.is-cursor {
@@ -4156,13 +4160,15 @@ span.entry-icon > svg {
 
 .editor-tab {
   position: relative;
-  flex: none;
+  /* 标签可被压缩，且有硬性宽度上限：CLI 生成的会话标题可能上百字，
+     不设上限的话一颗标签就能占满整条页签栏（标题全文仍在悬停提示里）。 */
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 6px;
   height: 28px;
   min-width: 80px;
-  width: fit-content;
+  max-width: 200px;
   padding: 0 24px 0 8px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -4923,12 +4929,14 @@ span.entry-icon > svg {
 }
 
 /* 代码块外壳与标签 */
-.markdown-body .code-block-wrapper {
+/* 聊天正文也走同一套 highlight.js 标记，所以代码块样式两边共用；
+   用 :is() 而不是复制一份，免得色盘漂移。 */
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .code-block-wrapper {
   position: relative;
   margin: 16px 0;
 }
 
-.markdown-body .code-lang-tag {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .code-lang-tag {
   position: absolute;
   top: 7px;
   right: 12px;
@@ -4942,7 +4950,7 @@ span.entry-icon > svg {
   opacity: 0.8;
 }
 
-.markdown-body pre {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) pre {
   margin: 0;
   padding: 14px 16px;
   background: var(--code-bg);
@@ -4954,7 +4962,7 @@ span.entry-icon > svg {
   line-height: 1.55;
 }
 
-.markdown-body pre code {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) pre code {
   background: none;
   border: 0;
   padding: 0;
@@ -4962,72 +4970,438 @@ span.entry-icon > svg {
   color: var(--text-primary);
 }
 
+/* 逐代码块复制：聊天的正文是注入的 HTML，按钮只能靠样式画出来。
+   它和语言标签占同一个角——不透明底压住标签，出现即替换，窄气泡里才不挤。 */
+.ai-message-markdown .code-block-wrapper {
+  margin: 10px 0;
+}
+
+.ai-message-markdown .code-copy {
+  position: absolute;
+  top: 7px;
+  right: 10px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-family: var(--font-mono), monospace;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ai-message-markdown .code-block-wrapper:hover .code-copy,
+.ai-message-markdown .code-copy:focus-visible,
+.ai-message-markdown .code-copy.is-copied {
+  opacity: 1;
+}
+
+.ai-message-markdown .code-copy:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: 1px;
+}
+
+.ai-message-markdown .code-copy.is-copied {
+  color: var(--accent-green-text, var(--text-secondary));
+}
+
+/* 连续过程折成一段：收起时整段只占一行，展开后靠左竖线和正文区分——和工具详情同一种层级。 */
+.ai-process-group {
+  margin: 0 0 6px;
+}
+
+.ai-process-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-process-head:hover {
+  color: var(--text-primary);
+}
+
+.ai-process-head:focus-visible {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: 2px;
+}
+
+.ai-process-head strong {
+  font-weight: 600;
+}
+
+.ai-process-group.is-open > .ai-process-head .ai-detail-chevron {
+  transform: rotate(90deg);
+}
+
+.ai-process-live {
+  color: var(--accent-green-text, var(--text-secondary));
+}
+
+.ai-process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 8px 6px;
+  padding-left: 14px;
+  border-left: 1px solid var(--border-color);
+}
+
+/* 「回到底部」要钉在滚动视口下沿。绝对定位放进滚动容器里会跟着内容一起跑（滚上去就看不见了），
+   所以外面套一层只负责定位的壳；壳自己仍按原来的方式撑满剩余高度。 */
+.ai-chat-viewport {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 回到底部：贴在滚动区下沿，带计数时才长出一块胶囊。 */
+.ai-jump-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.ai-jump-bottom:hover {
+  color: var(--text-primary);
+}
+
+.ai-jump-bottom.has-count {
+  color: var(--accent-blue-text, var(--text-primary));
+  background: var(--accent-blue-bg, var(--bg-secondary));
+}
+
+/* 请求的模型和实际服务的模型不一致时才出现；同代不同档位和彻底换了模型分开配色。 */
+.ai-model-match {
+  padding: 1px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12ch;
+}
+
+.ai-model-match.is-variant {
+  color: var(--accent-amber-text);
+  border-color: var(--accent-amber-text);
+  background: var(--accent-amber-bg, transparent);
+}
+
+.ai-model-match.is-mismatch {
+  color: var(--accent-red-text, var(--text-secondary));
+  border-color: var(--accent-red, var(--border-color));
+  background: var(--accent-red-bg, transparent);
+}
+
+/* 授权卡片：动作多到一行放不下，允许换行而不挤压按钮文字。 */
+.ai-approval-actions {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.ai-approval-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 8px;
+}
+
+.ai-approval-edit .text-input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+/* 回合结尾：错误留在原地，动作跟在后面。 */
+.ai-turn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-turn-actions > .ai-error {
+  flex: 1 1 100%;
+  white-space: pre-wrap;
+}
+
+/* 压缩过程提示：真正压缩的是 CLI，这里只报告它开始了 / 结束了。 */
+.ai-compaction-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ai-compaction-notice strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ai-compaction-notice.is-running {
+  border-style: solid;
+  border-color: var(--accent-amber-text);
+  color: var(--text-primary);
+}
+
+/* 会话面板：正文搜索 + 归档视图 */
+.ai-session-search {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 12px 6px;
+}
+
+.ai-session-search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+}
+
+.ai-session-search-field:focus-within {
+  outline: 2px solid var(--focus-ring);
+  border-color: var(--accent-blue);
+}
+
+.ai-session-search-field input {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 5px 0;
+}
+
+.ai-session-search-field input:focus {
+  outline: none;
+}
+
+.ai-session-filter {
+  display: flex;
+  padding: 0 12px 6px;
+}
+
+.ai-session-filter-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ai-session-filter-button[aria-checked="true"] {
+  border-color: var(--accent-blue);
+  background: var(--sidebar-selected);
+  color: var(--text-primary);
+}
+
+.ai-session-filter-count {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-search-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* 覆盖范围说明必须一直看得见：没扫完、读不出，都不能假装搜过了。 */
+.ai-search-count,
+.ai-search-coverage {
+  margin: 0;
+  padding: 2px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.ai-search-coverage {
+  color: var(--accent-amber-text);
+}
+
+.ai-search-group-list,
+.ai-search-hit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ai-search-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-search-group-head > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-search-hit {
+  display: block;
+  width: 100%;
+  padding: 4px 12px 4px 26px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.ai-search-hit:hover {
+  background: var(--sidebar-hover);
+}
+
+.ai-search-hit mark {
+  border-radius: 2px;
+  background: var(--accent-amber-bg);
+  color: var(--accent-amber-text);
+}
+
+.ai-search-cut {
+  color: var(--text-tertiary);
+}
+
 /* Highlight.js 语法高亮色盘 */
-.markdown-body .hljs-comment,
-.markdown-body .hljs-quote {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-comment,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-quote {
   color: var(--hljs-comment);
   font-style: italic;
 }
 
-.markdown-body .hljs-keyword,
-.markdown-body .hljs-selector-tag,
-.markdown-body .hljs-subst {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-keyword,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-tag,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-subst {
   color: var(--hljs-keyword);
   font-weight: 600;
 }
 
-.markdown-body .hljs-string,
-.markdown-body .hljs-regexp,
-.markdown-body .hljs-addition {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-string,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-regexp,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-addition {
   color: var(--hljs-string);
 }
 
-.markdown-body .hljs-number,
-.markdown-body .hljs-literal {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-number,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-literal {
   color: var(--hljs-number);
 }
 
-.markdown-body .hljs-title,
-.markdown-body .hljs-section,
-.markdown-body .hljs-title.function_ {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-title,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-section,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-title.function_ {
   color: var(--hljs-function);
   font-weight: 600;
 }
 
-.markdown-body .hljs-type,
-.markdown-body .hljs-class .hljs-title {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-type,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-class .hljs-title {
   color: var(--hljs-type);
 }
 
-.markdown-body .hljs-attr,
-.markdown-body .hljs-attribute {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-attr,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-attribute {
   color: var(--hljs-attr);
 }
 
-.markdown-body .hljs-variable,
-.markdown-body .hljs-template-variable {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-variable,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-template-variable {
   color: var(--hljs-variable);
 }
 
-.markdown-body .hljs-meta {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-meta {
   color: var(--hljs-meta);
 }
 
-.markdown-body .hljs-tag,
-.markdown-body .hljs-name {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-tag,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-name {
   color: var(--hljs-tag);
 }
 
-.markdown-body .hljs-deletion {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-deletion {
   color: var(--accent-red);
   background-color: var(--accent-red-bg);
 }
 
-.markdown-body .hljs-emphasis {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-emphasis {
   font-style: italic;
 }
 
-.markdown-body .hljs-strong {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-strong {
   font-weight: bold;
 }
 

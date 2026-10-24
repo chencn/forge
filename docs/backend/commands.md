@@ -145,8 +145,8 @@
 
 | 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
 | --- | --- | --- | --- | --- |
-| `settings_load` | — | `Settings` | 文件缺失或 JSON 坏都静默退回默认值，不报错 | `settings.rs:179` |
-| `settings_save` | `settings` | `()` | 整份 `to_string_pretty` 经 `write_atomic` 写 `<app_config_dir>/settings.json`（先 `.tmp` 再改名），目录不存在先建 | `settings.rs:185` |
+| `settings_load` | — | `Settings` | 文件缺失或 JSON 坏都静默退回默认值，不报错（读宽容，只为应用起得来；写的那条路严格，见 `settings_save`） | `settings.rs:322` |
+| `settings_save` | `patch` | `Settings` | 把这份 JSON Merge Patch（RFC 7396）合并进 `<app_config_dir>/settings.json` 现有内容：只覆盖出现的键，读不懂的旧段落原样留着；底稿读不出来就报错，不拿空对象覆盖。合并结果先按结构校验，再 `to_string_pretty` 经 `write_atomic` 原子写（先 `.tmp` 再改名），进程内用 `SETTINGS_LOCK` 串起读-合并-写。只在本次合并把 AI 助手从开变成关时先 `stop_for_disable`。返回合并后的全量设置，调用方跟着它走 | `settings.rs:377` |
 | `history_load` | — | `History` | 读 `<app_config_dir>/history.json`；文件不存在时从同目录 `settings.json` 迁移那四项并立刻落盘；JSON 坏同样退回空表并重写，不报错 | `history.rs:101` |
 | `history_save` | `history` | `()` | 整份 `to_string_pretty` 经 `write_atomic` 写 `history.json`，目录不存在先建 | `history.rs:107` |
 | `tray_labels` | `show, quit` | `()` | 改托盘两项文字；菜单是系统画的 | `tray.rs:69` |
@@ -170,7 +170,7 @@
 | `src-tauri/src/lsp_config.rs` | `LspServerConfig` / `LspConfig` `:18-58`、`allowed_modes` `:60`、种子表 `seed` `:105-324`、`DEFAULT_MAX_SESSIONS` 5 与 `DEFAULT_IDLE_TIMEOUT_MIN` 30 `:326-328`、`effective_program` 的 path 优先 `:332`、`normalize` `:354`、`clamp` 的档位与空字段兜底 `:384-415`、`migrate_from_settings` `:427`、`load_in` `:463`、`save_in` `:485`、`load` / `save` 两个 `AppHandle` 壳 `:494-505`、探测结构 `LspServerProbe` / `LspProbeReport` `:507-524`、两条命令 `:527-536`、单测 10 条 `:539` 起 |
 | `src-tauri/src/lsp_probe.rs` | `PROBE_TTL` 10 秒 `:19`、`OUTPUT_TAIL` 32 KiB `:22`、`candidates` 的 `PATHEXT` 与补 `.ps1` `:52-78`、`search_dirs` 的补目录 `:84-128`、`augmented_path` `:131`、`is_functional` 的 rust-analyzer `--version` `:143-168`、`resolve_command` 与缓存 `:170-188`、`run_install` 的 shell 选择与按字符取尾 `:212-246`、`probe_and_reconcile` 的单向校正 `:276`、单测 6 条 `:302` 起 |
 | `src-tauri/src/lsp_detect.rs` | `CACHE_TTL` 60 秒 `:15`、`MAX_DEPTH` 2 `:17`、`SKIP_DIRS` 九项 `:19`、`marker_matches`（`*` 前缀名）`:39`、`hit_in` `:50`、`search_up` `:87`、`search_down` `:103`、`resolve` 的标志表为空原样回根 `:140`、`cached` `:162`、命令壳 `:188`、单测 7 条 `:208` 起 |
-| `src-tauri/src/settings.rs` | `read` `:160-166`、`settings_load` `:179-182`、`settings_save` `:185-192`（`lsp` 段已搬去 `lsp.json`，历史四项已搬去 `history.json`，旧文件里那些键读到时直接忽略） |
+| `src-tauri/src/settings.rs` | `read` `:312-317`、`settings_load` `:322`、`read_document` `:332`、`apply_patch` `:352`、`settings_save` `:377`（按字段合并落盘；`lsp` 段已搬去 `lsp.json`，历史四项已搬去 `history.json`，旧文件里那些键读到就原样留着） |
 | `src-tauri/src/history.rs` | `History` `:25-33`、`migrate_from_settings` `:38-63`、`load_in` `:71-81`、`save_in` `:84-89`、`read` `:92-97`、`history_load` / `history_save` `:101-117`、单测 4 条 `:119` 起 |
 | `src-tauri/src/tray.rs` | `tray_labels` `:68-76`、`app_exit` `:122-126` |
 | `src-tauri/src/sys.rs` | `hide_console` 的 `CREATE_NO_WINDOW` `:5-11`、`write_atomic` 的 tmp+rename `:25-33`、`which_program` 的 Windows 扩展名候选 `:65-76`、`capture_text`（stdout 空了取 stderr）`:80-101`、`group` 的 ppid 走树与按程序归并 `:154-212`、`win::private_set_of` `:305-316`、`win::snapshot` `:319-341`、`sys_memory` `:369-376`、单测 4 条 `:378` 起 |

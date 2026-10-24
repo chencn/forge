@@ -1,0 +1,461 @@
+import { createElement } from "react";
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
+import { loadDraft, rememberPrompt } from "../../src/lib/aiDrafts";
+
+const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", desktop: true, send: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
+vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Record<string, unknown>) => key === "ai.chat.editedFiles" ? `Edited ${vars?.count} files` : key }) }));
+vi.mock("../../src/lib/aiCli", () => ({ AI_NAMES: { codex: "Codex" }, cliDesktopAvailable: () => h.desktop }));
+vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, loadAiMessages: vi.fn(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn() }));
+vi.mock("../../src/lib/fs", () => ({ openExternal: vi.fn(), assetUrl: (path: string) => `asset://${path}` }));
+vi.mock("dompurify", () => ({ default: { sanitize: h.sanitize } }));
+import AiSessionPane from "../../src/components/AiSessionPane";
+
+let number = 0;
+let sessionId = "";
+/**
+ * 草稿与发送历史都存在 localStorage 里，静态渲染每次都是一次全新挂载：面板靠这两个存储
+ * 把输入框的内容带过下一次渲染（原来那份模块级 `Map` 也是同一件事）。
+ * 所以这里给一个真实的内存存储，而不是把 `loadDraft` 也 mock 掉。
+ */
+let storage = new Map<string, string>();
+beforeEach(() => {
+  storage = new Map();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => { storage.set(key, value); },
+    removeItem: (key: string) => { storage.delete(key); },
+  });
+  h.activity = "idle";
+  h.outline = { turns: [], complete: false, loaded: false, loading: false, error: null };
+  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.sanitize.mockClear();
+  h.state = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: true, hasOlder: false, cursor: 0, nativeId: null, plans: [] };
+});
+function render() {
+  let pane!: ReactElement<any>;
+  function Harness() {
+    pane = AiSessionPane({ session: { id: sessionId, title: "Test", provider: "codex", createdAt: 1 }, workspace: "D:/project", onSettings: vi.fn(), beforeSend: h.beforeSend });
+    return pane;
+  }
+  return { html: renderToStaticMarkup(createElement(Harness)), pane };
+}
+function textarea(pane: ReactElement<any>): ReactElement<any> {
+  return findAll(pane, "textarea")[0] ?? (undefined as unknown as ReactElement<any>);
+}
+/** 收集渲染树里所有 `<img>`：附件回显的 onError 只能从元素 props 上取，静态 HTML 里没有。 */
+function pictures(pane: ReactElement<any>): ReactElement<any>[] {
+  return findAll(pane, "img");
+}
+function findAll(pane: ReactElement<any>, type: unknown): ReactElement<any>[] {
+  if (!pane || typeof pane !== "object" || !("props" in pane)) return [];
+  if (pane.type === type) return [pane];
+  // 输入框外壳与用户消息组件把子内容放在具名 prop（甚至包在普通对象数组）里，
+  // 不止 children；逐层摊开所有对象值里的 React 元素才能找齐。
+  const unwrap = (value: unknown): ReactElement<any>[] =>
+    [value].flat(Infinity).flatMap((item) =>
+      !item || typeof item !== "object" ? [] :
+      "props" in item ? [item as ReactElement<any>] :
+      unwrap(Object.values(item)));
+  return unwrap(pane.props).flatMap((child) => findAll(child, type));
+}
+/**
+ * 面板内部的私有组件在静态树里还是没展开的元素（它的按钮是在函数体里造的，
+ * 不是当 children 传进去的）。按组件函数名取到它的 props，才能调用面板交给它的回调。
+ */
+function propsOfComponent(pane: ReactElement<any>, name: string): Record<string, unknown> | undefined {
+  const stack: unknown[] = [pane];
+  while (stack.length) {
+    const item = stack.pop();
+    if (!item || typeof item !== "object") continue;
+    const node = item as { type?: unknown; props?: unknown };
+    if (typeof node.type === "function" && (node.type as { name?: string }).name === name) return node.props as Record<string, unknown>;
+    if (node.props && typeof node.props === "object") stack.push(...[Object.values(node.props as Record<string, unknown>)].flat(Infinity));
+  }
+  return undefined;
+}
+
+describe("AI conversation pane", () => {
+  it.each(["external", "unknown"])("keeps input usable for external activity or unavailable detection: %s", async (activity) => {
+    textarea(render().pane).props.onChange({ target: { value: "hello" } });
+    h.activity = activity;
+    const { pane, html } = render();
+    expect(textarea(pane).props.disabled).toBe(false);
+    expect(html).not.toContain('aria-label="ai.runtime.stop"');
+    textarea(pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: {}, preventDefault: vi.fn() });
+    textarea(pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
+    await Promise.resolve();
+    expect(h.beforeSend).toHaveBeenCalled();
+    h.activity = "idle";
+    expect(textarea(render().pane).props.disabled).toBe(false);
+  });
+  it("completes slash names with Tab and retains parameter guidance after a space", () => {
+    textarea(render().pane).props.onChange({ target: { value: "/rev" } });
+    const { pane, html } = render();
+    expect(html).toContain('role="listbox"');
+    const preventDefault = vi.fn();
+    textarea(pane).props.onKeyDown({ key: "Tab", nativeEvent: {}, preventDefault });
+    expect(preventDefault).toHaveBeenCalled();
+    const completed = render();
+    expect(textarea(completed.pane).props.value).toBe("/review ");
+    expect(completed.html).toContain("[instructions]");
+    expect(completed.html).not.toContain('class="ai-command-menu"');
+    expect(h.send).not.toHaveBeenCalled();
+  });
+  it.each([{ isComposing: true }, { keyCode: 229 }])("never completes or sends during IME composition: %j", (nativeEvent) => {
+    textarea(render().pane).props.onChange({ target: { value: "/review" } });
+    const preventDefault = vi.fn();
+    const field = textarea(render().pane);
+    field.props.onKeyDown({ key: "Enter", nativeEvent, preventDefault });
+    field.props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent, preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled(); expect(h.send).not.toHaveBeenCalled();
+    expect(textarea(render().pane).props.value).toBe("/review");
+  });
+  it.each(["/unknown args", "/compact extra", "/compact"])("rejects unsupported command or parameters before trust and retains draft: %s", async (draft) => {
+    textarea(render().pane).props.onChange({ target: { value: draft } });
+    textarea(render().pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: {}, preventDefault: vi.fn() });
+    await Promise.resolve();
+    expect(h.send).not.toHaveBeenCalled(); expect(h.beforeSend).not.toHaveBeenCalled();
+    expect(textarea(render().pane).props.value).toBe(draft);
+  });
+  it("allows local help through both button and keyboard while history is incomplete", async () => {
+    textarea(render().pane).props.onChange({ target: { value: "/help" } });
+    h.state.loaded = false; h.state.hasOlder = true;
+    const { pane, html } = render();
+    expect(html.match(/<button[^>]*class="ai-send-button"[^>]*>/)?.[0]).not.toContain("disabled");
+    textarea(pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: {}, preventDefault: vi.fn() });
+    await Promise.resolve();
+    expect(textarea(render().pane).props.value).toBe("");
+    expect(h.send).not.toHaveBeenCalled(); expect(h.beforeSend).not.toHaveBeenCalled();
+  });
+  it("shows local command output with the same sanitization as assistant messages", () => {
+    h.state.entries = [{ id: "output", runId: "run", kind: "command", text: "**command result**" }];
+    const { html } = render();
+    expect(html).toContain("ai.commands.output"); expect(h.sanitize).toHaveBeenCalled();
+  });
+  it("shows compact model, effort and honest context controls", () => {
+    h.state.configuration = { model: "effective-model", effort: "high" };
+    h.state.usage = { context: 250, window: 1000, total: 8000 };
+    const { html } = render();
+    expect(html).toContain("ai-settings-chip"); expect(html).toContain("effective-model");
+    expect(html).toContain("25%");
+  });
+  it("keeps controls in one composer and hides settings and usage details until requested", () => {
+    const { html } = render();
+    expect(html).toContain('class="ai-composer-dock"');
+    expect(html).toContain('class="ai-composer-bar"');
+    expect(html).toContain("ai-settings-chip");
+    expect(html).toContain('class="ai-send-button"');
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain("ai.chat.inputTokens");
+    expect(html).not.toContain("ai.chat.modelId");
+  });
+  it("accepts pasted image files in the composer", () => {
+    expect(textarea(render().pane).props.onPaste).toBeTypeOf("function");
+  });
+  it("offers a picker entry in the action bar and no drop hint until a drag is over", () => {
+    const { html, pane } = render();
+    const attach = findAll(pane, "button").find((button) => button.props.className === "ai-add-button");
+    expect(attach).toBeTruthy();
+    expect(attach!.props["aria-label"]).toBe("ai.chat.attach");
+    expect(attach!.props.disabled).toBe(false);
+    expect(html).not.toContain('class="ai-composer-drop"');
+    // CLI 不在本机时和其他输入控件一起停用，不给点了没反应的入口。
+    h.desktop = false;
+    const offline = findAll(render().pane, "button").find((button) => button.props.className === "ai-add-button");
+    expect(offline!.props.disabled).toBe(true);
+    h.desktop = true;
+  });
+  it("says plainly when an echoed attachment is no longer in the cache", () => {
+    h.state.entries = [{ id: "u", runId: "run", kind: "user", text: "看图", images: ["C:/cache/paste-1.png"] }];
+    const { pane, html } = render();
+    expect(html).toContain('src="asset://C:/cache/paste-1.png"');
+    const [image] = pictures(pane);
+    const classList = { add: vi.fn() };
+    const target = { alt: "paste-1.png", classList };
+    image.props.onError({ currentTarget: target });
+    // 坏图本来就显示 alt：换成一句实话，而不是编一张占位图。
+    expect(target.alt).toBe("ai.chat.imageMissing");
+    expect(classList.add).toHaveBeenCalledWith("is-missing");
+  });
+  it("summarizes edited files and real line churn", () => {
+    h.state.entries = [
+      { id: "edit-a", runId: "run", kind: "tool", text: "", name: "fileChange", status: "completed", input: { changes: [{ path: "a.ts", kind: { type: "update" }, diff: "@@ -1,20 +1,3 @@\n" + Array.from({ length: 20 }, (_, index) => `-old-${index}`).join("\n") + "\n" + Array.from({ length: 3 }, (_, index) => `+new-${index}`).join("\n") }] } },
+      { id: "edit-b", runId: "run", kind: "tool", text: "", name: "fileChange", status: "completed", input: { changes: [{ path: "b.ts", kind: { type: "update" }, diff: "@@ -1,24 +1,4 @@\n" + Array.from({ length: 24 }, (_, index) => `-before-${index}`).join("\n") + "\n" + Array.from({ length: 4 }, (_, index) => `+after-${index}`).join("\n") }] } },
+    ];
+    const { html } = render();
+    expect(html).toContain("Edited 2 files");
+    expect(html).toContain("+7");
+    expect(html).toContain("-44");
+  });
+  it("keeps tool calls and reasoning collapsed and gives them expansion affordances", () => {
+    h.state.entries = [
+      { id: "tool", runId: "run", kind: "tool", text: "", name: "Read", status: "completed" },
+      { id: "reasoning", runId: "run", kind: "reasoning", text: "summary" },
+    ];
+    const { html } = render();
+    expect(html).toContain('class="ai-tool is-completed"');
+    expect(html).toContain('class="ai-reasoning"');
+    expect(html.match(/<details[^>]*open/g)).toBeNull();
+    expect(html.match(/ai-detail-chevron/g)).toHaveLength(2);
+  });
+  it("keeps unknown context honest and uses an accessible icon-only stop control", () => {
+    h.state.status = "running"; h.state.runId = "run";
+    const { html } = render();
+    expect(html).toContain('aria-label="ai.chat.context --"');
+    expect(html).not.toContain('aria-label="ai.chat.context 0%"');
+    expect(html).toContain('class="ai-send-button is-stop"');
+    expect(html).toContain('aria-label="ai.runtime.stop"');
+  });
+  it("renders approvals at their timeline positions without duplicating them", () => {
+    h.state.entries = [
+      { id: "before", runId: "run", kind: "assistant", text: "before-marker" },
+      { id: "request", runId: "run", kind: "request", requestId: "approval", text: "" },
+      { id: "after", runId: "run", kind: "assistant", text: "after-marker" },
+    ];
+    h.state.requests = [{ requestId: "approval", runId: "run", kind: "permission", title: "approval-marker", detail: "", questions: [], active: true }];
+    const { html } = render();
+    expect(html.indexOf("before-marker")).toBeLessThan(html.indexOf("approval-marker"));
+    expect(html.indexOf("approval-marker")).toBeLessThan(html.indexOf("after-marker"));
+    expect(html.match(/class="ai-request-card/g)).toHaveLength(1);
+  });
+  it.each(["loading", "hasOlder", "unloaded"])("history state does not block native submission: %s", async (guard) => {
+    textarea(render().pane).props.onChange({ target: { value: "hello" } });
+    if (guard === "loading") h.state.loading = true;
+    if (guard === "hasOlder") h.state.hasOlder = true;
+    if (guard === "unloaded") h.state.loaded = false;
+    const { pane, html } = render();
+    const preventDefault = vi.fn();
+    textarea(pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: { isComposing: false }, preventDefault });
+    await Promise.resolve();
+    expect(preventDefault).toHaveBeenCalled(); expect(h.beforeSend).toHaveBeenCalled();
+    expect(html.match(/<button[^>]*class="ai-send-button"[^>]*>/)?.[0]).not.toContain("disabled");
+  });
+  it("browser preview still blocks submission", async () => {
+    textarea(render().pane).props.onChange({ target: { value: "hello" } });
+    h.desktop = false;
+    const { pane, html } = render();
+    const preventDefault = vi.fn();
+    textarea(pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: { isComposing: false }, preventDefault });
+    await Promise.resolve();
+    expect(preventDefault).toHaveBeenCalled(); expect(h.beforeSend).not.toHaveBeenCalled(); expect(h.send).not.toHaveBeenCalled();
+    expect(html.match(/<button[^>]*class="ai-send-button"[^>]*>/)?.[0]).toContain("disabled");
+  });
+  it("keeps an expansion control for older loaded messages", () => {
+    h.state.entries = Array.from({ length: 301 }, (_, i) => ({ id: String(i), runId: "run", kind: "user", text: `message-${i}` }));
+    const { html } = render();
+    expect(html).toContain("ai.runtime.showEarlier");
+    // 一屏最多铺 TIMELINE_WINDOW 项：其余的靠「显示更早」逐页放出来。
+    expect(html.match(/class="ai-chat-entry/g)).toHaveLength(120);
+  });
+  it("pins a pending approval above the composer instead of burying it in the timeline", () => {
+    h.state.entries = Array.from({ length: 301 }, (_, i) => ({ id: String(i), runId: "run", kind: "user", text: `message-${i}` }));
+    h.state.requests = [
+      { requestId: "old", runId: "run", kind: "permission", title: "approval-active", detail: "", questions: [], active: true },
+      { requestId: "done", runId: "run", kind: "permission", title: "approval-closed", detail: "", questions: [], active: false },
+    ];
+    const { html } = render();
+    // 还在等答复的那张钉在输入框上方；已经答完的属于历史，不再霸占这块地方。
+    expect(html).toContain("approval-active");
+    expect(html).not.toContain("approval-closed");
+    expect(html).toContain('class="ai-session-requests"');
+    expect(html.match(/class="ai-request-card/g)).toHaveLength(1);
+  });
+  it("walks history backwards from the newest page with one top control", () => {
+    h.state.hasOlder = true; h.state.cursor = 500;
+    const { pane, html } = render();
+    expect(html).toContain("ai.runtime.loadOlder");
+    expect(html).not.toContain("ai.runtime.showEarlier");
+    // 底部那条「加载更多记录」是旧语义的产物：首屏就在最新一页，往上翻才是更早。
+    expect(html).not.toContain("ai.runtime.loadMore");
+    const button = findAll(pane, "button").find((item) => [item.props.children].flat(Infinity).includes("ai.runtime.loadOlder"));
+    button!.props.onClick();
+    expect(h.older).toHaveBeenCalledWith(sessionId, "D:/project");
+  });
+  it("expands the loaded window before asking the backend for another page", () => {
+    h.state.hasOlder = true; h.state.cursor = 500;
+    h.state.entries = Array.from({ length: 301 }, (_, i) => ({ id: String(i), runId: "run", kind: "user", text: `message-${i}` }));
+    const { pane, html } = render();
+    expect(html).toContain("ai.runtime.showEarlier");
+    const button = findAll(pane, "button").find((item) => [item.props.children].flat(Infinity).includes("ai.runtime.showEarlier"));
+    button!.props.onClick();
+    expect(h.older).not.toHaveBeenCalled();
+  });
+  it("keeps a half-typed message per session and reloads it on the next render", () => {
+    textarea(render().pane).props.onChange({ target: { value: "写到一半" } });
+    expect(loadDraft("D:/project", sessionId)).toBe("写到一半");
+    expect(loadDraft("D:/project", "别的会话")).toBe("");
+    expect(textarea(render().pane).props.value).toBe("写到一半");
+  });
+  it("keeps the draft when the trust dialog stops the send", async () => {
+    textarea(render().pane).props.onChange({ target: { value: "发出去的这条" } });
+    textarea(render().pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: {}, preventDefault: vi.fn() });
+    await Promise.resolve();
+    // 信任确认挡在这里，本轮没发出去：草稿必须原样留着。
+    expect(loadDraft("D:/project", sessionId)).toBe("发出去的这条");
+    expect(h.send).not.toHaveBeenCalled();
+  });
+  it("recalls the last prompt sent in this project with ArrowUp", () => {
+    rememberPrompt("D:/project", "上一条发出去的话");
+    const preventDefault = vi.fn();
+    textarea(render().pane).props.onKeyDown({ key: "ArrowUp", nativeEvent: {}, preventDefault, currentTarget: { selectionStart: 0 } });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(textarea(render().pane).props.value).toBe("上一条发出去的话");
+  });
+  it("leaves ↑ to the caret while the user is reading a multi-line draft", () => {
+    rememberPrompt("D:/project", "上一条");
+    textarea(render().pane).props.onChange({ target: { value: "第一行\n第二行" } });
+    const preventDefault = vi.fn();
+    textarea(render().pane).props.onKeyDown({ key: "ArrowUp", nativeEvent: {}, preventDefault, currentTarget: { selectionStart: 8 } });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(textarea(render().pane).props.value).toBe("第一行\n第二行");
+  });
+  it("folds a long run of tool calls into one process group", () => {
+    h.state.entries = Array.from({ length: 5 }, (_, i) => ({ id: `t${i}`, runId: "run", kind: "tool", text: "", name: "Read", status: "completed" as const }));
+    const { html } = render();
+    expect(html.match(/class="ai-process-group/g)).toHaveLength(1);
+    expect(html).toContain("ai.chat.stepsTotal");
+    // 收起的那一段不渲染明细：过程折叠的意义就是别把 5 个展开块摊在屏幕上。
+    expect(html.match(/class="ai-tool /g)).toBeNull();
+  });
+  it("puts the failure on the turn that failed as a plain error line, with no retry button", () => {
+    h.state.tasks = [{ runId: "r1", status: "failed", prompt: "做个改动", error: "CLI 崩了", seq: 1 }];
+    const { html } = render();
+    expect(html).toContain('class="ai-turn-error"');
+    expect(html).toContain("CLI 崩了");
+    // 参考实现没有任何重试按钮：重试就是重发。
+    expect(html).not.toContain("ai.chat.retryTurn");
+    expect(html).not.toContain('class="ai-turn-actions"');
+  });
+  it("offers the deeper approval actions only when the backend can take them", () => {
+    h.state.requests = [{ requestId: "a", runId: "run", kind: "permission", title: "Edit a.ts", detail: "", questions: [], active: true, toolName: "Edit", input: { file_path: "D:/project/src/a.ts" }, canEdit: true }];
+    const { html } = render();
+    expect(html).toContain("ai.runtime.allowAndRemember");
+    expect(html).toContain("ai.runtime.allowDirectoryNamed");
+    expect(html).toContain("ai.runtime.editBeforeAllow");
+    h.state.requests = [{ requestId: "b", runId: "run", kind: "permission", title: "Bash", detail: "", questions: [], active: true }];
+    const bare = render();
+    expect(bare.html).toContain("ai.runtime.allowOnce");
+    expect(bare.html).not.toContain("ai.runtime.allowAndRemember");
+    expect(bare.html).not.toContain("ai.runtime.editBeforeAllow");
+  });
+  it("把提问卡按状态换成两种形态：还能答摆交互版，答过了只剩结果行", () => {
+    const questions = [{ id: "lang", question: "用哪种语言？", options: [{ label: "中文" }] }];
+    h.state.entries = [{ id: "e1", runId: "run", kind: "request", requestId: "q", text: "" }];
+    h.state.requests = [{ requestId: "q", runId: "run", kind: "question", title: "AskUserQuestion", detail: "", questions, active: true }];
+    expect(render().html).toContain('class="ai-question"');
+    // 已经结束的请求不再摆交互版：按钮还在、结果也在，等于自相矛盾。
+    h.state.requests = [{ requestId: "q", runId: "run", kind: "question", title: "AskUserQuestion", detail: "", questions, active: false, answer: { answers: { lang: ["中文"] } } }];
+    const done = render();
+    expect(done.html).toContain("ai-question-record");
+    expect(done.html).not.toContain('class="ai-question"');
+    expect(done.html).not.toContain("ai.runtime.answer");
+    // 没等到答复就结束的：失效说明照说，但「问了什么」照样给——一行摘要 + 点开的只读卡。
+    h.state.requests = [{ requestId: "q", runId: "run", kind: "question", title: "AskUserQuestion", detail: "", questions, active: false }];
+    const expired = render();
+    expect(expired.html).toContain("ai.runtime.requestExpired");
+    expect(expired.html).toContain("ai-question-record");
+    expect(expired.html).toContain("用哪种语言？");
+  });
+  it("没有正文的思考不摆成一排「思考」，只留本轮末尾那一条占位", () => {
+    h.state.entries = [
+      { id: "u", runId: "run", kind: "user", text: "做个东西" },
+      { id: "run:e1:reasoning", runId: "run", kind: "reasoning", text: "" },
+      { id: "run:e2:reasoning", runId: "run", kind: "reasoning", text: "" },
+    ];
+    // 本轮已结束：空正文就是没有可显示的东西，签名-only 的 redacted thinking 不该占两行。
+    expect(render().html).not.toContain("ai-reasoning");
+    // 还在跑：末尾那一条是「模型正在想」的唯一凭证，而「正在思考」只给它，不给历史里的其他条。
+    h.state.status = "running";
+    const live = render();
+    expect(live.html.match(/class="ai-reasoning/g)).toHaveLength(1);
+    expect(live.html).toContain("ai.chat.reasoningLive");
+    // 想完且有正文的，照常单独成行，正文摘要跟着走。
+    h.state.status = "idle";
+    h.state.entries = [{ id: "u", runId: "run", kind: "user", text: "做个东西" }, { id: "run:e3:reasoning", runId: "run", kind: "reasoning", text: "先看目录结构" }];
+    const told = render();
+    expect(told.html).toContain("先看目录结构");
+    expect(told.html).toContain("ai.chat.reasoning");
+    expect(told.html).not.toContain("ai.chat.reasoningLive");
+  });
+  it("marks the context chip when compacting is worth doing, and keeps the action there", () => {
+    h.state.nativeId = "native";
+    h.state.usage = { context: 900, window: 1000 };
+    const { html } = render();
+    expect(html).toContain('class="ai-context-trigger is-urgent"');
+    // 入口不再另起一条横幅：占用要看芯片，压缩就在它点开的那一层里。
+    expect(html).not.toContain('class="ai-compact-hint"');
+    h.state.usage = { context: 300, window: 1000 };
+    expect(render().html).not.toContain("is-urgent");
+  });
+  it("names compaction out loud while that is what the turn is doing", () => {
+    h.state.status = "running"; h.state.runId = "run";
+    h.state.tasks = [{ runId: "run", status: "running", prompt: "/compact", seq: 1 }];
+    const { html } = render();
+    expect(html).toContain("ai.chat.compactionRunning");
+    expect(html).toContain("is-compacting");
+    expect(html).not.toContain(">ai.runtime.running<");
+  });
+  it("labels ordinary turns as running on the live stats line, without repeating the prompt", () => {
+    h.state.status = "running"; h.state.runId = "run";
+    h.state.tasks = [{ runId: "run", status: "running", prompt: "把分页改成从最新一页开始", seq: 1 }];
+    const { html } = render();
+    expect(html).toContain("ai-live-stats");
+    expect(html).toContain("ai.runtime.running");
+    // 参考的运行行不回显提示词；它属于时间线本身。
+    expect(html).not.toContain("把分页改成从最新一页开始");
+    expect(html).not.toContain("is-compacting");
+  });
+  it("uses HTML-only sanitization and forbids automatically loaded media", () => {
+    h.state.entries = [{ id: "m", runId: "run", kind: "assistant", text: "**hello**" }]; render();
+    const config = h.sanitize.mock.calls[0]?.[1] as unknown as { USE_PROFILES: { html: boolean }; FORBID_TAGS: string[]; FORBID_ATTR: string[] };
+    expect(config.USE_PROFILES).toEqual({ html: true });
+    expect(config.FORBID_TAGS).toEqual(expect.arrayContaining(["img", "svg", "iframe", "style"]));
+    expect(config.FORBID_ATTR).toEqual(expect.arrayContaining(["src", "style", "background", "ping"]));
+  });
+  it("counts the whole session in the message nav, not just the page the body loaded", () => {
+    // 正文那一页事件里只装得下一条用户消息：长会话一轮工具输出就能把 500 条填满。
+    h.state.entries = [{ id: "r9:9", runId: "r9", kind: "user", text: "最新的一条" }];
+    h.state.hasOlder = true;
+    const chip = () => render().html.match(/class="ai-msgnav-chip-label"[^>]*>([^<]*)</)?.[1];
+    // 索引还没取回，只能报已加载的，并带个 + 说明后面还有。
+    expect(chip()).toBe("1+");
+    h.outline = {
+      turns: [
+        { seq: 1, entryId: "r1:1", runId: "r1", label: "第一条", files: 0 },
+        { seq: 5, entryId: "r5:5", runId: "r5", label: "第五条", files: 3 },
+        { seq: 9, entryId: "r9:9", runId: "r9", label: "最新的一条", files: 0 },
+      ],
+      complete: true, loaded: true, loading: false, error: null,
+    };
+    // 取回索引后报的是整个会话的轮数；正文只有一条不影响这个数字。
+    expect(chip()).toBe("3");
+  });
+  it("asks the backend for the turn index only once the nav is opened", async () => {
+    h.state.entries = [{ id: "r9:9", runId: "r9", kind: "user", text: "最新的一条" }];
+    h.state.hasOlder = true;
+    const { pane, html } = render();
+    // 收起状态只有一颗芯片：面板没展开就不该扫整份日志。
+    expect(html).not.toContain("ai-msgnav-panel");
+    expect(h.outlineLoad).not.toHaveBeenCalled();
+    const nav = propsOfComponent(pane, "AiMessageNav") as { onRequestOutline: () => void; onJump: (row: { id: string; seq?: number; ordinal: number; label: string; files: number; loaded: boolean }) => Promise<void> };
+    nav.onRequestOutline();
+    expect(h.outlineLoad).toHaveBeenCalledWith(sessionId, "D:/project");
+    // 点还没加载进正文的那一行：先按序号把中间的事件连续补齐，而不是让点击没有反应。
+    await nav.onJump({ id: "r1:1", seq: 1, ordinal: 1, label: "第一条", files: 0, loaded: false });
+    expect(h.through).toHaveBeenCalledWith(sessionId, "D:/project", 1);
+  });
+  it("seq 为 0 的那一轮照样补历史：拿真假判存在，最早的一轮就永远跳不到", async () => {
+    h.state.entries = [{ id: "r9:9", runId: "r9", kind: "user", text: "最新的一条" }];
+    const { pane } = render();
+    const nav = propsOfComponent(pane, "AiMessageNav") as { onJump: (row: { id: string; seq?: number; ordinal: number; label: string; files: number; loaded: boolean }) => Promise<void> };
+    await nav.onJump({ id: "r0:0", seq: 0, ordinal: 1, label: "最开头那条", files: 0, loaded: false });
+    expect(h.through).toHaveBeenCalledWith(sessionId, "D:/project", 0);
+    // 索引没给序号的行（只在正文里出现过）不需要补，直接当已加载处理。
+    h.through.mockClear();
+    await nav.onJump({ id: "r9:9", ordinal: 2, label: "最新的一条", files: 0, loaded: true });
+    expect(h.through).not.toHaveBeenCalled();
+  });
+});

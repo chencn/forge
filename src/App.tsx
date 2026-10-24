@@ -2,6 +2,7 @@ import { useCallback, lazy, Suspense, useEffect, useMemo, useRef, useState } fro
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Bell,
@@ -15,6 +16,7 @@ import {
   ListTree,
   LocateFixed,
   Maximize2,
+  Sparkles,
   Minus,
   PanelBottom,
   PanelLeftClose,
@@ -23,6 +25,7 @@ import {
   RefreshCw,
   Save,
   Settings,
+  SquarePen,
   SquareTerminal,
 } from "lucide-react";
 import TitleBar from "./components/TitleBar";
@@ -127,6 +130,7 @@ import {
   writeFile,
 } from "./lib/fs";
 import { dropHintKey, splitDrop } from "./lib/dropIn";
+import { dispatchDrop, dropPosition } from "./lib/dropOwner";
 import { codedError, describeError } from "./lib/errors";
 import { invalidateJavaIcons } from "./lib/javaKindIcons";
 import { IS_WINDOWS, MOD_LABEL } from "./lib/sys";
@@ -156,11 +160,23 @@ import {
 } from "./lib/httpFile";
 import type { FileContent, FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
+import { resolveFileLink } from "./lib/fileLinks";
 import { appExit, cancelAppExit, onWindowBlur, onWindowFocus, setTrayLabels } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
 import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
 import TerminalTabs from "./components/TerminalTabs";
+import AiSessionsPanel, { AiSessionsToolbar } from "./components/AiSessionsPanel";
+import AiProviderIcon from "./components/AiProviderIcon";
+import { forgetAiSessionWorkspace, useAiSessions } from "./hooks/useAiSessions";
+import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
+import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
+import type { AiRuntimeEvent } from "./lib/aiRuntime";
+import { AI_NAMES } from "./lib/aiCli";
+import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
+import type { AiProvider } from "./lib/aiCli";
+import type { AiSession } from "./lib/aiSessions";
+import "./components/aiAssistants.css";
 
 /**
  * 编辑区与工具窗口按「首次用到」才取。
@@ -181,6 +197,8 @@ const RunPane = lazy(() => import("./components/RunPane"));
 const RunConfigsPage = lazy(() => import("./components/RunConfigsPage"));
 const SearchEverywhere = lazy(() => import("./components/SearchEverywhere"));
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
+const AiSessionPane = lazy(() => import("./components/AiSessionPane"));
+const AiWelcomePane = lazy(() => import("./components/AiWelcomePane"));
 
 /** 对话框除了文案，还要记住它作用在哪个条目上、新建落在哪个目录里。 */
 type PendingDialog = DialogRequest & {
@@ -248,8 +266,8 @@ type DiffChain =
   | { kind: "between"; commit: GitCommitDetail; parent: string; items: GitCommitFile[] }
   | { kind: "against"; chainId: string; revision: string; leftLabel: string; items: DiffFileRef[] };
 
-/** 侧边工具窗口的两种内容，对应活动栏上端的两颗按钮。 */
-type Panel = "explorer" | "git";
+/** 左侧工具窗口：项目、提交与 AI 助手会话。 */
+type Panel = "explorer" | "git" | "ai";
 
 /** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。通知不占底部，停在右侧，并和 Maven 共用这一列。 */
 type BottomPane = "terminal" | "run" | "log" | "find" | "notifications";
@@ -260,6 +278,7 @@ type Placement = "hidden" | "docked" | "tabbed";
 const RAIL_LABEL: Record<Panel, TranslationKey> = {
   explorer: "panel.explorer",
   git: "panel.commit",
+  ai: "ai.title",
 };
 
 /** 并排时的固定次序，不受点开顺序影响。 */
@@ -671,9 +690,86 @@ export default function App() {
   /** 页签栏当前选中的那一项，按根隔离，null 表示当前根编辑区是空的。 */
   const [activeTabByRoot, setActiveTabByRoot] = useState<Record<string, string | null>>({});
   const activeTab = activeTabByRoot[rootKey] ?? null;
+  const aiSessions = useAiSessions(workspaceRoot, settings.aiAssistantsEnabled);
+  const aiActiveProjects = useAiActiveProjects();
+  const dispatchAiSession = aiSessions.dispatch;
+  const aiLifecycle = useAiRunLifecycle(reportError);
+  // 发送前的最后一道检查：CLI 会直接读写磁盘，项目里有未保存改动时先让用户保存，
+  // 否则模型看到的是旧内容、改动还可能被覆盖。
+  const beforeAiSend = useCallback(() => {
+    if (workspaceRoot && docsRef.current.hasDirtyForRoot(workspaceRoot)) {
+      reportError(t("ai.lifecycle.unsaved"));
+      return false;
+    }
+    return true;
+  }, [workspaceRoot, reportError, t]);
+  // 事件监听是全局单例，这里只保证「启用后一定挂上」；重复调用由 lib 内部去重。
+  useEffect(() => {
+    if (settings.aiAssistantsEnabled && isTauri()) void ensureAiRuntimeListener().catch((error) => reportError(String(error)));
+  }, [settings.aiAssistantsEnabled, reportError]);
+  useEffect(() => {
+    if (!settings.aiAssistantsEnabled || !workspaceRoot || !isTauri()) return;
+    // 项目一激活就读取 Codex 的有效配置；会话输入区随后直接复用，不要求用户重新设置。
+    void refreshAiProjectConfig(workspaceRoot).catch(() => {});
+  }, [settings.aiAssistantsEnabled, workspaceRoot]);
+  const activeAiSession = settings.aiAssistantsEnabled && activeTab?.startsWith("ai|")
+    ? aiSessions.sessions.find((session) => session.id === activeTab.slice(3)) ?? null
+    : null;
   const setActiveTab = useCallback((next: string | null) => {
     setActiveTabByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
   }, []);
+  const restoredAiTabRoots = useRef(new Set<string>());
+  useEffect(() => {
+    if (activeTab) {
+      restoredAiTabRoots.current.add(rootKey);
+      return;
+    }
+    if (restoredAiTabRoots.current.has(rootKey) || !aiSessions.activeId) return;
+    // 恢复明确记录的活动会话；它已在 useAiSessions 中经过 CLI 原生列表过滤。
+    restoredAiTabRoots.current.add(rootKey);
+    setActiveTab(`ai|${aiSessions.activeId}`);
+  }, [activeTab, aiSessions.activeId, rootKey, setActiveTab]);
+  useEffect(() => {
+    if (settings.aiAssistantsEnabled) return;
+    setPanel((current) => current === "ai" ? "explorer" : current);
+    setAiDraftOpen({});
+    setActiveTabByRoot((current) => Object.fromEntries(
+      Object.entries(current).map(([root, tab]) => [root, tab?.startsWith("ai|") ? null : tab]),
+    ));
+  }, [settings.aiAssistantsEnabled]);
+  const openAiSession = useCallback((id: string) => {
+    if (!settings.aiAssistantsEnabled) return;
+    dispatchAiSession({ type: "open", id });
+    setActiveTab(`ai|${id}`);
+  }, [dispatchAiSession, setActiveTab, settings.aiAssistantsEnabled]);
+  /** 「新建会话」草稿标签是否打开，按根隔离；真正的会话在首条消息发出时才创建。 */
+  const [aiDraftOpen, setAiDraftOpen] = useState<Record<string, boolean>>({});
+  const openAiDraft = useCallback(() => {
+    if (!settings.aiAssistantsEnabled) return;
+    setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: true }));
+    setActiveTab("ai|draft");
+  }, [setActiveTab, settings.aiAssistantsEnabled]);
+  /**
+   * 草稿页首条消息：创建会话、把欢迎页配置的选项种给新会话、留下待发出的
+   * 文本与附件，然后切到会话标签——会话页挂载后自动把这条消息发出去。
+   */
+  const launchAiDraft = (provider: AiProvider, text: string, images: string[]) => {
+    if (!settings.aiAssistantsEnabled || !workspaceRoot) return;
+    // 删除旧会话后也不会复用现存会话的默认名称。
+    let number = 1;
+    let title = t("ai.defaultTitle", { name: AI_NAMES[provider], number });
+    while (aiSessions.sessions.some((session) => session.title === title)) {
+      title = t("ai.defaultTitle", { name: AI_NAMES[provider], number: ++number });
+    }
+    const requestedId = provider === "claude" ? crypto.randomUUID() : null;
+    void invoke<AiSession>("ai_runtime_create", { provider, workspace: workspaceRoot, sessionId: requestedId, title }).then((session) => {
+      seedAiSessionOptions(workspaceRoot, session.id, provider);
+      setAiDraftHandoff(session.id, { text, images });
+      dispatchAiSession({ type: "create", session });
+      setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: false }));
+      setActiveTab(`ai|${session.id}`);
+    }).catch((cause) => reportError(errorText(cause)));
+  };
 
   /**
    * 语言服务「跳转到定义」落到别的文件时，由这里把那份文件开出来并定位。
@@ -1016,6 +1112,34 @@ export default function App() {
     () => setTreeRefresh((current) => ({ paths: null, seq: current.seq + 1 })),
     []
   );
+  // AI 运行期间会改文件，这些改动不经过编辑器，所以要主动刷新文件树、Git 变更，
+  // 并通知已打开的文档去重载。事件里只带项目相对/绝对路径，这里统一过滤掉
+  // 逃出工作区的路径，避免被诱导去读工作区外的文件。
+  useEffect(() => {
+    if (!settings.aiAssistantsEnabled || !isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AiRuntimeEvent[]>("ai-runtime://events", ({ payload }) => {
+      if (disposed || !workspaceRoot || !Array.isArray(payload)) return;
+      const projectEvents = filterAiProjectEvents(payload, workspaceRoot);
+      const changed = projectEvents.filter((event) => event.kind === "files").flatMap((event) =>
+        Array.isArray(event.data.paths) ? event.data.paths.filter((path): path is string => typeof path === "string") : []);
+      // 只有「真的改了文件」或「任务跑完了」才值得全量刷新；其余状态事件太频繁。
+      if (changed.length || projectEvents.some((event) => event.kind === "status" && event.data.status !== "running")) {
+        refreshTree();
+        void gitRef.current.refreshChanges();
+        if (changed.length && workspaceRoot) {
+          const paths = changed.filter((path) => !path.split(/[\\/]/).includes(".."))
+            .map((path) => path.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, ""))
+            .map((path) => /^(?:[a-z]:[\\/]|[\\/])/i.test(path) ? path : joinPath(workspaceRoot, path))
+            .filter((path) => pathWithin(workspaceRoot, path));
+          void docsRef.current.noteExternalChange(paths);
+        }
+      }
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch((error) => reportError(String(error)));
+    return () => { disposed = true; unlisten?.(); };
+  }, [settings.aiAssistantsEnabled, workspaceRoot, refreshTree, reportError]);
+
   /** 磁盘事件报得来的是具体哪几条路径变了，缓存就只作废与它们相干的那些目录。 */
   const refreshPaths = useCallback(
     (paths: string[]) => setTreeRefresh((current) => ({ paths, seq: current.seq + 1 })),
@@ -1746,9 +1870,17 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [configs, dialog, dockPane, everywhere, focusPane, hidePane, menu, places.run, resolveOpen, run]);
 
-  /** 彻底清理并移除一个常驻文件夹（在确认无脏文件/运行任务或用户已确认放弃后调用）。 */
+  /**
+   * 彻底清理并移除一个常驻文件夹（在确认无脏文件/运行任务或用户已确认放弃后调用）。
+   *
+   * 改成 async 是因为要先停掉该项目下的 AI 任务：进程还在写文件时就把项目从界面上摘掉，
+   * 后续事件会指向一个已不存在的根。停止失败则中止关闭并返回 false，
+   * 由调用方决定是否继续（换文件夹的场景会就此打住，避免留下跑着的任务）。
+   */
   const performCloseRoot = useCallback(
-    (targetRoot: string) => {
+    async (targetRoot: string) => {
+      try { if (isTauri()) await invoke("ai_runtime_stop_project", { workspace: targetRoot }); }
+      catch (error) { reportError(String(error)); return false; }
       void closeTermsForRoot(targetRoot);
       run.closeSessionsForRoot(targetRoot);
       // 忽略清单缓存按仓库根存，可能挂在子仓库键上：把该文件夹之下的条目一并回收。
@@ -1759,6 +1891,8 @@ export default function App() {
         }
       }
       docs.closeForRoot(targetRoot);
+      // 只有工程被真正关闭才注销轮询；切换前台工程时必须继续监测后台会话。
+      forgetAiSessionWorkspace(targetRoot);
       setDiffsByRoot((prev) => {
         const next = { ...prev };
         for (const key of Object.keys(next)) {
@@ -1832,8 +1966,9 @@ export default function App() {
         }
         setWorkspaceRoot(fallback);
       }
+      return true;
     },
-    [activeTab, docs, openFolders, run, settingsTab, workspaceRoot]
+    [activeTab, docs, openFolders, run, settingsTab, workspaceRoot, reportError]
   );
 
   /** 请求关闭指定文件夹：先处理失焦自动保存，再检查是否有未保存改动或后台运行任务。 */
@@ -1847,8 +1982,9 @@ export default function App() {
         }
       }
       const dirty = docs.hasDirtyForRoot(targetRoot);
+      // AI 任务也算「运行中」：关闭项目会杀掉它们的进程，必须先让用户确认。
       const running =
-        run.hasRunningSessionsForRoot(targetRoot) || hasAliveTermsForRoot(targetRoot);
+        run.hasRunningSessionsForRoot(targetRoot) || hasAliveTermsForRoot(targetRoot) || hasAiRuns(targetRoot);
       if (dirty || running) {
         setDialog({
           kind: "closeRoot",
@@ -1860,14 +1996,14 @@ export default function App() {
         });
         return;
       }
-      performCloseRoot(targetRoot);
+      await performCloseRoot(targetRoot);
     },
     [docs, git, performCloseRoot, run, settings.editor.savePolicy, suppressGitEcho, workspaceRoot]
   );
 
   /** 切换或添加文件夹：多工作区模式下常驻并秒切；单工作区模式下替换当前激活根。 */
   const switchOrAddFolder = useCallback(
-    (picked: string) => {
+    async (picked: string) => {
       if (settings.editor.savePolicy === "blur") {
         void saveAllRef.current();
       }
@@ -1876,9 +2012,10 @@ export default function App() {
 
       if (settings.workspaceMode === "single") {
         // 单工作区模式：若所选不是已常驻的后台根，关闭当前激活根并就地替换；不触碰其它已常驻的根。
+        // 关闭失败（AI 任务停不下来）就不切走，否则新项目会顶着一个还在跑旧任务的后端。
         const alreadyOpen = openFolders.some((item) => samePath(item, existing));
         if (workspaceRoot && !samePath(workspaceRoot, existing) && !alreadyOpen) {
-          performCloseRoot(workspaceRoot);
+          if (!await performCloseRoot(workspaceRoot)) return;
         }
         setOpenFolders((prev) => {
           if (prev.length <= 1) return [existing];
@@ -1940,13 +2077,18 @@ export default function App() {
         : workspaceRoot
           ? [workspaceRoot]
           : [];
-    return roots.map((folderPath) => ({
-      path: folderPath,
-      running:
-        run.hasRunningSessionsForRoot(folderPath) || hasAliveTermsForRoot(folderPath),
-      dirty: docs.hasDirtyForRoot(folderPath),
-    }));
-  }, [docs, openFolders, run, termRev, workspaceRoot]);
+    return roots.map((folderPath) => {
+      const ai = getAiProjectActivitySummary(folderPath);
+      return {
+        path: folderPath,
+        running: run.hasRunningSessionsForRoot(folderPath) || hasAliveTermsForRoot(folderPath) || hasAiProjectActivity(folderPath),
+        aiRunning: ai.running,
+        aiQueued: ai.queued,
+        aiExternal: ai.external,
+        dirty: docs.hasDirtyForRoot(folderPath),
+      };
+    });
+  }, [docs, openFolders, run, termRev, workspaceRoot, aiActiveProjects]);
 
   const openFile = useCallback(
     (entry: FsEntry) => {
@@ -2096,6 +2238,15 @@ export default function App() {
     void webview
       .onDragDropEvent((event) => {
         const payload = event.payload;
+        const point = dropPosition(payload.type === "leave" ? { x: 0, y: 0 } : payload.position);
+        // 悬停中的局部目标（聊天输入框）先认领；认领了就不显示整窗提示，也不打开文件。
+        if (dispatchDrop(payload.type, "paths" in payload ? payload.paths : [], point.x, point.y)) {
+          if (payload.type === "enter" || payload.type === "drop") {
+            dropGen.current += 1;
+            setDropHover(null);
+          }
+          return;
+        }
         if (payload.type === "enter") {
           const gen = ++dropGen.current;
           setDropHover({ pending: true, files: 0, folders: 0 });
@@ -3399,7 +3550,7 @@ export default function App() {
           if (queued.length > 0) closeBatch(queued);
         }
         if (kind === "closeRoot" && path) {
-          performCloseRoot(path);
+          await performCloseRoot(path);
           return;
         }
         if (kind === "restartUpdate") {
@@ -3486,6 +3637,26 @@ export default function App() {
       dirty: false,
       icon: PANE_ICON[key],
     })),
+    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => ({
+      id: `ai|${session.id}`,
+      kind: "ai" as const,
+      name: session.title,
+      title: `${AI_NAMES[session.provider]} · ${session.title}`,
+      dirty: false,
+      icon: <AiProviderIcon provider={session.provider} size={14} />,
+    })),
+    ...(aiDraftOpen[rootKey] && settings.aiAssistantsEnabled
+      ? [
+          {
+            id: "ai|draft",
+            kind: "ai" as const,
+            name: t("ai.newSession"),
+            title: t("ai.newSession"),
+            dirty: false,
+            icon: <SquarePen size={14} className="entry-icon" aria-hidden="true" />,
+          },
+        ]
+      : []),
     ...(settingsTab
       ? [
           {
@@ -3511,7 +3682,7 @@ export default function App() {
         ]
       : []),
     ],
-    [diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
+    [aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], settings.aiAssistantsEnabled, diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
   );
 
   // 栏上有哪些标签由上面那份目录说，排在哪儿由 tabOrder 说：新开一颗落在当前这颗右边，拖动改这个数组。
@@ -3579,27 +3750,43 @@ export default function App() {
     (id: string) => {
       setActiveTab(id);
       if (id.startsWith("doc|")) docs.setActivePath(id.slice(4));
+      // 已打开的 AI 标签再次被选中也要更新持久化活动项，不能只在首次 open 时记录；
+      // 草稿标签背后没有会话，只切换显示。
+      else if (id.startsWith("ai|") && id !== "ai|draft") dispatchAiSession({ type: "open", id: id.slice(3) });
     },
-    [docs]
+    [docs, dispatchAiSession]
   );
 
-  /** 关一颗标签：文档先问没保存的改动，面板那颗只是最小化，比对和整页那两类直接收。 */
+  /**
+   * 关一颗标签：文档先问没保存的改动，面板那颗只是最小化，比对和整页那两类直接收。
+   *
+   * AI 标签特殊：可能还有任务在跑，交给 `closeSession` 先问「后台继续 / 停止并关闭」，
+   * 只有用户选完才真正把标签从状态里摘掉。
+   */
   const closeTab = useCallback(
     (id: string, kind: TabKind) => {
       if (kind === "doc") closeDocTab(id.slice(4));
       else if (kind === "diff") closeDiff(id.slice(5));
       else if (kind === "pane") hidePane(id.slice(5) as BottomPane);
+      // 草稿标签背后没有会话也没有任务，直接收掉即可。
+      else if (id === "ai|draft") setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: false }));
+      else if (kind === "ai") aiLifecycle.closeSession(id.slice(3), () => dispatchAiSession({ type: "close", id: id.slice(3) }));
       else if (id === "run-configs") setRunConfigsTab(false);
       else setSettingsTab(false);
     },
-    [closeDiff, closeDocTab, hidePane]
+    [closeDiff, closeDocTab, hidePane, dispatchAiSession, aiLifecycle.closeSession]
   );
 
-  /** 批量关闭：脏文档一次只问一遍，靠的就是 closeBatch 那条队列。 */
+  /**
+   * 批量关闭：脏文档一次只问一遍，靠的就是 closeBatch 那条队列。
+   * AI 标签逐个走 `closeSession`，各自判断是否还有任务在跑。
+   */
   const dropTabs = useCallback(
     (list: TabItem[]) => {
       for (const tab of list) {
         if (tab.kind === "pane") hidePane(tab.id.slice(5) as BottomPane);
+        else if (tab.id === "ai|draft") setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: false }));
+        else if (tab.kind === "ai") aiLifecycle.closeSession(tab.id.slice(3), () => dispatchAiSession({ type: "close", id: tab.id.slice(3) }));
         else if (tab.kind === "settings") {
           if (tab.id === "run-configs") setRunConfigsTab(false);
           else setSettingsTab(false);
@@ -3607,7 +3794,7 @@ export default function App() {
       }
       closeBatch(list.filter((tab) => tab.kind === "doc").map((tab) => tab.id.slice(4)));
     },
-    [closeBatch, closeDiff, hidePane]
+    [closeBatch, closeDiff, hidePane, dispatchAiSession, aiLifecycle.closeSession]
   );
 
   const closeOtherTabs = useCallback(
@@ -4020,6 +4207,14 @@ export default function App() {
     const opened = line ? docs.openHit(path, line, column) : docs.open(path);
     void opened.catch((cause: unknown) => reportError(errorText(cause)));
   });
+  /** AI 回复里点中的文件路径：相对路径按工程根还原，带行号就跳过去。 */
+  const aiOpenFile = useStable((path: string, line?: number, column?: number) => {
+    const resolved = resolveFileLink({ path, line, column }, workspaceRoot);
+    if (!resolved) return;
+    setActiveTab(`doc|${resolved}`);
+    const opened = line ? docs.openHit(resolved, line, column) : docs.open(resolved);
+    void opened.catch((cause: unknown) => reportError(errorText(cause)));
+  });
   const panelOpenSource = useStable((change: GitChange) => {
     const absolute = git.absoluteOf(change.path);
     setActiveTab(`doc|${absolute}`);
@@ -4142,7 +4337,7 @@ export default function App() {
 
       <div className="app-body">
           <nav className="activity-rail" aria-label={t("panel.explorer")}>
-            {(["explorer", "git"] as Panel[]).map((key) => {
+            {([...(settings.aiAssistantsEnabled ? ["ai" as const] : []), "explorer", "git"] as Panel[]).map((key) => {
               const active = panel === key && sidebarOpen;
               return (
                 <button
@@ -4166,7 +4361,7 @@ export default function App() {
                     }
                   }}
                 >
-                  {key === "explorer" ? <ProjectIcon size={18} /> : <CommitIcon size={18} />}
+                  {key === "explorer" ? <ProjectIcon size={18} /> : key === "ai" ? <Sparkles size={18} /> : <CommitIcon size={18} />}
                   {key === "git" && changeCount > 0 ? (
                     <span className="rail-badge">{changeCount}</span>
                   ) : null}
@@ -4216,11 +4411,14 @@ export default function App() {
               ref={sidePanelRef}
               style={{ width: sidebarWidth }}
             >
-              <header className="tool-window-head">
-                <span className="tool-window-title">
-                  {panel === "explorer" ? t("panel.project") : t("panel.commit")}
+              <header className={`tool-window-head${panel === "ai" ? " ai-sessions-head" : ""}`}>
+                <span className="tool-window-title" title={panel === "ai" ? t("ai.title") : undefined}>
+                  {panel === "explorer" ? t("panel.project") : t(RAIL_LABEL[panel])}
                 </span>
                 <span className="status-spacer" />
+                {panel === "ai" && settings.aiAssistantsEnabled ? (
+                  <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} />
+                ) : null}
                 {panel === "explorer" && workspaceRoot ? (
                   <>
                     <button
@@ -4377,6 +4575,19 @@ export default function App() {
                       <p>{t("explorer.noFolder")}</p>
                     </div>
                   )
+                ) : panel === "ai" ? (
+                  settings.aiAssistantsEnabled ? <AiSessionsPanel
+                    key={rootKey}
+                    sessions={aiSessions.sessions}
+                    openIds={aiSessions.openIds}
+                    activeId={activeTab}
+                    storageError={aiSessions.storageError}
+                    workspace={workspaceRoot}
+                    onOpen={openAiSession}
+                    onNew={openAiDraft}
+                    // 重命名/删除可能要先停掉在跑的任务，归档与搜索按项目归属，统一交给生命周期钩子处理。
+                    onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
+                  /> : null
                 ) : workspaceRoot ? (
                   <Suspense fallback={null}>
                     <GitPanel
@@ -4499,6 +4710,15 @@ export default function App() {
                           paneFrame(activePane, false)
                         ) : activeTab === "run-configs" ? (
                           <RunConfigsPage configs={configs} />
+                        ) : activeTab === "ai|draft" ? (
+                          // 新建会话草稿页：会话还不存在，首条消息发出时才创建并切到会话页。
+                          <Suspense fallback={null}>
+                            <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
+                          </Suspense>
+                        ) : activeAiSession ? (
+                          // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
+                          // 展开状态和本地事件订阅会串到新会话上。
+                          <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} />
                         ) : activeTab === "settings" ? (
                           <SettingsPage
                             workspace={workspaceRoot}
@@ -4729,6 +4949,14 @@ export default function App() {
                       paneFrame(activePane, false)
                     ) : activeTab === "run-configs" ? (
                       <RunConfigsPage configs={configs} />
+                    ) : activeTab === "ai|draft" ? (
+                      // 同上：多工作区分支里的草稿页。
+                      <Suspense fallback={null}>
+                        <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
+                      </Suspense>
+                    ) : activeAiSession ? (
+                      // 同上：多工作区分支里的这颗也要按会话 id 重建。
+                      <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} />
                     ) : activeTab === "settings" ? (
                       <SettingsPage
                         workspace={workspaceRoot}
@@ -5060,6 +5288,8 @@ export default function App() {
           />
         </Suspense>
       ) : null}
+      {/* 生命周期确认框（后台继续 / 停止并关闭）由钩子自己渲染，放在最外层以覆盖全部标签。 */}
+      {aiLifecycle.dialog}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
       {dialog ? (
         <PromptDialog

@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { I18nProvider, resolveLang } from "../i18n";
-import { saveSettings } from "../lib/settings";
+import { loadSettings, saveSettings } from "../lib/settings";
 import type { Settings } from "../lib/settings";
 import { resolveTheme } from "../lib/window";
 import type { ThemeMode } from "../lib/window";
@@ -9,7 +9,7 @@ import type { ThemeMode } from "../lib/window";
 interface SettingsValue {
   /** 当前生效的全局设置。 */
   settings: Settings;
-  /** 局部覆盖后整份写回文件。 */
+  /** 改哪几个字段就只存那几个字段，存完跟着文件里的全量结果走。 */
   patch: (next: Partial<Settings>) => void;
   /** 已经写到 document 上的深浅色。子组件取色要等这一步落地，否则读到的还是上一套令牌。 */
   applied: "light" | "dark";
@@ -32,15 +32,27 @@ interface SettingsProviderProps {
 
 export function SettingsProvider({ initial, children }: SettingsProviderProps) {
   const [settings, setSettings] = useState<Settings>(initial);
+  /** 第几次保存的回包才算数；见下面 `patch`。 */
+  const pending = useRef(0);
 
+  /**
+   * 改设置：本地先按新值渲染，再把**改动的那几个字段**交给后端合并，最后用合并回来的
+   * 全量设置覆盖本地。只发改动项是为了不让这个窗口的旧副本抹掉别的窗口刚存的字段
+   * （原来任何一次改动都整份写回，AI 开关就是这么被别的窗口写没的）；用返回值收尾
+   * 是让每个窗口都跟文件一致。挂载时不再写盘——一开窗就重写一遍文件没有任何意义。
+   * 保存失败就按文件重读：宁可看到旧值，也不让界面停在一个根本没落盘的状态。
+   */
   const patch = useCallback((next: Partial<Settings>) => {
     setSettings((current) => ({ ...current, ...next }));
+    // 只有最后一次保存的回包才配覆盖本地：连着改两处会各回一次包，晚到的旧包会把新值倒回去。
+    const ticket = ++pending.current;
+    void saveSettings(next).then((latest) => {
+      if (pending.current === ticket) setSettings(latest);
+    }).catch(() => {
+      if (pending.current !== ticket) return;
+      void loadSettings().then((latest) => { if (pending.current === ticket) setSettings(latest); });
+    });
   }, []);
-
-  // 任何一处改动都整份落盘，文件始终是最新状态。
-  useEffect(() => {
-    void saveSettings(settings);
-  }, [settings]);
 
   // 跟随系统时要在系统偏好变化后重算，其它模式写死。
   const mode: ThemeMode = settings.theme;

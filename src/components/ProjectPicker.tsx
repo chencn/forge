@@ -11,6 +11,10 @@ export interface FolderStatusItem {
   path: string;
   /** 该根下有正在运行的任务或存活的终端会话。 */
   running: boolean;
+  /** AI 状态单独计数，避免和终端、构建任务混成一个圆点。 */
+  aiRunning: number;
+  aiQueued: number;
+  aiExternal: number;
   /** 该根下有未保存的编辑器改动。 */
   dirty: boolean;
 }
@@ -88,6 +92,8 @@ export default function ProjectPicker({
           <FolderOpen size={16} aria-hidden="true" />
         )}
         <span className="toolbar-chip-label">{name ?? t("workspace.openFolder")}</span>
+        {/* 工程名旁直接显示运行状态，不必先展开项目菜单才能发现后台任务。 */}
+        {root && openFolders.some((item) => samePath(item.path, root) && item.running) ? <span className="ws-dot is-running" aria-label={t("project.runningDot")} title={t("project.runningDot")} /> : null}
         {showCountBadge ? <span className="ws-count">{openFolders.length}</span> : null}
         {pickable ? <ChevronDown size={13} aria-hidden="true" /> : null}
       </button>
@@ -123,12 +129,18 @@ export default function ProjectPicker({
                   >
                     <ProjectAvatar name={folderName} path={item.path} size={20} />
                     <span className="popover-item-label">{folderName}</span>
-                    {item.running ? (
+                    {item.aiRunning || item.aiQueued || item.aiExternal ? (
                       <span
-                        className="ws-dot is-running"
+                        className="ai-project-running"
                         title={t("project.runningDot")}
                         aria-label={t("project.runningDot")}
-                      />
+                      >{[
+                        item.aiRunning ? t("ai.runtime.projectRunning", { count: item.aiRunning }) : "",
+                        item.aiQueued ? t("ai.runtime.projectQueued", { count: item.aiQueued }) : "",
+                        item.aiExternal ? t("ai.runtime.projectExternal", { count: item.aiExternal }) : "",
+                      ].filter(Boolean).join(" · ")}</span>
+                    ) : item.running ? (
+                      <span className="ai-project-running" title={t("project.runningDot")} aria-label={t("project.runningDot")}>{t("ai.runtime.running")}</span>
                     ) : null}
                     {item.dirty ? (
                       <span

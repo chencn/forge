@@ -1,0 +1,1073 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { useSyncExternalStore } from "react";
+import type { AiSession } from "./aiSessions";
+import { isAiTaskBackendActive, isAiTaskBackendStatus, isAiTaskLive, isAiTaskQueued, isAiTaskTerminal, type AiTaskStatus } from "./aiTaskStatus";
+import { normalizeAiUsage } from "./aiUsage";
+import type { AiUsage } from "./aiUsage";
+import { normalizeAiContext } from "./aiContext";
+import type { AiContext } from "./aiContext";
+import { normalizeCommandCatalog } from "./aiCommands";
+import type { AiCommandCatalog } from "./aiCommands";
+import type { AiRequestAnswer } from "./aiApprovals";
+import { createFrameNotifier } from "./aiFrame";
+export type AiCommandIntent = "claudeSlash" | "codexCompact" | "codexReview";
+
+/** 一轮运行可选的模型与思考强度；两者都为空表示沿用 CLI 默认。 */
+export interface AiRunOptions {
+  /** 模型 id；必须在 `AiCapabilities.models` 里或由用户自定义输入。 */
+  model?: string;
+  /** 思考强度；只有该模型声明支持的档位才可传。 */
+  effort?: string;
+  /** 默认按需审批；read 只允许只读工具，auto 的范围由 CLI 决定，full 为明确授权的完全访问。 */
+  permission?: "read" | "ask" | "auto" | "full";
+  /** Codex 的 Fast 服务等级，false 明确恢复标准速度。 */
+  fast?: boolean;
+  /** 计划模式：只产出计划，不执行修改。 */
+  planMode?: boolean;
+}
+
+/** 一份计划审阅记录；状态与后端 plans.json 一一对应。 */
+export interface AiPlanReview {
+  planId: string;
+  sessionId: string;
+  nativeId: string;
+  workspace: string;
+  runId?: string | null;
+  revision: number;
+  title: string;
+  content: string;
+  contentHash: string;
+  complete: boolean;
+  nativePlanId: string;
+  execPermission: string;
+  status: "awaiting_review" | "submitting" | "approved" | "changes_requested" | "deferred" | "expired" | "superseded";
+  execution: "not_started" | "running" | "completed" | "failed" | "unknown";
+  decision?: string | null;
+  appliedAt?: number | null;
+  createdAt: number;
+  updatedAt: number;
+  supersededBy?: number | null;
+  /** 事件序号；来自历史文件而非事件时为 undefined。 */
+  seq?: number;
+}
+
+/** CLI 报告的后台任务数；settled 表示当前回合已交还用户。 */
+export interface AiBackground { pending: number; settled: boolean }
+/** headless 下被权限系统拒绝的一次调用。 */
+export interface AiPermissionDenied { tool?: string; path?: string; text: string }
+/** CLI 实际加载的 MCP 服务快照。 */
+export interface AiMcpSnapshot { servers: Array<{ name: string; status?: string | null }>; tools?: string[] }
+
+/** CLI 报告的一个可选模型。 */
+export interface AiModelOption {
+  /** 官方目录项 ID，可能不同于实际调用参数 id。 */
+  catalogId?: string;
+  /** Claude 配置的别名目标，只展示，不冒充服务端实际运行模型。 */
+  configuredModel?: string;
+  /** 传给 CLI 的模型标识。 */
+  id: string;
+  /** 界面显示的名字。 */
+  name: string;
+  /** 该模型支持的思考强度档位；为空表示不支持调节。 */
+  efforts: string[];
+  /** 每档强度的说明文字（CLI 目录自带）；弹层按当前档展示。 */
+  effortDescriptions?: Record<string, string>;
+  /** Claude 槽位（opus/sonnet/haiku/fable）被用户配置后，标记所属槽位。 */
+  customSlot?: string;
+  /** Claude 的 ANTHROPIC_CUSTOM_MODEL_OPTION 条目：用户在 CLI 配置里追加的模型。 */
+  customOption?: boolean;
+  /** 模型的一句话说明（CLI 目录自带）。 */
+  description?: string;
+  /** CLI 建议的默认强度。 */
+  defaultEffort?: string;
+  /** 是否为 CLI 当前默认模型。 */
+  isDefault?: boolean;
+  /** CLI 原样报告的服务等级，不猜测 Fast 的协议取值。 */
+  serviceTiers?: Array<{ id: string; name: string; description: string }>;
+}
+
+/** CLI 的模型能力清单，用于渲染模型与强度下拉。 */
+export interface AiCapabilities {
+  /** Forge 独立维护的用户自定义列表，允许显式增删。 */
+  customModels?: string[];
+  /** 可用模型列表。 */
+  models: AiModelOption[];
+  /** 是否允许用户自己输入模型 id（列表外的模型）。 */
+  customModel: boolean;
+  /** 所有模型共有的强度档位，用于在没有具体模型时兜底展示。 */
+  efforts: string[];
+  /** 这份目录是否 CLI 亲口报的；false 说明只是 Forge 内置别名表，不能当成事实。 */
+  authoritative: boolean;
+  /** 这一次是现问 CLI 拿的，还是沿用磁盘上的上次结果。 */
+  remote: boolean;
+  /** 报出这份目录的 CLI 版本；后端按它判断缓存是否已经过期。 */
+  cliVersion?: string | null;
+}
+/** Codex 通过 app-server config/read 返回的当前项目有效配置。 */
+export interface AiProjectConfig {
+  model?: string;
+  effort?: string;
+  /** 仅精确匹配的官方组合使用快捷名；custom 时由下面两个原始字段说明真实配置。 */
+  permission: "read" | "ask" | "auto" | "full" | "custom";
+  sandboxMode?: string;
+  approvalPolicy?: string;
+  serviceTier?: string;
+}
+const projectConfigs = new Map<string, { value?: AiProjectConfig; pending?: Promise<AiProjectConfig> }>();
+function projectConfigKey(workspace: string) {
+  const normalized = workspace.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[a-z]:\//i.test(normalized) || normalized.startsWith("//") ? normalized.toLowerCase() : normalized;
+}
+function requestAiProjectConfig(workspace: string, force: boolean): Promise<AiProjectConfig> {
+  const key = projectConfigKey(workspace);
+  const current = projectConfigs.get(key);
+  if (current?.pending) return current.pending;
+  if (!force && current?.value) return Promise.resolve(current.value);
+  const pending = invoke<AiProjectConfig>("ai_runtime_project_config", { workspace }).then((value) => {
+    if (projectConfigs.get(key)?.pending === pending) projectConfigs.set(key, { value });
+    return value;
+  }).catch((error) => {
+    if (projectConfigs.get(key)?.pending === pending) {
+      if (current?.value) projectConfigs.set(key, { value: current.value });
+      else projectConfigs.delete(key);
+    }
+    throw error;
+  });
+  projectConfigs.set(key, { value: current?.value, pending });
+  return pending;
+}
+export function loadAiProjectConfig(workspace: string): Promise<AiProjectConfig> {
+  return requestAiProjectConfig(workspace, false);
+}
+/** 项目激活时重新读取 CLI 的有效配置；失败保留上一份缓存。 */
+export function refreshAiProjectConfig(workspace: string): Promise<AiProjectConfig> {
+  return requestAiProjectConfig(workspace, true);
+}
+export type AiProjectConfigPatch = { model?: string | null; effort?: string | null; permission?: Exclude<AiProjectConfig["permission"], "custom"> | null; serviceTier?: string | null };
+export function updateAiProjectConfig(workspace: string, patch: AiProjectConfigPatch): Promise<AiProjectConfig> {
+  return invoke<AiProjectConfig>("ai_runtime_update_project_config", { workspace, patch }).then((value) => {
+    projectConfigs.set(projectConfigKey(workspace), { value });
+    return value;
+  });
+}
+export function loadAiCapabilities(provider: AiSession["provider"], workspace: string): Promise<AiCapabilities> {
+  return invoke("ai_runtime_models", { provider, workspace });
+}
+/** 后台发现与读取磁盘分开，刷新失败不丢弃已有目录。 */
+export function refreshAiCapabilities(provider: AiSession["provider"], workspace: string, force = false): Promise<AiCapabilities> {
+  return invoke("ai_runtime_refresh_models", { provider, workspace, force });
+}
+/** 用户输入单独持久化，自动发现不能覆盖自定义 ID。 */
+export function saveAiCustomModel(provider: AiSession["provider"], model: string): Promise<AiCapabilities> {
+  return invoke("ai_runtime_save_model", { provider, model });
+}
+/** 设置页只读列表：不探测 CLI，也不依赖当前工程。 */
+export function loadAiCustomModels(provider: AiSession["provider"]): Promise<string[]> {
+  return invoke("ai_runtime_custom_models", { provider });
+}
+export function removeAiCustomModel(provider: AiSession["provider"], model: string): Promise<void> {
+  return invoke("ai_runtime_remove_model", { provider, model });
+}
+
+/** 后端推送的一条运行时事件，与 Rust 侧 `Event` 一一对应。 */
+export interface AiRuntimeEvent {
+  /** 事件属于哪个会话。 */
+  sessionId: string;
+  /** 事件属于哪一轮运行。 */
+  runId: string;
+  /** 会话内单调序号，用于排序、去重与补漏。 */
+  seq: number;
+  /** 事件类型：`text`、`tool`、`status`、`files`、`usage` 等。 */
+  kind: string;
+  /** 与类型配套的载荷，前端按 `kind` 解读。 */
+  data: Record<string, unknown>;
+}
+
+/** 一个需要用户回答的问题（来自 CLI 的提问工具）。 */
+export interface AiQuestion {
+  /** 问题标识，答复时按它回填。 */
+  id: string;
+  /** 可选的短标题。 */
+  header?: string;
+  /** 问题正文。 */
+  question: string;
+  /** 预设选项；允许自由输入时也可能为空。 */
+  options?: Array<{ label: string; description?: string }>;
+  /** 是否可多选。 */
+  multiSelect?: boolean;
+}
+
+/** 时间线上的一条记录：用户消息、助手回复、工具调用、文件变更等。 */
+export interface AiEntry {
+  /** 稳定 id，同一段内容多次更新时用它合并。 */
+  id: string;
+  /** 属于哪一轮运行。 */
+  runId: string;
+  /** 对应的事件序号；本地生成（如用户消息）时可能没有。 */
+  seq?: number;
+  /** 条目种类，决定渲染方式。 */
+  kind: "user" | "assistant" | "command" | "tool" | "files" | "reasoning" | "notice" | "request";
+  /** 正文；工具条目里是名称或摘要。 */
+  text: string;
+  /** 工具名，仅工具条目有。 */
+  name?: string;
+  /** 工具入参，仅工具条目有；结构由具体工具决定。 */
+  input?: unknown;
+  /** CLI 的结构化工具结果；与面向模型的文本 output 分开保存。 */
+  result?: unknown;
+  /** 工具输出，仅工具条目有。 */
+  output?: unknown;
+  /** 工具状态：running / completed / failed。 */
+  status?: string;
+  /** 被改动的文件路径，仅文件变更条目有。 */
+  paths?: string[];
+  /** Forge 图片沙箱中的附件路径，仅用户消息有。 */
+  images?: string[];
+  /** 关联的请求 id，仅请求条目有，用于定位答复目标。 */
+  requestId?: string;
+  /** 归属的 Task 工具调用 id（Claude 的 parent_tool_use_id）；子代理条目才有。 */
+  parent?: string;
+  /** 工具条目的原始工具 id（tool_use id）；子代理条目按它挂到对应委派卡。 */
+  toolId?: string;
+}
+
+/** 一张等待用户处理的卡片：授权或提问。 */
+export interface AiRequest {
+  /** 对外请求 id，答复时原样回传。 */
+  requestId: string;
+  /** 属于哪一轮运行。 */
+  runId: string;
+  /** 对应事件序号，用于按时间插入时间线。 */
+  seq?: number;
+  /** `permission` 是工具授权，`question` 是提问。 */
+  kind: "permission" | "question";
+  /** 卡片标题，通常是工具名。 */
+  title: string;
+  /** 详情（授权时是格式化的入参）。 */
+  detail: string;
+  /** 权限请求对应的真实工具与结构化参数；用于复用普通工具明细。 */
+  toolName?: string;
+  /** 原始工具调用 id（Claude 的 can_use_tool request_id = tool_use id）；用于工具记录让位。 */
+  toolId?: string;
+  input?: unknown;
+  reason?: string;
+  blockedPath?: string;
+  /** 由后端声明：这家的授权答复有没有「改过的入参」这个位置。没有就不给出现该按钮。 */
+  canEdit?: boolean;
+  /** 提问内容；授权卡片为空数组。 */
+  questions: AiQuestion[];
+  /** 是否仍可答复；请求被取消或已答复后置为 false。 */
+  active: boolean;
+  /** 答过了就带着当时的答案；`active` 为假而没有这一项，说明没等到答复就失效了。 */
+  answer?: AiRequestAnswer;
+}
+
+/** 会话中的一项真实任务；同一会话最多一项 running，其余活动项按 FIFO 排队。 */
+export interface AiTask {
+  runId: string;
+  status: AiTaskStatus;
+  prompt?: string;
+  error?: string;
+  seq: number;
+  /** 后端会话队列中的真实顺序；只对 queued/waitingExternal 有意义。 */
+  queueIndex?: number;
+}
+
+/** 一个会话在前端看到的状态快照。 */
+export interface AiRuntimeSnapshot {
+  /** 已合并好的时间线条目，按序号排列。 */
+  entries: AiEntry[];
+  /** 尚未处理的请求卡片。 */
+  requests: AiRequest[];
+  /** 当前运行项与历史/排队任务，用 runId 独立控制，不能压扁成一个布尔值。 */
+  tasks: AiTask[];
+  /** 当前或最近一轮的 run id；从未运行过为 null。 */
+  runId: string | null;
+  /** 会话状态：idle / running / completed / cancelled / failed。 */
+  status: string;
+  /** 是否正在停止；此期间禁用发送并显示停止中。 */
+  stopping: boolean;
+  /** 最近一次失败的原因。 */
+  error: string | null;
+  /** 是否正在加载历史。 */
+  loading: boolean;
+  /** 是否已成功加载过一次；未加载前不能发送。 */
+  loaded: boolean;
+  /** 是否还有更早的历史可翻；首屏取的是最新一页，往前翻才是「更早」。 */
+  hasOlder: boolean;
+  /** 翻页游标：已加载记录里最老一条的序号，往前翻从这里再往前取。 */
+  cursor: number;
+  /** CLI 原生会话 id；恢复对话时用。 */
+  nativeId: string | null;
+  /** 最近报告的用量统计。 */
+  usage?: AiUsage;
+  /** 独立的上下文组成快照；过期快照仅供回看。 */
+  context?: AiContext;
+  contextUnavailable?: boolean;
+  commands?: AiCommandCatalog;
+  /** CLI 报告的运行配置（实际模型、权限模式等）。 */
+  configuration?: AiRunOptions & { permissionMode?: string };
+  /** 本会话的全部计划版本，按 planId/revision 去重；界面取最新一版。 */
+  plans: AiPlanReview[];
+  /** 后台任务进度；没有后台任务时为 undefined。 */
+  background?: AiBackground;
+  /** 最近一次被权限系统拒绝的调用。 */
+  permissionDenied?: AiPermissionDenied;
+  /** CLI 实际加载的 MCP 服务。 */
+  mcpServers?: AiMcpSnapshot;
+}
+
+/** 一个会话的内部存储：事件原文与由它派生的快照。 */
+interface State {
+  /** 会话所属工作区（原始写法），用于按项目过滤事件。 */
+  workspace: string | null;
+  /** 按序号索引的事件原文；快照由它派生，便于重放。 */
+  events: Map<number, AiRuntimeEvent>;
+  /** 当前对外暴露的快照。 */
+  snapshot: AiRuntimeSnapshot;
+  /** 正在进行的历史加载；用于合并并发请求。 */
+  loading: Promise<void> | null;
+  /** 已知的最大序号与对应运行/状态，用于判断是否需要重新拉取。 */
+  summary: { seq: number; runId: string; status: string } | null;
+  /** 已见过的最大序号，防止乱序事件把游标回退。 */
+  maxSeq: number;
+  /** 本轮失败的记录；成功后清空。 */
+  failure: { runId: string; error: string } | null;
+}
+
+/** 后端返回的一页历史。 */
+interface Page {
+  /** 本页事件，按序号升序。 */
+  events: AiRuntimeEvent[];
+  /** 往前翻的那一页：还有更早的记录没被这一页装下。 */
+  hasOlder: boolean;
+  /** 下一次分页的游标：往前翻是这一页最老一条，往后翻是最新一条。 */
+  nextSeq: number;
+  /** CLI 原生会话 id。 */
+  nativeId: string | null;
+  /** 会话状态；后端未记录时为 null。 */
+  status: string | null;
+  /** 后端已知的最大序号，用来判断本地是否落后。 */
+  latestSeq?: number;
+  /** 最大序号所属的运行 id。 */
+  latestRunId?: string | null;
+  /** 后端全日志扫描得到的活动任务摘要，不受当前分页位置影响。 */
+  activeTasks?: AiTask[];
+  /** 读取时的非致命问题，例如某条记录损坏被跳过。 */
+  warning?: string | null;
+  /** 计划审阅记录；事件分页之外的独立事实源。 */
+  plans?: AiPlanReview[];
+}
+const EMPTY: AiRuntimeSnapshot = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: false, hasOlder: false, cursor: 0, nativeId: null, plans: [] };
+const stores = new Map<string, State>();
+const deleted = new Set<string>();
+const listeners = new Set<() => void>();
+export type AiSessionActivity = "idle" | "queued" | "running" | "external" | "conflict" | "unknown";
+const activities = new Map<string, AiSessionActivity>();
+const activityRoots = new Map<string, string>();
+const activityQueued = new Map<string, number>();
+export interface AiProjectActivitySummary { running: number; queued: number; external: number; }
+export function getAiProjectActivitySummary(workspace: string): AiProjectActivitySummary {
+  const key = rootKey(workspace);
+  let running = 0; let queued = 0; let external = 0;
+  for (const state of stores.values()) if (state.workspace && rootKey(state.workspace) === key) {
+    running += state.snapshot.tasks.filter((task) => task.status === "running").length;
+    queued += state.snapshot.tasks.filter((task) => isAiTaskQueued(task.status)).length;
+  }
+  for (const [id, root] of activityRoots) if (rootKey(root) === key) {
+    const local = stores.get(id)?.snapshot;
+    const state = activities.get(id) ?? "idle";
+    if (["external", "conflict"].includes(state)) external += 1;
+    else if (state === "running" && !local?.tasks.some((task) => task.status === "running")) running += 1;
+    const localQueued = local?.tasks.filter((task) => isAiTaskQueued(task.status)).length ?? 0;
+    queued += Math.max(0, (activityQueued.get(id) ?? 0) - localQueued);
+  }
+  return { running, queued, external };
+}
+/** 工程运行摘要只订阅任务状态变化，不跟随每个输出字符重渲染整个应用。 */
+export function useAiActiveProjects(): string {
+  return useSyncExternalStore(subscribeAiChanges, () => {
+    const roots = new Set<string>([...stores.values()].flatMap((state) => state.workspace ? [state.workspace] : []).concat([...activityRoots.values()]));
+    return JSON.stringify([...roots].map((root) => ({ root: rootKey(root), ...getAiProjectActivitySummary(root) }))
+      .filter((item) => item.running || item.queued || item.external).sort((a, b) => a.root.localeCompare(b.root)));
+  }, () => "[]");
+}
+export function hasAiProjectActivity(workspace: string): boolean {
+  return hasAiRuns(workspace) || [...activityRoots].some(([id, root]) => rootKey(root) === rootKey(workspace) && ["running", "external", "conflict"].includes(getAiSessionActivity(id)));
+}
+/** 活动状态独立于历史消息；外部占用不能伪装成 Forge 可停止的任务。 */
+export function getAiSessionActivity(id: string): AiSessionActivity {
+  if (activities.get(id) === "conflict") return "conflict";
+  if (isAiSessionRunning(id)) return "running";
+  const external = activities.get(id);
+  if (external === "running") return "running";
+  if (external === "external") return "external";
+  if (external === "unknown") return "unknown";
+  return getAiQueuedCount(id) > 0 ? "queued" : external ?? "idle";
+}
+export function useAiSessionActivity(id: string): AiSessionActivity {
+  return useSyncExternalStore(subscribeAiChanges, () => getAiSessionActivity(id), () => "idle");
+}
+/** 一次批量查询只更新请求涉及的会话，不覆盖其他工程的状态。 */
+export async function refreshAiSessionActivity(workspace: string, sessionIds: string[]): Promise<void> {
+  const requested = new Set(sessionIds);
+  for (const [id, root] of activityRoots) if (rootKey(root) === rootKey(workspace) && !requested.has(id)) {
+    activityRoots.delete(id); activities.delete(id); activityQueued.delete(id);
+  }
+  if (!isTauri() || !sessionIds.length) { changed(); return; }
+  for (const id of sessionIds) activityRoots.set(id, workspace);
+  try {
+    const records = await invoke<Array<{ sessionId: string; state: AiSessionActivity; queuedCount?: number }>>("ai_runtime_activity", { workspace, sessionIds });
+    for (const record of records) {
+      if (sessionIds.includes(record.sessionId) && ["idle", "running", "external", "conflict", "unknown"].includes(record.state)) {
+        activities.set(record.sessionId, record.state);
+        activityQueued.set(record.sessionId, Number.isSafeInteger(record.queuedCount) && (record.queuedCount ?? 0) > 0 ? record.queuedCount! : 0);
+      }
+    }
+  } catch {
+    // 探测失败不是“空闲”，不能把已知外部占用静默清除。
+    for (const id of sessionIds) activities.set(id, "unknown");
+  }
+  changed();
+}
+let listening: Promise<void> | null = null;
+const notify = () => { for (const listener of listeners) listener(); };
+/**
+ * 流式进度一帧只通知一次：快照照旧当场写进 store，欠的只有「什么时候告诉大家」。
+ * 兜底定时器保证 rAF 不来时（窗口隐藏）界面仍会追上，不会卡在旧数据上。
+ */
+const frames = createFrameNotifier(notify);
+const changed = () => { frames.cancel(); notify(); };
+/** 只推进正文、工具输出这类高频内容时用这个，攒到下一帧再通知。 */
+const changedSoon = () => frames.schedule();
+/** 取（必要时新建）某个会话的内部状态。所有会话共享一个 map，跨组件复用同一份数据。 */
+function store(id: string): State { let state = stores.get(id); if (!state) { state = { workspace: null, events: new Map(), snapshot: { ...EMPTY }, loading: null, summary: null, maxSeq: 0, failure: null }; stores.set(id, state); } return state; }
+/** 局部更新快照并通知订阅者；调用方只传要改的字段。 */
+function patch(id: string, change: Partial<AiRuntimeSnapshot>) { const state = store(id); state.snapshot = { ...state.snapshot, ...change }; changed(); }
+/** 订阅任何会话的变化（含新建/删除），供 `useSyncExternalStore` 使用。 */
+export function subscribeAiChanges(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
+/** 读取某个会话的快照；不存在的会话返回空快照，保证组件首帧不崩。 */
+export function useAiRuntime(id: string): AiRuntimeSnapshot { return useSyncExternalStore(subscribeAiChanges, () => stores.get(id)?.snapshot ?? EMPTY); }
+/** 当前（或最近）一轮的 run id；停止按钮要用它。 */
+export function getAiRunId(id: string) { return stores.get(id)?.snapshot.runId ?? null; }
+/** 该会话是否正在运行；关闭标签前的判断靠它。 */
+export function isAiSessionRunning(id: string) { return stores.get(id)?.snapshot.status === "running"; }
+/** 排队与等待外部任务都可取消，但不冒充正在运行。 */
+export function getAiQueuedCount(id: string) {
+  const local = stores.get(id)?.snapshot.tasks.filter((task) => isAiTaskQueued(task.status)).length ?? 0;
+  return Math.max(local, activityQueued.get(id) ?? 0);
+}
+export function useAiQueuedCount(id: string) { return useSyncExternalStore(subscribeAiChanges, () => getAiQueuedCount(id), () => 0); }
+/** 路径归一化用于比较：去 `\\?\` 前缀、统一分隔符，Windows 与 UNC 路径转小写。 */
+function rootKey(root: string) { const key = root.replace(/^\\\\\?\\UNC\\/i, "//").replace(/^\\\\\?\\/, "").replace(/\\/g, "/").replace(/\/+$/, ""); return /^[a-z]:\//i.test(key) || key.startsWith("//") ? key.toLowerCase() : key; }
+/** 只保留属于该工作区的事件；会话还没绑定工作区时一律过滤掉。 */
+export function filterAiProjectEvents(events: AiRuntimeEvent[], workspace: string): AiRuntimeEvent[] {
+  return events.filter((event) => { const root = stores.get(event.sessionId)?.workspace; return !!root && rootKey(root) === rootKey(workspace); });
+}
+/** 是否有正在运行的任务；传工作区则只统计该项目下的。 */
+export function hasAiRuns(workspace?: string) { return [...stores.values()].some((state) => state.snapshot.tasks.some((task) => isAiTaskLive(task.status)) && (!workspace || state.workspace !== null && rootKey(state.workspace) === rootKey(workspace))); }
+
+/** Complete messages replace deltas under the same provider item ID. */
+export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSnapshot = EMPTY, incremental = false): AiRuntimeSnapshot {
+  const entries: AiEntry[] = incremental ? previous.entries.map((entry) => ({ ...entry })) : [];
+  const byId = new Map<string, AiEntry>(entries.map((entry) => [entry.id, entry]));
+  const requests = new Map<string, AiRequest>(incremental ? previous.requests.map((request) => [request.requestId, { ...request }]) : []);
+  const tasks = new Map<string, AiTask>(incremental ? previous.tasks.map((task) => [task.runId, { ...task }]) : []);
+  // 每一轮的正文：只有真有状态事件的那一轮才配拿去当提示词（见下面 `user` 分支）。
+  const prompts = new Map<string, string>();
+  const seenRuns = new Set<string>();
+  let runId: string | null = incremental ? previous.runId : null;
+  let status = incremental ? previous.status : "idle"; let error: string | null = incremental ? previous.error : null; let nativeId = previous.nativeId;
+  let usage = incremental ? previous.usage : undefined;
+  let context = incremental ? previous.context : undefined;
+  let contextUnavailable = incremental ? previous.contextUnavailable : undefined;
+  const staleContext = () => { if (context) context = { ...context, stale: true }; };
+  let commands = incremental ? previous.commands : undefined;
+  let configuration = incremental ? previous.configuration : undefined;
+  const plans = new Map<string, AiPlanReview>(incremental ? previous.plans.map((plan) => [`${plan.planId}:${plan.revision}`, { ...plan }]) : []);
+  let background = incremental ? previous.background : undefined;
+  let permissionDenied = incremental ? previous.permissionDenied : undefined;
+  let mcpServers = incremental ? previous.mcpServers : undefined;
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    const data = event.data; const key = `${event.runId}:${typeof data.id === "string" ? data.id : event.seq}`;
+    seenRuns.add(event.runId);
+    if (event.kind === "status") {
+      // 词表外或前端专属（submitting）的状态一律当没发生：日志损坏时不能凭空造出一轮。
+      const rawStatus = String(data.status);
+      const taskStatus = isAiTaskBackendStatus(rawStatus) ? rawStatus : null;
+      if (taskStatus) {
+        const current = tasks.get(event.runId);
+        tasks.set(event.runId, { runId: event.runId, status: taskStatus,
+          prompt: typeof data.prompt === "string" ? data.prompt : (current?.prompt ?? prompts.get(event.runId)),
+          queueIndex: Number.isSafeInteger(data.queueIndex) && Number(data.queueIndex) >= 0 ? Number(data.queueIndex) : current?.queueIndex,
+          error: typeof data.error === "string" ? data.error : undefined, seq: current?.seq ?? event.seq });
+      }
+      const terminal = taskStatus !== null && isAiTaskTerminal(taskStatus);
+      if (taskStatus === "running") { runId = event.runId; status = "running"; error = null; staleContext(); contextUnavailable = undefined; background = undefined; permissionDenied = undefined; }
+      else if (terminal && runId === event.runId && taskStatus) { status = taskStatus; error = typeof data.error === "string" ? data.error : null; background = undefined; }
+      if (terminal) for (const request of requests.values()) if (request.runId === event.runId) request.active = false;
+      if (terminal && taskStatus) {
+        for (const entry of entries) if (entry.kind === "tool" && entry.runId === event.runId && entry.status === "running") {
+          entry.status = taskStatus === "completed" ? "unknown" : taskStatus;
+        }
+      }
+    } else if (event.kind === "bound" && typeof data.nativeId === "string") nativeId = data.nativeId;
+    else if (event.kind === "user" && typeof data.text === "string") {
+      // `user` 只说明「这一轮说过什么」，不说明「这一轮还在不在跑」。以前这里顺手造一轮
+      // （没有状态就写 `submitting`），导入的原生历史几百条用户消息一条状态事件都没有，
+      // 于是已经结束的历史被摆成一条待办任务：输入框上方多出一行点不动的「正在提交」，
+      // 按立即执行/编辑/取消，后端只回「这条任务不在当前窗口的队列里」——它本来就不存在。
+      // 正文照旧进时间线；提示词留给真正有状态事件的那一轮。
+      prompts.set(event.runId, data.text);
+      const task = tasks.get(event.runId);
+      if (task) tasks.set(event.runId, { ...task, prompt: data.text });
+      if (!byId.has(key)) { const entry: AiEntry = { id: key, runId: event.runId, seq: event.seq, kind: "user", text: data.text,
+        images: Array.isArray(data.images) ? data.images.filter((path): path is string => typeof path === "string") : undefined }; entries.push(entry); byId.set(key, entry); }
+    }
+    else if (event.kind === "command_output" && typeof data.id === "string" && typeof data.text === "string") {
+      const commandKey = `${key}:command`;
+      let entry = byId.get(commandKey);
+      if (!entry) { entry = { id: commandKey, runId: event.runId, kind: "command", text: "" }; byId.set(commandKey, entry); entries.push(entry); }
+      entry.text = data.text;
+    }
+    else if ((event.kind === "text" || event.kind === "message") && typeof data.id === "string" && typeof data.text === "string") {
+      let entry = byId.get(key); if (!entry) { entry = { id: key, runId: event.runId, kind: "assistant", text: "" }; byId.set(key, entry); entries.push(entry); }
+      entry.text = event.kind === "message" ? data.text : entry.text + data.text;
+      if (typeof data.parent === "string" && data.parent) entry.parent = data.parent;
+    } else if (event.kind === "tool" && typeof data.id === "string") {
+      let entry = byId.get(key); if (!entry) { entry = { id: key, runId: event.runId, kind: "tool", text: "" }; byId.set(key, entry); entries.push(entry); }
+      entry.toolId = data.id;
+      if (typeof data.parent === "string" && data.parent) entry.parent = data.parent;
+      if (typeof data.name === "string") entry.name = data.name;
+      if (data.input !== undefined && data.input !== null) entry.input = data.input;
+      if (data.inputPatch && typeof data.inputPatch === "object" && !Array.isArray(data.inputPatch)) {
+        entry.input = { ...(entry.input && typeof entry.input === "object" ? entry.input : {}), ...data.inputPatch };
+      }
+      if (data.result !== undefined && data.result !== null) entry.result = data.result;
+      if (data.output !== undefined && data.output !== null) entry.output = data.output;
+      if (typeof data.outputDelta === "string") entry.output = String(entry.output ?? "") + data.outputDelta;
+      if (typeof data.status === "string") entry.status = data.status;
+    } else if (event.kind === "files") {
+      const paths = Array.isArray(data.paths) ? data.paths.filter((path): path is string => typeof path === "string") : [];
+      if (paths.length) entries.push({ id: key, runId: event.runId, kind: "files", text: "", paths });
+    } else if (event.kind === "usage") {
+      usage = normalizeAiUsage(data, usage);
+    } else if (event.kind === "context" && (!runId || runId === event.runId)) {
+      const next = normalizeAiContext(data, event.runId);
+      if (next) { context = next; contextUnavailable = false; }
+      else { staleContext(); contextUnavailable = true; }
+    } else if (event.kind === "context_unavailable" && (!runId || runId === event.runId)) {
+      staleContext(); contextUnavailable = true;
+    } else if (event.kind === "commands" && (!runId || runId === event.runId)) {
+      const next = normalizeCommandCatalog(data);
+      if (next) commands = next;
+    } else if (event.kind === "configuration") {
+      if (typeof data.model === "string" && context && data.model !== context.model) staleContext();
+      if (typeof data.model === "string" && data.model !== configuration?.model && usage) usage = { ...usage, window: undefined, model: data.model };
+      configuration = { ...configuration,
+        ...(typeof data.model === "string" ? { model: data.model } : {}),
+        ...(typeof data.effort === "string" ? { effort: data.effort } : {}),
+        ...(typeof data.permissionMode === "string" ? { permissionMode: data.permissionMode } : {}),
+      };
+    } else if (event.kind === "plan_draft" && typeof data.planId === "string") {
+      const draftKey = `plan-draft:${data.planId}`;
+      let entry = byId.get(draftKey);
+      if (!entry) { entry = { id: draftKey, runId: event.runId, seq: event.seq, kind: "notice", name: "plan_draft", text: "" }; entries.push(entry); byId.set(draftKey, entry); }
+      const text = typeof data.text === "string" ? data.text : "";
+      entry.text = data.append === true ? entry.text + text : text;
+      entry.input = { planId: data.planId, complete: data.complete === true };
+      entry.seq = event.seq;
+    } else if (event.kind === "plan_review" && typeof data.planId === "string" && typeof data.revision === "number") {
+      const plan = data as unknown as AiPlanReview;
+      plans.set(`${plan.planId}:${plan.revision}`, { ...plan, seq: event.seq });
+      // 同一次规划先有流式草稿、后有权威正文：合并成一条，不让同一份计划出现两次。
+      const draftKey = `plan-draft:${plan.planId}`;
+      const entry = byId.get(draftKey) ?? { id: `${event.runId}:plan-review:${plan.planId}:${plan.revision}`, runId: event.runId, seq: event.seq, kind: "notice" as const, name: "plan_review", text: "" };
+      entry.name = "plan_review"; entry.text = typeof plan.content === "string" ? plan.content : entry.text;
+      entry.input = plan; entry.seq = event.seq;
+      if (!byId.has(entry.id)) { byId.set(entry.id, entry); entries.push(entry); }
+    } else if (event.kind === "plan_decision") {
+      const noticeKey = `${key}:plan-decision`;
+      let entry = byId.get(noticeKey);
+      if (!entry) { entry = { id: noticeKey, runId: event.runId, seq: event.seq, kind: "notice", name: "plan_decision", text: "" }; byId.set(noticeKey, entry); entries.push(entry); }
+      entry.input = data; entry.seq = event.seq;
+    } else if (event.kind === "background") {
+      background = { pending: Number.isSafeInteger(data.pending) && Number(data.pending) >= 0 ? Number(data.pending) : 0, settled: data.settled === true };
+    } else if (event.kind === "permission_denied") {
+      permissionDenied = {
+        ...(typeof data.tool === "string" ? { tool: data.tool } : {}),
+        ...(typeof data.path === "string" ? { path: data.path } : {}),
+        text: typeof data.text === "string" ? data.text : "",
+      };
+    } else if (event.kind === "mcp_servers") {
+      const servers = Array.isArray(data.servers) ? data.servers.flatMap((server) => server && typeof server === "object" && typeof (server as Record<string, unknown>).name === "string"
+        ? [{ name: String((server as Record<string, unknown>).name), status: typeof (server as Record<string, unknown>).status === "string" ? String((server as Record<string, unknown>).status) : null }] : []) : [];
+      if (servers.length) mcpServers = { servers, ...(Array.isArray(data.tools) ? { tools: data.tools.filter((tool): tool is string => typeof tool === "string") } : {}) };
+    } else if ((event.kind === "reasoning" || event.kind === "reasoning_delta") && typeof data.id === "string") {
+      const reasoningKey = `${key}:reasoning`;
+      let entry = byId.get(reasoningKey);
+      if (!entry) { entry = { id: reasoningKey, runId: event.runId, seq: event.seq, kind: "reasoning", text: "" }; byId.set(reasoningKey, entry); entries.push(entry); }
+      if (typeof data.parent === "string" && data.parent) entry.parent = data.parent;
+      const text = typeof data.text === "string" ? data.text : typeof data.delta === "string" ? data.delta : "";
+      // 完整思考块可能带着被 CLI 裁剪/签名后的空文本到来：空串不得洗掉已累计的增量，
+      // 否则流式期间还能看到的思考在整封信封落地后就消失了。
+      entry.text = !text ? entry.text
+        : event.kind === "reasoning_delta" || data.append === true ? entry.text + text
+        : text;
+    } else if (event.kind === "task_list") {
+      const taskKey = `${event.runId}:task-list`;
+      const incoming = Array.isArray(data.items) ? data.items.flatMap((item, index) => {
+        if (!item || typeof item !== "object") return [];
+        const value = item as Record<string, unknown>;
+        const content = typeof value.content === "string" ? value.content : "";
+        const id = typeof value.id === "string" && value.id ? value.id : content || `task-${index}`;
+        return [{ id, content, status: typeof value.status === "string" ? value.status : "pending", ...(typeof value.detail === "string" ? { detail: value.detail } : {}) }];
+      }) : [];
+      let entry = byId.get(taskKey);
+      const previousItems = entry?.input && typeof entry.input === "object" && !Array.isArray(entry.input) && Array.isArray((entry.input as Record<string, unknown>).items)
+        ? (entry.input as { items: Array<{ id: string; content: string; status: string; detail?: string }> }).items : [];
+      const items = data.replace === true ? incoming : [...previousItems];
+      if (data.replace !== true) for (const item of incoming) {
+        const index = items.findIndex((old) => old.id === item.id || item.content && old.content === item.content);
+        if (index < 0) items.push(item); else items[index] = { ...items[index], ...item, content: item.content || items[index].content };
+      }
+      if (!entry) { entry = { id: taskKey, runId: event.runId, seq: event.seq, kind: "notice", name: "task_list", text: "" }; entries.push(entry); byId.set(taskKey, entry); }
+      entry.input = { items }; entry.seq = event.seq;
+    } else if (["retry", "compaction", "notice", "plan"].includes(event.kind)) {
+      if (event.kind === "compaction") { staleContext(); if (usage) usage = { ...usage, context: undefined }; }
+      // 普通 notice 一条一格（本轮可能有多次自动允许/自动拒绝）；retry/compaction/plan 仍按类型合并。
+      const noticeKey = event.kind === "notice" ? `${key}:notice:${event.seq}` : `${key}:notice:${event.kind}`;
+      const existing = byId.get(noticeKey);
+      if (existing) { existing.text = typeof data.text === "string" ? data.text : existing.text; existing.input = data; existing.seq = event.seq; }
+      else { const entry: AiEntry = { id: noticeKey, runId: event.runId, seq: event.seq, kind: "notice", name: event.kind, text: typeof data.text === "string" ? data.text : "", input: data }; entries.push(entry); byId.set(noticeKey, entry); }
+    } else if ((event.kind === "permission" || event.kind === "question") && typeof data.requestId === "string") {
+      if (!requests.has(data.requestId)) entries.push({ id: `${key}:request`, runId: event.runId, seq: event.seq, kind: "request", text: "", requestId: data.requestId });
+      requests.set(data.requestId, { requestId: data.requestId, runId: event.runId, seq: event.seq, kind: event.kind, title: String(data.title ?? ""), detail: String(data.detail ?? ""),
+        ...(typeof data.toolName === "string" ? { toolName: data.toolName } : {}),
+        ...(typeof data.toolId === "string" ? { toolId: data.toolId } : {}),
+        ...(data.input !== undefined ? { input: data.input } : {}),
+        ...(typeof data.reason === "string" ? { reason: data.reason } : {}), ...(typeof data.blockedPath === "string" ? { blockedPath: data.blockedPath } : {}),
+        ...(data.canEdit === true ? { canEdit: true } : {}),
+        questions: Array.isArray(data.questions) ? data.questions.filter((q): q is AiQuestion => !!q && typeof q === "object" && typeof q.id === "string" && typeof q.question === "string") : [], active: true });
+    } else if (event.kind === "invalidated" && typeof data.requestId === "string") {
+      const request = requests.get(data.requestId);
+      // 答复带回来的那条失效事件留着答案：卡片据此分清「已处理」和「没等到答复就失效」，
+      // 重开会话时也能把当时选的那几项显示出来，而不是重新摆一副还能点的样子。
+      if (request) { request.active = false; if (data.answer !== undefined && data.answer !== null) request.answer = data.answer as AiRequestAnswer; }
+    }
+  }
+  // 全量重放期间保留尚未收到后端事件的提交项；其余状态一律由事件决定。
+  // 这一批事件里已经出现过的那一轮不算：它的状态由事件说了算，本地那份只是往返期间的占位。
+  if (!incremental) for (const task of previous.tasks) {
+    if (task.status === "submitting" && !tasks.has(task.runId) && !seenRuns.has(task.runId)) tasks.set(task.runId, { ...task });
+  }
+  // 失效的提问卡若没随 invalidated 带答案，从同轮 AskUserQuestion 工具的结构化结果里恢复。
+  // 答案经 updatedInput 交给 CLI 后，工具结果里每回都带着它；invalidated 那条丢答案的
+  // 场景（实测日志里确有）靠这份兜底，旧会话日志也一并修好。放在事件循环之后：
+  // invalidated 常常先于工具结果到达，逐事件处理时答案还没落盘。
+  for (const request of requests.values()) {
+    if (request.kind !== "question" || request.active || request.answer || !request.questions.length) continue;
+    const tool = entries.find((entry) => entry.kind === "tool" && entry.runId === request.runId
+      && /^askuserquestion$/i.test(entry.name ?? "")
+      && entry.result !== undefined && typeof entry.result === "object" && !Array.isArray(entry.result));
+    const result = tool ? tool.result as Record<string, unknown> : null;
+    const answers = result && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers as Record<string, unknown> : null;
+    const resultQuestions = result && Array.isArray(result.questions) ? result.questions : null;
+    if (!answers || !resultQuestions) continue;
+    // 只认问的是同一组问题的那次调用：一轮里问过两次时，别把别人的答案贴过来。
+    const sameQuestions = request.questions.every((question, index) => {
+      const match = resultQuestions[index] && typeof resultQuestions[index] === "object" ? resultQuestions[index] as Record<string, unknown> : null;
+      return match !== null && match.question === question.question;
+    });
+    if (!sameQuestions) continue;
+    const recovered: Record<string, string[]> = {};
+    for (const question of request.questions) {
+      const joined = answers[question.question];
+      if (typeof joined !== "string" || !joined) continue;
+      const parts = joined.split(", ");
+      const labels = (question.options ?? []).map((option) => option.label)
+        .filter((label) => parts.includes(label) || joined.includes(label));
+      if (labels.length) recovered[question.id] = labels;
+    }
+    if (Object.keys(recovered).length) request.answer = { answers: recovered };
+  }
+  const taskList = [...tasks.values()].sort((a, b) => a.seq - b.seq);
+  const active = taskList.slice().reverse().find((task) => task.status === "running");
+  const latest = taskList.at(-1);
+  if (active) { runId = active.runId; status = "running"; error = active.error ?? null; }
+  else if (latest) { runId = latest.runId; status = latest.status; error = latest.error ?? null; }
+  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), background, permissionDenied, mcpServers, stopping: status === "running" && previous.stopping };
+}
+function applySummary(state: State) {
+  const summary = state.summary;
+  if (!summary || state.maxSeq > summary.seq) return;
+  const summaryStatus = isAiTaskBackendStatus(summary.status) ? summary.status : null;
+  if (summaryStatus !== null && isAiTaskTerminal(summaryStatus)) {
+    state.snapshot = { ...state.snapshot, tasks: state.snapshot.tasks.map((task) => task.runId === summary.runId
+      ? { ...task, status: summaryStatus } : task) };
+  }
+  const active = state.snapshot.tasks.slice().reverse().find((task) => task.status === "running");
+  if (active && active.runId !== summary.runId) return;
+  const optimistic = state.snapshot.status === "running" && state.snapshot.runId !== summary.runId && ![...state.events.values()].some((event) => event.runId === state.snapshot.runId && event.kind === "status");
+  if (optimistic) return;
+  state.snapshot = { ...state.snapshot, runId: summary.runId, status: summary.status,
+    context: state.snapshot.context && state.snapshot.context.runId !== summary.runId ? { ...state.snapshot.context, stale: true } : state.snapshot.context,
+    stopping: summary.status === "running" && state.snapshot.stopping,
+    requests: state.snapshot.requests.map((request) => ({ ...request, active: request.active && summary.status === "running" && request.runId === summary.runId })),
+  };
+}
+/** 更新单项后重新选择当前运行项；排队项绝不能覆盖停止按钮所指向的 run id。 */
+function updateTask(id: string, next: AiTask) {
+  const state = store(id);
+  const tasks = state.snapshot.tasks.some((task) => task.runId === next.runId)
+    ? state.snapshot.tasks.map((task) => task.runId === next.runId ? next : task)
+    : [...state.snapshot.tasks, next];
+  tasks.sort((a, b) => a.seq - b.seq);
+  const active = tasks.slice().reverse().find((task) => task.status === "running");
+  const latest = tasks.at(-1);
+  state.snapshot = { ...state.snapshot, tasks, runId: active?.runId ?? latest?.runId ?? null,
+    status: active ? "running" : latest?.status ?? "idle", error: active?.error ?? latest?.error ?? null,
+    stopping: active ? state.snapshot.stopping : false };
+  changed();
+}
+
+/** 后端摘要覆盖分页之外的活动任务；已有 prompt 优先，避免刷新时任务只剩编号。 */
+function mergeActiveTasks(state: State, summaries: AiTask[], latestSeq: number) {
+  const activeIds = new Set(summaries.map((summary) => summary?.runId).filter((id): id is string => typeof id === "string"));
+  // activeTasks 是后端全日志摘要；本地仍活跃但摘要中不存在的项已经终结，不能继续显示幽灵队列。
+  state.snapshot = { ...state.snapshot, tasks: state.snapshot.tasks.map((task) =>
+    isAiTaskLive(task.status) && task.seq <= latestSeq && !activeIds.has(task.runId)
+      ? { ...task, status: "cancelled" as const } : task) };
+  for (const summary of summaries) {
+    if (!summary || typeof summary.runId !== "string" || !isAiTaskBackendActive(summary.status)) continue;
+    const current = state.snapshot.tasks.find((task) => task.runId === summary.runId);
+    const task = { ...summary, prompt: summary.prompt ?? current?.prompt, seq: Number.isSafeInteger(summary.seq) ? summary.seq : current?.seq ?? 0 };
+    const tasks = state.snapshot.tasks.filter((item) => item.runId !== task.runId).concat(task).sort((a, b) => a.seq - b.seq);
+    state.snapshot = { ...state.snapshot, tasks };
+  }
+  const active = state.snapshot.tasks.slice().reverse().find((task) => task.status === "running");
+  const latest = state.snapshot.tasks.at(-1);
+  state.snapshot = { ...state.snapshot, runId: active?.runId ?? latest?.runId ?? null,
+    status: active ? "running" : latest?.status ?? "idle", stopping: active ? state.snapshot.stopping : false };
+}
+function applyFailure(state: State) {
+  if (state.failure) {
+    const task = state.snapshot.tasks.find((item) => item.runId === state.failure!.runId);
+    if (task) state.snapshot = { ...state.snapshot, tasks: state.snapshot.tasks.map((item) => item.runId === task.runId ? { ...item, status: "failed", error: state.failure!.error } : item) };
+  }
+  if (state.failure && state.snapshot.runId === state.failure.runId) state.snapshot = {
+    ...state.snapshot, status: "failed", stopping: false, error: state.failure.error,
+    requests: state.snapshot.requests.map((request) => request.runId === state.failure!.runId ? { ...request, active: false } : request),
+  };
+}
+/** 只推进正文与工具输出的高频事件；词表外的任何 kind 都算紧急，宁可多通知一次。 */
+const STREAMING_EVENT_KINDS = new Set(["text", "message", "reasoning", "reasoning_delta", "tool", "command_output"]);
+function merge(events: AiRuntimeEvent[]) {
+  const touched = new Map<string, AiRuntimeEvent[]>();
+  for (const event of events) {
+    if (!event || typeof event.sessionId !== "string" || typeof event.runId !== "string" || !Number.isSafeInteger(event.seq) || event.seq < 1 || !event.data || typeof event.data !== "object" || deleted.has(event.sessionId)) continue;
+    const state = store(event.sessionId);
+    if (state.events.has(event.seq)) continue;
+    state.events.set(event.seq, event);
+    const batch = touched.get(event.sessionId) ?? []; batch.push(event); touched.set(event.sessionId, batch);
+  }
+  for (const [id, batch] of touched) {
+    const state = store(id);
+    const appendOnly = batch.every((event) => event.seq > state.maxSeq);
+    state.snapshot = projectAiEvents(appendOnly ? batch : [...state.events.values()], state.snapshot, appendOnly);
+    state.maxSeq = batch.reduce((max, event) => Math.max(max, event.seq), state.maxSeq);
+    applySummary(state); applyFailure(state);
+  }
+  if (!touched.size) return;
+  // 只有正文与工具进度攒到下一帧；状态、审批、用量这些会改按钮和卡片的事件当场通知，
+  // 否则「停止」按钮和审批卡片会比它们该出现的时间晚一帧。
+  const streamingOnly = [...touched.values()].flat().every((event) => STREAMING_EVENT_KINDS.has(event.kind));
+  streamingOnly ? changedSoon() : changed();
+}
+/** 后端在无法走事件流时回报的失败（例如进程起不来）。 */
+interface RuntimeFailure {
+  /** 出问题的会话。 */
+  sessionId: string;
+  /** 出问题的那一轮；与当前 run 不一致的旧失败会被丢弃。 */
+  runId: string;
+  /** 可直接展示的错误文本。 */
+  error: string;
+}
+/**
+ * 处理一次失败回报。会话已删除、或失败属于更早的某一轮时直接忽略，
+ * 免得把新一轮的正常状态覆盖成旧错误。
+ */
+function receiveFailure(failure: RuntimeFailure) {
+  if (!failure || typeof failure.sessionId !== "string" || typeof failure.runId !== "string" || typeof failure.error !== "string" || deleted.has(failure.sessionId)) return;
+  const state = store(failure.sessionId);
+  state.failure = { runId: failure.runId, error: failure.error };
+  const task = state.snapshot.tasks.find((item) => item.runId === failure.runId);
+  if (task) state.snapshot = { ...state.snapshot, tasks: state.snapshot.tasks.map((item) => item.runId === failure.runId ? { ...item, status: "failed" as const, error: failure.error } : item) };
+  else if (!state.snapshot.runId) state.snapshot = { ...state.snapshot, runId: failure.runId };
+  applyFailure(state); changed();
+}
+/**
+ * 挂上后端事件监听。全局只挂一次：重复调用返回同一个 Promise，
+ * 失败时把缓存清空，让下一次还能重试。
+ */
+export function ensureAiRuntimeListener(): Promise<void> {
+  if (!isTauri()) return Promise.reject(new Error("AI runtime requires the Forge desktop app"));
+  if (!listening) listening = (async () => {
+    const unlisten = await listen<AiRuntimeEvent[]>("ai-runtime://events", ({ payload }) => { if (Array.isArray(payload)) merge(payload); });
+    try { await listen<RuntimeFailure>("ai-runtime://errors", ({ payload }) => receiveFailure(payload)); }
+    catch (error) { unlisten(); throw error; }
+  })().catch((error) => { listening = null; throw error; });
+  return listening;
+}
+/** 一页取多少条事件。后端另有字节预算，所以这个数只是条数上限，不会把几 MB 一次灌进内存。 */
+const PAGE_LIMIT = 500;
+/**
+ * 加载首屏历史：取**最新**的一页，而不是从第一条开始。
+ *
+ * 一个跑了几百轮的会话有几十 MB 记录，从 seq 0 往后翻等于让用户一直点「加载更多」
+ * 才看得到正在聊的那里；所以打开会话必须落在末尾，更早的记录由 `loadOlderAiMessages` 往前翻。
+ *
+ * 并发的重复调用共享同一个 Promise，避免同一页被拉两次；
+ * 首次加载失败时保留 `loaded=false`，下次进入会话还会重试。
+ */
+export async function loadAiMessages(sessionId: string, workspace: string, refresh = false): Promise<void> {
+  const state = store(sessionId); state.workspace = workspace;
+  if (state.loading) return state.loading;
+  if (state.snapshot.loaded && !refresh) return;
+  const pending = (async () => {
+    patch(sessionId, { loading: true, error: null });
+    try {
+      await ensureAiRuntimeListener();
+      const page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, limit: PAGE_LIMIT });
+      if (deleted.has(sessionId)) return;
+      if (Number.isSafeInteger(page.latestSeq) && page.latestRunId && page.status) state.summary = { seq: page.latestSeq!, runId: page.latestRunId, status: page.status };
+      merge(page.events); applySummary(state); applyFailure(state);
+      // 计划记录不在事件分页里：事件投影优先（带 seq），其余由 plans.json 补齐。
+      if (Array.isArray(page.plans) && page.plans.length) {
+        const merged = new Map(page.plans.map((plan) => [`${plan.planId}:${plan.revision}`, plan]));
+        for (const plan of state.snapshot.plans) merged.set(`${plan.planId}:${plan.revision}`, plan);
+        state.snapshot = { ...state.snapshot, plans: [...merged.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision) };
+      }
+      if (Array.isArray(page.activeTasks)) mergeActiveTasks(state, page.activeTasks, Number.isSafeInteger(page.latestSeq) ? page.latestSeq! : state.maxSeq);
+      // 空会话没有游标可言；此时 nextSeq 是 0，留着它只会让「更早」按钮点亮又翻不出东西。
+      patch(sessionId, { loaded: true, hasOlder: page.hasOlder && page.events.length > 0, cursor: page.events.length ? page.nextSeq : 0, nativeId: state.snapshot.nativeId ?? page.nativeId, ...(page.warning ? { error: page.warning } : {}) });
+    } catch (error) { if (!deleted.has(sessionId)) patch(sessionId, { error: String(error) }); throw error; }
+    finally { state.loading = null; if (!deleted.has(sessionId)) patch(sessionId, { loading: false }); }
+  })();
+  state.loading = pending; return pending;
+}
+/**
+ * 往前翻一页：取已加载的最老一条之前那一段。
+ *
+ * 游标只会往更小的方向走，并且带上「这页确实读到了东西」的判断：
+ * 后端连续返回空页时直接把「更早」关掉，否则按钮会亮着却什么都翻不出来。
+ *
+ * `limit` 由调用方按还剩多少距离要给：跳到某一轮时不该先取满一页再等下一页，
+ * 但也不许小于 PAGE_LIMIT，否则一屏滚动就只前进几条。
+ */
+export async function loadOlderAiMessages(sessionId: string, workspace: string, limit = PAGE_LIMIT): Promise<void> {
+  const state = store(sessionId); state.workspace = workspace;
+  if (state.loading || !state.snapshot.hasOlder || !state.snapshot.cursor) return;
+  const pending = (async () => {
+    patch(sessionId, { loading: true, error: null });
+    try {
+      await ensureAiRuntimeListener();
+      const page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, beforeSeq: state.snapshot.cursor, limit });
+      if (deleted.has(sessionId)) return;
+      merge(page.events);
+      patch(sessionId, {
+        hasOlder: page.hasOlder && page.events.length > 0,
+        cursor: page.events.length ? Math.min(state.snapshot.cursor, page.nextSeq) : state.snapshot.cursor,
+      });
+    } catch (error) { if (!deleted.has(sessionId)) patch(sessionId, { error: String(error) }); throw error; }
+    finally { state.loading = null; if (!deleted.has(sessionId)) patch(sessionId, { loading: false }); }
+  })();
+  state.loading = pending; return pending;
+}
+/** 一次跳转最多往前补这么多页；再多就停下来认「这一轮太远」，不能把整个会话悄悄搬进内存。 */
+const THROUGH_PAGE_LIMIT = 12;
+/** 单次补齐的条数上限。后端另有字节预算兜底，这个数只防止一次要回上万条事件。 */
+const THROUGH_EVENT_LIMIT = 5000;
+/**
+ * 把正文一直加载到目标序号为止，消息导航点未加载的那一行时用它。
+ *
+ * 走的是「更早」那条路径：游标连续往前挪，中间不留没读到的空洞，
+ * 投影出来的时间线因此还是完整的一段对话，而不是首尾相接的两半。
+ * 返回 false 表示没能到达——要么真的到头了，要么超出一次跳转愿意付的代价。
+ */
+export async function loadAiMessagesThrough(sessionId: string, workspace: string, targetSeq: number): Promise<boolean> {
+  const state = store(sessionId);
+  if (!state.snapshot.loaded || state.loading) return false;
+  for (let guard = 0; guard < THROUGH_PAGE_LIMIT && state.snapshot.cursor > targetSeq; guard++) {
+    const cursor = state.snapshot.cursor;
+    const limit = Math.min(THROUGH_EVENT_LIMIT, Math.max(PAGE_LIMIT, cursor - targetSeq));
+    await loadOlderAiMessages(sessionId, workspace, limit);
+    // 游标没动说明这一页什么都没取到（并发占用或已到顶），继续循环只是空转。
+    if (state.snapshot.cursor >= cursor) break;
+  }
+  return state.snapshot.cursor <= targetSeq;
+}
+
+/** 消息导航用的轮次索引：只带每条用户消息的开头一行与该轮改过的文件数，不带正文。 */
+export interface AiOutlineTurn {
+  /** 该轮 user 事件的序号；正文没加载到那里时靠它往前补齐。 */
+  seq: number;
+  /** 与正文投影同意的条目 id；用它判断这一轮在不在已加载的正文里。 */
+  entryId: string;
+  runId: string;
+  /** 首行摘要；空串表示这条消息没有文字（只有附件）。 */
+  label: string;
+  /** 该轮改过的文件数，按路径去重。 */
+  files: number;
+}
+
+/** 一个会话的导航索引。 */
+export interface AiOutlineSnapshot {
+  /** 按序号升序的轮次。 */
+  turns: AiOutlineTurn[];
+  /** 索引是否覆盖到会话第一条消息；为假时序号只能当相对位置讲。 */
+  complete: boolean;
+  /** 已经取过一次；取过就不再重复扫盘。 */
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+const EMPTY_OUTLINE: AiOutlineSnapshot = { turns: [], complete: false, loaded: false, loading: false, error: null };
+const outlines = new Map<string, AiOutlineSnapshot>();
+function patchOutline(id: string, change: Partial<AiOutlineSnapshot>) { outlines.set(id, { ...(outlines.get(id) ?? EMPTY_OUTLINE), ...change }); changed(); }
+export function getAiOutline(id: string): AiOutlineSnapshot { return outlines.get(id) ?? EMPTY_OUTLINE; }
+export function useAiOutline(id: string): AiOutlineSnapshot { return useSyncExternalStore(subscribeAiChanges, () => getAiOutline(id), () => EMPTY_OUTLINE); }
+/**
+ * 取导航要的轮次索引——打开面板时才取，一次列全最近这么多轮。
+ *
+ * 正文分页一页只装得下几百条事件，长会话里连一轮都铺不满，导航跟着它就只能显示一条记录。
+ * 索引不碰正文和工具输出，几百轮也就几百 KB，才敢一次取回、按序号一路数下去。
+ */
+export async function loadAiOutline(sessionId: string, workspace: string): Promise<void> {
+  if (deleted.has(sessionId)) return;
+  const current = outlines.get(sessionId);
+  if (current?.loading || current?.loaded) return;
+  patchOutline(sessionId, { loading: true, error: null });
+  try {
+    const page = await invoke<{ turns?: AiOutlineTurn[]; complete?: boolean }>("ai_runtime_outline", { sessionId, workspace });
+    if (deleted.has(sessionId)) return;
+    patchOutline(sessionId, { turns: Array.isArray(page.turns) ? page.turns : [], complete: page.complete === true, loaded: true, loading: false });
+  } catch (error) {
+    if (!deleted.has(sessionId)) patchOutline(sessionId, { loading: false, error: String(error) });
+    throw error;
+  }
+}
+/**
+ * 发起一项任务。后端决定立即运行、FIFO 排队或等待外部 CLI；前端只按返回状态投影。
+ * CLI 原生会话 ID 是续聊依据；Forge 历史镜像的分页进度不参与发送资格判断。
+ */
+export async function sendAiMessage(session: AiSession, workspace: string, prompt: string, trusted: boolean, options: AiRunOptions = {}, command?: AiCommandIntent, images: string[] = [], additionalDirs: string[] = []): Promise<void> {
+  await ensureAiRuntimeListener();
+  const state = store(session.id); state.workspace = workspace;
+  state.failure = null;
+  const runId = crypto.randomUUID();
+  const seq = Math.max(0, ...state.snapshot.tasks.map((task) => task.seq)) + 0.001;
+  updateTask(session.id, { runId, status: "submitting", prompt, seq });
+  try {
+    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, workspace, title: session.title, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), fast: options.fast ?? null, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
+    const current = store(session.id).snapshot.tasks.find((task) => task.runId === runId);
+    // 只接受「后端说这一轮还没结束」的返回值：排队/等待外部/立即运行。
+    // 本地占位是 submitting，后端答成别的词表外字符串时宁可继续等事件，也不照着改。
+    if (current && current.status === "submitting" && isAiTaskBackendActive(result.status)) updateTask(session.id, { ...current, status: result.status });
+  }
+  catch (error) {
+    // IPC 报错不等于后端没收到请求：进程可能已经在跑。
+    // 所以先按本地预登记的 runId 发停止，再清掉本地运行状态，避免留下看不见的孤儿任务。
+    try { await invoke("ai_runtime_stop", { runId }); receiveFailure({ sessionId: session.id, runId, error: String(error) }); }
+    catch (stopError) { patch(session.id, { error: `${String(error)}\n${String(stopError)}` }); }
+    throw error;
+  }
+}
+
+/** 计划决策：批准会开一次执行回合，要求修改会带着反馈继续规划。 */
+export type AiPlanDecision = "approve" | "requestChanges";
+export async function decideAiPlan(session: AiSession, workspace: string, plan: AiPlanReview, decision: AiPlanDecision, feedback?: string): Promise<void> {
+  await ensureAiRuntimeListener();
+  const state = store(session.id); state.workspace = workspace;
+  state.failure = null;
+  const runId = crypto.randomUUID();
+  const seq = Math.max(0, ...state.snapshot.tasks.map((task) => task.seq)) + 0.001;
+  updateTask(session.id, { runId, status: "submitting", prompt: decision === "approve" ? "" : feedback?.trim() ?? "", seq });
+  try {
+    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: {
+      sessionId: session.id, runId, provider: session.provider, workspace, title: session.title,
+      prompt: "", images: [], trusted: true, model: null, effort: null, permission: "inherit", fast: null,
+      plan: { planId: plan.planId, revision: plan.revision, decision, feedback: feedback ?? null },
+    } });
+    const current = store(session.id).snapshot.tasks.find((task) => task.runId === runId);
+    if (current && current.status === "submitting" && isAiTaskBackendActive(result.status)) updateTask(session.id, { ...current, status: result.status });
+  } catch (error) {
+    try { await invoke("ai_runtime_stop", { runId }); receiveFailure({ sessionId: session.id, runId, error: String(error) }); }
+    catch (stopError) { patch(session.id, { error: `${String(error)}\n${String(stopError)}` }); }
+    throw error;
+  }
+}
+/** 暂不执行：只在本地落账，不启动回合，计划仍可再次提交。 */
+export async function deferAiPlan(sessionId: string, workspace: string, planId: string, revision: number): Promise<void> {
+  await invoke("ai_runtime_plan_defer", { sessionId, workspace, planId, revision });
+}
+/** 停止一轮运行。先把本地状态切成「停止中」禁用重复点击，成功后再落成已取消并关掉待答复卡片。 */
+export async function stopAiRun(runId: string) {
+  const item = [...stores].find(([, state]) => state.snapshot.tasks.some((task) => task.runId === runId));
+  const task = item?.[1].snapshot.tasks.find((candidate) => candidate.runId === runId);
+  if (item && task?.status === "running") patch(item[0], { stopping: true });
+  try {
+    await invoke("ai_runtime_stop", { runId });
+    if (item && task && isAiTaskLive(task.status)) updateTask(item[0], { ...task, status: "cancelled" });
+  }
+  catch (error) { if (item) patch(item[0], { error: String(error) }); throw error; }
+  finally { if (item) patch(item[0], { stopping: false }); }
+}
+/** 本窗口这份快照里已经没有这一条待办了：要么已经开始或结束，要么状态还没刷回来。
+ *  「不存在」太含糊——队列活在收下它的那个进程里，跨窗口的情况由后端那句更准的说明负责。 */
+const NOT_QUEUED_LOCALLY = "这一条已经不在本窗口的待办列表里（可能已经开始或结束了）";
+function queuedTaskOwner(runId: string) {
+  return [...stores].find(([, state]) => state.snapshot.tasks.some((task) => task.runId === runId && isAiTaskQueued(task.status)));
+}
+/** 编辑尚未启动的任务；运行中的任务不允许伪装成可编辑队列项。 */
+export async function editQueuedAiTask(runId: string, prompt: string) {
+  const owner = queuedTaskOwner(runId);
+  if (!owner) throw new Error(NOT_QUEUED_LOCALLY);
+  await invoke("ai_runtime_queue_update", { runId, prompt });
+  const task = owner[1].snapshot.tasks.find((item) => item.runId === runId);
+  if (task) updateTask(owner[0], { ...task, prompt: prompt.trim() });
+}
+/** 用目标 run id 表达顺序，避免另一个窗口更新后旧下标命中错误任务。 */
+export async function moveQueuedAiTask(runId: string, beforeRunId: string | null) {
+  if (!queuedTaskOwner(runId)) throw new Error(NOT_QUEUED_LOCALLY);
+  await invoke("ai_runtime_queue_move", { runId, beforeRunId });
+}
+/** 立即执行指定排队项：后端原子移到队首，并停止本窗口当前回合。 */
+export async function runQueuedAiTaskNow(runId: string) {
+  if (!queuedTaskOwner(runId)) throw new Error(NOT_QUEUED_LOCALLY);
+  await invoke("ai_runtime_queue_run_now", { runId });
+}
+/** 清空一个会话的所有排队项；运行中的任务保持不变。 */
+export async function clearQueuedAiTasks(sessionId: string) {
+  await invoke("ai_runtime_queue_clear", { sessionId });
+}
+/** 停止全部运行。用于关闭 AI 功能前的兜底，把所有在跑的会话一次性落成已取消。 */
+export async function stopAllAiRuns() {
+  await invoke("ai_runtime_stop_all");
+  for (const [id, state] of stores) for (const task of state.snapshot.tasks) {
+    if (isAiTaskLive(task.status)) updateTask(id, { ...task, status: "cancelled" });
+  }
+}
+/** 答复一个请求：`{allow}` 表示授权，`{answers}` 表示提问的回答。 */
+export async function respondAiRequest(runId: string, requestId: string, answer: AiRequestAnswer) { await invoke("ai_runtime_respond", { runId, requestId, answer }); }
+/** 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。 */
+export async function deleteAiRuntimeSession(sessionId: string, workspace: string) { await invoke("ai_runtime_delete", { sessionId, workspace }); deleted.add(sessionId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); changed(); }
+/**
+ * 归档 / 取消归档。后端只改 `meta.json` 的一个布尔位，事件日志与 CLI 原生会话都不动，
+ * 所以这里的失败只会让本地状态没变——本地列表始终以 `ai_runtime_list` 为准。
+ */
+export async function archiveAiRuntimeSession(sessionId: string, workspace: string, archived: boolean) { await invoke("ai_runtime_archive", { sessionId, workspace, archived }); }
+/** 置顶 / 取消置顶：与归档同为纯元数据动作，不影响运行中的任务。 */
+export async function pinAiRuntimeSession(sessionId: string, workspace: string, pinned: boolean) { await invoke("ai_runtime_set_pinned", { sessionId, workspace, pinned }); }

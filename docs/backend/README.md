@@ -35,7 +35,7 @@ Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注�
 | `src-tauri/src/lsp_probe.rs` | 350 | 安装状态探测（PATH 补齐、`PATHEXT`、`.ps1`、rust-analyzer 的 shim 复核）与一键安装 | 2 |
 | `src-tauri/src/lsp_detect.rs` | 310 | 按 `rootMarkers` 在工程里找语言服务的真根：向上越界即停、向下 2 层、结果缓存 60 秒 | 1 |
 | `src-tauri/src/ai_commit.rs` | 872 | AI 提交说明：`ai-commit.json` 读写、三家协议请求计划、敏感路径拦截、可取消的在飞请求；所有请求共用一个连接池 | 5 |
-| `src-tauri/src/settings.rs` | 226 | `settings.json` 读写，全在系统配置目录，缺字段按 `Default` 补，写盘走 `write_atomic` | 2 |
+| `src-tauri/src/settings.rs` | 511 | `settings.json` 读写，全在系统配置目录：读缺字段按 `Default` 补，写是 RFC 7396 按字段合并（不整份覆盖别的窗口的设置），落盘走 `write_atomic` | 2 |
 | `src-tauri/src/history.rs` | 191 | `history.json` 读写：上次开的项目、最近项目/分支/提交说明；首次从旧 `settings.json` 迁移，坏文件退回空表 | 2 |
 | `src-tauri/src/tray.rs` | 135 | 托盘图标与两项菜单、点关闭是收起还是先存盘再退 | 2 |
 | `src-tauri/src/sys.rs` | 199 | kernel32 取本进程工作集与物理内存总量；`which_program`（Windows 要带扩展名候选）、`capture_text`（`java -version` 打在 stderr）、`hide_console`、`write_atomic` 几个共用小工具 | 1 |

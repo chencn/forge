@@ -5,13 +5,14 @@ import { Columns2, Save, X } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useI18n } from "../i18n";
+import AiSessionActivity from "./AiSessionActivity";
 import type { TranslationKey } from "../i18n/lang/zh";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const SAVE_SHORTCUT = IS_MAC ? "⌘S" : "Ctrl+S";
 
-/** 标签的种类：文档、比对、底部工具窗口、设置页。 */
-export type TabKind = "doc" | "diff" | "pane" | "settings";
+/** 标签的种类：文档、比对、底部工具窗口、设置页、AI 会话。 */
+export type TabKind = "doc" | "diff" | "pane" | "settings" | "ai";
 
 /**
  * 编辑区页签栏上的一项。
@@ -60,12 +61,16 @@ interface EditorTabsProps {
   onShowLocalHistory?: (path: string) => void;
 }
 
-/** 面板标签的关闭动作叫最小化，不叫关闭：任务还在后台跑。 */
+/**
+ * 面板标签的关闭动作叫最小化，不叫关闭：任务还在后台跑。
+ * AI 标签用「关闭」：关闭时会在有任务的情况下询问是否停止。
+ */
 const CLOSE_LABEL: Record<TabKind, TranslationKey> = {
   doc: "editor.closeTab",
   diff: "editor.closeTab",
   pane: "tool.minimize",
   settings: "editor.closeTab",
+  ai: "editor.closeTab",
 };
 
 export default function EditorTabs({
@@ -246,6 +251,7 @@ export default function EditorTabs({
             >
               {tab.icon}
               <span className="tab-label">{tab.name}</span>
+              {tab.kind === "ai" && tab.id !== "ai|draft" ? <AiSessionActivity sessionId={tab.id.slice(3)} /> : null}
               {tab.dirty ? <span className="tab-dot" title={t("editor.dirty")} /> : null}
               <button
                 type="button"

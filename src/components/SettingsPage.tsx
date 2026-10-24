@@ -11,10 +11,16 @@ import {
 } from "lucide-react";
 import Select from "./Select";
 import PromptDialog from "./PromptDialog";
+import AiActionDialog from "./AiActionDialog";
 import CopyButton from "./CopyButton";
 import AiCommitSettingsPanel from "./AiCommitSettingsPanel";
+import AiCliSettingsPanel, { AiCliSettingsControls } from "./AiCliSettingsPanel";
+import ModelProvidersPanel from "./ModelProvidersPanel";
+import SkillsPanel from "./SkillsPanel";
+import McpPanel from "./McpPanel";
 import { LspInstallDialog, LspLogDialog, LspServerDialog } from "./LspDialogs";
 import { useSettings } from "../hooks/useSettings";
+import { hasUnsavedSettings } from "../hooks/useUnsavedGuard";
 import { useLspConfig, useLspSessionStatuses } from "../hooks/useLspConfig";
 import { modesFor, serverEntries } from "../lib/lspConfig";
 import type { LspMode, LspServerConfig } from "../lib/lspConfig";
@@ -66,10 +72,10 @@ import {
 } from "../lib/updater";
 import type { DownloadReport, UpdateInfo } from "../lib/updater";
 
-/** 设置窗口左侧的模块，一行一个。 */
-export type SettingsModule = "general" | "editor" | "terminal" | "lsp" | "aiCommit" | "about";
+/** 设置窗口左侧的模块，一行一个。`aiCli` 即「AI 编程助手」，标题行额外挂总开关。 */
+export type SettingsModule = "general" | "editor" | "terminal" | "lsp" | "aiCommit" | "aiCli" | "modelProviders" | "skills" | "mcp" | "about";
 
-const MODULES: SettingsModule[] = ["general", "editor", "terminal", "lsp", "aiCommit", "about"];
+const MODULES: SettingsModule[] = ["general", "editor", "terminal", "lsp", "aiCommit", "aiCli", "modelProviders", "skills", "mcp", "about"];
 
 const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   general: "settings.general",
@@ -77,6 +83,10 @@ const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   terminal: "settings.terminal",
   lsp: "settings.lsp",
   aiCommit: "settings.aiCommit",
+  aiCli: "ai.title",
+  modelProviders: "settings.modelProviders",
+  skills: "settings.skills",
+  mcp: "settings.mcp",
   about: "settings.about",
 };
 
@@ -210,6 +220,14 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
   /** 内置文本后缀。用来拦住用户把已有格式再追加一遍。 */
   const [builtinExtensions, setBuiltinExtensions] = useState<string[]>([]);
   const [extraDraft, setExtraDraft] = useState("");
+  /** AI 各页有未保存草稿时，先记下想跳去的模块，等确认框决定去不去。 */
+  const [pendingModule, setPendingModule] = useState<SettingsModule | null>(null);
+
+  // 面板卸载就会丢掉草稿，所以离开前问一句；目标就是当前页时不用管。
+  const navigate = (next: SettingsModule) => {
+    if (next !== module && hasUnsavedSettings()) setPendingModule(next);
+    else setModule(next);
+  };
 
   useEffect(() => {
     if (initialModule) {
@@ -515,7 +533,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
               key={key}
               type="button"
               className={`settings-nav-item${module === key ? " is-active" : ""}`}
-              onClick={() => setModule(key)}
+              onClick={() => navigate(key)}
             >
               {t(MODULE_LABEL[key])}
             </button>
@@ -526,6 +544,8 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
           <header className="settings-head">
             <span className="settings-head-title">{t(MODULE_LABEL[module])}</span>
             <span className="settings-head-spacer" />
+            {/* AI 助手页把检测与总开关放在标题行，和其他页面的「恢复默认值」同位。 */}
+            {module === "aiCli" ? <AiCliSettingsControls /> : null}
             {/* IDEA 把「恢复默认值」放在通用页标题行右端；点开先过一遍确认框。 */}
             {module === "general" ? (
               <button
@@ -1173,6 +1193,10 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
           ) : null}
 
           {module === "aiCommit" ? <AiCommitSettingsPanel /> : null}
+          {module === "aiCli" ? <AiCliSettingsPanel /> : null}
+          {module === "modelProviders" ? <ModelProvidersPanel /> : null}
+          {module === "skills" ? <SkillsPanel /> : null}
+          {module === "mcp" ? <McpPanel /> : null}
 
           {module === "about" ? (
             <div className="settings-rows">
@@ -1366,6 +1390,14 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
             }}
             onCancel={() => setConfirmReset(false)}
           />
+        ) : null}
+
+        {pendingModule ? (
+          <AiActionDialog title={t("settings.unsavedTitle")} confirm={t("settings.unsavedConfirm")} danger
+            onCancel={() => setPendingModule(null)}
+            onConfirm={() => { const next = pendingModule; setPendingModule(null); setModule(next); }}>
+            <p className="dialog-body">{t("settings.unsavedHint")}</p>
+          </AiActionDialog>
         ) : null}
     </div>
   );

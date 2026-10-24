@@ -1,3 +1,5 @@
+mod ai_cli;
+mod ai_runtime;
 mod ai_commit;
 mod error;
 mod http_exchange;
@@ -48,8 +50,10 @@ pub fn run() {
         .manage(watch::WatchSlot::default())
         .manage(shell_open::Pending::default())
         .setup(|app| {
+            ai_cli::settings::init(app.handle());
             tray::build(&app.handle().clone())?;
             disable_default_context_menu(app.handle());
+            ai_runtime::start_queue_monitor(app.handle().clone())?;
             // 这一份进程自己的窗口。资源管理器传来的路径记在这里，页面起来再取。
             // 不占单实例锁：再启动一次就是另一个窗口，不会被这一份吃掉。
             shell_open::deliver(app.handle(), &std::env::args().skip(1).collect::<Vec<_>>());
@@ -182,6 +186,68 @@ pub fn run() {
             update::update_install_cached,
             update::update_cache_state,
             update::update_cache_remove,
+            ai_cli::ai_cli_probe,
+            ai_cli::ai_cli_updates,
+            ai_cli::ai_cli_manage,
+            ai_cli::settings::ai_cli_settings_load,
+            ai_cli::settings::ai_cli_settings_save,
+            ai_cli::settings::ai_cli_config_read,
+            ai_cli::settings::ai_cli_config_write,
+            ai_cli::settings::ai_cli_claude_settings_read,
+            ai_cli::settings::ai_cli_claude_settings_save,
+            ai_cli::settings::ai_cli_codex_settings_read,
+            ai_cli::settings::ai_cli_codex_settings_save,
+            ai_cli::settings::ai_cli_diagnostics,
+            ai_cli::codex_catalog::ai_cli_codex_catalog_read,
+            ai_cli::codex_catalog::ai_cli_codex_catalog_save,
+            ai_cli::codex_catalog::ai_cli_codex_catalog_home,
+            ai_cli::providers::ai_providers_load,
+            ai_cli::providers::ai_providers_save,
+            ai_cli::providers::ai_providers_apply,
+            ai_cli::skills::ai_skills_list,
+            ai_cli::skills::ai_skill_read,
+            ai_cli::skills::ai_skill_save,
+            ai_cli::skills::ai_skill_delete,
+            ai_cli::mcp::ai_mcp_list,
+            ai_cli::mcp::ai_mcp_market_providers,
+            ai_cli::mcp::ai_mcp_market_search,
+            ai_cli::mcp::ai_mcp_market_detail,
+            ai_cli::mcp::ai_mcp_market_resolve,
+            ai_cli::mcp::ai_mcp_save,
+            ai_cli::mcp::ai_mcp_delete,
+            ai_runtime::ai_runtime_send,
+            ai_runtime::ai_runtime_plan_defer,
+            ai_runtime::ai_runtime_directory_for_path,
+            ai_runtime::ai_runtime_save_pasted_image,
+            ai_runtime::ai_runtime_save_image_file,
+            ai_runtime::ai_runtime_delete_image,
+            ai_runtime::ai_runtime_image_limits,
+            ai_runtime::ai_runtime_create,
+            ai_runtime::ai_runtime_models,
+            ai_runtime::ai_runtime_project_trusted,
+            ai_runtime::ai_runtime_project_config,
+            ai_runtime::ai_runtime_update_project_config,
+            ai_runtime::ai_runtime_activity,
+            ai_runtime::ai_runtime_refresh_models,
+            ai_runtime::ai_runtime_save_model,
+            ai_runtime::ai_runtime_custom_models,
+            ai_runtime::ai_runtime_remove_model,
+            ai_runtime::ai_runtime_load,
+            ai_runtime::ai_runtime_outline,
+            ai_runtime::ai_runtime_stop,
+            ai_runtime::ai_runtime_queue_update,
+            ai_runtime::ai_runtime_queue_move,
+            ai_runtime::ai_runtime_queue_run_now,
+            ai_runtime::ai_runtime_queue_clear,
+            ai_runtime::ai_runtime_stop_all,
+            ai_runtime::ai_runtime_respond,
+            ai_runtime::ai_runtime_delete,
+            ai_runtime::ai_runtime_list,
+            ai_runtime::ai_runtime_rename,
+            ai_runtime::ai_runtime_archive,
+            ai_runtime::ai_runtime_set_pinned,
+            ai_runtime::ai_runtime_search,
+            ai_runtime::ai_runtime_stop_project,
             ai_commit::ai_commit_config_load,
             ai_commit::ai_commit_config_save,
             ai_commit::ai_commit_generate,
@@ -195,10 +261,11 @@ pub fn run() {
     // 退出清理选 RunEvent::Exit：它在事件循环真正退出前发出，任何退出路径
     // （关窗、托盘退出、app.exit）都必经且不可拦截；ExitRequested 会被
     // api.prevent_exit() 拦下，在那儿清理会错杀本该活着的会话。
-    // 这三张表里的子进程（构建命令、语言服务、终端 shell）裸持着 Child，
+    // 这几张表里的子进程（AI CLI、构建命令、语言服务、终端 shell）裸持着 Child，
     // 不在这儿杀掉，应用一退它们就全成孤儿。
     app.run(|_app, event| {
         if let tauri::RunEvent::Exit = event {
+            ai_runtime::reap_all_for_exit();
             lsp::reap_all_for_exit();
             proc::reap_all_for_exit();
             term::reap_all_for_exit();

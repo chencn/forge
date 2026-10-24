@@ -1,0 +1,145 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { aiSessionStorageKey } from "../../src/lib/aiSessions";
+import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadDraft, loadPromptHistory, rememberPrompt, saveDraft } from "../../src/lib/aiDrafts";
+import type { DraftState } from "../../src/lib/aiDrafts";
+
+const ROOT = "D:\\app\\code\\forge";
+const PROMPTS = `${aiSessionStorageKey(ROOT)}:prompts`;
+/** 直接看写进了哪些键：草稿是不是真被删掉，光靠 loadDraft 返回 "" 分不出来。 */
+let store: Map<string, string>;
+
+beforeEach(() => {
+  store = new Map();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+  });
+});
+
+describe("AI 草稿持久化", () => {
+  it("按会话分别存回，切标签不会串用别人的半截话", () => {
+    saveDraft(ROOT, "s1", "第一条写到一半");
+    saveDraft(ROOT, "s2", "另一条");
+    expect(loadDraft(ROOT, "s1")).toBe("第一条写到一半");
+    expect(loadDraft(ROOT, "s2")).toBe("另一条");
+    expect(loadDraft(ROOT, "missing")).toBe("");
+  });
+  it("同一个工程的路径写法不同也算同一个键", () => {
+    saveDraft("D:\\app\\code\\forge\\", "s1", "带尾斜杠");
+    expect(loadDraft("d:/app/code/forge", "s1")).toBe("带尾斜杠");
+    expect(loadDraft("D:\\app\\code\\other", "s1")).toBe("");
+  });
+  it("清空草稿是删键，不是留一条空记录", () => {
+    saveDraft(ROOT, "s1", "x");
+    saveDraft(ROOT, "s1", "");
+    expect(loadDraft(ROOT, "s1")).toBe("");
+    expect([...store.keys()].filter((key) => key.includes(":draft:"))).toEqual([]);
+  });
+  it("删会话时带走它的草稿，发送历史留着", () => {
+    saveDraft(ROOT, "s1", "垃圾草稿");
+    rememberPrompt(ROOT, "留下来的话");
+    clearDraft(ROOT, "s1");
+    expect(loadDraft(ROOT, "s1")).toBe("");
+    expect(loadPromptHistory(ROOT)).toEqual(["留下来的话"]);
+  });
+  it("超长草稿只留前面一段", () => {
+    saveDraft(ROOT, "s1", "a".repeat(25_000));
+    expect(loadDraft(ROOT, "s1")).toHaveLength(20_000);
+  });
+  it("存储坏了不影响挂载，读取退回空草稿", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+      removeItem: () => { throw new Error("blocked"); },
+    });
+    expect(loadDraft(ROOT, "s1")).toBe("");
+    expect(() => saveDraft(ROOT, "s1", "写不进去")).not.toThrow();
+    expect(() => clearDraft(ROOT, "s1")).not.toThrow();
+    expect(() => rememberPrompt(ROOT, "也写不进去")).not.toThrow();
+    expect(loadPromptHistory(ROOT)).toEqual([]);
+  });
+});
+
+describe("AI 发送历史", () => {
+  it("最新一条排最前，并按容量截断", () => {
+    for (const index of Array.from({ length: 55 }, (_, i) => i)) rememberPrompt(ROOT, `第 ${index} 条`);
+    const history = loadPromptHistory(ROOT);
+    expect(history).toHaveLength(50);
+    expect(history[0]).toBe("第 54 条");
+    expect(history.at(-1)).toBe("第 5 条");
+  });
+  it("连续重复只留一份，隔开的重复各自留", () => {
+    rememberPrompt(ROOT, "同一句");
+    rememberPrompt(ROOT, "   同一句   ");
+    rememberPrompt(ROOT, "另一句");
+    rememberPrompt(ROOT, "同一句");
+    expect(loadPromptHistory(ROOT)).toEqual(["同一句", "另一句", "同一句"]);
+  });
+  it("斜杠命令与空白正文不进历史", () => {
+    for (const value of ["/compact", "  /model gpt", "", "   "]) rememberPrompt(ROOT, value);
+    expect(loadPromptHistory(ROOT)).toEqual([]);
+  });
+  it("坏数据与超长条目都按可用处理", () => {
+    localStorage.setItem(PROMPTS, "{not json");
+    expect(loadPromptHistory(ROOT)).toEqual([]);
+    localStorage.setItem(PROMPTS, JSON.stringify(["好的一条", 42, null, "", "x".repeat(5_000)]));
+    expect(loadPromptHistory(ROOT)).toEqual(["好的一条", "x".repeat(5_000)]);
+    rememberPrompt(ROOT, "y".repeat(5_000));
+    expect(loadPromptHistory(ROOT)[0]).toHaveLength(2_000);
+  });
+});
+
+describe("↑↓ 历史召回", () => {
+  const history = ["最新", "上一条", "最老"];
+  const fresh: DraftState = { text: "", browse: null };
+  it("从空行开始按 ↑ 落到最新一条，按 ↓ 走到底再回到 stash", () => {
+    const first = browseUp(history, fresh);
+    expect(first).toEqual({ text: "最新", browse: { index: 0, stash: "" } });
+    expect(browseUp(history, first)).toEqual({ text: "上一条", browse: { index: 1, stash: "" } });
+    expect(browseUp(history, browseUp(history, first))).toEqual({ text: "最老", browse: { index: 2, stash: "" } });
+    // 已经到最老一条，再按 ↑ 停在原地而不是把内容清空。
+    expect(browseUp(history, browseUp(history, browseUp(history, first)))).toEqual({ text: "最老", browse: { index: 2, stash: "" } });
+    expect(browseDown(history, { text: "最老", browse: { index: 2, stash: "" } })).toEqual({ text: "上一条", browse: { index: 1, stash: "" } });
+    expect(browseDown(history, { text: "最新", browse: { index: 0, stash: "自己打了一半" } })).toEqual({ text: "自己打了一半", browse: null });
+  });
+  it("没在召回状态时按 ↓ 什么都不动，历史为空时按 ↑ 什么都不动", () => {
+    expect(browseDown(history, fresh)).toBe(fresh);
+    expect(browseUp([], { text: "手写的", browse: null })).toEqual({ text: "手写的", browse: null });
+  });
+  it("召回后改字：位置留住，改动成为走出历史时要回的那行", () => {
+    const recalled = browseUp(history, { text: "原来的草稿", browse: null });
+    const edited = browseTyped("最新（我改过）", recalled);
+    expect(edited).toEqual({ text: "最新（我改过）", browse: { index: 0, stash: "最新（我改过）" } });
+    expect(browseUp(history, edited)).toEqual({ text: "上一条", browse: { index: 1, stash: "最新（我改过）" } });
+    expect(browseDown(history, edited)).toEqual({ text: "最新（我改过）", browse: null });
+    expect(browseTyped("直接打字", fresh)).toEqual({ text: "直接打字", browse: null });
+  });
+  it("Esc 回到召回前的那行并退出召回", () => {
+    const recalled = browseUp(history, { text: "正在写的", browse: null });
+    expect(browseCancel(recalled)).toEqual({ text: "正在写的", browse: null });
+    expect(browseCancel(browseCancel(recalled))).toEqual({ text: "正在写的", browse: null });
+  });
+  it("历史在召回期间变短时不会取到 undefined", () => {
+    expect(browseDown(["最新"], { text: "上一条", browse: { index: 5, stash: "兜底" } }).text).toBe("兜底");
+  });
+});
+
+describe("召回的按键归属", () => {
+  it("只有光标在首行时 ↑ 才归历史，在末行时 ↓ 才归历史", () => {
+    const text = "第一行\n第二行\n第三行";
+    expect(caretOnFirstLine(text, 0)).toBe(true);
+    expect(caretOnFirstLine(text, 3)).toBe(true);
+    expect(caretOnFirstLine(text, 5)).toBe(false);
+    expect(caretOnFirstLine(text, text.length)).toBe(false);
+    expect(caretOnLastLine(text, text.length)).toBe(true);
+    expect(caretOnLastLine(text, 10)).toBe(true);
+    expect(caretOnLastLine(text, 5)).toBe(false);
+  });
+  it("光标越界按边界算，不把整段文本判成一行", () => {
+    expect(caretOnFirstLine("a\nb", -5)).toBe(true);
+    expect(caretOnFirstLine("a\nb", 99)).toBe(false);
+    expect(caretOnLastLine("a\nb", -5)).toBe(false);
+    expect(caretOnLastLine("a\nb", 99)).toBe(true);
+  });
+});

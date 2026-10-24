@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
 export interface SelectOption<T extends string | number> {
@@ -7,6 +7,8 @@ export interface SelectOption<T extends string | number> {
   value: T;
   /** 触发器和列表里显示的主文案。 */
   label: string;
+  /** 可选的装饰图标，同时用于触发器与选项。 */
+  icon?: ReactNode;
   /** 右侧次级文案，等宽绘制，例如脚本的真实命令。 */
   detail?: string;
 }
@@ -88,12 +90,15 @@ export default function Select<T extends string | number>({
     const height = Math.min(LIST_MAX_HEIGHT, options.length * ITEM_HEIGHT + 14);
     const spaceBelow = window.innerHeight - box.bottom - LIST_GAP - VIEWPORT_PADDING;
     const openUp = spaceBelow < height && box.top > spaceBelow;
+    // 宽度只由触发器决定（下限 200px）：长选项在列表内截断、悬停有完整提示，
+    // 不再让内容把整张列表撑成一条跑道（对照参考实现的定宽 SelectContent）。
+    const width = Math.max(box.width, 200);
     setRect({
-      left: Math.min(box.left, window.innerWidth - Math.max(box.width, 200) - VIEWPORT_PADDING),
+      left: Math.min(box.left, window.innerWidth - width - VIEWPORT_PADDING),
       top: openUp
         ? Math.max(VIEWPORT_PADDING, box.top - height - LIST_GAP)
         : box.bottom + LIST_GAP,
-      width: Math.max(box.width, 200),
+      width,
     });
     const active = options.findIndex((option) => option.value === value);
     setCursor(active < 0 ? 0 : active);
@@ -157,6 +162,8 @@ export default function Select<T extends string | number>({
           }
         }}
       >
+        {/* 图标放在文本前，触发器与选项用同一个图标，保证切换前后视觉一致。 */}
+        {current?.icon}
         <span
           className="select-value"
           onMouseEnter={(event) => showTip(event, current ? current.label : undefined)}
@@ -193,6 +200,8 @@ export default function Select<T extends string | number>({
                 <span className="select-option-mark">
                   {selected ? <Check size={13} aria-hidden="true" /> : null}
                 </span>
+                {/* 勾选标记占位固定，图标紧随其后，有无勾选都不会让文字左右跳动。 */}
+                {option.icon}
                 <span
                   className="select-option-label"
                   onMouseEnter={(event) => showTip(event, option.label)}

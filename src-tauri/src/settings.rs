@@ -1,6 +1,7 @@
 use crate::error::{err, err_parts};
 use crate::offload::{block, block_value};
 use crate::sys::write_atomic;
+use json_patch::merge;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -244,6 +245,8 @@ impl Default for ShellSettings {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// AI 编程助手总开关，默认关闭。
+    pub ai_assistants_enabled: bool,
     /// 外观：light / dark / system。
     pub theme: String,
     /// 界面语言：zh / en。
@@ -273,6 +276,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            ai_assistants_enabled: false,
             theme: "system".to_string(),
             language: String::new(),
             workspace_mode: "multi".to_string(),
@@ -319,23 +323,99 @@ pub async fn settings_load(app: AppHandle) -> Settings {
     block_value(move || read(&app), Settings::default).await
 }
 
-/// 整份写回，格式化成可读的 JSON。原子写，避免写一半被杀掉留下半截文件。
-#[tauri::command]
-pub async fn settings_save(app: AppHandle, settings: Settings) -> Result<(), String> {
-    block(move || save(&app, &settings)).await
+/// 进程内的读-合并-写互斥。跨进程（dev 与安装版同时开）不靠这把锁，
+/// 靠的是「只写自己改过的那几个字段」：两个窗口改不同字段，谁后落盘都不影响对方。
+static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 读文件里的原始 JSON。与 `read` 相反，这里**不**退回默认值：
+/// 合并要以它为底稿，读不出来还照样写，等于把别人存过的设置整份抹掉。
+fn read_document(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let path = settings_path(app)?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        // 还没有配置文件：从空对象起步，合并结果就是本次改的那几个字段。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::Value::Object(Default::default())),
+        Err(error) => return Err(err_parts("IO", &[path.display().to_string(), error.to_string()])),
+    };
+    if text.trim().is_empty() {
+        return Ok(serde_json::Value::Object(Default::default()));
+    }
+    let document: serde_json::Value = serde_json::from_str(&text).map_err(|error| err_parts("SETTINGS_JSON", &[path.display().to_string(), error.to_string()]))?;
+    if !document.is_object() {
+        return Err(err("SETTINGS_JSON", format!("设置文件 {} 不是一个对象", path.display())));
+    }
+    Ok(document)
 }
 
-fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+/// 把一份 **JSON Merge Patch（RFC 7396）** 合并进现有文档，并按结构校验结果。
+/// 不碰磁盘，方便单测；返回合并后的文档与校验过的设置。
+fn apply_patch(document: serde_json::Value, patch: &serde_json::Value) -> Result<(serde_json::Value, Settings), String> {
+    if !patch.is_object() {
+        return Err(err("SETTINGS_PATCH", "设置补丁必须是一个对象"));
+    }
+    let mut document = document;
+    merge(&mut document, patch);
+    // 先校验再落盘：类型不对的字段不能留下半份配置。
+    let merged: Settings = serde_json::from_value(document.clone()).map_err(|error| err("SETTINGS_PATCH", error))?;
+    Ok((document, merged))
+}
+
+/// 按字段保存设置：把传来的补丁合并进文件里现有的内容，只覆盖出现过的字段。
+///
+/// 为什么不能整份写回：每个窗口都把自己那份内存里的 Settings 全量落盘，任何一次改动都写
+/// 整个文件。dev 与安装版（或两个窗口）同时开着时，内存副本旧的那个一保存，就把新设置——
+/// 包括 AI 助手开关——连同别的字段一起抹回旧值。按字段合并之后，「改一个字段」只可能
+/// 影响那一个字段；返回值是合并后的全量设置，调用方跟着它走，窗口之间不再各留一份真相。
+///
+/// 写的是合并后的文档而不是结构体，所以文件里我们不认识的段落（例如搬去 `lsp.json`
+/// 之前残留的 `lsp`）会原样留着——读不懂的东西不该顺手删掉。
+///
+/// 关闭 AI 助手仍然要先把在跑的 CLI 停掉并等它们退出，但只在**这次合并把它从开变成关**
+/// 时停：否则一次无关的保存（改个字号）也会把正在跑的任务全杀掉。
+/// `lifecycle_lock` 与启动路径共用同一把锁，防止「保存的同时又发起新运行」这种交叉。
+#[tauri::command]
+pub async fn settings_save(app: AppHandle, patch: serde_json::Value) -> Result<Settings, String> {
+    block(move || {
+        let _lifecycle = crate::ai_runtime::lifecycle_lock();
+        let guard = SETTINGS_LOCK.lock().map_err(|error| error.to_string())?;
+        let before = read(&app);
+        let (document, merged) = apply_patch(read_document(&app)?, &patch)?;
+        if before.ai_assistants_enabled && !merged.ai_assistants_enabled {
+            crate::ai_runtime::stop_for_disable(&app)?;
+        }
+        let saved = save_document(&app, &document);
+        drop(guard);
+        saved?;
+        Ok(merged)
+    })
+    .await
+}
+
+fn save_document(app: &AppHandle, document: &serde_json::Value) -> Result<(), String> {
     let path = settings_path(app)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|error| err_parts("IO", &[dir.display().to_string(), error.to_string()]))?;
     }
-    let text = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    let text = serde_json::to_string_pretty(document).map_err(|error| error.to_string())?;
+    // 原子写，避免写一半被杀掉留下半截文件。
     write_atomic(&path, &text)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_assistants_default_off_and_round_trip() {
+        assert!(!Settings::default().ai_assistants_enabled);
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(!old.ai_assistants_enabled);
+        let enabled: Settings = serde_json::from_str(r#"{"aiAssistantsEnabled":true}"#).unwrap();
+        assert!(enabled.ai_assistants_enabled);
+        let serialized = serde_json::to_string(&enabled).unwrap();
+        assert!(serialized.contains(r#""aiAssistantsEnabled":true"#));
+        let restored: Settings = serde_json::from_str(&serialized).unwrap();
+        assert!(restored.ai_assistants_enabled);
+    }
 
     /// 语言服务配置搬去 `lsp.json` 了，旧文件里残留的 `lsp` 段要能读、并且被忽略。
     #[test]
@@ -343,6 +423,39 @@ mod tests {
         let text = r#"{"theme":"dark","lsp":{"servers":{"gopls":{"mode":"lsp"}}}}"#;
         let settings: Settings = serde_json::from_str(text).unwrap();
         assert_eq!(settings.theme, "dark");
+    }
+
+    /// 补丁只动它写出来的那几个字段：没出现的字段照原样留着，连结构体不认识的段落也不删。
+    #[test]
+    fn patch_touches_only_the_fields_it_names() {
+        let file = serde_json::json!({
+            "aiAssistantsEnabled": true, "theme": "dark",
+            "editor": { "fontSize": 15, "tabSize": 4 },
+            "lsp": { "servers": { "gopls": { "mode": "lsp" } } },
+        });
+        let (document, merged) = apply_patch(file, &serde_json::json!({ "editor": { "fontSize": 13 } })).unwrap();
+        assert!(merged.ai_assistants_enabled);
+        assert_eq!(merged.theme, "dark");
+        assert_eq!(merged.editor.font_size, 13);
+        assert_eq!(merged.editor.tab_size, 4);
+        // 另一个窗口存过的开关、以及我们读不懂的旧段落，都不能被这次保存带走。
+        assert_eq!(document["aiAssistantsEnabled"], serde_json::json!(true));
+        assert!(document.get("lsp").is_some());
+    }
+
+    /// 没有配置文件时从空对象起步：合并结果就是本次改的那几个字段，其余仍是默认值。
+    #[test]
+    fn patch_on_a_missing_file_keeps_other_defaults() {
+        let (_, merged) = apply_patch(serde_json::Value::Object(Default::default()), &serde_json::json!({ "aiAssistantsEnabled": true })).unwrap();
+        assert!(merged.ai_assistants_enabled);
+        assert_eq!(merged.workspace_mode, "multi");
+    }
+
+    /// 类型不对或不是对象的补丁直接拒收，不落半份配置。
+    #[test]
+    fn patch_with_a_bad_shape_is_rejected() {
+        assert!(apply_patch(serde_json::json!({ "theme": "dark" }), &serde_json::json!({ "theme": 5 })).is_err());
+        assert!(apply_patch(serde_json::json!({}), &serde_json::json!("nope")).is_err());
     }
 
     /// 历史记录搬去 `history.json` 了，旧文件里残留的那四项同样要能被忽略掉。

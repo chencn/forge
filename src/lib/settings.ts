@@ -216,6 +216,8 @@ export type NotificationPosition = "bottom-right" | "top-right" | "bottom-left" 
  * 最近分支、用过的提交说明）住在 `history.json`，见 `lib/history.ts`。
  */
 export interface Settings {
+  /** AI 编程助手总开关，默认关闭。关闭后不再探测 CLI、加载会话或接受运行请求。 */
+  aiAssistantsEnabled: boolean;
   /** 外观模式。 */
   theme: ThemeMode;
   /** 界面语言；空串表示跟随系统。 */
@@ -242,6 +244,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  aiAssistantsEnabled: false,
   theme: "system",
   language: "",
   workspaceMode: "multi",
@@ -301,6 +304,8 @@ function merge(raw: Partial<Settings> | null): Settings {
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
+    // 只认严格的 true：老文件里没有这个字段、或被写成字符串，都按「关闭」处理。
+    aiAssistantsEnabled: raw?.aiAssistantsEnabled === true,
     workspaceMode: raw?.workspaceMode === "single" ? "single" : "multi",
     httpResponse: raw?.httpResponse === "tab" ? "tab" : "split",
     closeBehavior: raw?.closeBehavior === "quit" ? "quit" : "tray",
@@ -341,7 +346,11 @@ export async function loadSettings(): Promise<Settings> {
   }
 }
 
-/** 整份写回；纯浏览器里失败就忽略。 */
-export function saveSettings(settings: Settings): Promise<void> {
-  return invoke<void>("settings_save", { settings }).catch(() => {});
+/**
+ * 按字段保存：只把改动的部分交给后端做 JSON Merge Patch（RFC 7396）合并，
+ * 返回合并后的全量设置。不再传全量，是因为另一个窗口的旧内存副本整份写回时
+ * 会把新设置连别的字段一起抹掉；调用方拿返回值覆盖本地，两个窗口最终都跟文件一致。
+ */
+export function saveSettings(patch: Partial<Settings>): Promise<Settings> {
+  return invoke<Settings>("settings_save", { patch }).then(merge);
 }
