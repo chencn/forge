@@ -233,6 +233,12 @@ export function renderChatMarkdown(source: string, copyLabel: string, openBlocks
       code({ text, lang }) {
         return renderCodeBlock(text, lang, copyLabel, openBlocks);
       },
+      checkbox({ checked }) {
+        // GFM 任务列表复选框：用无害的只读 span 替换 input，避免被聊天的 DOMPurify 白名单删除。
+        return checked
+          ? '<span class="ai-task-checkbox is-checked" aria-hidden="true"></span> '
+          : '<span class="ai-task-checkbox" aria-hidden="true"></span> ';
+      },
       link({ href, title, tokens }) {
         const inner = this.parser.parseInline(tokens);
         const file = parseFileLink(href);

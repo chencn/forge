@@ -216,7 +216,8 @@ fn runtime_args(request: &SendRequest, claude_mode: &str, native: Option<&str>) 
     ];
     let read_only = claude_mode == "plan" || request.permission == options::PermissionMode::Read;
     if read_only {
-        args.extend(["--allowedTools", "Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoWrite", "Task"].map(str::to_owned));
+        // 允许只读排查与任务清单工具；精确对应 Claude Code 内置的 Task 工具名。
+        args.extend(["--allowedTools", "Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"].map(str::to_owned));
         args.extend(["--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit"].map(str::to_owned));
     }
     if claude_mode == "bypassPermissions" { args.push("--allow-dangerously-skip-permissions".into()); }
@@ -1344,38 +1345,36 @@ impl Worker {
                 return Err("CLI 长时间无响应，已停止本轮；未自动重发".into());
             }
             if let Ok(control) = controls.try_recv() {
-                let Control::Answer {
-                    request_id,
-                    answer,
-                    reply,
-                } = control;
-                let result = (|| {
-                    if stopping.is_some() || self.run.cancelled.load(Ordering::Acquire) {
-                        return Err("任务正在停止，请求已失效".into());
+                match control {
+                    Control::Answer { request_id, answer, reply } => {
+                        let result = (|| {
+                            if stopping.is_some() || self.run.cancelled.load(Ordering::Acquire) {
+                                return Err("任务正在停止，请求已失效".into());
+                            }
+                            let (key, kind) = self.pending.get(&request_id).cloned().ok_or("授权或提问已失效")?;
+                            let grant = validate_answer(&kind, &answer)?;
+                            let actions = protocol.respond(&key, answer.clone())?;
+                            self.actions(&mut *protocol, actions, &mut process)?;
+                            self.pending.remove(&request_id);
+                            // 答案随失效事件落盘，重开会话时不会重新出现一张可答复卡片。
+                            self.queue("invalidated", json!({"requestId":request_id, "answer":answer}))?;
+                            if let Some(rule) = grant {
+                                let explanation = rule.explain();
+                                if self.approvals.remember(rule) {
+                                    self.queue("notice", json!({"text": explanation, "approval": true}))?;
+                                }
+                            }
+                            self.flush()
+                        })();
+                        let _ = reply.send(result);
                     }
-                    let (key, kind) = self
-                        .pending
-                        .get(&request_id)
-                        .cloned()
-                        .ok_or("授权或提问已失效")?;
-                    let grant = validate_answer(&kind, &answer)?;
-                    let actions = protocol.respond(&key, answer.clone())?;
-                    self.actions(&mut *protocol, actions, &mut process)?;
-                    self.pending.remove(&request_id);
-                    // 把答案一起记进这条失效事件：卡片要分得清「用户答过了，这就是当时选的」和
-                    // 「没等到答复就失效了」，而且这份事实得进日志——重开会话时不能又变成可答复，
-                    // 也不能把用户选过的那几项显示成空白。
-                    self.queue("invalidated", json!({"requestId":request_id, "answer":answer}))?;
-                    // 规则在答复之后才登记：本轮这一次仍是用户亲手点的，之后同工具的请求才由它代答。
-                    if let Some(rule) = grant {
-                        let explanation = rule.explain();
-                        if self.approvals.remember(rule) {
-                            self.queue("notice", json!({"text": explanation, "approval": true}))?;
-                        }
+                    Control::GoalStatus { status, reply } => {
+                        let result = protocol.set_goal_status(&status)
+                            .and_then(|actions| self.actions(&mut *protocol, actions, &mut process).map(|_| ()))
+                            .and_then(|_| self.flush());
+                        let _ = reply.send(result);
                     }
-                    self.flush()
-                })();
-                let _ = reply.send(result);
+                }
             }
             if self.flushed.elapsed() >= Duration::from_millis(32) {
                 self.flush()?;
@@ -1624,6 +1623,57 @@ pub async fn ai_runtime_respond(
             .map_err(|_| "回应结果未确认；请勿重复批准".to_string())?
     })
     .await
+}
+
+/// 暂停或继续 Codex 原生 Goal。活动回合复用现有 app-server；空闲会话走短连接并落盘权威快照。
+#[tauri::command]
+pub async fn ai_runtime_set_goal_status(
+    app: AppHandle,
+    session_id: String,
+    workspace: String,
+    status: String,
+) -> Result<(), String> {
+    block(move || {
+        enabled(&app)?;
+        if !store::valid_id(&session_id) || !matches!(status.as_str(), "active" | "paused") {
+            return Err("无效的 Goal 状态请求".into());
+        }
+        let root = store::workspace(&workspace)?;
+        let runtime_base = base(&app)?;
+        let native = {
+            let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+            let target = store::Store::open_for_append(&runtime_base, &session_id, &root, Provider::Codex, "", "")?;
+            if target.meta.provider != Provider::Codex {
+                return Err("Goal 目前仅支持 Codex 会话".into());
+            }
+            target.meta.native_id.ok_or("Codex 会话尚未建立，无法修改 Goal")?
+        };
+        let send_active = |run: Arc<Run>| -> Result<(), String> {
+            let (reply, receive) = mpsc::sync_channel(1);
+            run.controls.try_send(Control::GoalStatus { status: status.clone(), reply })
+                .map_err(|_| "运行繁忙或已经结束")?;
+            receive.recv_timeout(Duration::from_secs(10))
+                .map_err(|_| "Goal 状态请求未送达；请重试".to_string())?
+        };
+        if let Some(run) = registry::for_session(&session_id) {
+            return send_active(run);
+        }
+
+        // 与发送共用生命周期锁，避免刚判为空闲就同时启动一个新回合和第二个管理连接。
+        let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
+        if let Some(run) = registry::for_session(&session_id) {
+            return send_active(run);
+        }
+        let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后修改 Goal")?;
+        let goal = options::codex_set_goal_status(&root, &native, &status)?;
+        let events = {
+            let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+            let mut target = store::Store::open_for_append(&runtime_base, &session_id, &root, Provider::Codex, "", "")?;
+            target.append("goal-control", vec![("goal".into(), json!({"goal":goal}))])?
+        };
+        let _ = app.emit(CHANNEL, &events);
+        Ok(())
+    }).await
 }
 #[tauri::command]
 pub async fn ai_runtime_load(
@@ -2217,5 +2267,22 @@ mod tests {
         assert!(auto_answer_for(&memory, &json!({"toolName":"Bash","input":{"command":"ls"}})).is_none());
         // 提问卡片即使带着 toolName 也不算授权请求：调用方按 kind 分流，这里只保证读不懂时不猜。
         assert!(auto_answer_for(&approvals::ApprovalMemory::default(), &inside).is_none());
+    }
+
+    #[test]
+    fn claude_plan_mode_whitelists_task_tools() {
+        let mut request = base_request();
+        // 显式指定 Claude 运行时，确保进入 Claude 参数组装分支。
+        request.provider = Provider::Claude;
+        let args = runtime_args(&request, "plan", None);
+        assert!(args.contains(&"--allowedTools".into()));
+        assert!(args.contains(&"TaskCreate".into()));
+        assert!(args.contains(&"TaskUpdate".into()));
+        assert!(args.contains(&"TaskList".into()));
+        assert!(args.contains(&"TaskGet".into()));
+        assert!(args.contains(&"TodoWrite".into()));
+        assert!(args.contains(&"--disallowedTools".into()));
+        assert!(args.contains(&"Edit".into()));
+        assert!(args.contains(&"Write".into()));
     }
 }

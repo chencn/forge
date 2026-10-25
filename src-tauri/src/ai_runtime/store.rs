@@ -606,6 +606,7 @@ impl Store {
         active_tasks.sort_by_key(|task| task["seq"].as_u64().unwrap_or_default());
         // 索引是正常路径；索引不可用时，全量扫描仍按同一规则折叠，不返回半张清单。
         let task_list = index.as_ref().and_then(|index| index.task_list.clone()).or_else(|| scan.task_list.clone());
+        let goal = index.as_ref().and_then(|index| index.goal.clone()).or_else(|| scan.goal.clone());
         let (has_more, has_older, latest_seq) = (scan.has_more, scan.has_older, scan.seq);
         let latest_run_id = scan.last_status.take().map(|event| event.run_id);
         let events = scan.take_events();
@@ -626,6 +627,7 @@ impl Store {
             latest_run_id,
             active_tasks,
             task_list,
+            goal,
             warning: None,
             plans: Vec::new(),
         })
@@ -663,6 +665,8 @@ struct Scan {
     pending_prompts: std::collections::HashMap<String, String>,
     /// 全量扫描折叠出的最新模型任务清单；分页窗口不参与这份状态的计算。
     task_list: Option<serde_json::Value>,
+    /// 最新 Goal 状态；goal:null 也必须保留序号，才能覆盖更早的非空快照。
+    goal: Option<serde_json::Value>,
     /// 往后翻：还有更新的事件没被这一页装下。
     has_more: bool,
     /// 往前翻：还有更早的事件没被这一页装下。
@@ -720,6 +724,12 @@ fn fold_task_list(previous: Option<&serde_json::Value>, event: &Event) -> serde_
         }
     }
     serde_json::json!({"seq":event.seq,"runId":event.run_id,"items":items})
+}
+
+/// Goal 更新与清除都折成带序号的完整快照，保证迟到分页不会让已清除目标复活。
+fn fold_goal(event: &Event) -> serde_json::Value {
+    let goal = event.data.get("goal").filter(|goal| goal.is_object()).cloned().unwrap_or(serde_json::Value::Null);
+    serde_json::json!({"seq":event.seq,"goal":goal})
 }
 
 impl Scan {
@@ -1007,6 +1017,8 @@ struct LogIndex {
     status: Option<Event>,
     /// 最新模型任务清单的完整快照；与时间线分页分离，重开会话也能直接恢复。
     task_list: Option<serde_json::Value>,
+    /// 最新 Goal 的完整快照；清除状态也以 goal:null 留在索引中。
+    goal: Option<serde_json::Value>,
     episodes: Vec<CompactionEpisode>,
     summaries: Vec<CompactionSummary>,
 }
@@ -1026,6 +1038,7 @@ impl LogIndex {
             prompts: vec![],
             status: None,
             task_list: None,
+            goal: None,
             episodes: vec![],
             summaries: vec![],
         }
@@ -1117,6 +1130,9 @@ impl LogIndex {
         self.latest_seq = event.seq;
         if event.kind == "task_list" {
             self.task_list = Some(fold_task_list(self.task_list.as_ref(), &event));
+        }
+        if event.kind == "goal" {
+            self.goal = Some(fold_goal(&event));
         }
         match event.kind.as_str() {
             "compaction" => classify_compaction(&event, &mut self.episodes, &mut self.summaries, Some(offset)),
@@ -1242,6 +1258,9 @@ fn scan_events_folded(
         scan.seq = event.seq;
         if event.kind == "task_list" {
             scan.task_list = Some(fold_task_list(scan.task_list.as_ref(), &event));
+        }
+        if event.kind == "goal" {
+            scan.goal = Some(fold_goal(&event));
         }
         // role=user 的记录里混着 CLI 自己写的系统注入（AGENTS.md 指令、环境上下文、任务通知）。
         // 回放时已经不再写入这种事件，但旧日志里躺着的那些仍会被翻出来当成用户气泡，
@@ -2085,6 +2104,25 @@ mod tests {
             {"id":"2","content":"实现","status":"complete"},
             {"id":"3","content":"验证","status":"active"}
         ]})));
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn goal_snapshot_survives_pagination_and_preserves_clear_state() {
+        let p = fixture();
+        let mut s = Store::open(&p, "session", "root", TestProvider, "t", "").unwrap();
+        let goal = json!({
+            "threadId":"native","objective":"完成联测","status":"active","tokenBudget":null,
+            "tokensUsed":10,"timeUsedSeconds":2,"createdAt":1,"updatedAt":2
+        });
+        s.append("run-a", vec![("goal".into(), json!({"goal":goal}))]).unwrap();
+        s.append("run-b", vec![("text".into(), json!({"id":"answer","text":"继续"}))]).unwrap();
+        let active = Store::page(&p, "session", "root", Window::Before(u64::MAX), 1, false).unwrap();
+        assert_eq!(active.goal, Some(json!({"seq":1,"goal":goal})));
+
+        s.append("run-c", vec![("goal".into(), json!({"goal":null}))]).unwrap();
+        let cleared = Store::page(&p, "session", "root", Window::Before(u64::MAX), 1, false).unwrap();
+        assert_eq!(cleared.goal, Some(json!({"seq":3,"goal":null})));
         fs::remove_dir_all(p).unwrap();
     }
 

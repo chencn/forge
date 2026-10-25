@@ -290,6 +290,21 @@ export interface AiModelTaskItem { id: string; content: string; status: string; 
 /** 会话级模型任务快照；seq 用来防止迟到的分页响应覆盖实时进展。 */
 export interface AiModelTaskList { seq: number; runId: string; items: AiModelTaskItem[] }
 
+export type AiThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+/** Codex 原生线程 Goal；它描述长期目标，不承担 Task 清单的逐步进度。 */
+export interface AiThreadGoal {
+  seq: number;
+  threadId: string;
+  objective: string;
+  status: AiThreadGoalStatus;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+interface AiGoalSummary { seq: number; goal: AiThreadGoal | null }
+
 /** 一个会话在前端看到的状态快照。 */
 export interface AiRuntimeSnapshot {
   /** 已合并好的时间线条目，按序号排列。 */
@@ -300,6 +315,8 @@ export interface AiRuntimeSnapshot {
   tasks: AiTask[];
   /** 模型拆出的最新任务清单；独立于时间线分页。 */
   taskList?: AiModelTaskList;
+  /** Codex 线程的长期目标；与本轮任务清单相互独立。 */
+  goal?: AiThreadGoal;
   /** 当前或最近一轮的 run id；从未运行过为 null。 */
   runId: string | null;
   /** 会话状态：idle / running / completed / cancelled / failed。 */
@@ -354,6 +371,8 @@ interface State {
   activeSummary?: { seq: number; tasks: AiTask[] };
   /** 全日志模型任务快照必须跨历史重放保留，避免只靠当前页的稀疏补丁重建。 */
   taskListSummary?: AiModelTaskList;
+  /** Goal 的最新状态（包括清除）必须带序号跨分页保留。 */
+  goalSummary?: AiGoalSummary;
   /** 已见过的最大序号，防止乱序事件把游标回退。 */
   maxSeq: number;
   /** 本轮失败的记录；成功后清空。 */
@@ -384,6 +403,8 @@ interface Page {
   activeTasks?: AiTask[];
   /** 后端全日志折叠出的模型任务清单，不受当前分页位置影响。 */
   taskList?: AiModelTaskList | null;
+  /** 后端全日志折叠出的 Goal 状态；goal:null 表示它已被清除。 */
+  goal?: AiGoalSummary | null;
   /** 读取时的非致命问题，例如某条记录损坏被跳过。 */
   warning?: string | null;
   /** 计划审阅记录；事件分页之外的独立事实源。 */
@@ -599,6 +620,43 @@ function normalizeAiModelTaskList(value: unknown): AiModelTaskList | undefined {
   return { seq: Number(snapshot.seq), runId: snapshot.runId, items };
 }
 
+const GOAL_STATUSES = new Set<AiThreadGoalStatus>(["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]);
+function normalizeAiThreadGoal(value: unknown, seq: number): AiThreadGoal | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const goal = value as Record<string, unknown>;
+  if (typeof goal.threadId !== "string" || typeof goal.objective !== "string" || !GOAL_STATUSES.has(goal.status as AiThreadGoalStatus)) return undefined;
+  const numbers = [goal.tokensUsed, goal.timeUsedSeconds, goal.createdAt, goal.updatedAt];
+  if (numbers.some((number) => !Number.isSafeInteger(number) || Number(number) < 0)) return undefined;
+  if (goal.tokenBudget != null && (!Number.isSafeInteger(goal.tokenBudget) || Number(goal.tokenBudget) < 1)) return undefined;
+  return {
+    seq,
+    threadId: goal.threadId,
+    objective: goal.objective,
+    status: goal.status as AiThreadGoalStatus,
+    tokenBudget: goal.tokenBudget == null ? null : Number(goal.tokenBudget),
+    tokensUsed: Number(goal.tokensUsed),
+    timeUsedSeconds: Number(goal.timeUsedSeconds),
+    createdAt: Number(goal.createdAt),
+    updatedAt: Number(goal.updatedAt),
+  };
+}
+
+function normalizeAiGoalSummary(value: unknown): AiGoalSummary | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const summary = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(summary.seq) || Number(summary.seq) < 1) return undefined;
+  if (summary.goal === null) return { seq: Number(summary.seq), goal: null };
+  const goal = normalizeAiThreadGoal(summary.goal, Number(summary.seq));
+  return goal ? { seq: Number(summary.seq), goal } : undefined;
+}
+
+function goalSummaryFromEvent(event: AiRuntimeEvent): AiGoalSummary | undefined {
+  if (event.kind !== "goal") return undefined;
+  if (event.data.goal === null) return { seq: event.seq, goal: null };
+  const goal = normalizeAiThreadGoal(event.data.goal, event.seq);
+  return goal ? { seq: event.seq, goal } : undefined;
+}
+
 /** Complete messages replace deltas under the same provider item ID. */
 export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSnapshot = EMPTY, incremental = false): AiRuntimeSnapshot {
   const entries: AiEntry[] = incremental ? previous.entries.map((entry) => ({ ...entry })) : [];
@@ -621,6 +679,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   let permissionDenied = incremental ? previous.permissionDenied : undefined;
   let mcpServers = incremental ? previous.mcpServers : undefined;
   let modelTasks = incremental ? previous.taskList : undefined;
+  let goal = incremental ? previous.goal : undefined;
   /** 每轮当前所处的压缩段（entry id）；用户消息一旦出现即视为新段落。 */
   const compactionEpisodes = new Map<string, string>();
   if (incremental) {
@@ -792,6 +851,10 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         // 这是会话级最新快照，但在时间线上仍必须归到产生本次更新的新回合和新位置。
         entry.runId = event.runId; entry.input = { items }; entry.seq = event.seq; entries.push(entry);
       }
+    } else if (event.kind === "goal") {
+      // 清除与更新共用一个事件类型；坏载荷不能误清除当前 Goal。
+      const summary = goalSummaryFromEvent(event);
+      if (summary) goal = summary.goal ?? undefined;
     } else if (["retry", "compaction", "notice", "plan"].includes(event.kind)) {
       if (event.kind === "compaction") { staleContext(); if (usage) usage = { ...usage, context: undefined }; }
       // 普通 notice 一条一格（本轮可能有多次自动允许/自动拒绝）；retry/plan 仍按类型合并。
@@ -901,7 +964,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   const latest = taskList.at(-1);
   if (active) { runId = active.runId; status = "running"; error = active.error ?? null; }
   else if (latest) { runId = latest.runId; status = latest.status; error = latest.error ?? null; }
-  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
+  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, goal, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
 }
 function applySummary(state: State) {
   const summary = state.summary;
@@ -977,6 +1040,18 @@ function mergePageTaskList(state: State, page: Page) {
   const summary = normalizeAiModelTaskList(page.taskList);
   if (summary) mergeTaskListSummary(state, summary);
 }
+/** Goal 摘要按事件序号覆盖；goal:null 是有效终态，不能当“没有返回字段”。 */
+function mergeGoalSummary(state: State, summary: AiGoalSummary) {
+  if (!state.goalSummary || summary.seq >= state.goalSummary.seq) state.goalSummary = summary;
+  const source = state.goalSummary;
+  if (!state.snapshot.goal || source.seq >= state.snapshot.goal.seq) {
+    state.snapshot = { ...state.snapshot, goal: source.goal ?? undefined };
+  }
+}
+function mergePageGoal(state: State, page: Page) {
+  const summary = normalizeAiGoalSummary(page.goal);
+  if (summary) mergeGoalSummary(state, summary);
+}
 function applyFailure(state: State) {
   if (state.failure) {
     const task = state.snapshot.tasks.find((item) => item.runId === state.failure!.runId);
@@ -992,10 +1067,15 @@ const STREAMING_EVENT_KINDS = new Set(["text", "message", "reasoning", "reasonin
 function projectBatch(id: string, batch: AiRuntimeEvent[]) {
   const state = store(id);
   const appendOnly = batch.every((event) => event.seq > state.maxSeq);
+  for (const event of batch) {
+    const summary = goalSummaryFromEvent(event);
+    if (summary && (!state.goalSummary || summary.seq >= state.goalSummary.seq)) state.goalSummary = summary;
+  }
   state.snapshot = projectAiEvents(appendOnly ? batch : [...state.events.values()], state.snapshot, appendOnly);
   state.maxSeq = batch.reduce((max, event) => Math.max(max, event.seq), state.maxSeq);
   if (!appendOnly && state.activeSummary) mergeActiveTasks(state, state.activeSummary.tasks, state.activeSummary.seq);
   if (state.taskListSummary) mergeTaskListSummary(state, state.taskListSummary);
+  if (state.goalSummary) mergeGoalSummary(state, state.goalSummary);
   applySummary(state); applyFailure(state);
   releaseInactiveCache(id);
 }
@@ -1119,6 +1199,7 @@ export async function loadAiMessages(sessionId: string, workspace: string, refre
       const initialPage = page;
       merge(page.events);
       mergePageTaskList(state, page);
+      mergePageGoal(state, page);
       // 首屏已成功就保存向前游标；后续补采失败也不能让已显示的历史无法翻页。
       patch(sessionId, { hasOlder: page.hasOlder && page.events.length > 0, cursor: page.events.length ? page.nextSeq : 0 });
       // 最新页之后可能还有原生补采；按事件游标续读，保留最初的向前分页边界。
@@ -1130,6 +1211,7 @@ export async function loadAiMessages(sessionId: string, workspace: string, refre
         if (page.hasMore && (!page.events.length || page.events.at(-1)!.seq <= afterSeq)) throw new Error("原生历史同步没有推进游标");
         merge(page.events);
         mergePageTaskList(state, page);
+        mergePageGoal(state, page);
       }
       if (Number.isSafeInteger(page.latestSeq) && page.latestRunId && page.status) state.summary = { seq: page.latestSeq!, runId: page.latestRunId, status: page.status };
       applySummary(state); applyFailure(state);
@@ -1176,6 +1258,7 @@ export async function loadOlderAiMessages(sessionId: string, workspace: string, 
         if (page.events.length > 0 && !advanced) throw new Error("历史分页游标未前进，请重试");
         merge(page.events);
         mergePageTaskList(state, page);
+        mergePageGoal(state, page);
         patch(sessionId, { hasOlder: page.hasOlder && advanced, cursor: advanced ? page.nextSeq : cursor });
         if (!state.snapshot.hasOlder) break;
       }
@@ -1254,6 +1337,7 @@ function releaseInactiveCache(sessionId: string): boolean {
   state.summary = null;
   state.activeSummary = undefined;
   state.taskListSummary = undefined;
+  state.goalSummary = undefined;
   state.maxSeq = 0;
   state.failure = null;
   outlines.delete(sessionId);
@@ -1415,6 +1499,10 @@ export async function stopAllAiRuns() {
 }
 /** 答复一个请求：`{allow}` 表示授权，`{answers}` 表示提问的回答。 */
 export async function respondAiRequest(runId: string, requestId: string, answer: AiRequestAnswer) { await invoke("ai_runtime_respond", { runId, requestId, answer }); }
+/** Goal 是 Codex 线程状态；这里只暴露用户能直接控制的暂停与继续。 */
+export async function setAiGoalStatus(sessionId: string, workspace: string, status: "active" | "paused") {
+  await invoke("ai_runtime_set_goal_status", { sessionId, workspace, status });
+}
 /** 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。 */
 export async function deleteAiRuntimeSession(sessionId: string, workspace: string) { await invoke("ai_runtime_delete", { sessionId, workspace }); deleted.add(sessionId); releaseRequested.delete(sessionId); pendingStreaming.delete(sessionId); for (const task of stores.get(sessionId)?.snapshot.tasks ?? []) stoppingRunIds.delete(task.runId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); changed(); }
 /**

@@ -62,7 +62,10 @@ impl Process {
             .stderr(Stdio::piped());
         command
             .env("PATH", crate::lsp_probe::augmented_path())
-            .env("DISABLE_AUTOUPDATER", "1");
+            .env("DISABLE_AUTOUPDATER", "1")
+            // 启用 Claude Code 的任务/Todo 工具注入（TaskCreate/TaskUpdate/TaskList）。
+            .env("CLAUDE_CODE_ENABLE_TASKS", "1")
+            .env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

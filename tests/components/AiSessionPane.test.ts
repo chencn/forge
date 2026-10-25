@@ -611,4 +611,31 @@ describe("AI conversation pane", () => {
     expect(chip).toContain("ai.chat.editedFile");
     expect(chip).not.toContain("ai.chat.editedFiles");
   });
+  it("任务清单在右侧视口贴边展示且默认展开，带有拖动手柄与折叠按钮", () => {
+    h.state.taskList = {
+      runId: "run",
+      seq: 1,
+      items: [
+        { id: "1", content: "检查代码结构", status: "completed" },
+        { id: "2", content: "运行测试套件", status: "in_progress" },
+        { id: "3", content: "汇总检查报告", status: "pending" },
+      ],
+    };
+    const { html } = render();
+    // 渲染在右侧贴边浮动挂件中且默认展开
+    expect(html).toContain('class="ai-taskchip is-open"');
+    expect(html).toContain('class="ai-taskchip-panel"');
+    expect(html).toContain('class="ai-taskchip-chip');
+    // 包含拖拽手柄、折叠按钮、清单项与统计进度
+    expect(html).toContain('ai-taskchip-drag-handle');
+    expect(html).toContain('ai-taskchip-collapse');
+    expect(html).toContain("检查代码结构");
+    expect(html).toContain("运行测试套件");
+    expect(html).toContain("汇总检查报告");
+    expect(html).toContain("1/3");
+    expect(html).toContain("33%");
+    // 顶栏不包含任务清单，任务清单位于视口内与消息导航相邻
+    const headerHtml = html.slice(html.indexOf('<header class="ai-session-pane-head">'), html.indexOf('</header>'));
+    expect(headerHtml).not.toContain("ai-taskchip");
+  });
 });

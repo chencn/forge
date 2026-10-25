@@ -29,6 +29,11 @@ pub enum Control {
         /// 回执通道：写入线程处理完后回一个结果，调用方据此知道答复是否送达。
         reply: mpsc::SyncSender<Result<(), String>>,
     },
+    /// 用户暂停或继续当前线程的 Goal；状态值已由命令入口收窄为 active/paused。
+    GoalStatus {
+        status: String,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
 }
 
 /// 一次运行在全局登记表里的条目。UI 命令通过它判断能否停止、停止哪个项目。

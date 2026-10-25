@@ -44,6 +44,8 @@ pub struct Page {
     pub active_tasks: Vec<Value>,
     /// 模型拆出的最新任务清单。它是会话级状态，不能依赖当前时间线页是否碰巧含有 task_list 事件。
     pub task_list: Option<Value>,
+    /// Codex 线程的最新 Goal 快照；外层携带事件序号，清除 Goal 时内部 goal 为 null。
+    pub goal: Option<Value>,
     /// 读取过程中的非致命问题（例如某条记录损坏被跳过），有值就提示用户。
     pub warning: Option<String>,
     /// 该会话的全部计划版本；前端按 planId 取最新一版渲染审阅卡片。

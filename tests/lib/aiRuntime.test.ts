@@ -415,6 +415,36 @@ describe("AI runtime event store", () => {
       { id: "3", content: "验证", status: "active" },
     ] });
   });
+  it("Goal 创建、完成与清除保持线程级状态，不生成 Task 条目", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const base = { threadId: "native", objective: "完成 Goal 与 Task 联测", tokenBudget: 10000,
+      tokensUsed: 1200, timeUsedSeconds: 30, createdAt: 1, updatedAt: 2 };
+    const active = projectAiEvents([event(1, "goal", { goal: { ...base, status: "active" } })]);
+    expect(active.goal).toMatchObject({ seq: 1, objective: base.objective, status: "active" });
+    expect(active.taskList).toBeUndefined();
+    const completed = projectAiEvents([event(2, "goal", { goal: { ...base, status: "complete", tokensUsed: 8000, updatedAt: 3 } })], active, true);
+    expect(completed.goal).toMatchObject({ seq: 2, status: "complete", tokensUsed: 8000 });
+    const cleared = projectAiEvents([event(3, "goal", { goal: null })], completed, true);
+    expect(cleared.goal).toBeUndefined();
+  });
+  it("Goal 暂停通过受限命令发送线程、工作区和状态", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.setAiGoalStatus("session", "D:/project", "paused");
+    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_set_goal_status", {
+      sessionId: "session", workspace: "D:/project", status: "paused",
+    });
+  });
+  it("重开会话时从分页摘要恢复 Goal，并接受已清除快照", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    const goal = { threadId: "native", objective: "持续目标", status: "paused",
+      tokensUsed: 42, timeUsedSeconds: 8, createdAt: 1, updatedAt: 2 };
+    h.invoke.mockResolvedValueOnce({ events: [], hasOlder: false, hasMore: false, nextSeq: 0, latestSeq: 8,
+      goal: { seq: 7, goal } });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id).goal).toMatchObject({ seq: 7, objective: "持续目标", status: "paused", tokenBudget: null });
+    emit(event(8, "goal", { goal: null }));
+    expect(runtime.useAiRuntime(session.id).goal).toBeUndefined();
+  });
   it("registers routing before invoking send and retains early Unicode events", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
     h.invoke.mockImplementation(async (command, args) => {

@@ -23,6 +23,9 @@ struct AsyncQuestion {
     titles: HashMap<String, String>,
 }
 
+const TASK_TOOL_NAMESPACE: &str = "forge";
+const TASK_TOOL_NAME: &str = "update_tasks";
+
 /// Codex 的协议适配器。
 ///
 /// 与 Claude 不同，Codex 是「先 initialize、再开线程、最后开回合」的三段握手，
@@ -90,6 +93,12 @@ pub struct Codex {
     /// 已发出的 mcpServerStatus/list 探测 id；回包同样不是握手响应。
     mcp_probes: HashSet<u64>,
     next_mcp_probe: u64,
+    /// 已发出的 thread/goal/get 探测 id；Goal 是线程状态，恢复时不能等下一次通知。
+    goal_probes: HashSet<u64>,
+    next_goal_probe: u64,
+    /// Goal 状态写请求先等服务端确认，再回读完整快照，避免前端伪造原生状态。
+    goal_sets: HashSet<u64>,
+    next_goal_set: u64,
 }
 /// `declined` 的 fileChange 条目里，changes 的键就是要写的那个文件。
 /// 只有整个键本身就是绝对路径才配得上「授予这个目录」：相对写法交给后端复核会直接报错，
@@ -130,6 +139,78 @@ fn permission_request_text(permissions: &Value) -> String {
 }
 
 impl Codex {
+    /// 给新线程注册一个 Forge 自己拥有的任务清单工具。
+    ///
+    /// 每次调用都提交完整快照，避免在协议层再维护一套增删改命令与部分更新状态机。
+    pub(super) fn task_tools() -> Value {
+        json!([{
+            "type": "namespace",
+            "name": TASK_TOOL_NAMESPACE,
+            "description": "Update Forge conversation UI state.",
+            "tools": [{
+                "type": "function",
+                "name": TASK_TOOL_NAME,
+                "description": "Replace the current task checklist. Use for multi-step work and call again whenever progress changes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 32,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "step": { "type": "string", "minLength": 1, "maxLength": 500 },
+                                    "status": { "type": "string", "enum": ["pending", "in_progress", "completed"] }
+                                },
+                                "required": ["step", "status"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["tasks"],
+                    "additionalProperties": false
+                }
+            }]
+        }])
+    }
+
+    /// 校验动态工具提交的完整快照，并转换成 Forge 已有的 task_list 词表。
+    fn task_list(arguments: &Value) -> Result<Value, String> {
+        let tasks = arguments["tasks"].as_array().ok_or("tasks 必须是数组")?;
+        if tasks.is_empty() || tasks.len() > 32 {
+            return Err("tasks 必须包含 1 到 32 项".into());
+        }
+        let mut active = 0usize;
+        let mut items = Vec::with_capacity(tasks.len());
+        for (index, task) in tasks.iter().enumerate() {
+            let content = task["step"].as_str().map(str::trim).filter(|step| !step.is_empty())
+                .ok_or_else(|| format!("第 {} 项任务缺少正文", index + 1))?;
+            if content.chars().count() > 500 {
+                return Err(format!("第 {} 项任务正文超过 500 字", index + 1));
+            }
+            let status = match task["status"].as_str() {
+                Some("pending") => "pending",
+                Some("in_progress") => { active += 1; "active" }
+                Some("completed") => "complete",
+                _ => return Err(format!("第 {} 项任务状态无效", index + 1)),
+            };
+            items.push(json!({"id":format!("task-{index}"),"content":content,"status":status}));
+        }
+        if active > 1 {
+            return Err("任务清单最多只能有一项正在执行".into());
+        }
+        Ok(json!({"replace":true,"items":items}))
+    }
+
+    fn dynamic_tool_result(id: Value, success: bool, text: &str) -> Action {
+        Action::Write(json!({"id":id,"result":{
+            "contentItems":[{"type":"inputText","text":text}],
+            "success":success
+        }}))
+    }
+
     pub fn new(cwd: String, prompt: String, native_id: Option<String>) -> Self {
         Self {
             cwd,
@@ -164,6 +245,10 @@ impl Codex {
             pending_mcp_status: HashMap::new(),
             mcp_probes: HashSet::new(),
             next_mcp_probe: 2_000_000,
+            goal_probes: HashSet::new(),
+            next_goal_probe: 3_000_000,
+            goal_sets: HashSet::new(),
+            next_goal_set: 4_000_000,
         }
     }
     pub fn with_options(mut self, model: Option<String>, effort: Option<String>) -> Self {
@@ -241,6 +326,13 @@ impl Codex {
             data: json!({"servers": self.mcp_servers.iter().map(|server| json!({"name":server["name"],"status":server["status"]})).collect::<Vec<_>>()}),
         }
     }
+    /// Goal 由 Codex 线程原生持有；每次接上线程后读取一次，避免恢复会话只能等后续变更通知。
+    fn goal_probe(&mut self, thread: &str) -> Value {
+        let id = self.next_goal_probe;
+        self.next_goal_probe += 1;
+        self.goal_probes.insert(id);
+        json!({"id":id,"method":"thread/goal/get","params":{"threadId":thread}})
+    }
     /// 通知只能改完整列表里已有的服务器；未知名字不能凭一条局部通知扩成“全表”。
     fn record_mcp_status(&mut self, name: &str, status: &str) -> bool {
         let Some(server) = self.mcp_servers.iter_mut().find(|server| server["name"].as_str() == Some(name)) else { return false; };
@@ -315,6 +407,16 @@ impl Codex {
             )]);
         }
         match method {
+            "item/tool/call" if params["namespace"].as_str() == Some(TASK_TOOL_NAMESPACE)
+                && params["tool"].as_str() == Some(TASK_TOOL_NAME) => {
+                match Self::task_list(&params["arguments"]) {
+                    Ok(data) => Ok(vec![
+                        Action::Emit { kind: "task_list", data },
+                        Self::dynamic_tool_result(id, true, "Task list updated."),
+                    ]),
+                    Err(error) => Ok(vec![Self::dynamic_tool_result(id, false, &error)]),
+                }
+            }
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                 self.pending
                     .insert(key.clone(), (id, method.into(), params.clone()));
@@ -396,8 +498,8 @@ impl Protocol for Codex {
             return Err("Codex 已初始化".into());
         }
         self.phase = 1;
-        // 实验能力只在计划/决策回合声明；普通聊天必须保持稳定协议面。
-        let experimental = self.plan() || self.decision.is_some();
+        // dynamicTools 是实验字段；所有 Forge 对话都依赖任务工具，因此握手必须声明实验能力。
+        let experimental = true;
         Ok(vec![Action::Write(
             json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":experimental}}}),
         )])
@@ -616,6 +718,15 @@ impl Protocol for Codex {
                     }).collect();
                     out.push(Action::Emit { kind: "task_list", data: json!({"replace":true,"items":items}) });
                 }
+                // Goal 是线程级目标，不是任务清单；保留 Codex 的原生状态与用量字段原样落盘。
+                "thread/goal/updated" => {
+                    if p["goal"].is_object() {
+                        out.push(Action::Emit { kind: "goal", data: json!({"goal":p["goal"]}) });
+                    }
+                }
+                "thread/goal/cleared" => {
+                    out.push(Action::Emit { kind: "goal", data: json!({"goal":null}) });
+                }
                 // thread/compacted 中携带着会话压缩的总结文本 message，将其转成 compaction 事件补全摘要。
                 "thread/compacted" => {
                     let text = p.get("message").or_else(|| p.get("summary")).and_then(|v| v.as_str()).unwrap_or("");
@@ -751,6 +862,25 @@ impl Protocol for Codex {
             }
             return Ok(vec![self.mcp_snapshot()]);
         }
+        // Goal 探测失败不影响聊天；成功时即使为空也要广播清除，防止前端残留旧快照。
+        if self.goal_probes.remove(&id) {
+            if message.get("error").is_some() {
+                return Ok(vec![]);
+            }
+            let goal = message["result"].get("goal").cloned().unwrap_or(Value::Null);
+            return Ok(vec![Action::Emit { kind: "goal", data: json!({"goal":goal}) }]);
+        }
+        // 写成功后再读一次完整 Goal；通知可能被旧版 CLI 漏掉，但 UI 仍必须拿权威快照。
+        if self.goal_sets.remove(&id) {
+            if let Some(error) = message.get("error") {
+                return Ok(vec![Action::Emit {
+                    kind: "notice",
+                    data: json!({"text":format!("Goal 状态修改失败：{}", error["message"].as_str().unwrap_or("unknown"))}),
+                }]);
+            }
+            let thread = self.thread.clone().ok_or("Codex Goal 缺少线程 ID")?;
+            return Ok(vec![Action::Write(self.goal_probe(&thread))]);
+        }
         if let Some(error) = message.get("error") {
             let text = error["message"].as_str().unwrap_or("unknown");
             // 复用会话时被另一个窗口或 CLI 占着写锁，Codex 只丢一句 "already has an active writer"，
@@ -774,6 +904,11 @@ impl Protocol for Codex {
                 }
                 if let Some(model) = &self.model {
                     params["model"] = json!(model);
+                }
+                // Dynamic tools belong to the thread and can only be supplied at thread/start.
+                // Existing native threads keep their original tool set when resumed.
+                if self.thread.is_none() {
+                    params["dynamicTools"] = Self::task_tools();
                 }
                 let method = if let Some(id) = &self.thread {
                     params["threadId"] = json!(id);
@@ -825,6 +960,7 @@ impl Protocol for Codex {
                             "threadId":id,"itemsView":"full","limit":16,"sortDirection":"desc"
                         }})),
                         Action::Write(self.mcp_probe(&id)),
+                        Action::Write(self.goal_probe(&id)),
                     ]);
                 }
                 if self.decision.is_some() {
@@ -833,7 +969,10 @@ impl Protocol for Codex {
                     self.phase = 4;
                     self.plan_pages = 1;
                     self.plan_cursors.clear();
-                    return Ok(vec![Action::Write(Self::plan_page(&id, None))]);
+                    return Ok(vec![
+                        Action::Write(Self::plan_page(&id, None)),
+                        Action::Write(self.goal_probe(&id)),
+                    ]);
                 }
                 self.phase = 3;
                 let mut input = vec![];
@@ -886,6 +1025,7 @@ impl Protocol for Codex {
                     Action::Write(json!({"id":3,"method":method,"params":params})),
                     // 快照排在回合之后发：一台卡住的 MCP 服务不该把用户的消息挡在回合门口。
                     Action::Write(self.mcp_probe(&id)),
+                    Action::Write(self.goal_probe(&id)),
                 ])
             }
             (4, 3) => {
@@ -1052,6 +1192,20 @@ impl Protocol for Codex {
         self.pending.remove(key);
         Ok(vec![response])
     }
+    fn set_goal_status(&mut self, status: &str) -> Result<Vec<Action>, String> {
+        if !matches!(status, "active" | "paused") {
+            return Err("Goal 状态只允许 active 或 paused".into());
+        }
+        let thread = self.thread.as_deref().ok_or("Codex Goal 缺少线程 ID")?;
+        let id = self.next_goal_set;
+        self.next_goal_set += 1;
+        self.goal_sets.insert(id);
+        Ok(vec![Action::Write(json!({
+            "id":id,
+            "method":"thread/goal/set",
+            "params":{"threadId":thread,"status":status,"origin":"user"}
+        }))])
+    }
     fn interrupt(&mut self) -> Vec<Action> {
         self.stopped = true;
         self.pending.clear();
@@ -1177,7 +1331,7 @@ mod tests {
             _ => None,
         }).collect::<Vec<_>>();
         // 探测排在回合之后：一台卡住的 MCP 服务不该挡在用户消息门口。
-        assert_eq!(methods, vec!["turn/start".to_owned(), "mcpServerStatus/list".to_owned()]);
+        assert_eq!(methods, vec!["turn/start".to_owned(), "mcpServerStatus/list".to_owned(), "thread/goal/get".to_owned()]);
         let probe = actions.iter().find_map(|action| match action {
             Action::Write(value) if value["method"] == "mcpServerStatus/list" => value["id"].as_u64(),
             _ => None,
@@ -1292,15 +1446,33 @@ mod tests {
         let mut p = Codex::new("root".into(), "hello".into(), None)
             .with_policy(super::super::options::PermissionMode::Inherit, String::new());
         let init = p.start().unwrap();
-        assert!(matches!(&init[0], Action::Write(value) if value["params"]["capabilities"]["experimentalApi"] == false));
+        assert!(matches!(&init[0], Action::Write(value) if value["params"]["capabilities"]["experimentalApi"] == true));
         let actions = p.receive(json!({"id":1,"result":{}})).unwrap();
         let params = actions.iter().find_map(|a| match a { Action::Write(v) if v["method"] == "thread/start" => Some(&v["params"]), _ => None }).unwrap();
-        assert_eq!(params, &json!({"cwd":"root"}));
+        assert_eq!(params["cwd"], "root");
+        assert!(params.get("model").is_none() && params.get("sandbox").is_none() && params.get("approvalPolicy").is_none());
+        assert_eq!(params["dynamicTools"][0]["name"], TASK_TOOL_NAMESPACE);
+        assert_eq!(params["dynamicTools"][0]["tools"][0]["name"], TASK_TOOL_NAME);
         let actions = p.receive(json!({"id":2,"result":{"thread":{"id":"native"},"model":"configured","approvalPolicy":"never","sandbox":{"type":"readOnly"}}})).unwrap();
         let params = actions.iter().find_map(|a| match a { Action::Write(v) if v["method"] == "turn/start" => Some(&v["params"]), _ => None }).unwrap();
         assert!(params.get("serviceTierForTurn").is_none());
         assert!(params.get("model").is_none());
         assert!(params.get("effort").is_none());
+    }
+
+    #[test]
+    fn forge_precreated_thread_enables_the_experimental_task_tool_contract() {
+        // 工具已在预创建 thread/start 注册；首次发送走 resume 时仍须启用同一实验协议面。
+        let mut protocol = Codex::new("root".into(), "执行三个任务".into(), Some("native".into()));
+        let init = protocol.start().unwrap();
+        assert!(matches!(&init[0], Action::Write(value)
+            if value["params"]["capabilities"]["experimentalApi"] == true));
+        let actions = protocol.receive(json!({"id":1,"result":{}})).unwrap();
+        let params = actions.iter().find_map(|action| match action {
+            Action::Write(value) if value["method"] == "thread/resume" => Some(&value["params"]),
+            _ => None,
+        }).expect("Forge 预创建线程首次发送必须走 resume");
+        assert!(params.get("dynamicTools").is_none(), "resume 不支持重新注册线程工具");
     }
 
     #[test]
@@ -1513,6 +1685,108 @@ mod tests {
     }
 
     #[test]
+    fn forge_task_tool_replaces_the_model_task_list_and_acknowledges_the_call() {
+        let mut protocol = Codex::new("root".into(), "执行".into(), Some("native".into()));
+        started_thread(&mut protocol);
+        let out = protocol.receive(json!({
+            "id": 9,
+            "method": "item/tool/call",
+            "params": {
+                "threadId": "native",
+                "turnId": "turn-1",
+                "callId": "task-call",
+                "namespace": TASK_TOOL_NAMESPACE,
+                "tool": TASK_TOOL_NAME,
+                "arguments": {"tasks": [
+                    {"step":"检查项目","status":"completed"},
+                    {"step":"运行验证","status":"in_progress"},
+                    {"step":"汇总结果","status":"pending"}
+                ]}
+            }
+        })).unwrap();
+        assert!(matches!(&out[0], Action::Emit { kind:"task_list", data } if data == &json!({
+            "replace":true,
+            "items":[
+                {"id":"task-0","content":"检查项目","status":"complete"},
+                {"id":"task-1","content":"运行验证","status":"active"},
+                {"id":"task-2","content":"汇总结果","status":"pending"}
+            ]
+        })));
+        assert!(matches!(&out[1], Action::Write(value)
+            if value["id"] == 9 && value["result"]["success"] == true));
+    }
+
+    #[test]
+    fn forge_task_tool_rejects_invalid_snapshots_without_changing_the_list() {
+        let mut protocol = Codex::new("root".into(), "执行".into(), Some("native".into()));
+        started_thread(&mut protocol);
+        let out = protocol.receive(json!({
+            "id": 10,
+            "method": "item/tool/call",
+            "params": {
+                "threadId": "native",
+                "turnId": "turn-1",
+                "namespace": TASK_TOOL_NAMESPACE,
+                "tool": TASK_TOOL_NAME,
+                "arguments": {"tasks": [
+                    {"step":"步骤一","status":"in_progress"},
+                    {"step":"步骤二","status":"in_progress"}
+                ]}
+            }
+        })).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0], Action::Write(value)
+            if value["id"] == 10
+                && value["result"]["success"] == false
+                && value["result"]["contentItems"][0]["text"].as_str().is_some_and(|text| text.contains("最多只能有一项"))));
+    }
+
+    #[test]
+    fn native_goal_probe_updates_and_clear_emit_independent_goal_events() {
+        let mut protocol = Codex::new("root".into(), "执行".into(), Some("native".into()));
+        protocol.start().unwrap();
+        protocol.receive(json!({"id":1,"result":{}})).unwrap();
+        let connected = protocol.receive(json!({"id":2,"result":{
+            "thread":{"id":"native"},"model":"gpt-5","approvalPolicy":"on-request",
+            "approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}
+        }})).unwrap();
+        let probe = connected.iter().find_map(|action| match action {
+            Action::Write(value) if value["method"] == "thread/goal/get" => value["id"].as_u64(),
+            _ => None,
+        }).expect("接上线程后必须读取 Goal");
+        let goal = json!({
+            "threadId":"native","objective":"完成 Goal 与 Task 联测","status":"active",
+            "tokenBudget":10000,"tokensUsed":1200,"timeUsedSeconds":30,
+            "createdAt":1,"updatedAt":2
+        });
+        let loaded = protocol.receive(json!({"id":probe,"result":{"goal":goal}})).unwrap();
+        assert!(matches!(&loaded[..], [Action::Emit { kind:"goal", data }] if data["goal"]["objective"] == "完成 Goal 与 Task 联测"));
+
+        let setting = protocol.set_goal_status("paused").unwrap();
+        let request = match &setting[..] {
+            [Action::Write(value)] => value,
+            _ => panic!("Goal 状态必须只发送一条原生请求"),
+        };
+        assert_eq!(request["method"], "thread/goal/set");
+        assert_eq!(request["params"], json!({"threadId":"native","status":"paused","origin":"user"}));
+        let refresh = protocol.receive(json!({"id":request["id"],"result":{}})).unwrap();
+        assert!(matches!(&refresh[..], [Action::Write(value)]
+            if value["method"] == "thread/goal/get" && value["params"]["threadId"] == "native"));
+        assert!(protocol.set_goal_status("complete").is_err(), "用户控制只允许暂停或继续");
+
+        let updated = protocol.receive(json!({"method":"thread/goal/updated","params":{
+            "threadId":"native","turnId":"turn-1","goal":{
+                "threadId":"native","objective":"完成 Goal 与 Task 联测","status":"complete",
+                "tokenBudget":10000,"tokensUsed":8000,"timeUsedSeconds":90,
+                "createdAt":1,"updatedAt":3
+            }
+        }})).unwrap();
+        assert!(matches!(&updated[..], [Action::Emit { kind:"goal", data }] if data["goal"]["status"] == "complete"));
+        let cleared = protocol.receive(json!({"method":"thread/goal/cleared","params":{"threadId":"native"}})).unwrap();
+        assert!(matches!(&cleared[..], [Action::Emit { kind:"goal", data }] if data["goal"].is_null()));
+    }
+
+    #[test]
     fn plan_mode_without_a_model_fails_closed_instead_of_sending_invalid_settings() {
         let mut p = Codex::new("root".into(), "设计".into(), None).with_policy(super::super::options::PermissionMode::Inherit, String::new()).with_mode("plan".into());
         p.start().unwrap();
@@ -1591,11 +1865,11 @@ mod tests {
     #[test]
     fn ordinary_turn_never_sends_experimental_collaboration_mode() {
         // 用户 UI 上没有开 plan 模式，但 Codex 服务端记录该 thread 处于 plan 模式：
-        // 普通回合已经声明 experimentalApi:false，不能再用实验字段尝试重置它。
+        // 握手为 Task 工具声明实验能力，不代表普通回合可以偷带 collaborationMode。
         let mut p = Codex::new("root".into(), "修改代码".into(), Some("native".into()))
             .with_policy(super::super::options::PermissionMode::Inherit, String::new());
         let init = p.start().unwrap();
-        assert!(matches!(&init[0], Action::Write(value) if value["params"]["capabilities"]["experimentalApi"] == false));
+        assert!(matches!(&init[0], Action::Write(value) if value["params"]["capabilities"]["experimentalApi"] == true));
         p.receive(json!({"id":1,"result":{}})).unwrap();
         let out = p.receive(json!({
             "id": 2,

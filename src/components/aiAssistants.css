@@ -243,6 +243,9 @@
 .ai-message-markdown pre { white-space: pre; }
 .ai-message-markdown a.ai-file-link { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
 .ai-message-markdown a.ai-file-link:hover { text-decoration-style: solid; }
+.ai-task-checkbox { display: inline-block; width: 13px; height: 13px; margin-right: 5px; vertical-align: -1.5px; border: 1.5px solid var(--text-tertiary); border-radius: 3px; box-sizing: border-box; position: relative; }
+.ai-task-checkbox.is-checked { border-color: var(--sidebar-stripe); background: var(--sidebar-stripe); }
+.ai-task-checkbox.is-checked::after { content: ""; position: absolute; left: 3px; top: 0.5px; width: 3.5px; height: 6.5px; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
 
 /* 工具与思考默认只占一行，展开内容才显示细节层级。 */
 .ai-chat-entry.is-tool, .ai-chat-entry.is-files, .ai-chat-entry.is-notice, .ai-chat-entry.is-reasoning { margin-bottom: 6px; }
@@ -1476,52 +1479,87 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-delegation-detail .ai-reasoning { margin: 0; }
 .ai-detail-chevron.is-open { transform: rotate(90deg); }
 
-/* 任务清单芯片（Codex / zcode 风格右上角折叠面板）：常驻顶栏右上角，点击向下展开 */
-.ai-taskchip { position: relative; display: inline-flex; align-items: center; margin-left: auto; flex: none; }
-.ai-taskchip + .ai-head-menu { margin-left: 4px; }
-.ai-taskchip-trigger { display: inline-flex; align-items: center; gap: 5.5px; height: 24px; padding: 0 8px;
-  border: 1px solid var(--border-color); border-radius: 6px;
-  background: var(--bg-secondary); color: var(--text-secondary);
-  cursor: pointer; font-size: 11.5px; line-height: 1; user-select: none;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease; }
-.ai-taskchip-trigger:hover, .ai-taskchip-trigger:focus-visible, .ai-taskchip-trigger.is-active {
-  background: var(--bg-tertiary); color: var(--text-primary); border-color: color-mix(in srgb, var(--border-color) 70%, var(--accent-blue)); }
-.ai-taskchip-trigger.is-idle { opacity: 0.8; }
-.ai-taskchip-trigger.is-idle:hover { opacity: 1; }
-.ai-taskchip-trigger.is-success { border-color: color-mix(in srgb, var(--accent-green, #22c55e) 40%, var(--border-color)); color: var(--accent-green-text, #22c55e); }
-.ai-taskchip-trigger.is-dirty { border-color: var(--accent-blue); color: var(--accent-blue-text); }
+/* Task 是标题栏概览；Goal 是输入区上方的线程控制条，层级不能再混在一起。 */
+.ai-head-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; }
+.ai-goalbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 9px;
+  margin: 0 0 8px; padding: 8px 9px; border: 1px solid var(--border-color); border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary)); }
+.ai-goalbar.is-active { border-color: color-mix(in srgb, var(--accent-blue-text) 30%, var(--border-color)); }
+.ai-goalbar.is-complete { border-color: color-mix(in srgb, var(--accent-green-text) 30%, var(--border-color)); }
+.ai-goalbar.is-blocked, .ai-goalbar.is-usageLimited, .ai-goalbar.is-budgetLimited {
+  border-color: color-mix(in srgb, var(--accent-amber-text) 38%, var(--border-color)); }
+.ai-goalbar-icon { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px;
+  background: var(--bg-tertiary); color: var(--text-secondary); }
+.ai-goalbar-body { min-width: 0; display: grid; gap: 1px; }
+.ai-goalbar-body > div { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ai-goalbar-body strong { font-size: 11.5px; font-weight: 600; }
+.ai-goalbar-body p { min-width: 0; margin: 0; overflow: hidden; color: var(--text-secondary); font-size: 11.5px;
+  text-overflow: ellipsis; white-space: nowrap; }
+.ai-goalbar-status { padding: 1px 5px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-tertiary); font-size: 9.5px; }
+.ai-goalbar-status.is-active { color: var(--accent-blue-text); }
+.ai-goalbar-status.is-complete { color: var(--accent-green-text); }
+.ai-goalbar-status.is-blocked, .ai-goalbar-status.is-usageLimited, .ai-goalbar-status.is-budgetLimited { color: var(--accent-amber-text); }
+.ai-goalbar-usage { color: var(--text-tertiary); font: 10px var(--font-mono); white-space: nowrap; }
+.ai-goalbar-action { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-primary); color: var(--text-secondary);
+  cursor: pointer; font: inherit; font-size: 10.5px; }
+.ai-goalbar-action:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text-primary); }
+.ai-goalbar-action:disabled { cursor: wait; opacity: .65; }
+@container ai-chat (max-width: 520px) {
+  .ai-goalbar { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .ai-goalbar-usage { display: none; }
+  .ai-goalbar-action span { display: none; }
+}
+
+/* 任务清单贴边挂件：右缘浮动芯片 + 展开卡片，可上下拖动位置 */
+.ai-taskchip { position: absolute; right: 0; top: calc(40% - 150px); z-index: 16;
+  display: flex; align-items: flex-start; gap: 4px; }
+.ai-taskchip.is-dragging { user-select: none; cursor: grabbing !important; }
+.ai-taskchip.is-dragging * { user-select: none !important; cursor: grabbing !important; }
+
+/* 贴边小药丸：收起或展开时贴在右边缘 */
+.ai-taskchip-chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 4px 0 8px;
+  border: 1px solid var(--border-color); border-radius: var(--radius-pill) 0 0 var(--radius-pill);
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent); color: var(--text-tertiary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); cursor: pointer;
+  opacity: .75; transition: opacity 150ms, background-color 150ms, color 150ms; flex: none; }
+.ai-taskchip-chip:hover, .ai-taskchip-chip:focus-visible, .ai-taskchip.is-open .ai-taskchip-chip {
+  opacity: 1; background: var(--bg-secondary); color: var(--text-primary); }
+.ai-taskchip-chip.is-dirty { border-color: var(--accent-blue); color: var(--accent-blue-text); }
+.ai-taskchip-chip.is-success { border-color: color-mix(in srgb, var(--accent-green, #22c55e) 40%, var(--border-color)); color: var(--accent-green-text, #22c55e); }
 .ai-taskchip-icon { flex: none; }
 .ai-taskchip-icon.is-spinning { color: var(--accent-blue-text, var(--accent-blue)); }
 .ai-taskchip-icon.is-complete { color: var(--accent-green-text, #22c55e); }
 .ai-taskchip-progress { font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 500; }
-.ai-taskchip-label { font-size: 11px; font-weight: 500; }
 .ai-taskchip-active-text { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-tertiary); }
 .ai-taskchip-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-blue-text); }
-.ai-taskchip-chevron { flex: none; color: var(--text-tertiary); transition: transform 180ms ease; }
-.ai-taskchip-chevron.is-open { transform: rotate(180deg); color: var(--text-primary); }
 
 @keyframes ai-taskchip-pop {
-  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  from { opacity: 0; transform: scale(0.96) translateX(4px); }
+  to { opacity: 1; transform: scale(1) translateX(0); }
 }
 
-.ai-taskchip-panel { position: absolute; right: 0; top: calc(100% + 6px); width: 340px; max-width: calc(100vw - 32px); z-index: 100;
-  display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: 10px;
+.ai-taskchip-panel { width: 320px; max-width: calc(100vw - 48px);
+  display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: 12px;
   background: var(--surface-island-strong, var(--bg-primary));
-  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 14px 34px -4px rgba(0, 0, 0, 0.22);
-  transform-origin: top right; animation: ai-taskchip-pop 160ms cubic-bezier(0.16, 1, 0.3, 1); overflow: hidden; }
-.ai-taskchip-panel header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px;
-  border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-secondary) 50%, transparent); }
-.ai-taskchip-header-title { display: flex; align-items: center; gap: 7px; }
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16);
+  overflow: hidden; animation: ai-taskchip-pop 160ms cubic-bezier(0.16, 1, 0.3, 1); }
+.ai-taskchip-panel header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-secondary) 50%, transparent); cursor: grab; user-select: none; }
+.ai-taskchip-panel header:active { cursor: grabbing; }
+.ai-taskchip-drag-handle { color: var(--text-tertiary); cursor: grab; flex: none; opacity: 0.6; }
+.ai-taskchip-panel header:hover .ai-taskchip-drag-handle { opacity: 1; }
+.ai-taskchip-header-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .ai-taskchip-header-icon { color: var(--text-secondary); flex: none; }
-.ai-taskchip-header-title strong { font-size: 12.5px; font-weight: 500; }
-.ai-taskchip-stats { display: inline-flex; align-items: center; gap: 5px; }
+.ai-taskchip-header-title strong { font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.ai-taskchip-stats { display: inline-flex; align-items: center; gap: 4px; }
 .ai-taskchip-count { display: inline-flex; align-items: center; min-width: 18px; height: 18px; padding: 0 5px;
   border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; font-weight: 500; }
 .ai-taskchip-percent { font-size: 10.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.ai-taskchip-close { width: 22px; height: 22px; padding: 0; display: grid; place-items: center; border-radius: 4px; color: var(--text-tertiary); }
-.ai-taskchip-close:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.ai-taskchip-collapse { margin-left: auto; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
+  border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); cursor: pointer; }
+.ai-taskchip-collapse:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.ai-taskchip-collapse .is-flipped { transform: scaleX(-1); }
 
 .ai-taskchip-progress-bar { flex: none; height: 3px; width: 100%; background: var(--bg-tertiary); overflow: hidden; }
 .ai-taskchip-progress-fill { height: 100%; background: var(--accent-blue); transition: width 220ms ease; }

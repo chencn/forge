@@ -52,6 +52,10 @@ pub trait Protocol: Send {
     fn receive(&mut self, message: Value) -> Result<Vec<Action>, String>;
     /// 把用户答复转成协议消息。`answer` 形如 `{allow: bool}` 或 `{answers: {questionId: string[]}}`。
     fn respond(&mut self, key: &str, answer: Value) -> Result<Vec<Action>, String>;
+    /// 修改线程级 Goal 状态。只有原生支持 Goal 的协议实现会覆盖它。
+    fn set_goal_status(&mut self, _status: &str) -> Result<Vec<Action>, String> {
+        Err("当前 CLI 不支持 Goal 状态控制".into())
+    }
     /// 回合完成后、关闭 stdin 前获取只读上下文快照；不发模型消息。
     fn request_context(&mut self) -> Vec<Action> { vec![] }
     /// 诊断失败不能改变对话的成功终态。

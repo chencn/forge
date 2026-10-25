@@ -98,6 +98,13 @@ describe("renderChatMarkdown", () => {
     expect(html).toContain('<a href="https://example.com/a">docs</a>');
     expect(html).not.toContain("data-file-path");
   });
+
+  it("renders task list checkboxes as safe span elements", () => {
+    const html = renderChatMarkdown("* [x] 已完成任务\n* [ ] 待处理任务", "复制");
+    expect(html).toContain('class="ai-task-checkbox is-checked"');
+    expect(html).toContain('class="ai-task-checkbox"');
+    expect(html).not.toContain("<input");
+  });
 });
 
 describe("renderMarkdown", () => {

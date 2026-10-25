@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Archive, ArrowUpRight, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, ListTodo, Loader2, Paperclip, Pencil, Pin, PinOff, Plane, Plus, Send, Settings, Square, Timer, Trash2, X } from "lucide-react";
+import { Archive, ArrowUpRight, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, ListTodo, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
@@ -17,8 +17,8 @@ import { assetUrl } from "../lib/fs";
 import { aiArrival, aiArrivalOf, formatAiClock, formatAiSeconds, useAiElapsed } from "../lib/aiClock";
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { compactionFacts } from "../lib/aiCompaction";
-import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiMessage, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
-import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiModelTaskList } from "../lib/aiRuntime";
+import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiMessage, setAiGoalStatus, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
+import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiModelTaskList, AiThreadGoal } from "../lib/aiRuntime";
 import { buildNavRows, NAV_PAGE, navCount, visibleNavRows } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
@@ -256,6 +256,112 @@ function AiUserMessage({ text, images }: { text: string; images?: { node: ReactN
   </div>;
 }
 
+interface FloatingPos {
+  left: number;
+  top: number;
+}
+
+/**
+ * 浮动挂件自由 2D 拖拽 Hook：
+ * 支持在任何地方自由拖拽，自动限制在可视区域内（8px 安全边距）；
+ * 面板展开状态切换时自动校验尺寸防右下边界溢出；
+ * 点击与拖拽平滑解耦（微小位移视为点击）。
+ */
+function useFloatingDraggable(open: boolean) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<FloatingPos | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    initialLeft: number;
+    initialTop: number;
+    moved: boolean;
+  } | null>(null);
+
+  // 展开时校验位置：避免展开后宽度/高度溢出父容器右下边界
+  useLayoutEffect(() => {
+    if (!pos || !open || !containerRef.current) return;
+    const container = containerRef.current;
+    const parent = container.parentElement;
+    if (!parent) return;
+    const parentWidth = parent.clientWidth;
+    const parentHeight = parent.clientHeight;
+    const width = container.offsetWidth;
+    const height = container.offsetHeight;
+    if (pos.left + width > parentWidth - 8 || pos.top + height > parentHeight - 8) {
+      setPos((prev) => {
+        if (!prev) return null;
+        return {
+          left: Math.max(8, Math.min(parentWidth - width - 8, prev.left)),
+          top: Math.max(8, Math.min(parentHeight - height - 8, prev.top)),
+        };
+      });
+    }
+  }, [open]);
+
+  const startDrag = (event: React.PointerEvent) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    // 点击面板内部的具体交互按钮（如折叠按钮、重试按钮、列表项按钮等）时不启动拖拽
+    if (target.closest("button") && !target.closest(".ai-floating-chip")) {
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) return;
+    const parent = container.parentElement;
+    const parentRect = parent ? parent.getBoundingClientRect() : document.body.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const currentLeft = containerRect.left - parentRect.left;
+    const currentTop = containerRect.top - parentRect.top;
+
+    dragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      initialLeft: currentLeft,
+      initialTop: currentTop,
+      moved: false,
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!dragRef.current) return;
+      const deltaX = e.clientX - dragRef.current.startX;
+      const deltaY = e.clientY - dragRef.current.startY;
+      if (!dragRef.current.moved && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
+        dragRef.current.moved = true;
+        setIsDragging(true);
+      }
+      if (dragRef.current.moved) {
+        const parentWidth = parent ? parent.clientWidth : window.innerWidth;
+        const parentHeight = parent ? parent.clientHeight : window.innerHeight;
+        const currentWidth = container.offsetWidth || 32;
+        const currentHeight = container.offsetHeight || 32;
+        const clampedLeft = Math.max(8, Math.min(parentWidth - currentWidth - 8, dragRef.current.initialLeft + deltaX));
+        const clampedTop = Math.max(8, Math.min(parentHeight - currentHeight - 8, dragRef.current.initialTop + deltaY));
+        setPos({ left: clampedLeft, top: clampedTop });
+      }
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      setTimeout(() => {
+        setIsDragging(false);
+        dragRef.current = null;
+      }, 0);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  };
+
+  const isMoved = () => dragRef.current?.moved === true;
+
+  return { containerRef, pos, isDragging, startDrag, isMoved };
+}
+
 /**
  * 右侧消息导航，对照参考实现的 Session Details 消息索引：收起时是右缘一颗
  * 小芯片（图标 + 消息数），展开为一张卡片，按顺序列出会话里每一轮用户消息（序号 +
@@ -284,6 +390,8 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
   const rows = useMemo(() => buildNavRows(entries, outline), [entries, outline]);
   const visible = useMemo(() => visibleNavRows(rows, rendered), [rows, rendered]);
   const count = navCount(rows, outline, hasOlder);
+  const { containerRef, pos, isDragging, startDrag, isMoved } = useFloatingDraggable(open);
+
   const scrollToList = () => {
     if (grewAt.current) {
       const element = list.current;
@@ -318,9 +426,19 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
     setPendingId(row.id);
     try { await onJump(row); } finally { setPendingId(null); }
   };
-  return <div className={`ai-msgnav${open ? " is-open" : ""}`}>
+  const handleChipClick = () => {
+    if (isMoved()) return;
+    toggle();
+  };
+
+  return <div
+    className={`ai-msgnav${open ? " is-open" : ""}${isDragging ? " is-dragging" : ""}`}
+    ref={containerRef}
+    style={pos ? { left: `${pos.left}px`, top: `${pos.top}px`, right: "auto", bottom: "auto", transform: "none" } : undefined}
+  >
     {open ? <div className="ai-msgnav-panel">
-      <header>
+      <header onPointerDown={startDrag} title={t("ai.nav.title")}>
+        <GripVertical size={13} className="ai-msgnav-drag-handle" aria-hidden />
         <strong>{t("ai.nav.title")}</strong>
         <span className="ai-msgnav-count">{count}</span>
         <button type="button" className="ai-msgnav-collapse" aria-label={t("ai.sidebar.collapseAll")} onClick={() => setOpen(false)}>
@@ -350,12 +468,13 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
         ))}
         {!rows.length && !outline.loading && !outline.error ? <p className="ai-msgnav-empty">{t("ai.nav.empty")}</p> : null}
       </div>
-    </div> : null}
-    <button type="button" className="ai-msgnav-chip" title={t("ai.nav.title")} aria-label={t("ai.nav.title")} aria-expanded={open}
-      onClick={toggle}>
-      <ListOrdered size={12} aria-hidden />
-      <span className="ai-msgnav-chip-label">{count}</span>
-    </button>
+    </div> : (
+      <button type="button" className="ai-msgnav-chip ai-floating-chip" title={t("ai.nav.title")} aria-label={t("ai.nav.title")} aria-expanded={false}
+        onPointerDown={startDrag} onClick={handleChipClick}>
+        <ListOrdered size={12} aria-hidden />
+        <span className="ai-msgnav-chip-label">{count}</span>
+      </button>
+    )}
   </div>;
 }
 
@@ -491,10 +610,44 @@ function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
   </div>;
 }
 
+/** Goal 是会话级控制器，固定在输入区上方；Task 仍是标题栏里的步骤概览。 */
+function AiGoalBar({ goal, busy, onStatus }: {
+  goal: AiThreadGoal;
+  busy: boolean;
+  onStatus: (status: "active" | "paused") => void;
+}) {
+  const { t } = useI18n();
+  const status = {
+    active: t("ai.chat.goalStatusActive"),
+    paused: t("ai.chat.goalStatusPaused"),
+    blocked: t("ai.chat.goalStatusBlocked"),
+    usageLimited: t("ai.chat.goalStatusUsageLimited"),
+    budgetLimited: t("ai.chat.goalStatusBudgetLimited"),
+    complete: t("ai.chat.goalStatusComplete"),
+  }[goal.status];
+  const next = goal.status === "active" ? "paused" : goal.status === "paused" ? "active" : null;
+  return <section className={`ai-goalbar is-${goal.status}`} aria-label={t("ai.chat.goal")}>
+    <span className="ai-goalbar-icon">{goal.status === "active" ? <Loader2 size={14} className="is-spinning" aria-hidden /> : goal.status === "complete" ? <CheckCircle2 size={14} aria-hidden /> : <Target size={14} aria-hidden />}</span>
+    <div className="ai-goalbar-body">
+      <div><strong>{t("ai.chat.goal")}</strong><span className={`ai-goalbar-status is-${goal.status}`}>{status}</span></div>
+      <p title={goal.objective}>{goal.objective}</p>
+    </div>
+    <span className="ai-goalbar-usage" title={`${t("ai.chat.goalTime")}: ${goal.timeUsedSeconds.toLocaleString()}s`}>
+      {goal.tokensUsed.toLocaleString()}{goal.tokenBudget !== null ? ` / ${goal.tokenBudget.toLocaleString()}` : ""} tok
+    </span>
+    {next ? <button type="button" className="ai-goalbar-action" disabled={busy} onClick={() => onStatus(next)}
+      aria-label={t(next === "paused" ? "ai.chat.pauseGoal" : "ai.chat.resumeGoal")}
+      title={t(next === "paused" ? "ai.chat.pauseGoal" : "ai.chat.resumeGoal")}>
+      {busy ? <Loader2 size={13} className="is-spinning" aria-hidden /> : next === "paused" ? <Pause size={13} aria-hidden /> : <Play size={13} aria-hidden />}
+      <span>{t(next === "paused" ? "ai.chat.pause" : "ai.chat.resume")}</span>
+    </button> : null}
+  </section>;
+}
+
 /**
- * 任务清单芯片（Codex / zcode 风格右上角折叠面板）：
- * 吸附在顶栏右上角，收起时是紧凑药丸（图标 + 进度/状态 + 运行中显示当前项）；
- * 展开时在右上角向下弹出卡片清单（含执行计划与会话队列管理），支持点击外部或按 Esc 自动收起；
+ * 任务清单贴边面板：
+ * 贴在右侧边缘（消息导航旁边），有任务清单时默认展开，收起时为半圆药丸芯片；
+ * 支持按住卡片头部或贴边芯片上下拖动位置（自动限制在视口边界内）；
  * 点击条目可跳转至正文时间线中对应清单位置。
  */
 function AiTaskListChip({ taskList, running, onJump }: {
@@ -503,8 +656,18 @@ function AiTaskListChip({ taskList, running, onJump }: {
   onJump: (id: string) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  // 有清单时默认展开
+  const [open, setOpen] = useState(true);
+  // 用户拖动后的纵向像素位置；未拖动时按默认 CSS 贴边定位
+  const [top, setTop] = useState<number | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    startY: number;
+    initialTop: number;
+    moved: boolean;
+  } | null>(null);
+
   const visible = taskList.items.filter((item) => item.status !== "dropped" && item.content.trim());
   const completed = visible.filter((item) => item.status === "complete" || item.status === "completed").length;
   const allCompleted = completed === visible.length;
@@ -522,21 +685,73 @@ function AiTaskListChip({ taskList, running, onJump }: {
     });
   };
 
-  // 点击外部与按下 Esc 键时自动收起面板
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setOpen(false);
+  // 支持拖动面板垂直位置：限制在父级可视区边界内
+  const startDrag = (event: React.PointerEvent) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    // 点击关闭/折叠/跳转等具名按钮时不触发拖拽
+    if (target.closest("button") && !target.closest(".ai-taskchip-chip")) {
+      return;
+    }
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    const parent = container.parentElement;
+    const parentRect = parent ? parent.getBoundingClientRect() : document.body.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const currentTop = containerRect.top - parentRect.top;
+
+    dragRef.current = {
+      startY: event.clientY,
+      initialTop: currentTop,
+      moved: false,
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!dragRef.current) return;
+      const deltaY = e.clientY - dragRef.current.startY;
+      if (!dragRef.current.moved && Math.abs(deltaY) > 3) {
+        dragRef.current.moved = true;
+        setIsDragging(true);
+      }
+      if (dragRef.current.moved) {
+        const parentHeight = parent ? parent.clientHeight : window.innerHeight;
+        const currentHeight = container.offsetHeight || 32;
+        // 留出 8px 上下安全边距
+        const clampedTop = Math.max(8, Math.min(parentHeight - currentHeight - 8, dragRef.current.initialTop + deltaY));
+        setTop(clampedTop);
       }
     };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      setTimeout(() => {
+        setIsDragging(false);
+        dragRef.current = null;
+      }, 0);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  };
+
+  const handleChipClick = () => {
+    if (dragRef.current?.moved) return;
+    toggle();
+  };
+
+  // 按下 Esc 键时快捷收起面板
+  useEffect(() => {
+    if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
-    window.addEventListener("mousedown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [open]);
@@ -544,26 +759,15 @@ function AiTaskListChip({ taskList, running, onJump }: {
   const activePlanItem = visible.find((item) => item.status === "in_progress" || item.status === "active");
   const activePosition = activePlanItem ? visible.indexOf(activePlanItem) + 1 : 0;
 
-  return <div className={`ai-taskchip${open ? " is-open" : ""}${running ? " is-running" : ""}${allCompleted ? " is-all-completed" : ""}`} ref={containerRef}>
-    <button type="button" className={`ai-taskchip-trigger${dirty ? " is-dirty" : ""}${open ? " is-active" : ""}${allCompleted && !running ? " is-success" : ""}`}
-      title={t("ai.chat.taskList")} aria-label={t("ai.chat.taskList")} aria-expanded={open} onClick={toggle}>
-      {running && activePlanItem ? (
-        <Loader2 size={12} className="ai-taskchip-icon is-spinning" aria-hidden />
-      ) : allCompleted && !running ? (
-        <CheckCircle2 size={12} className="ai-taskchip-icon is-complete" aria-hidden />
-      ) : (
-        <ListTodo size={12} className="ai-taskchip-icon" aria-hidden />
-      )}
-      <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
-      {running && activePlanItem ? (
-        <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePosition}/{visible.length} · {activePlanItem.content}</span>
-      ) : null}
-      {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
-      <ChevronDown size={12} className={`ai-taskchip-chevron${open ? " is-open" : ""}`} aria-hidden />
-    </button>
+  return <div
+    className={`ai-taskchip${open ? " is-open" : ""}${running ? " is-running" : ""}${allCompleted ? " is-all-completed" : ""}${isDragging ? " is-dragging" : ""}`}
+    ref={containerRef}
+    style={top !== null ? { top: `${top}px`, transform: "none" } : undefined}
+  >
     {open ? <div className="ai-taskchip-panel" role="region" aria-label={t("ai.chat.taskList")}>
-      <header>
+      <header onPointerDown={startDrag} title={t("ai.chat.taskList")}>
         <div className="ai-taskchip-header-title">
+          <GripVertical size={13} className="ai-taskchip-drag-handle" aria-hidden />
           <ListTodo size={14} className="ai-taskchip-header-icon" aria-hidden />
           <strong>{t("ai.chat.taskList")}</strong>
           <div className="ai-taskchip-stats">
@@ -571,8 +775,8 @@ function AiTaskListChip({ taskList, running, onJump }: {
             <span className="ai-taskchip-percent">{percent}%</span>
           </div>
         </div>
-        <button type="button" className="icon-button is-inline ai-taskchip-close" aria-label={t("dialog.close")} title={t("dialog.close")} onClick={() => setOpen(false)}>
-          <X size={14} aria-hidden />
+        <button type="button" className="ai-taskchip-collapse" aria-label={t("ai.sidebar.collapseAll")} title={t("ai.sidebar.collapseAll")} onClick={() => setOpen(false)}>
+          <ChevronRight size={14} className="is-flipped" aria-hidden />
         </button>
       </header>
       <div className="ai-taskchip-progress-bar" role="progressbar" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={visible.length}>
@@ -584,7 +788,7 @@ function AiTaskListChip({ taskList, running, onJump }: {
             const isDone = item.status === "complete" || item.status === "completed";
             const isActive = item.status === "in_progress" || item.status === "active";
             return <li key={item.id || index} className={`is-${item.status}`}>
-              <button type="button" className="ai-taskchip-row" onClick={() => { setOpen(false); onJump("session:task-list"); }}>
+              <button type="button" className="ai-taskchip-row" onClick={() => onJump("session:task-list")}>
                 <span className="ai-plan-entry-icon" aria-hidden>
                   {isDone ? <CheckCircle2 size={14} className="is-complete" /> : isActive ? <Loader2 size={14} className="is-spinning" /> : <CircleDashed size={14} />}
                 </span>
@@ -599,6 +803,27 @@ function AiTaskListChip({ taskList, running, onJump }: {
         </ol>
       </div>
     </div> : null}
+    <button type="button"
+      className={`ai-taskchip-chip${dirty ? " is-dirty" : ""}${open ? " is-active" : ""}${allCompleted && !running ? " is-success" : ""}`}
+      title={t("ai.chat.taskList")}
+      aria-label={t("ai.chat.taskList")}
+      aria-expanded={open}
+      onPointerDown={startDrag}
+      onClick={handleChipClick}
+    >
+      {running && activePlanItem ? (
+        <Loader2 size={12} className="ai-taskchip-icon is-spinning" aria-hidden />
+      ) : allCompleted && !running ? (
+        <CheckCircle2 size={12} className="ai-taskchip-icon is-complete" aria-hidden />
+      ) : (
+        <ListTodo size={12} className="ai-taskchip-icon" aria-hidden />
+      )}
+      <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
+      {running && activePlanItem && !open ? (
+        <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePosition}/{visible.length} · {activePlanItem.content}</span>
+      ) : null}
+      {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
+    </button>
   </div>;
 }
 
@@ -681,6 +906,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [compactDismissed, setCompactDismissed] = useState<string | null>(null);
   const [compactPrefs, setCompactPrefs] = useState(readCompactPrefs);
   const [error, setError] = useState<string | null>(null);
+  const [goalUpdating, setGoalUpdating] = useState(false);
   const content = useRef<HTMLDivElement>(null);
   const pane = useRef<HTMLElement>(null);
   /** 聊天列宽（左右手柄可调，持久化在 aiChatWidth）；列宽变化经 CSS 变量即时生效。 */
@@ -1120,6 +1346,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const timelineEntries = useMemo(() => runtime.entries.filter((entry) => !entry.parent), [runtime.entries]);
   /** 任务清单是会话级事实，不再依赖当前时间线页是否包含它的最后一次更新。 */
   const taskList = runtime.taskList?.items.some((item) => item.status !== "dropped" && item.content.trim()) ? runtime.taskList : null;
+  const goal = runtime.goal?.objective.trim() ? runtime.goal : null;
   // 先折叠再开窗：反过来会把一整段过程劈成两半，两段各自都够不上折叠门槛，就都摊在屏幕上。
   // 传 running 是为了只留「正在想」那一条空思考：空正文的历史思考块摆成一排「思考」却点不出东西。
   const timeline = useMemo(() => windowAiTimeline(groupAiTimeline(timelineEntries, running), timelineLimit), [timelineEntries, running, timelineLimit]);
@@ -1286,7 +1513,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       </span>
       <ChevronRight size={14} className="ai-head-sep" aria-hidden />
       <span className="ai-head-title" title={displayTitle}>{displayTitle}</span>
-      {taskList ? <AiTaskListChip taskList={taskList} running={running} onJump={jumpToEntryById} /> : null}
       {onAction || onNew ? <button type="button" className="ai-head-menu" title={t("ai.sidebar.moreOptions")} aria-label={t("ai.sidebar.moreOptions")}
         aria-haspopup="menu" aria-expanded={headMenuAnchor !== null}
         onClick={(event) => setHeadMenuAnchor(event.currentTarget)}>
@@ -1347,12 +1573,21 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     </div>
     {/* 浮在滚动区下沿，所以放在滚动容器之外：往上翻页和流式增长都不该把它跟着推走。 */}
     {!atBottom ? <AiJumpToBottom unseen={unseen} onClick={jumpToBottom} /> : null}
+    {/* 右侧贴边任务清单：吸附在右边缘（消息导航旁边），有清单时默认展开，支持拖动垂直位置 */}
+    {taskList ? <AiTaskListChip taskList={taskList} running={running} onJump={jumpToEntryById} /> : null}
     {/* 芯片只要会话读过就挂着：长会话的首屏可能一条用户消息都没落进那一页事件里，
         按「有没有已加载的用户消息」来隐藏，导航就永远没机会被点开、也就永远取不到索引。 */}
     {runtime.loaded && (runtime.entries.length || outline.turns.length) ? <AiMessageNav key={session.id} entries={runtime.entries} outline={outline} hasOlder={runtime.hasOlder}
       onRequestOutline={() => { if (workspace) void loadAiOutline(session.id, workspace).catch(() => {}); }} onJump={jumpToTurn} /> : null}
     </div>
     <footer className="ai-composer-dock">
+    {goal ? <AiGoalBar goal={goal} busy={goalUpdating} onStatus={(status) => {
+      if (!workspace || goalUpdating) return;
+      setGoalUpdating(true); setError(null);
+      void setAiGoalStatus(session.id, workspace, status)
+        .catch((cause) => setError(String(cause)))
+        .finally(() => setGoalUpdating(false));
+    }} /> : null}
     {/* 待答复的卡片钉在输入框上方：正文一路往下滚的时候，不能让它跟着滚出屏幕——那等于本轮卡住却看不见卡在哪。 */}
     {pendingCards.length ? <div className="ai-session-requests">{pendingCards.map((request) => <RequestCard key={request.requestId} request={request} stopping={runtime.stopping} />)}</div> : null}
     {openPlan && workspace ? <AiPlanApproval plan={openPlan} disabled={decidingPlan || runtime.stopping || sending} key={`${openPlan.planId}:${openPlan.revision}`}

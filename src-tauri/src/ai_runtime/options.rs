@@ -496,14 +496,17 @@ fn response(process: &mut Process, id: u64, deadline: Instant, operation: &str) 
     }
 }
 /// 建立只做管理调用的 Codex app-server 连接；这些请求不会触发模型调用。
-fn codex_management_process(cwd: &str, operation: &str) -> Result<(Process, Instant), String> {
+fn codex_management_process_with_experimental(cwd: &str, operation: &str, experimental: bool) -> Result<(Process, Instant), String> {
     let (command, _) = ai_cli::runtime_command(Provider::Codex, &["app-server"])?;
     let mut process = Process::spawn(command, cwd)?;
     let deadline = Instant::now() + Duration::from_secs(15);
-    process.write(&json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}}}))?;
+    process.write(&json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":experimental}}}))?;
     response(&mut process, 1, deadline, operation)?;
     process.write(&json!({"method":"initialized","params":{}}))?;
     Ok((process, deadline))
+}
+fn codex_management_process(cwd: &str, operation: &str) -> Result<(Process, Instant), String> {
+    codex_management_process_with_experimental(cwd, operation, false)
 }
 
 /// 让 Codex 现场读一份模型目录，把它的判决原样带回来：`Ok(())` = 这份目录被接受，
@@ -561,9 +564,13 @@ pub fn codex_threads(cwd: &str) -> Result<Vec<Value>, String> {
 }
 
 /// 新建空 Codex thread 并让 CLI 保存标题，返回 CLI 原生 ID。
+fn codex_thread_start_params(cwd: &str) -> Value {
+    json!({"cwd":cwd,"dynamicTools":super::codex::Codex::task_tools()})
+}
 pub fn codex_create_thread(cwd: &str, title: &str) -> Result<Value, String> {
-    let (mut process, deadline) = codex_management_process(cwd, "初始化 Codex 新会话")?;
-    process.write(&json!({"id":2,"method":"thread/start","params":{"cwd":cwd}}))?;
+    // dynamicTools 受 experimentalApi 门控，而且只能在 thread/start 注册；resume 无法补挂。
+    let (mut process, deadline) = codex_management_process_with_experimental(cwd, "初始化 Codex 新会话", true)?;
+    process.write(&json!({"id":2,"method":"thread/start","params":codex_thread_start_params(cwd)}))?;
     let result = response(&mut process, 2, deadline, "创建 Codex 会话")?;
     let id = result["thread"]["id"].as_str().ok_or("Codex 未返回 thread ID")?;
     process.write(&json!({"id":3,"method":"thread/name/set","params":{"threadId":id,"name":title}}))?;
@@ -576,6 +583,20 @@ pub fn codex_set_thread_name(cwd: &str, id: &str, title: &str) -> Result<(), Str
     process.write(&json!({"id":2,"method":"thread/name/set","params":{"threadId":id,"name":title}}))?;
     response(&mut process, 2, deadline, "重命名 Codex 会话")?;
     Ok(())
+}
+/// 在没有活动回合时通过短生命周期 app-server 修改 Goal，并回读服务端完整快照。
+pub fn codex_set_goal_status(cwd: &str, thread_id: &str, status: &str) -> Result<Value, String> {
+    if !matches!(status, "active" | "paused") {
+        return Err("Goal 状态只允许 active 或 paused".into());
+    }
+    let (mut process, deadline) = codex_management_process(cwd, "初始化 Codex Goal 控制")?;
+    process.write(&json!({"id":2,"method":"thread/goal/set","params":{
+        "threadId":thread_id,"status":status,"origin":"user"
+    }}))?;
+    response(&mut process, 2, deadline, "修改 Codex Goal 状态")?;
+    process.write(&json!({"id":3,"method":"thread/goal/get","params":{"threadId":thread_id}}))?;
+    let result = response(&mut process, 3, deadline, "读取 Codex Goal 状态")?;
+    result.get("goal").filter(|goal| goal.is_object()).cloned().ok_or("Codex 未返回 Goal".into())
 }
 /// 官方负责项目层/profile/系统层优先级；前端只获得展示所需的白名单字段。
 pub fn codex_project_config(cwd: &str) -> Result<Value, String> {
@@ -795,6 +816,14 @@ fn parse_models(value: &Value) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_thread_creation_registers_forge_task_tool() {
+        // 预创建线程是 Forge 新会话的真实入口；动态工具必须在这里一次性注册。
+        let params = codex_thread_start_params("D:/project");
+        assert_eq!(params["cwd"], "D:/project");
+        assert_eq!(params["dynamicTools"][0]["name"], "forge");
+        assert_eq!(params["dynamicTools"][0]["tools"][0]["name"], "update_tasks");
+    }
     #[test]
     fn project_trust_reads_only_matching_project_with_normalized_windows_path() {
         let config: toml::Value = "[projects.'D:\\app\\code\\forge']\ntrust_level = 'trusted'\n[projects.'D:\\app\\code\\other']\ntrust_level = 'untrusted'".parse().unwrap();
