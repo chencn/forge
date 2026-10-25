@@ -1,5 +1,5 @@
 fn main() {
-    // 必须先于 tauri_build：windows 配置把 DLL 列进 resources，缺文件会直接失败。
+    // 必须先于 tauri_build：Windows 配置把 DLL 列进 resources，缺文件会直接失败。
     build_shell_cmd_dll();
     tauri_build::build();
     link_manifest_into_tests();

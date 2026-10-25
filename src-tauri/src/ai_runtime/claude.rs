@@ -41,7 +41,12 @@ pub(crate) fn task_event(tool_id: &str, name: &str, input: &Value) -> Option<Act
         "TaskUpdate" => {
             let id = input["taskId"].as_str()?.trim();
             if id.is_empty() { return None; }
-            (false, vec![json!({"id":id,"content":input["subject"].as_str().unwrap_or(""),"status":task_status(input["status"].as_str()),"detail":input["description"]})])
+            // TaskUpdate 是稀疏补丁；缺失字段不是“重置为默认值”。
+            let mut item = json!({"id":id});
+            if let Some(content) = input["subject"].as_str() { item["content"] = json!(content); }
+            if let Some(status) = input["status"].as_str() { item["status"] = json!(task_status(Some(status))); }
+            if let Some(detail) = input["description"].as_str() { item["detail"] = json!(detail); }
+            (false, vec![item])
         }
         _ => return None,
     };
@@ -80,7 +85,7 @@ fn created_task_id(value: &Value) -> Option<String> {
 
 /// TaskCreate 的真实 taskId 只在工具结果里出现；显式替换临时工具 ID，
 /// 后续 TaskUpdate 才能命中同一项。
-fn created_task_event(tool: &Value, structured: Option<&Value>, output: &Value) -> Option<Action> {
+pub(crate) fn created_task_event(tool: &Value, structured: Option<&Value>, output: &Value) -> Option<Action> {
     if tool["name"] != "TaskCreate" { return None; }
     let id = structured.and_then(created_task_id).or_else(|| created_task_id(output))?;
     let content = tool["input"]["subject"].as_str()?.trim();
@@ -892,6 +897,10 @@ mod tests {
         }]}})).unwrap();
         assert!(updated.iter().any(|action| matches!(action, Action::Emit { kind:"task_list", data }
             if data["items"][0]["id"] == "7" && data["items"][0]["status"] == "active")));
+
+        let partial = task_event("tool-update", "TaskUpdate", &json!({"taskId":"7","description":"等待复核"})).unwrap();
+        assert!(matches!(partial, Action::Emit { kind:"task_list", data }
+            if data["items"][0].get("status").is_none() && data["items"][0].get("content").is_none()));
 
         // 部分 Claude 版本没有结构化 tool_use_result，只在可读回执里给真实 ID。
         let mut text_only = Claude::new("root".into(), "hi".into(), None);

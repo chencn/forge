@@ -20,7 +20,7 @@ let seq = 0;
  * - 行内游标按真实文件位置推进——add 只推 new，delete 只推 old，context 推两侧；
  * - hunk 头给出的 old/new 起点各自权威；hunk 之间与首 hunk 之前的未改动区间**整段跳过**
  *   （游标直接跳到起点，不垫空行）——按行号垫空会让 L1374 的补丁先产出 1373 行空白对；
- * - 结尾补齐短的一侧，保证两份文本行数一致。
+ * - 两侧保留真实文本长度；行对齐交给 Monaco 的 diff 算法。
  */
 export function alignDiffSides(diff: string, startLine?: number): {
   original: string; modified: string;
@@ -70,8 +70,6 @@ export function alignDiffSides(diff: string, startLine?: number): {
     }
     // hunk 外的普通行（属于被跳过的区间）不进文本。
   }
-  while (oldLines.length < newLines.length) { oldLines.push(""); oldNos.push(oldAt); oldAt += 1; }
-  while (newLines.length < oldLines.length) { newLines.push(""); newNos.push(newAt); newAt += 1; }
   return { original: oldLines.join("\n"), modified: newLines.join("\n"), oldNos, newNos };
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Lightbulb, Plus, Send, Settings, X } from "lucide-react";
@@ -11,10 +11,12 @@ import { aiDraftOptionsKey, loadAiDraftProvider, saveAiDraftProvider } from "../
 import { collectPastedImages } from "../lib/aiClipboard";
 import { clearDraft, loadDraft, saveDraft } from "../lib/aiDrafts";
 import { loadAiOptions, saveAiOptions } from "../lib/aiOptions";
+import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash } from "../lib/aiCommands";
 import type { AiRunOptions } from "../lib/aiRuntime";
 import AiAgentPills from "./AiAgentPills";
+import AiCommandMenu from "./AiCommandMenu";
 import AiComposerShell from "./AiComposerShell";
-import AiComposerOptions from "./AiComposerOptions";
+import AiComposerOptions, { type AiComposerHandle } from "./AiComposerOptions";
 import AiImageDialog from "./AiImageDialog";
 
 /** 选择器里的筛选提示；真正认格式的是后端的文件头嗅探，扩展名写错也骗不过去。 */
@@ -39,7 +41,7 @@ interface AiWelcomePaneProps {
   /** 发送前的最后检查；返回 false 则中止（例如项目里还有未保存文件）。 */
   beforeSend?: () => boolean | Promise<boolean>;
   /** 首条消息就绪：由上层创建会话、切换标签并交给会话页自动发出。 */
-  onLaunch: (provider: AiProvider, text: string, images: string[]) => void;
+  onLaunch: (provider: AiProvider, text: string, images: string[]) => Promise<void>;
   /** 打开设置页的 AI 助手模块。 */
   onSettings: () => void;
 }
@@ -78,13 +80,35 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
+  const composer = useRef<AiComposerHandle>(null);
+  const commandMenu = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [commandsDismissed, setCommandsDismissed] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const chatWidth = useAiChatWidth();
   /** 图片放大预览：存沙箱里的副本路径；null 表示关着。 */
   const [lightbox, setLightbox] = useState<string | null>(null);
   const tipKey = useMemo(() => WELCOME_TIP_KEYS[Math.floor(Math.random() * WELCOME_TIP_KEYS.length)], []);
   const tip = t(tipKey);
+  // 新建页还没有 CLI 会话，只列本地命令与可安全映射的 Codex 命令；Claude 原生命令创建会话后再发现。
+  const commandList = provider ? commandSuggestions(provider).filter((command) => command.local !== "context") : [];
+  const suggestions = commandsDismissed ? [] : showHelp ? commandList : filterCommandSuggestions(commandList, draft);
+  const selectedCommand = Math.min(commandIndex, Math.max(0, suggestions.length - 1));
+  const menuVisible = suggestions.length > 0 && !sending;
 
   useEffect(() => { setDraft(loadDraft(workspace, "draft")); }, [workspace]);
+  useEffect(() => {
+    if (!menuVisible) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target !== input.current && !commandMenu.current?.contains(event.target as Node)) {
+        setCommandsDismissed(true); setShowHelp(false);
+      }
+    };
+    window.addEventListener("pointerdown", dismiss, true);
+    return () => window.removeEventListener("pointerdown", dismiss, true);
+  }, [menuVisible]);
+  useEffect(() => { document.getElementById(`${menuId}-${selectedCommand}`)?.scrollIntoView?.({ block: "nearest" }); }, [menuId, selectedCommand]);
   useEffect(() => {
     if (!cliDesktopAvailable()) return;
     void invoke<{ maxImages: number }>("ai_runtime_image_limits").then(({ maxImages }) => setImageLimit(maxImages)).catch(() => {});
@@ -96,11 +120,16 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
     element.style.height = "auto";
     element.style.height = `${Math.min(240, Math.max(52, element.scrollHeight))}px`;
   }, [draft]);
-  // 草稿随打字落盘：欢迎页关掉或应用重启都不丢。
-  const updateDraft = (text: string) => {
+  // 草稿随打字落盘：欢迎页关掉或应用重启都不丢。命令执行清空草稿时不一定要关闭帮助菜单。
+  const commitDraft = (text: string) => {
     setDraft(text);
     if (text) saveDraft(workspace, "draft", text); else clearDraft(workspace, "draft");
   };
+  const updateDraft = (text: string) => {
+    commitDraft(text);
+    setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setError(null);
+  };
+  const chooseCommand = (name: string) => { updateDraft(completeCommand(draft, name)); input.current?.focus(); };
   const changeOptions = (next: AiRunOptions) => {
     setOptions(next);
     try { saveAiOptions(optionsKey, provider ?? "claude", next); } catch { setError(t("ai.storageError")); }
@@ -140,20 +169,57 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   };
   /** 首条消息：创建交给上层，这里的草稿与附件随交接清空。 */
   const launch = async () => {
-    if (!provider || sending) return;
+    if (!provider || !workspace || sending) return;
     if (!draft.trim() && !images.length) return;
-    if (beforeSend && !await beforeSend()) return;
     setSending(true);
     try {
-      onLaunch(provider, draft, images.map((image) => image.path));
+      const slash = parseSlash(draft);
+      const local = slash && localCommand(slash.name);
+      if (slash && images.length) throw new Error(t("ai.chat.imageCommandConflict"));
+      if (slash && !slash.name) {
+        setShowHelp(true); setCommandsDismissed(false); setCommandIndex(0);
+        return;
+      }
+      // 新建页能直接完成不依赖会话历史的命令；/context 留给创建后的会话处理。
+      if (slash && local && local !== "context") {
+        if (local === "help") {
+          if (slash.args.trim()) throw new Error(t("ai.commands.invalidArgs"));
+          commitDraft("");
+          setShowHelp(true); setCommandsDismissed(false); setCommandIndex(0);
+        } else {
+          if (!composer.current) return;
+          await composer.current.execute(local, slash.args);
+          updateDraft("");
+        }
+        return;
+      }
+      if (beforeSend && !await beforeSend()) return;
+      // 创建会话与草稿清理是一笔事务：上层确认创建成功后，才允许丢掉正文和附件。
+      await onLaunch(provider, draft, images.map((image) => image.path));
       updateDraft("");
       setImages([]);
+    } catch (cause) {
+      setError(String(cause));
     } finally {
       setSending(false);
     }
   };
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.nativeEvent.isComposing && !event.shiftKey) {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (menuVisible && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setCommandIndex((selectedCommand + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length);
+        return;
+      }
+      if (event.key === "Tab" && !event.shiftKey || event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault(); chooseCommand(suggestions[selectedCommand].name); return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation(); setCommandsDismissed(true); setShowHelp(false); return;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void launch();
     }
@@ -186,6 +252,8 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
           <div className="ai-composer-wrap">
             <AiComposerShell
               tall
+              overlay={menuVisible ? <AiCommandMenu id={menuId} suggestions={suggestions} selected={selectedCommand}
+                onChoose={chooseCommand} menuRef={commandMenu} showDiscovery={provider === "claude"} /> : null}
               attachments={images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
                 {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
                   onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
@@ -199,6 +267,10 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
                 maxLength={16000}
                 spellCheck={false}
                 disabled={!desktop}
+                aria-autocomplete="list"
+                aria-controls={menuVisible ? menuId : undefined}
+                aria-expanded={menuVisible}
+                aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
                 onChange={(event) => updateDraft(event.target.value)}
                 onKeyDown={onKeyDown}
                 onPaste={(event) => {
@@ -213,11 +285,11 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
                 <button type="button" className="ai-add-button" aria-label={t("ai.chat.attach")} title={t("ai.chat.attach")}
                   disabled={!desktop || !provider || images.length + pendingImages.current >= imageLimit}
                   onClick={() => void pickImages()}><Plus size={16} /></button>
-                <AiComposerOptions key={provider ?? "none"} provider={provider ?? "claude"} workspace={workspace}
+                <AiComposerOptions commandRef={composer} key={provider ?? "none"} provider={provider ?? "claude"} workspace={workspace}
                   value={options} onChange={changeOptions} disabled={!provider} />
               </>}
               toolbarRight={<button type="button" className="ai-send-button" aria-label={t("ai.send")} title={t("ai.send")}
-                disabled={!provider || !desktop || !draft.trim() && !images.length || sending} onClick={() => void launch()}>
+                disabled={!provider || !workspace || !desktop || !draft.trim() && !images.length || sending} onClick={() => void launch()}>
                 <Send size={16} />
               </button>}
             />

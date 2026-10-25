@@ -14,7 +14,7 @@ use super::store;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 /// 最多扫这么多个会话目录。
@@ -132,13 +132,19 @@ fn texts(path: &Path, max_bytes: u64) -> Result<(Vec<Fragment>, u64, bool), Stri
     };
     let mut reader = BufReader::new(file);
     loop {
+        let remaining = max_bytes.saturating_sub(read);
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
         let mut line = String::new();
-        let size = reader.read_line(&mut line).map_err(|e| e.to_string())? as u64;
+        // 限制发生在读取之前；不能先把一整条大事件读进内存，再宣称总预算只有 remaining。
+        let size = reader.by_ref().take(remaining).read_line(&mut line).map_err(|e| e.to_string())? as u64;
         if size == 0 {
             break;
         }
         read += size;
-        if read > max_bytes {
+        if size == remaining && !line.ends_with('\n') {
             truncated = true;
             break;
         }
@@ -173,7 +179,7 @@ fn texts(path: &Path, max_bytes: u64) -> Result<(Vec<Fragment>, u64, bool), Stri
     // 从原生日志捞回来的压缩摘要在读事件的那一层已经并进了它发生的位置，正文搜索扫的是原文，
     // 所以命中要按同一份口径改报到那一条上：否则点进去跳的是一条界面上根本不存在的卡片。
     // 只有真出现过压缩正文的会话才值得为这件事再扫一遍。
-    if out.iter().any(|piece| piece.kind == "compaction") {
+    if !truncated && out.iter().any(|piece| piece.kind == "compaction") {
         let fold = store::compaction_fold(path);
         if !fold.merged.is_empty() {
             for piece in out.iter_mut() {
@@ -188,12 +194,16 @@ fn texts(path: &Path, max_bytes: u64) -> Result<(Vec<Fragment>, u64, bool), Stri
 }
 
 /// 在一个会话目录里搜索。调用方已经确认过元数据与项目归属。
-fn session(dir: &Path, meta: &store::Metadata, needle: &str, limit: usize) -> Option<Value> {
-    let (fragments, read, truncated) =
-        texts(&dir.join("events.jsonl"), MAX_SESSION_BYTES).ok()?;
+fn session(dir: &Path, meta: &store::Metadata, needle: &str, limit: usize, max_bytes: u64, order_at: u64) -> Option<Value> {
+    let (fragments, read, mut truncated) = texts(&dir.join("events.jsonl"), max_bytes).ok()?;
     let mut hits = vec![];
-    for piece in fragments {
+    let hit_limit = limit.min(HITS_PER_SESSION);
+    for piece in fragments.into_iter().rev() {
         let Some(snippet) = find_snippet(&piece.text, needle) else { continue };
+        if hits.len() >= hit_limit {
+            truncated = true;
+            continue;
+        }
         hits.push(json!({
             "sessionId": meta.session_id,
             "sessionTitle": meta.title,
@@ -206,13 +216,24 @@ fn session(dir: &Path, meta: &store::Metadata, needle: &str, limit: usize) -> Op
             "length": snippet.length,
             "leading": snippet.leading,
             "trailing": snippet.trailing,
+            "_orderAt": order_at,
         }));
-        if hits.len() >= limit.min(HITS_PER_SESSION) {
-            break;
-        }
     }
     Some(json!({"hits": hits, "bytes": read, "truncated": truncated}))
 }
+
+#[derive(Clone, Copy)]
+struct SearchLimits {
+    sessions: usize,
+    session_bytes: u64,
+    total_bytes: u64,
+}
+
+const DEFAULT_LIMITS: SearchLimits = SearchLimits {
+    sessions: MAX_SESSIONS,
+    session_bytes: MAX_SESSION_BYTES,
+    total_bytes: MAX_TOTAL_BYTES,
+};
 
 /// 扫描这个项目下的全部会话正文。`truncated` 为真时，界面必须说明结果不全。
 /// `scanned` 只数真正读过的本项目会话；`skipped` 是读不出归属或已损坏的目录数。
@@ -222,6 +243,17 @@ pub fn search(
     query: &str,
     limit: usize,
     include_archived: bool,
+) -> Result<Value, String> {
+    search_with_limits(base, root, query, limit, include_archived, DEFAULT_LIMITS)
+}
+
+fn search_with_limits(
+    base: &Path,
+    root: &str,
+    query: &str,
+    limit: usize,
+    include_archived: bool,
+    limits: SearchLimits,
 ) -> Result<Value, String> {
     let needle = query.trim();
     if needle.is_empty() || needle.chars().count() > 200 {
@@ -241,7 +273,12 @@ pub fn search(
         }
         Err(error) => return Err(error.to_string()),
     };
-    for entry in entries.take(MAX_SESSIONS) {
+    let mut sessions = Vec::new();
+    for (entry_index, entry) in entries.enumerate() {
+        if entry_index >= 20_000 {
+            truncated = true;
+            break;
+        }
         let entry = entry.map_err(|e| e.to_string())?;
         let dir = entry.path();
         // 会话目录以 id 命名且必有 meta.json；锁文件、原生历史镜像都靠这一步排除，
@@ -259,12 +296,27 @@ pub fn search(
         if meta.archived && !include_archived {
             continue;
         }
-        if bytes >= MAX_TOTAL_BYTES || hits.len() >= limit {
+        if sessions.len() >= limits.sessions {
+            truncated = true;
+            break;
+        }
+        let activity = fs::metadata(dir.join("events.jsonl"))
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(meta.created_at);
+        sessions.push((dir, meta, activity));
+    }
+    sessions.sort_by_key(|(_, meta, activity)| std::cmp::Reverse((*activity, meta.created_at)));
+    for (dir, meta, activity) in sessions {
+        if bytes >= limits.total_bytes || hits.len() >= limit {
             truncated = true;
             break;
         }
         scanned += 1;
-        let Some(found) = session(&dir, &meta, needle, limit - hits.len()) else {
+        let budget = limits.session_bytes.min(limits.total_bytes - bytes);
+        let Some(found) = session(&dir, &meta, needle, limit - hits.len(), budget, activity) else {
             skipped += 1;
             continue;
         };
@@ -274,9 +326,12 @@ pub fn search(
             hits.extend(items.iter().cloned());
         }
     }
-    // 最近的会话排前面：搜索结果首先是「我最近在聊的那件事」。
-    hits.sort_by_key(|hit| std::cmp::Reverse(hit["createdAt"].as_u64().unwrap_or_default()));
+    // 跨会话按最后活动时间，同一会话按事件序号；两层都从新到旧。
+    hits.sort_by_key(|hit| std::cmp::Reverse((hit["_orderAt"].as_u64().unwrap_or_default(), hit["seq"].as_u64().unwrap_or_default())));
     hits.truncate(limit);
+    for hit in &mut hits {
+        if let Some(object) = hit.as_object_mut() { object.remove("_orderAt"); }
+    }
     Ok(json!({"hits": hits, "scanned": scanned, "skipped": skipped, "bytes": bytes, "truncated": truncated}))
 }
 
@@ -510,13 +565,60 @@ mod tests {
         // 预算正好少一字节：第一行读得下，第二行超了就停，并且如实报 truncated。
         let (fragments, read, truncated) = texts(&path, size - 1).unwrap();
         assert_eq!(fragments.len(), 1);
-        assert_eq!(read, size);
+        assert_eq!(read, size - 1, "读取量本身也不得跨过预算");
         assert!(truncated);
         // 整个会话读得下时，命中的两条都要出现，字节数也要报真实读过的量。
         let found = search(&p, "root", "可搜的话", 10, false).unwrap();
         assert_eq!(hits(&found), 2);
         assert_eq!(found["bytes"].as_u64(), Some(size));
         assert_eq!(found["truncated"].as_bool(), Some(false));
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn total_budget_is_passed_down_as_a_hard_read_limit() {
+        let p = fixture();
+        let mut handle = store::Store::open(&p, "s1", "root", Provider::Codex, "标题", "1").unwrap();
+        handle.append("r1", vec![("user".into(), json!({"text":"预算边界里的线索"}))]).unwrap();
+        let total = read_of(&p.join("s1/events.jsonl")) - 1;
+        let found = search_with_limits(&p, "root", "线索", 10, false, SearchLimits {
+            sessions: 10,
+            session_bytes: MAX_SESSION_BYTES,
+            total_bytes: total,
+        }).unwrap();
+        assert!(found["bytes"].as_u64().unwrap() <= total);
+        assert_eq!(found["truncated"].as_bool(), Some(true));
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn non_session_entries_do_not_consume_the_session_limit() {
+        let p = fixture();
+        let mut handle = store::Store::open(&p, "s1", "root", Provider::Codex, "标题", "1").unwrap();
+        handle.append("r1", vec![("user".into(), json!({"text":"唯一有效会话"}))]).unwrap();
+        for index in 0..20 { fs::write(p.join(format!("noise-{index}.lock")), b"").unwrap(); }
+        let found = search_with_limits(&p, "root", "有效会话", 10, false, SearchLimits {
+            sessions: 1,
+            session_bytes: MAX_SESSION_BYTES,
+            total_bytes: MAX_TOTAL_BYTES,
+        }).unwrap();
+        assert_eq!(hits(&found), 1);
+        assert_eq!(found["scanned"].as_u64(), Some(1));
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn hits_inside_one_session_are_newest_first() {
+        let p = fixture();
+        let mut handle = store::Store::open(&p, "s1", "root", Provider::Codex, "标题", "1").unwrap();
+        handle.append("r1", vec![
+            ("user".into(), json!({"text":"线索一"})),
+            ("user".into(), json!({"text":"线索二"})),
+            ("user".into(), json!({"text":"线索三"})),
+        ]).unwrap();
+        let found = search(&p, "root", "线索", 10, false).unwrap();
+        let seqs: Vec<_> = found["hits"].as_array().unwrap().iter().map(|hit| hit["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, [3, 2, 1]);
         fs::remove_dir_all(p).unwrap();
     }
 

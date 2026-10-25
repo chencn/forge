@@ -23,18 +23,88 @@ pub fn is_file(path: &str) -> bool {
     !path.is_empty() && std::path::Path::new(path).is_file()
 }
 
+/// 跨进程独占文件锁。锁对象必须活过完整的读—改—写区间；关闭句柄即释放。
+pub struct ExclusiveFileLock {
+    _file: std::fs::File,
+}
+impl ExclusiveFileLock {
+    pub fn acquire(path: &std::path::Path) -> Result<Self, String> {
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).open(path)
+            .map_err(|error| crate::error::err_parts("IO", &[path.display().to_string(), error.to_string()]))?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK}, System::IO::OVERLAPPED};
+            let mut overlapped = OVERLAPPED::default();
+            unsafe { LockFileEx(HANDLE(file.as_raw_handle()), LOCKFILE_EXCLUSIVE_LOCK, Some(0), u32::MAX, u32::MAX, &mut overlapped) }
+                .map_err(|error| error.to_string())?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
+        Ok(Self { _file: file })
+    }
+
+    /// 非阻塞尝试独占锁；`None` 只表示另一个进程已持有，权限/路径等真实错误必须上抛。
+    pub fn try_acquire(path: &std::path::Path) -> Result<Option<Self>, String> {
+        let file = match std::fs::OpenOptions::new().read(true).write(true).create(true).open(path) {
+            Ok(file) => file,
+            Err(error) => {
+                #[cfg(windows)]
+                if matches!(error.raw_os_error(), Some(32 | 33)) { return Ok(None); }
+                return Err(crate::error::err_parts("IO", &[path.display().to_string(), error.to_string()]));
+            }
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::{Foundation::{ERROR_LOCK_VIOLATION, HANDLE}, Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY}, System::IO::OVERLAPPED};
+            let mut overlapped = OVERLAPPED::default();
+            if let Err(error) = unsafe { LockFileEx(HANDLE(file.as_raw_handle()), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, Some(0), u32::MAX, u32::MAX, &mut overlapped) } {
+                // windows-core 把 Win32 错误包装成 FACILITY_WIN32 HRESULT；0x8007 是固定前缀。
+                let lock_violation = 0x8007_0000u32 | ERROR_LOCK_VIOLATION.0;
+                if error.code().0 as u32 == lock_violation { return Ok(None); }
+                return Err(error.to_string());
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if matches!(error.raw_os_error(), Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN) {
+                    return Ok(None);
+                }
+                return Err(error.to_string());
+            }
+        }
+        Ok(Some(Self { _file: file }))
+    }
+}
+
 /// 原子写一份文本：先写同目录的 `.tmp`，再改名盖过去。
 ///
 /// 直接 `fs::write` 覆盖，进程在写一半时被杀掉就留下半截 JSON，
 /// 下一次启动解析失败只能退回默认值，用户填的全丢。
 pub fn write_atomic(path: &std::path::Path, text: &str) -> Result<(), String> {
-    let tmp = std::path::PathBuf::from(format!("{}.tmp", path.display()));
+    static TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // 多个 Forge 进程不能共用固定 .tmp；唯一名只解决临时文件冲突，RMW 原子性由调用方文件锁保证。
+    let tmp = std::path::PathBuf::from(format!("{}.{}.{}.tmp", path.display(), std::process::id(), TEMP_ID.fetch_add(1, Ordering::Relaxed)));
     std::fs::write(&tmp, text).map_err(|error| {
         crate::error::err_parts("IO", &[tmp.display().to_string(), error.to_string()])
     })?;
-    std::fs::rename(&tmp, path).map_err(|error| {
-        crate::error::err_parts("IO", &[path.display().to_string(), error.to_string()])
-    })
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // 唯一临时名不会被下次写覆盖；失败路径必须主动收掉，避免反复失败持续堆积完整副本。
+            let _ = std::fs::remove_file(&tmp);
+            Err(crate::error::err_parts("IO", &[path.display().to_string(), error.to_string()]))
+        }
+    }
 }
 
 /// 拿一个环境变量拼出候选路径；变量没设就返回空串。
@@ -551,7 +621,10 @@ pub async fn sys_memory() -> Memory {
 }
 #[cfg(test)]
 mod tests {
-    use super::{group, ProcInfo, MB};
+    use super::{group, ExclusiveFileLock, ProcInfo, MB};
+    use std::path::Path;
+    use std::process::{Child, Command};
+    use std::time::{Duration, Instant};
 
     fn row(pid: u32, ppid: u32, program: &str) -> ProcInfo {
         ProcInfo {
@@ -568,6 +641,74 @@ mod tests {
             .into_iter()
             .map(|part| (part.kind.to_string(), part.program, part.mb, part.count))
             .collect()
+    }
+
+    fn wait_for(path: &Path, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if path.exists() { return true; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    fn wait_child(child: &mut Child) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().expect("读取锁测试子进程状态") { return status.success(); }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        false
+    }
+
+    #[test]
+    fn exclusive_file_lock_process_helper() {
+        let Ok(mode) = std::env::var("FORGE_LOCK_TEST_MODE") else { return; };
+        let root = std::path::PathBuf::from(std::env::var("FORGE_LOCK_TEST_ROOT").expect("锁测试目录"));
+        let lock_path = root.join("shared.lock");
+        match mode.as_str() {
+            "holder" => {
+                let _lock = ExclusiveFileLock::acquire(&lock_path).expect("holder 取得锁");
+                std::fs::write(root.join("ready"), b"ready").expect("holder 发 ready");
+                assert!(wait_for(&root.join("release"), Duration::from_secs(10)), "父进程没有释放 holder");
+            }
+            "contender" => {
+                std::fs::write(root.join("attempting"), b"attempting").expect("contender 发 attempting");
+                let _lock = ExclusiveFileLock::acquire(&lock_path).expect("contender 取得锁");
+                std::fs::write(root.join("acquired"), b"acquired").expect("contender 发 acquired");
+            }
+            _ => panic!("未知锁测试模式"),
+        }
+    }
+
+    #[test]
+    fn exclusive_file_lock_serializes_real_processes() {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!("forge-file-lock-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&root).unwrap();
+        let executable = std::env::current_exe().expect("当前测试二进制");
+        let spawn = |mode: &str| {
+            let mut command = Command::new(&executable);
+            command.args(["--exact", "sys::tests::exclusive_file_lock_process_helper", "--nocapture"])
+                .env("FORGE_LOCK_TEST_MODE", mode)
+                .env("FORGE_LOCK_TEST_ROOT", &root);
+            super::hide_console(&mut command);
+            command.spawn().expect("启动锁测试子进程")
+        };
+
+        let mut holder = spawn("holder");
+        assert!(wait_for(&root.join("ready"), Duration::from_secs(10)), "holder 未取得锁");
+        let mut contender = spawn("contender");
+        assert!(wait_for(&root.join("attempting"), Duration::from_secs(10)), "contender 未开始取锁");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!root.join("acquired").exists(), "holder 释放前 contender 不得取得锁");
+
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert!(wait_for(&root.join("acquired"), Duration::from_secs(10)), "holder 释放后 contender 应取得锁");
+        assert!(wait_child(&mut holder));
+        assert!(wait_child(&mut contender));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

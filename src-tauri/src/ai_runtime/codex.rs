@@ -69,6 +69,9 @@ pub struct Codex {
     compact_pending: Option<u64>,
     /// 本轮是计划决策回合；它为一些线程先核对被审阅的计划。
     decision: Option<Decision>,
+    /// 计划核验的分页状态；游标去重和页数上限同时防住服务端循环页。
+    plan_cursors: HashSet<String>,
+    plan_pages: usize,
     /// thread/resume 报告的实际模型与强度；collaborationMode.settings 必须带模型。
     thread_model: Option<String>,
     thread_effort: Option<String>,
@@ -80,6 +83,10 @@ pub struct Codex {
     /// 本轮问到的 MCP 服务与状态全表。前端按整张表替换快照，所以启动通知必须改写
     /// 这张表再整体发出，不能只报那一台——八台的表会被压成一行。
     mcp_servers: Vec<Value>,
+    /// 只有完整非空列表到达后，启动通知才有权改写并广播全表。
+    mcp_ready: bool,
+    /// 完整列表之前到达的通知先缓存；探测失败或为空时整批丢弃。
+    pending_mcp_status: HashMap<String, String>,
     /// 已发出的 mcpServerStatus/list 探测 id；回包同样不是握手响应。
     mcp_probes: HashSet<u64>,
     next_mcp_probe: u64,
@@ -145,12 +152,16 @@ impl Codex {
             context_tokens: None,
             compact_pending: None,
             decision: None,
+            plan_cursors: HashSet::new(),
+            plan_pages: 0,
             thread_model: None,
             thread_effort: None,
             async_questions: HashMap::new(),
             steers: HashSet::new(),
             next_steer: 1_000_000,
             mcp_servers: vec![],
+            mcp_ready: false,
+            pending_mcp_status: HashMap::new(),
             mcp_probes: HashSet::new(),
             next_mcp_probe: 2_000_000,
         }
@@ -230,13 +241,11 @@ impl Codex {
             data: json!({"servers": self.mcp_servers.iter().map(|server| json!({"name":server["name"],"status":server["status"]})).collect::<Vec<_>>()}),
         }
     }
-    /// 启动状态通知只带一台：改写全表里那一台，没有就补一条。
-    /// 直接发单台会把整张表压成一行，而探测失败时又必须让通知还有地方进来。
-    fn record_mcp_status(&mut self, name: &str, status: &str) {
-        match self.mcp_servers.iter_mut().find(|server| server["name"].as_str() == Some(name)) {
-            Some(server) => server["status"] = json!(status),
-            None => self.mcp_servers.push(json!({"name":name,"status":status})),
-        }
+    /// 通知只能改完整列表里已有的服务器；未知名字不能凭一条局部通知扩成“全表”。
+    fn record_mcp_status(&mut self, name: &str, status: &str) -> bool {
+        let Some(server) = self.mcp_servers.iter_mut().find(|server| server["name"].as_str() == Some(name)) else { return false; };
+        server["status"] = json!(status);
+        true
     }
     /// collaborationMode 的 settings.model 是必填项；拿不到模型就失败关闭，
     /// 发一个缺少必填字段的对象不是协商，而是无效请求。
@@ -252,7 +261,7 @@ impl Codex {
     }
     /// `thread/turns/list`（itemsView=full）里核对被审阅的最终计划：
     /// id 与正文指纹都要对上，否则整个决策在开回合前失败。
-    fn check_plan(page: &Value, native_plan_id: &str, expected_hash: &str) -> Result<(), String> {
+    fn check_plan(page: &Value, native_plan_id: &str, expected_hash: &str) -> Result<bool, String> {
         let turns = page["data"].as_array().ok_or("thread/turns/list 未返回回合页")?;
         for turn in turns {
             for item in turn["items"].as_array().into_iter().flatten() {
@@ -261,13 +270,18 @@ impl Codex {
                 }
                 let text = item["text"].as_str().ok_or("codex plan is stale: 计划条目缺少正文")?;
                 return if super::plans::content_hash(text) == expected_hash {
-                    Ok(())
+                    Ok(true)
                 } else {
                     Err("codex plan is stale: 计划正文在等待审批期间已改变".into())
                 };
             }
         }
-        Err("codex plan is stale: 被审阅的计划已不在会话中".into())
+        Ok(false)
+    }
+    fn plan_page(thread: &str, cursor: Option<&str>) -> Value {
+        let mut params = json!({"threadId":thread,"itemsView":"full","limit":16,"sortDirection":"desc"});
+        if let Some(cursor) = cursor { params["cursor"] = json!(cursor); }
+        json!({"id":3,"method":"thread/turns/list","params":params})
     }
     /// 把 AgentMessage 上的 `questions` 转成通用提问卡；没有问题的消息返回空。
     /// 单题缺 title 时跳过那一题而不是整组丢弃：一题格式坏了不该把其余能答的问题一起藏掉。
@@ -382,10 +396,10 @@ impl Protocol for Codex {
             return Err("Codex 已初始化".into());
         }
         self.phase = 1;
-        // collaborationMode 与 plan item 属于实验能力；始终声明开启，
-        // 保证无论是进入计划模式、退出计划模式还是接收 plan item，协议层均正常支持。
+        // 实验能力只在计划/决策回合声明；普通聊天必须保持稳定协议面。
+        let experimental = self.plan() || self.decision.is_some();
         Ok(vec![Action::Write(
-            json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}}),
+            json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":experimental}}}),
         )])
     }
     fn receive(&mut self, message: Value) -> Result<Vec<Action>, String> {
@@ -512,7 +526,8 @@ impl Protocol for Codex {
                             }
                             out.push(Action::Emit {kind:"tool",data:json!({"id":id,"name":name,"input":input,"result":result,"output":output,"status":status})});
                             if done && item["type"] == "fileChange" {
-                                let paths: Vec<_> = item["changes"]
+                                // 上面已把原生路径映射规范化成 changes 数组；文件事件必须复用同一份数据。
+                                let paths: Vec<_> = input["changes"]
                                     .as_array()
                                     .into_iter()
                                     .flatten()
@@ -632,8 +647,11 @@ impl Protocol for Codex {
                     let name = p["name"].as_str().map(str::trim).filter(|name| !name.is_empty());
                     let status = p["status"].as_str().filter(|status| !status.is_empty());
                     if let (Some(name), Some(status)) = (name, status) {
-                        self.record_mcp_status(name, status);
-                        out.push(self.mcp_snapshot());
+                        if self.mcp_ready {
+                            if self.record_mcp_status(name, status) { out.push(self.mcp_snapshot()); }
+                        } else {
+                            self.pending_mcp_status.insert(name.to_owned(), status.to_owned());
+                        }
                     }
                 }
                 "serverRequest/resolved" => {
@@ -708,7 +726,12 @@ impl Protocol for Codex {
         }
         // MCP 快照的回包只投事件，不参与握手状态机。CLI 说没有就是没有，不猜。
         if self.mcp_probes.remove(&id) {
-            if message.get("error").is_some() { return Ok(vec![]); }
+            if message.get("error").is_some() {
+                self.mcp_ready = false;
+                self.mcp_servers.clear();
+                self.pending_mcp_status.clear();
+                return Ok(vec![self.mcp_snapshot()]);
+            }
             // 全量结果按权威处理：它是在同一刻问出来的，比之前收到的零散启动通知更完整。
             let mut servers = Vec::new();
             for server in message["result"]["data"].as_array().into_iter().flatten() {
@@ -717,7 +740,16 @@ impl Protocol for Codex {
                 servers.push(json!({"name":name,"status":server["runtimeStatus"]}));
             }
             self.mcp_servers = servers;
-            return Ok(if self.mcp_servers.is_empty() { vec![] } else { vec![self.mcp_snapshot()] });
+            if self.mcp_servers.is_empty() {
+                self.mcp_ready = false;
+                self.pending_mcp_status.clear();
+                return Ok(vec![self.mcp_snapshot()]);
+            }
+            self.mcp_ready = true;
+            for (name, status) in std::mem::take(&mut self.pending_mcp_status) {
+                self.record_mcp_status(&name, &status);
+            }
+            return Ok(vec![self.mcp_snapshot()]);
         }
         if let Some(error) = message.get("error") {
             let text = error["message"].as_str().unwrap_or("unknown");
@@ -799,9 +831,9 @@ impl Protocol for Codex {
                     // 决策回合先重取最终计划条目，证明它仍在线且正文未变；
                     // 对不上就在开回合之前失败，绝不执行一份已经变过的计划。
                     self.phase = 4;
-                    return Ok(vec![Action::Write(json!({"id":3,"method":"thread/turns/list","params":{
-                        "threadId":id,"itemsView":"full","limit":16,"sortDirection":"desc"
-                    }}))]);
+                    self.plan_pages = 1;
+                    self.plan_cursors.clear();
+                    return Ok(vec![Action::Write(Self::plan_page(&id, None))]);
                 }
                 self.phase = 3;
                 let mut input = vec![];
@@ -809,12 +841,9 @@ impl Protocol for Codex {
                 input.extend(self.images.iter().map(|path| json!({"type":"localImage","path":path})));
                 let mut turn = json!({"threadId":id,"input":input});
                 self.apply_sandbox_policy(&mut turn);
-                // 非正常档一律显式下发所选模式；正常档只在线程确实滞留在计划里时才重申一次。
-                // 关键约束：Codex CLI 的 collaborationMode 是 thread 级持久状态，
-                // 远端处于 plan 而本轮没带回去，Codex 服务端会永久停在计划模式。
-                // 两者只能发一种：collaborationMode 优先于顶层 model/effort。
-                let normal = self.mode == super::options::default_mode_id(crate::ai_cli::Provider::Codex);
-                if normal && !thread_plan_mode {
+                // 普通回合声明 experimentalApi:false，不能再偷带实验 collaborationMode。
+                // 只有本轮明确进入计划模式时使用它；普通回合始终走稳定的顶层模型字段。
+                if !self.plan() {
                     if let Some(model) = &self.model {
                         turn["model"] = json!(model);
                     }
@@ -861,7 +890,16 @@ impl Protocol for Codex {
             }
             (4, 3) => {
                 let decision = self.decision.clone().ok_or("Codex 决策状态丢失")?;
-                Self::check_plan(result, &decision.native_plan_id, &decision.content_hash)?;
+                if !Self::check_plan(result, &decision.native_plan_id, &decision.content_hash)? {
+                    let cursor = result["nextCursor"].as_str().map(str::trim).filter(|value| !value.is_empty())
+                        .ok_or("codex plan is stale: 被审阅的计划已不在会话中")?.to_owned();
+                    if self.plan_pages >= 64 || !self.plan_cursors.insert(cursor.clone()) {
+                        return Err("codex plan is stale: 计划历史分页没有推进".into());
+                    }
+                    self.plan_pages += 1;
+                    let thread = self.thread.as_deref().ok_or("Codex 决策缺少会话")?;
+                    return Ok(vec![Action::Write(Self::plan_page(thread, Some(&cursor)))]);
+                }
                 let thread = self.thread.clone().ok_or("Codex 决策缺少会话")?;
                 let mut turn = json!({"threadId":thread,"input":[{"type":"text","text":self.prompt}]});
                 self.apply_sandbox_policy(&mut turn);
@@ -1148,19 +1186,22 @@ mod tests {
             Action::Write(value) if value["id"] == json!(probe) => Some(value["params"]["detail"].as_str()),
             _ => None,
         }), Some(Some("toolsAndAuthOnly")), "只要名字与状态，不拉工具清单");
+        // 完整列表之前到达的通知只能缓存，不能拿一台服务器冒充全表。
+        let early = p.receive(json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"native","name":"b","status":"failed"}})).unwrap();
+        assert!(early.is_empty());
         let actions = p.receive(json!({"id":probe,"result":{"data":[
             {"name":"a","runtimeStatus":"connected"},{"name":"b","runtimeStatus":null}
         ]}})).unwrap();
         assert!(matches!(&actions[0], Action::Emit{kind:"mcp_servers",data} if data["servers"] == json!([
-            {"name":"a","status":"connected"},{"name":"b","status":null}
-        ])), "全表按 CLI 报的原样投，没连上的留空而不是编一个状态");
+            {"name":"a","status":"connected"},{"name":"b","status":"failed"}
+        ])), "完整列表到达后才应用早到的状态更新");
         // 启动通知只改一台：整张表必须还是两张。
         let actions = p.receive(json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"native","name":"b","status":"failed"}})).unwrap();
         assert!(matches!(&actions[0], Action::Emit{kind:"mcp_servers",data}
             if data["servers"].as_array().is_some_and(|list| list.len() == 2) && data["servers"][1]["status"] == "failed"));
     }
     #[test]
-    fn a_missing_mcp_snapshot_is_not_faked_as_an_empty_table() {
+    fn a_failed_or_empty_mcp_probe_clears_old_state_without_leaking_partial_updates() {
         for reply in [json!({"error":{"code":-32601,"message":"unknown method"}}), json!({"result":{"data":[]}})] {
             let mut p = Codex::new("root".into(), "跑一下".into(), Some("native".into()));
             p.start().unwrap();
@@ -1170,10 +1211,12 @@ mod tests {
                 Action::Write(value) if value["method"] == "mcpServerStatus/list" => value["id"].as_u64(),
                 _ => None,
             }).unwrap();
-            // 探测失败或报空：整块不出现。宁可少一块信息，也不摆一张「都查过了」的空表。
+            assert!(p.receive(json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"native","name":"partial","status":"connected"}})).unwrap().is_empty());
+            // 探测失败或报空：显式清空前端旧快照，但绝不能把缓存的一台服务器带出去。
             let mut message = json!({"id":probe});
             for (key, value) in reply.as_object().unwrap() { message[key] = value.clone(); }
-            assert!(p.receive(message).unwrap().is_empty(), "{reply} 不该被当成快照");
+            let actions = p.receive(message).unwrap();
+            assert!(matches!(&actions[..], [Action::Emit{kind:"mcp_servers",data}] if data["servers"] == json!([])));
         }
     }
     #[test]
@@ -1186,6 +1229,16 @@ mod tests {
         assert!(actions.iter().any(|a| matches!(a, Action::Emit{kind:"tool",data} if data["outputDelta"] == "applying")));
         let actions = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{"id":"cmd","type":"commandExecution","command":"npm test","status":"interrupted"}}})).unwrap();
         assert!(actions.iter().any(|a| matches!(a, Action::Emit{kind:"tool",data} if data["status"] == "cancelled" && data["input"]["command"] == "npm test")));
+    }
+    #[test]
+    fn completed_file_change_emits_paths_from_the_native_change_map() {
+        let mut p = Codex::new("root".into(), "改文件".into(), Some("native".into()));
+        let actions = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
+            "id":"patch","type":"fileChange","status":"completed",
+            "changes":{"src/a.ts":{"type":"update","unified_diff":"@@ -1 +1 @@\n-a\n+b"},"src/b.ts":{"type":"add","unified_diff":"@@ -0 +1 @@\n+b"}}
+        }}})).unwrap();
+        assert!(actions.iter().any(|action| matches!(action, Action::Emit { kind: "files", data }
+            if data["paths"] == json!(["src/a.ts", "src/b.ts"]))));
     }
     fn ready_command(prompt: &str, intent: super::super::commands::CommandIntent) -> (Codex, Vec<Action>) {
         let mut p = Codex::new("root".into(), prompt.into(), Some("native".into())).with_command(Some(intent));
@@ -1238,7 +1291,8 @@ mod tests {
     fn inherited_project_configuration_does_not_send_default_overrides() {
         let mut p = Codex::new("root".into(), "hello".into(), None)
             .with_policy(super::super::options::PermissionMode::Inherit, String::new());
-        p.start().unwrap();
+        let init = p.start().unwrap();
+        assert!(matches!(&init[0], Action::Write(value) if value["params"]["capabilities"]["experimentalApi"] == false));
         let actions = p.receive(json!({"id":1,"result":{}})).unwrap();
         let params = actions.iter().find_map(|a| match a { Action::Write(v) if v["method"] == "thread/start" => Some(&v["params"]), _ => None }).unwrap();
         assert_eq!(params, &json!({"cwd":"root"}));
@@ -1438,6 +1492,27 @@ mod tests {
     }
 
     #[test]
+    fn turn_plan_update_emits_model_task_list_in_protocol_order() {
+        let mut protocol = Codex::new("root".into(), "执行".into(), Some("native".into()));
+        let out = protocol.receive(json!({"method":"turn/plan/updated","params":{
+            "threadId":"native","turnId":"turn-1","explanation":null,
+            "plan":[
+                {"step":"检查协议","status":"completed"},
+                {"step":"修复历史恢复","status":"inProgress"},
+                {"step":"运行验证","status":"pending"}
+            ]
+        }})).unwrap();
+        assert!(matches!(&out[0], Action::Emit { kind:"task_list", data } if data == &json!({
+            "replace":true,
+            "items":[
+                {"id":"plan-0","content":"检查协议","status":"complete"},
+                {"id":"plan-1","content":"修复历史恢复","status":"active"},
+                {"id":"plan-2","content":"运行验证","status":"pending"}
+            ]
+        })));
+    }
+
+    #[test]
     fn plan_mode_without_a_model_fails_closed_instead_of_sending_invalid_settings() {
         let mut p = Codex::new("root".into(), "设计".into(), None).with_policy(super::super::options::PermissionMode::Inherit, String::new()).with_mode("plan".into());
         p.start().unwrap();
@@ -1466,6 +1541,35 @@ mod tests {
     }
 
     #[test]
+    fn a_decision_turn_pages_until_it_finds_the_reviewed_plan() {
+        let content = "older approved plan";
+        let mut p = Codex::new("root".into(), "execute".into(), Some("native".into()))
+            .with_policy(super::super::options::PermissionMode::Inherit, String::new())
+            .with_decision(Some(Decision { mode: "default", native_plan_id: "plan-item".into(), content_hash: super::super::plans::content_hash(content) }));
+        p.start().unwrap();
+        p.receive(json!({"id":1,"result":{}})).unwrap();
+        p.receive(json!({"id":2,"result":{"thread":{"id":"native"},"model":"gpt-5"}})).unwrap();
+        let next = p.receive(json!({"id":3,"result":{"data":[],"nextCursor":"older"}})).unwrap();
+        assert!(matches!(&next[0], Action::Write(value)
+            if value["method"] == "thread/turns/list" && value["params"]["cursor"] == "older"));
+        assert!(!next.iter().any(|action| matches!(action, Action::Write(value) if value["method"] == "turn/start")));
+        let found = p.receive(json!({"id":3,"result":{"data":[{"items":[{"id":"plan-item","type":"plan","text":content}]}]}})).unwrap();
+        assert!(found.iter().any(|action| matches!(action, Action::Write(value) if value["method"] == "turn/start")));
+    }
+
+    #[test]
+    fn a_decision_turn_rejects_repeated_pagination_cursors() {
+        let mut p = Codex::new("root".into(), "execute".into(), Some("native".into()))
+            .with_policy(super::super::options::PermissionMode::Inherit, String::new())
+            .with_decision(Some(Decision { mode: "default", native_plan_id: "plan-item".into(), content_hash: "hash".into() }));
+        p.start().unwrap();
+        p.receive(json!({"id":1,"result":{}})).unwrap();
+        p.receive(json!({"id":2,"result":{"thread":{"id":"native"},"model":"gpt-5"}})).unwrap();
+        p.receive(json!({"id":3,"result":{"data":[],"nextCursor":"same"}})).unwrap();
+        assert!(p.receive(json!({"id":3,"result":{"data":[],"nextCursor":"same"}})).is_err());
+    }
+
+    #[test]
     fn decision_keeps_explicit_model_and_effort_over_thread_defaults() {
         let content = "approved plan";
         let mut protocol = Codex::new("root".into(), "execute".into(), Some("native".into()))
@@ -1485,12 +1589,13 @@ mod tests {
     }
 
     #[test]
-    fn thread_in_plan_mode_resets_to_default_when_user_sends_ordinary_turn() {
+    fn ordinary_turn_never_sends_experimental_collaboration_mode() {
         // 用户 UI 上没有开 plan 模式，但 Codex 服务端记录该 thread 处于 plan 模式：
-        // 下一轮普通对话发送时必须显式重申 collaborationMode: default，彻底脱离 plan 模式。
+        // 普通回合已经声明 experimentalApi:false，不能再用实验字段尝试重置它。
         let mut p = Codex::new("root".into(), "修改代码".into(), Some("native".into()))
             .with_policy(super::super::options::PermissionMode::Inherit, String::new());
-        p.start().unwrap();
+        let init = p.start().unwrap();
+        assert!(matches!(&init[0], Action::Write(value) if value["params"]["capabilities"]["experimentalApi"] == false));
         p.receive(json!({"id":1,"result":{}})).unwrap();
         let out = p.receive(json!({
             "id": 2,
@@ -1511,7 +1616,7 @@ mod tests {
             Action::Write(value) if value["method"] == "turn/start" => Some(value["params"].clone()),
             _ => None,
         }).unwrap();
-        assert_eq!(turn["collaborationMode"], json!({"mode":"default","settings":{"model":"gpt-5"}}));
+        assert!(turn.get("collaborationMode").is_none());
     }
 
     #[test]

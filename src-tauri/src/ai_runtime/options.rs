@@ -111,7 +111,7 @@ fn catalog_from(document: &Value, provider: Provider) -> Value {
     if let Some(custom) = document["customModels"][key].as_array() {
         for raw in custom.iter().filter_map(Value::as_str) {
             let id = canonical_model(&catalog, raw);
-            if validate(provider, Some(&id), None).is_err() { continue; }
+            if validate(Some(&id), None).is_err() { continue; }
             // 用户保存集合独立于发现目录，后台目录重叠不能删除用户配置。
             if !custom_models.contains(&id) { custom_models.push(id.clone()); }
             if !catalog["models"].as_array().unwrap().iter().any(|m| m["id"] == id) {
@@ -190,7 +190,7 @@ pub fn save_models(path: &Path, provider: Provider, catalog: Option<Value>, cust
             return Err("Codex 的自定义模型请在下方「模型清单」里添加：复制一个官方条目再改，裸 ID 没有可核实的参数".into());
         }
         let id = canonical_model(&catalog_from(&document, provider), id);
-        validate(provider, Some(&id), None)?;
+        validate(Some(&id), None)?;
         if !document["customModels"][key].is_array() { document["customModels"][key] = json!([]); }
         let items = document["customModels"][key].as_array_mut().unwrap();
         if !items.iter().any(|item| item == &id) { items.push(json!(id)); }
@@ -204,7 +204,7 @@ pub fn save_models(path: &Path, provider: Provider, catalog: Option<Value>, cust
 
 /// 只删除 Forge 自定义列表中的条目，不修改 CLI 配置或自动发现目录。
 pub fn remove_model(path: &Path, provider: Provider, model: &str) -> Result<(), String> {
-    validate(provider, Some(model), None)?;
+    validate(Some(model), None)?;
     let _guard = CATALOG_FILE.lock().map_err(|e| e.to_string())?;
     let mut document = read_document(path);
     if let Some(items) = document["customModels"][provider_key(provider)].as_array_mut() { items.retain(|item| item != model); }
@@ -423,6 +423,20 @@ fn claude_mode_ids(help: &str) -> Option<Vec<String>> {
     (!ids.is_empty()).then_some(ids)
 }
 
+/// Claude 的思考强度同样写在 `--help`：`--effort <level> … (low, medium, high, xhigh, max)`。
+/// 和模式一样照抄，CLI 增删档位时界面跟着变，不在这里另存一份会过期的枚举。
+fn claude_effort_ids(help: &str) -> Option<Vec<String>> {
+    let block = &help[help.find("--effort")?..].split("\n  --").next()?;
+    let at = block.find('(')? + 1;
+    let ids = block[at..].split(')').next()?.split(',')
+        .filter_map(|item| {
+            let id = item.trim().trim_matches('"').trim();
+            valid_mode_id(id).then(|| id.to_owned())
+        })
+        .collect::<Vec<_>>();
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// 从已安装版本的模型目录中找 Fast 的真实 ID，而不是猜测 fast/priority。
 pub fn fast_tier(catalog: &Value, model: Option<&str>) -> Result<(String, String), String> {
     let item = catalog["models"].as_array().and_then(|items| items.iter().find(|item| {
@@ -435,30 +449,20 @@ pub fn fast_tier(catalog: &Value, model: Option<&str>) -> Result<(String, String
     Ok((item["id"].as_str().ok_or("模型缺少 ID")?.into(), tier.into()))
 }
 
-pub fn validate(
-    provider: Provider,
-    model: Option<&str>,
-    effort: Option<&str>,
-) -> Result<(), String> {
-    if model.is_some_and(|m| {
-        m.trim().is_empty()
-            || m.len() > 200
-            || m.starts_with('-')
-            || m.chars().any(|c| c.is_control() || c.is_whitespace())
-    }) {
+/// 只校验形状，不校验取值：模型与强度档位以 CLI 当场报出的清单为准（界面只列它认的），
+/// 在 Forge 里再存一份枚举，CLI 新增档位就会被这里拒掉。
+pub fn validate(model: Option<&str>, effort: Option<&str>) -> Result<(), String> {
+    let shape_ok = |value: &str, max: usize| {
+        !value.trim().is_empty()
+            && value.len() <= max
+            && !value.starts_with('-')
+            && !value.chars().any(|c| c.is_control() || c.is_whitespace())
+    };
+    if model.is_some_and(|m| !shape_ok(m, 200)) {
         return Err("模型名称无效".into());
     }
-    if let Some(effort) = effort {
-        let valid = match provider {
-            Provider::Codex => matches!(
-                effort,
-                "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
-            ),
-            Provider::Claude => matches!(effort, "low" | "medium" | "high" | "xhigh" | "max"),
-        };
-        if !valid {
-            return Err("此 CLI 不支持所选思考强度".into());
-        }
+    if effort.is_some_and(|e| !shape_ok(e, 40)) {
+        return Err("思考强度无效".into());
     }
     Ok(())
 }
@@ -661,10 +665,10 @@ pub fn update_codex_project_config(cwd: &str, patch: &Value) -> Result<Value, St
         return Err("项目配置更新包含未知字段".into());
     }
     if let Some(value) = object.get("model") {
-        if !value.is_null() { validate(Provider::Codex, value.as_str(), None)?; }
+        if !value.is_null() { validate(value.as_str(), None)?; }
     }
     if let Some(value) = object.get("effort") {
-        if !value.is_null() { validate(Provider::Codex, None, value.as_str())?; }
+        if !value.is_null() { validate(None, value.as_str())?; }
     }
     if let Some(value) = object.get("serviceTier") {
         if !value.is_null() && !value.as_str().is_some_and(|tier| !tier.trim().is_empty() && tier.len() <= 80 && !tier.chars().any(char::is_whitespace)) {
@@ -717,13 +721,19 @@ pub fn models(provider: Provider, cwd: &str) -> Result<Value, String> {
         let mut catalog = defaults(provider);
         let discovered = ai_cli::runtime_command(provider, &["--help"])
             .and_then(|(command, version)| crate::ai_cli::process::checked_full(command).map(|help| (help, version)))
-            .ok()
-            .and_then(|(help, version)| claude_mode_ids(&help).map(|ids| (ids, version)));
-        // 只有模式这一维是 CLI 亲口报的，模型仍然是别名：authoritative 不能跟着一起翻真。
-        if let Some((ids, version)) = discovered {
-            catalog["modes"] = json!(ids);
-            catalog["modesAuthoritative"] = json!(true);
-            catalog["cliVersion"] = json!(version);
+            .ok();
+        // 模式和强度都是 CLI 亲口报的，各维独立采用；模型仍是别名，authoritative 不能跟着翻真。
+        if let Some((help, version)) = discovered {
+            if let Some(ids) = claude_mode_ids(&help) {
+                catalog["modes"] = json!(ids);
+                catalog["modesAuthoritative"] = json!(true);
+            }
+            if let Some(ids) = claude_effort_ids(&help) {
+                catalog["efforts"] = json!(ids);
+                catalog["effortsAuthoritative"] = json!(true);
+            }
+            // 版本只用于标注来源；解析不出来就留空（null），不影响启动。
+            if !version.is_empty() { catalog["cliVersion"] = json!(version); }
         }
         return Ok(catalog);
     }
@@ -749,7 +759,8 @@ pub fn models(provider: Provider, cwd: &str) -> Result<Value, String> {
                 Err(_) => (mode_ids(&Value::Null, provider), false),
             };
             drop(process);
-            return Ok(json!({"models":models,"customModel":true,"efforts":[],"authoritative":true,"cliVersion":version,
+            let cli_version = if version.is_empty() { Value::Null } else { json!(version) };
+            return Ok(json!({"models":models,"customModel":true,"efforts":[],"authoritative":true,"cliVersion":cli_version,
                 "modes":ids,"modesAuthoritative":probed}));
         }
         if !cursor.is_string() || !cursors.insert(cursor.to_string()) {
@@ -947,6 +958,13 @@ mod tests {
         assert_eq!(claude_mode_ids(help).unwrap(), ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
         assert_eq!(claude_mode_ids("no options here"), None);
     }
+    /// 强度档位也照抄 `--help`：新增一档不该等 Forge 发版才出现。
+    #[test]
+    fn claude_efforts_come_from_the_help_choices() {
+        let help = "  --effort <level>                      Effort level for the current session\n                                        (low, medium, high, xhigh, max)\n  --environment <id>   another option\n";
+        assert_eq!(claude_effort_ids(help).unwrap(), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(claude_effort_ids("  --model <model>  no choices here\n"), None);
+    }
     /// Codex 的模式取自 CLI 的序列化侧：收得下别名不等于那是个模式。
     /// 这份 fixture 就是 0.164.0 导出的形状；`code`/`execute`/`pair_programming`/`custom`
     /// 只在输入侧作为 `default` 的别名存在，混进列表就是给用户摆假档位。
@@ -1026,9 +1044,10 @@ mod tests {
 
     #[test]
     fn validates_cli_arguments_and_preserves_real_capabilities() {
-        assert!(validate(Provider::Claude, Some("--dangerous"), None).is_err());
-        assert!(validate(Provider::Codex, Some("custom-model"), Some("max")).is_err());
-        assert!(validate(Provider::Claude, Some("provider.model-v1"), Some("max")).is_ok());
+        assert!(validate(Some("--dangerous"), None).is_err());
+        // 取值由 CLI 亲口报出的清单把关，形状不对才在本地拒绝。
+        assert!(validate(Some("custom-model"), Some("has space")).is_err());
+        assert!(validate(Some("provider.model-v1"), Some("max")).is_ok());
         let values=parse_models(&json!({"data":[{"model":"real","displayName":"Real","supportedReasoningEfforts":[{"reasoningEffort":"low"}],"defaultReasoningEffort":"low"},{"hidden":true}]})).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0]["efforts"], json!(["low"]));

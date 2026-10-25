@@ -373,18 +373,20 @@ fn launch(exe: &Path, paths: &[PathBuf]) {
         return;
     }
 
-    // 2. 备选方案：ShellExecuteEx
-    if launch_shell_execute(exe, paths) {
-        return;
-    }
-
+    // 2. 备选方案：带 Breakaway 策略的 CreateProcess。
+    // 必须排在 ShellExecuteEx 前面：在包宿主里 ShellExecuteEx 也会成功，但子进程照样
+    // 继承包身份，只有 Breakaway 能把它摘掉。
     let mut args: Vec<String> = Vec::with_capacity(paths.len() + 1);
     args.push(exe.display().to_string());
     args.extend(paths.iter().map(|path| path.display().to_string()));
     let mut cmd_wide = command_line(&args);
 
-    // 3. 备选方案：带 Breakaway 策略的 CreateProcess
     if launch_with_breakaway(cmd_wide.as_mut_slice()) {
+        return;
+    }
+
+    // 3. 备选方案：ShellExecuteEx
+    if launch_shell_execute(exe, paths) {
         return;
     }
 
@@ -430,8 +432,8 @@ fn launch_via_explorer_shell(exe: &Path, paths: &[PathBuf]) -> bool {
     };
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::Shell::{
-        IShellBrowser, IShellDispatch2, IShellView, IShellWindows, ShellWindows,
-        SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH,
+        IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellView, IShellWindows,
+        ShellWindows, SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH,
     };
 
     unsafe {
@@ -471,22 +473,37 @@ fn launch_via_explorer_shell(exe: &Path, paths: &[PathBuf]) -> bool {
             Err(_) => return false,
         };
 
+        // 桌面视图返回的是文件夹视图的自动化对象（IShellFolderViewDual），
+        // 它本身不是 Shell.Application。必须先取 Application，再换成 IShellDispatch2；
+        // 直接 cast 会 E_NOINTERFACE，整个转发路径失效，退回会在包里启动、丢掉任务栏图标。
         let app_disp: IDispatch = match view.GetItemObject(SVGIO_BACKGROUND) {
             Ok(obj) => obj,
             Err(_) => return false,
         };
 
-        let shell_dispatch: IShellDispatch2 = match app_disp.cast() {
+        let folder_view: IShellFolderViewDual = match app_disp.cast() {
+            Ok(view) => view,
+            Err(_) => return false,
+        };
+
+        let shell_app: IDispatch = match folder_view.Application() {
+            Ok(app) => app,
+            Err(_) => return false,
+        };
+
+        let shell_dispatch: IShellDispatch2 = match shell_app.cast() {
             Ok(s) => s,
             Err(_) => return false,
         };
 
         let file = BSTR::from(exe.to_string_lossy().as_ref());
-        let params_str: String = paths
+        let params_owned: Vec<String> = paths
             .iter()
-            .map(|p| format!("\"{}\"", p.display()))
-            .collect::<Vec<_>>()
-            .join(" ");
+            .map(|p| p.display().to_string())
+            .collect();
+        // 和 CreateProcess 分支共用同一套引号规则：`C:\` 这种以反斜杠结尾的
+        // 目录直接拼 `"C:\"` 会把结尾引号当转义，参数被截坏。
+        let params_str = argument_line(&params_owned);
         let args = VARIANT::from(BSTR::from(params_str.as_str()));
         let dir = VARIANT::default();
         let op = VARIANT::from(BSTR::from("open"));
@@ -619,6 +636,12 @@ fn launch_with_breakaway(cmd: &mut [u16]) -> bool {
             false
         }
     }
+}
+
+/// `command_line` 的文本版本：去掉结尾 NUL，给 `ShellExecute` 的参数串用。
+fn argument_line(args: &[String]) -> String {
+    let wide = command_line(args);
+    String::from_utf16_lossy(&wide[..wide.len().saturating_sub(1)])
 }
 
 /// 按 `CommandLineToArgvW` 的反解析规则拼命令行，结尾是 NUL。
@@ -761,5 +784,15 @@ mod tests {
     fn line_is_nul_terminated() {
         let wide = command_line(&["forge.exe".to_string()]);
         assert_eq!(wide.last(), Some(&0));
+    }
+
+    /// explorer 转发用的参数串和 CreateProcess 用同一套规则，
+    /// 盘符根目录不能拼成 `"C:\"`。
+    #[test]
+    fn explorer_arguments_share_the_same_quoting() {
+        assert_eq!(
+            argument_line(&[r"C:\".to_string(), r"D:\a b\c.txt".to_string()]),
+            r#""C:\\" "D:\a b\c.txt""#
+        );
     }
 }

@@ -757,13 +757,9 @@ Section Install
   ; Win11 新菜单把 forge_shell_cmd.dll 加载在 dllhost.exe 里。主程序退出不会放开这把锁。
   !insertmacro MoveShellDllAside HideExec
 
-  ; Win11 稀疏包：在安装/升级前清理旧版本，避免 WindowsApps 积压旧包；同时预先配置证书信任
-  System::Call "kernel32::Wow64EnableWow64FsRedirection(i 0)"
-  Push '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-AppxPackage -Name Forge.ShellOpen -AllUsers -ErrorAction SilentlyContinue | ForEach-Object { $$pkg = $$_.PackageFullName; if ($$_.PackageUserInformation) { foreach ($$u in $$_.PackageUserInformation) { Remove-AppxPackage -Package $$pkg -User $$u.UserSecurityId.Value -ErrorAction SilentlyContinue } }; Remove-AppxPackage -Package $$pkg -AllUsers -ErrorAction SilentlyContinue }; Get-AppxPackage -Name Forge.ShellOpen -ErrorAction SilentlyContinue | ForEach-Object { Remove-AppxPackage -Package $$_.PackageFullName -ErrorAction SilentlyContinue }"'
-  Call HideExec
-  Push '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$c = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object { $$_.Subject -eq `\"CN=Forge Shell Open`\" -and $$_.HasPrivateKey } | Select-Object -First 1; if (-not $$c) { $$c = New-SelfSignedCertificate -Type Custom -KeyUsage DigitalSignature -CertStoreLocation `\"Cert:\CurrentUser\My`\" -TextExtension @(`\"2.5.29.37={text}1.3.6.1.5.5.7.3.3`\", `\"2.5.29.19={text}`\") -Subject `\"CN=Forge Shell Open`\" -FriendlyName `\"Forge Shell Open`\" -NotAfter (Get-Date).AddYears(15) }; $$cer = \"\"$$env:TEMP\ForgeShell.cer\"\"; Export-Certificate -Cert $$c -FilePath $$cer -Force | Out-Null; $$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $$cer; foreach ($$pair in @("CurrentUser|TrustedPeople","LocalMachine|TrustedPeople","LocalMachine|Root")) { $$bits = $$pair.Split("|"); $$store = New-Object System.Security.Cryptography.X509Certificates.X509Store($$bits[1], $$bits[0]); $$store.Open("ReadWrite"); $$store.Add($$cert); $$store.Close() }; Remove-Item $$cer -Force -ErrorAction SilentlyContinue"'
-  Call HideExec
-  System::Call "kernel32::Wow64EnableWow64FsRedirection(i 1)"
+  ; Win11 稀疏包与签名证书不在这里处理：只有用户开启「通过 Forge 打开」时才需要，
+  ; 由主程序在应用设置时按需创建证书、签名并注册（shell_sparse）。安装器不再为此
+  ; 中断整个安装；升级后包的内容身份变化也由主程序自己重注册。
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -915,11 +911,14 @@ Section Uninstall
   Call un.HideExec
   Sleep 200
 
-  ; 无论升级还是卸载，都清理 WindowsApps 中的稀疏包，避免残留旧版本
-  System::Call "kernel32::Wow64EnableWow64FsRedirection(i 0)"
-  Push '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-AppxPackage -Name Forge.ShellOpen -AllUsers -ErrorAction SilentlyContinue | ForEach-Object { $$pkg = $$_.PackageFullName; if ($$_.PackageUserInformation) { foreach ($$u in $$_.PackageUserInformation) { Remove-AppxPackage -Package $$pkg -User $$u.UserSecurityId.Value -ErrorAction SilentlyContinue } }; Remove-AppxPackage -Package $$pkg -AllUsers -ErrorAction SilentlyContinue }; Get-AppxPackage -Name Forge.ShellOpen -ErrorAction SilentlyContinue | ForEach-Object { Remove-AppxPackage -Package $$_.PackageFullName -ErrorAction SilentlyContinue }"'
-  Call un.HideExec
-  System::Call "kernel32::Wow64EnableWow64FsRedirection(i 1)"
+  ; 真正卸载才移除系统包。升级时保留：包的外部位置就是 $INSTDIR，文件会被就地替换，
+  ; 主程序再按内容标识决定是否重注册；先删包会让菜单在升级后凭空消失。
+  ${If} $UpdateMode != 1
+    System::Call "kernel32::Wow64EnableWow64FsRedirection(i 0)"
+    Push '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-AppxPackage -Name Forge.ShellOpen -AllUsers -ErrorAction SilentlyContinue | ForEach-Object { $$pkg = $$_.PackageFullName; if ($$_.PackageUserInformation) { foreach ($$u in $$_.PackageUserInformation) { Remove-AppxPackage -Package $$pkg -User $$u.UserSecurityId.Value -ErrorAction SilentlyContinue } }; Remove-AppxPackage -Package $$pkg -AllUsers -ErrorAction SilentlyContinue }; Get-AppxPackage -Name Forge.ShellOpen -ErrorAction SilentlyContinue | ForEach-Object { Remove-AppxPackage -Package $$_.PackageFullName -ErrorAction SilentlyContinue }"'
+    Call un.HideExec
+    System::Call "kernel32::Wow64EnableWow64FsRedirection(i 1)"
+  ${EndIf}
 
   ; 真正卸载时清掉自签证书、经典动词、默认关联和稀疏包目录
   ${If} $UpdateMode != 1
@@ -928,7 +927,7 @@ Section Uninstall
     Call un.HideExec
 
     System::Call "kernel32::Wow64EnableWow64FsRedirection(i 0)"
-    Push '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPeople, Cert:\CurrentUser\TrustedPeople, Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object { $$_.Subject -eq `\"CN=Forge Shell Open`\" } | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem HKCU:\Software\Classes\SystemFileAssociations -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item -LiteralPath (Join-Path $$_.PSPath `\"shell\ForgeOpen`\") -Recurse -Force -ErrorAction SilentlyContinue }"'
+    Push '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPeople, Cert:\CurrentUser\TrustedPeople, Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object { $$_.Subject -eq \"CN=Forge Shell Open\" } | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem HKCU:\Software\Classes\SystemFileAssociations -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item -LiteralPath (Join-Path $$_.PSPath \"shell\ForgeOpen\") -Recurse -Force -ErrorAction SilentlyContinue }"'
     Call un.HideExec
     System::Call "kernel32::Wow64EnableWow64FsRedirection(i 1)"
     DeleteRegKey HKCU "Software\Classes\Directory\shell\ForgeOpen"

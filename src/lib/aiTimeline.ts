@@ -65,7 +65,7 @@ export function groupAiTimeline(entries: readonly AiEntry[], running = false): A
     // 两个气泡之间至多只有一个折叠段，展开看各步骤明细，避免交替切成多个碎片段落。
     const process = PROCESS_KINDS.includes(entry.kind);
     // 跨轮不并段：两段的归属轮次要唯一，否则「停止这一轮」之类的操作没有对象。
-    if (process && (!run.length || run[0].runId === entry.runId)) run = [...run, entry];
+    if (process && (!run.length || run[0].runId === entry.runId)) run.push(entry);
     else { flush(); if (process) run = [entry]; else items.push({ kind: "entry", key: entry.id, entry }); }
   }
   flush();

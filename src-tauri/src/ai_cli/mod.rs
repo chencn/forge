@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tauri::{AppHandle, Manager};
 
 /// 官方 npm registry。安装与更新只认它，镜像只用来查版本号。
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
@@ -23,6 +24,41 @@ const NPM_REGISTRY: &str = "https://registry.npmjs.org";
 static BUSY: AtomicBool = AtomicBool::new(false);
 /// 是否有管理操作正在进行；AI 会话启动前据此避让。
 pub(crate) fn management_busy() -> bool { BUSY.load(Ordering::Acquire) }
+
+/// 所有会启动 CLI 或修改 CLI 安装的入口先抢这把跨进程门闩；只尝试，不在生命周期锁内等待。
+pub(crate) struct RuntimeGate {
+    _lock: crate::sys::ExclusiveFileLock,
+}
+pub(crate) fn runtime_gate(app: &AppHandle) -> Result<RuntimeGate, String> {
+    let root = app.path().app_local_data_dir().map_err(|error| error.to_string())?;
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    crate::sys::ExclusiveFileLock::try_acquire(&root.join("ai-cli-management.lock"))?
+        .map(|lock| RuntimeGate { _lock: lock })
+        .ok_or_else(|| "CLI 管理进行中，请稍后重试".into())
+}
+
+/// 管理操作把所有空闲会话租约一并持住：门闩挡新启动，会话锁识别已在其他 Forge 进程运行的任务。
+fn lock_idle_sessions(app: &AppHandle) -> Result<Vec<crate::sys::ExclusiveFileLock>, String> {
+    let base = app.path().app_local_data_dir().map_err(|error| error.to_string())?.join("ai-sessions-v1");
+    let entries = match fs::read_dir(&base) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut locks = Vec::new();
+    for entry in entries.take(20_000) {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.file_type().map_err(|error| error.to_string())?.is_file() { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".lock") else { continue; };
+        if id.is_empty() || id.len() > 80 || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') { continue; }
+        match crate::sys::ExclusiveFileLock::try_acquire(&entry.path())? {
+            Some(lock) => locks.push(lock),
+            None => return Err("请先停止其他 Forge 窗口中的 AI 对话，再修改 CLI 安装".into()),
+        }
+    }
+    Ok(locks)
+}
 
 /// 两个受支持的 CLI。序列化成小写字符串，直接对应前端的 provider 值。
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -400,9 +436,9 @@ pub(crate) fn runtime_command(provider: Provider, args: &[&str]) -> Result<(Comm
     let status = cached_status(provider)?;
     if !status.installed || status.launcher_count != 1 { return Err("请保留一份可用的 CLI 安装后重新检测".into()); }
     let path = PathBuf::from(status.path.ok_or("CLI 安装路径缺失")?);
-    let version = status.version.ok_or("CLI 版本无法识别，不启动对话")?;
-    // 安装与更新是两套状态。用户正常升级后仍应启动；真正不兼容的帧由协议适配器
-    // 在本轮明确报错，不能拿一个写死的版本号把已安装 CLI 判成不可用。
+    // 不按版本号做任何拦截：用户升到哪个版本都照常启动，真正不兼容的帧由协议适配器
+    // 按实际内容报错。版本只作为展示与缓存键返回；解析不出来时留空，调用方按未知处理。
+    let version = status.version.unwrap_or_default();
     #[cfg(windows)]
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("ps1")) {
         let prefix = path.parent().ok_or("CLI 安装路径无效")?.to_path_buf();
@@ -468,11 +504,12 @@ fn failed_status(provider: Provider, error: String) -> Status {
 /// 检测两个 CLI。互斥在这里拿，保证检测期间不会有安装操作改目录；
 /// 两个 provider 并发探测，单个失败只影响自己那一份结果。
 #[tauri::command]
-pub async fn ai_cli_probe(force: Option<bool>) -> Result<Vec<Status>, String> {
+pub async fn ai_cli_probe(app: AppHandle, force: Option<bool>) -> Result<Vec<Status>, String> {
     // 桌面进程级缓存跨项目、跨 WebView 刷新保留；安装管理后才失效。
     let mut cache = LOCAL_STATUS.lock().await;
     if force == Some(true) { *cache = None; }
     if let Some(statuses) = cache.as_ref() { return Ok(statuses.clone()); }
+    let _gate = runtime_gate(&app)?;
     let _guard = BusyGuard::acquire()?;
     let (claude, codex) = tokio::join!(block(|| local_status(Provider::Claude)), block(|| local_status(Provider::Codex)));
     let mut statuses = vec![claude.unwrap_or_else(|error| failed_status(Provider::Claude, error)), codex.unwrap_or_else(|error| failed_status(Provider::Codex, error))];
@@ -485,8 +522,8 @@ static LOCAL_STATUS: tokio::sync::Mutex<Option<Vec<Status>>> = tokio::sync::Mute
 
 /// 联网更新查询不持有管理锁，不影响已安装工具创建或发送会话。
 #[tauri::command]
-pub async fn ai_cli_updates() -> Result<Vec<Status>, String> {
-    let statuses = ai_cli_probe(None).await?;
+pub async fn ai_cli_updates(app: AppHandle) -> Result<Vec<Status>, String> {
+    let statuses = ai_cli_probe(app, None).await?;
     let (claude, codex) = tokio::join!(update_status(statuses[0].clone()), update_status(statuses[1].clone()));
     Ok(vec![claude, codex])
 }
@@ -515,13 +552,16 @@ fn install_command(provider: Provider, action: Action, version: &str, home: &Pat
 /// 互斥与对话生命周期在同一临界区里拿：先确认没有正在跑的 AI 对话（否则改 CLI 会打断它们），
 /// 再拿管理锁。锁随阻塞任务移动，前端断开或 future 被取消都不会提前释放。
 #[tauri::command]
-pub async fn ai_cli_manage(provider: Provider, action: Action) -> Result<ManageResult, String> {
+pub async fn ai_cli_manage(app: AppHandle, provider: Provider, action: Action) -> Result<ManageResult, String> {
     let mut cache = LOCAL_STATUS.lock().await;
     // Guard 移入阻塞任务，前端断开或 async future 取消也不能提前解除互斥。
     let guard = {
         let _lifecycle = crate::ai_runtime::lifecycle_lock();
+        let gate = runtime_gate(&app).map_err(|_| "另一个 Forge 窗口正在检测或修改 CLI，请稍后重试")?;
+        let busy = BusyGuard::acquire()?;
         if crate::ai_runtime::has_runs() { return Err("请先停止 AI 对话，再修改 CLI 安装".into()); }
-        BusyGuard::acquire()?
+        let sessions = lock_idle_sessions(&app)?;
+        (busy, gate, sessions)
     };
     // 即使管理命令失败也可能留下部分安装，下一次读取必须重新检测。
     *cache = None;

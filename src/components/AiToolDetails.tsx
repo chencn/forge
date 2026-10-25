@@ -199,17 +199,19 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
 /** 折叠时不构造文件 diff 和完整 JSON，避免每个流式事件重做大文件工作。 */
 export function AiToolCall({ entry, subagents, hasRequest }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const view = describeAiTool(entry, false);
+  const fileEdit = ["edit", "add", "delete", "move"].includes(view.kind);
+  const [open, setOpen] = useState(fileEdit);
   /** 用户手动开关过后就不再自动展开；程序置位的那次不算用户意图。 */
   const touched = useRef(false);
   const programmatic = useRef(false);
   useEffect(() => {
-    // 失败的调用自动展开并保持（对照参考的 force + latch）：错误藏在折叠里等于没报。
-    if (entry.status === "failed" && !touched.current && !open) {
+    // 文件修改与失败调用默认展开；流式过程中后识别成修改也要打开，但绝不覆盖用户手动收起。
+    if ((fileEdit || entry.status === "failed") && !touched.current && !open) {
       programmatic.current = true;
       setOpen(true);
     }
-  }, [entry.status, open]);
+  }, [entry.status, fileEdit, open]);
   if (DELEGATION_TOOL.test(entry.name ?? "")) return <AiDelegationCard entry={entry} subagents={subagents} />;
   // 历史里的提问工具（没有请求卡的那份记录）才按问答记录渲染；实时里请求卡和工具条目
   // 是同一次提问的两条协议记录，这里再画一张就是「显示两次」——有请求卡就让位。
@@ -220,7 +222,6 @@ export function AiToolCall({ entry, subagents, hasRequest }: { entry: AiEntry; s
     </div>;
   }
   const status = entry.status === "failed" ? t("ai.runtime.failed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
-  const view = describeAiTool(entry, false);
   return <details className={`ai-tool is-${entry.status ?? "pending"}`} data-kind={view.kind} open={open}
     onToggle={(event) => {
       const next = event.currentTarget.open;

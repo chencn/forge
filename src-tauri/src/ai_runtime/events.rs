@@ -42,6 +42,8 @@ pub struct Page {
     pub latest_run_id: Option<String>,
     /// 当前仍在运行或排队的任务。历史分页可能尚未读到这些事件，所以单独返回轻量摘要。
     pub active_tasks: Vec<Value>,
+    /// 模型拆出的最新任务清单。它是会话级状态，不能依赖当前时间线页是否碰巧含有 task_list 事件。
+    pub task_list: Option<Value>,
     /// 读取过程中的非致命问题（例如某条记录损坏被跳过），有值就提示用户。
     pub warning: Option<String>,
     /// 该会话的全部计划版本；前端按 planId 取最新一版渲染审阅卡片。

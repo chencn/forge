@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aiSessionStorageKey } from "../../src/lib/aiSessions";
-import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadDraft, loadPromptHistory, rememberPrompt, saveDraft } from "../../src/lib/aiDrafts";
+import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearAiSessionStorage, clearDraft, loadDraft, loadPromptHistory, rememberPrompt, saveDraft } from "../../src/lib/aiDrafts";
 import type { DraftState } from "../../src/lib/aiDrafts";
 
 const ROOT = "D:\\app\\code\\forge";
@@ -42,6 +42,14 @@ describe("AI 草稿持久化", () => {
     clearDraft(ROOT, "s1");
     expect(loadDraft(ROOT, "s1")).toBe("");
     expect(loadPromptHistory(ROOT)).toEqual(["留下来的话"]);
+  });
+  it("删除会话同时清理草稿、附加目录和会话选项", () => {
+    const prefix = aiSessionStorageKey(ROOT);
+    saveDraft(ROOT, "s1", "draft");
+    store.set(`${prefix}:dirs:s1`, '["D:/extra"]');
+    store.set(`${prefix}:options:s1`, '{"model":"chosen"}');
+    clearAiSessionStorage(ROOT, "s1");
+    expect([...store.keys()].filter((key) => key.includes(":s1"))).toEqual([]);
   });
   it("超长草稿只留前面一段", () => {
     saveDraft(ROOT, "s1", "a".repeat(25_000));

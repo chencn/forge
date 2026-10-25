@@ -1,7 +1,7 @@
 //! Win11 新右键菜单用的稀疏包（IExplorerCommand + package identity）。
 //!
 //! 经典 `shell\ForgeOpen` 动词进不了新菜单。这里在开启「通过 Forge 打开」时
-//! 签名并注册稀疏包；关掉时卸掉。
+//! 创建证书、签名并注册稀疏包；关掉开关只隐藏动词，不卸包。
 //!
 //! 签名用一张自签证书。私钥只在 `CurrentUser\My` 里，不导出成文件。
 //! Win11 的 AppX 部署服务按**本机**信任链校验，只放进当前用户的
@@ -15,13 +15,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PACKAGE_NAME: &str = "Forge.ShellOpen";
+#[path = "../windows/shell/package.rs"]
+mod package_contract;
+
+use package_contract::{CERT_SUBJECT, PACKAGE_NAME};
 /// 用户在证书说明框里点了取消。不当成注册失败，也不要继续弹 UAC。
 const CERT_INSTALL_DECLINED: &str = "CERT_INSTALL_DECLINED";
-/// 文件、文件夹、空白处共用这一个命令。再挂第二个 CLSID 时，
-/// DLL 无法知道当前是哪一条 Verb，两条会同时变成「通过 Forge 打开」。
-const CLSID_FILE: &str = "B8E4F1A2-9C3D-4E5F-A1B2-C3D4E5F60718";
-const CERT_SUBJECT: &str = "CN=Forge Shell Open";
 /// 菜单标题与开关由主程序写在这里，DLL 只读。和记录「上一轮后缀 / 原默认程序」
 /// 的 `Software\Forge\OpenWith` 分开，免得两拨数据互相覆盖。
 pub const MENU_KEY: &str = r"Software\Forge\ShellMenu";
@@ -46,16 +45,17 @@ pub fn sync(
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     write_dll_settings(open_folder, open_file, label, extras)?;
-    if !(open_folder || open_file) {
-        remove_if_registered()?;
+    // 新菜单是 Win11 才有的扩展。Win10 上装了包也不会出现那条命令，
+    // 这时必须退回经典动词，否则菜单会整条消失。
+    if !is_windows_11() {
         return Ok(SyncOutcome {
             packaged: false,
             warning: None,
         });
     }
-    // 新菜单是 Win11 才有的扩展。Win10 上装了包也不会出现那条命令，
-    // 这时必须退回经典动词，否则菜单会整条消失。
-    if !is_windows_11() {
+    // 菜单没开就不建证书、不签名、不注册：这些都只在用户真正要用新菜单时才需要。
+    // 已经装过的包不因关开关而卸载——DLL 按 MENU_KEY 隐藏动词即可，避免下次再签一遍。
+    if !open_folder && !open_file {
         return Ok(SyncOutcome {
             packaged: false,
             warning: None,
@@ -228,17 +228,21 @@ fn ensure_package(install_dir: &Path) -> Result<(), String> {
     let marker = package_marker(install_dir, &dll_rel);
     let state_path = work.join("registered.txt");
     let state = fs::read_to_string(&state_path).unwrap_or_default();
-    if state == marker {
+    // 标记只是缓存，不是系统事实：安装器、系统清理工具或用户都可能单独卸掉 AppX 包。
+    // 只有标记和系统包版本同时命中才走快路径，避免“文件说已注册、Explorer 实际没菜单”。
+    let installed = installed_package_version();
+    let expected_version = package_version();
+    if state == marker
+        && installed
+            .as_ref()
+            .and_then(|value| value.as_ref())
+            .is_some_and(|version| version == &expected_version)
+    {
         return Ok(());
     }
-    // 包已经在用、版本也对，就不要重打。重打会先 Remove-AppxPackage，
-    // 后面的 Add 一旦失败，新菜单就没了。DLL 在外部目录，换文件不用重注册。
-    match installed_package_version() {
-        Some(Some(installed)) if installed == package_version() => {
-            stop_shell_host();
-            let _ = fs::write(&state_path, &marker);
-            return Ok(());
-        }
+    // marker 不一致说明 DLL、安装目录或包协议发生了变化。即使版本号相同也必须重装，
+    // 不能拿版本号替代内容身份；安装失败时下面仍会尝试装回上一份备份。
+    match installed {
         Some(_) => {}
         None => {
             return Err(err(
@@ -318,37 +322,29 @@ Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPeople, Cert:\C
     }
 }
 
-/// 关过一次就记下，下次启动不再为了「确认没装」去拉 PowerShell。
-fn remove_if_registered() -> Result<(), String> {
-    let Some(base) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return Ok(());
-    };
-    let work = base.join("Forge").join("shell-package");
-    let marker = work.join("registered.txt");
-    if fs::read_to_string(&marker).ok().as_deref() == Some("off\n") {
-        return Ok(());
-    }
-    remove_package()?;
-    fs::create_dir_all(&work).map_err(|e| err("SHELL_REG", e))?;
-    fs::write(&marker, "off\n").map_err(|e| err("SHELL_REG", e))
-}
-
 /// 记下这个包里写死了什么。版本号进 marker：升级后包必须重注册，
 /// 否则 manifest 里那条 `Version` 永远停在第一次装上的那个。
+/// 清单本身由 `package_contract` 按 schema 版本生成，语义变化靠 `PACKAGE_SCHEMA_VERSION` 兜住。
 fn package_marker(install_dir: &Path, dll_rel: &str) -> String {
     let dll = install_dir.join(dll_rel);
-    let meta = fs::metadata(&dll).ok();
+    let (dll_len, dll_secs) = file_stamp(&dll);
+    format!(
+        "on\n{}\n{}\n{}\n{dll_rel}\n{dll_len}\n{dll_secs}\n",
+        package_contract::PACKAGE_SCHEMA_VERSION,
+        env!("CARGO_PKG_VERSION"),
+        install_dir.display()
+    )
+}
+
+fn file_stamp(path: &Path) -> (u64, u64) {
+    let meta = fs::metadata(path).ok();
     let len = meta.as_ref().map(|item| item.len()).unwrap_or(0);
     let secs = meta
         .and_then(|item| item.modified().ok())
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|time| time.as_secs())
         .unwrap_or(0);
-    format!(
-        "on\n7\n{}\n{}\n{dll_rel}\n{len}\n{secs}\n",
-        env!("CARGO_PKG_VERSION"),
-        install_dir.display()
-    )
+    (len, secs)
 }
 
 /// 已安装的包版本。外层 `None` 表示没查成（这时不能当成「没安装」去卸包），
@@ -377,18 +373,6 @@ fn installed_package_version() -> Option<Option<String>> {
     } else {
         Some(Some(line.to_string()))
     }
-}
-
-/// 让持有 DLL 的 `dllhost.exe` 退出，好让安装包覆盖文件。
-///
-/// `taskkill` 没有 `COMMANDLINE` 过滤器（会直接报 "The search filter cannot be
-/// recognized"），只能按模块名筛：谁加载了 `forge_shell_cmd.dll` 就收谁。
-fn stop_shell_host() {
-    let mut command = Command::new("taskkill");
-    crate::sys::hide_console(&mut command);
-    let _ = command
-        .args(["/F", "/FI", "MODULES eq forge_shell_cmd.dll"])
-        .output();
 }
 
 fn remove_package() -> Result<(), String> {
@@ -689,66 +673,7 @@ fn find_shell_dll(install_dir: &Path) -> Option<PathBuf> {
 }
 
 fn write_manifest(pkg_dir: &Path, publisher: &str, dll_rel: &str) -> Result<(), String> {
-    let version = package_version();
-    let xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Package
-  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
-  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
-  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
-  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
-  IgnorableNamespaces="uap uap10 rescap desktop4 desktop5 com">
-  <Identity Name="{PACKAGE_NAME}" Publisher="{publisher}" Version="{version}" ProcessorArchitecture="x64" />
-  <Properties>
-    <DisplayName>Forge</DisplayName>
-    <PublisherDisplayName>Forge</PublisherDisplayName>
-    <Logo>StoreLogo.png</Logo>
-    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
-  </Properties>
-  <Resources>
-    <Resource Language="en-us" />
-  </Resources>
-  <Dependencies>
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
-  </Dependencies>
-  <Capabilities>
-    <rescap:Capability Name="runFullTrust" />
-    <rescap:Capability Name="unvirtualizedResources" />
-  </Capabilities>
-  <Applications>
-    <Application Id="Forge" Executable="forge.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
-      <uap:VisualElements DisplayName="Forge" Description="Forge" BackgroundColor="transparent"
-        Square150x150Logo="Square150x150Logo.png" Square44x44Logo="Square44x44Logo.png" />
-      <Extensions>
-        <com:Extension Category="windows.comServer">
-          <com:ComServer>
-            <com:SurrogateServer DisplayName="Forge Shell Open">
-              <com:Class Id="{CLSID_FILE}" Path="{dll_rel}" ThreadingModel="STA" />
-            </com:SurrogateServer>
-          </com:ComServer>
-        </com:Extension>
-        <desktop4:Extension Category="windows.fileExplorerContextMenus">
-          <desktop4:FileExplorerContextMenus>
-            <desktop5:ItemType Type="*">
-              <desktop5:Verb Id="ForgeOpen" Clsid="{CLSID_FILE}" />
-            </desktop5:ItemType>
-            <desktop5:ItemType Type="Directory">
-              <desktop5:Verb Id="ForgeOpenDir" Clsid="{CLSID_FILE}" />
-            </desktop5:ItemType>
-            <desktop5:ItemType Type="Directory\Background">
-              <desktop5:Verb Id="ForgeOpenBg" Clsid="{CLSID_FILE}" />
-            </desktop5:ItemType>
-          </desktop4:FileExplorerContextMenus>
-        </desktop4:Extension>
-      </Extensions>
-    </Application>
-  </Applications>
-</Package>
-"#
-    );
+    let xml = package_contract::manifest(env!("CARGO_PKG_VERSION"), publisher, dll_rel);
     fs::write(pkg_dir.join("AppxManifest.xml"), xml).map_err(|e| err("SHELL_REG", e))
 }
 
@@ -758,19 +683,7 @@ fn write_manifest(pkg_dir: &Path, publisher: &str, dll_rel: &str) -> Result<(), 
 /// `1.0.6.0`，发 1.0.7 时包永远停在旧版本，`package_marker` 又没记版本，
 /// 结果升级后新菜单不刷新。
 fn package_version() -> String {
-    let mut parts: Vec<u32> = env!("CARGO_PKG_VERSION")
-        .split(['.', '-', '+'])
-        .take(3)
-        .map(|part| part.parse().unwrap_or(0))
-        .collect();
-    while parts.len() < 4 {
-        parts.push(0);
-    }
-    parts
-        .iter()
-        .map(|part| part.to_string())
-        .collect::<Vec<_>>()
-        .join(".")
+    package_contract::package_version(env!("CARGO_PKG_VERSION"))
 }
 
 /// 稀疏包规范尺寸的彩色图标。
@@ -931,5 +844,17 @@ mod tests {
             version == format!("{cargo}.0") || version.starts_with(&prefix),
             "包版本 {version} 与 Cargo 版本 {cargo} 不一致"
         );
+    }
+
+    /// AppX 清单是与 Explorer/COM 的协议，三种右键目标和外部 DLL 路径缺一不可。
+    #[test]
+    fn package_manifest_registers_all_explorer_targets() {
+        let xml = package_contract::manifest("1.2.3", CERT_SUBJECT, "forge_shell_cmd.dll");
+        assert!(xml.contains("Version=\"1.2.3.0\""));
+        assert!(xml.contains("Path=\"forge_shell_cmd.dll\""));
+        assert!(xml.contains("Type=\"*\""));
+        assert!(xml.contains("Type=\"Directory\""));
+        assert!(xml.contains("Type=\"Directory\\Background\""));
+        assert!(xml.contains(&format!("Clsid=\"{}\"", package_contract::CLSID_FILE)));
     }
 }

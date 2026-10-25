@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { archiveAiRuntimeSession, pinAiRuntimeSession, deleteAiRuntimeSession } from "../lib/aiRuntime";
+import { archiveAiRuntimeSession, pinAiRuntimeSession, deleteAiRuntimeSession, releaseAiRuntimeSessionCache } from "../lib/aiRuntime";
 import type { AiSessionAction } from "../lib/aiSessions";
 
 /**
@@ -15,8 +15,10 @@ export function useAiRunLifecycle(reportError: (message: string) => void) {
    * 请求关闭一个会话标签：直接关。运行中的任务由全局运行时继续推进，
    * 重开会话即可看到后续进度（侧栏状态点/旋转标记同步指示）。
    */
-  const closeSession = useCallback((_id: string, close: () => void) => {
+  const closeSession = useCallback((id: string, close: () => void) => {
     close();
+    // 标签只是视图；后台任务继续，但终态后完整正文应释放，重开时再从持久化日志恢复。
+    releaseAiRuntimeSessionCache(id);
   }, []);
   /**
    * 重命名/归档/删除的统一入口：先动后端（删除还要停运行、删记录），成功后再改本地状态。

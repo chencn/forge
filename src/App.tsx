@@ -753,8 +753,11 @@ export default function App() {
    * 草稿页首条消息：创建会话、把欢迎页配置的选项种给新会话、留下待发出的
    * 文本与附件，然后切到会话标签——会话页挂载后自动把这条消息发出去。
    */
-  const launchAiDraft = (provider: AiProvider, text: string, images: string[]) => {
+  const launchAiDraft = async (provider: AiProvider, text: string, images: string[]) => {
     if (!settings.aiAssistantsEnabled || !workspaceRoot) return;
+    // 异步创建完成时用户可能已切换项目；后续状态必须仍写回发起创建的工程。
+    const launchWorkspace = workspaceRoot;
+    const launchRootKey = rootKey;
     // 删除旧会话后也不会复用现存会话的默认名称。
     let number = 1;
     let title = t("ai.defaultTitle", { name: AI_NAMES[provider], number });
@@ -762,13 +765,17 @@ export default function App() {
       title = t("ai.defaultTitle", { name: AI_NAMES[provider], number: ++number });
     }
     const requestedId = provider === "claude" ? crypto.randomUUID() : null;
-    void invoke<AiSession>("ai_runtime_create", { provider, workspace: workspaceRoot, sessionId: requestedId, title }).then((session) => {
-      seedAiSessionOptions(workspaceRoot, session.id, provider);
+    try {
+      const session = await invoke<AiSession>("ai_runtime_create", { provider, workspace: launchWorkspace, sessionId: requestedId, title });
+      seedAiSessionOptions(launchWorkspace, session.id, provider);
       setAiDraftHandoff(session.id, { text, images });
       dispatchAiSession({ type: "create", session });
-      setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: false }));
-      setActiveTab(`ai|${session.id}`);
-    }).catch((cause) => reportError(errorText(cause)));
+      setAiDraftOpen((current) => ({ ...current, [launchRootKey]: false }));
+      setActiveTabByRoot((current) => ({ ...current, [launchRootKey]: `ai|${session.id}` }));
+    } catch (cause) {
+      reportError(errorText(cause));
+      throw cause;
+    }
   };
 
   /**

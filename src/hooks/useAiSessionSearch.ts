@@ -16,9 +16,11 @@ export interface AiSearchState {
   query: string;
   /** ……以及对应哪一档搜索范围（含不含已归档）。 */
   archived: boolean;
+  /** 结果所属工作区；项目切换后的首帧也不能复用旧项目结论。 */
+  workspace: string | null;
 }
 
-const IDLE: AiSearchState = { status: "idle", result: null, error: null, query: "", archived: false };
+const IDLE: AiSearchState = { status: "idle", result: null, error: null, query: "", archived: false, workspace: null };
 
 /**
  * 会话正文搜索的节流与归属判定。
@@ -32,25 +34,32 @@ export function useAiSessionSearch(workspace: string | null, raw: string, includ
   const tracker = useRef(createAiSearchTracker()).current;
   const query = normalizeSearchQuery(raw);
   useEffect(() => {
+    // 工作区、查询词或范围一变就立即换令牌；不能等防抖结束才让旧项目的在途请求失效。
+    const token = tracker.begin(`${workspace ?? ""}\0${query}\0${includeArchived}`);
     if (!workspace || !isTauri() || query.length < AI_SEARCH_MIN_QUERY) {
-      setState((current) => (current === IDLE ? current : IDLE));
+      setState((current) => (current === IDLE ? current : { ...IDLE, workspace }));
       return;
     }
     // 查询词或范围一变，旧结果立刻不再作数：先落到 loading，别让上一条命中继续显示。
     setState((current) => (current.status === "loading" && current.query === query && current.archived === includeArchived
       ? current
-      : { status: "loading", result: null, error: null, query, archived: includeArchived }));
+      : { status: "loading", result: null, error: null, query, archived: includeArchived, workspace }));
     const timer = setTimeout(() => {
-      const token = tracker.begin(query);
       void searchAiSessions(workspace, query, includeArchived).then((result) => {
         if (!tracker.settle(token)) return;
-        setState({ status: "ready", result, error: null, query, archived: includeArchived });
+        setState({ status: "ready", result, error: null, query, archived: includeArchived, workspace });
       }).catch((error) => {
         if (!tracker.settle(token)) return;
-        setState({ status: "failed", result: null, error: String(error), query, archived: includeArchived });
+        setState({ status: "failed", result: null, error: String(error), query, archived: includeArchived, workspace });
       });
     }, AI_SEARCH_DEBOUNCE_MS);
     return () => { clearTimeout(timer); };
   }, [includeArchived, query, tracker, workspace]);
+  // effect 要到提交后才运行；render 当下就挡掉旧工作区快照，避免闪一帧旧命中。
+  if (state.workspace !== workspace) {
+    return workspace && query.length >= AI_SEARCH_MIN_QUERY
+      ? { status: "loading", result: null, error: null, query, archived: includeArchived, workspace }
+      : { ...IDLE, workspace };
+  }
   return state;
 }

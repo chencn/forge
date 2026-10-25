@@ -6,6 +6,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -334,19 +335,36 @@ fn save_source(base: &Path, id: &str, source: &Source) -> Result<(), String> {
         &serde_json::to_string(source).map_err(|e| e.to_string())?,
     )
 }
-fn checkpoint(base: &Path, id: &str) -> Result<u64, String> {
+#[derive(Default)]
+struct ProjectionState {
+    pending_task_creates: HashMap<String, Value>,
+}
+
+fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     let path = base.join(id).join("events.jsonl");
     if !path.exists() {
-        return Ok(0);
+        return Ok((0, ProjectionState::default()));
     }
     let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
     let mut offset = 0;
+    let mut state = ProjectionState::default();
     while let Some((event, _)) = bounded_line(&mut reader)? {
         if event["kind"] == "history_checkpoint" {
             offset = event["data"]["offset"].as_u64().ok_or("原生历史游标损坏")?;
         }
+        if event["kind"] == "tool" {
+            let data = &event["data"];
+            if let Some(id) = data["id"].as_str() {
+                if data["name"] == "TaskCreate" {
+                    state.pending_task_creates.insert(id.to_owned(), data.clone());
+                } else if data.get("output").is_some() {
+                    // 工具结果已经消费了这次创建；无论是否成功提取真实 ID，都不能串到后续结果。
+                    state.pending_task_creates.remove(id);
+                }
+            }
+        }
     }
-    Ok(offset)
+    Ok((offset, state))
 }
 /// 调用方需持有 `IO_LOCK` 与会话租约；一批事件与检查点合并成一次持久追加。
 pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
@@ -362,7 +380,7 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     if checked.source.native_id != source.native_id {
         return Err("原生历史文件被替换".into());
     }
-    let mut offset = checkpoint(base, id)?;
+    let (mut offset, mut projection) = checkpoint(base, id)?;
     let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
     if length > MAX_FILE || length < offset {
         return Err("原生历史过大或已被截断；保留现有镜像".into());
@@ -405,7 +423,7 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
                 return Err("原生历史记录归属不一致".into());
             }
         }
-        let values = project(source.provider, &value, offset);
+        let values = project_with_state(source.provider, &value, offset, &mut projection);
         bytes += values
             .iter()
             .map(|(_, v)| v.to_string().len())
@@ -632,6 +650,15 @@ pub fn human_text(body: &str) -> Option<String> {
     (!rest.is_empty()).then(|| rest.to_owned())
 }
 fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value)> {
+    project_with_state(provider, value, offset, &mut ProjectionState::default())
+}
+
+fn project_with_state(
+    provider: Provider,
+    value: &Value,
+    offset: u64,
+    projection: &mut ProjectionState,
+) -> Vec<(String, Value)> {
     let mut out = vec![];
     let id = format!("native-{offset}");
     if provider == Provider::Claude {
@@ -675,12 +702,32 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
                         "thinking" => out.push(("reasoning".into(), json!({"id":format!("{id}-{index}"),"text":block["thinking"]}))),
                         "tool_use" => {
                             out.push(("tool".into(), json!({"id":block["id"],"name":block["name"],"input":block["input"],"status":"recorded"})));
+                            if block["name"] == "TaskCreate" {
+                                if let Some(tool_id) = block["id"].as_str().filter(|id| !id.is_empty()) {
+                                    projection.pending_task_creates.insert(tool_id.to_owned(), block.clone());
+                                }
+                            }
                             // 原生历史回放：TodoWrite / TaskCreate / TaskUpdate 补齐 task_list 事件，确保历史会话恢复后可折叠任务清单可见。
                             if let Some(super::protocol::Action::Emit { kind, data }) = super::claude::task_event(block["id"].as_str().unwrap_or(""), block["name"].as_str().unwrap_or(""), &block["input"]) {
                                 out.push((kind.into(), data));
                             }
                         }
-                        "tool_result" => out.push(("tool".into(), json!({"id":block["tool_use_id"],"output":block["content"],"result":super::structured_tool_result(value.get("toolUseResult").or_else(|| value.get("tool_use_result")), block["tool_use_id"].as_str().unwrap_or_default(), result_count),"status":if block["is_error"]==true {"failed"} else {"completed"}}))),
+                        "tool_result" => {
+                            let tool_id = block["tool_use_id"].as_str().unwrap_or_default();
+                            let structured = super::structured_tool_result(
+                                value.get("toolUseResult").or_else(|| value.get("tool_use_result")),
+                                tool_id,
+                                result_count,
+                            );
+                            out.push(("tool".into(), json!({"id":block["tool_use_id"],"output":block["content"],"result":structured,"status":if block["is_error"]==true {"failed"} else {"completed"}})));
+                            if let Some(tool) = projection.pending_task_creates.remove(tool_id) {
+                                if block["is_error"] != true {
+                                    if let Some(super::protocol::Action::Emit { kind, data }) = super::claude::created_task_event(&tool, structured, &block["content"]) {
+                                        out.push((kind.into(), data));
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -733,42 +780,10 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
                     let summary = p["summary"].as_array().into_iter().flatten().filter_map(|s| s["text"].as_str()).collect::<Vec<_>>().join("\n");
                     if !summary.is_empty() { out.push(("reasoning".into(), json!({"id":id,"text":summary}))); }
                 }
-                "plan" => {
-                    if let Some(plan_arr) = p["plan"].as_array().or_else(|| p["items"].as_array()) {
-                        let items: Vec<_> = plan_arr.iter().enumerate().filter_map(|(index, item)| {
-                            let content = item["step"].as_str().or_else(|| item["content"].as_str())?.trim();
-                            if content.is_empty() { return None; }
-                            let status = match item["status"].as_str().unwrap_or("") {
-                                "completed" | "complete" => "complete",
-                                "inProgress" | "in_progress" | "active" => "active",
-                                _ => "pending",
-                            };
-                            Some(json!({"id": format!("plan-{index}"), "content": content, "status": status}))
-                        }).collect();
-                        if !items.is_empty() {
-                            out.push(("task_list".into(), json!({"replace": true, "items": items})));
-                        }
-                    }
-                }
+                // Codex 的完成态 plan item 是待审阅正文，不是 turn/plan/updated 任务清单。
+                "plan" => {}
                 _ => {}
             },
-            "turn_plan" => {
-                if let Some(plan_arr) = p["plan"].as_array().or_else(|| value["plan"].as_array()) {
-                    let items: Vec<_> = plan_arr.iter().enumerate().filter_map(|(index, item)| {
-                        let content = item["step"].as_str().or_else(|| item["content"].as_str())?.trim();
-                        if content.is_empty() { return None; }
-                        let status = match item["status"].as_str().unwrap_or("") {
-                            "completed" | "complete" => "complete",
-                            "inProgress" | "in_progress" | "active" => "active",
-                            _ => "pending",
-                        };
-                        Some(json!({"id": format!("plan-{index}"), "content": content, "status": status}))
-                    }).collect();
-                    if !items.is_empty() {
-                        out.push(("task_list".into(), json!({"replace": true, "items": items})));
-                    }
-                }
-            }
             "turn_context" => out.push(("configuration".into(), json!({"model":p["model"],"effort":p["effort"]}))),
             "compacted" => out.push(("compaction".into(), json!({"summaryId":id,"status":"completed","text":p["message"].as_str().unwrap_or("")}))),
             // 文件改动只在这条事件里有权威数据（changes 映射带 unified_diff）：
@@ -958,6 +973,57 @@ mod tests {
         assert_eq!(recorded[0].1["status"], "recorded");
         assert_eq!(failed[0].1["status"], "failed");
     }
+
+    #[test]
+    fn claude_history_rebinds_task_create_id_before_task_update() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-history-task-create-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("native");
+        for path in [&root, &base, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let session = "claude-task-history";
+        let mut records = vec![
+            json!({"type":"assistant","cwd":root,"sessionId":session,"message":{"content":[{
+                "type":"tool_use","id":"tool-create","name":"TaskCreate",
+                "input":{"subject":"检查历史任务","description":"保留正文"}
+            }]}}),
+        ];
+        // 强制 TaskCreate 与结果跨过单次同步的 500 个投影事件上限，覆盖进程内状态丢失的边界。
+        for index in 0..498 {
+            records.push(json!({"type":"assistant","cwd":root,"sessionId":session,"message":{
+                "id":format!("filler-{index}"),"content":format!("filler-{index}")
+            }}));
+        }
+        records.extend([
+            json!({"type":"user","cwd":root,"sessionId":session,"message":{"content":[{
+                "type":"tool_result","tool_use_id":"tool-create","content":"Task #7 created"
+            }]}}),
+            json!({"type":"assistant","cwd":root,"sessionId":session,"message":{"content":[{
+                "type":"tool_use","id":"tool-update","name":"TaskUpdate",
+                "input":{"taskId":"7","status":"in_progress"}
+            }]}}),
+        ]);
+        let content = records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        fs::write(native.join("session.jsonl"), content).unwrap();
+
+        discover_in(&base, &workspace, vec![(Provider::Claude, native)]).unwrap();
+        assert!(sync(&base, session, &workspace).unwrap(), "创建结果应留到下一同步批次");
+        while sync(&base, session, &workspace).unwrap() {}
+        let page = Store::page(&base, session, &workspace, Window::After(0), 500, false).unwrap();
+        let items = page.task_list.unwrap()["items"].as_array().unwrap().clone();
+        assert_eq!(items, vec![json!({
+            "id":"7","content":"检查历史任务","detail":"保留正文","status":"active"
+        })]);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     #[test]
     fn discovery_sync_continuation_and_hiding_are_project_scoped() {
         let temp = std::env::temp_dir().join(format!(

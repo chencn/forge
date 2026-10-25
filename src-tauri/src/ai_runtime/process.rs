@@ -1,6 +1,6 @@
 //! 专用的有界 JSONL 传输层，与 CLI 安装时的输出捕获分开。
 //! Dedicated bounded JSONL transport, separate from CLI installation capture.
-use crate::ai_cli::process::ProcessTree;
+use crate::ai_cli::process::{prepare_isolated, ProcessTree};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -69,6 +69,7 @@ impl Process {
             command.process_group(0);
         }
         crate::sys::hide_console(&mut command);
+        prepare_isolated(&mut command);
         let mut child = command.spawn().map_err(|e| format!("无法启动 CLI：{e}"))?;
         let tree = match ProcessTree::new(&child) {
             Ok(tree) => tree,
@@ -81,7 +82,8 @@ impl Process {
         let stdin = child.stdin.take().ok_or("CLI 缺少 stdin")?;
         let stdout = child.stdout.take().ok_or("CLI 缺少 stdout")?;
         let stderr_pipe = child.stderr.take().ok_or("CLI 缺少 stderr")?;
-        let (tx, incoming) = mpsc::sync_channel(64);
+        // 单条合法消息可达 16 MiB；容量 2 把解析后在途数据压在几十 MiB，并尽早反压 CLI。
+        let (tx, incoming) = mpsc::sync_channel(2);
         let errors = tx.clone();
         let (writer, writes) = mpsc::sync_channel::<Vec<u8>>(32);
         let write_thread = std::thread::spawn(move || {

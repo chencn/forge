@@ -323,8 +323,7 @@ pub async fn settings_load(app: AppHandle) -> Settings {
     block_value(move || read(&app), Settings::default).await
 }
 
-/// 进程内的读-合并-写互斥。跨进程（dev 与安装版同时开）不靠这把锁，
-/// 靠的是「只写自己改过的那几个字段」：两个窗口改不同字段，谁后落盘都不影响对方。
+/// 进程内互斥减少同进程争用；跨进程原子性由 settings.lock 覆盖完整读改写。
 static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 读文件里的原始 JSON。与 `read` 相反，这里**不**退回默认值：
@@ -376,16 +375,27 @@ fn apply_patch(document: serde_json::Value, patch: &serde_json::Value) -> Result
 #[tauri::command]
 pub async fn settings_save(app: AppHandle, patch: serde_json::Value) -> Result<Settings, String> {
     block(move || {
-        let _lifecycle = crate::ai_runtime::lifecycle_lock();
-        let guard = SETTINGS_LOCK.lock().map_err(|error| error.to_string())?;
-        let before = read(&app);
-        let (document, merged) = apply_patch(read_document(&app)?, &patch)?;
-        if before.ai_assistants_enabled && !merged.ai_assistants_enabled {
-            crate::ai_runtime::stop_for_disable(&app)?;
+        let (merged, stopping) = {
+            let _lifecycle = crate::ai_runtime::lifecycle_lock();
+            let _guard = SETTINGS_LOCK.lock().map_err(|error| error.to_string())?;
+            let path = settings_path(&app)?;
+            let dir = path.parent().ok_or_else(|| err("CONFIG_DIR", "设置路径没有父目录"))?;
+            fs::create_dir_all(dir).map_err(|error| err_parts("IO", &[dir.display().to_string(), error.to_string()]))?;
+            let _file_guard = crate::sys::ExclusiveFileLock::acquire(&dir.join("settings.lock"))?;
+            let before = read(&app);
+            let (document, merged) = apply_patch(read_document(&app)?, &patch)?;
+            // 锁内只清队列、置停止位并保存开关；真正等进程退出必须等三把锁都释放。
+            let stopping = if before.ai_assistants_enabled && !merged.ai_assistants_enabled {
+                Some(crate::ai_runtime::stop_for_disable(&app)?)
+            } else {
+                None
+            };
+            save_document(&app, &document)?;
+            (merged, stopping)
+        };
+        if let Some(stopping) = stopping {
+            crate::ai_runtime::wait_for_disable(stopping)?;
         }
-        let saved = save_document(&app, &document);
-        drop(guard);
-        saved?;
         Ok(merged)
     })
     .await

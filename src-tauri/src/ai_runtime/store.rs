@@ -128,6 +128,11 @@ pub fn workspace(path: &str) -> Result<String, String> {
     })
 }
 
+/// 事件锁放在会话目录旁边；删除目录时锁文件仍在，旧进程不能在删除后重新追加并复活会话。
+pub fn events_lock_path(base: &Path, id: &str) -> PathBuf {
+    base.join(format!("{id}.events.lock"))
+}
+
 /// 一把 OS 级独占租约。进程崩溃时内核自动释放，所以不需要靠 PID 判断陈旧锁。
 pub struct Lease {
     /// 句柄必须活着：锁随句柄关闭而释放，Drop 即解锁。
@@ -212,7 +217,29 @@ impl Store {
         title: &str,
         version: &str,
     ) -> Result<Self, String> {
-        let (mut store, scan) = Self::load(base, id, root, provider, title, version)?;
+        Self::open_mode(base, id, root, provider, title, version, true)
+    }
+    /// 打开已经存在的会话准备启动运行。发送链路绝不能凭一个旧标签或外部队列重建已删除会话。
+    pub fn open_existing(
+        base: &Path,
+        id: &str,
+        root: &str,
+        provider: Provider,
+        title: &str,
+        version: &str,
+    ) -> Result<Self, String> {
+        Self::open_mode(base, id, root, provider, title, version, false)
+    }
+    fn open_mode(
+        base: &Path,
+        id: &str,
+        root: &str,
+        provider: Provider,
+        title: &str,
+        version: &str,
+        create: bool,
+    ) -> Result<Self, String> {
+        let (mut store, scan) = Self::load(base, id, root, provider, title, version, create)?;
         // 调用方握着租约，就说明本进程里没有这一轮的 worker：日志停在 running
         // 必然是上一次进程被打断的。标成已取消，并且不自动重发消息，避免重复执行工具。
         if let Some(event) = scan.last_status {
@@ -234,7 +261,7 @@ impl Store {
         title: &str,
         version: &str,
     ) -> Result<Self, String> {
-        Self::load(base, id, root, provider, title, version).map(|(store, _)| store)
+        Self::load(base, id, root, provider, title, version, false).map(|(store, _)| store)
     }
     /// 同上，另外带回日志当前的活动任务表（runId → 最后一次未终结的状态记录）。
     /// 写状态前拿它比一比：秒级监控和重复的顺序回写会一遍遍写同一个状态，
@@ -247,7 +274,7 @@ impl Store {
         title: &str,
         version: &str,
     ) -> Result<(Self, std::collections::HashMap<String, serde_json::Value>), String> {
-        let (store, scan) = Self::load(base, id, root, provider, title, version)?;
+        let (store, scan) = Self::load(base, id, root, provider, title, version, false)?;
         Ok((store, scan.active_tasks))
     }
     /// 两个打开方式共用的部分：建目录、读元数据、扫出最新序号。
@@ -258,12 +285,17 @@ impl Store {
         provider: Provider,
         title: &str,
         version: &str,
+        create: bool,
     ) -> Result<(Self, Scan), String> {
         if !valid_id(id) {
             return Err("无效的会话 ID".into());
         }
         let dir = base.join(id);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        if create {
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        } else if !dir.is_dir() {
+            return Err("会话不存在".into());
+        }
         // 已有标题以持久化记录为准，旧标签页发送时不能覆盖重命名结果。
         let meta = if dir.join("meta.json").exists() {
             Self::metadata(&dir, root)?
@@ -290,7 +322,7 @@ impl Store {
         }
         let path = dir.join("events.jsonl");
         let length = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let scan = match LogIndex::current(&path, &dir) {
+        let scan = match LogIndex::current(&path, &dir, id) {
             // 索引只认「补读到日志末尾」的那一份：序号连续与归属都是补读时校验过的，
             // 最新序号和活动任务直接取它，不必为了开一次会话把整份日志再解析一遍。
             // 尾巴上有写了一半的行时长度对不上，交给下面那条会截断修复的全量扫描。
@@ -431,6 +463,12 @@ impl Store {
         if self.poisoned {
             return Err("本轮记录写入已失败，禁止继续追加；请重新加载会话".into());
         }
+        let base = self.dir.parent().ok_or("会话存储路径无效")?;
+        // 进程内 IO_LOCK 只能挡住本窗口；这个锁覆盖跨进程的尾序号读取与整批追加。
+        let _events = crate::sys::ExclusiveFileLock::acquire(&events_lock_path(base, &self.meta.session_id))?;
+        if !self.dir.is_dir() {
+            return Err("会话不存在".into());
+        }
         let path = self.dir.join("events.jsonl");
         let mut file = OpenOptions::new()
             .create(true)
@@ -442,7 +480,7 @@ impl Store {
         // 共享日志的序号不能只信实例缓存：排队状态、计划结算、导入镜像都是另开 Store
         // 实例的写者，它们推进的序号不会同步进这里的 `self.seq`——照缓存写就会回卷重复
         // （实测日志里 seq 从 8433 倒回 8428）。每次落盘前从文件尾部实读最后一条完整
-        // 事件对齐；调用方持有 IO_LOCK，串行到这里，这份实读就是权威值。
+        // 事件对齐；调用方持有 IO_LOCK，跨进程再由 events.lock 串行，这份实读就是权威值。
         self.seq = Self::tail_seq(&mut file, original_len)?;
         let mut events = Vec::new();
         let mut bytes = Vec::new();
@@ -502,7 +540,7 @@ impl Store {
         let path = dir.join("events.jsonl");
         // 索引把「整份日志」的代价挪到它自己身上：翻页只解析这一页附近，
         // 摘要配对素材、最新序号、活动任务也一并从它那里取。
-        let index = LogIndex::current(&path, &dir);
+        let index = LogIndex::current(&path, &dir, id);
         let index_file = LogIndex::file(&dir);
         let fold = match &index {
             Some(index) => pair_compactions(&mut index.episodes.clone(), &index.summaries),
@@ -561,6 +599,8 @@ impl Store {
             .map(str::to_owned);
         let mut active_tasks: Vec<_> = std::mem::take(&mut scan.active_tasks).into_values().collect();
         active_tasks.sort_by_key(|task| task["seq"].as_u64().unwrap_or_default());
+        // 索引是正常路径；索引不可用时，全量扫描仍按同一规则折叠，不返回半张清单。
+        let task_list = index.as_ref().and_then(|index| index.task_list.clone()).or_else(|| scan.task_list.clone());
         let (has_more, has_older, latest_seq) = (scan.has_more, scan.has_older, scan.seq);
         let latest_run_id = scan.last_status.take().map(|event| event.run_id);
         let events = scan.take_events();
@@ -580,6 +620,7 @@ impl Store {
             latest_seq,
             latest_run_id,
             active_tasks,
+            task_list,
             warning: None,
             plans: Vec::new(),
         })
@@ -615,10 +656,65 @@ struct Scan {
     active_tasks: std::collections::HashMap<String, serde_json::Value>,
     /// user 与紧随其后的 status 分开写入；暂存提示词用于活动任务摘要。
     pending_prompts: std::collections::HashMap<String, String>,
+    /// 全量扫描折叠出的最新模型任务清单；分页窗口不参与这份状态的计算。
+    task_list: Option<serde_json::Value>,
     /// 往后翻：还有更新的事件没被这一页装下。
     has_more: bool,
     /// 往前翻：还有更早的事件没被这一页装下。
     has_older: bool,
+}
+
+/// task_list 既会发完整快照，也会发 TaskUpdate 稀疏补丁；这里统一折叠成可独立返回的完整状态。
+fn fold_task_list(previous: Option<&serde_json::Value>, event: &Event) -> serde_json::Value {
+    fn patch(item: &serde_json::Value, index: usize) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let source = item.as_object()?;
+        let content = source.get("content").and_then(|value| value.as_str());
+        let id = source.get("id").and_then(|value| value.as_str()).filter(|value| !value.is_empty())
+            .map(str::to_owned).or_else(|| content.filter(|value| !value.is_empty()).map(str::to_owned))
+            .unwrap_or_else(|| format!("task-{index}"));
+        let mut out = serde_json::Map::new();
+        out.insert("id".into(), serde_json::json!(id));
+        for key in ["content", "replacesId", "status", "detail"] {
+            if let Some(value) = source.get(key).and_then(|value| value.as_str()) {
+                out.insert(key.into(), serde_json::json!(value));
+            }
+        }
+        Some(out)
+    }
+    fn complete(mut item: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+        item.entry("content").or_insert_with(|| serde_json::json!(""));
+        item.entry("status").or_insert_with(|| serde_json::json!("pending"));
+        // replacesId 只参与一次身份迁移，不属于最终任务状态。
+        item.remove("replacesId");
+        serde_json::Value::Object(item)
+    }
+
+    let incoming: Vec<_> = event.data["items"].as_array().into_iter().flatten().enumerate()
+        .filter_map(|(index, item)| patch(item, index)).collect();
+    let replace = event.data["replace"] == true;
+    let mut items = previous.and_then(|snapshot| snapshot["items"].as_array()).cloned().unwrap_or_default();
+    if replace {
+        items = incoming.into_iter().map(complete).collect();
+    } else {
+        for update in incoming {
+            let id = update["id"].as_str().unwrap_or_default();
+            let replaces = update.get("replacesId").and_then(|value| value.as_str());
+            let found = items.iter().position(|old| old["id"].as_str() == Some(id)
+                || replaces.is_some_and(|old_id| old["id"].as_str() == Some(old_id)));
+            if let Some(index) = found {
+                let mut merged = items[index].as_object().cloned().unwrap_or_default();
+                for (key, value) in update {
+                    // 空 subject 是 Claude 的“字段缺失”旧形状，不能洗掉 TaskCreate 的正文。
+                    if key == "content" && value.as_str().is_some_and(str::is_empty) { continue; }
+                    merged.insert(key, value);
+                }
+                items[index] = complete(merged);
+            } else {
+                items.push(complete(update));
+            }
+        }
+    }
+    serde_json::json!({"seq":event.seq,"runId":event.run_id,"items":items})
 }
 
 impl Scan {
@@ -691,6 +787,10 @@ struct CompactionSummary {
     episode_id: Option<String>,
     /// `summaryId`（`native-1418700`）里带的原生字节偏移。
     at: Option<u64>,
+    /// 对应事件行在 Forge 日志里的偏移；索引不复制正文，读取时只 seek 这一行。
+    #[serde(default)]
+    offset: Option<u64>,
+    #[serde(default, skip_serializing)]
     text: String,
 }
 
@@ -699,6 +799,9 @@ struct CompactionSummary {
 pub struct CompactionFold {
     /// 段落末尾事件的序号 → 要并进去的摘要正文。
     pub text: std::collections::HashMap<u64, String>,
+    /// 段落末尾事件序号 →（摘要事件序号，摘要行偏移）。索引路径按需读取正文，
+    /// 不再为每次翻页预读会话里的全部压缩摘要。
+    offsets: std::collections::HashMap<u64, (u64, u64)>,
     /// 正文已经并走的摘要事件序号 → 它并入的那一条。摘要本身不再单独出现，
     /// 否则同一次压缩在时间线上排两遍；搜索也按这份口径改报命中位置，
     /// 点进去才跳得到一条界面上真有的事件。
@@ -716,6 +819,7 @@ fn classify_compaction(
     event: &Event,
     episodes: &mut Vec<CompactionEpisode>,
     summaries: &mut Vec<CompactionSummary>,
+    offset: Option<u64>,
 ) {
     let text = event.data["text"].as_str().unwrap_or_default();
     let episode_id = event.data["episodeId"].as_str().map(str::to_owned);
@@ -724,6 +828,7 @@ fn classify_compaction(
             seq: event.seq,
             episode_id,
             at: id.strip_prefix("native-").and_then(|digits| digits.parse::<u64>().ok()),
+            offset,
             text: text.to_owned(),
         });
         return;
@@ -765,24 +870,61 @@ fn classify_compaction(
 /// 也不把摘要贴到另一次压缩上。
 fn pair_compactions(episodes: &mut [CompactionEpisode], summaries: &[CompactionSummary]) -> CompactionFold {
     let mut fold = CompactionFold::default();
+    let mut by_id = std::collections::HashMap::<String, std::collections::VecDeque<usize>>::new();
+    for (index, episode) in episodes.iter().enumerate() {
+        if let Some(id) = &episode.episode_id {
+            by_id.entry(id.clone()).or_default().push_back(index);
+        }
+    }
+    let mut legacy = 0usize;
     for summary in summaries {
-        // 只认排在摘要之前的段落：原生内容是追加在日志末尾的，往后的段落不可能是它的出处。
-        let hit = episodes.iter_mut().find(|episode| episode.last < summary.seq && !episode.resolved && !episode.has_text
-            && match (&summary.episode_id, &episode.episode_id) {
-                (Some(want), Some(have)) => want == have,
-                // 没有段落标识就按顺序认，但仍要过字节偏移这一关：
-                // 写日志时按偏移认不上的，这里也不许靠顺序硬凑。
-                (None, Some(_)) | (Some(_), None) => false,
-                (None, None) => match (episode.source_start, summary.at) {
-                    (Some(start), Some(offset)) => start <= offset,
-                    _ => true,
-                },
-            });
-        if let Some(episode) = hit {
+        // 有身份的现代日志直接按 id 取；旧日志按顺序单调前进。两条路径都只看每个段落一次。
+        let hit = if let Some(id) = &summary.episode_id {
+            let mut found = None;
+            if let Some(queue) = by_id.get_mut(id) {
+                while let Some(&index) = queue.front() {
+                    let episode = &episodes[index];
+                    if episode.resolved || episode.has_text {
+                        queue.pop_front();
+                        continue;
+                    }
+                    // 摘要只可能认领排在它之前的段落；未来摘要仍可能认领这一条，不能弹掉。
+                    if episode.last >= summary.seq { break; }
+                    queue.pop_front();
+                    found = Some(index);
+                    break;
+                }
+            }
+            found
+        } else {
+            let mut found = None;
+            while legacy < episodes.len() {
+                let index = legacy;
+                let episode = &episodes[index];
+                if episode.episode_id.is_some() || episode.resolved || episode.has_text {
+                    legacy += 1;
+                    continue;
+                }
+                if episode.last >= summary.seq { break; }
+                // 原生偏移按时间递增；当前段落起点已经越过摘要时，宁可不配，也不向后误配。
+                if matches!((episode.source_start, summary.at), (Some(start), Some(at)) if start > at) { break; }
+                legacy += 1;
+                found = Some(index);
+                break;
+            }
+            found
+        };
+        if let Some(index) = hit {
+            let episode = &mut episodes[index];
             episode.resolved = true;
             episode.has_text = true;
             fold.merged.insert(summary.seq, episode.last);
-            fold.text.insert(episode.last, summary.text.clone());
+            if !summary.text.is_empty() {
+                fold.text.insert(episode.last, summary.text.clone());
+            }
+            if let Some(offset) = summary.offset {
+                fold.offsets.insert(episode.last, (summary.seq, offset));
+            }
         }
     }
     fold
@@ -811,7 +953,7 @@ fn compaction_material(path: &Path) -> (Vec<CompactionEpisode>, Vec<CompactionSu
         if event.kind != "compaction" {
             continue;
         }
-        classify_compaction(&event, &mut episodes, &mut summaries);
+        classify_compaction(&event, &mut episodes, &mut summaries, None);
     }
     (episodes, summaries)
 }
@@ -828,8 +970,10 @@ pub fn compaction_fold(path: &Path) -> CompactionFold {
 }
 
 /// 已索引到日志的哪个字节位置、每 `ANCHOR_EVERY` 条事件的一次落点。
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 3;
 const ANCHOR_EVERY: u64 = 64;
+const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_INDEX_PROMPTS: usize = 64;
 
 /// 事件日志的稀疏索引，与日志放在同一个会话目录里（`events.idx`）。
 ///
@@ -843,6 +987,8 @@ const ANCHOR_EVERY: u64 = 64;
 #[derive(Serialize, Deserialize)]
 struct LogIndex {
     version: u32,
+    /// 索引只属于目录名对应的会话；复制来的同长度缓存也不能冒充。
+    session_id: String,
     length: u64,
     latest_seq: u64,
     /// (事件序号, 该行在文件里的起始字节)。升序。
@@ -854,6 +1000,8 @@ struct LogIndex {
     prompts: Vec<(String, String)>,
     /// 最后一条状态事件。
     status: Option<Event>,
+    /// 最新模型任务清单的完整快照；与时间线分页分离，重开会话也能直接恢复。
+    task_list: Option<serde_json::Value>,
     episodes: Vec<CompactionEpisode>,
     summaries: Vec<CompactionSummary>,
 }
@@ -862,39 +1010,42 @@ impl LogIndex {
     fn file(dir: &Path) -> PathBuf {
         dir.join("events.idx")
     }
-    fn empty() -> Self {
+    fn empty(session_id: &str) -> Self {
         Self {
             version: INDEX_VERSION,
+            session_id: session_id.to_owned(),
             length: 0,
             latest_seq: 0,
             anchors: vec![],
             active: vec![],
             prompts: vec![],
             status: None,
+            task_list: None,
             episodes: vec![],
             summaries: vec![],
         }
     }
     /// 读一份版本对得上的索引；坏了或版本不符都当没有，由调用方重建。
     fn read(dir: &Path) -> Option<Self> {
-        let bytes = fs::read(Self::file(dir)).ok()?;
-        // 缓存也要有上限：一份坏掉的超大「索引」不能当成索引读进内存。
-        if bytes.len() > 16 * 1024 * 1024 {
-            return None;
-        }
+        let path = Self::file(dir);
+        // 先看 metadata，再读内容；坏掉的超大缓存不能先整份分配进内存。
+        if fs::metadata(&path).ok()?.len() > MAX_INDEX_BYTES { return None; }
+        let bytes = fs::read(path).ok()?;
         let index: Self = serde_json::from_slice(&bytes).ok()?;
         (index.version == INDEX_VERSION).then_some(index)
     }
     fn save(&self, dir: &Path) -> Result<(), String> {
+        let text = serde_json::to_string(self).map_err(|e| e.to_string())?;
+        if text.len() as u64 > MAX_INDEX_BYTES { return Err("会话事件索引超过容量上限".into()); }
         crate::sys::write_atomic(
             &Self::file(dir),
-            &serde_json::to_string(self).map_err(|e| e.to_string())?,
+            &text,
         )
     }
     /// 取一份与日志对齐的索引：没有就建（一次全量扫描），过期就只补读新增的那一段。
-    fn current(path: &Path, dir: &Path) -> Option<Self> {
-        if let Some(mut index) = Self::read(dir) {
-            match index.catch_up(path) {
+    fn current(path: &Path, dir: &Path, session_id: &str) -> Option<Self> {
+        if let Some(mut index) = Self::read(dir).filter(|index| index.session_id == session_id) {
+            match index.catch_up(path, session_id) {
                 Ok(changed) => {
                     if changed {
                         let _ = index.save(dir);
@@ -905,15 +1056,15 @@ impl LogIndex {
                 Err(_) => {}
             }
         }
-        let mut index = Self::empty();
-        if index.catch_up(path).is_err() {
+        let mut index = Self::empty(session_id);
+        if index.catch_up(path, session_id).is_err() {
             return None;
         }
         let _ = index.save(dir);
         Some(index)
     }
     /// 把索引推进到日志当前末尾，只解析新增的那一段。返回索引是否长长了。
-    fn catch_up(&mut self, path: &Path) -> Result<bool, String> {
+    fn catch_up(&mut self, path: &Path, session_id: &str) -> Result<bool, String> {
         let length = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         if length < self.length {
             return Err("日志比索引短".into());
@@ -944,6 +1095,9 @@ impl LogIndex {
             if event.seq != self.latest_seq + 1 {
                 return Err("会话事件序列不连续".into());
             }
+            if event.session_id != session_id || !valid_id(&event.run_id) {
+                return Err("会话事件归属不匹配".into());
+            }
             self.push(event, offset);
             offset += count as u64;
         }
@@ -956,8 +1110,11 @@ impl LogIndex {
             self.anchors.push((event.seq, offset));
         }
         self.latest_seq = event.seq;
+        if event.kind == "task_list" {
+            self.task_list = Some(fold_task_list(self.task_list.as_ref(), &event));
+        }
         match event.kind.as_str() {
-            "compaction" => classify_compaction(&event, &mut self.episodes, &mut self.summaries),
+            "compaction" => classify_compaction(&event, &mut self.episodes, &mut self.summaries, Some(offset)),
             // 用户消息里混着 CLI 自己写的注入：投影时挡、扫描时挡，这里也要挡，
             // 因为活动任务摘要里的 prompt 正是从这里取的。
             "user" => {
@@ -966,6 +1123,9 @@ impl LogIndex {
                         match self.prompts.iter_mut().find(|(run, _)| run == &event.run_id) {
                             Some(entry) => entry.1 = spoken.to_owned(),
                             None => self.prompts.push((event.run_id.clone(), spoken.to_owned())),
+                        }
+                        if self.prompts.len() > MAX_INDEX_PROMPTS {
+                            self.prompts.drain(..self.prompts.len() - MAX_INDEX_PROMPTS);
                         }
                     }
                 }
@@ -1075,6 +1235,9 @@ fn scan_events_folded(
             return Err("会话事件归属不匹配".into());
         }
         scan.seq = event.seq;
+        if event.kind == "task_list" {
+            scan.task_list = Some(fold_task_list(scan.task_list.as_ref(), &event));
+        }
         // role=user 的记录里混着 CLI 自己写的系统注入（AGENTS.md 指令、环境上下文、任务通知）。
         // 回放时已经不再写入这种事件，但旧日志里躺着的那些仍会被翻出来当成用户气泡，
         // 所以在读的这一层一并挡掉：整条都是注入就不进页，混着人话就只留人话。
@@ -1151,11 +1314,14 @@ fn scan_indexed(
         return Ok(Scan::default());
     }
     let mut start = start_anchor(index, window, limit);
+    let mut retreat = 1usize;
     loop {
         let mut scan = scan_from_anchor(path, repair, window, limit, session_id, index, fold, start)?;
         let short = matches!(window, Window::Before(_)) && scan.page.len() < limit && !scan.has_older;
         if short && start > 0 {
-            start -= 1;
+            // 被过滤的长尾不能每次只退一个锚点并重扫同一后缀；指数退避让累计解析量保持线性。
+            start = start.saturating_sub(retreat);
+            retreat = retreat.saturating_mul(2);
             continue;
         }
         // 从日志开头都读过了就是真的没有更早的了（`accept` 挤出过条目时它自己已经记了）。
@@ -1269,6 +1435,10 @@ fn scan_from_anchor(
             if let Some(text) = fold.text.get(&event.seq) {
                 event.data["text"] = serde_json::json!(text);
                 width += text.len() as u64;
+            } else if let Some((summary_seq, summary_offset)) = fold.offsets.get(&event.seq) {
+                let text = read_compaction_summary(path, *summary_offset, *summary_seq)?;
+                event.data["text"] = serde_json::json!(text);
+                width += event.data["text"].as_str().map_or(0, |value| value.len() as u64);
             }
         }
         scan.accept(window, limit, event, width);
@@ -1279,6 +1449,18 @@ fn scan_from_anchor(
         }
     }
     Ok(scan)
+}
+
+/// 索引只保存摘要行偏移；当前页真的包含对应压缩卡时才读取这一行正文。
+fn read_compaction_summary(path: &Path, offset: u64, expected_seq: u64) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(offset)).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    BufReader::new(file).take(MAX_LINE + 1).read_until(b'\n', &mut bytes).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_LINE { return Err("压缩摘要事件过大".into()); }
+    let event: Event = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if event.seq != expected_seq || event.kind != "compaction" { return Err("压缩摘要索引与日志不一致".into()); }
+    Ok(event.data["text"].as_str().unwrap_or_default().to_owned())
 }
 
 #[cfg(test)]
@@ -1319,6 +1501,20 @@ mod tests {
             assert!(seen.insert(e.seq), "duplicate seq {}", e.seq);
             assert_eq!(e.seq, seen.len() as u64, "sequence gap at {}", e.seq);
         }
+    }
+
+    #[test]
+    fn deleted_session_cannot_be_recreated_by_an_old_append_handle() {
+        let base = fixture();
+        let mut stale = Store::open(&base, "session", "root", TestProvider, "t", "").unwrap();
+        fs::remove_dir_all(base.join("session")).unwrap();
+
+        let error = stale.append("run", vec![("status".into(), json!({"status":"queued"}))]).unwrap_err();
+        assert!(error.contains("会话不存在"));
+        assert!(!base.join("session").exists(), "旧队列不得复活已删除会话");
+        assert!(Store::open_for_append(&base, "session", "root", TestProvider, "t", "").is_err());
+        assert!(!base.join("session").exists(), "只追加打开也不得创建目录");
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -1863,6 +2059,31 @@ mod tests {
     }
 
     #[test]
+    fn task_list_snapshot_survives_pagination_and_sparse_updates() {
+        let p = fixture();
+        let mut s = Store::open(&p, "session", "root", TestProvider, "t", "").unwrap();
+        s.append("run-a", vec![("task_list".into(), json!({"replace":true,"items":[
+            {"id":"1","content":"分析","status":"complete"},
+            {"id":"2","content":"实现","status":"active"},
+            {"id":"3","content":"验证","status":"pending"}
+        ]}))]).unwrap();
+        s.append("run-b", vec![("task_list".into(), json!({"replace":false,"items":[
+            {"id":"2","status":"complete"},
+            {"id":"3","status":"active"}
+        ]}))]).unwrap();
+
+        // 最新页故意只装稀疏补丁；完整任务状态必须由会话级摘要独立返回。
+        let page = Store::page(&p, "session", "root", Window::Before(u64::MAX), 1, false).unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.task_list, Some(json!({"seq":2,"runId":"run-b","items":[
+            {"id":"1","content":"分析","status":"complete"},
+            {"id":"2","content":"实现","status":"complete"},
+            {"id":"3","content":"验证","status":"active"}
+        ]})));
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
     fn a_truncated_log_rebuilds_the_index_instead_of_reading_past_the_end() {
         let p = fixture();
         long_log(&p);
@@ -1888,6 +2109,50 @@ mod tests {
         assert_eq!(page.events.last().unwrap().seq, 100);
         // 兜底扫过之后索引应当重建好，下一次照旧走索引。
         assert!(LogIndex::read(&p.join("session")).is_some());
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn rebuilding_an_index_rejects_an_early_foreign_session_event() {
+        let p = fixture();
+        long_log(&p);
+        let _ = Store::page(&p, "session", "root", Window::Before(u64::MAX), 5, true).unwrap();
+        let index_path = p.join("session").join("events.idx");
+        let mut stale: serde_json::Value = serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+        stale["version"] = json!(INDEX_VERSION - 1);
+        fs::write(&index_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+
+        let log_path = p.join("session").join("events.jsonl");
+        let mut lines = io_read_all(&log_path);
+        let mut foreign: Event = serde_json::from_slice(&lines[0]).unwrap();
+        foreign.session_id = "foreign".into(); // 与 "session" 等长，日志长度不变也必须重建校验。
+        lines[0] = serde_json::to_vec(&foreign).unwrap();
+        let bytes: Vec<u8> = lines.into_iter().flat_map(|line| line.into_iter().chain(std::iter::once(b'\n'))).collect();
+        fs::write(&log_path, bytes).unwrap();
+
+        let error = match Store::page(&p, "session", "root", Window::Before(u64::MAX), 5, true) {
+            Ok(_) => panic!("外来会话事件不应被索引接受"),
+            Err(error) => error,
+        };
+        assert!(error.contains("归属不匹配"));
+        fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn an_old_index_version_is_rebuilt_before_it_is_used() {
+        let p = fixture();
+        long_log(&p);
+        let _ = Store::page(&p, "session", "root", Window::Before(u64::MAX), 5, true).unwrap();
+        let path = p.join("session").join("events.idx");
+        let mut stale: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // 版本号是磁盘缓存契约；旧布局必须整份重建，不能拿新结构勉强反序列化后继续用。
+        stale["version"] = json!(1);
+        fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+
+        let page = Store::page(&p, "session", "root", Window::Before(u64::MAX), 5, true).unwrap();
+        assert_eq!(page.latest_seq, 100);
+        let rebuilt: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(rebuilt["version"], INDEX_VERSION);
         fs::remove_dir_all(p).unwrap();
     }
 
@@ -1919,6 +2184,10 @@ mod tests {
         compaction_log(&p);
         let _ = Store::page(&p, "session", "root", Window::Before(u64::MAX), 500, true).unwrap();
         assert!(LogIndex::read(&p.join("session")).is_some(), "索引要真的存下来");
+        let persisted = fs::read_to_string(p.join("session").join("events.idx")).unwrap();
+        // 摘要正文只属于事件日志；索引保存偏移，避免长摘要让缓存再次膨胀到容量上限。
+        assert!(!persisted.contains("第二次的摘要"));
+        assert!(!persisted.contains("第三次的摘要"));
         let page = Store::page(&p, "session", "root", Window::Before(u64::MAX), 500, true).unwrap();
         let text_at = |seq: u64| page.events.iter().find(|event| event.seq == seq)
             .and_then(|event| event.data["text"].as_str()).unwrap_or_default().to_owned();

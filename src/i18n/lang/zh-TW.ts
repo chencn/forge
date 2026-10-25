@@ -1403,7 +1403,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "ai.codexMethod": "npm 全域安裝 · 最新正式版",
   "ai.commands.busy": "目前無法修改選項，請等待本輪操作結束。",
   "ai.commands.compact": "壓縮目前工作階段；可能消耗模型額度；Codex 不接受附加參數",
-  "ai.commands.compactArgs": "Codex 0.163.0 的壓縮介面不支援附加指令，未執行。",
+  "ai.commands.compactArgs": "Codex 的壓縮介面不支援附加指令，未執行。",
   "ai.commands.context": "開啟上下文組成明細（已有快照）",
   "ai.commands.discovery": "Claude 原生命令會在正常工作階段初始化後出現；不會僅為載入選單啟動 CLI。",
   "ai.commands.effort": "選擇思考強度；只接受目前模型支援的級別",

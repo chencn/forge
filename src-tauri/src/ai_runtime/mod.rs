@@ -114,6 +114,8 @@ struct PlanTurn {
     previous: plans::Status,
     native_plan_id: String,
     content_hash: String,
+    /// 与 plans.lock 分离：后者只保护一次 RMW，这把锁保护完整的排队与启动生命周期。
+    _claim: Arc<store::Lease>,
 }
 
 /// 批准后发给模型的一句固定指令：批准路径不携带用户正文，
@@ -170,10 +172,24 @@ fn take_queued_run(run_id: &str) -> Result<Option<(String, SendRequest)>, String
 fn queued_status(is_front: bool, external_blocked: bool) -> &'static str {
     if is_front && external_blocked { task_status::WAITING_EXTERNAL } else { task_status::QUEUED }
 }
-/// 只有两份探针都明确说“空闲”才允许接管会话。未知或 IO 失败必须排队：
-/// 猜错成空闲会让两个 CLI 同时续写一条原生会话，代价远高于多等一次轮询。
+/// 先解析源和目标，再改队列。目标来自另一个窗口的旧快照时必须原样失败，不能先把源任务删掉。
+fn move_queued_run(items: &mut VecDeque<SendRequest>, run_id: &str, before_run_id: Option<&str>) -> Result<(), &'static str> {
+    let old = items.iter().position(|item| item.run_id == run_id).ok_or(NOT_QUEUED_HERE)?;
+    if before_run_id == Some(run_id) { return Ok(()); }
+    let target = match before_run_id {
+        Some(before) => items.iter().position(|item| item.run_id == before).ok_or(NOT_QUEUED_HERE)?,
+        None => items.len(),
+    };
+    let item = items.remove(old).ok_or(NOT_QUEUED_HERE)?;
+    // 删除发生在目标之前时，目标下标左移一位；None 的 len 也按同一规则落到新队尾。
+    items.insert(target.saturating_sub(usize::from(old < target)), item);
+    Ok(())
+}
+/// 只让明确的活动或写锁阻塞。Unknown/读取失败没有占用证据，按产品契约允许发送；
+/// 真正的原生写锁冲突仍由 CLI 在启动握手时明确拒绝。
 fn activity_blocks_dispatch(state: Result<activity::State, String>, writer_held: Result<bool, String>) -> bool {
-    !matches!(state, Ok(activity::State::Idle)) || !matches!(writer_held, Ok(false))
+    matches!(state, Ok(activity::State::Running | activity::State::External | activity::State::Conflict))
+        || matches!(writer_held, Ok(true))
 }
 
 /// 自动恢复必须保守：只试一次，只续接已经真正开跑且没有悬空审批的普通回合。
@@ -315,15 +331,7 @@ pub async fn ai_runtime_queue_move(app: AppHandle, run_id: String, before_run_id
             let mut all = queued().lock().map_err(|e| e.to_string())?;
             let session_id = all.iter().find_map(|(session_id, items)| items.iter().any(|item| item.run_id == run_id).then(|| session_id.clone())).ok_or(NOT_QUEUED_HERE)?;
             let items = all.get_mut(&session_id).ok_or("排队会话不存在")?;
-            let old = items.iter().position(|item| item.run_id == run_id).ok_or(NOT_QUEUED_HERE)?;
-            if before_run_id.as_deref() == Some(run_id.as_str()) { return Ok(()); }
-            let item = items.remove(old).ok_or(NOT_QUEUED_HERE)?;
-            // 用稳定 run id 定位，避免另一个窗口改过队列后旧下标把任务移错位置。
-            let target = match before_run_id.as_deref() {
-                Some(before) => items.iter().position(|item| item.run_id == before).ok_or(NOT_QUEUED_HERE)?,
-                None => items.len(),
-            };
-            items.insert(target, item);
+            move_queued_run(items, &run_id, before_run_id.as_deref())?;
             session_id
         };
         emit_queue_order(&app, &session_id)
@@ -511,7 +519,6 @@ fn validate(request: &SendRequest) -> Result<(), String> {
         return Err("Fast 目前仅支持 Codex".into());
     }
     options::validate(
-        request.provider,
         request.model.as_deref(),
         request.effort.as_deref(),
     )?;
@@ -725,6 +732,9 @@ pub async fn ai_runtime_remove_model(app: AppHandle, provider: Provider, model: 
 #[tauri::command]
 pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: String, session_id: Option<String>, title: String) -> Result<Value, String> {
     block(move || {
+        let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
+        let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后创建会话")?;
+        if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后创建会话".into()); }
         enabled(&app)?;
         if !ai_cli::settings::enabled(&app, provider) { return Err("该 CLI 已在设置中停用，请先在设置中启用".into()); }
         let root = store::workspace(&workspace)?;
@@ -783,6 +793,8 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
         let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
+        let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后发送")?;
+        if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后发送".into()); }
         enabled(&app)?;
         let root = store::workspace(&request.workspace)?;
         request.additional_dirs = validated_dirs(&request, &root)?;
@@ -815,6 +827,7 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
             if !dir.exists() {
                 return Err("会话不存在".into());
             }
+            let claim = Arc::new(plans::claim(&dir).map_err(|_| "计划正在另一窗口提交，请稍后重试")?);
             match plans::submit(&dir, &plan.plan_id, plan.revision, plan.decision, plan.feedback.as_deref())? {
                 plans::Submit::Conflict(current) => {
                     return Err(format!("计划已被处理或版本已变化（当前状态 {}），请刷新后重试", current.status.as_str()));
@@ -832,6 +845,7 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
                         previous,
                         native_plan_id: review.native_plan_id.clone(),
                         content_hash: review.content_hash.clone(),
+                        _claim: claim,
                     });
                     request.prompt = prompt;
                     // 先把「正在启动」写进事件流：排队期间界面也不会重复显示可批准状态。
@@ -947,7 +961,7 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
         // CLI resume 只依赖原生会话 ID；Forge 镜像是否已经分页读完不能阻塞发送。
         // 历史继续由 ai_runtime_load 惰性同步，避免大会话在发送路径上反复扫描。
-        let mut target = store::Store::open(&base, &request.session_id, &root, request.provider, &request.title, "")?;
+        let mut target = store::Store::open_existing(&base, &request.session_id, &root, request.provider, &request.title, "")?;
         // 标题失败发生在 reserve 之前，不能留下没有工作线程的运行登记。
         title_first_message(&mut target, &request, include_user)?;
         target
@@ -981,6 +995,8 @@ fn schedule_next(app: &AppHandle, session_id: &str) -> Result<(), String> {
     loop {
         let next = queued().lock().map_err(|e| e.to_string())?.get(session_id).and_then(|items| items.front()).cloned();
         let Some(request) = next else { return Ok(()); };
+        // 管理操作期间队首原地等待；不能先弹出再把一次合法请求记成失败。
+        let Ok(_cli_gate) = ai_cli::runtime_gate(app) else { return Ok(()); };
         let root = store::workspace(&request.workspace)?;
         let base = base(app)?;
         if externally_blocked(&base, session_id, &root) {
@@ -1233,7 +1249,7 @@ impl Worker {
         if self.run.cancelled.load(Ordering::Acquire) {
             return Ok(task_status::CANCELLED);
         }
-        self.plan_claim = request.plan_turn.clone();
+        self.plan_claim = request.plan_turn.take();
         // 排队期间缓存文件可能变化；真正启动 CLI 前必须重新校验根目录、魔数和大小。
         request.images = images::validate_paths(&self.app, &request.images)?.into_iter().map(|path| path.to_string_lossy().into_owned()).collect();
         let service_tier = if let Some(tier) = request.service_tier.clone() {
@@ -1633,7 +1649,9 @@ pub async fn ai_runtime_load(
                 // 没有本进程回合、也没有排队决策时，plans.json 里的 submitting 就是上次
                 // 进程没来得及确认的残留；退回待审，别让计划卡永远消失。
                 if !has_queued(&session_id) {
-                    let _ = plans::recover(&base.join(&session_id));
+                    let dir = base.join(&session_id);
+                    // 活着的提交者从 CAS 到 applied/revert 一直持有 claim；只有崩溃遗留才可恢复。
+                    let _ = plans::recover(&dir);
                 }
                 match history::sync(&base, &session_id, &root) {
                     Ok(more) => native_more = more,
@@ -1717,7 +1735,10 @@ pub async fn ai_runtime_delete(
         }
         let _lease = store::Lease::acquire(&base.join(format!("{session_id}.lock")))?;
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-        store::Store::page(&base, &session_id, &root, store::Window::After(0), 1, false)?;
+        // 与无租约的排队状态追加共用跨进程锁；删除赢得锁后，旧窗口只能得到“会话不存在”。
+        let _events = crate::sys::ExclusiveFileLock::acquire(&store::events_lock_path(&base, &session_id))?;
+        // 只校验归属，不在即将删除的日志里补写“中断”事件，也避免重入同一事件锁。
+        store::Store::page(&base, &session_id, &root, store::Window::After(0), 1, true)?;
         let dir = base.join(&session_id);
         if dir.exists() {
             // 目录一删，事件日志里引用的附件就再没人认得了：先把它们收走，别留在沙箱里当孤儿。
@@ -1915,9 +1936,15 @@ pub fn lifecycle_lock() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
 }
-pub fn stop_for_disable(app: &AppHandle) -> Result<(), String> {
-    registry::stop_all()?;
-    cancel_queued(app, |_| true)
+/// 设置保存锁内只携带这些句柄出去，registry 的具体类型不泄漏给设置模块。
+pub struct StoppingRuns(Vec<Arc<Run>>);
+pub fn stop_for_disable(app: &AppHandle) -> Result<StoppingRuns, String> {
+    // 先清队列：否则 worker 收尾可能在设置尚未落盘前调度下一项。
+    cancel_queued(app, |_| true)?;
+    Ok(StoppingRuns(stop_registered()))
+}
+pub fn wait_for_disable(stopping: StoppingRuns) -> Result<(), String> {
+    registry::wait_stopped(stopping.0)
 }
 pub fn has_runs() -> bool {
     !registry::all().is_empty() || queued().lock().unwrap_or_else(|e| e.into_inner()).values().any(|items| !items.is_empty())
@@ -1957,14 +1984,22 @@ mod tests {
         assert_eq!(queued_status(false, false), task_status::QUEUED);
     }
     #[test]
-    fn dispatch_requires_both_activity_probes_to_confirm_idle() {
+    fn invalid_queue_target_does_not_remove_the_source_run() {
+        let mut items = VecDeque::from([base_request_with_id("first"), base_request_with_id("second")]);
+        assert_eq!(move_queued_run(&mut items, "first", Some("missing")), Err(NOT_QUEUED_HERE));
+        assert_eq!(items.iter().map(|item| item.run_id.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+    }
+    #[test]
+    fn dispatch_only_blocks_on_confirmed_activity_or_writer() {
         assert!(!activity_blocks_dispatch(Ok(activity::State::Idle), Ok(false)));
-        for state in [activity::State::Running, activity::State::External, activity::State::Conflict, activity::State::Unknown] {
+        for state in [activity::State::Running, activity::State::External, activity::State::Conflict] {
             assert!(activity_blocks_dispatch(Ok(state), Ok(false)), "{state:?}");
         }
+        assert!(!activity_blocks_dispatch(Ok(activity::State::Unknown), Ok(false)));
         assert!(activity_blocks_dispatch(Ok(activity::State::Idle), Ok(true)));
-        assert!(activity_blocks_dispatch(Err("probe failed".into()), Ok(false)));
-        assert!(activity_blocks_dispatch(Ok(activity::State::Idle), Err("lock failed".into())));
+        assert!(!activity_blocks_dispatch(Err("probe failed".into()), Ok(false)));
+        assert!(!activity_blocks_dispatch(Ok(activity::State::Idle), Err("lock failed".into())));
+        assert!(activity_blocks_dispatch(Err("probe failed".into()), Ok(true)));
     }
     #[test]
     fn disconnect_recovery_is_one_shot_and_fails_closed() {
@@ -2050,6 +2085,11 @@ mod tests {
             additional_dirs: vec![],
             plan_turn: None,
         }
+    }
+    fn base_request_with_id(run_id: &str) -> SendRequest {
+        let mut request = base_request();
+        request.run_id = run_id.to_owned();
+        request
     }
     #[test]
     fn codex_enqueue_keeps_selected_model_effort_fast_and_permission() {

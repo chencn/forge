@@ -1434,7 +1434,7 @@ export const en: Record<TranslationKey, string> = {
   "ai.codexMethod": "Global npm installation · latest stable release",
   "ai.commands.busy": "Options cannot be changed until the current operation finishes.",
   "ai.commands.compact": "Compact this session; may consume model quota; Codex accepts no arguments",
-  "ai.commands.compactArgs": "Codex 0.163.0 compaction accepts no additional instructions. Nothing was executed.",
+  "ai.commands.compactArgs": "Codex compaction accepts no additional instructions. Nothing was executed.",
   "ai.commands.context": "Open context composition (existing snapshot)",
   "ai.commands.discovery": "Native Claude commands appear after a normal session initializes. Opening this menu never starts the CLI.",
   "ai.commands.effort": "Choose reasoning effort; only supported levels are accepted",

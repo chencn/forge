@@ -16,6 +16,8 @@ use std::sync::Mutex;
 /// 串行化 plans.json 的读改写。只做本地小文件操作，不在锁内启动 CLI。
 static PLAN_LOCK: Mutex<()> = Mutex::new(());
 const FILE: &str = "plans.json";
+const LOCK_FILE: &str = "plans.lock";
+const CLAIM_LOCK_FILE: &str = "plan-claim.lock";
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,10 +143,21 @@ pub fn load(dir: &Path) -> Result<Vec<PlanReview>, String> {
 
 fn save(dir: &Path, plans: &[PlanReview]) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    crate::sys::write_atomic(
-        &dir.join(FILE),
-        &serde_json::to_string_pretty(plans).map_err(|error| error.to_string())?,
-    )
+    let text = serde_json::to_string_pretty(plans).map_err(|error| error.to_string())?;
+    // 写端和读端必须守同一上限；否则本次成功、下一次永远读不回，审批状态直接报废。
+    if text.len() as u64 > MAX_FILE { return Err("计划记录过大".into()); }
+    crate::sys::write_atomic(&dir.join(FILE), &text)
+}
+
+fn update_lock(dir: &Path) -> Result<crate::sys::ExclusiveFileLock, String> {
+    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    crate::sys::ExclusiveFileLock::acquire(&dir.join(LOCK_FILE))
+}
+
+/// 一次计划决策从 CAS 抢占起持有到应用或回滚；进程崩溃时由内核释放。
+pub fn claim(dir: &Path) -> Result<crate::ai_runtime::store::Lease, String> {
+    if !dir.is_dir() { return Err("会话不存在".into()); }
+    crate::ai_runtime::store::Lease::acquire(&dir.join(CLAIM_LOCK_FILE))
 }
 
 /// 登记一份新计划：同一 planId 的历史开放版本全部被取代，revision 递增。
@@ -159,6 +172,7 @@ pub fn record(
     native_plan_id: &str,
 ) -> Result<PlanReview, String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let next = plans.iter().filter(|plan| plan.plan_id == plan_id_for(native_id)).map(|plan| plan.revision).max().unwrap_or(0) + 1;
     let plan_id = plan_id_for(native_id);
@@ -217,6 +231,7 @@ pub fn submit(dir: &Path, plan_id: &str, expected: i64, decision: Decision, feed
         return Err("要求修改必须填写说明".into());
     }
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let Some(current) = plans.iter().find(|plan| plan.plan_id == plan_id && plan.revision == expected).cloned() else {
         return Err("计划版本不存在或已失效".into());
@@ -244,16 +259,24 @@ pub fn submit(dir: &Path, plan_id: &str, expected: i64, decision: Decision, feed
 /// 原生回合确认启动后落账；批准不等于执行成功，执行状态另记。
 pub fn mark_applied(dir: &Path, plan_id: &str, revision: i64, decision: Decision) -> Result<PlanReview, String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let now = now_ms();
     let Some(plan) = plans.iter_mut().find(|plan| plan.plan_id == plan_id && plan.revision == revision) else {
         return Err("计划版本不存在".into());
     };
-    if plan.status == Status::Submitting {
-        plan.status = decision.settled();
-        plan.applied_at = Some(now);
-        plan.updated_at = now;
+    if plan.status != Status::Submitting {
+        return Err(format!("计划提交状态已变化（当前状态 {}）", plan.status.as_str()));
     }
+    let stored_decision = plan.decision.as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .and_then(|value| value["decision"].as_str().map(str::to_owned));
+    if stored_decision.as_deref() != Some(decision.as_str()) {
+        return Err("计划提交决策与应用决策不一致".into());
+    }
+    plan.status = decision.settled();
+    plan.applied_at = Some(now);
+    plan.updated_at = now;
     let record = plan.clone();
     save(dir, &plans)?;
     Ok(record)
@@ -262,6 +285,7 @@ pub fn mark_applied(dir: &Path, plan_id: &str, revision: i64, decision: Decision
 /// 写管道失败：决策意图留存，状态退回抢占前，绝不显示已批准。
 pub fn revert(dir: &Path, plan_id: &str, revision: i64, previous: Status) -> Result<PlanReview, String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let Some(plan) = plans.iter_mut().find(|plan| plan.plan_id == plan_id && plan.revision == revision) else {
         return Err("计划版本不存在".into());
@@ -278,6 +302,7 @@ pub fn revert(dir: &Path, plan_id: &str, revision: i64, previous: Status) -> Res
 /// 计划正文在等待审批期间被改写或消失：该版本只能过期，不能继续挂着旧正文。
 pub fn expire(dir: &Path, plan_id: &str, revision: i64) -> Result<Option<PlanReview>, String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let Some(plan) = plans.iter_mut().find(|plan| plan.plan_id == plan_id && plan.revision == revision) else {
         return Ok(None);
@@ -291,6 +316,7 @@ pub fn expire(dir: &Path, plan_id: &str, revision: i64) -> Result<Option<PlanRev
 
 pub fn mark_execution(dir: &Path, plan_id: &str, revision: i64, execution: Execution) -> Result<(), String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let Some(plan) = plans.iter_mut().find(|plan| plan.plan_id == plan_id && plan.revision == revision) else {
         return Ok(());
@@ -300,19 +326,16 @@ pub fn mark_execution(dir: &Path, plan_id: &str, revision: i64, execution: Execu
     save(dir, &plans)
 }
 
-/// 刚提交、正在启动回合的这段时间不算残留：打开会话与发送回合并不共用一把锁，
-/// 立刻回收会跟正在启动的决策抢版本。超过这个时长还没有回合接手，才是崩溃留下的。
-const RECOVER_AFTER_MS: u64 = 10_000;
-
 /// 打开会话时修复「提交了但没有回合」的残留：进程崩溃或应用退出会让 submitting
-/// 永远等不到确认。退回待审，保留决策意图，让用户重新选择。
+/// 永远等不到确认。活提交者持有 claim，拿不到时绝不能靠时间猜它已经死了。
 pub fn recover(dir: &Path) -> Result<(), String> {
+    let Ok(_claim) = claim(dir) else { return Ok(()); };
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
+    let _file_guard = update_lock(dir)?;
     let mut plans = load(dir)?;
     let now = now_ms();
     let mut changed = false;
     for plan in plans.iter_mut().filter(|plan| plan.status == Status::Submitting) {
-        if plan.updated_at.saturating_add(RECOVER_AFTER_MS) > now { continue; }
         plan.status = Status::AwaitingReview;
         plan.updated_at = now;
         changed = true;
@@ -388,6 +411,16 @@ mod tests {
     }
 
     #[test]
+    fn oversized_plan_is_rejected_before_it_can_poison_the_store() {
+        let path = dir("oversized");
+        let content = "x".repeat(MAX_FILE as usize + 1);
+        let error = record(&path, "s1", "thread-1", "root", "run-1", "large", &content, "item-1").unwrap_err();
+        assert!(error.contains("计划记录过大"));
+        assert!(load(&path).unwrap().is_empty());
+        fs::remove_dir_all(path).ok();
+    }
+
+    #[test]
     fn request_changes_requires_feedback_and_defer_can_resubmit() {
         let path = dir("feedback");
         add(&path, "# 计划");
@@ -417,18 +450,29 @@ mod tests {
     }
 
     #[test]
-    fn recovery_leaves_a_just_submitted_plan_alone_but_reclaims_stale_ones() {
+    fn recovery_respects_a_live_claim_and_reclaims_after_it_is_released() {
         let path = dir("recover");
         add(&path, "# 计划");
         let plan_id = plan_id_for("thread-1");
+        let claim = claim(&path).unwrap();
         submit(&path, &plan_id, 1, Decision::Approve, None).unwrap();
         recover(&path).unwrap();
         assert_eq!(get(&path, &plan_id, 1).unwrap().unwrap().status, Status::Submitting);
-        let mut plans = load(&path).unwrap();
-        plans[0].updated_at = now_ms() - RECOVER_AFTER_MS - 1;
-        save(&path, &plans).unwrap();
+        drop(claim);
         recover(&path).unwrap();
         assert_eq!(get(&path, &plan_id, 1).unwrap().unwrap().status, Status::AwaitingReview);
+        assert!(mark_applied(&path, &plan_id, 1, Decision::Approve).is_err(), "已恢复的提交不能假装应用成功");
+        fs::remove_dir_all(path).ok();
+    }
+
+    #[test]
+    fn applied_decision_must_match_the_claimed_decision() {
+        let path = dir("decision");
+        add(&path, "# 计划");
+        let plan_id = plan_id_for("thread-1");
+        submit(&path, &plan_id, 1, Decision::Approve, None).unwrap();
+        assert!(mark_applied(&path, &plan_id, 1, Decision::RequestChanges).is_err());
+        assert_eq!(get(&path, &plan_id, 1).unwrap().unwrap().status, Status::Submitting);
         fs::remove_dir_all(path).ok();
     }
 

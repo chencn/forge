@@ -141,7 +141,7 @@ fn normalize_models(provider: Provider, input: &[String]) -> Result<Vec<String>,
     for raw in input {
         let id = raw.trim();
         if id.is_empty() { continue; }
-        options::validate(provider, Some(id), None)?;
+        options::validate(Some(id), None)?;
         if !out.iter().any(|item| item == id) { out.push(id.to_owned()); }
         if out.len() > 200 { return Err("单个渠道最多登记 200 个模型".into()); }
     }
@@ -157,7 +157,7 @@ fn normalize_aliases(provider: Provider, input: &BTreeMap<String, String>) -> Re
         if provider != Provider::Claude || !options::CLAUDE_MODELS.iter().any(|(name, _)| *name == alias.as_str()) {
             return Err("未知的模型别名".into());
         }
-        options::validate(provider, Some(target), None)?;
+        options::validate(Some(target), None)?;
         out.insert(alias.clone(), target.to_owned());
     }
     Ok(out)
@@ -178,7 +178,7 @@ pub fn upsert(path: &Path, provider: Provider, draft: Draft, api_key: Option<&st
     let alias_targets = normalize_aliases(provider, &draft.alias_targets)?;
     let default_model = draft.default_model.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
     if let Some(model) = default_model.as_deref() {
-        options::validate(provider, Some(model), None)?;
+        options::validate(Some(model), None)?;
         // 默认模型必须在渠道自己的清单里，否则会注入一个该网关根本不服务的 id。
         if !models.iter().any(|item| item == model) { return Err("默认模型要先登记在该渠道的模型列表中".into()); }
     }

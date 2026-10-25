@@ -2,7 +2,7 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { aiSessionStorageKey, parseAiSessions, reduceAiSessions } from "../lib/aiSessions";
 import type { AiSessionAction, AiSessionState } from "../lib/aiSessions";
-import { clearDraft } from "../lib/aiDrafts";
+import { clearAiSessionStorage } from "../lib/aiDrafts";
 import { ensureAiRuntimeListener, refreshAiSessionActivity } from "../lib/aiRuntime";
 
 /** 一个工作区缓存下来的会话状态。 */
@@ -121,10 +121,10 @@ export function useAiSessions(root: string | null, enabled = true) {
   /** 写回 localStorage 并通知订阅者。写失败只降级成「本次不持久化」，不阻断界面。 */
   const dispatch = useCallback((action: AiSessionAction) => {
     if (!enabled) return;
-    // 删会话带走它的草稿：草稿按会话存，不清就会一直攒没有主人的键。发送历史按工程存，留着。
+    // 删会话带走全部会话级缓存；发送历史和引擎默认项按工程/引擎共享，继续保留。
     if (action.type === "delete") {
       deleted.add(`${key}:${action.id}`);
-      clearDraft(root, action.id);
+      clearAiSessionStorage(root, action.id);
     }
     const state = reduceAiSessions(get(key).state, action);
     if (state === get(key).state) return;

@@ -20,7 +20,7 @@ function render(state: AiSearchState, query = "keyword", archived = false) {
 }
 
 const ready = (over: Partial<AiSearchState> = {}, hits: AiSearchHit[] = [hit()]): AiSearchState => ({
-  status: "ready", query: "keyword", archived: false, error: null,
+  status: "ready", query: "keyword", archived: false, workspace: "D:/project", error: null,
   result: { hits, scanned: 4, skipped: 0, bytes: 1024, truncated: false }, ...over,
 });
 
@@ -39,19 +39,19 @@ describe("AiSearchResults 的归属判定", () => {
 
 describe("AiSearchResults 的状态", () => {
   it("扫描中给出进行时，不提前说「没找到」", () => {
-    const html = render({ status: "loading", query: "keyword", archived: false, result: null, error: null });
+    const html = render({ status: "loading", query: "keyword", archived: false, workspace: "D:/project", result: null, error: null });
     expect(html).toContain("ai.search.searching");
     expect(html).not.toContain("ai.search.none");
   });
   it("失败和没命中是两件事，各说各的", () => {
-    const failed = render({ status: "failed", query: "keyword", archived: false, result: null, error: "会话日志不可读" });
+    const failed = render({ status: "failed", query: "keyword", archived: false, workspace: "D:/project", result: null, error: "会话日志不可读" });
     expect(failed).toContain('class="ai-error" role="alert">会话日志不可读');
     expect(failed).not.toContain("ai.search.none");
     expect(render(ready({ result: { hits: [], scanned: 4, skipped: 0, bytes: 1024, truncated: false } })))
       .toContain("ai.search.none:keyword");
   });
   it("空输入不渲染任何东西", () => {
-    expect(render({ status: "idle", query: "", archived: false, result: null, error: null }, "")).toBe("");
+    expect(render({ status: "idle", query: "", archived: false, workspace: null, result: null, error: null }, "")).toBe("");
   });
 });
 

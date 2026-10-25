@@ -258,6 +258,24 @@ describe("AI conversation pane", () => {
     expect(h.moveQueued).toHaveBeenNthCalledWith(2, "second", null);
     expect(preventDefault).toHaveBeenCalledTimes(2);
   });
+  it("拖动整条任务行时按落点调整队列顺序", () => {
+    h.state.tasks = [
+      { runId: "first", status: "queued", seq: 1, prompt: "first" },
+      { runId: "second", status: "queued", seq: 2, prompt: "second" },
+      { runId: "third", status: "queued", seq: 3, prompt: "third" },
+    ];
+    h.ownedQueued = ["first", "second", "third"];
+    const rows = findAll(render().pane, "div").filter((item) => String(item.props.className).startsWith("ai-task-queue-item"));
+    const dataTransfer = { effectAllowed: "none", dropEffect: "none", setData: vi.fn() };
+    const box = { top: 100, height: 40 };
+    const preventDefault = vi.fn();
+    // 从第二条正文拖到第一条上半区：完整 dragstart → dragover → drop 必须提交一次稳定 id 排序。
+    rows[1].props.onDragStart({ target: { closest: () => null }, dataTransfer });
+    rows[0].props.onDragOver({ preventDefault, dataTransfer, currentTarget: { getBoundingClientRect: () => box }, clientY: 105 });
+    rows[0].props.onDrop({ preventDefault, currentTarget: { getBoundingClientRect: () => box }, clientY: 105 });
+    expect(dataTransfer.setData).toHaveBeenCalledWith("text/plain", "second");
+    expect(h.moveQueued).toHaveBeenCalledWith("second", "first");
+  });
   it("renders approvals at their timeline positions without duplicating them", () => {
     h.state.entries = [
       { id: "before", runId: "run", kind: "assistant", text: "before-marker" },

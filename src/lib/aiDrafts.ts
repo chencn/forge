@@ -73,6 +73,18 @@ export function clearDraft(workspace: string | null, sessionId: string): void {
   }
 }
 
+/** 删除会话时清掉所有按会话隔离的本地状态；工程级发送历史和引擎默认项继续保留。 */
+export function clearAiSessionStorage(workspace: string | null, sessionId: string): void {
+  const prefix = aiSessionStorageKey(workspace);
+  try {
+    localStorage.removeItem(draftKey(workspace, sessionId));
+    localStorage.removeItem(dirsKey(workspace, sessionId));
+    localStorage.removeItem(`${prefix}:options:${sessionId}`);
+  } catch {
+    // 会话已经从列表删除；缓存清理失败不能阻止主状态迁移。
+  }
+}
+
 /** 本会话已授权的额外目录。跨重启保留，但只影响这个会话的启动参数。 */
 export function loadAdditionalDirs(workspace: string | null, sessionId: string): string[] {
   try {

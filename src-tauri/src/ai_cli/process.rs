@@ -2,12 +2,19 @@
 use crate::sys::hide_console;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// 单条命令留存的输出上限。npm 出错时会刷出很长的日志，这里只留尾部：
 /// 界面要展示的是失败原因，不是完整流水账。
 const OUTPUT_LIMIT: usize = 32 * 1024;
+/// 需要完整解析的 stdout 也必须有硬上限；超过后继续排空管道，但拒绝解析截断数据。
+const FULL_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+
+struct Capture {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    overflow: Arc<AtomicBool>,
+}
 
 /// 一次命令执行的结果。`success` 由退出码决定，与是否解析出内容无关。
 pub struct Output {
@@ -31,24 +38,35 @@ impl Output {
 ///
 /// 必须读到 EOF 才退出：调用方要等子进程退出后才放手，管道里残留的数据没人收就会把子进程卡死。
 /// 读完发一个信号，让 `run` 知道输出已经收全，不必靠 sleep 猜。
-fn capture(pipe: impl Read + Send + 'static, done: mpsc::Sender<()>, mode: Truncation) -> Arc<Mutex<Vec<u8>>> {
+fn capture(pipe: impl Read + Send + 'static, done: mpsc::Sender<()>, mode: Truncation) -> Capture {
     let tail = Arc::new(Mutex::new(Vec::new()));
     let result = tail.clone();
+    let overflow = Arc::new(AtomicBool::new(false));
+    let overflow_writer = overflow.clone();
     std::thread::spawn(move || {
         let mut pipe = pipe;
         let mut buffer = [0; 4096];
         while let Ok(count) = pipe.read(&mut buffer) {
             if count == 0 { break; }
             let mut bytes = tail.lock().unwrap_or_else(|e| e.into_inner());
-            bytes.extend_from_slice(&buffer[..count]);
-            if matches!(mode, Truncation::Tail) && bytes.len() > OUTPUT_LIMIT {
-                let excess = bytes.len() - OUTPUT_LIMIT;
-                bytes.drain(..excess);
+            match mode {
+                Truncation::Tail => {
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if bytes.len() > OUTPUT_LIMIT {
+                        let excess = bytes.len() - OUTPUT_LIMIT;
+                        bytes.drain(..excess);
+                    }
+                }
+                Truncation::Full => {
+                    let remaining = FULL_OUTPUT_LIMIT.saturating_sub(bytes.len());
+                    bytes.extend_from_slice(&buffer[..count.min(remaining)]);
+                    if count > remaining { overflow_writer.store(true, Ordering::Release); }
+                }
             }
         }
         let _ = done.send(());
     });
-    result
+    Capture { bytes: result, overflow }
 }
 
 /// Windows 上用 Job Object 把子进程树圈住：句柄一关，整棵树跟着结束。
@@ -71,10 +89,42 @@ impl ProcessTree {
                 &limits as *const _ as *const std::ffi::c_void,
                 std::mem::size_of_val(&limits) as u32).map_err(|e| e.to_string())?;
             AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())).map_err(|e| e.to_string())?;
+            resume_process(child.id())?;
             Ok(job)
         }
     }
 }
+#[cfg(windows)]
+fn resume_process(pid: u32) -> Result<(), String> {
+    use windows::Win32::{Foundation::CloseHandle, System::{Diagnostics::ToolHelp::*, Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME}}};
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(|error| error.to_string())?;
+    let result = (|| {
+        let mut entry = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+        unsafe { Thread32First(snapshot, &mut entry) }.map_err(|error| error.to_string())?;
+        let mut resumed = false;
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) }.map_err(|error| error.to_string())?;
+                let previous = unsafe { ResumeThread(thread) };
+                let _ = unsafe { CloseHandle(thread) };
+                if previous == u32::MAX { return Err("无法恢复隔离的子进程线程".into()); }
+                resumed = true;
+            }
+            if unsafe { Thread32Next(snapshot, &mut entry) }.is_err() { break; }
+        }
+        resumed.then_some(()).ok_or_else(|| "没有找到隔离子进程的初始线程".into())
+    })();
+    let _ = unsafe { CloseHandle(snapshot) };
+    result
+}
+#[cfg(windows)]
+pub(crate) fn prepare_isolated(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    // 子进程在加入 Job 前一条指令都不能执行；否则包装器可在窗口期生成逃逸后代。
+    command.creation_flags(0x0000_0004 | 0x0800_0000); // CREATE_SUSPENDED | CREATE_NO_WINDOW
+}
+#[cfg(not(windows))]
+pub(crate) fn prepare_isolated(_command: &mut Command) {}
 #[cfg(windows)]
 impl Drop for ProcessTree {
     fn drop(&mut self) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.0); } }
@@ -102,6 +152,7 @@ pub fn run(command: Command, timeout: Duration) -> Result<Output, String> {
 }
 
 /// 输出收集策略：短命令只留尾部；`codex debug models` 这类要整份解析的大输出必须全量。
+#[derive(Clone, Copy)]
 pub enum Truncation { Tail, Full }
 
 pub fn run_with(mut command: Command, timeout: Duration, mode: Truncation) -> Result<Output, String> {
@@ -111,6 +162,7 @@ pub fn run_with(mut command: Command, timeout: Duration, mode: Truncation) -> Re
     #[cfg(unix)]
     { use std::os::unix::process::CommandExt; command.process_group(0); }
     hide_console(&mut command);
+    prepare_isolated(&mut command);
     let mut child = command.spawn().map_err(|e| format!("无法启动命令：{e}"))?;
     let tree = match ProcessTree::new(&child) {
         Ok(tree) => tree,
@@ -132,9 +184,13 @@ pub fn run_with(mut command: Command, timeout: Duration, mode: Truncation) -> Re
     if status.is_err() { let _ = child.kill(); let _ = child.wait(); }
     // 清理树后管道应关闭；仍设上限，不让第三方工具永久阻塞应用。
     for _ in 0..2 { let _ = receiver.recv_timeout(Duration::from_secs(2)); }
-    let decode = |value: Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&value.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
-    let stdout = decode(stdout);
-    let stderr = decode(stderr);
+    let decode = |value: &Capture| String::from_utf8_lossy(&value.bytes.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+    let stdout_text = decode(&stdout);
+    let stderr = decode(&stderr);
+    if stdout.overflow.load(Ordering::Acquire) {
+        return Err(format!("命令标准输出超过 {} MiB 上限，已拒绝解析不完整结果", FULL_OUTPUT_LIMIT / 1024 / 1024));
+    }
+    let stdout = stdout_text;
     let status = status.map_err(|error| format!("{error}\n{stdout}\n{stderr}"))?;
     Ok(Output { success: status.success(), code: status.code(), stdout, stderr })
 }
@@ -237,9 +293,18 @@ mod tests {
         data.extend_from_slice(b"END");
         let bytes = capture(std::io::Cursor::new(data), done, Truncation::Tail);
         receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-        let bytes = bytes.lock().unwrap();
+        let bytes = bytes.bytes.lock().unwrap();
         assert_eq!(bytes.len(), OUTPUT_LIMIT);
         assert!(bytes.ends_with(b"END"));
+    }
+
+    #[test]
+    fn full_capture_reports_overflow_without_growing_past_the_limit() {
+        let (done, receiver) = mpsc::channel();
+        let bytes = capture(std::io::Cursor::new(vec![b'x'; FULL_OUTPUT_LIMIT + 1]), done, Truncation::Full);
+        receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(bytes.bytes.lock().unwrap().len(), FULL_OUTPUT_LIMIT);
+        assert!(bytes.overflow.load(Ordering::Acquire));
     }
 
     #[test]

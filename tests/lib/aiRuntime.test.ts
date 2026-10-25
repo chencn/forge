@@ -70,10 +70,31 @@ describe("AI runtime event store", () => {
     h.invoke.mockImplementation(() => new Promise<void>((done) => { resolve = done; }));
     const stopping = runtime.stopAiRun("run");
     emit(event(3, "status", { status: "running" }));
+    expect(runtime.useAiRuntime(session.id).stopping).toBe(true);
     resolve();
     await stopping;
     expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "running", stopping: true,
       tasks: [{ status: "running", started: true }] });
+  });
+  it("取消排队项不会冻结同一会话里正在运行的任务", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(
+      event(1, "status", { status: "running" }, "running"),
+      event(2, "status", { status: "queued", prompt: "稍后执行" }, "queued"),
+    );
+    await runtime.stopAiRun("queued");
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "running", stopping: false });
+  });
+  it.each([
+    ["普通消息", async (runtime: typeof import("../../src/lib/aiRuntime")) => runtime.sendAiMessage(session, "D:/project", "不会被受理", true)],
+    ["计划决策", async (runtime: typeof import("../../src/lib/aiRuntime")) => runtime.decideAiPlan(session, "D:/project", { planId: "p", revision: 1 } as never, "approve")],
+  ])("%s 前置校验失败且后端无任务时终结 submitting 占位", async (_label, submit) => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockRejectedValueOnce(new Error("前置校验失败")).mockRejectedValueOnce(new Error("任务未受理"));
+    await expect(submit(runtime)).rejects.toThrow("前置校验失败");
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "failed", stopping: false });
+    expect(runtime.useAiRuntime(session.id).tasks).toMatchObject([{ status: "failed", error: "Error: 前置校验失败" }]);
   });
   it("发送已受理但 CLI 尚未确认时保持 submitting", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
@@ -369,6 +390,31 @@ describe("AI runtime event store", () => {
     const cleared = projectAiEvents([event(4, "task_list", { replace: true, items: [] }, "run-b")], state, true);
     expect(cleared.entries.some((entry) => entry.name === "task_list")).toBe(false);
   });
+  it("TaskUpdate 缺失字段时保留原任务内容和状态", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const initial = projectAiEvents([event(1, "task_list", { replace: true,
+      items: [{ id: "1", content: "正在实现", status: "active", detail: "保持 FIFO" }] })]);
+    const updated = projectAiEvents([event(2, "task_list", { replace: false, items: [{ id: "1", detail: "等待复核" }] })], initial, true);
+    expect(updated.entries.at(-1)?.input).toEqual({ items: [{ id: "1", content: "正在实现", status: "active", detail: "等待复核" }] });
+  });
+  it("重开会话时从分页摘要恢复完整任务清单，不拿最新页的稀疏补丁冒充全量", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({
+      events: [event(20, "task_list", { replace: false, items: [{ id: "2", status: "complete" }] }, "run-b")],
+      hasOlder: true, hasMore: false, nextSeq: 20, nativeId: "native", status: "completed", latestSeq: 20, latestRunId: "run-b",
+      taskList: { seq: 20, runId: "run-b", items: [
+        { id: "1", content: "分析", status: "complete" },
+        { id: "2", content: "实现", status: "complete" },
+        { id: "3", content: "验证", status: "active" },
+      ] },
+    });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id).taskList).toEqual({ seq: 20, runId: "run-b", items: [
+      { id: "1", content: "分析", status: "complete" },
+      { id: "2", content: "实现", status: "complete" },
+      { id: "3", content: "验证", status: "active" },
+    ] });
+  });
   it("registers routing before invoking send and retains early Unicode events", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
     h.invoke.mockImplementation(async (command, args) => {
@@ -388,8 +434,8 @@ describe("AI runtime event store", () => {
     const delta = event(2, "text", { id: "m", text: "中" });
     emit(event(1, "status", { status: "running" }), delta); emit(delta, event(3, "text", { id: "m", text: "文😀" }));
     emit(event(4, "message", { id: "m", text: "中文😀" }));
+    await vi.waitFor(() => expect(runtime.useAiRuntime(session.id).entries[0]?.text).toBe("中文😀"));
     expect(runtime.useAiRuntime(session.id).entries).toHaveLength(1);
-    expect(runtime.useAiRuntime(session.id).entries[0].text).toBe("中文😀");
   });
   it("答案跟着失效事件一起回来，已处理和已失效分得清", async () => {
     const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
@@ -534,7 +580,7 @@ describe("AI runtime event store", () => {
     expect(runtime.useAiRuntime(session.id)).toMatchObject({ runId: "run", status: "running",
       tasks: [{ runId: "run", status: "running" }] });
     emit(event(4, "text", { id: "m", text: "，新输出" }));
-    expect(runtime.useAiRuntime(session.id).entries[0].text).toBe("正在继续，新输出");
+    await vi.waitFor(() => expect(runtime.useAiRuntime(session.id).entries[0]?.text).toBe("正在继续，新输出"));
   });
   it("refreshes a reopened session and restores the active turn outside the newest page", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
@@ -547,7 +593,7 @@ describe("AI runtime event store", () => {
     expect(runtime.getAiSessionActivity(session.id)).toBe("running");
     expect(runtime.getAiRunId(session.id)).toBe("run");
     emit(event(601, "text", { id: "m", text: "继续更新" }));
-    expect(runtime.useAiRuntime(session.id).entries[0].text).toBe("后台输出继续更新");
+    await vi.waitFor(() => expect(runtime.useAiRuntime(session.id).entries[0]?.text).toBe("后台输出继续更新"));
   });
   it.each(["completed", "cancelled", "failed"])("does not revive a %s turn from an older running summary", async (status) => {
     const runtime = await import("../../src/lib/aiRuntime");
@@ -642,6 +688,50 @@ describe("AI runtime event store", () => {
     emit(event(2, "text", { id: "m", text: "late" }));
     expect(runtime.useAiRuntime(session.id).entries).toEqual([]);
   });
+  it("releases closed terminal sessions and reloads them from persistence", async () => {
+    const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
+    emit(event(1, "user", { text: "问题" }), event(2, "status", { status: "running" }),
+      event(3, "message", { id: "m", text: "回答" }), event(4, "status", { status: "completed" }));
+
+    runtime.releaseAiRuntimeSessionCache(session.id);
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ entries: [], tasks: [], loaded: false });
+    expect(runtime.getAiSessionLastStatus(session.id)).toBe("completed");
+
+    h.invoke.mockResolvedValueOnce({ events: [event(3, "message", { id: "m", text: "回答" }), event(4, "status", { status: "completed" })],
+      hasOlder: true, nextSeq: 3, latestSeq: 4, latestRunId: "run", status: "completed", nativeId: "native", activeTasks: [] });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ loaded: true, status: "completed" });
+    expect(runtime.useAiRuntime(session.id).entries.map((entry) => entry.text)).toEqual(["回答"]);
+  });
+  it("keeps a closed background run until its terminal event then releases it", async () => {
+    const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
+    emit(event(1, "status", { status: "running" }), event(2, "text", { id: "m", text: "后台输出" }));
+
+    runtime.releaseAiRuntimeSessionCache(session.id);
+    expect(runtime.useAiRuntime(session.id).entries.map((entry) => entry.text)).toEqual(["后台输出"]);
+    emit(event(3, "status", { status: "completed" }));
+
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ entries: [], tasks: [], loaded: false });
+    expect(runtime.getAiSessionLastStatus(session.id)).toBe("completed");
+  });
+  it("does not let an internal queued refresh cancel a close-time release", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    let resolveInitial!: (page: unknown) => void;
+    let resolveRefresh!: (page: unknown) => void;
+    h.invoke.mockImplementationOnce(() => new Promise((done) => { resolveInitial = done; }))
+      .mockImplementationOnce(() => new Promise((done) => { resolveRefresh = done; }));
+    const initial = runtime.loadAiMessages(session.id, "D:/project");
+    await vi.waitFor(() => expect(resolveInitial).toBeTypeOf("function"));
+    const refresh = runtime.loadAiMessages(session.id, "D:/project", true);
+    runtime.releaseAiRuntimeSessionCache(session.id);
+
+    resolveInitial({ events: [event(1, "message", { id: "old", text: "首屏" })], hasOlder: false, nextSeq: 1, nativeId: "native" });
+    await vi.waitFor(() => expect(resolveRefresh).toBeTypeOf("function"));
+    resolveRefresh({ events: [event(2, "message", { id: "new", text: "刷新" })], hasOlder: false, nextSeq: 2, nativeId: "native" });
+    await Promise.all([initial, refresh]);
+    await vi.waitFor(() => expect(runtime.useAiRuntime(session.id).entries).toEqual([]));
+    expect(runtime.useAiRuntime(session.id).loaded).toBe(false);
+  });
   it("coalesces streaming notifications without delaying state changes", async () => {
     const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
     let notifications = 0;
@@ -650,12 +740,13 @@ describe("AI runtime event store", () => {
     expect(notifications).toBe(1);
     emit(event(2, "text", { id: "m", text: "中" }), event(3, "tool", { id: "t", name: "Read", outputDelta: "x" }));
     emit(event(4, "text", { id: "m", text: "文" }));
-    // 合帧只推迟「告诉大家」：快照当场就是最新的，读得到但还没通知。
+    // 高频事件连投影一起合帧，不能只延迟通知却仍为每个 delta 复制整份长会话。
     expect(notifications).toBe(1);
-    expect(runtime.useAiRuntime(session.id).entries.map((entry) => entry.text)).toEqual(["中文", ""]);
+    expect(runtime.useAiRuntime(session.id).entries).toEqual([]);
     // 没有 rAF 的环境靠兜底定时器追上，不会永远欠一次通知。
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(notifications).toBe(2);
+    expect(runtime.useAiRuntime(session.id).entries.map((entry) => entry.text)).toEqual(["中文", ""]);
     // 混进状态事件的那一批必须当场通知，不能让用户等下一帧才看到停止按钮。
     emit(event(5, "text", { id: "m", text: "！" }), event(6, "status", { status: "completed" }));
     expect(notifications).toBe(3);
@@ -697,6 +788,10 @@ describe("AI runtime event store", () => {
     expect(state.mcpServers).toEqual({ servers: [{ name: "docs", status: "connected" }], tools: ["mcp__docs__search"] });
     const done = projectAiEvents([event(5, "status", { status: "completed" })], state, true);
     expect(done.background).toBeUndefined();
+    const nextRun = projectAiEvents([event(6, "status", { status: "running" }, "next")], state, true);
+    expect(nextRun.mcpServers).toBeUndefined();
+    const empty = projectAiEvents([event(7, "mcp_servers", { servers: [] }, "next")], nextRun, true);
+    expect(empty.mcpServers).toBeUndefined();
   });
   it("a plan decision starts a run without pretending the backend prompt is a user message", async () => {
     const runtime = await import("../../src/lib/aiRuntime");

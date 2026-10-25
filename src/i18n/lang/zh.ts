@@ -1430,7 +1430,7 @@ export const zh = {
   "ai.codexMethod": "npm 全局安装 · 最新正式版",
   "ai.commands.busy": "当前无法修改选项，请等待本轮操作结束。",
   "ai.commands.compact": "压缩当前会话；可能消耗模型额度；Codex 不接受附加参数",
-  "ai.commands.compactArgs": "Codex 0.163.0 的压缩接口不支持附加指令，未执行。",
+  "ai.commands.compactArgs": "Codex 的压缩接口不支持附加指令，未执行。",
   "ai.commands.context": "打开上下文组成明细（已有快照）",
   "ai.commands.discovery": "Claude 原生命令会在正常会话初始化后出现；不会仅为加载菜单启动 CLI。",
   "ai.commands.effort": "选择思考强度；只接受当前模型支持的档位",

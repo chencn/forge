@@ -18,7 +18,7 @@ import { aiArrival, aiArrivalOf, formatAiClock, formatAiSeconds, useAiElapsed } 
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { compactionFacts } from "../lib/aiCompaction";
 import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiMessage, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
-import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent } from "../lib/aiRuntime";
+import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiModelTaskList } from "../lib/aiRuntime";
 import { buildNavRows, NAV_PAGE, navCount, visibleNavRows } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
@@ -41,6 +41,7 @@ import { aiQueueOrder, isAiTaskTerminal } from "../lib/aiTaskStatus";
 import type { AiComposerHandle } from "./AiComposerOptions";
 import AiComposerOptions from "./AiComposerOptions";
 import AiComposerShell from "./AiComposerShell";
+import AiCommandMenu from "./AiCommandMenu";
 import AiContextChip from "./AiContextChip";
 import { aiNormalMode, loadAiOptions, saveAiOptions } from "../lib/aiOptions";
 import AiToolDetails, { AiToolCall, AiToolSummary, CodeText } from "./AiToolDetails";
@@ -490,35 +491,6 @@ function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
   </div>;
 }
 
-/** 一张任务清单的条目形状（与 task_list / plan 事件的投影一致）。 */
-interface TaskListItem { id: string; content: string; status: string; detail?: string }
-
-/** 从时间线里取最近一张任务清单卡（支持 task_list 与 plan）；没有就是 null。 */
-export function latestTaskList(entries: AiEntry[]): { entry: AiEntry; items: TaskListItem[] } | null {
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index];
-    if (entry.kind !== "notice" || (entry.name !== "task_list" && entry.name !== "plan")) continue;
-    const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input)
-      ? (entry.input as Record<string, unknown>)
-      : null;
-    if (!data) continue;
-    const source = entry.name === "task_list" ? data.items : data.plan;
-    if (!Array.isArray(source)) continue;
-    const items = source.flatMap((item, itemIdx) => {
-      if (!item || typeof item !== "object") return [];
-      const val = item as Record<string, unknown>;
-      const content = typeof (val.content ?? val.step) === "string" ? String(val.content ?? val.step).trim() : "";
-      if (!content) return [];
-      const id = typeof val.id === "string" && val.id ? val.id : `task-${itemIdx}`;
-      const status = typeof val.status === "string" ? val.status : "pending";
-      const detail = typeof val.detail === "string" ? val.detail : undefined;
-      return [{ id, content, status, ...(detail ? { detail } : {}) }];
-    });
-    if (items.length) return { entry, items };
-  }
-  return null;
-}
-
 /**
  * 任务清单芯片（Codex / zcode 风格右上角折叠面板）：
  * 吸附在顶栏右上角，收起时是紧凑药丸（图标 + 进度/状态 + 运行中显示当前项）；
@@ -526,20 +498,20 @@ export function latestTaskList(entries: AiEntry[]): { entry: AiEntry; items: Tas
  * 点击条目可跳转至正文时间线中对应清单位置。
  */
 function AiTaskListChip({ taskList, running, onJump }: {
-  taskList: { entry: AiEntry; items: TaskListItem[] };
+  taskList: AiModelTaskList;
   running: boolean;
   onJump: (id: string) => void;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const visible = taskList.items.filter((item) => item.status !== "dropped");
+  const visible = taskList.items.filter((item) => item.status !== "dropped" && item.content.trim());
   const completed = visible.filter((item) => item.status === "complete" || item.status === "completed").length;
   const allCompleted = completed === visible.length;
   const percent = Math.round((completed / visible.length) * 100);
 
   // 有新进展（完成数变化或条目增减）且面板收着时点亮；点开就视为看过。
-  const signature = `${taskList.entry.seq ?? 0}:${visible.length}:${completed}:${running ? 1 : 0}`;
+  const signature = `${taskList.seq}:${visible.length}:${completed}:${running ? 1 : 0}`;
   const [lastSignature, setLastSignature] = useState(signature);
   const dirty = !open && signature !== lastSignature;
 
@@ -570,6 +542,7 @@ function AiTaskListChip({ taskList, running, onJump }: {
   }, [open]);
 
   const activePlanItem = visible.find((item) => item.status === "in_progress" || item.status === "active");
+  const activePosition = activePlanItem ? visible.indexOf(activePlanItem) + 1 : 0;
 
   return <div className={`ai-taskchip${open ? " is-open" : ""}${running ? " is-running" : ""}${allCompleted ? " is-all-completed" : ""}`} ref={containerRef}>
     <button type="button" className={`ai-taskchip-trigger${dirty ? " is-dirty" : ""}${open ? " is-active" : ""}${allCompleted && !running ? " is-success" : ""}`}
@@ -583,7 +556,7 @@ function AiTaskListChip({ taskList, running, onJump }: {
       )}
       <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
       {running && activePlanItem ? (
-        <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePlanItem.content}</span>
+        <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePosition}/{visible.length} · {activePlanItem.content}</span>
       ) : null}
       {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
       <ChevronDown size={12} className={`ai-taskchip-chevron${open ? " is-open" : ""}`} aria-hidden />
@@ -611,7 +584,7 @@ function AiTaskListChip({ taskList, running, onJump }: {
             const isDone = item.status === "complete" || item.status === "completed";
             const isActive = item.status === "in_progress" || item.status === "active";
             return <li key={item.id || index} className={`is-${item.status}`}>
-              <button type="button" className="ai-taskchip-row" onClick={() => { setOpen(false); onJump(taskList.entry.id); }}>
+              <button type="button" className="ai-taskchip-row" onClick={() => { setOpen(false); onJump("session:task-list"); }}>
                 <span className="ai-plan-entry-icon" aria-hidden>
                   {isDone ? <CheckCircle2 size={14} className="is-complete" /> : isActive ? <Loader2 size={14} className="is-spinning" /> : <CircleDashed size={14} />}
                 </span>
@@ -1145,8 +1118,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     return map;
   }, [runtime.entries]);
   const timelineEntries = useMemo(() => runtime.entries.filter((entry) => !entry.parent), [runtime.entries]);
-  /** 最近一张任务清单：右缘常驻芯片的镜像来源。 */
-  const taskList = useMemo(() => latestTaskList(timelineEntries), [timelineEntries]);
+  /** 任务清单是会话级事实，不再依赖当前时间线页是否包含它的最后一次更新。 */
+  const taskList = runtime.taskList?.items.some((item) => item.status !== "dropped" && item.content.trim()) ? runtime.taskList : null;
   // 先折叠再开窗：反过来会把一整段过程劈成两半，两段各自都够不上折叠门槛，就都摊在屏幕上。
   // 传 running 是为了只留「正在想」那一条空思考：空正文的历史思考块摆成一排「思考」却点不出东西。
   const timeline = useMemo(() => windowAiTimeline(groupAiTimeline(timelineEntries, running), timelineLimit), [timelineEntries, running, timelineLimit]);
@@ -1416,7 +1389,14 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         </header>
         <div className="ai-task-queue-list" id={queueBodyId} hidden={!queueExpanded}>
         {queuedTasks.map((task, index) => { const owned = ownedQueued.has(task.runId); const ownedIndex = ownedQueuedTasks.findIndex((item) => item.runId === task.runId); return <div key={task.runId} data-queue-id={task.runId} aria-current={editingTask?.runId === task.runId ? "true" : undefined}
-          className={`ai-task-queue-item${owned ? "" : " is-external"}${editingTask?.runId === task.runId ? " is-editing" : ""}${queueDrop?.runId === task.runId ? ` is-drop-${queueDrop.edge}` : ""}`}
+          className={`ai-task-queue-item${owned ? " is-draggable" : " is-external"}${editingTask?.runId === task.runId ? " is-editing" : ""}${queueDrop?.runId === task.runId ? ` is-drop-${queueDrop.edge}` : ""}`}
+          draggable={owned}
+          onDragStart={(event) => {
+            // WebView2 不可靠地启动 button[draggable]；整行才是用户眼里的任务，也是稳定的拖拽源。
+            draggedTask.current = task.runId; setQueueDrop(null);
+            event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", task.runId);
+          }}
+          onDragEnd={() => { draggedTask.current = null; setQueueDrop(null); }}
           onDragOver={(event) => {
             const runId = draggedTask.current;
             if (!owned || !runId || runId === task.runId) return;
@@ -1438,13 +1418,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
               void moveQueuedAiTask(runId, beforeRunId).catch((cause) => setError(String(cause)));
             }
           }}>
-          <button type="button" className="ai-task-drag" disabled={!owned} draggable={owned}
+          <button type="button" className="ai-task-drag" disabled={!owned}
             aria-label={t("ai.runtime.reorderQueued")} title={t("ai.runtime.reorderQueued")}
-            onDragStart={(event) => {
-              draggedTask.current = task.runId; setQueueDrop(null);
-              event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", task.runId);
-            }}
-            onDragEnd={() => { draggedTask.current = null; setQueueDrop(null); }}
             onKeyDown={(event) => {
               if (!owned || ownedIndex < 0 || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
               const beforeRunId = event.key === "ArrowUp"
@@ -1453,12 +1428,15 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
               if (event.key === "ArrowUp" && !beforeRunId || event.key === "ArrowDown" && ownedIndex >= ownedQueuedTasks.length - 1) return;
               event.preventDefault(); captureQueueFlip();
               void moveQueuedAiTask(task.runId, beforeRunId ?? null).catch((cause) => setError(String(cause)));
-            }}><GripVertical size={14} aria-hidden /><b>{index + 1}</b></button>
+            }}><GripVertical size={14} aria-hidden /></button>
+          {/* 序号属于任务正文，不属于拖拽图标；用普通文本保持列表阅读顺序。 */}
+          <span className="ai-task-queue-index" aria-hidden>{index + 1}.</span>
           <p title={task.prompt}>{task.prompt || t("ai.runtime.queuedTask")}</p>
           {owned ? <span className="ai-task-queue-actions">
-            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => setError(String(cause)))}><ChevronsUp size={13} /><span>{t("ai.runtime.runQueuedShort")}</span></button>
-            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.editQueued")} title={t("ai.runtime.editQueued")} onClick={() => beginQueuedEdit(task.runId, task.prompt ?? "")}><Pencil size={13} /><span>{t("ai.runtime.editQueuedShort")}</span></button>
-            <button type="button" className="ai-task-action is-danger" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => setError(String(cause)))}><X size={13} /><span>{t("ai.runtime.cancelQueuedShort")}</span></button>
+            {/* 队列是高频操作区：正文占主位，右侧只留图标；完整语义由 title 与 aria-label 承担。 */}
+            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => setError(String(cause)))}><Send size={14} aria-hidden /></button>
+            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.editQueued")} title={t("ai.runtime.editQueued")} onClick={() => beginQueuedEdit(task.runId, task.prompt ?? "")}><Pencil size={14} aria-hidden /></button>
+            <button type="button" className="ai-task-action is-danger" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => setError(String(cause)))}><X size={14} aria-hidden /></button>
           </span> : <small className="ai-task-queue-owner">{t("ai.runtime.otherWindow")}</small>}
         </div>; })}
         </div>
@@ -1467,17 +1445,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     <AiComposerShell
       overlay={<>
         {dropArmed ? <div className="ai-composer-drop" role="status">{t("ai.chat.dropImages")}</div> : null}
-        {menuVisible ? <div className="ai-command-menu" ref={commandMenu}>
-        <p className="ai-popover-note">{t("ai.commands.hint")}</p>
-        <div id={menuId} role="listbox" aria-label={t("ai.commands.title")}>
-          {suggestions.map((command, index) => <button type="button" role="option" id={`${menuId}-${index}`} key={command.name} aria-selected={index === selectedCommand} tabIndex={-1}
-            onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(command.name)}>
-            <span><strong>/{command.name}</strong> <code>{command.argumentHint}</code></span>
-            <small>{command.hintKey ? t(command.hintKey as Parameters<typeof t>[0]) : command.description}</small>
-          </button>)}
-        </div>
-        {session.provider === "claude" && !runtime.commands ? <p className="ai-popover-note">{t("ai.commands.discovery")}</p> : null}
-      </div> : null}
+        {menuVisible ? <AiCommandMenu id={menuId} suggestions={suggestions} selected={selectedCommand} onChoose={chooseCommand}
+          menuRef={commandMenu} showDiscovery={session.provider === "claude" && !runtime.commands} /> : null}
       </>}
       attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
         {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
