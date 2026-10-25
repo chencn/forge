@@ -4767,84 +4767,84 @@ span.entry-icon > svg {
   -webkit-user-select: text;
 }
 
-/* 标题 */
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3,
-.markdown-body h4,
-.markdown-body h5,
-.markdown-body h6 {
+/* 正文排版：文档预览与聊天共用。聊天容器（滚动、内边距、文件链接）仍在 aiAssistants.css。 */
+:is(.markdown-body, .ai-message-markdown) h1,
+:is(.markdown-body, .ai-message-markdown) h2,
+:is(.markdown-body, .ai-message-markdown) h3,
+:is(.markdown-body, .ai-message-markdown) h4,
+:is(.markdown-body, .ai-message-markdown) h5,
+:is(.markdown-body, .ai-message-markdown) h6 {
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.35;
 }
 
-.markdown-body > *:first-child {
+:is(.markdown-body, .ai-message-markdown) > *:first-child {
   margin-top: 0 !important;
 }
 
-.markdown-body h1 {
+:is(.markdown-body, .ai-message-markdown) h1 {
   font-size: 24px;
   margin: 28px 0 16px 0;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-color);
 }
 
-.markdown-body h2 {
+:is(.markdown-body, .ai-message-markdown) h2 {
   font-size: 19px;
   margin: 24px 0 14px 0;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border-color);
 }
 
-.markdown-body h3 {
+:is(.markdown-body, .ai-message-markdown) h3 {
   font-size: 16px;
   margin: 20px 0 10px 0;
 }
 
-.markdown-body h4 {
+:is(.markdown-body, .ai-message-markdown) h4 {
   font-size: 14.5px;
   margin: 16px 0 8px 0;
 }
 
-.markdown-body h5,
-.markdown-body h6 {
+:is(.markdown-body, .ai-message-markdown) h5,
+:is(.markdown-body, .ai-message-markdown) h6 {
   font-size: 13.5px;
   margin: 14px 0 6px 0;
 }
 
 /* 段落与列表 */
-.markdown-body p {
+:is(.markdown-body, .ai-message-markdown) p {
   margin: 0 0 14px 0;
 }
 
-.markdown-body ul,
-.markdown-body ol {
+:is(.markdown-body, .ai-message-markdown) ul,
+:is(.markdown-body, .ai-message-markdown) ol {
   margin: 0 0 14px 0;
   padding-left: 22px;
 }
 
-.markdown-body li {
+:is(.markdown-body, .ai-message-markdown) li {
   margin: 4px 0;
 }
 
-.markdown-body li > p {
+:is(.markdown-body, .ai-message-markdown) li > p {
   margin: 4px 0;
 }
 
 /* 链接 */
-.markdown-body a {
+:is(.markdown-body, .ai-message-markdown) a {
   color: var(--button-solid, #3574f0);
   text-decoration: none;
   font-weight: 500;
 }
 
-.markdown-body a:hover {
+:is(.markdown-body, .ai-message-markdown) a:hover {
   text-decoration: underline;
 }
 
 /* 引用块 */
-.markdown-body blockquote {
+:is(.markdown-body, .ai-message-markdown) blockquote {
   margin: 16px 0;
   padding: 10px 16px;
   border-left: 3.5px solid var(--button-solid, #3574f0);
@@ -4853,12 +4853,12 @@ span.entry-icon > svg {
   color: var(--text-secondary);
 }
 
-.markdown-body blockquote > *:last-child {
+:is(.markdown-body, .ai-message-markdown) blockquote > *:last-child {
   margin-bottom: 0;
 }
 
 /* 表格 */
-.markdown-body table {
+:is(.markdown-body, .ai-message-markdown) table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
@@ -4869,7 +4869,7 @@ span.entry-icon > svg {
   font-size: 13px;
 }
 
-.markdown-body th {
+:is(.markdown-body, .ai-message-markdown) th {
   background: var(--bg-secondary);
   padding: 8px 14px;
   font-weight: 600;
@@ -4878,27 +4878,27 @@ span.entry-icon > svg {
   border-right: 1px solid var(--border-color);
 }
 
-.markdown-body td {
+:is(.markdown-body, .ai-message-markdown) td {
   padding: 8px 14px;
   border-bottom: 1px solid var(--border-color);
   border-right: 1px solid var(--border-color);
 }
 
-.markdown-body tr:last-child td {
+:is(.markdown-body, .ai-message-markdown) tr:last-child td {
   border-bottom: none;
 }
 
-.markdown-body th:last-child,
-.markdown-body td:last-child {
+:is(.markdown-body, .ai-message-markdown) th:last-child,
+:is(.markdown-body, .ai-message-markdown) td:last-child {
   border-right: none;
 }
 
-.markdown-body tr:nth-child(even) {
+:is(.markdown-body, .ai-message-markdown) tr:nth-child(even) {
   background: var(--bg-secondary);
 }
 
 /* 分隔线 */
-.markdown-body hr {
+:is(.markdown-body, .ai-message-markdown) hr {
   height: 1px;
   padding: 0;
   margin: 24px 0;
@@ -4907,7 +4907,7 @@ span.entry-icon > svg {
 }
 
 /* 行内代码 */
-.markdown-body code:not(pre code) {
+:is(.markdown-body, .ai-message-markdown) code:not(pre code) {
   font-family: var(--font-mono), monospace;
   font-size: 12.5px;
   padding: 2px 6px;
@@ -4928,15 +4928,14 @@ span.entry-icon > svg {
   -webkit-user-select: none;
 }
 
-/* 代码块外壳与标签 */
-/* 聊天正文也走同一套 highlight.js 标记，所以代码块样式两边共用；
-   用 :is() 而不是复制一份，免得色盘漂移。 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .code-block-wrapper {
+/* 代码块外壳：文档预览与工具源码。聊天折叠卡（题头、行号、复制）只写在 aiAssistants.css，
+   不放进这个选择器，否则语言标签定位和 pre 底色会被后加载的聊天规则整段盖掉。 */
+:is(.markdown-body, .ai-tool-source-code) .code-block-wrapper {
   position: relative;
   margin: 16px 0;
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .code-lang-tag {
+:is(.markdown-body, .ai-tool-source-code) .code-lang-tag {
   position: absolute;
   top: 7px;
   right: 12px;
@@ -4950,7 +4949,7 @@ span.entry-icon > svg {
   opacity: 0.8;
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) pre {
+:is(.markdown-body, .ai-tool-source-code) pre {
   margin: 0;
   padding: 14px 16px;
   background: var(--code-bg);
@@ -4962,52 +4961,13 @@ span.entry-icon > svg {
   line-height: 1.55;
 }
 
+/* 代码文字色三处共用。token 色在下面的 hljs 规则，不在这里。 */
 :is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) pre code {
   background: none;
   border: 0;
   padding: 0;
   font-size: inherit;
   color: var(--text-primary);
-}
-
-/* 逐代码块复制：聊天的正文是注入的 HTML，按钮只能靠样式画出来。
-   它和语言标签占同一个角——不透明底压住标签，出现即替换，窄气泡里才不挤。 */
-.ai-message-markdown .code-block-wrapper {
-  margin: 10px 0;
-}
-
-.ai-message-markdown .code-copy {
-  position: absolute;
-  top: 7px;
-  right: 10px;
-  padding: 2px 7px;
-  font-size: 11px;
-  font-family: var(--font-mono), monospace;
-  line-height: 1.4;
-  color: var(--text-secondary);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 5px;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.ai-message-markdown .code-block-wrapper:hover .code-copy,
-.ai-message-markdown .code-copy:focus-visible,
-.ai-message-markdown .code-copy.is-copied {
-  opacity: 1;
-}
-
-.ai-message-markdown .code-copy:focus-visible {
-  outline: 2px solid var(--accent-green);
-  outline-offset: 1px;
-}
-
-.ai-message-markdown .code-copy.is-copied {
-  color: var(--accent-green-text, var(--text-secondary));
 }
 
 /* 连续过程折成一段：收起时整段只占一行，展开后靠左竖线和正文区分——和工具详情同一种层级。 */
@@ -5376,6 +5336,24 @@ span.entry-icon > svg {
 :is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-attr,
 :is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-attribute {
   color: var(--hljs-attr);
+}
+
+/* CSS 选择器：highlight.js 打的是 selector-class / id / attr / pseudo，不是 attribute。
+   类、id、属性选择器跟属性名一档蓝；伪类跟标签一档绿。 */
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-class,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-id,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-attr {
+  color: var(--hljs-attr);
+}
+
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-pseudo {
+  color: var(--hljs-tag);
+}
+
+/* var() / rgb() / url() 这类函数名是 built_in，原先落在默认灰上。 */
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-built_in,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-symbol {
+  color: var(--hljs-variable);
 }
 
 :is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-variable,

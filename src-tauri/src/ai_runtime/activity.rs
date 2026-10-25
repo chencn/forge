@@ -167,6 +167,14 @@ fn held_in(base: &Path, id: &str, root: &str, locks: &Path) -> Result<bool, Stri
 pub fn state(base: &Path, id: &str, root: &str) -> Result<State, String> {
     Probe::default().state(base, id, root)
 }
+/// 断线恢复时只检查原生会话是否被外部 CLI 占用，不能走 `state`：当前 Worker
+/// 仍在 registry 中，`state` 必然返回 Running，反而会把自己的恢复挡住。
+pub fn externally_occupied(base: &Path, id: &str, root: &str) -> Result<bool, String> {
+    if !store::valid_id(id) { return Err("无效会话 ID".into()); }
+    let meta = store::Store::metadata(&base.join(id), root)?;
+    let Some(native) = meta.native_id.as_deref() else { return Ok(false); };
+    Probe::default().external(meta.provider, native, 0)
+}
 fn state_with(probe: &mut Probe, base: &Path, id: &str, root: &str) -> Result<State, String> {
     if !store::valid_id(id) { return Err("无效会话 ID".into()); }
     if let Some(run) = registry::for_session(id) {

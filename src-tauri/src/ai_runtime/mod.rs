@@ -10,13 +10,15 @@ mod history;
 mod images;
 #[cfg(test)]
 mod integration_tests;
-mod options;
 mod outline;
 mod plans;
 mod process;
 mod protocol;
 mod registry;
 mod search;
+// `ai_cli::codex_catalog` 要用这条通道现问 Codex 字段取值域（它起 app-server 的那套
+// 进程与超时逻辑在这里，不再抄第二份），所以这个模块要对 crate 内可见。
+pub(crate) mod options;
 mod store;
 mod task_status;
 
@@ -69,11 +71,18 @@ pub struct SendRequest {
     /// Codex 入队时从 config/read 冻结的有效服务等级；不接受前端伪造。
     #[serde(skip)]
     service_tier: Option<String>,
+    /// Codex 入队时按生效沙箱算好的附加目录落点；同样不接受前端伪造。
+    #[serde(skip)]
+    codex_grant: Option<options::SandboxGrant>,
     #[serde(default)]
     command: Option<commands::CommandIntent>,
-    /// 计划模式：这一轮只产出计划，不执行修改。
+    /// 计划模式：这一轮只产出计划，不执行修改。旧的布尔入参，只用于没带 `mode` 的请求。
     #[serde(default)]
     plan_mode: bool,
+    /// CLI 自己的模式 id（Claude 的 `--permission-mode` 取值、Codex 的 collaborationMode 取值）。
+    /// 入队时按这版 CLI 报过的取值定稿，执行时不再回看界面。
+    #[serde(default)]
+    mode: Option<String>,
     /// 对已有计划的决策（仅 Codex 支持）。前端只提交 id/版本/决策/反馈。
     #[serde(default)]
     plan: Option<PlanRequest>,
@@ -126,8 +135,12 @@ fn queued() -> &'static Mutex<HashMap<String, VecDeque<SendRequest>>> { QUEUED.g
 fn has_queued(session_id: &str) -> bool {
     queued().lock().unwrap_or_else(|e| e.into_inner()).get(session_id).is_some_and(|items| !items.is_empty())
 }
-fn queued_count(session_id: &str) -> usize {
-    queued().lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map_or(0, VecDeque::len)
+/// 队列只活在当前桌面进程；把 run id 一并交给前端，避免另一个 Forge 进程
+/// 从共享日志看到 queued 后，误画出实际上无法操作的编辑/取消按钮。
+fn queued_run_ids(session_id: &str) -> Vec<String> {
+    queued().lock().unwrap_or_else(|e| e.into_inner()).get(session_id)
+        .map(|items| items.iter().map(|request| request.run_id.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// 队列调度属于桌面进程，不属于某个 React 页面。这样切换工程或关闭标签后，
@@ -157,12 +170,98 @@ fn take_queued_run(run_id: &str) -> Result<Option<(String, SendRequest)>, String
 fn queued_status(is_front: bool, external_blocked: bool) -> &'static str {
     if is_front && external_blocked { task_status::WAITING_EXTERNAL } else { task_status::QUEUED }
 }
+/// 只有两份探针都明确说“空闲”才允许接管会话。未知或 IO 失败必须排队：
+/// 猜错成空闲会让两个 CLI 同时续写一条原生会话，代价远高于多等一次轮询。
+fn activity_blocks_dispatch(state: Result<activity::State, String>, writer_held: Result<bool, String>) -> bool {
+    !matches!(state, Ok(activity::State::Idle)) || !matches!(writer_held, Ok(false))
+}
+
+/// 自动恢复必须保守：只试一次，只续接已经真正开跑且没有悬空审批的普通回合。
+/// 外部占用探测失败按失败处理，不能用一次不确定的重连抢写同一原生会话。
+fn should_reconnect_after_disconnect(
+    started: bool,
+    attempts: u8,
+    pending: bool,
+    ordinary: bool,
+    external: Result<bool, String>,
+) -> Result<bool, String> {
+    if !started || attempts >= 1 || pending || !ordinary { return Ok(false); }
+    external.map(|occupied| !occupied).map_err(|error| format!("无法确认 CLI 会话是否被外部占用：{error}"))
+}
+
+/// 每次重连都重新生成参数。首轮可能用 `--session-id`，恢复时必须切成 `--resume`；
+/// 复用旧 argv 会启动一条同名新会话，表面连上了，实际上下文已经断裂。
+fn runtime_args(request: &SendRequest, claude_mode: &str, native: Option<&str>) -> Vec<String> {
+    if request.provider == Provider::Codex { return vec!["app-server".into()]; }
+    let mut args = vec![
+        "-p".into(), "--input-format".into(), "stream-json".into(), "--output-format".into(),
+        "stream-json".into(), "--verbose".into(), "--include-partial-messages".into(),
+        "--permission-prompt-tool".into(), "stdio".into(), "--permission-mode".into(), claude_mode.into(),
+    ];
+    let read_only = claude_mode == "plan" || request.permission == options::PermissionMode::Read;
+    if read_only {
+        args.extend(["--allowedTools", "Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoWrite", "Task"].map(str::to_owned));
+        args.extend(["--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit"].map(str::to_owned));
+    }
+    if claude_mode == "bypassPermissions" { args.push("--allow-dangerously-skip-permissions".into()); }
+    if let Some(id) = native {
+        args.extend(["--resume".into(), id.into()]);
+    } else {
+        args.extend(["--session-id".into(), request.session_id.clone(), "--name".into(), request.title.clone()]);
+    }
+    if let Some(model) = &request.model { args.extend(["--model".into(), model.clone()]); }
+    if let Some(effort) = &request.effort { args.extend(["--effort".into(), effort.clone()]); }
+    for dir in &request.additional_dirs { args.extend(["--add-dir".into(), dir.clone()]); }
+    args
+}
+
+fn spawn_runtime_process(request: &SendRequest, claude_mode: &str, native: Option<&str>) -> Result<(Process, String), String> {
+    let args = runtime_args(request, claude_mode, native);
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let (command, version) = ai_cli::runtime_command(request.provider, &refs)?;
+    Ok((Process::spawn(command, &request.workspace)?, version))
+}
+
+/// 新进程必须配新协议状态机。Codex 恢复态只附着 `recovery_turn`，不发送提示词；
+/// Claude 没有 attach 协议，因此拒绝进入这条路径。
+fn runtime_protocol(
+    request: &SendRequest,
+    native: Option<String>,
+    service_tier: &str,
+    codex_policy: &Option<Value>,
+    claude_mode: &str,
+    recovery_turn: Option<String>,
+) -> Result<Box<dyn Protocol>, String> {
+    Ok(match request.provider {
+        Provider::Codex => {
+            let recovering = recovery_turn.is_some();
+            let protocol = codex::Codex::new(request.workspace.clone(), if recovering { String::new() } else { request.prompt.clone() }, native)
+                .with_images(if recovering { vec![] } else { request.images.clone() })
+                .with_options(request.model.clone(), request.effort.clone())
+                .with_policy(request.permission, service_tier.to_owned())
+                .with_sandbox_policy(codex_policy.clone())
+                .with_command(if recovering { None } else { request.command })
+                .with_mode(request.mode.clone().unwrap_or_else(|| if request.plan_mode { "plan".into() } else { options::default_mode_id(Provider::Codex).into() }))
+                .with_decision(if recovering { None } else { request.plan_turn.as_ref().map(|turn| codex::Decision {
+                    mode: if turn.decision == plans::Decision::Approve { "default" } else { "plan" },
+                    native_plan_id: turn.native_plan_id.clone(),
+                    content_hash: turn.content_hash.clone(),
+                }) });
+            Box::new(if let Some(turn) = recovery_turn { protocol.with_recovery_turn(turn) } else { protocol })
+        }
+        Provider::Claude => {
+            if recovery_turn.is_some() { return Err("Claude CLI 不支持附着正在生成的旧回合，已停止以避免重复执行".into()); }
+            Box::new(claude::Claude::new(request.workspace.clone(), request.prompt.clone(), native)
+                .with_images(images::claude_blocks(&request.images.iter().map(PathBuf::from).collect::<Vec<_>>())?)
+                .with_model(request.model.clone()).with_command(request.command)
+                .with_plan(claude_mode == "plan"))
+        }
+    })
+}
+
 /// 这一轮开不开得起来：外部进程占着会话，或 Codex 的原生写锁还握在别的窗口手里。
-/// 后者是必须的——徽标会按回合边界把「持锁但没在跑」报成空闲，而 `thread/resume` 不认：
-/// 只要锁有人握着就当场拒。探测失败按「不挡」处理，和判定改动前一致，不让读锁的IO错误堵住发送。
 fn externally_blocked(base: &std::path::Path, session_id: &str, root: &str) -> bool {
-    matches!(activity::state(base, session_id, root), Ok(activity::State::External | activity::State::Conflict))
-        || activity::writer_held(base, session_id, root).unwrap_or(false)
+    activity_blocks_dispatch(activity::state(base, session_id, root), activity::writer_held(base, session_id, root))
 }
 /// 队列变更后把真实顺序写入事件流，所有窗口据此得到同一顺序。
 fn emit_queue_order(app: &AppHandle, session_id: &str) -> Result<(), String> {
@@ -246,12 +345,15 @@ pub async fn ai_runtime_queue_run_now(app: AppHandle, run_id: String) -> Result<
                 session_id
             };
             emit_queue_order(&app, &session_id)?;
-            // 单会话只能有一个回合；“立即执行”先在锁内决定停掉当前 Forge 回合，
-            // 退出后由该回合的收尾统一调度队首。
-            (session_id.clone(), registry::for_session(&session_id))
+            let run = registry::for_session(&session_id);
+            // 锁内必须真的把停止位置上：只拿引用不置位，下面的等待就是在等一个
+            // 没被要求停止的回合——白等 15 秒后必然报「任务仍在清理」。
+            if let Some(run) = &run { run.request_stop(); }
+            (session_id.clone(), run)
         };
-        // 等待清理放在锁外：一个卡住的回合不该按住所有会话的发送和队列调度。
-        if let Some(run) = stopping { return run.wait_until_stopped(); }
+        // 有回合在跑：置位即返回——它的收尾（finish → schedule_next）会带着队首这一项
+        // 重新调度，等待放在锁外也不需要：一个卡住的回合不该按住队列调度。
+        if stopping.is_some() { return Ok(()); }
         schedule_next(&app, &session_id)
     }).await
 }
@@ -298,11 +400,42 @@ fn stop_registered() -> Vec<Arc<Run>> {
     registry::flag_stop(&runs);
     runs
 }
+/// 新会话标题从首条用户消息生成（对照参考实现：发送第一条后立即改题，不等 CLI 刷新）：
+/// 取第一个非空行，去掉首尾空白，最长 60 个字符（按字符截，中文不切半）。
+pub(crate) fn title_from_prompt(prompt: &str) -> Option<String> {
+    let line = prompt.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let cut: String = line.chars().take(60).collect();
+    let title = cut.trim().to_string();
+    if title.is_empty() { None } else { Some(title) }
+}
+
+/// 首条消息的标题同时更新原生来源，避免列表同步把新标题覆盖回默认名称。
+fn title_first_message(store: &mut store::Store, request: &SendRequest, include_user: bool) -> Result<(), String> {
+    if !include_user || store.seq != 0 || request.plan_turn.is_some() { return Ok(()); }
+    if let Some(title) = title_from_prompt(&request.prompt) {
+        if title == store.meta.title { return Ok(()); }
+        if store.meta.provider == Provider::Codex {
+            let native = store.meta.native_id.as_deref().unwrap_or(&store.meta.session_id);
+            options::codex_set_thread_name(&store.meta.workspace, native, &title)?;
+        }
+        store.meta.title = title;
+        store.save()?;
+    }
+    Ok(())
+}
+
 fn append_task_status(app: &AppHandle, request: &SendRequest, status: &str, extra: Value, include_user: bool) -> Result<(), String> {
     let root = store::workspace(&request.workspace)?;
     let base = base(app)?;
     let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-    let mut store = store::Store::open(&base, &request.session_id, &root, request.provider, &request.title, "")?;
+    // 排队、取消、状态回写都可能发生在某一轮正在跑的时候，这里没有租约，
+    // 绝不能走 `Store::open` 的「上次运行未正常结束」修复：那会把还活着的回合写成 cancelled。
+    let (mut store, tasks) = store::Store::open_for_append_with_tasks(&base, &request.session_id, &root, request.provider, &request.title, "")?;
+    // 用户消息永远落盘：它是这条排队项的正文，跳过就等于把消息弄丢了。
+    if !include_user && status_already_recorded(tasks.get(&request.run_id), status, &extra) { return Ok(()); }
+    // 会话的第一条事件（seq 归零说明日志刚建）：标题自动换成首条消息的摘要，
+    // 否则新建会话永远顶着「新会话」，要等下次原生历史发现才被动改名。
+    title_first_message(&mut store, request, include_user)?;
     let mut data = json!({"status":status});
     if let (Some(target), Some(source)) = (data.as_object_mut(), extra.as_object()) { target.extend(source.clone()); }
     let mut events = vec![];
@@ -315,6 +448,16 @@ fn append_task_status(app: &AppHandle, request: &SendRequest, status: &str, extr
     }
     let _ = app.emit(CHANNEL, &events);
     Ok(())
+}
+
+/// 日志里已经记着同一个状态、且这次要补的字段一个都没变，就是空转。
+/// 秒级队列监控在外部 CLI 占着会话时每秒都会写一次 `waitingExternal`，
+/// 顺序回写也会在没动过的队列上重写一遍 `queued`：真实日志里出现过连续三条
+/// 字节完全相同的排队事件。挡掉它们，前端才不会每秒重新投影一次整条会话。
+fn status_already_recorded(record: Option<&Value>, status: &str, extra: &Value) -> bool {
+    let Some(record) = record else { return false; };
+    if record["status"].as_str() != Some(status) { return false; }
+    extra.as_object().is_none_or(|fields| fields.iter().all(|(key, value)| record.get(key.as_str()) == Some(value)))
 }
 fn base(app: &AppHandle) -> Result<PathBuf, String> {
     let path = app
@@ -337,8 +480,12 @@ fn validate(request: &SendRequest) -> Result<(), String> {
     if request.command.is_some() && !request.images.is_empty() {
         return Err("斜杠命令不能附加图片".into());
     }
-    if request.plan_mode && (request.command.is_some() || request.permission == options::PermissionMode::Full) {
-        return Err("计划模式不能同时使用斜杠命令或完全访问".into());
+    // 计划模式和斜杠命令不能同轮：命令自己决定这一轮做什么，模式参数会被它吞掉。
+    // 「计划 + 完全访问」不再是冲突：Claude 的 --permission-mode 一档只能取一个值，
+    // plan 与 bypassPermissions 天然互斥；Codex 的协作模式和沙箱档本来就是两条轴。
+    let planned = request.plan_mode || request.mode.as_deref() == Some("plan");
+    if planned && request.command.is_some() {
+        return Err("计划模式不能同时使用斜杠命令".into());
     }
     if let Some(plan) = &request.plan {
         // 决策回合由后端生成唯一的执行正文；前端只能提交 id、版本、决策与反馈。
@@ -348,7 +495,7 @@ fn validate(request: &SendRequest) -> Result<(), String> {
         if plan.plan_id.trim().is_empty() || plan.plan_id.len() > 512 || plan.revision < 1 {
             return Err("计划审阅标识无效".into());
         }
-        if request.plan_mode || request.command.is_some() || !request.images.is_empty() || !request.prompt.trim().is_empty() {
+        if planned || request.command.is_some() || !request.images.is_empty() || !request.prompt.trim().is_empty() {
             return Err("计划决策不能附带正文、命令、图片或计划模式".into());
         }
         if plan.decision == plans::Decision::Defer {
@@ -383,13 +530,11 @@ fn validate(request: &SendRequest) -> Result<(), String> {
     Ok(())
 }
 
-/// Codex 入队时冻结项目配置的模型、强度与服务等级；权限是本轮输入框的显式选择，
-/// 不在这里覆盖，否则每次发送都会退回原生配置、界面选过的档位等于没选。
+/// 入队时固定本轮选项：显式选择优先，项目配置只补未选择的默认值。
 fn freeze_codex_config(request: &mut SendRequest, config: &Value) {
-    request.model = config["model"].as_str().map(str::to_owned);
-    request.effort = config["effort"].as_str().map(str::to_owned);
-    request.service_tier = config["serviceTier"].as_str().map(str::to_owned);
-    request.fast = None;
+    if request.model.is_none() { request.model = config["model"].as_str().map(str::to_owned); }
+    if request.effort.is_none() { request.effort = config["effort"].as_str().map(str::to_owned); }
+    if request.fast.is_none() { request.service_tier = config["serviceTier"].as_str().map(str::to_owned); }
 }
 
 /// 额外目录：绝对、存在、是目录、去重且不与工作区重复；上限防止把参数表撑爆。
@@ -511,7 +656,12 @@ pub async fn ai_runtime_models(
     block(move || {
         enabled(&app)?;
         let catalog = options::cached_models(&models_path(&app)?, provider);
-        Ok(if provider == Provider::Claude { options::claude_configured_models(catalog, &store::workspace(&workspace)?) } else { catalog })
+        if provider == Provider::Claude {
+            return Ok(options::claude_configured_models(catalog, &store::workspace(&workspace)?));
+        }
+        // Codex 的「模型清单」改的是它自己的目录文件，而 `model/list` 不读那份文件，
+        // 所以排除与新增要由我们并进来，否则在清单里配完，对话框里还是老样子。
+        Ok(options::apply_picker_patch(catalog, ai_cli::codex_catalog::picker_patch(&app)))
     })
     .await
 }
@@ -610,8 +760,12 @@ pub async fn ai_runtime_activity(app: AppHandle, workspace: String, session_ids:
                 schedule_next(&app, &id)?;
                 state = probe.state(&base, &id, &root).unwrap_or(activity::State::Unknown);
             }
-            let count = queued_count(&id);
-            records.push(json!({"sessionId":id,"state":state,"queuedCount":count}));
+            let queued_run_ids = queued_run_ids(&id);
+            // activeRunId/queuedRunIds 是控制权，不是展示提示：只有当前进程登记的 id
+            // 才允许本窗口发送停止、编辑和重排命令。
+            let active_run_id = registry::for_session(&id).map(|run| run.id.clone());
+            records.push(json!({"sessionId":id,"state":state,"queuedCount":queued_run_ids.len(),
+                "activeRunId":active_run_id,"queuedRunIds":queued_run_ids}));
         }
         Ok(records)
     }).await
@@ -637,13 +791,21 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
             // 队列必须冻结发送当刻的项目有效配置；执行时再读会被后续 UI 修改串改。
             let config = options::codex_project_config(&root)?;
             freeze_codex_config(&mut request, &config);
+            // 附加目录同样在入队时定档：本轮到底能不能收下这些目录，取决于此刻生效的沙箱，
+            // 而不是执行时才飘忽的项目配置。
+            if !request.additional_dirs.is_empty() {
+                request.codex_grant = Some(options::codex_sandbox_grant(&config, request.permission, &request.additional_dirs));
+            }
         }
+        // 模型和模式都在入队这一刻对着「这版 CLI 报过的取值」定稿：执行时缓存可能已经
+        // 被升级刷掉，而用户在界面上选的、界面上看到的就是按下发送时的档位。
+        let cached = options::cached_models(&models_path(&app)?, request.provider);
+        let catalog = if request.provider == Provider::Claude { options::claude_configured_models(cached, &root) } else { cached };
         if let Some(model) = request.model.as_deref() {
-            let cached = options::cached_models(&models_path(&app)?, request.provider);
-            let catalog = if request.provider == Provider::Claude { options::claude_configured_models(cached, &root) } else { cached };
             let canonical = options::canonical_model(&catalog, model);
             request.model = Some(if request.provider == Provider::Claude { options::configured_model(&catalog, &canonical) } else { canonical });
         }
+        request.mode = Some(options::canonical_mode(&catalog, request.provider, request.mode.as_deref(), request.plan_mode, request.permission)?);
         validate(&request)?;
         let base = base(&app)?;
         // 计划决策先抢提交权：双击或两个窗口只能有一个进入队列。
@@ -701,13 +863,16 @@ fn dispatch_task(app: &AppHandle, request: &SendRequest, root: &str, base: &std:
             if session_count >= 32 || total >= 256 { return Err("任务队列已满".into()); }
         }
         // 这一条永远排在最后，所以只有队列为空时它才是队首，才可能被外部 CLI 直接挡住。
+        // 入队时绝不提前向会话追加用户消息，避免在上一轮未结束时打乱时间线时序；提示词存入 extra 供队列条展示。
         let status = queued_status(!queue_has_items, external_active);
-        append_task_status(app, request, status, json!({}), request.plan_turn.is_none())?;
+        append_task_status(app, request, status, json!({"prompt": request.prompt}), false)?;
         queued().lock().map_err(|e| e.to_string())?.entry(request.session_id.clone()).or_default().push_back(request.clone());
         return Ok(json!({"status":status}));
     }
     launch_task(app.clone(), request.clone(), true)?;
-    Ok(json!({"status":task_status::RUNNING}))
+    // 线程已登记，但 CLI 还没给出任何有效协议帧。前端保留 submitting，
+    // 等 worker 真正确认连接后收到 running 事件，不能把“已受理”冒充“已连接”。
+    Ok(json!({"status":"submitting"}))
 }
 
 /// 决策回合没能开起来：正文变了就过期，其它失败退回待审；两种情况都广播最终状态。
@@ -730,11 +895,8 @@ fn settle_plan_failure(app: &AppHandle, request: &SendRequest, claim: &PlanTurn,
 fn emit_plan_record(app: &AppHandle, request: &SendRequest, root: &str, base: &std::path::Path, record: plans::PlanReview) -> Result<(), String> {
     let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
     // 这里可能正有一轮在跑（决策已排队），不能用 Store::open 的「上次运行未结束」修复：
-    // 那会把仍在跑的回合误写成 cancelled。只读元数据与最新序号，直接追加。
-    let dir = base.join(&request.session_id);
-    let meta = store::Store::metadata(&dir, root)?;
-    let page = store::Store::page(base, &request.session_id, root, store::Window::After(0), 1, true)?;
-    let mut store = store::Store { dir, meta, seq: page.latest_seq, poisoned: false };
+    // 那会把仍在跑的回合误写成 cancelled。
+    let mut store = store::Store::open_for_append(&base, &request.session_id, root, request.provider, &request.title, "")?;
     let events = store.append(&request.run_id, vec![("plan_review".into(), serde_json::to_value(record).map_err(|e| e.to_string())?)])?;
     let _ = app.emit(CHANNEL, &events);
     Ok(())
@@ -781,46 +943,28 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
     let root = store::workspace(&request.workspace)?;
     let base = base(&app)?;
     let session_lease = store::Lease::acquire(&base.join(format!("{}.lock", request.session_id)))?;
-    let mut store = {
+    let store = {
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
         // CLI resume 只依赖原生会话 ID；Forge 镜像是否已经分页读完不能阻塞发送。
         // 历史继续由 ai_runtime_load 惰性同步，避免大会话在发送路径上反复扫描。
-        store::Store::open(&base, &request.session_id, &root, request.provider, &request.title, "")?
+        let mut target = store::Store::open(&base, &request.session_id, &root, request.provider, &request.title, "")?;
+        // 标题失败发生在 reserve 之前，不能留下没有工作线程的运行登记。
+        title_first_message(&mut target, &request, include_user)?;
+        target
     };
     let (run, controls) = Run::reserve(request.run_id.clone(), request.session_id.clone(), root, request.workspace.clone())?;
-    let initial = {
-        let _io = store::IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut events = vec![];
-        // 计划决策不是用户正文：时间线上只记一条「已批准/已要求修改」，
-        // 绝不能把后端生成的执行指令伪装成用户说的话。
-        let include_user = include_user && request.plan_turn.is_none();
-        if let Some(turn) = &request.plan_turn {
-            events.push(("plan_decision".into(), json!({"planId":turn.plan_id,"revision":turn.revision,"decision":turn.decision})));
-        }
-        if include_user { events.push(("user".into(), json!({"text":request.prompt,"images":request.images}))); }
-        events.push(("status".into(), json!({"status":task_status::RUNNING})));
-        store.append(&run.id, events)
-    };
-    match initial {
-        Ok(events) => {
-            if include_user {
-                images::mark_referenced(&app, &request.images);
-            }
-            let _ = app.emit(CHANNEL, &events);
-        }
-        Err(error) => { run.finish(); return Err(error); }
-    }
     let worker_run = run.clone();
     let session_id = request.session_id.clone();
     let spawned = std::thread::Builder::new().name("forge-ai-runtime".into()).spawn(move || {
         let session_lease = session_lease;
-        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.execute(request, controls)));
+        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: 0, compaction_index: 0, compaction_done: false };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.execute(request, controls, include_user)));
         let outcome = match result { Ok(result) => result, Err(_) => Err("AI 运行线程异常退出，未自动重发".into()) };
         if let Err(error) = &outcome { worker.fail_plan_claim(error); }
-        if worker_run.cancelled.load(Ordering::Acquire) { worker.fail_plan_claim("任务已取消"); }
-        let (status, error) = if worker_run.cancelled.load(Ordering::Acquire) { (task_status::CANCELLED, None) }
-            else { match outcome { Ok(status) => (status, None), Err(error) => (task_status::FAILED, Some(error)) } };
+        // 停止位只是意图；协议若已明确完成，就保留 completed。真正超时/EOF/强杀的
+        // 取消路径会由 execute 自己返回 cancelled，不能在这里用一个 bool 改写 CLI 事实。
+        let (status, error) = match outcome { Ok(status) => (status, None), Err(error) => (task_status::FAILED, Some(error)) };
+        if status == task_status::CANCELLED { worker.fail_plan_claim("任务已取消"); }
         worker.finish(status, error);
         let next_app = worker.app.clone();
         drop(session_lease);
@@ -844,7 +988,8 @@ fn schedule_next(app: &AppHandle, session_id: &str) -> Result<(), String> {
             return Ok(());
         }
         queued().lock().map_err(|e| e.to_string())?.get_mut(session_id).and_then(VecDeque::pop_front);
-        match launch_task(app.clone(), request.clone(), false) {
+        // 上一轮全部输出已彻底终结，排队任务出队启动时才正式将用户消息写入会话时间线
+        match launch_task(app.clone(), request.clone(), true) {
             Ok(()) => return Ok(()),
             // 启动失败几乎都是会话级原因（会话目录、租约、进程创建），不是这一条提示的问题。
             // 继续往下弹只会把整队提示在一次抖动里全部判死，所以留下其余排队项，
@@ -884,6 +1029,12 @@ struct Worker {
     plan_claim: Option<PlanTurn>,
     /// 已确认启动的决策版本；收尾时据此记录执行状态。
     plan_applied: Option<(String, i64)>,
+    /// CLI 确认的原生回合 ID；Codex 断线后只能附着这个回合，绝不能新开一轮。
+    native_turn_id: Option<String>,
+    /// 原生摘要关联范围固定在进程启动前，不能用收到结束事件时的 EOF。
+    summary_start: u64,
+    compaction_index: u64,
+    compaction_done: bool,
 }
 impl Worker {
     fn queue(&mut self, kind: &str, data: Value) -> Result<(), String> {
@@ -922,7 +1073,17 @@ impl Worker {
             match action {
                 Action::Write(value) => process.write(&value)?,
                 Action::CloseInput => process.close_input(),
-                Action::Emit { kind, data } => {
+                Action::Emit { kind, mut data } => {
+                    if kind == "turn" {
+                        self.native_turn_id = data["nativeTurnId"].as_str().map(str::to_owned);
+                    }
+                    if kind == "compaction" {
+                        let starting = matches!(data["status"].as_str(), Some("running" | "compacting"));
+                        if self.compaction_index == 0 || starting && self.compaction_done { self.compaction_index += 1; }
+                        self.compaction_done = !starting;
+                        data["episodeId"] = json!(format!("{}:{}", self.run.id, self.compaction_index));
+                        data["sourceStart"] = json!(self.summary_start);
+                    }
                     // 回合被 CLI 确认启动后，计划决策才算落地；批准不等于执行成功。
                     if kind == "turn" {
                         if let Some(claim) = self.plan_claim.take() {
@@ -1067,6 +1228,7 @@ impl Worker {
         &mut self,
         mut request: SendRequest,
         controls: mpsc::Receiver<Control>,
+        include_user: bool,
     ) -> Result<&'static str, String> {
         if self.run.cancelled.load(Ordering::Acquire) {
             return Ok(task_status::CANCELLED);
@@ -1082,59 +1244,36 @@ impl Worker {
             request.model = Some(model);
             tier
         } else if request.fast == Some(false) { "default".into() } else { String::new() };
-        let mut args = match request.provider {
-            Provider::Codex => vec!["app-server"],
-            Provider::Claude => vec![
-                "-p",
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--include-partial-messages",
-                "--permission-prompt-tool",
-                "stdio",
-            ],
+        // 模式一律用 CLI 的原话 id 下发（入队时已按这版 CLI 报过的取值校验过）；
+        // 没带 mode 的请求按旧的权限档映射，行为与升级前一致。
+        let claude_mode = request.mode.clone().unwrap_or_else(|| request.permission.claude().to_owned());
+        // 附加目录在 Codex 侧的落点是 turn/start 的 sandboxPolicy（入队时已按生效沙箱算好）。
+        // 沙箱收不下这些目录时必须当场说出来：用户点过的授权不能既不生效又不吭声。
+        let codex_policy = match request.provider {
+            Provider::Codex => match request.codex_grant.as_ref() {
+                Some(options::SandboxGrant::Policy(policy)) => Some(policy.clone()),
+                Some(options::SandboxGrant::Unapplied(reason)) => {
+                    self.queue("notice", json!({"text": reason}))?;
+                    self.flush()?;
+                    None
+                }
+                Some(options::SandboxGrant::AlreadyOpen) | None => None,
+            },
+            Provider::Claude => None,
         };
-        if request.provider == Provider::Claude {
-            // 计划模式只读：模式本身拒绝写操作，再显式列出允许/禁止的工具，
-            // 防止不同 CLI 版本对 plan 的解析差异让某个写工具漏过来。
-            let mode = if request.plan_mode { "plan" } else { request.permission.claude() };
-            args.extend(["--permission-mode", mode]);
-            if request.plan_mode {
-                args.extend(["--allowedTools", "Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoWrite", "Task"]);
-                args.extend(["--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit"]);
-            }
-        }
-        if request.provider == Provider::Codex && !request.additional_dirs.is_empty() {
-            return Err("Codex 暂不支持附加目录；请在项目原生配置中调整".into());
-        }
         let native = self.store.meta.native_id.clone();
+        // 专用命令没有 turn/start 的参数契约；不能吞掉设置后假装已经应用。
+        if matches!(request.command, Some(commands::CommandIntent::CodexCompact | commands::CommandIntent::CodexReview)) {
+            if request.command == Some(commands::CommandIntent::CodexReview) && !request.additional_dirs.is_empty() {
+                return Err("Codex /review 不支持本轮额外目录授权；请用普通消息发起审查以应用这些目录".into());
+            }
+            self.queue("notice", json!({"text":"Codex 此命令使用线程模型与审批设置，不支持本轮思考强度、Fast 开关和额外目录授权；这些本轮设置未应用。"}))?;
+            self.flush()?;
+        }
         if request.command == Some(commands::CommandIntent::CodexCompact) && native.is_none() {
             return Err("请先建立会话，再压缩上下文".into());
         }
-        if request.provider == Provider::Claude {
-            if request.permission == options::PermissionMode::Full {
-                args.push("--allow-dangerously-skip-permissions");
-            }
-            if let Some(id) = native.as_deref() {
-                args.extend(["--resume", id]);
-            } else {
-                // CLI 公共参数允许宿主指定原生 ID；首轮前后与 /resume 使用同一个会话。
-                args.extend(["--session-id", request.session_id.as_str(), "--name", request.title.as_str()]);
-            }
-            if let Some(model) = request.model.as_deref() {
-                args.extend(["--model", model]);
-            }
-            if let Some(effort) = request.effort.as_deref() {
-                args.extend(["--effort", effort]);
-            }
-            // 目录授权每次启动都带上：CLI 不能在进程中途扩容，而每一轮都是新进程。
-            for dir in &request.additional_dirs {
-                args.extend(["--add-dir", dir]);
-            }
-        }
-        let (command, version) = ai_cli::runtime_command(request.provider, &args)?;
+        let (mut process, version) = spawn_runtime_process(&request, &claude_mode, native.as_deref())?;
         {
             let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
             self.store.meta.cli_version = version;
@@ -1143,29 +1282,8 @@ impl Worker {
         if self.run.cancelled.load(Ordering::Acquire) {
             return Ok(task_status::CANCELLED);
         }
-        let mut protocol: Box<dyn Protocol> = match request.provider {
-            Provider::Codex => Box::new(
-                codex::Codex::new(self.run.workspace.clone(), request.prompt.clone(), native)
-                    .with_images(request.images.clone())
-                    .with_options(request.model.clone(), request.effort.clone())
-                    .with_policy(request.permission, service_tier)
-                    .with_command(request.command)
-                    .with_plan(request.plan_mode)
-                    .with_decision(request.plan_turn.as_ref().map(|turn| codex::Decision {
-                        mode: if turn.decision == plans::Decision::Approve { "default" } else { "plan" },
-                        native_plan_id: turn.native_plan_id.clone(),
-                        content_hash: turn.content_hash.clone(),
-                    })),
-            ),
-            Provider::Claude => Box::new(claude::Claude::new(
-                self.run.workspace.clone(),
-                request.prompt.clone(),
-                native,
-            ).with_images(images::claude_blocks(&request.images.iter().map(PathBuf::from).collect::<Vec<_>>())?)
-                .with_model(request.model.clone()).with_command(request.command)
-                .with_plan(request.plan_mode)),
-        };
-        let mut process = Process::spawn(command, &self.run.workspace)?;
+        let mut protocol = runtime_protocol(&request, native, &service_tier, &codex_policy, &claude_mode, None)?;
+        self.summary_start = history::summary_offset(&self.store)?;
         self.run.child_pid.store(process.id(), Ordering::Release);
         let handshake = protocol.start()?;
         if let Err(error) = self.actions(&mut *protocol, handshake, &mut process) {
@@ -1175,7 +1293,21 @@ impl Worker {
         let started = Instant::now();
         let mut stopping = None;
         let mut last_output = Instant::now();
+        let mut summary_poll = Instant::now();
+        let mut summary_offset = self.summary_start;
+        let mut connected = false;
+        let mut reconnects = 0u8;
         loop {
+            // CLI 常常只把摘要写进原生历史；运行期间补采并广播，不等回合结束。
+            if self.compaction_index > 0 && summary_poll.elapsed() >= Duration::from_secs(2) {
+                self.flush()?;
+                let events = {
+                    let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                    history::poll_summaries(&mut self.store, &mut summary_offset)?
+                };
+                if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); }
+                summary_poll = Instant::now();
+            }
             if self.run.cancelled.load(Ordering::Acquire) && stopping.is_none() {
                 stopping = Some(Instant::now());
                 let interrupt = protocol.interrupt();
@@ -1248,6 +1380,12 @@ impl Worker {
                             return Err(error);
                         }
                     };
+                    if !connected && protocol.turn_started() {
+                        // 初始化成功不等于提示词已送达。必须等 CLI 确认真正建立原生回合，
+                        // 再写 user + running；否则握手中断会留下根本没发送过的假消息。
+                        self.begin_turn(&request, include_user)?;
+                        connected = true;
+                    }
                     if let Some(status) = terminal {
                         // 辅助上下文若尚未返回，只把旧缓存标记为过期；终态、锁释放和队列调度立即继续。
                         let timeout = protocol.context_timeout();
@@ -1268,15 +1406,70 @@ impl Worker {
                     if protocol.parked() {
                         return Ok(task_status::COMPLETED);
                     }
-                    if let Some(exit) = process.status()? {
-                        if exit.success() { return Err(format!("CLI 未返回完整结果便退出：{}", process.diagnostics())); }
-                        return Err(format!("CLI 异常退出（{exit}）：{}", process.diagnostics()));
+                    // EOF 已经说明这条管道永久失效；不能再等子进程退出。CLI 可能仍挂着，
+                    // 继续轮询同一个 Receiver 只会空转，正是“进程还在但 Forge 已失联”的状态。
+                    let exit = process.status()?;
+                    let diagnostics = process.diagnostics();
+                    let failure = match exit {
+                        Some(exit) if exit.success() => format!("CLI 未返回完整结果便退出：{diagnostics}"),
+                        Some(exit) => format!("CLI 异常退出（{exit}）：{diagnostics}"),
+                        None => format!("CLI 输出管道已断开：{diagnostics}"),
+                    };
+                    // 旧进程及其树必须先彻底回收，Codex writer lock/Claude PID 登记释放后，
+                    // 外部占用探针才有意义。
+                    process.terminate();
+                    self.run.child_pid.store(0, Ordering::Release);
+                    let ordinary = request.provider == Provider::Codex
+                        && request.command.is_none() && request.plan_turn.is_none()
+                        && self.native_turn_id.is_some();
+                    let probe = if connected && reconnects < 1 && self.pending.is_empty() && ordinary {
+                        let runtime_base = base(&self.app)?;
+                        activity::externally_occupied(&runtime_base, &request.session_id, &self.run.workspace)
+                    } else {
+                        Ok(false)
+                    };
+                    let reconnect = should_reconnect_after_disconnect(
+                        connected, reconnects, !self.pending.is_empty(), ordinary, probe,
+                    ).map_err(|error| format!("{failure}；{error}"))?;
+                    if !reconnect { return Err(failure); }
+
+                    reconnects += 1;
+                    self.queue("notice", json!({"text":"CLI 连接中断，正在重新附着当前回合。","reconnecting":true,"attempt":reconnects}))?;
+                    self.flush()?;
+                    let native = self.store.meta.native_id.clone().ok_or("CLI 断线后缺少可恢复的原生会话 ID")?;
+                    let (next, version) = spawn_runtime_process(&request, &claude_mode, Some(&native))?;
+                    process = next;
+                    self.run.child_pid.store(process.id(), Ordering::Release);
+                    {
+                        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                        self.store.meta.cli_version = version;
+                        self.store.save()?;
                     }
-                    std::thread::sleep(Duration::from_millis(20));
+                    let turn = self.native_turn_id.clone().ok_or("CLI 断线后缺少原生回合 ID")?;
+                    protocol = runtime_protocol(&request, Some(native), &service_tier, &codex_policy, &claude_mode, Some(turn))?;
+                    let handshake = protocol.start()?;
+                    self.actions(&mut *protocol, handshake, &mut process)?;
+                    last_output = Instant::now();
+                    continue;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
+    }
+    fn begin_turn(&mut self, request: &SendRequest, include_user: bool) -> Result<(), String> {
+        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+        let mut events = vec![];
+        // 计划决策不是用户正文：时间线上只记一条「已批准/已要求修改」。
+        let include_user = include_user && request.plan_turn.is_none();
+        if let Some(turn) = &request.plan_turn {
+            events.push(("plan_decision".into(), json!({"planId":turn.plan_id,"revision":turn.revision,"decision":turn.decision})));
+        }
+        if include_user { events.push(("user".into(), json!({"text":request.prompt,"images":request.images}))); }
+        events.push(("status".into(), json!({"status":task_status::RUNNING})));
+        let events = self.store.append(&self.run.id, events)?;
+        if include_user { images::mark_referenced(&self.app, &request.images); }
+        let _ = self.app.emit(CHANNEL, &events);
+        Ok(())
     }
     fn finish(&mut self, status: &str, error: Option<String>) {
         // 进程结束后所有待答复请求都已失效；卡片不能继续停在「可批准」。
@@ -1290,10 +1483,13 @@ impl Worker {
             let base = self.store.dir.parent().ok_or("会话路径无效")?.to_path_buf();
             history::mark_current(&mut self.store, &base)
         });
-        let data = if let Err(cause) = history_result {
-            json!({"status":task_status::FAILED,"error":cause})
-        } else {
-            json!({"status":status,"error":error})
+        let data = match history_result {
+            Err(cause) => json!({"status":task_status::FAILED,"error":cause}),
+            Ok(events) => {
+                // 补采已落盘，但不广播就只能重开会话后才看见摘要。
+                if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); }
+                json!({"status":status,"error":error})
+            }
         };
         self.batch.push(("status".into(), data));
         if let Err(error) = self.flush() {
@@ -1362,7 +1558,9 @@ pub async fn ai_runtime_stop(app: AppHandle, run_id: String) -> Result<(), Strin
                 emit_queue_order(&app, &session_id)?;
                 None
             } else {
-                None
+                // 找不到不是幂等成功：最常见的是历史快照指向另一个 Forge 窗口的运行。
+                // 若这里回 Ok，前端会误以为当前进程已经把那个 CLI 中断。
+                return Err("任务已结束或不属于当前窗口，未发送中断".into());
             }
         };
         registry::wait_stopped(stopping)
@@ -1439,6 +1637,11 @@ pub async fn ai_runtime_load(
                 }
                 match history::sync(&base, &session_id, &root) {
                     Ok(more) => native_more = more,
+                    Err(error) => warning = Some(error),
+                }
+                // 空闲会话重开时，补回曾被旧版本游标跳过的压缩摘要记录。
+                match history::repair_summaries(&base, &session_id, &root) {
+                    Ok(more) => native_more |= more,
                     Err(error) => warning = Some(error),
                 }
             }
@@ -1754,6 +1957,41 @@ mod tests {
         assert_eq!(queued_status(false, false), task_status::QUEUED);
     }
     #[test]
+    fn dispatch_requires_both_activity_probes_to_confirm_idle() {
+        assert!(!activity_blocks_dispatch(Ok(activity::State::Idle), Ok(false)));
+        for state in [activity::State::Running, activity::State::External, activity::State::Conflict, activity::State::Unknown] {
+            assert!(activity_blocks_dispatch(Ok(state), Ok(false)), "{state:?}");
+        }
+        assert!(activity_blocks_dispatch(Ok(activity::State::Idle), Ok(true)));
+        assert!(activity_blocks_dispatch(Err("probe failed".into()), Ok(false)));
+        assert!(activity_blocks_dispatch(Ok(activity::State::Idle), Err("lock failed".into())));
+    }
+    #[test]
+    fn disconnect_recovery_is_one_shot_and_fails_closed() {
+        // 只有已经真正开跑的普通回合可以续接；握手失败、待审批、特殊命令、
+        // 第二次断线以及无法确认外部占用时都不能盲目重发。
+        assert!(should_reconnect_after_disconnect(true, 0, false, true, Ok(false)).unwrap());
+        assert!(!should_reconnect_after_disconnect(false, 0, false, true, Ok(false)).unwrap());
+        assert!(!should_reconnect_after_disconnect(true, 1, false, true, Ok(false)).unwrap());
+        assert!(!should_reconnect_after_disconnect(true, 0, true, true, Ok(false)).unwrap());
+        assert!(!should_reconnect_after_disconnect(true, 0, false, false, Ok(false)).unwrap());
+        assert!(!should_reconnect_after_disconnect(true, 0, false, true, Ok(true)).unwrap());
+        assert!(should_reconnect_after_disconnect(true, 0, false, true, Err("probe failed".into())).is_err());
+    }
+    #[test]
+    fn repeated_noop_status_writes_never_reach_the_log() {
+        let record = json!({"runId":"run","status":"queued","seq":7,"prompt":"提示词","queueIndex":0});
+        // 秒级队列监控在外部 CLI 占着会话时每秒都写一次 waitingExternal，
+        // 顺序回写也会在没动过的队列上重写一遍 queued：真实日志里出现过连续三条字节相同的排队事件。
+        assert!(status_already_recorded(Some(&record), task_status::QUEUED, &json!({})));
+        assert!(status_already_recorded(Some(&record), task_status::QUEUED, &json!({"prompt":"提示词","queueIndex":0})));
+        // 顺序真的变了、状态真的换了、这一轮还没记过：三种都必须照写。
+        assert!(!status_already_recorded(Some(&record), task_status::QUEUED, &json!({"queueIndex":2})));
+        assert!(!status_already_recorded(Some(&record), task_status::QUEUED, &json!({"prompt":"改过的提示词"})));
+        assert!(!status_already_recorded(Some(&record), task_status::WAITING_EXTERNAL, &json!({})));
+        assert!(!status_already_recorded(None, task_status::QUEUED, &json!({})));
+    }
+    #[test]
     fn rejects_untrusted_oversized_and_injected_inputs() {
         let mut r = SendRequest {
             session_id: "session".into(),
@@ -1769,8 +2007,10 @@ mod tests {
             permission: Default::default(),
             fast: None,
             service_tier: None,
+            codex_grant: None,
             command: None,
             plan_mode: false,
+            mode: None,
             plan: None,
             additional_dirs: vec![],
             plan_turn: None,
@@ -1802,23 +2042,27 @@ mod tests {
             permission: Default::default(),
             fast: None,
             service_tier: None,
+            codex_grant: None,
             command: None,
             plan_mode: false,
+            mode: None,
             plan: None,
             additional_dirs: vec![],
             plan_turn: None,
         }
     }
     #[test]
-    fn codex_enqueue_freezes_project_config_but_keeps_the_turn_permission() {
+    fn codex_enqueue_keeps_selected_model_effort_fast_and_permission() {
         let mut request = base_request();
         request.permission = options::PermissionMode::Auto;
         request.fast = Some(true);
+        request.model = Some("chosen-model".into());
+        request.effort = Some("low".into());
         freeze_codex_config(&mut request, &json!({"model":"cfg-model","effort":"high","serviceTier":"fast-id","permission":"read"}));
-        assert_eq!(request.model.as_deref(), Some("cfg-model"));
-        assert_eq!(request.effort.as_deref(), Some("high"));
-        assert_eq!(request.service_tier.as_deref(), Some("fast-id"));
-        assert_eq!(request.fast, None);
+        assert_eq!(request.model.as_deref(), Some("chosen-model"));
+        assert_eq!(request.effort.as_deref(), Some("low"));
+        assert_eq!(request.service_tier, None);
+        assert_eq!(request.fast, Some(true));
         // 权限来自本轮选择，不能被项目配置或默认值改写。
         assert!(matches!(request.permission, options::PermissionMode::Auto));
     }
@@ -1846,14 +2090,20 @@ mod tests {
         assert!(validate(&request).is_err());
     }
     #[test]
-    fn plan_mode_is_read_only_and_cannot_combine_with_full_access() {
+    fn plan_mode_rejects_a_slash_command_but_not_the_sandbox_preset() {
         let mut request = base_request();
-        request.plan_mode = true;
+        request.mode = Some("plan".into());
+        // 模式与沙箱档在 Codex 上是两条轴：计划回合也可以用完全访问的沙箱，
+        // 界面既然把两件事拆成两个选项，后端就不该再造一条「互斥」规则。
         assert!(validate(&request).is_ok());
         request.permission = options::PermissionMode::Full;
-        assert!(validate(&request).is_err());
-        request.permission = options::PermissionMode::Ask;
+        assert!(validate(&request).is_ok());
+        // 斜杠命令自己决定这一轮做什么，额外模式会被它吞掉，仍然拒绝。
         request.command = Some(commands::CommandIntent::CodexCompact);
+        assert!(validate(&request).is_err());
+        // 旧的 plan_mode 布尔与 mode 同义：带着斜杠命令时同样拒绝。
+        request.mode = None;
+        request.plan_mode = true;
         assert!(validate(&request).is_err());
     }
     #[test]

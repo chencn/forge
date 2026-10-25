@@ -2,11 +2,14 @@
 //! CLI 原生历史只读：只有 Forge 自己的镜像与会话检查点会被写入。
 use super::store::{self, Store};
 use crate::ai_cli::Provider;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// 单行上限，与事件存储保持一致；原生历史里也可能混入超长行。
 const MAX_LINE: u64 = 2 * 1024 * 1024;
@@ -133,8 +136,10 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
                     return Ok(None);
                 }
             }
-            if value["type"] == "response_item" && value["payload"]["role"] == "user" {
-                title = Some(text(&value["payload"]["content"]));
+            if value["type"] == "response_item" && value["payload"]["role"] == "user" && title.is_none() {
+                // 标题只认真人说的话：Codex 的第一条 user 记录往往就是它自己注入的
+                // 「# AGENTS.md instructions」，拿它当标题就会在会话列表里挂一条系统提示词。
+                title = human_text(&text(&value["payload"]["content"]));
             }
         } else {
             if value["isSidechain"] == true {
@@ -148,7 +153,11 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
                 native = value["sessionId"].as_str().map(str::to_owned).or(native);
             }
             if value["type"] == "user" && value["isMeta"] != true && title.is_none() {
-                title = Some(text(&value["message"]["content"]));
+                // 压缩续篇摘要（isCompactSummary）是机器生成的上下文说明，任务通知也一样：
+                // 都不拿当标题素材，继续往下找真人说的那一句。
+                if value["isCompactSummary"] != true {
+                    title = human_text(&text(&value["message"]["content"]));
+                }
             }
             if let Some(custom) = value["customTitle"].as_str() {
                 custom_title = Some(custom.into());
@@ -277,13 +286,14 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                     }
                 }
                 // Claude 的 /rename 会把 customTitle 追加到原生日志；已有镜像也要跟随 CLI 标题。
-                if provider == Provider::Claude {
-                    if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{id}.lock"))) {
-                        if let Ok(mut meta) = Store::metadata(&base.join(id), root) {
-                            if meta.title != candidate.title {
-                                meta.title = candidate.title.clone();
-                                Store { dir: base.join(id), meta, seq: 0, poisoned: false }.save()?;
-                            }
+                // Codex 的标题归 Forge 管（用户可以改名），只有存下来的那条根本不是人话时才纠正：
+                // 早期版本把注入的「# AGENTS.md instructions」写进了 meta.json，会话列表至今挂着它。
+                if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{id}.lock"))) {
+                    if let Ok(mut meta) = Store::metadata(&base.join(id), root) {
+                        let follows = provider == Provider::Claude || human_text(&meta.title).is_none();
+                        if follows && meta.title != candidate.title {
+                            meta.title = candidate.title.clone();
+                            Store { dir: base.join(id), meta, seq: 0, poisoned: false }.save()?;
                         }
                     }
                 }
@@ -433,19 +443,124 @@ fn complete_offset(path: &Path) -> Result<u64, String> {
         None => Ok(0),
     }
 }
+/// 运行开始前的原生边界，用于限定本轮摘要，避免旧摘要串到新压缩上。
+pub fn summary_offset(target: &Store) -> Result<u64, String> {
+    let base = target.dir.parent().ok_or("会话路径无效")?;
+    match source(base, &target.meta.session_id, &target.meta.workspace)? {
+        Some(source) if source.path.exists() => complete_offset(&source.path),
+        _ => Ok(0),
+    }
+}
+
+/// 运行中有新完整行才补采；调用者持有会话租约和 IO_LOCK。
+pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<super::events::Event>, String> {
+    let base = target.dir.parent().ok_or("会话路径无效")?;
+    let Some(source) = source(base, &target.meta.session_id, &target.meta.workspace)? else { return Ok(vec![]); };
+    let offset = complete_offset(&source.path)?;
+    if offset == *previous { return Ok(vec![]); }
+    let (events, more) = recover_summaries(target, &source, false)?;
+    if !more { *previous = offset; }
+    Ok(events)
+}
 /// 跳过刚刚被 Forge 记录过的那段原生内容，避免同一轮消息显示两遍。
-pub fn mark_current(target: &mut Store, base: &Path) -> Result<(), String> {
+pub fn mark_current(target: &mut Store, base: &Path) -> Result<Vec<super::events::Event>, String> {
     let Some(source) = source(base, &target.meta.session_id, &target.meta.workspace)? else {
-        return Ok(());
+        return Ok(vec![]);
     };
     if source.path.exists() {
         let offset = complete_offset(&source.path)?;
-        target.append(
+        // 收尾一次扫描补齐摘要，不按批重复读取整份事件日志和检查点。
+        let (mut events, _) = recover_summaries(target, &source, true)?;
+        events.extend(target.append(
             "native",
             vec![("history_checkpoint".into(), json!({"offset":offset}))],
-        )?;
+        )?);
+        return Ok(events);
     }
-    Ok(())
+    Ok(vec![])
+}
+
+/// 摘要有独立游标：实时协议不保证携带正文，不能跟随普通历史游标跳到 EOF。
+/// 调用方持有会话租约和 IO_LOCK；只消费完整行，失败时不提交扫描进度。
+fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Result<(Vec<super::events::Event>, bool), String> {
+    if target.meta.provider != source.provider || target.meta.native_id.as_deref() != Some(&source.native_id) {
+        return Err("原生摘要标识不匹配".into());
+    }
+    let checked = inspect(&source.path, source.provider, &target.meta.workspace)?.ok_or("原生历史归属变化")?;
+    if checked.source.native_id != source.native_id { return Err("原生历史文件被替换".into()); }
+    let mut offset = 0;
+    let mut known = std::collections::HashSet::new();
+    let mut legacy = std::collections::HashSet::new();
+    let mut episodes: Vec<(String, u64)> = vec![];
+    let mut resolved = std::collections::HashSet::new();
+    let path = target.dir.join("events.jsonl");
+    if path.exists() {
+        let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
+        while let Some((event, _)) = bounded_line(&mut reader)? {
+            if event["kind"] == "summary_checkpoint" {
+                // 旧检查点可能已经跳过 meta 摘要，首次升级重扫；已有 summaryId 继续去重。
+                offset = if event["data"]["version"] == 1 { event["data"]["offset"].as_u64().ok_or("摘要游标损坏")? } else { 0 };
+            }
+            if event["kind"] == "compaction" {
+                if let Some(id) = event["data"]["episodeId"].as_str() {
+                    if let Some(start) = event["data"]["sourceStart"].as_u64() {
+                        if !episodes.iter().any(|(old, _)| old == id) { episodes.push((id.to_owned(), start)); }
+                    }
+                    if event["data"]["summaryId"].is_string() { resolved.insert(id.to_owned()); }
+                }
+                if let Some(id) = event["data"]["summaryId"].as_str() { known.insert(id.to_owned()); }
+                else if let Some(body) = event["data"]["text"].as_str().filter(|s| !s.is_empty()) { legacy.insert(body.to_owned()); }
+            }
+        }
+    }
+    let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
+    if length > MAX_FILE || length < offset { return Err("原生历史过大或已被截断".into()); }
+    let size = complete_offset(&source.path)?;
+    if size < offset { return Err("原生历史尾部已变化".into()); }
+    if size == offset { return Ok((vec![], false)); }
+    let mut file = File::open(&source.path).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file.take(size - offset));
+    let start = offset;
+    let mut batch = vec![];
+    while let Some((value, count)) = bounded_line(&mut reader)? {
+        if source.provider == Provider::Claude && (value["sessionId"].as_str().is_some_and(|s| s != source.native_id)
+            || value["cwd"].as_str().is_some_and(|s| !same_root(s, &target.meta.workspace))) {
+            return Err("原生摘要记录归属不一致".into());
+        }
+        if source.provider == Provider::Codex && matches!(value["type"].as_str(), Some("session_meta" | "turn_context"))
+            && (value["payload"]["cwd"].as_str().is_some_and(|s| !same_root(s, &target.meta.workspace))
+                || value["type"] == "session_meta" && value["payload"]["id"].as_str() != Some(source.native_id.as_str())) {
+            return Err("原生摘要记录归属不一致".into());
+        }
+        for (kind, mut data) in project(source.provider, &value, offset) {
+            if kind == "compaction" && data["text"].as_str().is_some_and(|s| !s.is_empty()) {
+                let id = data["summaryId"].as_str().unwrap_or_default();
+                if !known.contains(id) {
+                    // 同轮压缩按协议顺序与原生摘要对应；先限定最新的运行起点，不能串轮。
+                    let start = episodes.iter().filter(|(_, start)| *start <= offset).map(|(_, start)| *start).max();
+                    if let Some((episode, _)) = episodes.iter().find(|(id, floor)| Some(*floor) == start && !resolved.contains(id)) {
+                        data["episodeId"] = json!(episode);
+                        resolved.insert(episode.clone());
+                    } else if legacy.contains(data["text"].as_str().unwrap_or_default()) { continue; }
+                    batch.push((kind, data));
+                }
+            }
+        }
+        offset += count;
+        // 界面补采保留分页预算；回合收尾扫描固定的、受 MAX_FILE 限制的快照。
+        if !complete && (offset - start >= 4 * 1024 * 1024 || batch.len() >= 128) { break; }
+    }
+    batch.push(("summary_checkpoint".into(), json!({"offset":offset,"version":1})));
+    Ok((target.append("native", batch)?, offset < size))
+}
+
+/// 空闲会话重开时补回旧版本已经跳过的摘要。
+pub fn repair_summaries(base: &Path, id: &str, root: &str) -> Result<bool, String> {
+    let Some(source) = source(base, id, root)? else { return Ok(false); };
+    let meta = Store::metadata(&base.join(id), root)?;
+    let mut target = Store::open(base, id, root, meta.provider, &meta.title, "")?;
+    recover_summaries(&mut target, &source, false).map(|(_, more)| more)
 }
 fn text(value: &Value) -> String {
     if let Some(text) = value.as_str() {
@@ -465,18 +580,84 @@ fn text(value: &Value) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// CLI 以 user 角色写下的系统注入。清单是实测出来的：Codex 的五个包装在本机
+/// `~/.codex/sessions` 的 rollout 里出现 51 次（`<INSTRUCTIONS>` 30、
+/// `<subagent_notification>` 10、`<codex_internal_context>` 5、`<environment_context>` 4、
+/// `<turn_aborted>` 2），Claude 的七个在 `claude.exe` 里能查到字面量
+/// （`<system-reminder>` 76、`<local-command-stdout>` 17、`<task-notification>` 14、
+/// `<command-name>` 13、`<command-message>`/`<command-args>`/`<user-prompt-submit-hook>` 各 2）。
+const SYSTEM_TAGS: [&str; 12] = [
+    "environment_context",
+    "INSTRUCTIONS",
+    "subagent_notification",
+    "codex_internal_context",
+    "turn_aborted",
+    "system-reminder",
+    "local-command-stdout",
+    "task-notification",
+    "command-name",
+    "command-message",
+    "command-args",
+    "user-prompt-submit-hook",
+];
+
+/// Codex 把 AGENTS.md 注入成「裸标题 + `<INSTRUCTIONS>` 正文」，标题不带标签，只能按字面量认。
+const SYSTEM_HEADING: &str = "# AGENTS.md instructions";
+
+/// 剥掉系统注入之后这条 user 记录里还剩的真人话；整条都是注入（或本来就空）就是 `None`。
+///
+/// role=user 不代表真人打的字：两个 CLI 都把环境上下文、AGENTS.md 指令、子代理通知、
+/// 后台任务完成通知、本地斜杠命令的回显写成 user 记录。照单投影就是把自己的提示词
+/// 安到用户头上，还会让「# AGENTS.md instructions」变成会话标题。
+///
+/// 只整块剥离成对标签：regex 不支持反向引用，而这里每个标签名都是已知字面量，用不上它。
+/// 一个标签都没匹配到时原样返回，真人消息里的空白和换行不归我们改。
+pub fn human_text(body: &str) -> Option<String> {
+    static BLOCKS: OnceLock<Regex> = OnceLock::new();
+    let blocks = BLOCKS.get_or_init(|| {
+        let pattern = SYSTEM_TAGS
+            .iter()
+            .map(|tag| format!("<{tag}\\b[\\s\\S]*?</{tag}>"))
+            .collect::<Vec<_>>()
+            .join("|");
+        Regex::new(&pattern).expect("系统注入标签的模式必须能编译")
+    });
+    let stripped = blocks.replace_all(body, "");
+    if matches!(stripped, Cow::Borrowed(_)) && !body.contains(SYSTEM_HEADING) {
+        return (!body.trim().is_empty()).then(|| body.to_owned());
+    }
+    let rest = stripped.replace(SYSTEM_HEADING, "");
+    let rest = rest.trim();
+    (!rest.is_empty()).then(|| rest.to_owned())
+}
 fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value)> {
     let mut out = vec![];
     let id = format!("native-{offset}");
     if provider == Provider::Claude {
-        if value["isSidechain"] == true || value["isMeta"] == true {
+        if value["isSidechain"] == true {
             return out;
         }
         let message = &value["message"];
+        // Claude 压缩后的续篇摘要有专门标记（isCompactSummary）：机器生成的上下文说明。
+        // 并进压缩记录当摘要文本（前端折叠可看），绝不冒充用户气泡。
+        if value["isCompactSummary"] == true {
+            out.push(("compaction".into(), json!({"summaryId":id,"text": text(&message["content"]), "status": "completed"})));
+            return out;
+        }
+        // 压缩摘要本身也可能是 meta；先识别摘要，再过滤其他内部消息。
+        if value["isMeta"] == true { return out; }
         match value["type"].as_str().unwrap_or("") {
             "user" | "assistant" => {
                 let body = text(&message["content"]);
-                if !body.is_empty() {
+                // user 角色不等于真人：Claude 把 <task-notification>、<system-reminder>
+                // 和本地斜杠命令的回显也写成 user 记录，整块剥掉，全是指令就不发事件。
+                let spoken = if value["type"] == "user" {
+                    human_text(&body)
+                } else {
+                    (!body.is_empty()).then_some(body)
+                };
+                if let Some(spoken) = spoken {
                     out.push((
                         if value["type"] == "user" {
                             "user"
@@ -484,7 +665,7 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
                             "message"
                         }
                         .into(),
-                        json!({"id":value["uuid"].as_str().or_else(|| message["id"].as_str()).unwrap_or(&id),"text":body}),
+                        json!({"id":value["uuid"].as_str().or_else(|| message["id"].as_str()).unwrap_or(&id),"text":spoken}),
                     ));
                 }
                 let blocks = message["content"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -492,7 +673,13 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
                 for (index, block) in blocks.iter().enumerate() {
                     match block["type"].as_str().unwrap_or("") {
                         "thinking" => out.push(("reasoning".into(), json!({"id":format!("{id}-{index}"),"text":block["thinking"]}))),
-                        "tool_use" => out.push(("tool".into(), json!({"id":block["id"],"name":block["name"],"input":block["input"],"status":"recorded"}))),
+                        "tool_use" => {
+                            out.push(("tool".into(), json!({"id":block["id"],"name":block["name"],"input":block["input"],"status":"recorded"})));
+                            // 原生历史回放：TodoWrite / TaskCreate / TaskUpdate 补齐 task_list 事件，确保历史会话恢复后可折叠任务清单可见。
+                            if let Some(super::protocol::Action::Emit { kind, data }) = super::claude::task_event(block["id"].as_str().unwrap_or(""), block["name"].as_str().unwrap_or(""), &block["input"]) {
+                                out.push((kind.into(), data));
+                            }
+                        }
                         "tool_result" => out.push(("tool".into(), json!({"id":block["tool_use_id"],"output":block["content"],"result":super::structured_tool_result(value.get("toolUseResult").or_else(|| value.get("tool_use_result")), block["tool_use_id"].as_str().unwrap_or_default(), result_count),"status":if block["is_error"]==true {"failed"} else {"completed"}}))),
                         _ => {}
                     }
@@ -518,7 +705,19 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
             "response_item" => match p["type"].as_str().unwrap_or("") {
                 "message" if p["role"] == "user" || p["role"] == "assistant" => {
                     let body = text(&p["content"]);
-                    if !body.is_empty() { out.push((if p["role"] == "user" {"user"} else {"message"}.into(), json!({"id":p["id"].as_str().unwrap_or(&id),"text":body}))); }
+                    // Codex 把 AGENTS.md 指令、环境上下文、子代理通知、中断说明都写成 role=user，
+                    // 本机 rollout 里 187 条 user 记录有 51 条是这种注入。
+                    let spoken = if p["role"] == "user" {
+                        human_text(&body)
+                    } else {
+                        (!body.is_empty()).then_some(body)
+                    };
+                    if let Some(spoken) = spoken {
+                        out.push((
+                            if p["role"] == "user" { "user" } else { "message" }.into(),
+                            json!({"id":p["id"].as_str().unwrap_or(&id),"text":spoken}),
+                        ));
+                    }
                 }
                 "function_call" | "custom_tool_call" => out.push(("tool".into(), json!({"id":p["call_id"],"name":p["name"],"input":p.get("arguments").or_else(|| p.get("input")),"status":"recorded"}))),
                 "function_call_output" | "custom_tool_call_output" => {
@@ -534,10 +733,61 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
                     let summary = p["summary"].as_array().into_iter().flatten().filter_map(|s| s["text"].as_str()).collect::<Vec<_>>().join("\n");
                     if !summary.is_empty() { out.push(("reasoning".into(), json!({"id":id,"text":summary}))); }
                 }
+                "plan" => {
+                    if let Some(plan_arr) = p["plan"].as_array().or_else(|| p["items"].as_array()) {
+                        let items: Vec<_> = plan_arr.iter().enumerate().filter_map(|(index, item)| {
+                            let content = item["step"].as_str().or_else(|| item["content"].as_str())?.trim();
+                            if content.is_empty() { return None; }
+                            let status = match item["status"].as_str().unwrap_or("") {
+                                "completed" | "complete" => "complete",
+                                "inProgress" | "in_progress" | "active" => "active",
+                                _ => "pending",
+                            };
+                            Some(json!({"id": format!("plan-{index}"), "content": content, "status": status}))
+                        }).collect();
+                        if !items.is_empty() {
+                            out.push(("task_list".into(), json!({"replace": true, "items": items})));
+                        }
+                    }
+                }
                 _ => {}
             },
+            "turn_plan" => {
+                if let Some(plan_arr) = p["plan"].as_array().or_else(|| value["plan"].as_array()) {
+                    let items: Vec<_> = plan_arr.iter().enumerate().filter_map(|(index, item)| {
+                        let content = item["step"].as_str().or_else(|| item["content"].as_str())?.trim();
+                        if content.is_empty() { return None; }
+                        let status = match item["status"].as_str().unwrap_or("") {
+                            "completed" | "complete" => "complete",
+                            "inProgress" | "in_progress" | "active" => "active",
+                            _ => "pending",
+                        };
+                        Some(json!({"id": format!("plan-{index}"), "content": content, "status": status}))
+                    }).collect();
+                    if !items.is_empty() {
+                        out.push(("task_list".into(), json!({"replace": true, "items": items})));
+                    }
+                }
+            }
             "turn_context" => out.push(("configuration".into(), json!({"model":p["model"],"effort":p["effort"]}))),
-            "compacted" => out.push(("compaction".into(), json!({"text":p["message"].as_str().unwrap_or("")}))),
+            "compacted" => out.push(("compaction".into(), json!({"summaryId":id,"status":"completed","text":p["message"].as_str().unwrap_or("")}))),
+            // 文件改动只在这条事件里有权威数据（changes 映射带 unified_diff）：
+            // 漏了它，导入的 Codex 会话永远聚合不出「改动文件」。
+            "event_msg" if p["type"] == "item_completed" && p["item"]["type"] == "FileChange" => {
+                let item = &p["item"];
+                let changes = item["changes"].as_object().map(|map| {
+                    let list: Vec<Value> = map.iter().map(|(path, change)| {
+                        json!({"path":path,"kind":change["type"],"diff":change["unified_diff"]})
+                    }).collect();
+                    json!(list)
+                }).unwrap_or_else(|| item["changes"].clone());
+                out.push(("tool".into(), json!({
+                    "id":item["id"].as_str().unwrap_or(&id),
+                    "name":"apply_patch",
+                    "input":{"changes":changes},
+                    "status":if item["status"] == "completed" { "completed" } else { "recorded" },
+                })));
+            }
             "event_msg" if p["type"] == "token_count" => {
                 let info=&p["info"]; let last=&info["last_token_usage"]; let total=&info["total_token_usage"];
                 out.push(("usage".into(), json!({"tokenUsage":{"last":{"inputTokens":last["input_tokens"],"outputTokens":last["output_tokens"],"cachedInputTokens":last["cached_input_tokens"],"reasoningOutputTokens":last["reasoning_output_tokens"],"totalTokens":last["total_tokens"]},"total":{"totalTokens":total["total_tokens"]},"modelContextWindow":info["model_context_window"]}})));
@@ -552,6 +802,134 @@ fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value
 mod tests {
     use super::*;
     use super::super::store::Window;
+    #[test]
+    fn codex_file_change_projects_as_patch_tool_with_changes_array() {
+        let _root = std::env::temp_dir().join("forge-history-filechange").to_string_lossy().to_string();
+        let events = project(Provider::Codex, &json!({
+            "timestamp":"2026-10-23T04:26:08.000Z","type":"event_msg",
+            "payload":{"type":"item_completed","thread_id":"t","turn_id":"turn",
+                "item":{"type":"FileChange","id":"call_1","status":"completed",
+                    "changes":{"src/images.rs":{"type":"add","unified_diff":"@@ -0,0 +1,2 @@
++//! a
++//! b"}}}}
+        }), 1);
+        let tool = events.iter().find(|(kind, _)| kind == "tool").expect("tool event");
+        let data = &tool.1;
+        assert_eq!(data["name"], "apply_patch");
+        assert_eq!(data["status"], "completed");
+        let changes = data["input"]["changes"].as_array().expect("changes array");
+        assert_eq!(changes[0]["path"], "src/images.rs");
+        assert_eq!(changes[0]["kind"], "add");
+        assert!(changes[0]["diff"].as_str().unwrap_or("").starts_with("@@"));
+    }
+
+    #[test]
+    fn claude_compact_summary_joins_the_compaction_record_not_a_user_bubble() {
+        let root = std::env::temp_dir().join("forge-history-compact").to_string_lossy().to_string();
+        let events = project(Provider::Claude, &json!({
+            "type":"user","cwd":root,"sessionId":"s1","isCompactSummary":true,"isMeta":true,
+            "message":{"content":"This session is being continued from a previous conversation..."}
+        }), 1);
+        // 一条压缩事件带摘要文本；不产生任何 user 事件。
+        assert!(events.iter().any(|(kind, data)| kind == "compaction" && data["text"].as_str().unwrap_or("").starts_with("This session")));
+        assert!(!events.iter().any(|(kind, _)| kind == "user"));
+        // 子代理摘要仍不能混进主会话；普通 meta 也仍需过滤。
+        assert!(project(Provider::Claude, &json!({"isSidechain":true,"isCompactSummary":true,"message":{"content":"private"}}), 2).is_empty());
+        assert!(project(Provider::Claude, &json!({"type":"user","isMeta":true,"message":{"content":"internal"}}), 3).is_empty());
+    }
+
+    #[test]
+    fn system_injected_user_records_never_become_user_bubbles() {
+        // 实测：本机 ~/.codex/sessions 的 187 条 role=user 记录里有 51 条是 CLI 自己写的注入
+        // （AGENTS.md 指令 30、子代理通知 10、goal 上下文 5、环境上下文 4、中断说明 2），
+        // Forge 自己的 9 份会话日志里也已经躺着 7 条被当成用户消息的事件。
+        let codex = |text: &str| {
+            project(
+                Provider::Codex,
+                &json!({"type":"response_item","payload":{"type":"message","role":"user","id":"m","content":[{"type":"input_text","text":text}]}}),
+                1,
+            )
+        };
+        let injected = codex(
+            "# AGENTS.md instructions\n<INSTRUCTIONS>\n- 始终使用简体中文输出。\n</INSTRUCTIONS>\n<environment_context>\n<current_date>2026-10-23</current_date>\n</environment_context>",
+        );
+        assert!(!injected.iter().any(|(kind, _)| kind == "user"), "AGENTS.md 指令与环境上下文不是用户说的话");
+        assert!(codex("<subagent_notification>\n{\"agent_path\":\"01a16e1e\",\"status\":{\"completed\":\"…\"}}\n</subagent_notification>").is_empty());
+        assert!(codex("<codex_internal_context source=\"goal\">\nContinue working toward the active thread goal.\n</codex_internal_context>").is_empty());
+        assert!(codex("<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>").is_empty());
+
+        let claude = |text: &str| project(Provider::Claude, &json!({"type":"user","message":{"content":text}}), 2);
+        assert!(!claude("<task-notification>\n<task-id>a70f6004</task-id>\n</task-notification>").iter().any(|(kind, _)| kind == "user"));
+        assert!(!claude("<system-reminder data-role=\"tool-hint\">hint</system-reminder>").iter().any(|(kind, _)| kind == "user"));
+        // 本地斜杠命令的回显带三个成对标签，一起剥掉之后什么都不剩。
+        assert!(!claude("<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>").iter().any(|(kind, _)| kind == "user"));
+
+        // 真人消息一个字都不能改：没匹配到注入时连首尾空白都要留着。
+        let human = claude("  帮我看下这个 task 有什么问题  \n");
+        assert_eq!(human.len(), 1);
+        assert_eq!(human[0].0, "user");
+        assert_eq!(human[0].1["text"], "  帮我看下这个 task 有什么问题  \n");
+        // 注入追加在真人消息后面时，只留人话。
+        let mixed = claude("继续 <system-reminder>Caveat: 下面的消息来自本地命令</system-reminder>");
+        assert_eq!(mixed[0].1["text"], "继续");
+        // 助手引用同样的标签是在讲这段文本，不能删。
+        let assistant = project(Provider::Claude, &json!({"type":"assistant","message":{"id":"m","content":"这里的 <system-reminder> 是注入"}}), 3);
+        assert_eq!(assistant[0].1["text"], "这里的 <system-reminder> 是注入");
+    }
+
+    #[test]
+    fn native_title_skips_cli_injected_user_records() {
+        // 实测：会话列表里真有一条标题就是「# AGENTS.md instructions」——
+        // Codex 的第一条 role=user 记录就是它自己注入的指令。
+        let temp = std::env::temp_dir().join(format!(
+            "forge-history-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let native = temp.join("native");
+        for path in [&root, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let path = native.join("injected.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":"injected-session","cwd":root,"source":"cli"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions <INSTRUCTIONS>始终使用简体中文</INSTRUCTIONS>"}]}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"已修改的部分可能有些问题 需要优化"}]}})
+            ),
+        )
+        .unwrap();
+        let candidate = inspect(&path, Provider::Codex, &workspace).unwrap().expect("候选历史");
+        assert_eq!(candidate.title, "已修改的部分可能有些问题 需要优化");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn finish_recovers_all_summary_batches_before_advancing_history() {
+        let temp = std::env::temp_dir().join(format!("forge-summary-batches-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("native");
+        for path in [&root, &base, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut content = format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"summary-session","message":{"content":"hello"}}));
+        // 超过单批 128 条：第二批不能靠用户重新打开会话才能恢复。
+        for index in 0..129 {
+            content.push_str(&format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"summary-session","isCompactSummary":true,"isMeta":true,"message":{"content":format!("summary-{index}")}})));
+        }
+        let old_offset = content.len();
+        fs::write(native.join("session.jsonl"), content).unwrap();
+        discover_in(&base, &workspace, vec![(Provider::Claude, native)]).unwrap();
+        let mut target = Store::open(&base, "summary-session", &workspace, Provider::Claude, "test", "").unwrap();
+        // 模拟旧版本已经扫到 EOF 却漏掉 meta 摘要，升级后仍应恢复。
+        target.append("native", vec![("summary_checkpoint".into(), json!({"offset":old_offset}))]).unwrap();
+        let events = mark_current(&mut target, &base).unwrap();
+        assert_eq!(events.iter().filter(|event| event.kind == "compaction").count(), 129);
+        assert!(!mark_current(&mut target, &base).unwrap().iter().any(|event| event.kind == "compaction"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     #[test]
     fn projects_only_public_native_messages_and_never_replays_permissions() {
         let events = project(
@@ -739,3 +1117,4 @@ mod tests {
         );
     }
 }
+

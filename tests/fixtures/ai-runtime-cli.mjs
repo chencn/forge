@@ -1,6 +1,6 @@
 // Deterministic local test peer. Never launches a provider or contacts a service.
 import { createInterface } from 'node:readline';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 const [provider, scenario = 'deny'] = process.argv.slice(2);
 const send = (value) => {
@@ -9,10 +9,11 @@ const send = (value) => {
   for (let i = 0; i < bytes.length; i += 3) process.stdout.write(bytes.subarray(i, i + 3));
 };
 const thread = 'native-session';
+const reconnectMarker = `disconnect-once-${provider}.marker`;
 const line = createInterface({ input: process.stdin });
 line.on('line', (raw) => {
   const msg = JSON.parse(raw);
-  if (scenario === 'oversize') { process.stdout.write('x'.repeat(1024 * 1024 + 20)); return; }
+  if (scenario === 'oversize') { process.stdout.write('x'.repeat(16 * 1024 * 1024 + 20)); return; }
   if (scenario === 'crash') { process.stderr.write('fixture crash'); process.exit(7); }
   if (scenario === 'flood') { for (let i = 0; i < 10000; i++) process.stdout.write(JSON.stringify({ index: i }) + '\n'); setInterval(() => {}, 1000); return; }
   if (scenario === 'truncated') { process.stdout.write('{"unfinished":'); process.exit(0); }
@@ -45,8 +46,18 @@ line.on('line', (raw) => {
       send({ method: 'item/started', params: { threadId: thread, turnId: 'turn-1', item: { id: 'command-1', type: compact ? 'contextCompaction' : 'enteredReviewMode' } } });
       send({ method: 'item/completed', params: { threadId: thread, turnId: 'turn-1', item: { id: 'command-1', type: compact ? 'contextCompaction' : 'exitedReviewMode', review: 'fixture review 中文😀' } } });
       setTimeout(() => send({ method: 'turn/completed', params: { threadId: thread, turn: { id: 'turn-1', status: 'completed' } } }), 30);
+    } else if (msg.method === 'thread/turns/list' && scenario === 'disconnect-recover') {
+      send({ id: msg.id, result: { data: [{ id: 'turn-1', status: 'completed', items: [{ id: 'recovered', type: 'agentMessage', text: '恢复完成' }] }], nextCursor: null } });
     } else if (msg.method === 'turn/start') {
       if (scenario.startsWith('slash-')) process.exit(16);
+      if (scenario === 'disconnect-recover') {
+        if (existsSync(reconnectMarker)) process.exit(19);
+        send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
+        writeFileSync(reconnectMarker, 'disconnected');
+        send({ method: 'item/agentMessage/delta', params: { threadId: thread, itemId: 'partial', delta: '中断前' } });
+        setTimeout(() => process.exit(23), 20);
+        return;
+      }
       send({ id: msg.id, result: { turn: { id: 'turn-1' } } });
       send({ method: 'item/agentMessage/delta', params: { threadId: thread, itemId: 'text-1', delta: '中文😀' } });
       send({ method: 'item/completed', params: { threadId: thread, item: { id: 'text-1', type: 'agentMessage', text: '中文😀' } } });
@@ -86,6 +97,15 @@ line.on('line', (raw) => {
         send({ type: 'system', subtype: 'commands_changed', commands: [{ name: 'replacement', description: 'new catalog', argumentHint: '[text]' }] });
         send({ type: 'system', subtype: 'local_command_output', session_id: thread, uuid: 'command-output', content: 'fixture output 中文😀' });
         send({ type: 'result', subtype: 'success', session_id: thread, is_error: false, result: 'fixture output 中文😀' });
+        return;
+      }
+      if (scenario === 'disconnect-recover') {
+        if (existsSync(reconnectMarker)) process.exit(19);
+        send({ type: 'system', subtype: 'init', session_id: thread });
+        writeFileSync(reconnectMarker, 'disconnected');
+        send({ type: 'stream_event', event: { type: 'message_start', message: { id: 'partial' } } });
+        send({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '中断前' } } });
+        setTimeout(() => process.exit(23), 20);
         return;
       }
       send({ type: 'system', subtype: 'init', session_id: thread });

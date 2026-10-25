@@ -864,6 +864,7 @@ pub async fn ai_cli_codex_settings_save(settings: CodexSettings) -> Result<Codex
 
 /// 供应商「应用」用：只改端点、密钥与模型，其余结构化字段保持磁盘上的原值。
 /// auth.json 与已有 provider 的 base_url 通过同一条保存路径同步。
+#[allow(dead_code)]
 pub(crate) fn apply_codex_endpoint(model: &str, base_url: &str, api_key: &str) -> Result<(), String> {
     let path = config_path(Provider::Codex)?;
     let mut config = read_codex_settings_at(&path)?;
@@ -871,6 +872,122 @@ pub(crate) fn apply_codex_endpoint(model: &str, base_url: &str, api_key: &str) -
     config.api_base_url = base_url.trim().to_string();
     config.api_key = api_key.trim().to_string();
     save_codex_settings(config).map(|_| ())
+}
+
+const CODEX_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
+
+fn provider_uses_actor_authorization(table: &Table) -> bool {
+    table.get("http_headers")
+        .and_then(|item| item.as_table_like())
+        .is_some_and(|headers| {
+            headers.iter().any(|(name, val)| {
+                name.eq_ignore_ascii_case(CODEX_ACTOR_AUTHORIZATION_HEADER)
+                    && val.as_str().is_some_and(|text| !text.trim().is_empty())
+            })
+        })
+}
+
+/// 写入 Codex 的 auth.json（仅供供应商应用时调用）。
+/// - 若文件不存在且密钥非空：创建文件并写入 {"OPENAI_API_KEY": key}
+/// - 若文件已存在：在现有 JSON 对象中设置或移除 OPENAI_API_KEY，保留其他字段
+/// - 若文件不存在且密钥为空：不创建文件
+pub(crate) fn write_codex_provider_auth(api_key: &str) -> Result<(), String> {
+    let auth_path = codex_auth_path()?;
+    let key = api_key.trim();
+    if !auth_path.exists() {
+        if key.is_empty() {
+            return Ok(());
+        }
+        if let Some(dir) = auth_path.parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("无法创建 Codex 配置目录：{e}"))?;
+        }
+        let root = serde_json::json!({ "OPENAI_API_KEY": key });
+        return backup_and_write(&auth_path, &serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?);
+    }
+
+    let text = fs::read_to_string(&auth_path).map_err(|e| format!("读取 auth.json 失败：{e}"))?;
+    let mut value: serde_json::Value = if text.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return Err("auth.json 格式错误：根节点不是对象".into());
+    };
+
+    if key.is_empty() {
+        obj.remove("OPENAI_API_KEY");
+    } else {
+        obj.insert("OPENAI_API_KEY".to_string(), serde_json::Value::String(key.to_string()));
+    }
+    backup_and_write(&auth_path, &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?)
+}
+
+/// 供应商「应用」专用的路由配置写入（对齐 codeg 行为，同时用 toml_edit 保留注释）：
+/// 1. 设置根 `model`：有效默认模型写入根 `model`，若为 None 或空则移除根 `model`；
+/// 2. 检查 `model_provider`：若为空或为内置 ID (openai/ollama/lmstudio)，则换成 "forge"；否则保留用户的自定义 provider 名；
+/// 3. 设置 `[model_providers.<name>]` 表的 `base_url`；
+/// 4. 若名称为 "forge"，确保 `name = "forge"` 与 `wire_api = "responses"`，且仅在不存在 `requires_openai_auth` 且未开启 actor authorization 时补 `requires_openai_auth = true`；
+/// 5. 保存 config.toml 并同步调用 `write_codex_provider_auth(api_key)`。
+pub(crate) fn apply_codex_provider_route(base_url: &str, model: Option<&str>, api_key: &str) -> Result<(), String> {
+    let path = config_path(Provider::Codex)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|error| format!("无法创建配置目录：{error}"))?;
+    }
+    let existing = if path.exists() {
+        fs::read_to_string(&path).map_err(|error| format!("读取 Codex 配置失败：{error}"))?
+    } else {
+        String::new()
+    };
+    let mut doc: DocumentMut = existing.parse().map_err(|error| format!("TOML 格式错误：{error}"))?;
+
+    // 1. 根 model
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => put(doc.as_table_mut(), "model", m.into()),
+        None => { doc.as_table_mut().remove("model"); }
+    }
+
+    // 2. model_provider
+    let current_provider = doc.get("model_provider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    let provider_name = if current_provider.is_empty()
+        || current_provider == "openai"
+        || current_provider == "ollama"
+        || current_provider == "lmstudio"
+    {
+        "forge".to_string()
+    } else {
+        current_provider.to_string()
+    };
+    put(doc.as_table_mut(), "model_provider", provider_name.as_str().into());
+
+    // 3. [model_providers.<provider_name>] 表
+    let providers_entry = doc.entry("model_providers").or_insert(toml_edit::Item::Table(Table::new()));
+    let providers_table = providers_entry.as_table_mut().ok_or("model_providers 必须是 TOML 表")?;
+    let provider_entry = providers_table.entry(&provider_name).or_insert(toml_edit::Item::Table(Table::new()));
+    let provider_table = provider_entry.as_table_mut().ok_or("供应商条目必须是 TOML 表")?;
+
+    let url = base_url.trim();
+    if url.is_empty() {
+        provider_table.remove("base_url");
+    } else {
+        put(provider_table, "base_url", url.into());
+    }
+
+    // 4. forge 自有表配置
+    if provider_name == "forge" {
+        put(provider_table, "name", "forge".into());
+        put(provider_table, "wire_api", "responses".into());
+        if !provider_table.contains_key("requires_openai_auth") && !provider_uses_actor_authorization(provider_table) {
+            put(provider_table, "requires_openai_auth", true.into());
+        }
+    }
+
+    backup_and_write(&path, &doc.to_string())?;
+    write_codex_provider_auth(api_key)?;
+    Ok(())
 }
 
 fn version_of(program: &str) -> Option<String> {
@@ -1253,5 +1370,15 @@ mod tests {
 
         let _ = fs::remove_dir_all(login.parent().unwrap());
         let _ = fs::remove_dir_all(keyed.parent().unwrap());
+    }
+
+    #[test]
+    fn actor_authorization_detection_respects_header() {
+        let mut table = Table::new();
+        assert!(!provider_uses_actor_authorization(&table));
+        let mut headers = Table::new();
+        headers.insert(CODEX_ACTOR_AUTHORIZATION_HEADER.into(), value("Bearer test"));
+        table.insert("http_headers".into(), toml_edit::Item::Table(headers));
+        assert!(provider_uses_actor_authorization(&table));
     }
 }

@@ -5,10 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
 import { loadDraft, rememberPrompt } from "../../src/lib/aiDrafts";
 
-const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", desktop: true, send: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
+const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, send: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
 vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Record<string, unknown>) => key === "ai.chat.editedFiles" ? `Edited ${vars?.count} files` : key }) }));
 vi.mock("../../src/lib/aiCli", () => ({ AI_NAMES: { codex: "Codex" }, cliDesktopAvailable: () => h.desktop }));
-vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, loadAiMessages: vi.fn(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn() }));
+vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiMessages: vi.fn(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn() }));
 vi.mock("../../src/lib/fs", () => ({ openExternal: vi.fn(), assetUrl: (path: string) => `asset://${path}` }));
 vi.mock("dompurify", () => ({ default: { sanitize: h.sanitize } }));
 import AiSessionPane from "../../src/components/AiSessionPane";
@@ -29,8 +29,9 @@ beforeEach(() => {
     removeItem: (key: string) => { storage.delete(key); },
   });
   h.activity = "idle";
+  h.ownedRun = null; h.ownedQueued = [];
   h.outline = { turns: [], complete: false, loaded: false, loading: false, error: null };
-  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.sanitize.mockClear();
+  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.sanitize.mockClear();
   h.state = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: true, hasOlder: false, cursor: 0, nativeId: null, plans: [] };
 });
 function render() {
@@ -50,7 +51,8 @@ function pictures(pane: ReactElement<any>): ReactElement<any>[] {
 }
 function findAll(pane: ReactElement<any>, type: unknown): ReactElement<any>[] {
   if (!pane || typeof pane !== "object" || !("props" in pane)) return [];
-  if (pane.type === type) return [pane];
+  // 匹配到父容器后仍需遍历子节点，否则找不到嵌套滚动容器。
+  const matches = pane.type === type ? [pane] : [];
   // 输入框外壳与用户消息组件把子内容放在具名 prop（甚至包在普通对象数组）里，
   // 不止 children；逐层摊开所有对象值里的 React 元素才能找齐。
   const unwrap = (value: unknown): ReactElement<any>[] =>
@@ -58,7 +60,7 @@ function findAll(pane: ReactElement<any>, type: unknown): ReactElement<any>[] {
       !item || typeof item !== "object" ? [] :
       "props" in item ? [item as ReactElement<any>] :
       unwrap(Object.values(item)));
-  return unwrap(pane.props).flatMap((child) => findAll(child, type));
+  return [...matches, ...unwrap(pane.props).flatMap((child) => findAll(child, type))];
 }
 /**
  * 面板内部的私有组件在静态树里还是没展开的元素（它的按钮是在函数体里造的，
@@ -79,6 +81,8 @@ function propsOfComponent(pane: ReactElement<any>, name: string): Record<string,
 describe("AI conversation pane", () => {
   it.each(["external", "unknown"])("keeps input usable for external activity or unavailable detection: %s", async (activity) => {
     textarea(render().pane).props.onChange({ target: { value: "hello" } });
+    // 共享历史仍残留 running，也不能把别的进程画成本窗口可停止的任务。
+    h.state.status = "running"; h.state.runId = "foreign";
     h.activity = activity;
     const { pane, html } = render();
     expect(textarea(pane).props.disabled).toBe(false);
@@ -203,11 +207,56 @@ describe("AI conversation pane", () => {
   });
   it("keeps unknown context honest and uses an accessible icon-only stop control", () => {
     h.state.status = "running"; h.state.runId = "run";
+    h.state.tasks = [{ runId: "run", status: "running", seq: 1 }];
+    h.activity = "running"; h.ownedRun = "run";
     const { html } = render();
     expect(html).toContain('aria-label="ai.chat.context --"');
     expect(html).not.toContain('aria-label="ai.chat.context 0%"');
     expect(html).toContain('class="ai-send-button is-stop"');
     expect(html).toContain('aria-label="ai.runtime.stop"');
+  });
+  it("连接阶段可中断，但不会伪装成可编辑队列", () => {
+    h.state.status = "submitting"; h.state.runId = "connecting";
+    h.state.tasks = [{ runId: "connecting", status: "submitting", seq: 1, prompt: "hello" }];
+    h.activity = "running"; h.ownedRun = "connecting";
+    const { html } = render();
+    expect(html).toContain("ai.runtime.submitting");
+    expect(html).toContain('aria-label="ai.runtime.stop"');
+    expect(html).not.toContain('aria-label="ai.runtime.editQueued"');
+  });
+  it("其他窗口的队列只读展示，不暴露本窗口控制按钮", () => {
+    h.state.tasks = [{ runId: "foreign-queue", status: "queued", seq: 1, prompt: "later" }];
+    h.state.status = "queued"; h.state.runId = "foreign-queue"; h.activity = "queued";
+    const { html } = render();
+    expect(html).toContain("ai.runtime.otherWindow");
+    expect(html).not.toContain('aria-label="ai.runtime.runQueuedNow"');
+    expect(html).not.toContain('aria-label="ai.runtime.cancelQueued"');
+    expect(html).not.toContain('aria-label="ai.runtime.stop"');
+  });
+  it("任务队列默认展开，并把折叠按钮与正文关联起来", () => {
+    h.state.tasks = [{ runId: "queued", status: "queued", seq: 1, prompt: "later" }];
+    h.ownedQueued = ["queued"];
+    const { html } = render();
+    const toggle = html.match(/class="ai-task-queue-toggle"[^>]*aria-expanded="true"[^>]*aria-controls="([^"]+)"/);
+    expect(toggle?.[1]).toBeTruthy();
+    // aria-controls 必须指向实际正文；屏幕阅读器才能把按钮和被折叠区域对应起来。
+    expect(html).toContain(`class="ai-task-queue-list" id="${toggle![1]}"`);
+  });
+  it("用方向键按稳定 runId 调整自己的队列顺序", () => {
+    h.state.tasks = [
+      { runId: "first", status: "queued", seq: 1, prompt: "first" },
+      { runId: "second", status: "queued", seq: 2, prompt: "second" },
+      { runId: "third", status: "queued", seq: 3, prompt: "third" },
+    ];
+    h.ownedQueued = ["first", "second", "third"];
+    const handles = findAll(render().pane, "button").filter((button) => button.props.className === "ai-task-drag");
+    const preventDefault = vi.fn();
+    // 向上就是插到前一项前；向下到队尾用 null 表达，避免依赖可变序号。
+    handles[1].props.onKeyDown({ key: "ArrowUp", preventDefault });
+    handles[1].props.onKeyDown({ key: "ArrowDown", preventDefault });
+    expect(h.moveQueued).toHaveBeenNthCalledWith(1, "second", "first");
+    expect(h.moveQueued).toHaveBeenNthCalledWith(2, "second", null);
+    expect(preventDefault).toHaveBeenCalledTimes(2);
   });
   it("renders approvals at their timeline positions without duplicating them", () => {
     h.state.entries = [
@@ -243,12 +292,11 @@ describe("AI conversation pane", () => {
     expect(preventDefault).toHaveBeenCalled(); expect(h.beforeSend).not.toHaveBeenCalled(); expect(h.send).not.toHaveBeenCalled();
     expect(html.match(/<button[^>]*class="ai-send-button"[^>]*>/)?.[0]).toContain("disabled");
   });
-  it("keeps an expansion control for older loaded messages", () => {
+  it("正常首屏不要求点击加载按钮", () => {
     h.state.entries = Array.from({ length: 301 }, (_, i) => ({ id: String(i), runId: "run", kind: "user", text: `message-${i}` }));
     const { html } = render();
-    expect(html).toContain("ai.runtime.showEarlier");
-    // 一屏最多铺 TIMELINE_WINDOW 项：其余的靠「显示更早」逐页放出来。
-    expect(html.match(/class="ai-chat-entry/g)).toHaveLength(120);
+    expect(html).not.toContain("ai.runtime.showEarlier");
+    expect(html).not.toContain("ai.runtime.loadOlder");
   });
   it("pins a pending approval above the composer instead of burying it in the timeline", () => {
     h.state.entries = Array.from({ length: 301 }, (_, i) => ({ id: String(i), runId: "run", kind: "user", text: `message-${i}` }));
@@ -263,24 +311,26 @@ describe("AI conversation pane", () => {
     expect(html).toContain('class="ai-session-requests"');
     expect(html.match(/class="ai-request-card/g)).toHaveLength(1);
   });
-  it("walks history backwards from the newest page with one top control", () => {
+  it("向上滚动提前请求三页历史，无需点击按钮", () => {
     h.state.hasOlder = true; h.state.cursor = 500;
     const { pane, html } = render();
-    expect(html).toContain("ai.runtime.loadOlder");
+    expect(html).not.toContain("ai.runtime.loadOlder");
     expect(html).not.toContain("ai.runtime.showEarlier");
     // 底部那条「加载更多记录」是旧语义的产物：首屏就在最新一页，往上翻才是更早。
     expect(html).not.toContain("ai.runtime.loadMore");
-    const button = findAll(pane, "button").find((item) => [item.props.children].flat(Infinity).includes("ai.runtime.loadOlder"));
-    button!.props.onClick();
-    expect(h.older).toHaveBeenCalledWith(sessionId, "D:/project");
+    const viewport = findAll(pane, "div").find((item) => item.props.onWheel)!;
+    viewport.props.ref.current = { scrollTop: 1200, scrollHeight: 4000, clientHeight: 800, getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [] };
+    viewport.props.onWheel({ deltaY: -100 });
+    expect(h.older).toHaveBeenCalledWith(sessionId, "D:/project", undefined, 3);
   });
   it("expands the loaded window before asking the backend for another page", () => {
     h.state.hasOlder = true; h.state.cursor = 500;
     h.state.entries = Array.from({ length: 301 }, (_, i) => ({ id: String(i), runId: "run", kind: "user", text: `message-${i}` }));
     const { pane, html } = render();
-    expect(html).toContain("ai.runtime.showEarlier");
-    const button = findAll(pane, "button").find((item) => [item.props.children].flat(Infinity).includes("ai.runtime.showEarlier"));
-    button!.props.onClick();
+    expect(html).not.toContain("ai.runtime.showEarlier");
+    const viewport = findAll(pane, "div").find((item) => item.props.onWheel)!;
+    viewport.props.ref.current = { scrollTop: 1200, scrollHeight: 4000, clientHeight: 800, getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [] };
+    viewport.props.onWheel({ deltaY: -100 });
     expect(h.older).not.toHaveBeenCalled();
   });
   it("keeps a half-typed message per session and reloads it on the next render", () => {
@@ -289,13 +339,13 @@ describe("AI conversation pane", () => {
     expect(loadDraft("D:/project", "别的会话")).toBe("");
     expect(textarea(render().pane).props.value).toBe("写到一半");
   });
-  it("keeps the draft when the trust dialog stops the send", async () => {
-    textarea(render().pane).props.onChange({ target: { value: "发出去的这条" } });
-    textarea(render().pane).props.onKeyDown({ key: "Enter", ctrlKey: true, nativeEvent: {}, preventDefault: vi.fn() });
+  it("不再有信任确认挡路：首条消息直接发出，不弹窗", async () => {
+    textarea(render().pane).props.onChange({ target: { value: "直接发这条" } });
+    textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
     await Promise.resolve();
-    // 信任确认挡在这里，本轮没发出去：草稿必须原样留着。
-    expect(loadDraft("D:/project", sessionId)).toBe("发出去的这条");
-    expect(h.send).not.toHaveBeenCalled();
+    await Promise.resolve();
+    // 项目是用户自己打开的：直接信任随请求置位，一次都不弹窗。
+    expect(h.send).toHaveBeenCalled();
   });
   it("recalls the last prompt sent in this project with ArrowUp", () => {
     rememberPrompt("D:/project", "上一条发出去的话");
@@ -341,6 +391,27 @@ describe("AI conversation pane", () => {
     expect(bare.html).not.toContain("ai.runtime.allowAndRemember");
     expect(bare.html).not.toContain("ai.runtime.editBeforeAllow");
   });
+  it("回合末尾挂新增/改动汇总卡：完成轮次的 Write 建档计入新增，运行中的轮次不挂", () => {
+    // 真实镜像的事件形态：同一工具 id 的 running → 入参补全 → completed(result) 三段合并成一条。
+    h.state.entries = [
+      { id: "u", runId: "run", kind: "user", text: "做个东西" },
+      { id: "t1", runId: "run", kind: "tool", toolId: "toolu_1", name: "Write", text: "", input: { file_path: "D:/project/images.rs", content: "fn main() {}" }, status: "running" },
+      { id: "t2", runId: "run", kind: "tool", toolId: "toolu_1", name: "Write", text: "", input: { file_path: "D:/project/images.rs", content: "fn main() {}" }, status: "running" },
+      { id: "t3", runId: "run", kind: "tool", toolId: "toolu_1", name: "Write", text: "", status: "completed",
+        output: "ok", result: { type: "create", filePath: "D:/project/images.rs", content: "fn main() {}" } },
+      { id: "a1", runId: "run", kind: "assistant", text: "做完了" },
+    ];
+    h.state.tasks = [{ runId: "run", status: "completed", seq: 1 }];
+    const html = render().html;
+    expect(html).toContain("ai-artifacts");
+    expect(html).toContain("ai.chat.filesAdded");
+    expect(html).toContain("images.rs");
+    // 运行中的轮次不在末尾挂卡：它还在改。
+    h.state.tasks = [{ runId: "run", status: "running", seq: 1 }];
+    h.state.status = "running"; h.state.runId = "run";
+    h.activity = "running"; h.ownedRun = "run";
+    expect(render().html).not.toContain("ai-artifacts");
+  });
   it("把提问卡按状态换成两种形态：还能答摆交互版，答过了只剩结果行", () => {
     const questions = [{ id: "lang", question: "用哪种语言？", options: [{ label: "中文" }] }];
     h.state.entries = [{ id: "e1", runId: "run", kind: "request", requestId: "q", text: "" }];
@@ -368,7 +439,8 @@ describe("AI conversation pane", () => {
     // 本轮已结束：空正文就是没有可显示的东西，签名-only 的 redacted thinking 不该占两行。
     expect(render().html).not.toContain("ai-reasoning");
     // 还在跑：末尾那一条是「模型正在想」的唯一凭证，而「正在思考」只给它，不给历史里的其他条。
-    h.state.status = "running";
+    h.state.status = "running"; h.state.runId = "run"; h.state.tasks = [{ runId: "run", status: "running", seq: 1 }];
+    h.activity = "running"; h.ownedRun = "run";
     const live = render();
     expect(live.html.match(/class="ai-reasoning/g)).toHaveLength(1);
     expect(live.html).toContain("ai.chat.reasoningLive");
@@ -401,6 +473,7 @@ describe("AI conversation pane", () => {
   it("labels ordinary turns as running on the live stats line, without repeating the prompt", () => {
     h.state.status = "running"; h.state.runId = "run";
     h.state.tasks = [{ runId: "run", status: "running", prompt: "把分页改成从最新一页开始", seq: 1 }];
+    h.activity = "running"; h.ownedRun = "run";
     const { html } = render();
     expect(html).toContain("ai-live-stats");
     expect(html).toContain("ai.runtime.running");
@@ -457,5 +530,67 @@ describe("AI conversation pane", () => {
     h.through.mockClear();
     await nav.onJump({ id: "r9:9", ordinal: 2, label: "最新的一条", files: 0, loaded: true });
     expect(h.through).not.toHaveBeenCalled();
+  });
+  it("轮次以 tool 调用收尾时，改动文件汇总卡依然挂载渲染", () => {
+    h.state.entries = [
+      { id: "u1", runId: "r1", seq: 1, kind: "user", text: "修改代码" },
+      { id: "t1", runId: "r1", seq: 2, kind: "tool", name: "Edit", text: "", status: "completed", input: { changes: [{ path: "src/foo.ts", diff: "@@ -1 +1 @@\n-a\n+b" }] } },
+    ];
+    h.state.tasks = [{ runId: "r1", status: "completed", seq: 1 }];
+    const { html } = render();
+    expect(html).toContain("ai-artifacts");
+    expect(html).toContain("src/foo.ts");
+  });
+  it("CLI 汇报处于计划模式时，输入框工具栏浮现计划模式徽章与一键退出按钮", () => {
+    h.state.configuration = { planMode: true };
+    const { html } = render();
+    expect(html).toContain("ai-composer-plan-badge");
+    expect(html).toContain("ai-composer-plan-exit");
+  });
+  it("轮次同时发生压缩与文件改动时，压缩分隔条与新增修改文件汇总两者兼备且新增与修改卡片并存", () => {
+    h.state.entries = [
+      { id: "u1", runId: "r1", seq: 1, kind: "user", text: "做一次改动并压缩" },
+      { id: "t1", runId: "r1", seq: 2, kind: "tool", name: "Write", text: "", status: "completed", input: { file_path: "src/newFile.ts" }, result: { type: "create", content: "export const x = 1;" } },
+      { id: "t2", runId: "r1", seq: 3, kind: "tool", name: "Edit", text: "", status: "completed", input: { file_path: "src/existing.ts" }, result: { type: "update", structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] }] } },
+      { id: "c1", runId: "r1", seq: 4, kind: "notice", name: "compaction", text: "This is compaction summary text", input: { status: "completed", metadata: { before_tokens: 10000, after_tokens: 2000 } } },
+    ];
+    h.state.tasks = [{ runId: "r1", status: "completed", seq: 1 }];
+    const { html } = render();
+    // 压缩分隔条在，摘要正文默认收起（对齐参考实现），点开后才落到 DOM 里。
+    expect(html).toContain("ai-compaction-container");
+    expect(html).toContain('class="ai-compaction-toggle" aria-expanded="false"');
+    expect(html).not.toContain("ai-compaction-summary");
+    expect(html).not.toContain("This is compaction summary text");
+    // 新增文件卡默认摊开，改动文件卡默认收起。
+    expect(html).toContain('<details class="ai-artifact-card is-open" open="">');
+    expect(html).toContain('<details class="ai-artifact-card"><summary>');
+    expect(html).toContain("ai-artifacts");
+    expect(html).toContain("src/newFile.ts");
+    expect(html).toContain("src/existing.ts");
+    expect(html).toContain("ai.chat.filesAdded");
+    expect(html).toContain("ai.chat.filesChanged");
+  });
+  it("整段导入的原生会话按「一轮」切分改动卡，底栏只报最新一轮", () => {
+    // 导入的历史每条都写着 runId="native"：按 runId 切会把几十轮压成时间线最末尾的一张卡，
+    // 底栏那个数字也会随着往上翻越长越大。
+    const edit = (id: string, seq: number, path: string) => ({ id, runId: "native", seq, kind: "tool" as const, name: "Edit", text: "", status: "completed",
+      input: { changes: [{ path, diff: "@@ -1 +1 @@\n-a\n+b" }] } });
+    h.state.entries = [
+      { id: "u1", runId: "native", seq: 1, kind: "user", text: "第一轮改动" },
+      edit("t1", 2, "src/first.ts"),
+      { id: "a1", runId: "native", seq: 3, kind: "assistant", text: "第一轮做完了" },
+      { id: "u2", runId: "native", seq: 4, kind: "user", text: "第二轮改动" },
+      edit("t2", 5, "src/second.ts"),
+      { id: "a2", runId: "native", seq: 6, kind: "assistant", text: "第二轮做完了" },
+    ];
+    const { html } = render();
+    expect(html.match(/class="ai-artifacts"/g)).toHaveLength(2);
+    // 每张卡挂在它那一轮的末尾，而不是全挤在时间线最下面。
+    expect(html.indexOf("src/first.ts")).toBeLessThan(html.indexOf("第二轮改动"));
+    expect(html.indexOf("src/second.ts")).toBeGreaterThan(html.indexOf("第二轮改动"));
+    // 底栏报的是「这一趟」：只有一个文件，且往上翻历史时不会跟着变。
+    const chip = html.slice(html.indexOf("ai-edit-summary"));
+    expect(chip).toContain("ai.chat.editedFile");
+    expect(chip).not.toContain("ai.chat.editedFiles");
   });
 });

@@ -1,4 +1,11 @@
-import type { AiEntry } from "./aiRuntime";
+import type { AiEntry, AiTask } from "./aiRuntime";
+import { isAiTaskQueued } from "./aiTaskStatus";
+
+/** 入队日志不是已执行正文；正文与导航使用同一规则，保留没有任务状态的原生历史。 */
+export function conversationItems<T extends { runId: string }>(items: T[], tasks: AiTask[]): T[] {
+  const pending = new Set(tasks.filter((task) => isAiTaskQueued(task.status) || task.started === false).map((task) => task.runId));
+  return items.filter((item) => !pending.has(item.runId));
+}
 
 /**
  * 时间线折叠。
@@ -54,6 +61,8 @@ export function groupAiTimeline(entries: readonly AiEntry[], running = false): A
     run = [];
   };
   for (const entry of rows) {
+    // 所有的工具调用（含文件修改）与思考连续归纳进过程段中（对照参考实现）：
+    // 两个气泡之间至多只有一个折叠段，展开看各步骤明细，避免交替切成多个碎片段落。
     const process = PROCESS_KINDS.includes(entry.kind);
     // 跨轮不并段：两段的归属轮次要唯一，否则「停止这一轮」之类的操作没有对象。
     if (process && (!run.length || run[0].runId === entry.runId)) run = [...run, entry];

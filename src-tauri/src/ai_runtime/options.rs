@@ -62,6 +62,9 @@ fn git_trust_root(workspace: &Path) -> Option<std::path::PathBuf> {
 /// `authoritative` 说明这份目录是不是 CLI 自己报的，`remote` 说明取得它要不要走网络，
 /// `cliVersion` 记住是哪一版 CLI 报的。三者决定前端能不能把目录当成事实、以及什么时候
 /// 该重新探测——缺省一律按「未核实」处理，宁可提示也不冒充。
+///
+/// `modes` 是探测失败时的兜底模式表，只够界面渲染，不能当成这版 CLI 的事实；
+/// 真实取值由 `discover_modes` 现问 CLI，见 `modesAuthoritative`。
 pub fn defaults(provider: Provider) -> Value {
     if provider == Provider::Claude {
         json!({"models":[
@@ -70,8 +73,10 @@ pub fn defaults(provider: Provider) -> Value {
             {"id":"fable","name":"Fable","efforts":["low","medium","high","xhigh","max"]},
             {"id":"sonnet","name":"Sonnet","efforts":["low","medium","high","xhigh","max"]},
             {"id":"haiku","name":"Haiku","efforts":[]}
-        ],"customModel":true,"efforts":["low","medium","high","xhigh","max"],"authoritative":false,"remote":false,"cliVersion":null})
-    } else { json!({"models":[],"customModel":true,"efforts":["none","minimal","low","medium","high","xhigh"],"authoritative":false,"remote":false,"cliVersion":null}) }
+        ],"customModel":true,"efforts":["low","medium","high","xhigh","max"],"authoritative":false,"remote":false,"cliVersion":null,
+            "modes":["manual","plan","acceptEdits","auto","dontAsk","bypassPermissions"],"modesAuthoritative":false})
+    } else { json!({"models":[],"customModel":true,"efforts":["none","minimal","low","medium","high","xhigh"],"authoritative":false,"remote":false,"cliVersion":null,
+        "modes":["default","plan"],"modesAuthoritative":false}) }
 }
 
 fn read_document(path: &Path) -> Value {
@@ -110,19 +115,57 @@ fn catalog_from(document: &Value, provider: Provider) -> Value {
             // 用户保存集合独立于发现目录，后台目录重叠不能删除用户配置。
             if !custom_models.contains(&id) { custom_models.push(id.clone()); }
             if !catalog["models"].as_array().unwrap().iter().any(|m| m["id"] == id) {
-                let efforts = defaults(provider)["efforts"].clone();
+                // Claude 的 `--effort` 是会话级参数，别名照给；Codex 的档位属于模型自己，
+                // 我们不知道一个陌生 slug 支持什么，宁可给空列表也不替 CLI 编一份。
+                let efforts = match provider {
+                    Provider::Claude => defaults(provider)["efforts"].clone(),
+                    Provider::Codex => json!([]),
+                };
                 catalog["models"].as_array_mut().unwrap().push(json!({"id":id,"name":id,"efforts":efforts}));
             }
         }
     }
     catalog["customModels"] = json!(custom_models);
+    // 模式表跟模型表同一套规矩：只留合法的 id，整表坏掉就退回内置兜底，
+    // 不能让手改过的缓存把任意字符串送进 CLI 参数。
+    let modes = catalog["modes"].as_array().and_then(|items| {
+        let ids = items.iter().filter_map(Value::as_str).filter(|id| valid_mode_id(id)).map(str::to_owned).collect::<Vec<_>>();
+        (!ids.is_empty()).then_some(ids)
+    });
+    catalog["modes"] = match modes {
+        Some(ids) => json!(ids),
+        None => defaults(provider)["modes"].clone(),
+    };
     // 来源两位加版本号是可选字段：旧缓存或手改的缓存没有它们时按「未核实」补齐，
     // 缺省不能看起来像事实。`remote` 只描述这一次怎么拿到的，不跟着列表落盘。
     catalog["authoritative"] = json!(catalog["authoritative"].as_bool().unwrap_or(false));
     catalog["remote"] = json!(catalog["remote"].as_bool().unwrap_or(false));
+    catalog["modesAuthoritative"] = json!(catalog["modesAuthoritative"].as_bool().unwrap_or(false));
     if !catalog["cliVersion"].as_str().is_some_and(|value| !value.trim().is_empty()) { catalog["cliVersion"] = json!(null); }
     catalog
 }
+/// 「模型清单」里的定制必须在选模型的地方看得见：被排除的官方模型从列表里去掉，
+/// 清单新增的自定义模型按它自己条目的档位补进来。
+/// 这层合并非做不可：Codex 的 `model/list` 根本不读 `model_catalog_json`
+/// （实测把目录裁到只剩一个模型，它照样回 11 条内置项）。
+pub fn apply_picker_patch(catalog: Value, patch: Option<Value>) -> Value {
+    let Some(patch) = patch else { return catalog };
+    let excluded = patch["excluded"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>();
+    let customs = patch["customs"].as_array().cloned().unwrap_or_default();
+    let mut catalog = catalog;
+    let Some(models) = catalog["models"].as_array().cloned() else { return catalog };
+    let mut kept: Vec<Value> = models.into_iter()
+        .filter(|model| !excluded.iter().any(|slug| model["id"].as_str() == Some(slug)))
+        .collect();
+    for custom in customs {
+        let Some(id) = custom["id"].as_str() else { continue };
+        if kept.iter().any(|model| model["id"].as_str() == Some(id)) { continue; }
+        kept.push(json!({"id": id, "name": custom["name"].as_str().unwrap_or(id), "efforts": custom["efforts"].clone()}));
+    }
+    catalog["models"] = json!(kept);
+    catalog
+}
+
 /// 缓存目录是否就是当前这版 CLI 报的：版本一变即失效，升级带出的新模型不必等用户手动刷新。
 pub fn is_current(path: &Path, provider: Provider, version: &str) -> bool {
     let _guard = CATALOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
@@ -141,6 +184,11 @@ pub fn save_models(path: &Path, provider: Provider, catalog: Option<Value>, cust
     let key = provider_key(provider);
     if let Some(catalog) = catalog { document["catalogs"][key] = catalog; }
     if let Some(id) = custom {
+        // Codex 的目录是整份替换：一个能用的高级模型条目要带上下文长度、档位、协议开关，
+        // 裸 ID 只能靠我们猜。所以新增一律走「模型清单」，那里是复制官方条目再改。
+        if provider == Provider::Codex {
+            return Err("Codex 的自定义模型请在下方「模型清单」里添加：复制一个官方条目再改，裸 ID 没有可核实的参数".into());
+        }
         let id = canonical_model(&catalog_from(&document, provider), id);
         validate(provider, Some(&id), None)?;
         if !document["customModels"][key].is_array() { document["customModels"][key] = json!([]); }
@@ -290,6 +338,91 @@ impl PermissionMode {
     }
 }
 
+/// 模式 id 会原样进 CLI 参数，所以只收 CLI 亲口报过的那种形状：首字符是字母，
+/// 其后限字母/数字/下划线/连字符，最长 40。靠白名单不收，而不是靠转义硬塞。
+fn valid_mode_id(value: &str) -> bool {
+    value.len() <= 40
+        && value.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// 这版 CLI 报出的模式取值；探测没成功时退回内置兜底。
+pub fn mode_ids(catalog: &Value, provider: Provider) -> Vec<String> {
+    let discovered = catalog["modes"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).filter(|id| valid_mode_id(id)).map(str::to_owned).collect::<Vec<_>>();
+    if !discovered.is_empty() { return discovered; }
+    defaults(provider)["modes"].as_array().unwrap().iter().filter_map(Value::as_str).map(str::to_owned).collect()
+}
+
+/// 「正常」档的 id：用户记住的模式被 CLI 撤掉时回落到它，而不是回落到 Forge 自己的档名。
+pub fn default_mode_id(provider: Provider) -> &'static str {
+    match provider { Provider::Claude => "manual", Provider::Codex => "default" }
+}
+
+/// 把前端选的档位折成这版 CLI 认的一个模式 id；`requested` 为空表示这是旧请求
+/// （只有 permission/planMode），按旧语义映射。用户明确选过的模式不在 CLI 报过的
+/// 取值里时宁可报错让他重选，也不悄悄换成另一档权限跑起来。
+pub fn canonical_mode(catalog: &Value, provider: Provider, requested: Option<&str>, legacy_plan: bool, legacy: PermissionMode) -> Result<String, String> {
+    let ids = mode_ids(catalog, provider);
+    let allowed = |value: &str| ids.iter().any(|id| id == value);
+    if let Some(value) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+        if !valid_mode_id(value) || !allowed(value) { return Err("当前 CLI 不提供所选模式，请重新选择".into()); }
+        return Ok(value.to_owned());
+    }
+    // Codex 的计划模式过去只有 plan_mode 这一个布尔，权限档是另一条轴，与此无关。
+    let preferred = match provider {
+        Provider::Codex => if legacy_plan { "plan" } else { default_mode_id(provider) },
+        Provider::Claude => if legacy_plan { "plan" } else { legacy.claude() },
+    };
+    let fallback = default_mode_id(provider);
+    Ok(if allowed(preferred) { preferred.to_owned() } else if allowed(fallback) { fallback.to_owned() } else { ids[0].clone() })
+}
+
+/// Codex 的协作模式取值只认 CLI 的「序列化侧」：它能报出什么名字，就真有几个模式。
+///
+/// 反序列化接受的名字不能用。`code`/`custom`/`execute`/`pair_programming` 只是 `default`
+/// 的 serde 别名——实测朝 ephemeral 线程发 `pair_programming`，CLI 回报的是
+/// `mode:"default"` 并注入 "Collaboration Mode: Default" 指令；照收下的名字摆按钮，
+/// 等于给用户四个假的「正常」。`generate-json-schema` 导出的正是序列化侧，
+/// 所以现问一次、读完就删，取值也跟着 CLI 版本一起变。
+fn codex_mode_ids() -> Result<Vec<String>, String> {
+    let dir = std::env::temp_dir().join(format!("forge-codex-schema-{}", std::process::id()));
+    let _cleanup = TempSchemaDir(dir.clone());
+    let out = dir.to_string_lossy().into_owned();
+    let (command, _) = ai_cli::runtime_command(Provider::Codex, &["app-server", "generate-json-schema", "--out", &out])?;
+    crate::ai_cli::process::checked_full(command)?;
+    let schema = read_document(&std::path::Path::new(&out).join("codex_app_server_protocol.v2.schemas.json"));
+    let ids = mode_ids_from_schema(&schema);
+    if ids.is_empty() { return Err("Codex 未报出可用的协作模式".into()); }
+    Ok(ids)
+}
+
+/// `collaborationMode.mode` 的序列化取值就是这版 CLI 真正区分的模式；取不到时交回空表，
+/// 由调用方退回内置档位并把来源写成「未核实」。
+fn mode_ids_from_schema(schema: &Value) -> Vec<String> {
+    schema["definitions"]["ModeKind"]["enum"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).filter(|id| valid_mode_id(id)).map(str::to_owned).collect()
+}
+
+/// 探测目录用完即删：它只是问 CLI 要一份契约文本，不该在临时目录里留 4MB。
+struct TempSchemaDir(std::path::PathBuf);
+impl Drop for TempSchemaDir {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+/// Claude 把可选模式写在 `--help` 的 choices 里；照抄它，CLI 增删档位界面就跟着变。
+fn claude_mode_ids(help: &str) -> Option<Vec<String>> {
+    let block = &help[help.find("--permission-mode")?..].split("\n  --").next()?;
+    let at = block.find("(choices:")? + "(choices:".len();
+    let ids = block[at..].split(')').next()?.split(',')
+        .filter_map(|item| {
+            let id = item.trim().trim_matches('"').trim();
+            valid_mode_id(id).then(|| id.to_owned())
+        })
+        .collect::<Vec<_>>();
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// 从已安装版本的模型目录中找 Fast 的真实 ID，而不是猜测 fast/priority。
 pub fn fast_tier(catalog: &Value, model: Option<&str>) -> Result<(String, String), String> {
     let item = catalog["models"].as_array().and_then(|items| items.iter().find(|item| {
@@ -369,6 +502,36 @@ fn codex_management_process(cwd: &str, operation: &str) -> Result<(Process, Inst
     Ok((process, deadline))
 }
 
+/// 让 Codex 现场读一份模型目录，把它的判决原样带回来：`Ok(())` = 这份目录被接受，
+/// `Err` = CLI 的报错原文（`unknown variant …, expected one of …` / `invalid type: null, …`）。
+///
+/// 只有 `thread/start` 的 `config` 覆盖会真正解析 `model_catalog_json`：实测 0.164.0 里
+/// `codex debug models` 和 `model/list` 都完全不读它（把目录裁到只剩一个模型，两者仍回整份内置表）。
+/// 探测用 `ephemeral` 会话，不落 `~/.codex/sessions`（实测探测前后计数不变）。
+/// `prepare(index)` 负责写出第 index 份目录并返回其绝对路径，这样调用方能一次跑完所有字段而只起一个进程。
+pub fn codex_catalog_probe(cwd: &str, count: usize, prepare: &mut dyn FnMut(usize) -> Result<String, String>) -> Result<Vec<Result<(), String>>, String> {
+    let mut answers = Vec::with_capacity(count);
+    let (mut process, mut deadline) = codex_management_process(cwd, "初始化 Codex 字段探测")?;
+    let mut request_id = 2_u64;
+    for index in 0..count {
+        let outcome = match prepare(index) {
+            Err(error) => Err(error),
+            Ok(path) => {
+                let sent = process.write(&json!({"id":request_id,"method":"thread/start","params":{"cwd":cwd,"ephemeral":true,"config":{"model_catalog_json":path}}}));
+                match sent {
+                    Err(error) => Err(error),
+                    Ok(()) => response(&mut process, request_id, deadline, "探测 Codex 模型目录").map(|_| ()),
+                }
+            }
+        };
+        request_id += 1;
+        // 一轮可能耗掉原来的时限，每轮把截止点往后推，别让最后一个字段背整轮的锅。
+        deadline = Instant::now() + Duration::from_secs(15);
+        answers.push(outcome);
+    }
+    Ok(answers)
+}
+
 /// 使用 Codex /resume 同源的 thread/list 读取会话身份、标题与运行态。
 pub fn codex_threads(cwd: &str) -> Result<Vec<Value>, String> {
     let (mut process, deadline) = codex_management_process(cwd, "初始化 Codex 会话列表")?;
@@ -437,7 +600,50 @@ fn project_config_fields(result: &Value) -> Value {
     json!({
         "model":config["model"], "effort":config["model_reasoning_effort"], "serviceTier":config["service_tier"],
         "permission":permission, "sandboxMode":config["sandbox_mode"], "approvalPolicy":config["approval_policy"],
+        // 附加目录要并进生效策略而不是替换它，所以这几项也得读回来。
+        "sandboxWritableRoots":config["sandbox_workspace_write"]["writable_roots"],
+        "sandboxNetworkAccess":config["sandbox_workspace_write"]["network_access"],
+        "sandboxExcludeTmpdir":config["sandbox_workspace_write"]["exclude_tmpdir_env_var"],
+        "sandboxExcludeSlashTmp":config["sandbox_workspace_write"]["exclude_slash_tmp"],
     })
+}
+
+/// 附加目录在 Codex 侧的落点。`turn/start.sandboxPolicy` 是整份替换而不是追加：
+/// 只把自己想加的目录发过去，会把用户项目里已配的 writable_roots 与 network_access 顶掉，
+/// 所以这里读的必须是 `config/read` 算出来的生效值。
+#[derive(Clone)]
+pub enum SandboxGrant {
+    /// 本轮按这份策略发送。只有 workspace-write 沙箱才有可写根目录这个位置。
+    Policy(Value),
+    /// 完全访问本来就覆盖这些目录，无需再发策略。
+    AlreadyOpen,
+    /// 当前沙箱收不下这些目录。必须把原因说给用户，不能让他点的授权静默蒸发。
+    Unapplied(&'static str),
+}
+
+pub fn codex_sandbox_grant(config: &Value, permission: PermissionMode, dirs: &[String]) -> SandboxGrant {
+    // Inherit 时本轮不发送沙箱覆盖，生效模式只能问 CLI；其余档位由本轮选择直接决定。
+    let mode = if permission == PermissionMode::Inherit { config["sandboxMode"].as_str().unwrap_or("") } else { permission.codex_sandbox() };
+    match mode {
+        "danger-full-access" => SandboxGrant::AlreadyOpen,
+        "read-only" => SandboxGrant::Unapplied("当前权限档是只读沙箱，附加目录本轮不会生效；要写入这些目录请改用「询问」或「自动」档。"),
+        "workspace-write" => {
+            let configured = config["sandboxWritableRoots"].as_array().into_iter().flatten().filter_map(Value::as_str);
+            let mut roots: Vec<String> = Vec::new();
+            for raw in configured.chain(dirs.iter().map(String::as_str)) {
+                let path = raw.trim();
+                if !path.is_empty() && !roots.iter().any(|kept| super::same_workspace_path(kept, path)) { roots.push(path.to_owned()); }
+            }
+            let mut policy = json!({ "type": "workspaceWrite", "writableRoots": roots });
+            // 省略的字段由 CLI 按默认值解释，所以只回填项目里真配过的那几项：
+            // 网络开关若被我们凭空写成 false，等于替用户关掉了联网。
+            if let Some(access) = config["sandboxNetworkAccess"].as_bool() { policy["networkAccess"] = json!(access); }
+            if let Some(value) = config["sandboxExcludeTmpdir"].as_bool() { policy["excludeTmpdirEnvVar"] = json!(value); }
+            if let Some(value) = config["sandboxExcludeSlashTmp"].as_bool() { policy["excludeSlashTmp"] = json!(value); }
+            SandboxGrant::Policy(policy)
+        }
+        _ => SandboxGrant::Unapplied("无法确认 Codex 当前生效的沙箱模式，附加目录本轮未生效；请重新发送以刷新项目配置。"),
+    }
 }
 
 fn project_config_target(result: &Value, cwd: &str) -> (std::path::PathBuf, Option<String>) {
@@ -507,7 +713,19 @@ pub fn models(provider: Provider, cwd: &str) -> Result<Value, String> {
     if provider == Provider::Claude {
         // 这些只是 CLI 的别名，不代表账号一定可用、也不保证背后是哪个具体模型。
         // 为了填一个下拉框不去初始化 Claude 会话——初始化会触发 hooks，代价和副作用都太大。
-        return Ok(defaults(provider));
+        // 模式档位是另一回事：`--help` 只是本地打印文本，现问一次就能让档位跟着 CLI 版本变。
+        let mut catalog = defaults(provider);
+        let discovered = ai_cli::runtime_command(provider, &["--help"])
+            .and_then(|(command, version)| crate::ai_cli::process::checked_full(command).map(|help| (help, version)))
+            .ok()
+            .and_then(|(help, version)| claude_mode_ids(&help).map(|ids| (ids, version)));
+        // 只有模式这一维是 CLI 亲口报的，模型仍然是别名：authoritative 不能跟着一起翻真。
+        if let Some((ids, version)) = discovered {
+            catalog["modes"] = json!(ids);
+            catalog["modesAuthoritative"] = json!(true);
+            catalog["cliVersion"] = json!(version);
+        }
+        return Ok(catalog);
     }
     let (command, version) = ai_cli::runtime_command(provider, &["app-server"])?;
     let mut process = Process::spawn(command, cwd)?;
@@ -524,8 +742,15 @@ pub fn models(provider: Provider, cwd: &str) -> Result<Value, String> {
         models.extend(parse_models(&result)?);
         cursor = result["nextCursor"].clone();
         if cursor.is_null() {
-            // CLI 亲口报的目录才谈得上 authoritative；版本号是它的失效条件。
-            return Ok(json!({"models":models,"customModel":true,"efforts":[],"authoritative":true,"cliVersion":version}));
+            // 模式和模型在同一次刷新里一起问 CLI：CLI 升级后两件事一起跟着变。
+            // 探测失败不判死刑，退回内置档位并把来源写成「未核实」。
+            let (ids, probed) = match codex_mode_ids() {
+                Ok(ids) => (ids, true),
+                Err(_) => (mode_ids(&Value::Null, provider), false),
+            };
+            drop(process);
+            return Ok(json!({"models":models,"customModel":true,"efforts":[],"authoritative":true,"cliVersion":version,
+                "modes":ids,"modesAuthoritative":probed}));
         }
         if !cursor.is_string() || !cursors.insert(cursor.to_string()) {
             return Err("模型分页游标无效".into());
@@ -569,8 +794,10 @@ mod tests {
         let missing: toml::Value = "[projects.'D:/root']".parse().unwrap();
         assert_eq!(project_trust(&missing, "D:/root"), Some(false));
         assert_eq!(project_trust(&missing, "D:/missing"), None);
+        // 只投影沙箱设置，凭据一律不带出：api_key 与 env 必须继续缺席。
         assert_eq!(project_config_fields(&json!({"config":{"model":"chosen","model_reasoning_effort":"high","sandbox_mode":"read-only","approval_policy":"on-request","api_key":"never-return","env":{"TOKEN":"secret"}}})),
-            json!({"model":"chosen","effort":"high","serviceTier":null,"permission":"read","sandboxMode":"read-only","approvalPolicy":"on-request"}));
+            json!({"model":"chosen","effort":"high","serviceTier":null,"permission":"read","sandboxMode":"read-only","approvalPolicy":"on-request",
+                "sandboxWritableRoots":null,"sandboxNetworkAccess":null,"sandboxExcludeTmpdir":null,"sandboxExcludeSlashTmp":null}));
         assert_eq!(project_config_fields(&json!({"config":{"sandbox_mode":"custom-sandbox","approval_policy":"custom-policy"}}))["permission"], "custom");
     }
     #[test]
@@ -583,13 +810,50 @@ mod tests {
         assert_eq!(canonical_model(&merged, "unknown/MixedCase"), "unknown/MixedCase");
     }
     #[test]
+    fn an_unknown_codex_model_gets_no_efforts_because_the_cli_never_reported_any() {
+        // 档位是模型自己的事：Codex 没报过的档位列表不能由我们编一份给界面选。
+        let document = json!({"catalogs":{"codex":{"models":[],"efforts":["none","minimal","low","medium","high","xhigh"]}},"customModels":{"codex":["gw/claude-opus"]}});
+        assert_eq!(catalog_from(&document, Provider::Codex)["models"][0]["efforts"], json!([]));
+        // Claude 的 `--effort` 是会话级参数，与别名指向哪个模型无关，所以照常给全表。
+        let claude = json!({"catalogs":{"claude":{"models":[],"efforts":[]}},"customModels":{"claude":["gw/claude-opus"]}});
+        assert_eq!(catalog_from(&claude, Provider::Claude)["models"][0]["efforts"].as_array().unwrap().len(), 5);
+    }
+    #[test]
+    fn saving_a_bare_codex_model_id_is_redirected_to_the_catalog_editor() {
+        let dir = std::env::temp_dir().join(format!("forge-codex-bare-id-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ai-models.json");
+        let error = save_models(&path, Provider::Codex, None, Some("gw/claude-opus")).unwrap_err();
+        assert!(error.contains("模型清单"), "要把用户领到能填参数的那个入口：{error}");
+        // 已经存着的裸 ID 不能被这次改动清掉：旧配置继续能用，只是不再有添加入口。
+        std::fs::write(&path, r#"{"customModels":{"codex":["gw/claude-opus"]},"catalogs":{"codex":{"models":[],"efforts":[]}}}"#).unwrap();
+        assert_eq!(cached_models(&path, Provider::Codex)["customModels"], json!(["gw/claude-opus"]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn the_model_picker_follows_the_catalog_editor() {
+        let discovered = json!({"models":[{"id":"gpt-5.5","name":"GPT-5.5","efforts":["low"]},{"id":"gpt-6-astra","name":"GPT-6 Astra","efforts":["medium"]}],"efforts":[],"customModels":[]});
+        let patched = apply_picker_patch(discovered.clone(), Some(json!({"excluded":["gpt-6-astra"],"customs":[{"id":"gw/claude-opus","name":"网关 Opus","efforts":["low","high"]}]})));
+        let ids = patched["models"].as_array().unwrap().iter().map(|model| model["id"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["gpt-5.5", "gw/claude-opus"], "排除的要消失、新增的要能选");
+        assert_eq!(patched["models"][1]["name"], "网关 Opus");
+        assert_eq!(patched["models"][1]["efforts"], json!(["low", "high"]));
+        // 没有定制时一个字节都不动；没有清单条目也不给编档位。
+        assert_eq!(apply_picker_patch(discovered.clone(), None), discovered);
+        let bare = apply_picker_patch(discovered.clone(), Some(json!({"excluded":[],"customs":[{"id":"gw/x","name":"X","efforts":[]}]})));
+        assert_eq!(bare["models"].as_array().unwrap().len(), 3);
+    }
+    #[test]
     fn model_cache_preserves_custom_models_across_refresh_and_restart() {
         let dir = std::env::temp_dir().join(format!("forge-model-cache-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let path = dir.join("ai-models.json");
         assert!(cached_models(&path, Provider::Claude)["models"].as_array().unwrap().iter().any(|model| model["id"] == "sonnet"));
-        save_models(&path, Provider::Codex, None, Some("custom-codex")).unwrap();
+        // Codex 的裸 ID 添加入口已经收进「模型清单」，但历史配置必须继续读得到、删得掉。
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, r#"{"customModels":{"codex":["custom-codex"]}}"#).unwrap();
         save_models(&path, Provider::Claude, None, Some("custom-claude")).unwrap();
-        save_models(&path, Provider::Codex, None, Some("custom-codex")).unwrap();
+        assert!(save_models(&path, Provider::Codex, None, Some("another-codex")).is_err());
+        assert_eq!(cached_models(&path, Provider::Codex)["customModels"], json!(["custom-codex"]));
         let discovered = json!({"models":[{"id":"discovered","name":"Discovered","efforts":["high"]}],"efforts":[],"customModel":true});
         let overlap = json!({"models":[{"id":"custom-codex","name":"Custom","efforts":[]}],"efforts":[]});
         save_models(&path, Provider::Codex, Some(overlap), None).unwrap();
@@ -674,6 +938,60 @@ mod tests {
         assert_eq!(PermissionMode::Read.codex_policy(), "on-request");
         assert!(matches!(serde_json::from_value::<PermissionMode>(json!("read")), Ok(PermissionMode::Read)));
         assert!(serde_json::from_value::<PermissionMode>(json!("unknown")).is_err());
+    }
+    /// 帮助文本按列换行，choices 会横跨好几行；必须收全 CLI 报的取值，
+    /// 只认第一行等于把新版 CLI 新增的模式永远藏起来。
+    #[test]
+    fn claude_modes_come_from_the_help_choices_across_wrapped_lines() {
+        let help = "  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: \"acceptEdits\", \"auto\",\n                                        \"bypassPermissions\", \"manual\",\n                                        \"dontAsk\", \"plan\")\n  --profile <name>      another option\n";
+        assert_eq!(claude_mode_ids(help).unwrap(), ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]);
+        assert_eq!(claude_mode_ids("no options here"), None);
+    }
+    /// Codex 的模式取自 CLI 的序列化侧：收得下别名不等于那是个模式。
+    /// 这份 fixture 就是 0.164.0 导出的形状；`code`/`execute`/`pair_programming`/`custom`
+    /// 只在输入侧作为 `default` 的别名存在，混进列表就是给用户摆假档位。
+    #[test]
+    fn codex_modes_come_from_the_serialized_mode_kind() {
+        let schema = json!({"definitions":{
+            "ModeKind":{"enum":["plan","default"],"type":"string"},
+            "CollaborationMode":{"properties":{"mode":{"$ref":"#/definitions/ModeKind"}}}
+        }});
+        assert_eq!(mode_ids_from_schema(&schema), ["plan", "default"]);
+        assert!(mode_ids_from_schema(&json!({"definitions":{"ModeKind":{"enum":[]}}})).is_empty());
+        assert!(mode_ids_from_schema(&json!({})).is_empty());
+    }
+    #[test]
+    fn a_mode_is_sent_only_when_this_cli_reported_it() {
+        let catalog = json!({"modes":["manual","plan","bypassPermissions"]});
+        assert_eq!(canonical_mode(&catalog, Provider::Claude, Some("plan"), false, PermissionMode::Ask).unwrap(), "plan");
+        // 用户记住的模式被新版 CLI 撤掉：报错让他重选，不能悄悄换成另一档权限跑起来。
+        assert!(canonical_mode(&catalog, Provider::Claude, Some("dontAsk"), false, PermissionMode::Ask).is_err());
+        // 不合白名单形状的字符串不参与任何比较，更进不了 argv。
+        assert!(canonical_mode(&catalog, Provider::Claude, Some("--help"), false, PermissionMode::Ask).is_err());
+        // 没带 mode 的旧请求按原语义映射；映射不到就退回这版 CLI 的正常档。
+        assert_eq!(canonical_mode(&catalog, Provider::Claude, None, true, PermissionMode::Ask).unwrap(), "plan");
+        assert_eq!(canonical_mode(&catalog, Provider::Claude, None, false, PermissionMode::Auto).unwrap(), "manual");
+        assert_eq!(canonical_mode(&json!({}), Provider::Codex, None, true, PermissionMode::Inherit).unwrap(), "plan");
+        assert_eq!(canonical_mode(&json!({}), Provider::Codex, None, false, PermissionMode::Full).unwrap(), "default");
+    }
+    #[test]
+    fn granted_dirs_merge_into_the_effective_sandbox_instead_of_replacing_it() {
+        let config = json!({"sandboxMode":"workspace-write","sandboxWritableRoots":["D:\\already"],"sandboxNetworkAccess":true});
+        let granted = vec!["D:\\extra".to_owned(), "D:\\already".to_owned()];
+        let SandboxGrant::Policy(policy) = codex_sandbox_grant(&config, PermissionMode::Inherit, &granted) else {
+            panic!("workspace-write 沙箱必须给出策略");
+        };
+        // 项目里已配的可写根目录不能被一次授权顶掉，重复的那条只留一份。
+        assert_eq!(policy["writableRoots"], json!(["D:\\already", "D:\\extra"]));
+        // 省略字段会被 CLI 按默认值解释：网络开关不回填，就等于替用户关掉联网。
+        assert_eq!(policy["networkAccess"], json!(true));
+        assert!(policy.get("excludeSlashTmp").is_none());
+        // 本轮显式选择压过项目配置：只读档收不下这些目录，但要说清楚，不能静默丢弃。
+        assert!(matches!(codex_sandbox_grant(&config, PermissionMode::Read, &granted), SandboxGrant::Unapplied(_)));
+        // 完全访问本来就覆盖这些目录，再发一份策略是多余且更窄的覆盖。
+        assert!(matches!(codex_sandbox_grant(&config, PermissionMode::Full, &granted), SandboxGrant::AlreadyOpen));
+        // Inherit 且生效模式读不出来时按最窄处理：不发策略，也不假装成功。
+        assert!(matches!(codex_sandbox_grant(&json!({}), PermissionMode::Inherit, &granted), SandboxGrant::Unapplied(_)));
     }
     #[test]
     fn claude_custom_models_survive_configured_mappings() {

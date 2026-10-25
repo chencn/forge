@@ -34,10 +34,11 @@ describe("aiRetry 的回合判定", () => {
     const failed = task("r1", "failed", { prompt: "写个测试" });
     expect(turnAction(state([failed], "failed", true), "retry").reason).toBe("ai.chat.turnActionStopping");
   });
-  it("还没开跑的任务走「立即运行」，这里不出现第三个按钮", () => {
-    for (const status of ["submitting", "queued", "waitingExternal"] as const) {
+  it("后端队列项走「立即运行」，连接中的任务只等待握手或中断", () => {
+    for (const status of ["queued", "waitingExternal"] as const) {
       expect(turnAction(state([task("r1", status, { prompt: "排队的问题" })]), "retry").reason).toBe("ai.chat.turnActionQueued");
     }
+    expect(turnAction(state([task("r1", "submitting", { prompt: "连接中的问题" })]), "retry").reason).toBe("ai.chat.turnActionNotFinished");
   });
   it("没有原文就没有可重发的内容", () => {
     for (const prompt of [undefined, "", "   "]) {

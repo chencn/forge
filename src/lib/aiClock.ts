@@ -84,6 +84,13 @@ export function formatAiClock(ms: number): string {
 /** 参考实现的取舍：不足 10 秒的运行不显示时钟——数字跳得太快只是噪音。 */
 export const AI_CLOCK_AFTER_MS = 10000;
 
+/** 与参考实现相同的短耗时格式：`3.2s` / `45s`。不到一秒或负数没有可说的，返回 null。 */
+export function formatAiSeconds(ms: number): string | null {
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const seconds = ms / 1000;
+  return `${seconds >= 10 ? Math.round(seconds) : seconds.toFixed(1)}s`;
+}
+
 /** 供测试重置。 */
 export function __resetAiClockForTest() {
   arrivals.clear();

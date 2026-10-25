@@ -36,8 +36,8 @@ Forge 通过 Rust 子进程接入本机 Codex app-server 与 Claude Code JSON �
 - 计划模式：输入框设置芯片新增「计划模式」。Codex 通过 `collaborationMode`（实验能力，只在计划/决策回合开启）进行规划，完成的 `plan` item 成为可审阅卡片；Claude 以 `--permission-mode plan` 加只读工具白名单运行，不产生类型化审阅记录，计划正文按普通回复展示。
 - Codex 计划审阅：审核卡固定在输入框上方，支持批准执行、要求修改（必填反馈）与暂不执行。批准/修改走会话目录下 `plans.json` 的版本与 CAS；决策回合启动前用 `thread/turns/list` 重新核对计划 id 与正文指纹，正文变化即过期，绝不执行已变化的计划。批准 ≠ 执行成功，执行状态单独记录。双击或两个窗口只有一个提交者。
 - Claude 后台任务：`background_tasks_changed` 与 `task_notification` 进入事件流；仍有后台任务时回合结束不杀进程，界面显示后台任务条。任务结束后 CLI 自己退出或补发后续回合；用户在此窗口发的新消息仍排在同一会话队列里，等这一轮收尾后按 `--resume` 启动，而不是写进正在驻留的进程。
-- 权限拒绝与额外目录：headless 下被权限系统拒绝的工具结果会变成可行动提示；确认后把真实目录记入本会话的附加目录，下一轮以 `--add-dir` 生效。Codex 暂不支持附加目录。
-- MCP 快照：Claude `system/init` 报告的已加载 MCP 服务与工具名进入会话快照，只读展示；Forge 不向会话注入任意 MCP 命令。
+- 权限拒绝与额外目录：headless 下被权限系统拒绝的工具结果会变成可行动提示；确认后把真实目录记入本会话的附加目录，下一轮 Claude 以 `--add-dir` 生效，Codex 以 `turn/start` 的沙箱策略 `writableRoots` 生效，并与项目里已配的可写根目录、网络开关合并而不是替换。Codex 当前是只读沙箱时收不下这些目录，会在时间线里说明原因，不静默丢弃；完全访问本就覆盖这些目录。Codex 主动申请扩大权限时不再静默拒绝：进审批卡，批准等于原样授予它申请的那份，且没有工具名就没有「本轮不再询问」——Forge 不替 CLI 记住越权。
+- MCP 快照：会话底部列出本次实际加载的 MCP 服务与状态——Claude 取 `system/init` 报告的那份，Codex 在回合起来后问 `mcpServerStatus/list` 拿全表、再由启动状态通知逐台改写后整表重发；探测失败或报空时整块不出现，不摆空表。只读展示，Forge 不向会话注入任意 MCP 命令。
 - MCP 管理与市场：本地页读写 Claude `~/.claude.json` 与 Codex `config.toml` 的原生条目；市场支持官方 MCP registry 与 Smithery，列表固定 `version=latest` 并按完整服务器名去重。详情从 registry 读取全部安装方式（npm、pypi、包内远程、独立远程、Smithery 连接），展示协议、版本、验证、部署与使用量；安装参数按 env / header / query / argv 的位置写入，必填缺失拒绝安装，Codex 不提供 SSE。安装后使用 registry 的完整名称作为本地配置键，配置 JSON 可在安装前编辑。
 - Codex 异步提问：AgentMessage 上的问题转成提问卡，回答通过 `turn/steer` 写入当前回合，不复用普通授权回包。
 - 以上能力均只接受受限的结构化参数；计划审批 id、版本、决策与反馈由前端提交，执行指令、原生计划和路径解析全部留在后端。

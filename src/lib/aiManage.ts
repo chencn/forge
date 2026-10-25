@@ -20,6 +20,12 @@ export interface ModelProvider {
 
 export const CLAUDE_MODEL_SLOTS = ["main", "reasoning", "haiku", "sonnet", "opus", "fable"] as const;
 export type ClaudeModelSlot = (typeof CLAUDE_MODEL_SLOTS)[number];
+/**
+ * 自定义模型选项：在 CLI 的 /model 选择器里多出来的那一项（值 / 显示名 / 说明），
+ * 用来点名网关自己提供的模型。它和六个槽位一样属于供应商，随同一次「应用」写进 CLI。
+ */
+export const CLAUDE_CUSTOM_SLOTS = ["customOption", "customOptionName", "customOptionDescription"] as const;
+export type ClaudeCustomSlot = (typeof CLAUDE_CUSTOM_SLOTS)[number];
 
 export function emptyModelProvider(kind: AiProvider): ModelProvider {
   return {
@@ -152,9 +158,10 @@ export function skillHasFrontMatter(content: string): boolean {
 }
 
 /**
- * Codex 模型清单。`model_catalog_json` 是**整份替换**语义（实测指向单模型文件后
- * `codex debug models` 只回那一个），所以后端必须在 Codex 原始条目上做稀疏覆盖。
- * 下面的取值域全部是 Codex 0.164.0 实测能原样回显的值；写未知枚举会被整份拒掉。
+ * Codex 模型清单。`model_catalog_json` 是**整份替换**语义（实测 0.164.0 指到 `{"models":[]}`
+ * 时 `thread/start` 直接拒绝：must contain at least one model），所以后端必须在 Codex 原始条目上
+ * 做稀疏覆盖。枚举取值域与「能不能清除」都不写死：后端现场问 Codex，结果随 CLI 版本缓存，
+ * 问不到时才退回下面这份按 0.164.0 实测抄录的兜底表，并在界面上标成未核实。
  */
 export interface CodexModelOverride {
   toolMode?: string | null;
@@ -168,15 +175,28 @@ export interface CodexModelOverride {
   visibility?: string | null;
   contextWindow?: number | null;
   maxContextWindow?: number | null;
+  /** 系统提示词：空值等于「不覆盖」，Codex 条目自带的那段文本会原样留着。 */
+  baseInstructions?: string | null;
   flags: Record<string, boolean>;
+}
+
+/** 后端实测出来的一个枚举字段的规则。 */
+export interface CodexFieldDomain {
+  /** Codex 亲口报的合法取值（`verified` 为假时是兜底表）。 */
+  values: string[];
+  /** 能不能选「清除」：往 Codex 的非可选字段写 null 会让整份目录被拒。 */
+  nullable: boolean;
+  verified: boolean;
 }
 
 export interface CodexCustomModel {
   slug: string;
   displayName: string;
   description: string;
-  /** 复制哪个官方条目的参数；后端要求它必须存在于原始目录。 */
+  /** 复制哪个官方条目的参数；空或对不上快照时回退到 priority 最小的官方条目。 */
   base: string;
+  /** 手写的上下文长度；写进条目并抬高 max_context_window。 */
+  contextWindow?: number;
   overrides: CodexModelOverride;
 }
 
@@ -184,6 +204,7 @@ export interface CodexCatalogIntent {
   excluded: string[];
   overrides: Record<string, CodexModelOverride>;
   customs: CodexCustomModel[];
+  default?: string;
 }
 
 export interface CodexCatalogView {
@@ -198,30 +219,126 @@ export interface CodexCatalogView {
   models: Record<string, unknown>[];
   /** 被排除的原始条目：界面要能显示“是哪个模型被放出去了”，否则没法放回。 */
   hidden: Record<string, unknown>[];
+  /** 按目录字段名给的取值域，界面所有的下拉都从这里取。 */
+  domains: Record<string, CodexFieldDomain>;
+  /** 这一版 Codex 还认的布尔开关；后端探测失败时是整张候选表。 */
+  flags: string[];
+  /** `flags` 是不是现问的；为假时界面要标未核实。 */
+  flagsVerified: boolean;
 }
 
+/** 兜底取值域：只在后端问不到 Codex 时用，界面会标成「未核实」。 */
 export const CODEX_TOOL_MODES = ["direct", "code_mode", "code_mode_only"];
 export const CODEX_MULTI_AGENT_VERSIONS = ["v1", "v2"];
 export const CODEX_REASONING_SUMMARIES = ["auto", "concise", "detailed", "none"];
 export const CODEX_VERBOSITIES = ["low", "medium", "high"];
-export const CODEX_SHELL_TYPES = ["unified_exec", "disabled"];
+export const CODEX_SHELL_TYPES = ["default", "local", "shell_command", "unified_exec", "disabled"];
 export const CODEX_APPLY_PATCH_TYPES = ["freeform"];
 export const CODEX_WEB_SEARCH_TYPES = ["text", "text_and_image"];
-export const CODEX_VISIBILITIES = ["list", "hide"];
-/** 实测会被原样回显的开关；`supports_parallel_tool_calls` 等在 0.164 已是被忽略的死键，不提供。 */
+export const CODEX_VISIBILITIES = ["list", "hide", "none"];
+/** 开关候选表：实际显示哪些由后端探测结果决定（`view.flags`）。 */
 export const CODEX_MODEL_FLAGS = [
+  "use_responses_lite",
+  "supports_image_detail_original",
   "support_verbosity",
   "supports_search_tool",
-  "supports_image_detail_original",
   "include_apps_usage_instructions",
   "include_plugin_usage_instructions",
   "include_skills_usage_instructions",
-  "use_responses_lite",
+  "supports_reasoning_summary_parameter",
 ] as const;
-export type CodexModelFlag = (typeof CODEX_MODEL_FLAGS)[number];
+
+/**
+ * 走 OpenAI 兼容网关时要改的五件事：Codex 对自己的 GPT 用的是私有方言（代码模式、
+ * 多智能体、apply_patch、responses-lite、原图细节），第三方端点只认标准 Responses。
+ * 这是「能不能连通」的分水岭，所以做成一键预设，而不是让用户在八个开关里自己猜。
+ */
+const CODEX_COMPAT_ENUMS: CodexEnumKey[] = ["toolMode", "multiAgentVersion", "applyPatchToolType"];
+const CODEX_COMPAT_FLAGS = ["use_responses_lite", "supports_image_detail_original"];
+
+/** 下拉里「跟随 Codex」和「显式清除」是两个不同状态，不能都塞成空串：前者不写键，后者写 null。 */
+export const CODEX_INHERIT = "\u0000inherit";
+export const CODEX_CLEAR = "\u0000clear";
 
 export function emptyCodexModelOverride(): CodexModelOverride {
   return { flags: {} };
+}
+
+/** 清单里渲染成下拉的目录字段；`key` 是覆盖项字段名，`field` 是 Codex 目录里的键名。 */
+export type CodexEnumKey = "toolMode" | "multiAgentVersion" | "defaultReasoningSummary"
+  | "defaultVerbosity" | "shellType" | "applyPatchToolType" | "webSearchToolType" | "visibility";
+
+const CODEX_ENUM_FIELDS: Record<CodexEnumKey, string> = {
+  toolMode: "tool_mode",
+  multiAgentVersion: "multi_agent_version",
+  defaultReasoningSummary: "default_reasoning_summary",
+  defaultVerbosity: "default_verbosity",
+  shellType: "shell_type",
+  applyPatchToolType: "apply_patch_tool_type",
+  webSearchToolType: "web_search_tool_type",
+  visibility: "visibility",
+};
+
+/** 兜底表：按 Codex 0.164.0 实测抄录，只在后端问不到这一版 CLI 时用。 */
+const CODEX_ENUM_FALLBACK: Record<CodexEnumKey, { values: string[]; nullable: boolean }> = {
+  toolMode: { values: CODEX_TOOL_MODES, nullable: true },
+  multiAgentVersion: { values: CODEX_MULTI_AGENT_VERSIONS, nullable: true },
+  defaultReasoningSummary: { values: CODEX_REASONING_SUMMARIES, nullable: false },
+  defaultVerbosity: { values: CODEX_VERBOSITIES, nullable: true },
+  shellType: { values: CODEX_SHELL_TYPES, nullable: false },
+  applyPatchToolType: { values: CODEX_APPLY_PATCH_TYPES, nullable: true },
+  webSearchToolType: { values: CODEX_WEB_SEARCH_TYPES, nullable: false },
+  visibility: { values: CODEX_VISIBILITIES, nullable: false },
+};
+
+/** 取值域优先用后端实测的；没探到的字段退回兜底表并标成未核实。 */
+export function codexFieldDomain(view: CodexCatalogView | null, key: CodexEnumKey): CodexFieldDomain {
+  const found = view?.domains?.[CODEX_ENUM_FIELDS[key]];
+  if (found && Array.isArray(found.values) && found.values.length) {
+    return { values: found.values, nullable: found.nullable === true, verified: found.verified === true };
+  }
+  const fallback = CODEX_ENUM_FALLBACK[key];
+  return { values: [...fallback.values], nullable: fallback.nullable, verified: false };
+}
+
+/** 条目当前的实际取值（覆盖项优先，否则是基础条目自带的）；空串是「显式清除」，等于没有值。 */
+function effectiveEnum(item: CodexModelOverride, key: CodexEnumKey, base: Record<string, unknown> | undefined): unknown {
+  const value = item[key];
+  if (value === "") return null;
+  if (value !== undefined && value !== null) return value;
+  return base?.[CODEX_ENUM_FIELDS[key]] ?? null;
+}
+
+/** 这一条是不是已经等于兼容网关需要的样子——按值判断，不另外记一个标记位。
+ *  开关缺省算「未定」而不是 false：Codex 的默认值由它自己定，只有条目里写死了 false 才算已经兼容。 */
+export function isCodexCompatModel(model: CodexCustomModel, base: Record<string, unknown> | undefined): boolean {
+  const item = model.overrides ?? emptyCodexModelOverride();
+  return CODEX_COMPAT_ENUMS.every((key) => effectiveEnum(item, key, base) === null)
+    && CODEX_COMPAT_FLAGS.every((field) => (item.flags?.[field] ?? base?.[field]) === false);
+}
+
+/**
+ * 套上/取下兼容预设。和清单别处一样是稀疏写法：基础条目已经等于目标值的字段不记覆盖项，
+ * 取下预设时也只撤自己写过的键，用户另外设过的东西一律不碰。
+ */
+export function applyCodexCompatPreset(model: CodexCustomModel, base: Record<string, unknown> | undefined, enabled: boolean): CodexModelOverride {
+  const next: CodexModelOverride = { ...model.overrides, flags: { ...(model.overrides?.flags ?? {}) } };
+  for (const key of CODEX_COMPAT_ENUMS) {
+    if (enabled) {
+      // 空串在清单里就是「显式清除」；基础条目本来没有值时不必记这条覆盖。
+      if (effectiveEnum(next, key, base) !== null) next[key] = "";
+      else delete next[key];
+    } else delete next[key];
+  }
+  for (const field of CODEX_COMPAT_FLAGS) {
+    // 缺省不当成 false：Codex 的默认值只有写进条目才算数，所以「条目里没有」也要显式钉上 false。
+    const current = next.flags[field] ?? base?.[field];
+    if (enabled) {
+      if (current !== false) next.flags[field] = false;
+      else delete next.flags[field];
+    } else delete next.flags[field];
+  }
+  return next;
 }
 
 export function emptyCodexCatalogIntent(): CodexCatalogIntent {
@@ -235,7 +352,8 @@ export function normalizeCodexCatalogIntent(intent: CodexCatalogIntent): string 
     const fields: Record<string, string | number> = {};
     for (const [key, value] of Object.entries(source)) {
       if (key === "flags") continue;
-      if (value === undefined || value === null || value === "") continue;
+      // 空串是「显式清除」（后端写 null），和没填不一样，必须在归一化里留着。
+      if (value === undefined || value === null) continue;
       fields[key] = value as string | number;
     }
     const flags: Record<string, boolean> = {};
@@ -246,13 +364,98 @@ export function normalizeCodexCatalogIntent(intent: CodexCatalogIntent): string 
   };
   const overrides: Record<string, unknown> = {};
   for (const slug of Object.keys(intent.overrides ?? {}).sort()) overrides[slug] = override(intent.overrides[slug]);
-  return JSON.stringify({
+  const customs = [...(intent.customs ?? [])]
+    .sort((left, right) => left.slug.localeCompare(right.slug))
+    .map((item) => {
+      const entry: Record<string, unknown> = {
+        slug: item.slug,
+        displayName: item.displayName.trim(),
+        description: item.description.trim(),
+        base: item.base,
+        overrides: override(item.overrides),
+      };
+      if (item.contextWindow !== undefined && item.contextWindow !== null && item.contextWindow > 0) {
+        entry.contextWindow = item.contextWindow;
+      }
+      return entry;
+    });
+  const normalized: Record<string, unknown> = {
     excluded: [...(intent.excluded ?? [])].sort(),
     overrides,
-    customs: [...(intent.customs ?? [])]
-      .sort((left, right) => left.slug.localeCompare(right.slug))
-      .map((item) => ({ slug: item.slug, displayName: item.displayName.trim(), description: item.description.trim(), base: item.base, overrides: override(item.overrides) })),
-  });
+    customs,
+  };
+  if (intent.default && intent.default.trim()) {
+    normalized.default = intent.default.trim();
+  }
+  return JSON.stringify(normalized);
+}
+
+/** 从供应商 model 字符串解析意图，支持新意图 JSON、老 models 数组与裸 slug。 */
+export function parseCodexCatalogIntent(raw: string | undefined | null): CodexCatalogIntent {
+  if (!raw || !raw.trim()) return emptyCodexCatalogIntent();
+  const trimmed = raw.trim();
+  try {
+    const value = JSON.parse(trimmed);
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if ("customs" in value || "excluded" in value || "overrides" in value) {
+        return {
+          excluded: Array.isArray(value.excluded) ? value.excluded.map(String) : [],
+          overrides: value.overrides && typeof value.overrides === "object" ? value.overrides : {},
+          customs: Array.isArray(value.customs) ? value.customs.map((c: any) => ({
+            slug: String(c.slug ?? ""),
+            displayName: String(c.displayName ?? c.display_name ?? ""),
+            description: String(c.description ?? ""),
+            base: String(c.base ?? c.slug ?? ""),
+            contextWindow: typeof c.contextWindow === "number" ? c.contextWindow : (typeof c.context_window === "number" ? c.context_window : undefined),
+            overrides: c.overrides ?? emptyCodexModelOverride(),
+          })) : [],
+          default: typeof value.default === "string" ? value.default : undefined,
+        };
+      }
+      if (Array.isArray(value.models)) {
+        return {
+          excluded: [],
+          overrides: {},
+          customs: value.models.map((m: any) => ({
+            slug: String(m.slug ?? ""),
+            displayName: String(m.displayName ?? m.display_name ?? ""),
+            description: String(m.description ?? ""),
+            base: String(m.base ?? m.slug ?? ""),
+            contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
+            overrides: m.overrides ?? emptyCodexModelOverride(),
+          })),
+          default: typeof value.default === "string" ? value.default : undefined,
+        };
+      }
+    }
+    if (typeof value === "string" && value.trim()) {
+      const slug = value.trim();
+      return {
+        excluded: [],
+        overrides: {},
+        customs: [{ slug, displayName: "", description: "", base: slug, overrides: emptyCodexModelOverride() }],
+        default: slug,
+      };
+    }
+  } catch {
+    // 裸 slug 文本
+    return {
+      excluded: [],
+      overrides: {},
+      customs: [{ slug: trimmed, displayName: "", description: "", base: trimmed, overrides: emptyCodexModelOverride() }],
+      default: trimmed,
+    };
+  }
+  return emptyCodexCatalogIntent();
+}
+
+export function serializeCodexCatalogIntent(intent: CodexCatalogIntent): string {
+  const hasContent = (intent.customs && intent.customs.length > 0)
+    || (intent.excluded && intent.excluded.length > 0)
+    || (intent.overrides && Object.keys(intent.overrides).length > 0)
+    || !!intent.default;
+  if (!hasContent) return "";
+  return JSON.stringify(intent, null, 2);
 }
 
 export function catalogIntentEquals(left: CodexCatalogIntent, right: CodexCatalogIntent): boolean {
@@ -273,6 +476,11 @@ export function readAiCliCodexCatalog(): Promise<CodexCatalogView> {
 
 export function saveAiCliCodexCatalog(intent: CodexCatalogIntent): Promise<CodexCatalogView> {
   return invoke<CodexCatalogView>("ai_cli_codex_catalog_save", { intent });
+}
+
+/** 按需取某个条目自带的系统提示词：整份目录里它占两成体积，不跟着列表一起塞给界面。 */
+export function readAiCliCodexCatalogText(slug: string): Promise<string | null> {
+  return invoke<string | null>("ai_cli_codex_catalog_text", { slug });
 }
 
 /** 市场来源：官方 MCP registry 与 Smithery。 */

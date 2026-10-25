@@ -6,8 +6,8 @@ export interface AiCommandCatalog { commands: AiCommand[]; terminal: string[] }
 export type LocalCommand = "help" | "model" | "effort" | "permissions" | "fast" | "context" | "settings";
 export interface CommandSuggestion extends AiCommand { local?: LocalCommand; hintKey?: string }
 const localNames: LocalCommand[] = ["help", "model", "effort", "permissions", "fast", "context", "settings"];
-// read 是 Codex 的只读项目权限；Claude 会在执行命令时按自身支持范围拒绝它。
-const hints: Record<LocalCommand, string> = { help: "", model: "[model-id | default]", effort: "[level | default]", permissions: "[read | ask | auto | full]", fast: "[on | off]", context: "", settings: "" };
+// 参数按这版 CLI 的模式原话匹配（read/ask/auto/full 仍是 Codex 的沙箱档、Claude 的旧别名）。
+const hints: Record<LocalCommand, string> = { help: "", model: "[model-id | default]", effort: "[level | default]", permissions: "[plan | default | read | ask | auto | full]", fast: "[on | off]", context: "", settings: "" };
 
 export function normalizeCommandCatalog(data: Record<string, unknown>): AiCommandCatalog | undefined {
   if (!Array.isArray(data.commands)) return undefined;

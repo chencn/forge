@@ -31,7 +31,8 @@ describe("AiToolSummary 的文件路径", () => {
         }),
       })
     );
-    expect(html).toContain('class="ai-file-target ai-tool-name"');
+    expect(html).toContain('<span class="ai-file-target ai-tool-name"');
+    expect(html).not.toContain('<button');
     expect(html).toContain('title="D:/repo/a.ts:12"');
   });
 
@@ -49,6 +50,8 @@ describe("AiToolSummary 的文件路径", () => {
         }),
       })
     );
+    expect(html).toContain('<span class="ai-file-target ai-tool-name"');
+    expect(html).not.toContain('<button');
     expect(html).toContain('title="src/a.ts:44"');
   });
 

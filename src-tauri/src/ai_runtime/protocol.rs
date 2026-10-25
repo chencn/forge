@@ -58,6 +58,9 @@ pub trait Protocol: Send {
     fn context_timeout(&mut self) -> Vec<Action> { vec![] }
     /// 中断当前回合；返回要发给 CLI 的收尾动作。
     fn interrupt(&mut self) -> Vec<Action>;
+    /// CLI 已确认本轮用户输入并建立原生回合。初始化回包不算：只有到这个边界以后，
+    /// 管道断开才允许按“运行中失联”恢复，也只有这时才能把 Forge 状态写成 running。
+    fn turn_started(&self) -> bool { false }
     /// 回合已经交还给用户，但进程仍留在原地等后台任务自发的后续回合。
     /// 运行时据此区分「卡死」和「有事在跑」：前者要报错，后者不能报错也不能重发。
     fn parked(&self) -> bool {

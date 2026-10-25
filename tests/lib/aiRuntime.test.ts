@@ -14,6 +14,102 @@ beforeEach(() => {
 });
 
 describe("AI runtime event store", () => {
+  it("压缩身份延迟关联时合并已有卡片，增量与重放一致", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const first = [event(1, "compaction", { episodeId: "run:1", status: "running" }),
+      event(2, "compaction", { summaryId: "native-1", text: "摘要", status: "completed" }, "native")];
+    const linked = event(3, "compaction", { episodeId: "run:1", summaryId: "native-1", text: "摘要", status: "completed" }, "native");
+    for (const state of [projectAiEvents([...first, linked]), projectAiEvents([linked], projectAiEvents(first), true)]) {
+      expect(state.entries).toHaveLength(1);
+      expect(state.entries[0]).toMatchObject({ text: "摘要", input: { episodeId: "run:1", summaryId: "native-1", status: "completed" } });
+    }
+  });
+  it("原生压缩边界和随后摘要合为一张卡，下一次压缩独立保留", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const state = projectAiEvents([
+      event(1, "compaction", { metadata: { preTokens: 100 } }, "native"),
+      event(2, "compaction", { summaryId: "s1", text: "相同摘要", status: "completed" }, "native"),
+      event(3, "compaction", { metadata: { preTokens: 200 } }, "native"),
+      event(4, "compaction", { summaryId: "s2", text: "相同摘要", status: "completed" }, "native"),
+    ]);
+    expect(state.entries).toHaveLength(2);
+    expect(state.entries.map((entry) => entry.input)).toMatchObject([
+      { summaryId: "s1", metadata: { preTokens: 100 } }, { summaryId: "s2", metadata: { preTokens: 200 } },
+    ]);
+  });
+  it.each(["approve", "requestChanges"] as const)("计划 %s 保留当前执行设置", async (decision) => {
+    const api = await import("../../src/lib/aiRuntime");
+    await api.decideAiPlan(session, "D:/project", { planId: "p", revision: 1 } as never, decision, "修改反馈",
+      { model: "selected", effort: "high", permission: "auto", fast: true }, ["D:/extra"]);
+    const request = h.invoke.mock.calls.find(([command]) => command === "ai_runtime_send")?.[1]?.request;
+    expect(request).toMatchObject({ model: "selected", effort: "high", permission: "auto", fast: true, additionalDirs: ["D:/extra"], prompt: "", plan: { decision } });
+  });
+  it("未开启 Fast 时明确发送 false", async () => {
+    const api = await import("../../src/lib/aiRuntime");
+    await api.sendAiMessage(session, "D:/project", "hello", true);
+    expect(h.invoke.mock.calls.find(([command]) => command === "ai_runtime_send")?.[1]?.request.fast).toBe(false);
+  });
+  it("刷新恢复的运行摘要在翻旧页后不会退回排队", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(2, "status", { status: "queued", prompt: "待执行" }));
+    h.invoke.mockResolvedValueOnce({ events: [event(600, "text", { id: "m", text: "已执行" })], hasOlder: true, nextSeq: 600,
+      latestSeq: 600, latestRunId: "run", status: "running", activeTasks: [{ runId: "run", status: "running", seq: 2 }] });
+    await runtime.loadAiMessages(session.id, "D:/project", true);
+    h.invoke.mockResolvedValueOnce({ events: [event(1, "user", { text: "待执行" })], hasOlder: false, nextSeq: 1 });
+    await runtime.loadOlderAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id).tasks).toMatchObject([{ status: "running", started: true }]);
+    emit(event(601, "status", { status: "completed" }));
+    expect(runtime.useAiRuntime(session.id).tasks).toMatchObject([{ status: "completed", started: true }]);
+  });
+  it("停止命令返回但没有终态事件时保持停止中，不伪造已取消", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(1, "user", { text: "问题" }), event(2, "status", { status: "queued" }));
+    let resolve!: () => void;
+    h.invoke.mockImplementation(() => new Promise<void>((done) => { resolve = done; }));
+    const stopping = runtime.stopAiRun("run");
+    emit(event(3, "status", { status: "running" }));
+    resolve();
+    await stopping;
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "running", stopping: true,
+      tasks: [{ status: "running", started: true }] });
+  });
+  it("发送已受理但 CLI 尚未确认时保持 submitting", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ status: "submitting" });
+    await runtime.sendAiMessage(session, "D:/project", "等待 CLI", true);
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "submitting", tasks: [{ status: "submitting", prompt: "等待 CLI" }] });
+    expect(runtime.getAiOwnedRunId(session.id)).not.toBeNull();
+    expect(runtime.getAiOwnedQueuedRunIds(session.id)).toEqual([]);
+  });
+  it("原生历史尚未补齐时自动续读，不需要用户点击更早记录才能看到压缩摘要", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ events: [event(10, "message", { text: "最新回复" })], hasOlder: true, hasMore: true, nextSeq: 10, nativeId: "native" })
+      .mockResolvedValueOnce({ events: [event(11, "compaction", { summaryId: "native-1", text: "完整摘要", status: "completed" })], hasOlder: false, hasMore: false, nextSeq: 11, nativeId: "native" });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id).entries.map((entry) => entry.text)).toContain("完整摘要");
+    expect(h.invoke).toHaveBeenNthCalledWith(2, "ai_runtime_load", expect.objectContaining({ afterSeq: 10 }));
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ cursor: 10, hasOlder: true, loading: false });
+  });
+  it("原生续读游标不前进时停止并报告错误，避免无休止请求", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    const page = { events: [event(10, "compaction", { text: "摘要" })], hasOlder: false, hasMore: true, nextSeq: 10, nativeId: "native" };
+    h.invoke.mockResolvedValue(page);
+    await expect(runtime.loadAiMessages(session.id, "D:/project")).rejects.toThrow("没有推进游标");
+    expect(h.invoke).toHaveBeenCalledTimes(2);
+    expect(runtime.useAiRuntime(session.id).loading).toBe(false);
+  });
+  it("摘要续读失败不撤销首屏的向前分页能力", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ events: [event(10, "compaction", { text: "摘要" })], hasOlder: true, hasMore: true, nextSeq: 10, nativeId: "native" })
+      .mockRejectedValueOnce(new Error("同步失败"));
+    await expect(runtime.loadAiMessages(session.id, "D:/project")).rejects.toThrow("同步失败");
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ cursor: 10, hasOlder: true, loading: false, error: "Error: 同步失败" });
+    h.invoke.mockResolvedValueOnce({ events: [event(1, "user", { text: "最早的问题" })], hasOlder: false, nextSeq: 1 });
+    await runtime.loadOlderAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id).entries.map((entry) => entry.text)).toContain("最早的问题");
+  });
   it("keeps structured tool output, patch updates and cancellation as separate facts", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");
     const result = { file: { filePath: "a.ts", content: "a\nb", startLine: 10, numLines: 2 }, type: "text" };
@@ -45,10 +141,13 @@ describe("AI runtime event store", () => {
   });
   it("tracks external occupancy per session and recovers after release", async () => {
     const api = await import("../../src/lib/aiRuntime");
-    h.invoke.mockResolvedValueOnce([{ sessionId: "external-session", state: "external", queuedCount: 2 }, { sessionId: "other", state: "external" }]);
+    h.invoke.mockResolvedValueOnce([{ sessionId: "external-session", state: "external", queuedCount: 2,
+      activeRunId: null, queuedRunIds: ["owned-a", "owned-b"] }, { sessionId: "other", state: "external" }]);
     await api.refreshAiSessionActivity("D:/project", ["external-session", "idle-session"]);
     expect(api.getAiSessionActivity("external-session")).toBe("external");
     expect(api.getAiQueuedCount("external-session")).toBe(2);
+    expect(api.getAiOwnedRunId("external-session")).toBeNull();
+    expect(api.getAiOwnedQueuedRunIds("external-session")).toEqual(["owned-a", "owned-b"]);
     expect(api.getAiSessionActivity("idle-session")).toBe("idle");
     expect(api.getAiSessionActivity("other")).toBe("idle");
     expect(api.hasAiProjectActivity("d:/PROJECT")).toBe(true);
@@ -71,6 +170,28 @@ describe("AI runtime event store", () => {
     await api.refreshAiSessionActivity("D:/project", [session.id]);
     expect(api.getAiSessionActivity(session.id)).toBe("conflict");
     expect(api.isAiSessionRunning(session.id)).toBe(true);
+  });
+  it.each(["idle", "external", "unknown"] as const)("后端活动探针的 %s 覆盖历史里的旧 running", async (state) => {
+    const api = await import("../../src/lib/aiRuntime");
+    await api.ensureAiRuntimeListener();
+    emit(event(1, "status", { status: "running" }));
+    h.invoke.mockResolvedValueOnce([{ sessionId: session.id, state }]);
+    await api.refreshAiSessionActivity("D:/project", [session.id]);
+    expect(api.getAiSessionActivity(session.id)).toBe(state);
+  });
+  it("较早发出的 activity 响应后返回时不能覆盖新结果", async () => {
+    const api = await import("../../src/lib/aiRuntime");
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    h.invoke.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve; }));
+    const old = api.refreshAiSessionActivity("D:/project", [session.id]);
+    const latest = api.refreshAiSessionActivity("D:/project", [session.id]);
+    resolveNew([{ sessionId: session.id, state: "idle" }]);
+    await latest;
+    resolveOld([{ sessionId: session.id, state: "running" }]);
+    await old;
+    expect(api.getAiSessionActivity(session.id)).toBe("idle");
   });
   it("replaces command catalogs and ignores old-run discovery during replay and incremental updates", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");
@@ -186,7 +307,7 @@ describe("AI runtime event store", () => {
     await api.sendAiMessage(session, "D:/project", "duplicate", true);
     const sends = h.invoke.mock.calls.filter(([command]) => command === "ai_runtime_send");
     expect(sends).toHaveLength(3);
-    expect(sends[0][1].request).toMatchObject({ permission: "inherit", fast: null });
+    expect(sends[0][1].request).toMatchObject({ permission: "inherit", fast: false });
     expect(api.useAiRuntime(session.id).tasks.map((task) => task.status)).toEqual(["running", "queued"]);
     expect(api.getAiQueuedCount(session.id)).toBe(1);
   });
@@ -202,6 +323,7 @@ describe("AI runtime event store", () => {
   });
   it("keeps the running task addressable while projecting FIFO queued tasks", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const { conversationItems } = await import("../../src/lib/aiTimeline");
     const state = projectAiEvents([
       event(1, "user", { text: "first" }, "run-a"), event(2, "status", { status: "running" }, "run-a"),
       event(3, "user", { text: "second" }, "run-b"), event(4, "status", { status: "queued" }, "run-b"),
@@ -209,12 +331,43 @@ describe("AI runtime event store", () => {
     ]);
     expect(state.runId).toBe("run-a");
     expect(state.status).toBe("running");
+    expect(conversationItems(state.entries, state.tasks).map((entry) => entry.text)).toEqual(["first"]);
     expect(state.tasks.map((task) => [task.runId, task.status, task.prompt])).toEqual([
       ["run-a", "running", "first"], ["run-b", "queued", "second"], ["run-c", "waitingExternal", "third"],
     ]);
     const next = projectAiEvents([event(7, "status", { status: "cancelled" }, "run-b"), event(8, "status", { status: "completed" }, "run-a"), event(9, "status", { status: "running" }, "run-c")], state, true);
     expect(next.runId).toBe("run-c");
     expect(next.tasks.map((task) => task.status)).toEqual(["completed", "cancelled", "running"]);
+    expect(conversationItems(next.entries, next.tasks).map((entry) => entry.text)).toEqual(["first", "third"]);
+  });
+  it("排队编辑后启动只显示最终提示词，取消未启动任务不生成正文", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const { conversationItems } = await import("../../src/lib/aiTimeline");
+    const events = [event(1, "user", { text: "旧提示词", images: ["image.png"] }),
+      event(2, "status", { status: "queued" }),
+      event(3, "status", { status: "queued", prompt: "最终提示词" })];
+    const queued = projectAiEvents(events);
+    expect(conversationItems(queued.entries, queued.tasks)).toEqual([]);
+    const started = projectAiEvents([event(4, "status", { status: "running" })], queued, true);
+    expect(conversationItems(started.entries, started.tasks)).toMatchObject([{ text: "最终提示词", images: ["image.png"] }]);
+    expect(started.tasks.filter((task) => task.status === "queued")).toEqual([]);
+    const cancelled = projectAiEvents([...events, event(4, "status", { status: "cancelled" })]);
+    expect(conversationItems(cancelled.entries, cancelled.tasks)).toEqual([]);
+    const history = projectAiEvents([event(1, "user", { text: "原生历史" })]);
+    expect(conversationItems(history.entries, history.tasks)).toHaveLength(1);
+  });
+  it("跨回合 task_list 更新归到新回合并移动到最新位置", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const state = projectAiEvents([
+      event(1, "task_list", { replace: true, items: [{ id: "1", content: "旧任务", status: "pending" }] }, "run-a"),
+      event(2, "message", { id: "answer", text: "第一轮结束" }, "run-a"),
+      event(3, "task_list", { replace: false, items: [{ id: "1", content: "", status: "completed" }] }, "run-b"),
+    ]);
+    expect(state.entries.map((entry) => entry.id)).toEqual(["run-a:answer", "session:task-list"]);
+    expect(state.entries.at(-1)).toMatchObject({ runId: "run-b", seq: 3,
+      input: { items: [{ id: "1", content: "旧任务", status: "completed" }] } });
+    const cleared = projectAiEvents([event(4, "task_list", { replace: true, items: [] }, "run-b")], state, true);
+    expect(cleared.entries.some((entry) => entry.name === "task_list")).toBe(false);
   });
   it("registers routing before invoking send and retains early Unicode events", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
@@ -252,6 +405,45 @@ describe("AI runtime event store", () => {
     // 没等到答复的那张只有失效，不能凭空给它编一个答案。
     expect(state.requests.find((item) => item.requestId === "p")?.active).toBe(false);
     expect(state.requests.find((item) => item.requestId === "p")?.answer).toBeUndefined();
+  });
+  it("一次压缩只留一条记录：live 两段与导入边界合并，用户消息开启新段", async () => {
+    const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
+    emit(
+      event(1, "status", { status: "running" }),
+      // live：压缩中 + 边界（同一次压缩的两段）。
+      event(2, "compaction", { status: "compacting", metadata: { tokensBefore: 100, tokensAfter: 0 } }),
+      event(3, "compaction", { status: "completed", metadata: { tokensBefore: 100, tokensAfter: 42 } }),
+      // 后续对话……然后历史导入又投影了一次同一次压缩的边界（seq 靠后，但中间没有新用户消息）。
+      event(4, "assistant", { id: "m", text: "压缩后的回答" }),
+      event(5, "compaction", { status: "completed", metadata: { tokensBefore: 100, tokensAfter: 42 } }),
+      // 新的用户消息开启新段落：之后的压缩是另一次。
+      event(6, "user", { text: "再来一轮" }),
+      event(7, "compaction", { status: "compacting" }),
+    );
+    const state = runtime.useAiRuntime(session.id);
+    const compactions = state.entries.filter((entry) => entry.kind === "notice" && entry.name === "compaction");
+    expect(compactions).toHaveLength(2);
+    // 合并后保留最新状态与 token 数。
+    expect((compactions[0].input as Record<string, unknown>).status).toBe("completed");
+    expect((compactions[0].input as Record<string, unknown>).metadata).toMatchObject({ tokensAfter: 42 });
+  });
+  it("压缩摘要按原生记录去重，同轮再次压缩独立显示且取消后停止", async () => {
+    const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
+    // 后端给每条实时压缩事件盖 episodeId，捞回来的摘要带上它认领的那一段，前端只按这份标识认亲。
+    emit(event(1, "status", { status: "running" }),
+      event(2, "compaction", { status: "compacting", episodeId: "run:1" }),
+      event(3, "compaction", { status: "completed", episodeId: "run:1" }),
+      event(4, "compaction", { status: "compacting", episodeId: "run:2" }),
+      event(5, "status", { status: "cancelled" }),
+      event(6, "compaction", { summaryId: "native-100", episodeId: "run:1", text: "摘要一", status: "completed" }, "native"),
+      event(7, "compaction", { summaryId: "native-200", episodeId: "run:2", text: "摘要二", status: "completed" }, "native"),
+      event(8, "compaction", { summaryId: "native-100", episodeId: "run:1", text: "摘要一", status: "completed" }, "native"));
+    // 实时的两条和原生的两条讲的是同两次压缩：摘要折回实时卡，重复的原生记录（seq 8）按 summaryId 去重。
+    const entries = runtime.useAiRuntime(session.id).entries.filter((entry) => entry.name === "compaction");
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.text)).toEqual(["摘要一", "摘要二"]);
+    // 取消掉的那次仍然是取消掉的：摘要那条的 status 是投影时写死的 completed，不许改写观察到的状态。
+    expect(entries[1].input).toMatchObject({ status: "interrupted", summaryId: "native-200" });
   });
   it("失效事件丢了答案时，从同轮提问工具的结构化结果里恢复当时的选择", async () => {
     const runtime = await import("../../src/lib/aiRuntime"); await runtime.ensureAiRuntimeListener();
@@ -325,6 +517,54 @@ describe("AI runtime event store", () => {
     await runtime.sendAiMessage(session, "D:/project", "hello", true);
     expect(h.invoke.mock.calls.some(([command]) => command === "ai_runtime_send")).toBe(true);
   });
+  it("does not replace a live running turn with an older queued history response", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(1, "status", { status: "queued" }));
+    let resolve!: (page: unknown) => void;
+    h.invoke.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const loading = runtime.loadAiMessages(session.id, "D:/project", true);
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    emit(event(2, "status", { status: "running" }), event(3, "text", { id: "m", text: "正在继续" }));
+    resolve({ events: [event(1, "status", { status: "queued" })], hasOlder: false, nextSeq: 1,
+      latestSeq: 1, latestRunId: "run", status: "queued", nativeId: session.id,
+      activeTasks: [{ runId: "run", status: "queued", seq: 1 }] });
+    await loading;
+    expect(runtime.getAiSessionActivity(session.id)).toBe("running");
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ runId: "run", status: "running",
+      tasks: [{ runId: "run", status: "running" }] });
+    emit(event(4, "text", { id: "m", text: "，新输出" }));
+    expect(runtime.useAiRuntime(session.id).entries[0].text).toBe("正在继续，新输出");
+  });
+  it("refreshes a reopened session and restores the active turn outside the newest page", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ events: [], hasOlder: false, nextSeq: 0, latestSeq: 0, nativeId: session.id, activeTasks: [] });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    h.invoke.mockResolvedValueOnce({ events: [event(600, "text", { id: "m", text: "后台输出" })],
+      hasOlder: true, nextSeq: 600, latestSeq: 600, latestRunId: "run", status: "running", nativeId: session.id,
+      activeTasks: [{ runId: "run", status: "running", seq: 1 }] });
+    await runtime.loadAiMessages(session.id, "D:/project", true);
+    expect(runtime.getAiSessionActivity(session.id)).toBe("running");
+    expect(runtime.getAiRunId(session.id)).toBe("run");
+    emit(event(601, "text", { id: "m", text: "继续更新" }));
+    expect(runtime.useAiRuntime(session.id).entries[0].text).toBe("后台输出继续更新");
+  });
+  it.each(["completed", "cancelled", "failed"])("does not revive a %s turn from an older running summary", async (status) => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(1, "status", { status: "running" }));
+    let resolve!: (page: unknown) => void;
+    h.invoke.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const loading = runtime.loadAiMessages(session.id, "D:/project", true);
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    emit(event(2, "status", { status }));
+    resolve({ events: [event(1, "status", { status: "running" })], hasOlder: false, nextSeq: 1,
+      latestSeq: 1, latestRunId: "run", status: "running", nativeId: session.id,
+      activeTasks: [{ runId: "run", status: "running", seq: 1 }] });
+    await loading;
+    expect(runtime.isAiSessionRunning(session.id)).toBe(false);
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status, tasks: [{ runId: "run", status }] });
+  });
   it("opens on the newest page and keeps walking backwards from there", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
     h.invoke.mockResolvedValue({ events: [event(901, "text", { id: "m", text: "tail" })], hasOlder: true, nextSeq: 901, latestSeq: 1200, latestRunId: "run", nativeId: "native", status: "completed" });
@@ -340,6 +580,28 @@ describe("AI runtime event store", () => {
     // 更早的一页接在上面，最新那条不被挤掉：投影按序号排，不看到达顺序。
     expect(state.entries.map((entry) => entry.text)).toEqual(["older", "tail"]);
     expect(state.status).toBe("completed");
+  });
+  it("refreshes the live turn after an older-page request finishes when reopening", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ events: [event(100, "text", { id: "old", text: "旧内容" })],
+      hasOlder: true, nextSeq: 100, nativeId: session.id, activeTasks: [] });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    let resolveOlder!: (page: unknown) => void;
+    h.invoke.mockImplementationOnce(() => new Promise((done) => { resolveOlder = done; }));
+    const older = runtime.loadOlderAiMessages(session.id, "D:/project");
+    await vi.waitFor(() => expect(resolveOlder).toBeTypeOf("function"));
+    const reopened = runtime.loadAiMessages(session.id, "D:/project", true);
+    const focused = runtime.loadAiMessages(session.id, "D:/project", true);
+    h.invoke.mockResolvedValueOnce({ events: [event(600, "text", { id: "live", text: "后台内容" })],
+      hasOlder: true, nextSeq: 600, latestSeq: 600, latestRunId: "run", status: "running", nativeId: session.id,
+      activeTasks: [{ runId: "run", status: "running", seq: 101 }] });
+    resolveOlder({ events: [event(99, "text", { id: "older", text: "更早内容" })], hasOlder: true, nextSeq: 99 });
+    await Promise.all([older, reopened, focused]);
+    expect(h.invoke).toHaveBeenCalledTimes(3);
+    expect(h.invoke.mock.calls.at(-1)?.[1]).not.toHaveProperty("beforeSeq");
+    expect(runtime.getAiSessionActivity(session.id)).toBe("running");
+    expect(runtime.getAiRunId(session.id)).toBe("run");
+    expect(runtime.useAiRuntime(session.id).entries.some((entry) => entry.text === "后台内容")).toBe(true);
   });
   it("gives up paging back when a page brings nothing new", async () => {
     const runtime = await import("../../src/lib/aiRuntime");

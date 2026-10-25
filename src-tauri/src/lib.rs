@@ -200,6 +200,7 @@ pub fn run() {
             ai_cli::settings::ai_cli_diagnostics,
             ai_cli::codex_catalog::ai_cli_codex_catalog_read,
             ai_cli::codex_catalog::ai_cli_codex_catalog_save,
+            ai_cli::codex_catalog::ai_cli_codex_catalog_text,
             ai_cli::codex_catalog::ai_cli_codex_catalog_home,
             ai_cli::providers::ai_providers_load,
             ai_cli::providers::ai_providers_save,

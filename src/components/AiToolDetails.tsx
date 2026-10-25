@@ -2,13 +2,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import hljs from "highlight.js";
 import type { AiEntry } from "../lib/aiRuntime";
 import { useI18n } from "../i18n";
-import { describeAiTool, parseToolDiff, toolDiffCounts, toolLineRange, toolObject, toolText as show } from "../lib/aiTools";
+import { describeAiTool, parseToolDiff, toolLineRange, toolLiveDiffCounts, toolObject, toolReadLines, toolText as show } from "../lib/aiTools";
 import type { ToolView } from "../lib/aiTools";
 import { AI_CLOCK_AFTER_MS, formatAiClock, useAiElapsed } from "../lib/aiClock";
 import { useAiDiffViewMode } from "../lib/aiDiffView";
+import AiDiffEditor from "./AiDiffEditor";
 import type { AiRequestAnswer } from "../lib/aiApprovals";
 import { Bot, Brain, ChevronRight, FileText, FilePenLine, Layers, MessageCircleQuestionMark, Search, Terminal, FolderOpen } from "lucide-react";
-import { AiFilePath } from "./AiFileLink";
 import { renderCodeBlock } from "../lib/markdown";
 import AiMarkdown from "./AiMarkdown";
 import { AiQuestionCard } from "./AiQuestionCard";
@@ -182,21 +182,10 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
   const { t } = useI18n();
   const running = entry.status === "running";
   const elapsed = useAiElapsed(running, entry.id);
-  const counts = useMemo(() => toolDiffCounts(view), [view]);
   if (running) {
     return elapsed !== undefined && elapsed >= AI_CLOCK_AFTER_MS
       ? <span className="ai-tool-status is-clock" title={t("ai.tool.duration")}>{formatAiClock(elapsed)}</span>
       : null;
-  }
-  if (counts && ["edit", "add", "delete", "move"].includes(view.kind)) {
-    return <span className="ai-tool-figure">
-      <span className="is-add">+{counts.additions}</span>
-      <span className="is-delete">−{counts.deletions}</span>
-    </span>;
-  }
-  if (view.kind === "read" && view.source) {
-    const lines = view.source.total ?? view.source.end - view.source.start + 1;
-    return <span className="ai-tool-status">{t("ai.chat.exploreLines", { count: lines })}</span>;
   }
   if (view.exitCode !== undefined && view.exitCode !== 0) {
     return <span className="ai-tool-status">exit {view.exitCode}</span>;
@@ -205,14 +194,6 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
     return <span className="ai-tool-status is-clock">{formatAiClock(view.durationMs)}</span>;
   }
   return null;
-}
-
-/** 命令行运行中的尾部输出（对照 LiveTail）：折叠态下露出最后 3 行，淡入不打扰。 */
-function AiCommandTail({ entry }: { entry: AiEntry }) {
-  const text = typeof entry.output === "string" ? entry.output : "";
-  const lines = useMemo(() => text.split(/\r?\n/).filter((line, index, all) => line.trim() || index < all.length - 1).slice(-3), [text]);
-  if (!lines.length) return null;
-  return <div className="ai-tool-tail" aria-hidden="true">{lines.map((line, index) => <span key={index}>{line}</span>)}</div>;
 }
 
 /** 折叠时不构造文件 diff 和完整 JSON，避免每个流式事件重做大文件工作。 */
@@ -239,9 +220,8 @@ export function AiToolCall({ entry, subagents, hasRequest }: { entry: AiEntry; s
     </div>;
   }
   const status = entry.status === "failed" ? t("ai.runtime.failed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
-  const running = entry.status === "running";
   const view = describeAiTool(entry, false);
-  return <details className={`ai-tool is-${entry.status ?? "pending"}`} open={open}
+  return <details className={`ai-tool is-${entry.status ?? "pending"}`} data-kind={view.kind} open={open}
     onToggle={(event) => {
       const next = event.currentTarget.open;
       if (programmatic.current) {
@@ -253,18 +233,20 @@ export function AiToolCall({ entry, subagents, hasRequest }: { entry: AiEntry; s
       setOpen(next);
     }}>
     <summary className="ai-row-head">
-      <AiToolSummary entry={entry} />
-      {running && view.kind === "command" ? <AiCommandTail entry={entry} /> : null}
+      {/* 命令行与思考行使用同一阅读顺序：类型 → 箭头 → 摘要。 */}
+      <AiToolSummary entry={entry} disclosure={view.kind === "command"
+        ? <ChevronRight className="ai-detail-chevron" size={14} aria-hidden />
+        : null} />
       <AiToolFigure entry={entry} view={view} />
       {status ? <span className="ai-tool-status">{status}</span> : null}
-      <ChevronRight className="ai-detail-chevron" size={14} aria-hidden />
+      {view.kind !== "command" ? <ChevronRight className="ai-detail-chevron" size={14} aria-hidden /> : null}
     </summary>
     {open ? <AiToolDetails entry={entry} /> : null}
   </details>;
 }
 
 /** 展开才序列化的大块内容：JSON/代码按语言高亮（复用聊天那套 hljs），认不出的语言保持素文本。 */
-function CodeText({ text, lang, startLine }: { text: string; lang?: string; startLine?: number }) {
+export function CodeText({ text, lang, startLine }: { text: string; lang?: string; startLine?: number }) {
   const clean = (lang || "").trim().split(/\s+/)[0].toLowerCase();
   const html = useMemo(() => clean && hljs.getLanguage(clean) ? renderCodeBlock(text, clean, undefined, false, startLine ?? 1) : null, [text, clean, startLine]);
   return html
@@ -279,22 +261,18 @@ function RawDetails({ label, value }: { label: string; value: unknown }) {
   return <details className="ai-tool-raw" onToggle={(event) => setOpen(event.currentTarget.open)}><summary>{label}</summary>{open ? <CodeText text={show(value)} lang={lang} /> : null}</details>;
 }
 
-/** 读取行点路径＝就地展开这一行的明细：内容就挂在行内，不需要弹窗，更不用跳去编辑器。 */
-function expandOwnRow(event: React.MouseEvent<HTMLElement>) {
-  event.preventDefault();
-  event.stopPropagation();
-  const row = event.currentTarget.closest("details");
-  if (row && !row.open) row.open = true;
-}
-
 /**
  * 工具行的摘要文字，按场景分形态（对照参考实现的 command/edit/explore 行）：
  * 命令行走等宽截断、编辑行带 `L44–46` 行号、读取/搜索带可点路径。
  * `icon` 为假时不画行内图标——过程行里状态环就是唯一图形，再叠一枚图标是重复。
  */
-export function AiToolSummary({ entry, icon = true }: { entry: AiEntry; icon?: boolean }) {
+export function AiToolSummary({ entry, icon = true, disclosure }: { entry: AiEntry; icon?: boolean; disclosure?: ReactNode }) {
   const { t } = useI18n();
   const view = useMemo(() => describeAiTool(entry, false), [entry]);
+  const running = entry.status === "running";
+  // 读取行数与改动增减行数（支持流式生成中动态变化）
+  const readLines = useMemo(() => view.kind === "read" ? toolReadLines(entry, view) : undefined, [entry, view]);
+  const diffCounts = useMemo(() => ["edit", "add", "delete", "move"].includes(view.kind) ? toolLiveDiffCounts(entry, view) : undefined, [entry, view]);
   // 提问工具的摘要是第一个问题正文，不是工具名——行上那两个字该说的是「问了什么」。
   const questionSummary = QUESTION_TOOL.test(entry.name ?? "") ? questionToolItems(entry)[0]?.question : undefined;
   const Icon = questionSummary ? MessageCircleQuestionMark
@@ -303,24 +281,51 @@ export function AiToolSummary({ entry, icon = true }: { entry: AiEntry; icon?: b
   const single = view.patches.length <= 1 && view.actions.length <= 1;
   const range = single && ["edit", "add", "delete", "move"].includes(view.kind) ? toolLineRange(view) : null;
   const commandText = view.kind === "command" ? view.summary : "";
-  // 目标的三种形态：读取行点开＝就地展开这一行的明细（内容就在里面，不弹窗不跳转）；
-  // 文件类目标点开跳编辑器；目录类目标（列目录/搜索的根路径）是纯文字，点它去开文件没有意义。
-  const targetKind = view.kind === "read" ? "inline" : ["list", "search"].includes(view.kind) ? "plain" : "file";
-  const TargetButton = ({ children }: { children: ReactNode }) => targetKind === "inline"
-    ? <button type="button" className="ai-file-target ai-tool-name" title={`${target!.path}${target!.line !== undefined ? `:${target!.line}` : ""}`} onClick={expandOwnRow}>{children}</button>
-    : targetKind === "file"
-      ? <AiFilePath path={target!.path} line={target!.line} className="ai-tool-name">{children}</AiFilePath>
-      : <span className="ai-tool-name" title={target!.path}>{children}</span>;
+  // 目标形态：读取与改动文件为 inline，光标呈现指针样式；
+  // 在 summary 内部作为普通文本节点呈现，点击文件标题将直接跟随 summary 原生逻辑就地切换折叠/展开，
+  // 避免嵌套 button 拦截事件导致折叠失效。目录类目标（列目录/搜索根）为纯文本。
+  const targetKind = ["list", "search"].includes(view.kind) ? "plain" : "inline";
+  const TargetTitle = ({ children }: { children: ReactNode }) => (
+    <span
+      className={targetKind === "inline" ? "ai-file-target ai-tool-name" : "ai-tool-name"}
+      title={target ? `${target.path}${target.line !== undefined ? `:${target.line}` : ""}` : undefined}
+    >
+      {children}
+    </span>
+  );
   return <>
     {/* ai-tool-glyph：活动导轨上的行不需要这枚图标（环就是图形），CSS 在导轨内隐藏它。 */}
     {icon ? <Icon className="ai-tool-glyph" size={13} aria-hidden /> : null}
     <span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span>
+    {disclosure}
+    {/* 读取文件：在文件名签名/前面显示读取的行数（如 128 行） */}
+    {readLines !== undefined ? (
+      <span className="ai-tool-inline-badge is-read">
+        {t("ai.chat.exploreLines", { count: readLines })}
+      </span>
+    ) : null}
+    {/* 修改文件：在文件名前面显示增减行数，流式修改中支持实时动态变化 */}
+    {diffCounts ? (
+      <span className={`ai-tool-inline-badge is-edit${running ? " is-live" : ""}`}>
+        <span className="is-add">+{diffCounts.additions}</span>
+        <span className="is-delete">−{diffCounts.deletions}</span>
+      </span>
+    ) : running && ["edit", "add", "delete", "move"].includes(view.kind) ? (
+      <span className="ai-tool-inline-badge is-edit is-live">
+        <span className="is-add">+0</span>
+        <span className="is-delete">−0</span>
+      </span>
+    ) : null}
     {questionSummary ? <span className="ai-tool-name" title={questionSummary}>{questionSummary}</span>
-      : commandText ? <code className="ai-tool-cmd" dir="ltr" title={commandText}>{commandText}</code>
+      : commandText ? (view.summary === commandText
+        // 没有描述：行上就是命令本身。
+        ? <code className="ai-tool-cmd" dir="ltr" title={commandText}>{commandText}</code>
+        // 有描述：行上说用途，悬浮提示给完整命令。
+        : <span className="ai-tool-name" title={commandText}>{view.summary}</span>)
       : target
-        ? <TargetButton>{view.summary}{range?.start !== undefined
+        ? <TargetTitle>{view.summary}{range?.start !== undefined
           ? ` L${range.start}${range.end !== undefined && range.end !== range.start ? `–${range.end}` : ""}`
-          : ""}</TargetButton>
+          : ""}</TargetTitle>
         : <span className="ai-tool-name" title={view.summary}>{view.summary}{range?.start !== undefined
           ? ` L${range.start}${range.end !== undefined && range.end !== range.start ? `–${range.end}` : ""}`
           : ""}</span>}
@@ -375,12 +380,27 @@ function toSplitRows(lines: ReturnType<typeof parseToolDiff>): SplitRow[] {
   return rows;
 }
 
+/** 补丁明细的 diff：Git 面板同款 Monaco DiffEditor（行内/分栏跟随全局偏好）。 */
+function PatchDiff({ diff, path }: { diff: string; path: string }) {
+  const [mode] = useAiDiffViewMode();
+  return <div className="ai-patch-diff"><AiDiffEditor diff={diff} path={path} sideBySide={mode === "split"} /></div>;
+}
+
+/** unified diff 行的首字符就是 +/-/空格 符号：拆开单独染色，正文去掉前缀（git 网页端惯例）。 */
+function DiffCode({ text, kind }: { text: string; kind: string }) {
+  if (kind === "add" || kind === "delete") {
+    return <><span className="ai-diff-sign" aria-hidden="true">{text.charAt(0)}</span><code>{text.slice(1)}</code></>;
+  }
+  return <code>{text}</code>;
+}
+
 function DiffLineView({ line, side }: { line: SplitRow["left"]; side: "old" | "new" }) {
   if (!line) return <div className="ai-tool-diff-line is-filler" />;
   const number = side === "old" ? line.oldLine : line.newLine;
-  return <div className={`ai-tool-diff-line is-${line.kind === "header" ? "header" : side === "old" ? line.kind === "add" ? "filler" : line.kind : line.kind === "delete" ? "filler" : line.kind}`}>
-    <span className="ai-line-number">{line.kind === "header" ? "" : number ?? ""}</span>
-    <code>{line.text}</code>
+  return <div className={`ai-tool-diff-line is-${line.kind === "header" ? "hunk" : side === "old" ? line.kind === "add" ? "filler" : line.kind : line.kind === "delete" ? "filler" : line.kind}`}>
+    {line.kind === "header"
+      ? <code>{line.text}</code>
+      : <><span className="ai-line-number">{number ?? ""}</span><DiffCode text={line.text} kind={side === "old" ? line.kind === "add" ? "filler" : line.kind : line.kind} /></>}
   </div>;
 }
 
@@ -410,7 +430,7 @@ function SplitDiff({ lines }: { lines: ReturnType<typeof parseToolDiff> }) {
 const DIFF_FIRST = 240;
 const DIFF_STEP = 400;
 
-function ToolDiff({ text }: { text: string }) {
+export function ToolDiff({ text }: { text: string }) {
   const { t } = useI18n();
   const lines = useMemo(() => parseToolDiff(text), [text]);
   const [mode, setMode] = useAiDiffViewMode();
@@ -422,7 +442,9 @@ function ToolDiff({ text }: { text: string }) {
       <button type="button" className={`ai-diff-mode${mode === "split" ? " is-on" : ""}`} role="radio" aria-checked={mode === "split"} onClick={() => setMode("split")}>{t("ai.tool.diffSplit")}</button>
     </div>
     {mode === "split" ? <SplitDiff lines={shown} /> : <div className="ai-tool-diff">
-      {shown.map((line, index) => <div key={index} className={`ai-tool-diff-line is-${line.kind}`}><span className="ai-line-number">{line.oldLine ?? ""}</span><span className="ai-line-number">{line.newLine ?? ""}</span><code>{line.text}</code></div>)}
+      {shown.map((line, index) => line.kind === "header"
+        ? <div key={index} className="ai-tool-diff-line is-hunk"><code>{line.text}</code></div>
+        : <div key={index} className={`ai-tool-diff-line is-${line.kind}`}><span className="ai-line-number">{line.oldLine ?? ""}</span><span className="ai-line-number">{line.newLine ?? ""}</span><DiffCode text={line.text} kind={line.kind} /></div>)}
     </div>}
     {lines.length > count ? <button type="button" className="ai-text-button" onClick={() => setCount((n) => n + DIFF_STEP)}>{t("ai.tool.more")}</button> : null}
   </div>;
@@ -451,7 +473,7 @@ export default function AiToolDetails({ entry }: AiToolDetailsProps) {
       {view.actions.map((action, index) => <div key={index} className="ai-tool-path"><strong>{t(`ai.tool.${action.kind}`)}</strong> · {action.kind === "list" || action.kind === "search"
         // 列目录/搜索的目标是目录：点它去「打开文件」没有意义，按纯文字展示。
         ? <span className="ai-tool-target">{action.target}</span>
-        : <AiFilePath path={action.target} line={action.start} className="ai-tool-target">{action.target}</AiFilePath>}{action.start !== undefined ? `:${action.start}${action.end !== undefined ? `–${action.end}` : ""}` : ""}{action.detail ? ` · ${action.detail}` : ""}</div>)}
+        : <span className="ai-tool-target">{action.target}</span>}{action.start !== undefined ? `:${action.start}${action.end !== undefined ? `–${action.end}` : ""}` : ""}{action.detail ? ` · ${action.detail}` : ""}</div>)}
     </ToolSection> : null}
     {view.source ? <>
       {/* 单文件读取展开后只有代码本体：路径在摘要行出现过，这里不再重复标题。 */}
@@ -460,17 +482,20 @@ export default function AiToolDetails({ entry }: AiToolDetailsProps) {
         view.source.path.split(".").pop() || undefined, undefined, false, view.source.start ?? 1) }} />
       {view.source.truncated ? <div className="ai-muted">{t("ai.tool.truncated")}</div> : null}
     </> : null}
-    {view.patches.length ? <ToolSection title={t("ai.tool.changes")}>
-      {view.patches.map((patch, index) => <section key={index} className="ai-tool-file-change">
-        <header className="ai-tool-path"><strong>{t(`ai.tool.${patch.kind}`)}</strong> · <AiFilePath path={patch.path} line={patch.start} className="ai-tool-target">{patch.path}</AiFilePath>{patch.destination ? <> → <AiFilePath path={patch.destination} className="ai-tool-target">{patch.destination}</AiFilePath></> : ""}{patch.proposed ? <small> · {t("ai.tool.proposed")}</small> : ""}</header>
-        {patch.diff ? <ToolDiff text={patch.diff} /> : <>{patch.before !== undefined ? <CodeText text={patch.before} lang={patch.path.split(".").pop()} startLine={patch.start} /> : null}{patch.after !== undefined ? <CodeText text={patch.after} lang={patch.path.split(".").pop()} startLine={patch.start} /> : null}</>}
-      </section>)}
-    </ToolSection> : null}
+    {view.patches.length ? view.patches.map((patch, index) => <section key={index} className="ai-tool-file-change">
+      {/* 单补丁不再套「文件改动」分节与补丁头——路径已在一级修改行上，三层说一件事是套娃；
+          多补丁（多文件）时才保留每文件的路径头作分组。 */}
+      {view.patches.length > 1 ? <header className="ai-tool-path"><strong>{t(`ai.tool.${patch.kind}`)}</strong> · <span className="ai-tool-target">{patch.path}</span>{patch.destination ? <> → <span className="ai-tool-target">{patch.destination}</span></> : ""}{patch.proposed ? <small> · {t("ai.tool.proposed")}</small> : ""}</header> : null}
+      {patch.diff ? <PatchDiff diff={patch.diff} path={patch.path} /> : <>{patch.before !== undefined ? <CodeText text={patch.before} lang={patch.path.split(".").pop()} startLine={patch.start} /> : null}{patch.after !== undefined ? <CodeText text={patch.after} lang={patch.path.split(".").pop()} startLine={patch.start} /> : null}</>}
+    </section>) : null}
     {!known && entry.input !== undefined ? <CodeText text={show(entry.input)} lang={entry.input !== null && typeof entry.input === "object" ? "json" : undefined} /> : null}
-    {known ? <RawDetails label={t("ai.chat.rawInput")} value={entry.input} /> : null}
+    {/* 已有结构化视图（读取内容/补丁/命中列表/命令）的条目不再附「完整参数 / 结构化结果」
+        折叠块：那是同一段数据的 JSON 原文，视图失真需要核对原始数据时才有价值；
+        认不出结构的条目（known 为假）仍给原文兜底。 */}
+    {known && !view.source && view.kind !== "search" ? <RawDetails label={t("ai.chat.rawInput")} value={entry.input} /> : null}
     {entry.output !== undefined && !view.source ? (view.kind === "search" ? <SearchHits output={show(entry.output)} /> : <pre className="ai-tool-output">{show(entry.output)}</pre>) : null}
     {view.exitCode !== undefined || view.durationMs !== undefined ? <div className="ai-tool-execution-meta">{view.exitCode !== undefined ? <span>{t("ai.chat.exitCode")}: {view.exitCode}</span> : null}{view.durationMs !== undefined ? <span>{t("ai.tool.duration")}: {(view.durationMs / 1000).toFixed(2)} s</span> : null}</div> : null}
-    {entry.result !== undefined ? <RawDetails label={t("ai.tool.structuredResult")} value={entry.result} /> : null}
+    {entry.result !== undefined && !view.source && view.kind !== "search" ? <RawDetails label={t("ai.tool.structuredResult")} value={entry.result} /> : null}
   </div>;
 }
 

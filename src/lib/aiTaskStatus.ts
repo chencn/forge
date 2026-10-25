@@ -18,10 +18,10 @@ export const AI_TASK_BACKEND_STATUSES: readonly AiTaskStatus[] = ["queued", "wai
 /** 前端认识的全部状态：后端六个，加上只存在于本地的 `submitting`。 */
 export const AI_TASK_STATUSES: readonly AiTaskStatus[] = ["submitting", ...AI_TASK_BACKEND_STATUSES];
 
-/** 尚未启动，因此可以编辑、移动、立即执行或取消。运行中的回合不属于这一档。 */
-const QUEUED: readonly AiTaskStatus[] = ["submitting", "queued", "waitingExternal"];
-/** 还没终结：排队项加上正在跑的回合。 */
-const LIVE: readonly AiTaskStatus[] = [...QUEUED, "running"];
+/** 后端已经接收但尚未启动，因此可以编辑、移动、立即执行或取消。 */
+const QUEUED: readonly AiTaskStatus[] = ["queued", "waitingExternal"];
+/** 还没终结：IPC/CLI 握手、排队项和正在跑的回合。 */
+const LIVE: readonly AiTaskStatus[] = ["submitting", ...QUEUED, "running"];
 /** 已落定的终态；只有这一档允许重试/重新生成。 */
 const TERMINAL: readonly AiTaskStatus[] = ["completed", "cancelled", "failed"];
 
@@ -63,4 +63,23 @@ export function isAiTaskBackendStatus(value: unknown): value is AiTaskStatus {
  */
 export function isAiTaskBackendActive(value: unknown): value is AiTaskStatus {
   return isAiTaskBackendStatus(value) && !isAiTaskTerminal(value);
+}
+
+/** 排序只用到这两个字段；结构性约束避免和 `aiRuntime` 形成循环依赖。 */
+export interface AiQueueOrdered {
+  status: AiTaskStatus;
+  seq: number;
+  queueIndex?: number;
+}
+
+/**
+ * 队列顺序的唯一来源：先按后端写下的 `queueIndex`，没有的排到最后，再按落盘序号兜底。
+ *
+ * 任务列表徽标和输入框上方的队列条都必须走这里。各写一份就会分家：重排和「立即执行」
+ * 只改 `queueIndex`，`seq` 是事件序号、永远不变，于是按 seq 排的那一边一直显示重排前的
+ * 旧顺序，`#3` 和队列条里的 `#1` 指的却是同一条任务。
+ */
+export function aiQueueOrder<T extends AiQueueOrdered>(tasks: readonly T[]): T[] {
+  return tasks.filter((task) => isAiTaskQueued(task.status))
+    .sort((a, b) => (a.queueIndex ?? Number.MAX_SAFE_INTEGER) - (b.queueIndex ?? Number.MAX_SAFE_INTEGER) || a.seq - b.seq);
 }

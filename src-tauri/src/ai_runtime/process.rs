@@ -12,8 +12,16 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// stdout 单行上限。CLI 会一行吐一个 JSON，超大行通常意味着协议错乱或进程异常，
-/// 到上限就断开而不是无限吃内存。
-const MAX_LINE: u64 = 1024 * 1024;
+/// 到上限就断开而不是无限吃内存。正常事件只有几 KB，但工具结果整段回显可能很大，
+/// 阈值取 16 MiB，与参考实现同一口径：太小会把合法的大结果当成协议错乱。
+const MAX_READ: u64 = 16 * 1024 * 1024;
+
+/// 出站单条上限。必须容得下界面允许发出的最大一次请求：`MAX_IMAGES` 张
+/// `MAX_IMAGE_BYTES` 的图片内联成 base64。卡得更小，界面上允许贴的附件
+/// 会在发送时才失败。
+const MAX_WRITE: u64 =
+    super::images::MAX_IMAGES as u64 * (super::images::MAX_IMAGE_BYTES as u64 / 3 * 4 + 8)
+        + 1024 * 1024;
 
 /// 从 CLI 读到的输入。把「解析成功」「正常结束」「出错」三种情况分开，
 /// 消费方不必自己区分管道关闭与 JSON 损坏。
@@ -133,8 +141,8 @@ impl Process {
     }
     pub fn write(&self, value: &Value) -> Result<(), String> {
         let mut bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_LINE {
-            return Err("发送消息过大".into());
+        if bytes.len() as u64 > MAX_WRITE {
+            return Err(format!("发送给 CLI 的消息过大（{} MiB 上限）", MAX_WRITE / (1024 * 1024)));
         }
         bytes.push(b'\n');
         self.writer
@@ -183,14 +191,14 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
     loop {
         let mut bytes = vec![];
         let n = reader
-            .take(MAX_LINE + 1)
+            .take(MAX_READ + 1)
             .read_until(b'\n', &mut bytes)
             .map_err(|e| e.to_string())?;
         if n == 0 {
             return Ok(None);
         }
-        if n as u64 > MAX_LINE {
-            return Err("CLI 协议行超出 1 MiB 上限".into());
+        if n as u64 > MAX_READ {
+            return Err(format!("CLI 输出单行超出 {} MiB 上限", MAX_READ / (1024 * 1024)));
         }
         if bytes.last() != Some(&b'\n') {
             return Err("CLI 协议输出被截断".into());
@@ -213,7 +221,7 @@ mod tests {
         assert!(read_message(&mut r).unwrap().is_none());
         assert!(read_message(&mut std::io::Cursor::new(b"{\"x\":1}")).is_err());
         assert!(
-            read_message(&mut std::io::Cursor::new(vec![b'x'; MAX_LINE as usize + 2])).is_err()
+            read_message(&mut std::io::Cursor::new(vec![b'x'; MAX_READ as usize + 2])).is_err()
         );
     }
     #[test]

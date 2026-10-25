@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { seedAiSessionOptions } from "../../src/lib/aiDraftSession";
 import { loadAiOptions, readAiOptions, saveAiOptions, resolveAiModel } from "../../src/lib/aiOptions";
+import { aiSessionStorageKey } from "../../src/lib/aiSessions";
 
 beforeEach(() => {
   const values = new Map<string, string>();
@@ -46,8 +48,34 @@ describe("AI option persistence", () => {
     expect(loadAiOptions("first", "claude").model).toBeUndefined();
     expect(loadAiOptions("new", "codex").model).toBeUndefined();
   });
+  it("新会话复制草稿页自己的配置，不受其他会话最后选择影响", () => {
+    const root = "D:/project";
+    const draftKey = "forge:ai-draft-options:v1:codex";
+    const sessionKey = `${aiSessionStorageKey(root)}:options:new-session`;
+    saveAiOptions(draftKey, "codex", { model: "draft-model", mode: "plan", permission: "read" });
+    // 草稿仍开着时，另一个会话修改配置；全局默认会变化，但不能污染这次草稿。
+    saveAiOptions("other-session", "codex", { model: "other-model", mode: "default", permission: "full" });
+    seedAiSessionOptions(root, "new-session", "codex");
+    expect(loadAiOptions(sessionKey, "codex")).toMatchObject({ model: "draft-model", mode: "plan", permission: "read" });
+  });
+  it("remembers the selected mode as a choice and preselects it on the next open", () => {
+    saveAiOptions("plan", "claude", { mode: "plan" });
+    expect(loadAiOptions("plan", "claude").mode).toBe("plan");
+    // 新会话首屏就要选中上次记的那一档，而不是每次都回到默认。
+    expect(loadAiOptions("fresh", "claude").mode).toBe("plan");
+    // 旧数据把计划模式存成布尔：读出来是模式列表里的同一项。
+    localStorage.setItem("legacy-plan", '{"planMode":true}');
+    expect(readAiOptions("legacy-plan").mode).toBe("plan");
+    // 升级前存下的会话没有 mode：沿用该引擎上次的模式，不能显示成「没选」。
+    saveAiOptions("seed", "codex", { mode: "default" });
+    localStorage.setItem("legacy-none", '{"model":"gpt-6-astra"}');
+    expect(loadAiOptions("legacy-none", "codex").mode).toBe("default");
+    // 形状不对的字符串不认；它绝不能原样变成 CLI 参数。
+    localStorage.setItem("bad-mode", '{"mode":"--permission-mode"}');
+    expect(readAiOptions("bad-mode").mode).toBeUndefined();
+  });
   it("ignores malformed storage", () => {
-    for (const stored of ["null", "broken", '{"model":1,"effort":false,"fast":"true","permission":7}']) {
+    for (const stored of ["null", "broken", '{"model":1,"effort":false,"fast":"true","permission":7}', '{"mode":{}}']) {
       localStorage.setItem("bad", stored);
       expect(readAiOptions("bad")).toEqual({});
     }

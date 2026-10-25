@@ -974,6 +974,7 @@ dependencies = [
  "forge-shell-ext",
  "json-patch",
  "libc",
+ "memchr",
  "minisign-verify",
  "notify",
  "portable-pty",

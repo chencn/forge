@@ -2,8 +2,8 @@
 //!
 //! 供应商本身存在 Forge 的配置目录。应用时写 CLI 真正读取的位置：
 //! Claude 的 settings.json 会覆盖父进程注入的变量，所以必须落到它的 env；
-//! Codex 的端点/密钥走环境变量与 auth.json，模型走 config.toml。
-use super::{settings, Provider};
+//! Codex 的端点/密钥走环境变量、auth.json 以及 config.toml 的自有 provider 表；模型目录走 forge-model-catalog.json。
+use super::{codex_catalog, settings, Provider};
 use crate::offload::block;
 use crate::sys::write_atomic;
 use serde::{Deserialize, Serialize};
@@ -18,15 +18,21 @@ const MAX_NAME: usize = 80;
 const MAX_URL: usize = 2048;
 const MAX_KEY: usize = 4096;
 const MAX_MODEL: usize = 200;
+/// Codex 的 `model` 字段存储整份自定义模型意图 JSON，放宽到 256 KB。
+const MAX_CODEX_MODEL: usize = 262_144;
 
 /// Claude Code 的模型槽位与对应环境变量。Codex 只用一个 `model`。
-const CLAUDE_MODEL_KEYS: [(&str, &str); 6] = [
+/// 后三项是「自定义模型选项」：在 CLI 的 /model 选择器里多出一项，用来点名网关自己提供的模型。
+const CLAUDE_MODEL_KEYS: [(&str, &str); 9] = [
     ("main", "ANTHROPIC_MODEL"),
     ("reasoning", "ANTHROPIC_REASONING_MODEL"),
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
     ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
+    ("customOption", "ANTHROPIC_CUSTOM_MODEL_OPTION"),
+    ("customOptionName", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
+    ("customOptionDescription", "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -78,10 +84,19 @@ fn validate(provider: &ModelProvider) -> Result<(), String> {
     if !valid_url(provider.api_url.trim()) {
         return Err("API 地址必须是 http(s) URL 且不能包含空格".into());
     }
+    // 端点和密钥都是这个供应商存在的意义。留空保存出来的条目一旦「应用」，
+    // 会把 CLI 里原本能用的 ANTHROPIC_BASE_URL / AUTH_TOKEN 一起清掉。
+    if provider.api_url.trim().is_empty() {
+        return Err("API 地址不能为空".into());
+    }
+    if provider.api_key.trim().is_empty() {
+        return Err("API Key 不能为空".into());
+    }
     if provider.api_key.len() > MAX_KEY || provider.api_key.contains('\0') {
         return Err("API Key 过长或包含非法字符".into());
     }
-    if provider.model.len() > MAX_MODEL || provider.model.contains('\0') {
+    let max_model = if provider.kind == "codex" { MAX_CODEX_MODEL } else { MAX_MODEL };
+    if provider.model.len() > max_model || provider.model.contains('\0') {
         return Err("模型名称过长或包含非法字符".into());
     }
     for (key, value) in &provider.models {
@@ -102,10 +117,57 @@ fn load(app: &AppHandle) -> Result<Vec<ModelProvider>, String> {
     Ok(store.providers)
 }
 
+/// 保存前的结构性检查：类型创建后不能改，仍被 CLI 绑定的不能删。
+/// 这两条与 codeg 的实现一致：改类型会把一种 CLI 的模型写法解释成另一种的，
+/// 删掉被绑定的条目只会让绑定那一栏变成「绑定的供应商已不存在」。
+fn structural(
+    previous: &[ModelProvider],
+    next: &[ModelProvider],
+    agents: &BTreeMap<String, settings::AgentSetting>,
+) -> Result<(), String> {
+    for provider in next {
+        if let Some(old) = previous.iter().find(|item| item.id == provider.id.trim()) {
+            if old.kind != provider.kind {
+                return Err("供应商类型创建后不能更改：绑定的 CLI 会按旧类型解释模型与端点，请另建一个供应商".into());
+            }
+        }
+    }
+    for old in previous {
+        if next.iter().any(|item| item.id.trim() == old.id) {
+            continue;
+        }
+        if let Some((key, _)) = agents.iter().find(|(_, agent)| agent.provider == old.id) {
+            let name = match key.as_str() {
+                "claude" => "Claude Code",
+                "codex" => "Codex",
+                other => other,
+            };
+            return Err(format!("供应商「{}」还被 {name} 绑定着，请先在那里改绑再删除", old.name));
+        }
+    }
+    Ok(())
+}
+
+/// 编辑时把密钥清空等于「沿用原值」：界面上是密码框，用户看到的是掩码，清空多半是误操作。
+/// 与 codeg 的编辑对话框同一条口径（空密钥不提交，原值保留）。
+fn keep_keys(previous: &[ModelProvider], providers: &mut [ModelProvider]) {
+    for provider in providers {
+        if provider.api_key.trim().is_empty() {
+            if let Some(old) = previous.iter().find(|item| item.id == provider.id.trim()) {
+                provider.api_key = old.api_key.clone();
+            }
+        }
+    }
+}
+
 fn save(app: &AppHandle, mut providers: Vec<ModelProvider>) -> Result<Vec<ModelProvider>, String> {
     if providers.len() > MAX_PROVIDERS {
         return Err(format!("最多保存 {MAX_PROVIDERS} 个供应商"));
     }
+    let previous = load(app)?;
+    let agents = settings::load(app).map(|settings| settings.agents).unwrap_or_default();
+    structural(&previous, &providers, &agents)?;
+    keep_keys(&previous, &mut providers);
     let mut seen = std::collections::BTreeSet::new();
     for provider in &mut providers {
         provider.id = provider.id.trim().to_string();
@@ -188,8 +250,11 @@ fn apply(app: &AppHandle, id: &str) -> Result<(), String> {
     }
     settings::save(app, settings)?;
     if kind == Provider::Codex {
-        // config.toml 里已有的 provider 会被 Codex 优先使用，端点与密钥同步写过去。
-        settings::apply_codex_endpoint(&provider.model, provider.api_url.trim(), provider.api_key.trim())?;
+        // 1. 生成并应用 Codex 模型清单，获得默认模型 slug
+        let intent = codex_catalog::parse_provider_model(Some(&provider.model));
+        let default_slug = codex_catalog::apply_provider_catalog(app, &intent)?;
+        // 2. 写入 config.toml 的自有 provider 表及根 model，并同步写 auth.json
+        settings::apply_codex_provider_route(provider.api_url.trim(), default_slug.as_deref(), provider.api_key.trim())?;
     }
     Ok(())
 }
@@ -240,6 +305,17 @@ mod tests {
         let mut item = provider();
         item.kind = "gemini".into();
         assert!(validate(&item).is_err());
+
+        // Claude model 限制 200，Codex model 放宽到 256KB
+        let mut claude_long = provider();
+        claude_long.model = "m".repeat(201);
+        assert!(validate(&claude_long).is_err());
+
+        let mut codex_long = provider();
+        codex_long.kind = "codex".into();
+        codex_long.models.clear();
+        codex_long.model = "m".repeat(1000);
+        assert!(validate(&codex_long).is_ok());
     }
 
     #[test]
@@ -269,5 +345,63 @@ mod tests {
         assert_eq!(env.get("ANTHROPIC_API_KEY").map(String::as_str), Some(""));
         assert_eq!(env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str), Some("claude-haiku-4-5"));
         assert_eq!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn a_provider_needs_both_an_endpoint_and_a_key() {
+        // 留空保存出来的供应商一旦「应用」，会把 CLI 里原本能用的端点与密钥一起清掉。
+        let mut item = provider();
+        item.api_url = "   ".into();
+        assert!(validate(&item).is_err());
+        let mut item = provider();
+        item.api_key = "".into();
+        assert!(validate(&item).is_err());
+    }
+
+    #[test]
+    fn kind_is_fixed_and_a_bound_provider_cannot_be_removed() {
+        let item = provider();
+        // 类型改动被拒：另一种 CLI 会把这份供应商的模型当成自己的写法。
+        let mut switched = item.clone();
+        switched.kind = "codex".into();
+        assert!(structural(&[item.clone()], &[switched], &BTreeMap::new()).is_err());
+        // 还被 Codex 绑着时不许删，改绑之后才能删。
+        let bound = BTreeMap::from([("codex".to_string(), settings::AgentSetting { provider: "gw-1".into(), ..Default::default() })]);
+        assert!(structural(&[item.clone()], &[], &bound).is_err());
+        let freed = BTreeMap::from([("codex".to_string(), settings::AgentSetting::default())]);
+        assert!(structural(&[item], &[], &freed).is_ok());
+    }
+
+    #[test]
+    fn clearing_the_key_while_editing_keeps_the_stored_one() {
+        let item = provider();
+        let mut cleared = item.clone();
+        cleared.api_key = "  ".into();
+        let mut next = vec![cleared];
+        keep_keys(&[item], &mut next);
+        assert_eq!(next[0].api_key, "sk-test");
+        // 新建的供应商没有原值可沿用，空密钥照旧留给 validate 拒。
+        let mut fresh = provider();
+        fresh.api_key = String::new();
+        let mut next = vec![fresh];
+        keep_keys(&[], &mut next);
+        assert!(validate(&next[0]).is_err());
+    }
+
+    #[test]
+    fn claude_custom_model_option_travels_with_the_provider() {
+        // 自定义模型选项是 /model 选择器里多出来的那一项，和六个槽位一样属于供应商。
+        let mut item = provider();
+        item.models.insert("customOption".into(), "my-gateway/claude-opus-5-5".into());
+        item.models.insert("customOptionName".into(), "Gateway Opus".into());
+        item.models.insert("customOptionDescription".into(), "Routed via gateway".into());
+        assert!(validate(&item).is_ok());
+        let env = claude_native_env(&item);
+        assert_eq!(env.get("ANTHROPIC_CUSTOM_MODEL_OPTION").map(String::as_str), Some("my-gateway/claude-opus-5-5"));
+        assert_eq!(env.get("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME").map(String::as_str), Some("Gateway Opus"));
+        assert_eq!(env.get("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION").map(String::as_str), Some("Routed via gateway"));
+        let mut applied = BTreeMap::new();
+        apply_claude(&mut applied, &item);
+        assert_eq!(applied.get("ANTHROPIC_CUSTOM_MODEL_OPTION").map(String::as_str), Some("my-gateway/claude-opus-5-5"));
     }
 }

@@ -19,11 +19,16 @@ export interface AiRunOptions {
   model?: string;
   /** 思考强度；只有该模型声明支持的档位才可传。 */
   effort?: string;
+  /**
+   * 会话模式，取 CLI 亲口报出的原话 id（Claude 的 `--permission-mode` 取值、
+   * Codex 的 collaborationMode 取值）。计划模式就是其中一项，不是一个开关。
+   */
+  mode?: string;
   /** 默认按需审批；read 只允许只读工具，auto 的范围由 CLI 决定，full 为明确授权的完全访问。 */
   permission?: "read" | "ask" | "auto" | "full";
   /** Codex 的 Fast 服务等级，false 明确恢复标准速度。 */
   fast?: boolean;
-  /** 计划模式：只产出计划，不执行修改。 */
+  /** 旧数据里的计划模式布尔；新选择一律写进 `mode`，读取时按同一语义迁移。 */
   planMode?: boolean;
 }
 
@@ -97,6 +102,10 @@ export interface AiCapabilities {
   customModel: boolean;
   /** 所有模型共有的强度档位，用于在没有具体模型时兜底展示。 */
   efforts: string[];
+  /** 这版 CLI 提供的会话模式取值；空表示只探测到内置兜底表。 */
+  modes?: string[];
+  /** 模式表是不是 CLI 亲口报的；false 时界面仍可用，但不能当成这版 CLI 的事实。 */
+  modesAuthoritative?: boolean;
   /** 这份目录是否 CLI 亲口报的；false 说明只是 Forge 内置别名表，不能当成事实。 */
   authoritative: boolean;
   /** 这一次是现问 CLI 拿的，还是沿用磁盘上的上次结果。 */
@@ -272,6 +281,8 @@ export interface AiTask {
   seq: number;
   /** 后端会话队列中的真实顺序；只对 queued/waitingExternal 有意义。 */
   queueIndex?: number;
+  /** false 表示已知尚未启动；缺失表示分页没有覆盖启动事件，不能据此隐藏历史。 */
+  started?: boolean;
 }
 
 /** 一个会话在前端看到的状态快照。 */
@@ -328,8 +339,12 @@ interface State {
   snapshot: AiRuntimeSnapshot;
   /** 正在进行的历史加载；用于合并并发请求。 */
   loading: Promise<void> | null;
+  /** 重开或聚焦期间排队的最新页刷新；多个请求共用一次补取。 */
+  refreshing?: Promise<void>;
   /** 已知的最大序号与对应运行/状态，用于判断是否需要重新拉取。 */
   summary: { seq: number; runId: string; status: string } | null;
+  /** 全日志任务摘要必须跨历史重放保留，避免旧 queued 事件复活队列。 */
+  activeSummary?: { seq: number; tasks: AiTask[] };
   /** 已见过的最大序号，防止乱序事件把游标回退。 */
   maxSeq: number;
   /** 本轮失败的记录；成功后清空。 */
@@ -342,6 +357,8 @@ interface Page {
   events: AiRuntimeEvent[];
   /** 往前翻的那一页：还有更早的记录没被这一页装下。 */
   hasOlder: boolean;
+  /** 原生历史/摘要尚在补采，或向后读取还有下一页。 */
+  hasMore?: boolean;
   /** 下一次分页的游标：往前翻是这一页最老一条，往后翻是最新一条。 */
   nextSeq: number;
   /** CLI 原生会话 id。 */
@@ -367,6 +384,11 @@ export type AiSessionActivity = "idle" | "queued" | "running" | "external" | "co
 const activities = new Map<string, AiSessionActivity>();
 const activityRoots = new Map<string, string>();
 const activityQueued = new Map<string, number>();
+const activityRunIds = new Map<string, string>();
+const activityQueuedRunIds = new Map<string, readonly string[]>();
+const NO_RUN_IDS: readonly string[] = [];
+/** 同一工程可能被多个 Hook 同时轮询；只允许最后发出的请求提交结果。 */
+const activityEpochs = new Map<string, number>();
 export interface AiProjectActivitySummary { running: number; queued: number; external: number; }
 export function getAiProjectActivitySummary(workspace: string): AiProjectActivitySummary {
   const key = rootKey(workspace);
@@ -398,35 +420,79 @@ export function hasAiProjectActivity(workspace: string): boolean {
 }
 /** 活动状态独立于历史消息；外部占用不能伪装成 Forge 可停止的任务。 */
 export function getAiSessionActivity(id: string): AiSessionActivity {
-  if (activities.get(id) === "conflict") return "conflict";
+  const observed = activities.get(id);
+  // 一旦进程探针回过结果，它就比历史投影权威。历史里的 running 可能来自另一个窗口，
+  // 也可能只是终态事件尚未补齐；拿它盖住 idle/external 会把不可停止的任务画成可停止。
+  if (observed) return observed === "idle" && (activityQueued.get(id) ?? 0) > 0 ? "queued" : observed;
   if (isAiSessionRunning(id)) return "running";
-  const external = activities.get(id);
-  if (external === "running") return "running";
-  if (external === "external") return "external";
-  if (external === "unknown") return "unknown";
-  return getAiQueuedCount(id) > 0 ? "queued" : external ?? "idle";
+  return getAiQueuedCount(id) > 0 ? "queued" : "idle";
 }
 export function useAiSessionActivity(id: string): AiSessionActivity {
   return useSyncExternalStore(subscribeAiChanges, () => getAiSessionActivity(id), () => "idle");
 }
+/** 当前桌面进程真正登记的运行 id；历史里的 running 没有控制权。 */
+export function getAiOwnedRunId(id: string): string | null { return activityRunIds.get(id) ?? null; }
+export function useAiOwnedRunId(id: string): string | null {
+  return useSyncExternalStore(subscribeAiChanges, () => getAiOwnedRunId(id), () => null);
+}
+/** 当前桌面进程持有的排队项；其他进程写进共享日志的 queued 只能只读展示。 */
+export function getAiOwnedQueuedRunIds(id: string): readonly string[] { return activityQueuedRunIds.get(id) ?? NO_RUN_IDS; }
+export function useAiOwnedQueuedRunIds(id: string): readonly string[] {
+  return useSyncExternalStore(subscribeAiChanges, () => getAiOwnedQueuedRunIds(id), () => NO_RUN_IDS);
+}
+/** 本进程事件/IPC 回执只更新控制权，不用共享日志反推所有权。 */
+function markOwnedTask(id: string, runId: string, status: AiTaskStatus) {
+  const queued = activityQueuedRunIds.get(id) ?? NO_RUN_IDS;
+  if (status === "submitting" || status === "running") {
+    activityRunIds.set(id, runId);
+    activities.set(id, "running");
+    const next = queued.filter((candidate) => candidate !== runId);
+    activityQueuedRunIds.set(id, next);
+    activityQueued.set(id, next.length);
+  } else if (isAiTaskQueued(status)) {
+    if (activityRunIds.get(id) === runId) activityRunIds.delete(id);
+    const next = queued.includes(runId) ? queued : [...queued, runId];
+    activityQueuedRunIds.set(id, next);
+    activityQueued.set(id, next.length);
+    activities.set(id, "idle");
+  } else if (isAiTaskTerminal(status)) {
+    if (activityRunIds.get(id) === runId) activityRunIds.delete(id);
+    const next = queued.filter((candidate) => candidate !== runId);
+    activityQueuedRunIds.set(id, next);
+    activityQueued.set(id, next.length);
+    activities.delete(id);
+  }
+}
 /** 一次批量查询只更新请求涉及的会话，不覆盖其他工程的状态。 */
 export async function refreshAiSessionActivity(workspace: string, sessionIds: string[]): Promise<void> {
+  const workspaceKey = rootKey(workspace);
+  const epoch = (activityEpochs.get(workspaceKey) ?? 0) + 1;
+  activityEpochs.set(workspaceKey, epoch);
   const requested = new Set(sessionIds);
   for (const [id, root] of activityRoots) if (rootKey(root) === rootKey(workspace) && !requested.has(id)) {
-    activityRoots.delete(id); activities.delete(id); activityQueued.delete(id);
+    activityRoots.delete(id); activities.delete(id); activityQueued.delete(id); activityRunIds.delete(id); activityQueuedRunIds.delete(id);
   }
   if (!isTauri() || !sessionIds.length) { changed(); return; }
   for (const id of sessionIds) activityRoots.set(id, workspace);
   try {
-    const records = await invoke<Array<{ sessionId: string; state: AiSessionActivity; queuedCount?: number }>>("ai_runtime_activity", { workspace, sessionIds });
+    const records = await invoke<Array<{ sessionId: string; state: AiSessionActivity; queuedCount?: number; activeRunId?: string | null; queuedRunIds?: string[] }>>("ai_runtime_activity", { workspace, sessionIds });
+    // 慢请求后返回时不能把较新的 idle/external 又覆盖成旧 running。
+    if (activityEpochs.get(workspaceKey) !== epoch) return;
     for (const record of records) {
       if (sessionIds.includes(record.sessionId) && ["idle", "running", "external", "conflict", "unknown"].includes(record.state)) {
         activities.set(record.sessionId, record.state);
         activityQueued.set(record.sessionId, Number.isSafeInteger(record.queuedCount) && (record.queuedCount ?? 0) > 0 ? record.queuedCount! : 0);
+        if (typeof record.activeRunId === "string" && record.activeRunId) activityRunIds.set(record.sessionId, record.activeRunId);
+        else activityRunIds.delete(record.sessionId);
+        activityQueuedRunIds.set(record.sessionId, Array.isArray(record.queuedRunIds)
+          ? record.queuedRunIds.filter((runId): runId is string => typeof runId === "string" && !!runId) : NO_RUN_IDS);
       }
     }
   } catch {
+    if (activityEpochs.get(workspaceKey) !== epoch) return;
     // 探测失败不是“空闲”，不能把已知外部占用静默清除。
+    // 探针失败时保留上一次控制权：网络/IO 错误不能凭空把仍在运行的停止按钮撤掉，
+    // 更不能把未知任务认领到本窗口；activity 本身仍明确显示 unknown。
     for (const id of sessionIds) activities.set(id, "unknown");
   }
   changed();
@@ -453,6 +519,12 @@ export function useAiRuntime(id: string): AiRuntimeSnapshot { return useSyncExte
 export function getAiRunId(id: string) { return stores.get(id)?.snapshot.runId ?? null; }
 /** 该会话是否正在运行；关闭标签前的判断靠它。 */
 export function isAiSessionRunning(id: string) { return stores.get(id)?.snapshot.status === "running"; }
+/** 该会话最后一轮任务的终态（completed/cancelled/failed）；没跑过为 null。侧栏状态点据此着色。 */
+export function getAiSessionLastStatus(id: string): string | null {
+  const tasks = stores.get(id)?.snapshot.tasks;
+  const last = tasks?.at(-1);
+  return last && isAiTaskTerminal(last.status) ? last.status : null;
+}
 /** 排队与等待外部任务都可取消，但不冒充正在运行。 */
 export function getAiQueuedCount(id: string) {
   const local = stores.get(id)?.snapshot.tasks.filter((task) => isAiTaskQueued(task.status)).length ?? 0;
@@ -489,6 +561,14 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   let background = incremental ? previous.background : undefined;
   let permissionDenied = incremental ? previous.permissionDenied : undefined;
   let mcpServers = incremental ? previous.mcpServers : undefined;
+  /** 每轮当前所处的压缩段（entry id）；用户消息一旦出现即视为新段落。 */
+  const compactionEpisodes = new Map<string, string>();
+  if (incremental) {
+    for (const entry of previous.entries) {
+      if (entry.kind === "notice" && entry.name === "compaction") compactionEpisodes.set(entry.runId, entry.id);
+      if (entry.kind === "user") compactionEpisodes.delete(entry.runId);
+    }
+  }
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const data = event.data; const key = `${event.runId}:${typeof data.id === "string" ? data.id : event.seq}`;
     seenRuns.add(event.runId);
@@ -499,17 +579,32 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       if (taskStatus) {
         const current = tasks.get(event.runId);
         tasks.set(event.runId, { runId: event.runId, status: taskStatus,
+          started: taskStatus === "running" || taskStatus === "completed" ? true
+            : current?.started ?? (isAiTaskQueued(taskStatus) ? false : undefined),
           prompt: typeof data.prompt === "string" ? data.prompt : (current?.prompt ?? prompts.get(event.runId)),
           queueIndex: Number.isSafeInteger(data.queueIndex) && Number(data.queueIndex) >= 0 ? Number(data.queueIndex) : current?.queueIndex,
           error: typeof data.error === "string" ? data.error : undefined, seq: current?.seq ?? event.seq });
+        // 排队期间编辑的是任务提示词；启动时正文必须使用最后确认的版本。
+        const prompt = tasks.get(event.runId)?.prompt;
+        if (current && isAiTaskQueued(current.status) && typeof prompt === "string") for (const entry of entries) {
+          if (entry.runId === event.runId && entry.kind === "user") entry.text = prompt;
+        }
       }
       const terminal = taskStatus !== null && isAiTaskTerminal(taskStatus);
       if (taskStatus === "running") { runId = event.runId; status = "running"; error = null; staleContext(); contextUnavailable = undefined; background = undefined; permissionDenied = undefined; }
       else if (terminal && runId === event.runId && taskStatus) { status = taskStatus; error = typeof data.error === "string" ? data.error : null; background = undefined; }
       if (terminal) for (const request of requests.values()) if (request.runId === event.runId) request.active = false;
       if (terminal && taskStatus) {
-        for (const entry of entries) if (entry.kind === "tool" && entry.runId === event.runId && entry.status === "running") {
-          entry.status = taskStatus === "completed" ? "unknown" : taskStatus;
+        for (const entry of entries) {
+          if (entry.kind === "tool" && entry.runId === event.runId && entry.status === "running") {
+            entry.status = taskStatus === "completed" ? "unknown" : taskStatus;
+          }
+          if (entry.kind === "notice" && entry.name === "compaction" && entry.runId === event.runId) {
+            const input = entry.input && typeof entry.input === "object" ? entry.input as Record<string, unknown> : {};
+            if (input.status === "compacting" || input.status === "running") {
+              entry.input = { ...input, status: taskStatus === "cancelled" ? "interrupted" : taskStatus };
+            }
+          }
         }
       }
     } else if (event.kind === "bound" && typeof data.nativeId === "string") nativeId = data.nativeId;
@@ -520,6 +615,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       // 按立即执行/编辑/取消，后端只回「这条任务不在当前窗口的队列里」——它本来就不存在。
       // 正文照旧进时间线；提示词留给真正有状态事件的那一轮。
       prompts.set(event.runId, data.text);
+      compactionEpisodes.delete(event.runId);
       const task = tasks.get(event.runId);
       if (task) tasks.set(event.runId, { ...task, prompt: data.text });
       if (!byId.has(key)) { const entry: AiEntry = { id: key, runId: event.runId, seq: event.seq, kind: "user", text: data.text,
@@ -569,6 +665,8 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         ...(typeof data.model === "string" ? { model: data.model } : {}),
         ...(typeof data.effort === "string" ? { effort: data.effort } : {}),
         ...(typeof data.permissionMode === "string" ? { permissionMode: data.permissionMode } : {}),
+        ...(typeof data.mode === "string" ? { mode: data.mode } : {}),
+        ...(typeof data.planMode === "boolean" ? { planMode: data.planMode } : {}),
       };
     } else if (event.kind === "plan_draft" && typeof data.planId === "string") {
       const draftKey = `plan-draft:${data.planId}`;
@@ -616,31 +714,84 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         : event.kind === "reasoning_delta" || data.append === true ? entry.text + text
         : text;
     } else if (event.kind === "task_list") {
-      const taskKey = `${event.runId}:task-list`;
+      // TaskUpdate 可以来自后续回合；任务清单属于会话，不能按回合截断。
+      const taskKey = "session:task-list";
       const incoming = Array.isArray(data.items) ? data.items.flatMap((item, index) => {
         if (!item || typeof item !== "object") return [];
         const value = item as Record<string, unknown>;
         const content = typeof value.content === "string" ? value.content : "";
         const id = typeof value.id === "string" && value.id ? value.id : content || `task-${index}`;
-        return [{ id, content, status: typeof value.status === "string" ? value.status : "pending", ...(typeof value.detail === "string" ? { detail: value.detail } : {}) }];
+        return [{ id, content, replacesId: typeof value.replacesId === "string" ? value.replacesId : undefined, status: typeof value.status === "string" ? value.status : "pending", ...(typeof value.detail === "string" ? { detail: value.detail } : {}) }];
       }) : [];
       let entry = byId.get(taskKey);
       const previousItems = entry?.input && typeof entry.input === "object" && !Array.isArray(entry.input) && Array.isArray((entry.input as Record<string, unknown>).items)
         ? (entry.input as { items: Array<{ id: string; content: string; status: string; detail?: string }> }).items : [];
       const items = data.replace === true ? incoming : [...previousItems];
       if (data.replace !== true) for (const item of incoming) {
-        const index = items.findIndex((old) => old.id === item.id || item.content && old.content === item.content);
+        const index = items.findIndex((old) => old.id === item.id || old.id === item.replacesId);
         if (index < 0) items.push(item); else items[index] = { ...items[index], ...item, content: item.content || items[index].content };
       }
-      if (!entry) { entry = { id: taskKey, runId: event.runId, seq: event.seq, kind: "notice", name: "task_list", text: "" }; entries.push(entry); byId.set(taskKey, entry); }
-      entry.input = { items }; entry.seq = event.seq;
+      if (data.replace === true && items.length === 0) {
+        // 清单清空就是删除当前快照，不能留下一个永远空着的“任务”壳。
+        if (entry) entries.splice(entries.indexOf(entry), 1);
+        byId.delete(taskKey);
+      } else {
+        if (!entry) { entry = { id: taskKey, runId: event.runId, seq: event.seq, kind: "notice", name: "task_list", text: "" }; byId.set(taskKey, entry); }
+        else entries.splice(entries.indexOf(entry), 1);
+        // 这是会话级最新快照，但在时间线上仍必须归到产生本次更新的新回合和新位置。
+        entry.runId = event.runId; entry.input = { items }; entry.seq = event.seq; entries.push(entry);
+      }
     } else if (["retry", "compaction", "notice", "plan"].includes(event.kind)) {
       if (event.kind === "compaction") { staleContext(); if (usage) usage = { ...usage, context: undefined }; }
-      // 普通 notice 一条一格（本轮可能有多次自动允许/自动拒绝）；retry/compaction/plan 仍按类型合并。
-      const noticeKey = event.kind === "notice" ? `${key}:notice:${event.seq}` : `${key}:notice:${event.kind}`;
-      const existing = byId.get(noticeKey);
-      if (existing) { existing.text = typeof data.text === "string" ? data.text : existing.text; existing.input = data; existing.seq = event.seq; }
-      else { const entry: AiEntry = { id: noticeKey, runId: event.runId, seq: event.seq, kind: "notice", name: event.kind, text: typeof data.text === "string" ? data.text : "", input: data }; entries.push(entry); byId.set(noticeKey, entry); }
+      // 普通 notice 一条一格（本轮可能有多次自动允许/自动拒绝）；retry/plan 仍按类型合并。
+      if (event.kind !== "compaction") {
+        const noticeKey = event.kind === "notice" ? `${key}:notice:${event.seq}` : `${key}:notice:${event.kind}`;
+        const existing = byId.get(noticeKey);
+        if (existing) { existing.text = typeof data.text === "string" ? data.text : existing.text; existing.input = data; existing.seq = event.seq; }
+        else { const entry: AiEntry = { id: noticeKey, runId: event.runId, seq: event.seq, kind: "notice", name: event.kind, text: typeof data.text === "string" ? data.text : "", input: data }; entries.push(entry); byId.set(noticeKey, entry); }
+      }
+    }
+    // 实时 episode 与原生 summary 是同一次压缩的两个身份；重放和增量都恢复别名。
+    if (event.kind === "compaction") {
+      const summaryId = typeof data.summaryId === "string" ? data.summaryId : undefined;
+      const episodeId = typeof data.episodeId === "string" ? data.episodeId : undefined;
+      const matches = entries.filter((entry) => {
+        if (entry.kind !== "notice" || entry.name !== "compaction") return false;
+        const input = entry.input as Record<string, unknown> | undefined;
+        return (summaryId && input?.summaryId === summaryId) || (episodeId && input?.episodeId === episodeId);
+      });
+      let existing = matches[0];
+      // 两个身份先各自到达，再收到关联事件时，收拢已存在的卡片。
+      for (const duplicate of matches.slice(1)) {
+        existing.input = { ...(existing.input as Record<string, unknown>), ...(duplicate.input as Record<string, unknown>) };
+        if (!existing.text) existing.text = duplicate.text;
+        entries.splice(entries.indexOf(duplicate), 1);
+        byId.delete(duplicate.id);
+        for (const [run, id] of compactionEpisodes) if (id === duplicate.id) compactionEpisodes.set(run, existing.id);
+      }
+      if (!existing) {
+        const currentId = compactionEpisodes.get(event.runId);
+        const current = currentId ? byId.get(currentId) : undefined;
+        const input = current?.input as Record<string, unknown> | undefined;
+        const starting = data.status === "compacting" || data.status === "running";
+        const newStart = starting && input?.status === "completed";
+        // 无身份的原生边界只能补给同段尚无摘要的记录，不能吞掉下一次摘要。
+        const compatible = (!episodeId || !input?.episodeId) && (!summaryId || !input?.summaryId);
+        if (current && compatible && !newStart && (!input?.summaryId || !data.metadata)) existing = current;
+      }
+      if (!existing) {
+        existing = { id: `${event.runId}:compaction:${event.seq}`, runId: event.runId, seq: event.seq, kind: "notice", name: "compaction", text: "" };
+        entries.push(existing);
+        byId.set(existing.id, existing);
+      }
+      // 摘要那条的 status 是投影时写死的 completed（history.rs），它并不知道那次压缩是怎么结束的；
+      // 卡片上已经观察到的状态（实时边界报的，或取消后写的 interrupted）不许被它改写。
+      const observed = existing.input as Record<string, unknown> | undefined;
+      existing.input = { ...observed, ...data,
+        ...(summaryId !== undefined && observed?.status !== undefined ? { status: observed.status } : {}) };
+      existing.seq = event.seq;
+      if (typeof data.text === "string" && data.text) existing.text = data.text;
+      compactionEpisodes.set(event.runId, existing.id);
     } else if ((event.kind === "permission" || event.kind === "question") && typeof data.requestId === "string") {
       if (!requests.has(data.requestId)) entries.push({ id: `${key}:request`, runId: event.runId, seq: event.seq, kind: "request", text: "", requestId: data.requestId });
       requests.set(data.requestId, { requestId: data.requestId, runId: event.runId, seq: event.seq, kind: event.kind, title: String(data.title ?? ""), detail: String(data.detail ?? ""),
@@ -657,6 +808,8 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       if (request) { request.active = false; if (data.answer !== undefined && data.answer !== null) request.answer = data.answer as AiRequestAnswer; }
     }
   }
+  // 同一次压缩的两条记录（实时状态 + 原生日志里的摘要正文）由后端在读事件时合并：
+  // 前端只看得到当前这一页，两张卡很少同页，按页折叠注定时对时错（见 store.rs 的 compaction_fold）。
   // 全量重放期间保留尚未收到后端事件的提交项；其余状态一律由事件决定。
   // 这一批事件里已经出现过的那一轮不算：它的状态由事件说了算，本地那份只是往返期间的占位。
   if (!incremental) for (const task of previous.tasks) {
@@ -720,6 +873,11 @@ function applySummary(state: State) {
 /** 更新单项后重新选择当前运行项；排队项绝不能覆盖停止按钮所指向的 run id。 */
 function updateTask(id: string, next: AiTask) {
   const state = store(id);
+  // 本窗口刚提交的新状态比上一轮三秒轮询更新；先丢掉旧探针，下一轮轮询再重新确认。
+  if (isAiTaskLive(next.status)) { activities.delete(id); activityQueued.delete(id); }
+  const current = state.snapshot.tasks.find((task) => task.runId === next.runId);
+  next = { ...next, started: current?.started === true || next.status === "running" || next.status === "completed" ? true
+    : next.started ?? (isAiTaskQueued(next.status) ? false : undefined) };
   const tasks = state.snapshot.tasks.some((task) => task.runId === next.runId)
     ? state.snapshot.tasks.map((task) => task.runId === next.runId ? next : task)
     : [...state.snapshot.tasks, next];
@@ -735,14 +893,19 @@ function updateTask(id: string, next: AiTask) {
 /** 后端摘要覆盖分页之外的活动任务；已有 prompt 优先，避免刷新时任务只剩编号。 */
 function mergeActiveTasks(state: State, summaries: AiTask[], latestSeq: number) {
   const activeIds = new Set(summaries.map((summary) => summary?.runId).filter((id): id is string => typeof id === "string"));
+  // 历史请求在途时仍会收到实时状态；task.seq 是入队序号，不能拿它判定状态的新旧。
+  // 摘要只覆盖其水位以内的任务状态，避免重开时把 running 改回 queued 或复活已结束的回合。
+  const newerStatusIds = new Set([...state.events.values()]
+    .filter((event) => event.seq > latestSeq && event.kind === "status" && isAiTaskBackendStatus(event.data.status))
+    .map((event) => event.runId));
   // activeTasks 是后端全日志摘要；本地仍活跃但摘要中不存在的项已经终结，不能继续显示幽灵队列。
   state.snapshot = { ...state.snapshot, tasks: state.snapshot.tasks.map((task) =>
-    isAiTaskLive(task.status) && task.seq <= latestSeq && !activeIds.has(task.runId)
+    isAiTaskLive(task.status) && task.seq <= latestSeq && !activeIds.has(task.runId) && !newerStatusIds.has(task.runId)
       ? { ...task, status: "cancelled" as const } : task) };
   for (const summary of summaries) {
-    if (!summary || typeof summary.runId !== "string" || !isAiTaskBackendActive(summary.status)) continue;
+    if (!summary || typeof summary.runId !== "string" || !isAiTaskBackendActive(summary.status) || newerStatusIds.has(summary.runId)) continue;
     const current = state.snapshot.tasks.find((task) => task.runId === summary.runId);
-    const task = { ...summary, prompt: summary.prompt ?? current?.prompt, seq: Number.isSafeInteger(summary.seq) ? summary.seq : current?.seq ?? 0 };
+    const task = { ...summary, started: summary.status === "running", prompt: summary.prompt ?? current?.prompt, seq: Number.isSafeInteger(summary.seq) ? summary.seq : current?.seq ?? 0 };
     const tasks = state.snapshot.tasks.filter((item) => item.runId !== task.runId).concat(task).sort((a, b) => a.seq - b.seq);
     state.snapshot = { ...state.snapshot, tasks };
   }
@@ -763,10 +926,16 @@ function applyFailure(state: State) {
 }
 /** 只推进正文与工具输出的高频事件；词表外的任何 kind 都算紧急，宁可多通知一次。 */
 const STREAMING_EVENT_KINDS = new Set(["text", "message", "reasoning", "reasoning_delta", "tool", "command_output"]);
-function merge(events: AiRuntimeEvent[]) {
+function merge(events: AiRuntimeEvent[], owned = false) {
   const touched = new Map<string, AiRuntimeEvent[]>();
+  let ownershipTouched = false;
   for (const event of events) {
     if (!event || typeof event.sessionId !== "string" || typeof event.runId !== "string" || !Number.isSafeInteger(event.seq) || event.seq < 1 || !event.data || typeof event.data !== "object" || deleted.has(event.sessionId)) continue;
+    // Tauri 事件只来自当前桌面进程，可以建立控制权；磁盘历史调用 merge 时不能。
+    if (owned && event.kind === "status" && isAiTaskBackendStatus(event.data.status)) {
+      markOwnedTask(event.sessionId, event.runId, event.data.status);
+      ownershipTouched = true;
+    }
     const state = store(event.sessionId);
     if (state.events.has(event.seq)) continue;
     state.events.set(event.seq, event);
@@ -777,9 +946,10 @@ function merge(events: AiRuntimeEvent[]) {
     const appendOnly = batch.every((event) => event.seq > state.maxSeq);
     state.snapshot = projectAiEvents(appendOnly ? batch : [...state.events.values()], state.snapshot, appendOnly);
     state.maxSeq = batch.reduce((max, event) => Math.max(max, event.seq), state.maxSeq);
+    if (!appendOnly && state.activeSummary) mergeActiveTasks(state, state.activeSummary.tasks, state.activeSummary.seq);
     applySummary(state); applyFailure(state);
   }
-  if (!touched.size) return;
+  if (!touched.size) { if (ownershipTouched) changed(); return; }
   // 只有正文与工具进度攒到下一帧；状态、审批、用量这些会改按钮和卡片的事件当场通知，
   // 否则「停止」按钮和审批卡片会比它们该出现的时间晚一帧。
   const streamingOnly = [...touched.values()].flat().every((event) => STREAMING_EVENT_KINDS.has(event.kind));
@@ -801,6 +971,7 @@ interface RuntimeFailure {
 function receiveFailure(failure: RuntimeFailure) {
   if (!failure || typeof failure.sessionId !== "string" || typeof failure.runId !== "string" || typeof failure.error !== "string" || deleted.has(failure.sessionId)) return;
   const state = store(failure.sessionId);
+  markOwnedTask(failure.sessionId, failure.runId, "failed");
   state.failure = { runId: failure.runId, error: failure.error };
   const task = state.snapshot.tasks.find((item) => item.runId === failure.runId);
   if (task) state.snapshot = { ...state.snapshot, tasks: state.snapshot.tasks.map((item) => item.runId === failure.runId ? { ...item, status: "failed" as const, error: failure.error } : item) };
@@ -814,7 +985,11 @@ function receiveFailure(failure: RuntimeFailure) {
 export function ensureAiRuntimeListener(): Promise<void> {
   if (!isTauri()) return Promise.reject(new Error("AI runtime requires the Forge desktop app"));
   if (!listening) listening = (async () => {
-    const unlisten = await listen<AiRuntimeEvent[]>("ai-runtime://events", ({ payload }) => { if (Array.isArray(payload)) merge(payload); });
+    const unlisten = await listen<AiRuntimeEvent[]>("ai-runtime://events", ({ payload }) => {
+      if (!Array.isArray(payload)) return;
+      merge(payload, true);
+      if (typeof window !== "undefined" && payload.some((event) => event.kind === "user" || event.kind === "bound")) window.dispatchEvent(new Event("ai-session-metadata"));
+    });
     try { await listen<RuntimeFailure>("ai-runtime://errors", ({ payload }) => receiveFailure(payload)); }
     catch (error) { unlisten(); throw error; }
   })().catch((error) => { listening = null; throw error; });
@@ -833,25 +1008,49 @@ const PAGE_LIMIT = 500;
  */
 export async function loadAiMessages(sessionId: string, workspace: string, refresh = false): Promise<void> {
   const state = store(sessionId); state.workspace = workspace;
-  if (state.loading) return state.loading;
+  if (state.loading) {
+    if (!refresh) return state.loading;
+    // 旧分页不能代替重连刷新；即使旧请求失败，也仍需尝试获取最新活动任务。
+    if (!state.refreshing) state.refreshing = (async () => {
+      while (state.loading) { try { await state.loading; } catch { /* 最新页请求会独立报告结果。 */ } }
+      if (!deleted.has(sessionId)) await loadAiMessages(sessionId, workspace, true);
+    })().finally(() => { state.refreshing = undefined; });
+    return state.refreshing;
+  }
   if (state.snapshot.loaded && !refresh) return;
   const pending = (async () => {
     patch(sessionId, { loading: true, error: null });
     try {
       await ensureAiRuntimeListener();
-      const page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, limit: PAGE_LIMIT });
+      let page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, limit: PAGE_LIMIT });
       if (deleted.has(sessionId)) return;
+      const initialPage = page;
+      merge(page.events);
+      // 首屏已成功就保存向前游标；后续补采失败也不能让已显示的历史无法翻页。
+      patch(sessionId, { hasOlder: page.hasOlder && page.events.length > 0, cursor: page.events.length ? page.nextSeq : 0 });
+      // 最新页之后可能还有原生补采；按事件游标续读，保留最初的向前分页边界。
+      while (page.hasMore) {
+        const afterSeq = page.events.at(-1)?.seq;
+        if (afterSeq === undefined) throw new Error("原生历史同步没有推进游标");
+        page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, afterSeq, limit: PAGE_LIMIT });
+        if (deleted.has(sessionId)) return;
+        if (page.hasMore && (!page.events.length || page.events.at(-1)!.seq <= afterSeq)) throw new Error("原生历史同步没有推进游标");
+        merge(page.events);
+      }
       if (Number.isSafeInteger(page.latestSeq) && page.latestRunId && page.status) state.summary = { seq: page.latestSeq!, runId: page.latestRunId, status: page.status };
-      merge(page.events); applySummary(state); applyFailure(state);
+      applySummary(state); applyFailure(state);
       // 计划记录不在事件分页里：事件投影优先（带 seq），其余由 plans.json 补齐。
       if (Array.isArray(page.plans) && page.plans.length) {
         const merged = new Map(page.plans.map((plan) => [`${plan.planId}:${plan.revision}`, plan]));
         for (const plan of state.snapshot.plans) merged.set(`${plan.planId}:${plan.revision}`, plan);
         state.snapshot = { ...state.snapshot, plans: [...merged.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision) };
       }
-      if (Array.isArray(page.activeTasks)) mergeActiveTasks(state, page.activeTasks, Number.isSafeInteger(page.latestSeq) ? page.latestSeq! : state.maxSeq);
+      if (Array.isArray(page.activeTasks)) {
+        state.activeSummary = { tasks: page.activeTasks, seq: Number.isSafeInteger(page.latestSeq) ? page.latestSeq! : state.maxSeq };
+        mergeActiveTasks(state, state.activeSummary.tasks, state.activeSummary.seq);
+      }
       // 空会话没有游标可言；此时 nextSeq 是 0，留着它只会让「更早」按钮点亮又翻不出东西。
-      patch(sessionId, { loaded: true, hasOlder: page.hasOlder && page.events.length > 0, cursor: page.events.length ? page.nextSeq : 0, nativeId: state.snapshot.nativeId ?? page.nativeId, ...(page.warning ? { error: page.warning } : {}) });
+      patch(sessionId, { loaded: true, hasOlder: initialPage.hasOlder && initialPage.events.length > 0, cursor: initialPage.events.length ? initialPage.nextSeq : 0, nativeId: state.snapshot.nativeId ?? page.nativeId, ...(page.warning || initialPage.warning ? { error: page.warning ?? initialPage.warning } : {}) });
     } catch (error) { if (!deleted.has(sessionId)) patch(sessionId, { error: String(error) }); throw error; }
     finally { state.loading = null; if (!deleted.has(sessionId)) patch(sessionId, { loading: false }); }
   })();
@@ -866,20 +1065,25 @@ export async function loadAiMessages(sessionId: string, workspace: string, refre
  * `limit` 由调用方按还剩多少距离要给：跳到某一轮时不该先取满一页再等下一页，
  * 但也不许小于 PAGE_LIMIT，否则一屏滚动就只前进几条。
  */
-export async function loadOlderAiMessages(sessionId: string, workspace: string, limit = PAGE_LIMIT): Promise<void> {
+export async function loadOlderAiMessages(sessionId: string, workspace: string, limit = PAGE_LIMIT, pages = 1): Promise<void> {
   const state = store(sessionId); state.workspace = workspace;
   if (state.loading || !state.snapshot.hasOlder || !state.snapshot.cursor) return;
   const pending = (async () => {
     patch(sessionId, { loading: true, error: null });
     try {
       await ensureAiRuntimeListener();
-      const page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, beforeSeq: state.snapshot.cursor, limit });
-      if (deleted.has(sessionId)) return;
-      merge(page.events);
-      patch(sessionId, {
-        hasOlder: page.hasOlder && page.events.length > 0,
-        cursor: page.events.length ? Math.min(state.snapshot.cursor, page.nextSeq) : state.snapshot.cursor,
-      });
+      // 字节预算会把大页截短；连续准备三页，整批共用加载锁，逐页显示并保持阅读位置。
+      for (let index = 0; index < Math.min(3, Math.max(1, pages)); index++) {
+        const cursor = state.snapshot.cursor;
+        const page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, beforeSeq: cursor, limit });
+        if (deleted.has(sessionId)) return;
+        const advanced = page.events.length > 0 && page.nextSeq < cursor;
+        // 重复页属于协议错误，不可伪装成历史耗尽；保留游标供用户重试。
+        if (page.events.length > 0 && !advanced) throw new Error("历史分页游标未前进，请重试");
+        merge(page.events);
+        patch(sessionId, { hasOlder: page.hasOlder && advanced, cursor: advanced ? page.nextSeq : cursor });
+        if (!state.snapshot.hasOlder) break;
+      }
     } catch (error) { if (!deleted.has(sessionId)) patch(sessionId, { error: String(error) }); throw error; }
     finally { state.loading = null; if (!deleted.has(sessionId)) patch(sessionId, { loading: false }); }
   })();
@@ -971,11 +1175,14 @@ export async function sendAiMessage(session: AiSession, workspace: string, promp
   const seq = Math.max(0, ...state.snapshot.tasks.map((task) => task.seq)) + 0.001;
   updateTask(session.id, { runId, status: "submitting", prompt, seq });
   try {
-    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, workspace, title: session.title, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), fast: options.fast ?? null, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
+    // Fast 是二态开关；未开启就明确关闭，不能暗中继承配置中的服务等级。
+    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, workspace, title: session.title, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), mode: options.mode ?? (options.planMode ? "plan" : null), fast: options.fast ?? false, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
     const current = store(session.id).snapshot.tasks.find((task) => task.runId === runId);
+    const accepted = result?.status;
     // 只接受「后端说这一轮还没结束」的返回值：排队/等待外部/立即运行。
     // 本地占位是 submitting，后端答成别的词表外字符串时宁可继续等事件，也不照着改。
-    if (current && current.status === "submitting" && isAiTaskBackendActive(result.status)) updateTask(session.id, { ...current, status: result.status });
+    if (current && current.status === "submitting" && isAiTaskBackendActive(accepted)) updateTask(session.id, { ...current, status: accepted });
+    if (accepted === "submitting" || isAiTaskBackendActive(accepted)) { markOwnedTask(session.id, runId, accepted); changed(); }
   }
   catch (error) {
     // IPC 报错不等于后端没收到请求：进程可能已经在跑。
@@ -988,7 +1195,7 @@ export async function sendAiMessage(session: AiSession, workspace: string, promp
 
 /** 计划决策：批准会开一次执行回合，要求修改会带着反馈继续规划。 */
 export type AiPlanDecision = "approve" | "requestChanges";
-export async function decideAiPlan(session: AiSession, workspace: string, plan: AiPlanReview, decision: AiPlanDecision, feedback?: string): Promise<void> {
+export async function decideAiPlan(session: AiSession, workspace: string, plan: AiPlanReview, decision: AiPlanDecision, feedback?: string, options: AiRunOptions = {}, additionalDirs: string[] = []): Promise<void> {
   await ensureAiRuntimeListener();
   const state = store(session.id); state.workspace = workspace;
   state.failure = null;
@@ -998,11 +1205,15 @@ export async function decideAiPlan(session: AiSession, workspace: string, plan: 
   try {
     const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: {
       sessionId: session.id, runId, provider: session.provider, workspace, title: session.title,
-      prompt: "", images: [], trusted: true, model: null, effort: null, permission: "inherit", fast: null,
+      // 计划决策只替换执行正文，模型、强度、权限和授权目录仍使用用户当前选择。
+      prompt: "", images: [], trusted: true, model: options.model || null, effort: options.effort || null,
+      permission: options.permission ?? "inherit", fast: options.fast ?? false, additionalDirs,
       plan: { planId: plan.planId, revision: plan.revision, decision, feedback: feedback ?? null },
     } });
     const current = store(session.id).snapshot.tasks.find((task) => task.runId === runId);
-    if (current && current.status === "submitting" && isAiTaskBackendActive(result.status)) updateTask(session.id, { ...current, status: result.status });
+    const accepted = result?.status;
+    if (current && current.status === "submitting" && isAiTaskBackendActive(accepted)) updateTask(session.id, { ...current, status: accepted });
+    if (accepted === "submitting" || isAiTaskBackendActive(accepted)) { markOwnedTask(session.id, runId, accepted); changed(); }
   } catch (error) {
     try { await invoke("ai_runtime_stop", { runId }); receiveFailure({ sessionId: session.id, runId, error: String(error) }); }
     catch (stopError) { patch(session.id, { error: `${String(error)}\n${String(stopError)}` }); }
@@ -1013,23 +1224,27 @@ export async function decideAiPlan(session: AiSession, workspace: string, plan: 
 export async function deferAiPlan(sessionId: string, workspace: string, planId: string, revision: number): Promise<void> {
   await invoke("ai_runtime_plan_defer", { sessionId, workspace, planId, revision });
 }
-/** 停止一轮运行。先把本地状态切成「停止中」禁用重复点击，成功后再落成已取消并关掉待答复卡片。 */
+/** 停止一轮运行。终态只能来自后端事件；IPC 返回成功本身不能伪造 CLI 已中断。 */
 export async function stopAiRun(runId: string) {
   const item = [...stores].find(([, state]) => state.snapshot.tasks.some((task) => task.runId === runId));
   const task = item?.[1].snapshot.tasks.find((candidate) => candidate.runId === runId);
-  if (item && task?.status === "running") patch(item[0], { stopping: true });
+  // 排队项可能在 IPC 往返期间刚好启动；所有活跃项都先进入缓冲态，终态事件再解除。
+  if (item && task && isAiTaskLive(task.status)) patch(item[0], { stopping: true });
   try {
     await invoke("ai_runtime_stop", { runId });
-    if (item && task && isAiTaskLive(task.status)) updateTask(item[0], { ...task, status: "cancelled" });
   }
-  catch (error) { if (item) patch(item[0], { error: String(error) }); throw error; }
-  finally { if (item) patch(item[0], { stopping: false }); }
+  catch (error) {
+    // 后端拒绝时中断并未成立，恢复可操作状态；成功时则一直保留缓冲，直到终态事件确认。
+    if (item) patch(item[0], { stopping: false, error: String(error) });
+    throw error;
+  }
 }
 /** 本窗口这份快照里已经没有这一条待办了：要么已经开始或结束，要么状态还没刷回来。
  *  「不存在」太含糊——队列活在收下它的那个进程里，跨窗口的情况由后端那句更准的说明负责。 */
 const NOT_QUEUED_LOCALLY = "这一条已经不在本窗口的待办列表里（可能已经开始或结束了）";
 function queuedTaskOwner(runId: string) {
-  return [...stores].find(([, state]) => state.snapshot.tasks.some((task) => task.runId === runId && isAiTaskQueued(task.status)));
+  return [...stores].find(([id, state]) => activityQueuedRunIds.get(id)?.includes(runId)
+    && state.snapshot.tasks.some((task) => task.runId === runId && isAiTaskQueued(task.status)));
 }
 /** 编辑尚未启动的任务；运行中的任务不允许伪装成可编辑队列项。 */
 export async function editQueuedAiTask(runId: string, prompt: string) {
@@ -1056,14 +1271,11 @@ export async function clearQueuedAiTasks(sessionId: string) {
 /** 停止全部运行。用于关闭 AI 功能前的兜底，把所有在跑的会话一次性落成已取消。 */
 export async function stopAllAiRuns() {
   await invoke("ai_runtime_stop_all");
-  for (const [id, state] of stores) for (const task of state.snapshot.tasks) {
-    if (isAiTaskLive(task.status)) updateTask(id, { ...task, status: "cancelled" });
-  }
 }
 /** 答复一个请求：`{allow}` 表示授权，`{answers}` 表示提问的回答。 */
 export async function respondAiRequest(runId: string, requestId: string, answer: AiRequestAnswer) { await invoke("ai_runtime_respond", { runId, requestId, answer }); }
 /** 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。 */
-export async function deleteAiRuntimeSession(sessionId: string, workspace: string) { await invoke("ai_runtime_delete", { sessionId, workspace }); deleted.add(sessionId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); changed(); }
+export async function deleteAiRuntimeSession(sessionId: string, workspace: string) { await invoke("ai_runtime_delete", { sessionId, workspace }); deleted.add(sessionId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); changed(); }
 /**
  * 归档 / 取消归档。后端只改 `meta.json` 的一个布尔位，事件日志与 CLI 原生会话都不动，
  * 所以这里的失败只会让本地状态没变——本地列表始终以 `ai_runtime_list` 为准。

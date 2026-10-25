@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Archive, ArrowUpRight, Brain, Check, CheckCircle2, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, Loader2, Paperclip, Pencil, Pin, PinOff, Plane, Plus, Send, Settings, Square, Timer, Trash2, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Archive, ArrowUpRight, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, ListTodo, Loader2, Paperclip, Pencil, Pin, PinOff, Plane, Plus, Send, Settings, Square, Timer, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
@@ -14,9 +14,10 @@ import AiActionDialog from "./AiActionDialog";
 import { useI18n } from "../i18n";
 import { AI_NAMES, cliDesktopAvailable } from "../lib/aiCli";
 import { assetUrl } from "../lib/fs";
-import { aiArrival, aiArrivalOf, formatAiClock, useAiElapsed } from "../lib/aiClock";
+import { aiArrival, aiArrivalOf, formatAiClock, formatAiSeconds, useAiElapsed } from "../lib/aiClock";
 import { useAiChatWidth } from "../lib/aiChatWidth";
-import { decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiMessage, stopAiRun, useAiOutline, useAiRuntime } from "../lib/aiRuntime";
+import { compactionFacts } from "../lib/aiCompaction";
+import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiMessage, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
 import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent } from "../lib/aiRuntime";
 import { buildNavRows, NAV_PAGE, navCount, visibleNavRows } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
@@ -27,30 +28,97 @@ import { commandSuggestions, completeCommand, filterCommandSuggestions, localCom
 import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft } from "../lib/aiDrafts";
 import type { PromptBrowse } from "../lib/aiDrafts";
 import { compactDecision, COMPACT_COMMAND_TEXT, readCompactPrefs, writeCompactPrefs } from "../lib/aiCompact";
-import { isNearBottom, trackFollow, unseenCount } from "../lib/aiFollow";
+import { isNearBottom, OlderHistoryScroll, trackFollow, unseenCount } from "../lib/aiFollow";
 import type { FollowAnchor } from "../lib/aiFollow";
-import { groupAiTimeline, liveThinking, TIMELINE_WINDOW, windowAiTimeline } from "../lib/aiTimeline";
+import { conversationItems, groupAiTimeline, liveThinking, TIMELINE_WINDOW, windowAiTimeline } from "../lib/aiTimeline";
 import { registerDropOwner } from "../lib/dropOwner";
 import { collectPastedImages } from "../lib/aiClipboard";
 import Popover from "./Popover";
 import { takeAiDraftHandoff } from "../lib/aiDraftSession";
-import { isAiTaskQueued, isAiTaskTerminal } from "../lib/aiTaskStatus";
+import { refreshAiSessionHistory } from "../hooks/useAiSessions";
+import { useCollapsibleOverflow } from "../hooks/useCollapsibleOverflow";
+import { aiQueueOrder, isAiTaskTerminal } from "../lib/aiTaskStatus";
 import type { AiComposerHandle } from "./AiComposerOptions";
 import AiComposerOptions from "./AiComposerOptions";
 import AiComposerShell from "./AiComposerShell";
 import AiContextChip from "./AiContextChip";
-import { loadAiOptions, saveAiOptions } from "../lib/aiOptions";
-import AiToolDetails, { AiToolCall, AiToolSummary } from "./AiToolDetails";
-import { AiOpenFileProvider, AiFilePath, type AiOpenFile } from "./AiFileLink";
+import { aiNormalMode, loadAiOptions, saveAiOptions } from "../lib/aiOptions";
+import AiToolDetails, { AiToolCall, AiToolSummary, CodeText } from "./AiToolDetails";
+import AiDiffEditor from "./AiDiffEditor";
+import { useAiDiffViewMode } from "../lib/aiDiffView";
+import { AiOpenFileProvider, type AiOpenFile } from "./AiFileLink";
 import { aiSessionStorageKey } from "../lib/aiSessions";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
 import { summarizeAiFileEdits, type AiEditSummary, type AiEditedFile } from "../lib/aiTools";
 
-const trustedRoots = new Set<string>();
 interface PastedImage { path: string; preview: string; name: string }
 /** 选择器里的筛选提示；真正认格式的是后端的文件头嗅探，扩展名写错也骗不过去。 */
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
 const detail = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
+
+/** 触发方式：只认两家 CLI 都会给的这两个词，认不出的照原样浮出——不猜，也不丢。 */
+const COMPACTION_TRIGGERS: Record<string, "ai.chat.compactionTriggerManual" | "ai.chat.compactionTriggerAutomatic"> = {
+  manual: "ai.chat.compactionTriggerManual",
+  auto: "ai.chat.compactionTriggerAutomatic",
+  automatic: "ai.chat.compactionTriggerAutomatic",
+};
+
+/**
+ * 压缩摘要正文：裁到固定高度，只有真被裁掉了底部才出现展开/收起页脚
+ * （对照参考实现的 CompactionSummaryBody）。
+ */
+function AiCompactionSummaryBody({ id, text }: { id: string; text: string }) {
+  const { t } = useI18n();
+  const { contentRef, isOverflowing, expanded, toggle } = useCollapsibleOverflow<HTMLDivElement>(text);
+  return <div id={id} className="ai-compaction-summary">
+    <div ref={contentRef} className={`ai-compaction-summary-body${expanded ? "" : " is-clipped"}${!expanded && isOverflowing ? " is-faded" : ""}`}>
+      <AiMarkdown text={text} />
+    </div>
+    {isOverflowing ? <button type="button" className="ai-compaction-summary-more" onClick={toggle} aria-expanded={expanded}>
+      {t(expanded ? "ai.chat.collapseMessage" : "ai.chat.expandMessage")}
+      {expanded ? <ChevronUp size={13} aria-hidden /> : <ChevronDown size={13} aria-hidden />}
+    </button> : null}
+  </div>;
+}
+
+/**
+ * 压缩分割线（对照参考实现的 ContextCompactionCard）：居中的一道无框分割线，左右渐隐的
+ * 横线夹着「图标 + 状态 + token 差值 + 耗时」，摘要开关就在这一行里。它是会话里的一道
+ * 分界标记——「这里压缩过」——不是一次工具调用，所以不给卡片外壳。
+ *
+ * 摘要默认折叠，分界线因此始终只占一行。触发方式浮在 title 里：它回答的是「为什么会
+ * 这样」，比 token 差值次一级。耗时只报 CLI 自己给的，不拿前端看到两个状态的时刻差
+ * 去冒充。数字认不出就不显示——没有数字比编一个数字好。
+ */
+function AiCompactionDivider({ entry }: { entry: AiEntry }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const facts = compactionFacts(entry);
+  // 前后相等就不是真压缩掉了什么，退回不带数字的说法，别让人以为出了 bug。
+  const label = facts.failed ? t("ai.chat.compactionFailed")
+    : facts.running ? t("ai.chat.compactionRunning")
+    : facts.before !== undefined && facts.after !== undefined && facts.before !== facts.after
+      ? t("ai.chat.compactionTokens", { before: facts.before.toLocaleString(), after: facts.after.toLocaleString() })
+      : t("ai.chat.compactionCompleted");
+  const triggerKey = facts.trigger ? COMPACTION_TRIGGERS[facts.trigger.toLowerCase()] : undefined;
+  const duration = !facts.running && facts.durationMs !== undefined ? formatAiSeconds(facts.durationMs) : null;
+  return <div className="ai-compaction-container">
+    <div className={`ai-compaction-notice${facts.failed ? " is-failed" : facts.running ? " is-running" : " is-completed"}`}
+      role="status" title={triggerKey ? t(triggerKey) : facts.trigger}>
+      <Archive size={13} aria-hidden />
+      <span className={facts.running ? "ai-activity-shimmer" : undefined}>{label}</span>
+      {duration ? <span className="ai-compaction-duration">· {duration}</span> : null}
+      {facts.summary ? <button type="button" className="ai-compaction-toggle" aria-expanded={open}
+        aria-controls={open ? bodyId : undefined} onClick={() => setOpen((value) => !value)}>
+        {t("ai.chat.compactionSummary")}
+        {open ? <ChevronUp size={13} aria-hidden /> : <ChevronDown size={13} aria-hidden />}
+      </button> : null}
+    </div>
+    {facts.summary && open ? <AiCompactionSummaryBody id={bodyId} text={facts.summary} /> : null}
+  </div>;
+}
+
 function TimelineNotice({ entry }: { entry: AiEntry }) {
   const { t } = useI18n();
   const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
@@ -59,30 +127,7 @@ function TimelineNotice({ entry }: { entry: AiEntry }) {
     const decision = String(data.decision ?? "");
     return <div className="ai-compaction-notice" role="status"><strong>{t("ai.plan.decision")}</strong><span>{t(decision === "approve" ? "ai.plan.decidedApprove" : decision === "requestChanges" ? "ai.plan.decidedChanges" : "ai.plan.decidedDefer")}</span></div>;
   }
-  if (entry.name === "compaction") {
-    const runningStatus = String(data.status ?? "completed") === "running";
-    // Claude 的 compact_metadata 带 token 前后值；Codex 只报状态。字段名按几代 CLI 的
-    // 写法都试一遍，认不出就不显示数字——没有数字比编一个数字好。
-    const meta = data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata) ? data.metadata as Record<string, unknown> : {};
-    const pickNumber = (...keys: string[]) => {
-      for (const key of keys) {
-        const value = meta[key];
-        if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
-      }
-      return undefined;
-    };
-    const before = pickNumber("tokensBefore", "before_tokens", "tokens_before");
-    const after = pickNumber("tokensAfter", "after_tokens", "tokens_after");
-    // 压缩通常几十秒：起止照「前端第一次看到 running / completed」记，历史里翻出来的没有起点就不算。
-    if (runningStatus) aiArrival(`compaction:${entry.runId}:start`);
-    const start = aiArrivalOf(`compaction:${entry.runId}:start`);
-    const duration = !runningStatus && start !== undefined ? aiArrival(`compaction:${entry.runId}:end`) - start : undefined;
-    return <div className={`ai-compaction-notice is-${String(data.status ?? "completed")}`} role="status">
-      <Archive size={14} aria-hidden /><strong>{t("ai.chat.compaction")}</strong><span>{t(runningStatus ? "ai.chat.compactionRunning" : "ai.chat.compactionCompleted")}</span>
-      {before !== undefined && after !== undefined ? <span className="ai-compaction-tokens">{before.toLocaleString()} → {after.toLocaleString()} tok</span> : null}
-      {duration !== undefined && duration >= 1000 ? <span className="ai-compaction-duration">{formatAiClock(duration)}</span> : null}
-    </div>;
-  }
+  if (entry.name === "compaction") return <AiCompactionDivider entry={entry} />;
   if (entry.name === "task_list" || entry.name === "plan" && Array.isArray(data.plan)) {
     const source = entry.name === "task_list" ? data.items : data.plan;
     const steps = Array.isArray(source) ? source.flatMap((item) => item && typeof item === "object" ? [item as Record<string, unknown>] : []).filter((item) => typeof (item.content ?? item.step) === "string") : [];
@@ -297,9 +342,7 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
             </button>
             {/* 当前行展开文件卡（对照参考实现的展开态）：路径只有已加载进正文的那几轮才有，没加载的只报数量。 */}
             {row.id === activeId && row.paths?.length ? <div className="ai-msgnav-files-card">
-              {row.paths.slice(0, 8).map((path) => <AiFilePath key={path} path={path} className="ai-msgnav-file">
-                <code>{path.split(/[\\/]/).pop() || path}</code>
-              </AiFilePath>)}
+              {row.paths.slice(0, 8).map((path) => <code key={path} className="ai-msgnav-file">{path.split(/[\\/]/).pop() || path}</code>)}
               {row.paths.length > 8 ? <span className="ai-msgnav-files-more">+{row.paths.length - 8}</span> : null}
             </div> : null}
           </div>
@@ -328,13 +371,16 @@ function aiRunUsageBaseline(runId: string, total: number | undefined): number | 
  * 补「耗时 / 本轮编辑统计 / tok/s」三档数据——按面板宽度分档出现，窄栏只留状态字。
  * 计时与 token 起点都从本轮第一次被前端看到起算，历史里翻开的旧轮没有这些数就不显示。
  */
-function AiLiveStats({ provider, runId, entries, usage, statusText }: {
+function AiLiveStats({ provider, runId, entries, usage, statusText, planMode }: {
   provider: AiSession["provider"];
   runId: string | null;
   entries: AiEntry[];
   usage?: import("../lib/aiUsage").AiUsage;
   statusText: string;
+  /** 本轮请求真实带去的模式（Codex collaborationMode / Claude --permission-mode plan）。 */
+  planMode: boolean;
 }) {
+  const { t } = useI18n();
   const elapsed = useAiElapsed(true, `run:${runId ?? ""}`);
   const edits = useMemo(() => summarizeAiFileEdits(entries.filter((entry) => entry.runId === runId)), [entries, runId]);
   const baseline = aiRunUsageBaseline(runId ?? "", usage?.total);
@@ -344,6 +390,7 @@ function AiLiveStats({ provider, runId, entries, usage, statusText }: {
   return <div className="ai-live-stats" role="status">
     <AiProviderIcon provider={provider} size={13} />
     <span>{statusText}</span>
+    {planMode ? <span className="ai-live-item ai-live-mode">{t("ai.chat.planModeActive")}</span> : null}
     {elapsed !== undefined && elapsed >= 10000 ? <span className="ai-live-item"><Timer size={12} aria-hidden />{formatAiClock(elapsed)}</span> : null}
     {edits.fileCount ? <span className="ai-live-item is-wide"><FilePenLine size={12} aria-hidden />{edits.fileCount}F{edits.additions !== undefined ? <> +{edits.additions}/−{edits.deletions ?? 0}</> : null}</span> : null}
     {speed !== undefined ? <span className="ai-live-item is-wider"><Plane size={12} aria-hidden />{speed.toFixed(1)} tok/s</span> : null}
@@ -361,7 +408,17 @@ function AiReplyArtifacts({ summary }: { summary: AiEditSummary }) {
   const changed = summary.files.filter((file) => file.kind !== "add");
   const [openNew, setOpenNew] = useState(true);
   const [openChanged, setOpenChanged] = useState(false);
+  /** 行内展开的文件：点行就地预览它的 diff（改动/删除）或建档内容（新增），不跳编辑器。 */
+  const [expanded, setExpanded] = useState<string | null>(null);
   if (!added.length && !changed.length) return null;
+  const [sideBySide] = useAiDiffViewMode();
+  const preview = (file: AiEditedFile) => {
+    if (file.kind === "add" && file.content !== undefined) {
+      return <CodeText text={file.content} lang={file.path.split(".").pop()} />;
+    }
+    return <>{file.diff !== undefined ? <AiDiffEditor diff={file.diff} path={file.path} sideBySide={sideBySide === "split"} /> : null}
+      {file.fragments?.map((fragment, index) => <div key={index}>{fragment.before !== undefined ? <CodeText text={fragment.before} lang={file.path.split(".").pop()} /> : null}{fragment.after !== undefined ? <CodeText text={fragment.after} lang={file.path.split(".").pop()} /> : null}</div>)}</>;
+  };
   const card = (title: string, files: AiEditedFile[], open: boolean, toggle: () => void, icon: ReactNode) => files.length ? <details className={`ai-artifact-card${open ? " is-open" : ""}`} open={open}
     onToggle={(event) => { const next = event.currentTarget.open; if (next !== open) toggle(); }}>
     <summary>
@@ -375,15 +432,17 @@ function AiReplyArtifacts({ summary }: { summary: AiEditSummary }) {
       {files.map((file) => {
         const name = file.path.split(/[\\/]/).pop() || file.path;
         const dir = file.path.slice(0, file.path.length - name.length - 1);
-        return <div key={file.path} className={`ai-artifact-file is-${file.kind ?? "edit"}`}>
-          <AiFilePath path={file.path} className="ai-artifact-file-main">
+        const canPreview = (file.kind === "add" && file.content !== undefined) || file.diff !== undefined || !!file.fragments?.length;
+        return <div key={file.path} className={`ai-artifact-file is-${file.kind ?? "edit"}${expanded === file.path ? " is-expanded" : ""}`}>
+          <button type="button" className="ai-artifact-file-main" disabled={!canPreview}
+            aria-expanded={expanded === file.path}
+            title={canPreview ? t("ai.chat.previewChange") : undefined}
+            onClick={() => setExpanded((current) => current === file.path ? null : file.path)}>
             <span className="ai-artifact-file-name">{name}</span>
             {dir ? <span className="ai-artifact-file-dir">{dir}</span> : null}
-          </AiFilePath>
+          </button>
           {file.additions !== undefined ? <span className="ai-artifact-file-diff"><b>+{file.additions}</b>{file.deletions ? <i>−{file.deletions}</i> : null}</span> : file.kind === "delete" ? <span className="ai-artifact-file-diff">{t("ai.tool.delete")}</span> : null}
-          <AiFilePath path={file.path} line={file.kind === "delete" ? undefined : 1} className="ai-artifact-open" aria-label={t("ai.chat.fileOpen")}>
-            <ArrowUpRight size={13} aria-hidden />
-          </AiFilePath>
+          {expanded === file.path ? <div className="ai-artifact-preview">{preview(file)}</div> : null}
         </div>;
       })}
     </div>
@@ -431,26 +490,40 @@ function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
   </div>;
 }
 
-/** 一张任务清单的条目形状（与 task_list 事件的投影一致）。 */
+/** 一张任务清单的条目形状（与 task_list / plan 事件的投影一致）。 */
 interface TaskListItem { id: string; content: string; status: string; detail?: string }
 
-/** 从时间线里取最近一张任务清单卡；没有就是 null。 */
+/** 从时间线里取最近一张任务清单卡（支持 task_list 与 plan）；没有就是 null。 */
 export function latestTaskList(entries: AiEntry[]): { entry: AiEntry; items: TaskListItem[] } | null {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
-    if (entry.kind !== "notice" || entry.name !== "task_list") continue;
-    const items = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) && Array.isArray((entry.input as Record<string, unknown>).items)
-      ? (entry.input as { items: TaskListItem[] }).items : [];
-    return { entry, items };
+    if (entry.kind !== "notice" || (entry.name !== "task_list" && entry.name !== "plan")) continue;
+    const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input)
+      ? (entry.input as Record<string, unknown>)
+      : null;
+    if (!data) continue;
+    const source = entry.name === "task_list" ? data.items : data.plan;
+    if (!Array.isArray(source)) continue;
+    const items = source.flatMap((item, itemIdx) => {
+      if (!item || typeof item !== "object") return [];
+      const val = item as Record<string, unknown>;
+      const content = typeof (val.content ?? val.step) === "string" ? String(val.content ?? val.step).trim() : "";
+      if (!content) return [];
+      const id = typeof val.id === "string" && val.id ? val.id : `task-${itemIdx}`;
+      const status = typeof val.status === "string" ? val.status : "pending";
+      const detail = typeof val.detail === "string" ? val.detail : undefined;
+      return [{ id, content, status, ...(detail ? { detail } : {}) }];
+    });
+    if (items.length) return { entry, items };
   }
   return null;
 }
 
 /**
- * 任务清单芯片（对照参考实现的 plan 折叠芯片）：收起时是右缘一颗小芯片
- * （图标 + `N/M` 进度），清单更新时点亮；展开是一张完整清单卡，点条目把正文
- * 滚到时间线里那张清单卡。它只是清单的**镜像入口**，真正的卡片始终在时间线里——
- * 不然两张可折叠的同一份清单，谁也不知道该看哪份。
+ * 任务清单芯片（Codex / zcode 风格右上角折叠面板）：
+ * 吸附在顶栏右上角，收起时是紧凑药丸（图标 + 进度/状态 + 运行中显示当前项）；
+ * 展开时在右上角向下弹出卡片清单（含执行计划与会话队列管理），支持点击外部或按 Esc 自动收起；
+ * 点击条目可跳转至正文时间线中对应清单位置。
  */
 function AiTaskListChip({ taskList, running, onJump }: {
   taskList: { entry: AiEntry; items: TaskListItem[] };
@@ -459,50 +532,100 @@ function AiTaskListChip({ taskList, running, onJump }: {
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const visible = taskList.items.filter((item) => item.status !== "dropped");
   const completed = visible.filter((item) => item.status === "complete" || item.status === "completed").length;
+  const allCompleted = completed === visible.length;
+  const percent = Math.round((completed / visible.length) * 100);
+
   // 有新进展（完成数变化或条目增减）且面板收着时点亮；点开就视为看过。
-  const signature = `${taskList.entry.seq}:${visible.length}:${completed}`;
+  const signature = `${taskList.entry.seq ?? 0}:${visible.length}:${completed}:${running ? 1 : 0}`;
   const [lastSignature, setLastSignature] = useState(signature);
   const dirty = !open && signature !== lastSignature;
+
   const toggle = () => {
     setOpen((current) => {
       if (!current) setLastSignature(signature);
       return !current;
     });
   };
-  const activeItem = visible.find((item) => item.status === "in_progress" || item.status === "active");
-  return <div className={`ai-taskchip${open ? " is-open" : ""}`}>
-    {open ? <div className="ai-taskchip-panel">
+
+  // 点击外部与按下 Esc 键时自动收起面板
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  const activePlanItem = visible.find((item) => item.status === "in_progress" || item.status === "active");
+
+  return <div className={`ai-taskchip${open ? " is-open" : ""}${running ? " is-running" : ""}${allCompleted ? " is-all-completed" : ""}`} ref={containerRef}>
+    <button type="button" className={`ai-taskchip-trigger${dirty ? " is-dirty" : ""}${open ? " is-active" : ""}${allCompleted && !running ? " is-success" : ""}`}
+      title={t("ai.chat.taskList")} aria-label={t("ai.chat.taskList")} aria-expanded={open} onClick={toggle}>
+      {running && activePlanItem ? (
+        <Loader2 size={12} className="ai-taskchip-icon is-spinning" aria-hidden />
+      ) : allCompleted && !running ? (
+        <CheckCircle2 size={12} className="ai-taskchip-icon is-complete" aria-hidden />
+      ) : (
+        <ListTodo size={12} className="ai-taskchip-icon" aria-hidden />
+      )}
+      <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
+      {running && activePlanItem ? (
+        <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePlanItem.content}</span>
+      ) : null}
+      {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
+      <ChevronDown size={12} className={`ai-taskchip-chevron${open ? " is-open" : ""}`} aria-hidden />
+    </button>
+    {open ? <div className="ai-taskchip-panel" role="region" aria-label={t("ai.chat.taskList")}>
       <header>
-        <strong>{t("ai.chat.taskList")}</strong>
-        <span className="ai-taskchip-count">{completed}/{visible.length}</span>
-        <button type="button" className="ai-msgnav-collapse" aria-label={t("ai.sidebar.collapseAll")} onClick={() => setOpen(false)}>
-          <ChevronRight size={14} className="is-flipped" aria-hidden />
+        <div className="ai-taskchip-header-title">
+          <ListTodo size={14} className="ai-taskchip-header-icon" aria-hidden />
+          <strong>{t("ai.chat.taskList")}</strong>
+          <div className="ai-taskchip-stats">
+            <span className="ai-taskchip-count">{completed}/{visible.length}</span>
+            <span className="ai-taskchip-percent">{percent}%</span>
+          </div>
+        </div>
+        <button type="button" className="icon-button is-inline ai-taskchip-close" aria-label={t("dialog.close")} title={t("dialog.close")} onClick={() => setOpen(false)}>
+          <X size={14} aria-hidden />
         </button>
       </header>
-      <ol className="ai-taskchip-list" role="list">
-        {visible.map((item, index) => <li key={item.id || index} className={`is-${item.status}`}>
-          <span className="ai-plan-entry-icon" aria-hidden>
-            {item.status === "complete" || item.status === "completed" ? <CheckCircle2 size={14} /> : <CircleDashed size={14} />}
-          </span>
-          <span className="ai-plan-entry-text">
-            <button type="button" className="ai-taskchip-item" onClick={() => { setOpen(false); onJump(taskList.entry.id); }}>
-              {item.content}
-            </button>
-            {item.detail ? <small>{item.detail}</small> : null}
-          </span>
-        </li>)}
-        {!visible.length ? <li className="ai-taskchip-empty">{t("ai.chat.taskListEmpty")}</li> : null}
-      </ol>
+      <div className="ai-taskchip-progress-bar" role="progressbar" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={visible.length}>
+        <div className={`ai-taskchip-progress-fill${allCompleted ? " is-complete" : ""}`} style={{ width: `${percent}%` }} />
+      </div>
+      <div className="ai-taskchip-body">
+        <ol className="ai-taskchip-list" role="list">
+          {visible.map((item, index) => {
+            const isDone = item.status === "complete" || item.status === "completed";
+            const isActive = item.status === "in_progress" || item.status === "active";
+            return <li key={item.id || index} className={`is-${item.status}`}>
+              <button type="button" className="ai-taskchip-row" onClick={() => { setOpen(false); onJump(taskList.entry.id); }}>
+                <span className="ai-plan-entry-icon" aria-hidden>
+                  {isDone ? <CheckCircle2 size={14} className="is-complete" /> : isActive ? <Loader2 size={14} className="is-spinning" /> : <CircleDashed size={14} />}
+                </span>
+                <span className="ai-plan-entry-text">
+                  <span className="ai-taskchip-item">{item.content}</span>
+                  {item.detail ? <small className="ai-taskchip-detail">{item.detail}</small> : null}
+                </span>
+                <ArrowUpRight size={13} className="ai-taskchip-jump" aria-hidden />
+              </button>
+            </li>;
+          })}
+        </ol>
+      </div>
     </div> : null}
-    <button type="button" className={`ai-taskchip-trigger${dirty ? " is-dirty" : ""}`} title={t("ai.chat.taskList")}
-      aria-label={t("ai.chat.taskList")} aria-expanded={open} onClick={toggle}>
-      <ListOrdered size={12} aria-hidden />
-      <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
-      {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
-    </button>
-    {running && activeItem ? <span className="ai-visually-hidden">{activeItem.content}</span> : null}
   </div>;
 }
 
@@ -531,13 +654,17 @@ interface AiSessionPaneProps {
  */
 export default function AiSessionPane({ session, workspace, onSettings, beforeSend, onAction, onNew, onOpenFile }: AiSessionPaneProps) {
   const { t } = useI18n();
-  const runtime = useAiRuntime(session.id);
+  const snapshot = useAiRuntime(session.id);
+  const activity = useAiSessionActivity(session.id);
+  const ownedRunId = useAiOwnedRunId(session.id);
+  const ownedQueuedRunIds = useAiOwnedQueuedRunIds(session.id);
+  // 原始日志保留入队记录；所有正文消费者只读取已启动的回合。
+  const entries = useMemo(() => conversationItems(snapshot.entries, snapshot.tasks), [snapshot.entries, snapshot.tasks]);
+  const runtime = { ...snapshot, entries };
   // 导航另用一份轮次索引；正文分页只覆盖最近那一页事件，长会话里连一轮都铺不满。
-  const outline = useAiOutline(session.id);
+  const rawOutline = useAiOutline(session.id);
+  const outline = useMemo(() => ({ ...rawOutline, turns: conversationItems(rawOutline.turns, snapshot.tasks) }), [rawOutline, snapshot.tasks]);
   // 打开工程即读本地信任配置，不启动 CLI，也不等待模型发现。
-  const projectTrust = useMemo(() => workspace && session.provider === "codex" && cliDesktopAvailable()
-    ? invoke<boolean>("ai_runtime_project_trusted", { workspace }).catch(() => false)
-    : Promise.resolve(false), [workspace, session.provider]);
   const optionsKey = `${aiSessionStorageKey(workspace)}:options:${session.id}`;
   const [options, setOptions] = useState<AiRunOptions>(() => loadAiOptions(optionsKey, session.provider));
   const [extraDirs, setExtraDirs] = useState<string[]>(() => loadAdditionalDirs(workspace, session.id));
@@ -549,8 +676,20 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const denialKey = runtime.permissionDenied ? runtime.permissionDenied.path ?? runtime.permissionDenied.text : "";
   const changeOptions = (next: AiRunOptions) => {
     setOptions(next);
+    // 切走计划这一档时，CLI 回报的那份运行态也要一起清掉：
+    // 否则徽标停在「计划模式」上，用户看不出自己已经换了选项。
+    if (runtime.configuration?.planMode && next.mode !== "plan" && next.planMode !== true) {
+      runtime.configuration.planMode = false;
+    }
     try { saveAiOptions(optionsKey, session.provider, next); } catch { setError(t("ai.storageError")); }
   };
+  const isPlanModeActive = options.mode === "plan" || options.planMode === true || runtime.configuration?.planMode === true;
+  const handleExitPlanMode = useCallback(() => {
+    changeOptions({ ...options, planMode: undefined, mode: aiNormalMode(session.provider) });
+    if (runtime.configuration) {
+      runtime.configuration.planMode = false;
+    }
+  }, [changeOptions, options, runtime]);
   const [draft, setDraft] = useState(() => loadDraft(workspace, session.id));
   /** ↑↓ 召回停在历史的哪一条；`stash` 是走出历史时要还回去的那行，用户在召回件上改的字也存这里。 */
   const [browse, setBrowse] = useState<PromptBrowse | null>(null);
@@ -562,7 +701,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   /** 外部文件正拖在输入框上方：整窗的「打开工程」路由这时要让位给附件。 */
   const [dropArmed, setDropArmed] = useState(false);
   const attachArea = useRef<HTMLDivElement>(null);
-  const [trust, setTrust] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [timelineLimit, setTimelineLimit] = useState(TIMELINE_WINDOW);
@@ -583,23 +721,31 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * 被顶得看不见。记住这一条的位置、提交后量它挪了多少、把 scrollTop 补回去——比按整个
    * scrollHeight 的差值补更准：翻页请求在途时正文照样在底部追加，那种增长不该移动视线。
    */
-  const olderTop = useRef<number | null>(null);
+  const olderTop = useRef<{ element: HTMLElement; offset: number; height: number; id?: string } | null>(null);
+  const olderScroll = useRef(new OlderHistoryScroll());
+  const olderLocal = useRef(false);
+  const olderRequest = useRef<Promise<void> | null>(null);
+  const [, refreshOlderScroll] = useState(0);
   const input = useRef<HTMLTextAreaElement>(null);
   const composer = useRef<AiComposerHandle>(null);
   /** 召回替换整段文本后要把光标放到末尾：一次性意图，用完就清掉，不值得进 state。 */
   const recallCaret = useRef<number | null>(null);
-  /** 需要信任确认才能发出去的那段文本；undefined 表示「就是输入框里的这段」。 */
-  const pendingSend = useRef<string | undefined>(undefined);
   const menuId = useId();
+  const queueBodyId = useId();
   const [commandIndex, setCommandIndex] = useState(0);
   const [commandsDismissed, setCommandsDismissed] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
-  const [editingTask, setEditingTask] = useState<{ runId: string; prompt: string } | null>(null);
+  /** 队列编辑借用主输入框；restoreDraft 保证用户原来写到一半的草稿不会被队列正文覆盖。 */
+  const [editingTask, setEditingTask] = useState<{ runId: string; restoreDraft: string } | null>(null);
   /** 横幅 ⋯ 菜单与重命名/删除确认。 */
   const [headMenuAnchor, setHeadMenuAnchor] = useState<HTMLElement | null>(null);
   const [headPending, setHeadPending] = useState<{ action: "rename" | "delete"; session: AiSession } | null>(null);
   const draggedTask = useRef<string | null>(null);
+  /** 队列默认展开；收起后保留标题、数量和清空入口，避免任务存在却完全失去提示。 */
+  const [queueExpanded, setQueueExpanded] = useState(true);
+  /** 当前拖拽落点只负责视觉反馈；真正排序仍用稳定 run id 交给后端原子完成。 */
+  const [queueDrop, setQueueDrop] = useState<{ runId: string; edge: "before" | "after" } | null>(null);
   /** 排队条拖拽排序的 FLIP：拖起时记下各行的位置，重排落地那一帧按差值反向平移再归位。 */
   const queueHost = useRef<HTMLElement>(null);
   const queueFlip = useRef<Map<string, DOMRect> | null>(null);
@@ -626,11 +772,11 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [addMenuAnchor, setAddMenuAnchor] = useState<HTMLElement | null>(null);
   const contextTrigger = useRef<HTMLButtonElement | null>(null);
   const commandList = commandSuggestions(session.provider, runtime.commands);
-  const suggestions = commandsDismissed ? [] : showHelp ? commandList : filterCommandSuggestions(commandList, draft);
+  const suggestions = editingTask ? [] : commandsDismissed ? [] : showHelp ? commandList : filterCommandSuggestions(commandList, draft);
   const selectedCommand = Math.min(commandIndex, Math.max(0, suggestions.length - 1));
   const draftSlash = parseSlash(draft);
-  const activeCommand = draftSlash && commandList.find((command) => command.name === (localCommand(draftSlash.name) ?? resolveNativeCommand(runtime.commands ?? { commands: [], terminal: [] }, draftSlash.name)?.name ?? draftSlash.name));
-  const menuVisible = suggestions.length > 0 && !trust && !sending;
+  const activeCommand = editingTask ? undefined : draftSlash && commandList.find((command) => command.name === (localCommand(draftSlash.name) ?? resolveNativeCommand(runtime.commands ?? { commands: [], terminal: [] }, draftSlash.name)?.name ?? draftSlash.name));
+  const menuVisible = suggestions.length > 0 && !sending;
   const commandMenu = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menuVisible) return;
@@ -646,10 +792,26 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     if (text) saveDraft(workspace, session.id, text); else clearDraft(workspace, session.id);
   };
   const updateDraft = (text: string) => {
-    commitDraft(text);
+    // 编辑队列时输入框只是临时工作区，不能拿队列正文覆盖持久草稿。
+    if (editingTask) setDraft(text); else commitDraft(text);
     // 直接在召回来的那行上改字：位置留住，改动记进 stash，走出历史时还回得到用户自己打的字。
     if (browse) setBrowse(browseTyped(text, { text, browse }).browse);
     setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setCommandNotice(null);
+  };
+  const cancelQueuedEdit = () => {
+    if (!editingTask) return;
+    const restore = editingTask.restoreDraft;
+    setEditingTask(null); commitDraft(restore); setBrowse(null); setCommandNotice(null);
+    recallCaret.current = restore.length;
+    requestAnimationFrame(() => input.current?.focus());
+  };
+  const beginQueuedEdit = (runId: string, prompt: string) => {
+    // 从一个队列项切到另一个时仍保留最初的用户草稿，而不是把上一项正文当成草稿。
+    const restoreDraft = editingTask?.restoreDraft ?? draft;
+    setEditingTask({ runId, restoreDraft }); setDraft(prompt); setBrowse(null);
+    setCommandsDismissed(true); setShowHelp(false); setCommandNotice(null); setError(null);
+    recallCaret.current = prompt.length;
+    requestAnimationFrame(() => input.current?.focus());
   };
   const chooseCommand = (name: string) => { updateDraft(completeCommand(draft, name)); input.current?.focus(); };
   useEffect(() => { document.getElementById(`${menuId}-${selectedCommand}`)?.scrollIntoView?.({ block: "nearest" }); }, [menuId, selectedCommand]);
@@ -685,8 +847,9 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * 补完之前不能说够不着。
    */
   const [pendingJump, setPendingJump] = useState<{ id: string; waiting: boolean } | null>(null);
-  const running = runtime.status === "running";
-  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setBrowse(null); setImages([]); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setTrust(false); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; }, [optionsKey, session.id, workspace]);
+  // 历史 running 可能属于另一个 Forge 进程；动画和停止按钮只能认实时探针给出的本进程 run id。
+  const running = runtime.status === "running" && activity === "running" && runtime.runId === ownedRunId;
+  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); setImages([]); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; }, [optionsKey, session.id, workspace]);
   /**
    * 新建会话的交接：草稿欢迎页在创建会话时把首条消息（含附件）留在这里，
    * 会话页挂载后先回填输入框与附件，再触发一次正常发送——信任确认、未保存检查
@@ -710,12 +873,13 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   }, [armedSend]);
   useEffect(() => {
     if (!workspace || !cliDesktopAvailable()) return;
-    // 打开会话取的是**最新**一页：几百轮的老记录从第一条往后翻，等于永远翻不到正在聊的地方。
-    void loadAiMessages(session.id, workspace).catch(() => {});
-    const refresh = () => { if (!running) void loadAiMessages(session.id, workspace, true).catch(() => {}); };
+    // 重开标签必须补取最新正文和活动任务；已有缓存不代表后台期间的事件已经收齐。
+    // 聚焦时也校准运行中的会话，不能用可能过期的 running 状态阻止恢复。
+    const refresh = () => { void loadAiMessages(session.id, workspace, true).catch(() => {}); };
+    refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [session.id, workspace, running]);
+  }, [session.id, workspace]);
   /**
    * 三条附件入口（粘贴、选择器、拖拽）共用的结算。
    *
@@ -723,7 +887,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * 其余**已经写进沙箱**的文件不能跟着结果一起被丢掉——那既看不见也没人删，只能堆在缓存目录里。
    */
   const attach = (tasks: Promise<PastedImage>[]) => {
-    if (!tasks.length) return;
+    // 队列更新接口只改提示词；编辑态忽略附件入口，不能让隐藏附件看起来会随保存生效。
+    if (editingTask || !tasks.length) return;
     if (images.length + pendingImages.current + tasks.length > imageLimit) { setError(t("ai.chat.tooManyImages", { count: imageLimit })); return; }
     pendingImages.current += tasks.length;
     void Promise.allSettled(tasks).then((results) => {
@@ -778,39 +943,79 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     if (!cliDesktopAvailable()) return;
     void invoke<{ maxImages: number }>("ai_runtime_image_limits").then(({ maxImages }) => setImageLimit(maxImages)).catch(() => {});
   }, []);
-  const scrollToBottom = () => { const element = content.current; if (element) element.scrollTop = element.scrollHeight; };
-  /** 最上面那条消息离视口顶的距离；`.ai-earlier` 那颗按钮在它上面，所以按钮自己的位置不能当锚点。 */
-  const topEntryOffset = () => content.current?.querySelector<HTMLElement>(".ai-chat-entry, .ai-process-group")?.getBoundingClientRect().top;
+  useEffect(() => {
+    olderScroll.current = new OlderHistoryScroll();
+    olderLocal.current = false;
+  }, [session.id, workspace]);
+  const scrollToBottom = () => {
+    olderTop.current = null;
+    const element = content.current;
+    if (element) { element.scrollTop = element.scrollHeight; olderScroll.current.follow(element.scrollTop); }
+  };
+  /** 保存消息的内容坐标，用户滚动不会改变它，因此无需等待 scroll 事件更新锚点。 */
+  const captureOlderAnchor = () => {
+    const container = content.current;
+    const top = container?.getBoundingClientRect().top ?? 0;
+    const element = Array.from(container?.querySelectorAll<HTMLElement>(".ai-chat-entry, .ai-process-group") ?? [])
+      .find((entry) => entry.getBoundingClientRect().bottom > top);
+    return element && container ? {
+      element, offset: element.getBoundingClientRect().top + container.scrollTop,
+      height: container.scrollHeight, id: element.dataset.entryId,
+    } : null;
+  };
   useLayoutEffect(() => {
+    if (olderLocal.current) { olderLocal.current = false; olderScroll.current.finish(); }
     const element = content.current;
     const before = olderTop.current;
     if (element === null || before === null) return;
-    const after = topEntryOffset();
-    if (after === undefined) { olderTop.current = null; return; }
-    const shift = after - before;
-    if (!shift) { if (!runtime.loading) olderTop.current = null; return; }
-    // 补完再记一次：放窗口和翻页落地可能连着提交两段，每一段都各自量。
-    element.scrollTop += shift;
-    olderTop.current = topEntryOffset() ?? null;
-  }, [runtime.entries, runtime.loading]);
-  useEffect(() => { if (!anchor) scrollToBottom(); }, [runtime.entries, runtime.requests, anchor]);
+    // 先接收尚未派发 scroll 事件的实际位移；自动补偿本身不算用户下滚。
+    olderScroll.current.scroll(element.scrollTop);
+    // 这一页真实长出来多高，就是滚动状态机算「提前两页」时的一页。
+    olderScroll.current.measure(element.scrollHeight - before.height);
+    const target = before.element.isConnected ? before.element : before.id
+      ? element.querySelector<HTMLElement>(`[data-entry-id="${CSS.escape(before.id)}"]`) : null;
+    // 过程组被合并、原条目被折叠时按新增高度补偿，不能直接丢掉阅读位置。
+    element.scrollTop += target
+      ? target.getBoundingClientRect().top + element.scrollTop - before.offset
+      : element.scrollHeight - before.height;
+    olderScroll.current.preserve(element.scrollTop);
+    olderTop.current = runtime.loading ? captureOlderAnchor() : null;
+  }, [runtime.entries, runtime.loading, timelineLimit]);
+  useEffect(() => { if (!anchor) scrollToBottom(); }, [runtime.entries, runtime.requests, timelineLimit, anchor]);
   /**
    * 「更早」这一颗按钮做两件事，按顺序：先把已经加载但被窗口挡住的那段放出来，
    * 挡无可挡且后端说还有更早的记录时，才往前翻一页。
    *
    * 合成一颗而不是上下各摆一颗：分页改成从最新一页开始以后，「往上翻」只有一个方向。
    */
-  const showEarlier = () => {
-    setAnchor((current) => trackFollow(current, false, tailId));
-    if (timeline.hidden > 0 || runtime.requests.length > timelineLimit) {
-      olderTop.current = topEntryOffset() ?? null;
-      setTimelineLimit((limit) => limit + TIMELINE_WINDOW);
+  const showEarlier = (initial = false) => {
+    if (runtime.loading) return;
+    const local = timeline.hidden > 0 || runtime.requests.length > timelineLimit;
+    if (!local && (!workspace || !runtime.hasOlder)) return;
+    const scroll = olderScroll.current;
+    if (!scroll.begin(initial)) return;
+    if (!initial) setAnchor((current) => trackFollow(current, false, tailId));
+    if (local) {
+      olderLocal.current = true;
+      olderTop.current = initial ? null : captureOlderAnchor();
+      setTimelineLimit((limit) => limit + TIMELINE_WINDOW * 3);
       return;
     }
-    if (!workspace || !runtime.hasOlder || runtime.loading) return;
-    olderTop.current = topEntryOffset() ?? null;
-    setTimelineLimit((limit) => limit + TIMELINE_WINDOW);
-    void loadOlderAiMessages(session.id, workspace).catch((cause) => { setError(String(cause)); olderTop.current = null; });
+    olderTop.current = initial ? null : captureOlderAnchor();
+    setTimelineLimit((limit) => limit + TIMELINE_WINDOW * 3);
+    const request = loadOlderAiMessages(session.id, workspace!, undefined, 3);
+    olderRequest.current = request;
+    void request.then(() => {
+      scroll.finish();
+    }, (cause) => {
+      scroll.finish(true);
+      if (scroll !== olderScroll.current) return;
+      setError(String(cause)); olderTop.current = null;
+    }).finally(() => {
+      if (olderRequest.current === request) olderRequest.current = null;
+      // 请求结束后再检查剩余距离，不依赖用户制造下一次 scroll 事件。
+      if (scroll === olderScroll.current) refreshOlderScroll((value) => value + 1);
+    });
   };
   /**
    * 发一条消息。
@@ -818,13 +1023,23 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * `override` 是面板代打的文本（自动压缩、重试）：它绕过输入框，但斜杠命令校验、未保存检查和
    * 信任确认一律照走，而且事后不动用户正在写的半截话与已经贴好的附件。
    */
-  const send = async (accepted = false, override?: string) => {
+  const send = async (_accepted = false, override?: string) => {
     const text = override ?? draft;
-    if (!workspace || !cliDesktopAvailable() || !text.trim() && !images.length || sendingRef.current || trust && !accepted) return;
+    const queueEdit = override === undefined ? editingTask : null;
+    if (!workspace || !cliDesktopAvailable() || sendingRef.current
+      || (queueEdit ? !text.trim() : !text.trim() && !images.length)) return;
     const slash = parseSlash(text);
     const local = slash && localCommand(slash.name);
     sendingRef.current = true; setSending(true); setError(null); setCommandNotice(null);
     try {
+      if (queueEdit) {
+        await editQueuedAiTask(queueEdit.runId, text);
+        // 更新成功才退出编辑态；失败时保留正文，用户仍可修正或复制。
+        setEditingTask(null); commitDraft(queueEdit.restoreDraft); setBrowse(null);
+        recallCaret.current = queueEdit.restoreDraft.length;
+        requestAnimationFrame(() => input.current?.focus());
+        return;
+      }
       if (slash && override === undefined && images.length) throw new Error(t("ai.chat.imageCommandConflict"));
       if (local && slash) {
         if (local === "help") {
@@ -858,22 +1073,23 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         }
       }
       if (beforeSend && !await beforeSend()) return;
-      if (!accepted && !trustedRoots.has(workspace) && !await projectTrust) { pendingSend.current = override; setTrust(true); return; }
-      setTrust(false); pendingSend.current = undefined;
-      // 信任确认框关掉后要再查一次：这段时间里编辑器可能又变脏了。
-      if (beforeSend && !await beforeSend()) return;
+      // 信任确认不再弹窗：项目是用户自己打开的，直接信任并随请求置位（对照用户决策）。
       await sendAiMessage(session, workspace, slash?.text ?? text, true, options, command, override === undefined ? images.map((image) => image.path) : [], extraDirs);
       void loadAiMessages(session.id, workspace, true).catch(() => {});
-      trustedRoots.add(workspace);
+      // 首条消息落盘后后端会把标题换成消息摘要：刷一次会话列表，侧栏与标签立即跟上。
+      refreshAiSessionHistory();
       if (override === undefined) { commitDraft(""); setBrowse(null); setImages([]); setShowHelp(false); }
       rememberPrompt(workspace, text);
       setAnchor(null); setAtBottom(true); scrollToBottom();
     } catch (cause) { setError(String(cause)); }
     finally { sendingRef.current = false; setSending(false); }
   };
-  const queuedTasks = runtime.tasks.filter((task) => isAiTaskQueued(task.status))
-    .sort((a, b) => (a.queueIndex ?? Number.MAX_SAFE_INTEGER) - (b.queueIndex ?? Number.MAX_SAFE_INTEGER) || a.seq - b.seq);
+  const queuedTasks = aiQueueOrder(runtime.tasks);
+  const ownedQueued = useMemo(() => new Set(ownedQueuedRunIds), [ownedQueuedRunIds]);
+  const ownedQueuedTasks = queuedTasks.filter((task) => ownedQueued.has(task.runId));
   const runningTask = runtime.tasks.find((task) => task.status === "running");
+  const connectingTask = activity === "running" && ownedRunId
+    ? runtime.tasks.find((task) => task.runId === ownedRunId && task.status === "submitting") : undefined;
   /** 权限拒绝指向文件时先问后端它的真实目录，再记进本会话的启动参数。 */
   const grantDirectory = async (path: string) => {
     const dir = await invoke<string>("ai_runtime_directory_for_path", { path });
@@ -886,13 +1102,37 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * 这一轮跑的就是压缩。CLI 折上下文时前面除了「运行中」什么都不显示，
    * 用户只能看到进度条空转几十秒，以为卡住了——那件事本身要说出来。
    */
-  const compacting = runningTask?.prompt?.trim() === COMPACT_COMMAND_TEXT;
+  // 项目目标库未包含 ES2023，倒序查找不依赖 findLast。
+  const latestCompaction = [...runtime.entries].reverse().find((entry) => entry.name === "compaction" && entry.runId === runningTask?.runId);
+  const compactionStatus = (latestCompaction?.input as Record<string, unknown> | undefined)?.status;
+  const compacting = compactionStatus === "running" || compactionStatus === "compacting"
+    || !latestCompaction && runningTask?.prompt?.trim().split(/\s+/, 1)[0] === COMPACT_COMMAND_TEXT;
   const requestsById = new Map(runtime.requests.map((request) => [request.requestId, request]));
   /** 已有请求卡的工具 id 集合：同一次提问的工具记录给请求卡让位，不画第二张。 */
   const requestToolIds = useMemo(() => new Set(runtime.requests.flatMap((request) => request.toolId ? [request.toolId] : [])), [runtime.requests]);
   /** 存在提问请求卡的轮次：旧日志的请求里没有 toolId，按「轮次里出现过提问卡」让位同样成立。 */
   const questionRequestRuns = useMemo(() => new Set(runtime.requests.filter((request) => request.kind === "question").map((request) => request.runId)), [runtime.requests]);
-  const editSummary = useMemo(() => summarizeAiFileEdits(runtime.entries), [runtime.entries]);
+  /**
+   * 顶层条目按「一轮」切分：一条用户消息到下一条用户消息之间。
+   *
+   * 不能按 runId 切——整段从原生日志导入的会话，每一条都写着 runId="native"，
+   * 几十轮的改动会被压成时间线最末尾的一张卡；底栏那个数字也会随着往上翻越长越大。
+   */
+  const replyTurns = useMemo(() => {
+    const groups: Array<{ runId: string; last: AiEntry; items: AiEntry[] }> = [];
+    for (const entry of runtime.entries) {
+      // 子代理的改动归它自己的委派卡，不进主时间线的这一轮。
+      if (entry.parent) continue;
+      if (entry.kind === "user" || !groups.length) groups.push({ runId: entry.runId, last: entry, items: [] });
+      const group = groups[groups.length - 1];
+      group.items.push(entry);
+      group.last = entry;
+      group.runId = entry.runId;
+    }
+    return groups;
+  }, [runtime.entries]);
+  // 底栏报的是「这一趟」的结果：只看最新那一轮，往上翻历史时它不该跟着变。
+  const editSummary = useMemo(() => summarizeAiFileEdits(replyTurns.at(-1)?.items ?? []), [replyTurns]);
   // 子代理条目（带 parent 归属）不再平铺主时间线：按归属挂进对应 Task 委派卡展开看。
   const subagentChildren = useMemo(() => {
     const map = new Map<string, AiEntry[]>();
@@ -939,18 +1179,15 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   /** 每轮最后一条顶层条目 → 该轮的文件汇总：轮内 edits 统计同底栏口径（不含子代理的改动）。 */
   const artifactsByLastEntry = useMemo(() => {
     const map = new Map<string, AiEditSummary>();
-    const lastIndex = new Map<string, number>();
-    runtime.entries.forEach((entry, index) => { if (!entry.parent) lastIndex.set(entry.runId, index); });
-    for (const [runId, index] of lastIndex) {
-      if (running && runId === runtime.runId) continue;
-      const entry = runtime.entries[index];
-      // 汇总卡挂在顶层可见的条目之后；轮次收在工具/思考里的话宁可不上（底栏仍有总账）。
-      if (entry.kind === "tool" || entry.kind === "reasoning") continue;
-      const summary = summarizeAiFileEdits(runtime.entries.filter((item) => item.runId === runId && !item.parent));
-      if (summary.fileCount) map.set(entry.id, summary);
+    for (const group of replyTurns) {
+      // 正在跑的这一轮先不挂卡：改动还在往里加，挂上去就是一张数字一直跳的卡。
+      if (running && group.runId === runtime.runId) continue;
+      // 汇总卡挂在顶层该轮最后一个条目之后（不论收尾是消息、工具调用还是通知，只要有改动就必须呈现）。
+      const summary = summarizeAiFileEdits(group.items);
+      if (summary.fileCount) map.set(group.last.id, summary);
     }
     return map;
-  }, [runtime.entries, runtime.runId, running]);
+  }, [replyTurns, runtime.runId, running]);
   // 会话状态与任务状态共用同一批词；认不出就当 idle，让判定回到任务列表本身。
   const compact = useMemo(() => compactDecision({
     provider: session.provider,
@@ -974,26 +1211,36 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   }, [compact.action, latestTask?.runId]);
   const tailId = runtime.entries.at(-1)?.id;
   const unseen = unseenCount(anchor, entryIds);
-  /** 上一轮已经翻过的 scrollTop：自动反向加载只在「向下穿越阈值」那一拍触发一次。 */
-  const lastScrollTop = useRef(0);
-  /** 向下穿越阈值多少像素内自动补更早（对照参考实现）；翻页在途时不重复触发。 */
-  const AUTO_LOAD_THRESHOLD_PX = 240;
+  const prefetchEarlier = () => {
+    const element = content.current;
+    if (!element || pendingJump) return;
+    const available = timeline.hidden > 0 || runtime.requests.length > timelineLimit || runtime.hasOlder;
+    if (runtime.loaded && olderScroll.current.shouldFill(element.scrollHeight, element.clientHeight, available, runtime.loading)) {
+      showEarlier(true);
+      return;
+    }
+    if (olderScroll.current.shouldLoad(element.scrollTop, element.clientHeight,
+      timeline.hidden > 0 || runtime.requests.length > timelineLimit || runtime.hasOlder, runtime.loading)) showEarlier();
+  };
+  // 每次补页提交后检查：不足两屏的短页会继续补，不需要点击按钮或再滚一下。
+  useEffect(() => { prefetchEarlier(); });
   const trackScroll = () => {
     const element = content.current;
     if (!element) return;
-    const near = isNearBottom(element.scrollHeight, element.scrollTop, element.clientHeight);
+    const delta = olderScroll.current.scroll(element.scrollTop);
+    if (delta === 0) return;
+    // 上翻即脱离跟随；底部容差只能用于向下滚动，不能把小幅上翻拉回底部。
+    const near = delta > 0 && isNearBottom(element.scrollHeight, element.scrollTop, element.clientHeight);
     setAtBottom(near);
+    // 首屏补页期间开始阅读，后续响应也必须补偿当前阅读位置。
+    if (runtime.loading) olderTop.current = near ? null : captureOlderAnchor();
     setAnchor((current) => trackFollow(current, near, tailId));
-    // 翻到顶附近就自动补一页更早的记录；手动按钮保留，两条路走同一段逻辑。
-    if (element.scrollTop < AUTO_LOAD_THRESHOLD_PX && lastScrollTop.current >= AUTO_LOAD_THRESHOLD_PX
-      && !runtime.loading && olderTop.current === null && (timeline.hidden > 0 || runtime.hasOlder)) {
-      showEarlier();
-    }
-    lastScrollTop.current = element.scrollTop;
+    prefetchEarlier();
   };
   const jumpToBottom = () => { setAnchor(null); setAtBottom(true); scrollToBottom(); };
   /** 跳到任意一条已加载的条目（回合操作行「回到该轮消息」用）：复用导航跳转那套状态机。 */
   const jumpToEntryById = (id: string) => {
+    olderTop.current = null;
     setAnchor((current) => current ?? { id: tailId ?? "" });
     setPendingJump({ id, waiting: false });
   };
@@ -1003,11 +1250,14 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * 补完了正文里还是没有这一条，就如实说一句，而不是让点击没有下文。
    */
   const jumpToTurn = async (row: AiNavRow) => {
+    olderTop.current = null;
     // 一决定跳就脱离贴底跟随：补历史期间每一页都会改 entries，锚点还空着的话那条 effect 会把视图一路拽回最后一条。
     setAnchor((current) => current ?? { id: tailId ?? "" });
     const willLoad = !row.loaded && !!workspace && row.seq !== undefined;
     setPendingJump({ id: row.id, waiting: willLoad });
     if (!willLoad) return;
+    // 导航优先，但不能把预加载占用请求通道误判成目标不存在。
+    await olderRequest.current?.catch(() => {});
     await loadAiMessagesThrough(session.id, workspace!, row.seq!).catch((cause) => { setError(String(cause)); return false; });
     setPendingJump((current) => current && current.id === row.id ? { ...current, waiting: false } : current);
   };
@@ -1025,6 +1275,9 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     if (!element) return;
     setPendingJump(null);
     element.scrollIntoView({ block: "center" });
+    if (content.current) olderScroll.current.follow(content.current.scrollTop);
+    // 跳转可能发生在三页预取途中；剩余页到达时保持刚定位的消息。
+    if (runtime.loading) olderTop.current = captureOlderAnchor();
     element.classList.add("is-flash");
     window.setTimeout(() => element.classList.remove("is-flash"), 1600);
   }, [pendingJump, runtime.entries, timeline, timelineLimit]);
@@ -1040,9 +1293,11 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       {entry.kind === "user" ? <AiUserMessage text={entry.text} images={entry.images?.map((path) => ({ key: path, node: <button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(path)}><img src={assetUrl(path, 0)} alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")} onLoad={() => { /* 图片加载完才撑开高度：首屏贴底时不补这一下，打开带图的会话就停在底部上面一截。 */ if (!anchor) scrollToBottom(); }} onError={(event) => { /* 文件被清掉时不编占位图：把 alt 换成一句实话，坏图本来就会显示 alt。 */ event.currentTarget.alt = t("ai.chat.imageMissing"); event.currentTarget.classList.add("is-missing"); }} /></button> }))} /> : entry.kind === "assistant" || entry.kind === "command" ? <>
         {entry.kind === "command" ? <small className="ai-muted">{t("ai.commands.output")}</small> : null}
         <AiMarkdown text={entry.text} streaming={entry.id === streamingEntryId} />
-      </> : entry.kind === "tool" ? <AiToolCall entry={entry} subagents={subagentChildren.get(entry.toolId ?? "")} hasRequest={requestToolIds.has(entry.toolId ?? "") || questionRequestRuns.has(entry.runId)} /> : entry.kind === "reasoning" ? <details className="ai-reasoning"><summary className="ai-row-head"><Brain size={13} aria-hidden className="ai-entry-icon" /><span aria-hidden className="ai-entry-dot" /><span className="ai-row-label">{entry.id === liveThinkingId ? t("ai.chat.reasoningLive") : t("ai.chat.reasoning")}</span>{entry.text ? <span className="ai-reasoning-title">{entry.text.split(/\r?\n/).find((line) => line.trim()) ?? ""}</span> : null}<ChevronRight className="ai-detail-chevron" size={14} aria-hidden /></summary><AiMarkdown text={entry.text} /></details>
+      </> : entry.kind === "tool" ? <AiToolCall entry={entry} subagents={subagentChildren.get(entry.toolId ?? "")} hasRequest={requestToolIds.has(entry.toolId ?? "") || questionRequestRuns.has(entry.runId)} /> : entry.kind === "reasoning" ? <details className="ai-reasoning"><summary className="ai-row-head"><Brain size={13} aria-hidden className="ai-entry-icon" /><span aria-hidden className="ai-entry-dot" /><span className="ai-row-label">{entry.id === liveThinkingId ? t("ai.chat.reasoningLive") : t("ai.chat.reasoning")}</span><ChevronRight className="ai-detail-chevron" size={14} aria-hidden />{entry.text ? <span className="ai-reasoning-title" aria-hidden={entry.id === liveThinkingId ? "true" : undefined}>{entry.id === liveThinkingId ? (entry.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) ?? "") : (entry.text.split(/\r?\n/).find((line) => line.trim()) ?? "")}</span> : null}</summary><AiMarkdown text={entry.text} /></details>
         : entry.kind === "notice" ? <TimelineNotice entry={entry} />
-        : <details><summary>{t("ai.runtime.filesChanged")} · {entry.paths?.length ?? 0}</summary><pre>{entry.paths?.join("\n")}</pre></details>}
+        // 「已报告的文件变动」fallback 行撤掉：一级已有每次修改的明细行 + 回合末尾的汇总卡，
+        // 再铺一条只报文件名的清单是三份重复（有修改文件显示就不要它）。
+        : null}
     </article>;
     return artifacts ? <Fragment key={entry.id}>{body}<AiReplyArtifacts summary={artifacts} /></Fragment> : body;
   };
@@ -1056,6 +1311,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       </span>
       <ChevronRight size={14} className="ai-head-sep" aria-hidden />
       <span className="ai-head-title" title={session.title}>{session.title}</span>
+      {taskList ? <AiTaskListChip taskList={taskList} running={running} onJump={jumpToEntryById} /> : null}
       {onAction || onNew ? <button type="button" className="ai-head-menu" title={t("ai.sidebar.moreOptions")} aria-label={t("ai.sidebar.moreOptions")}
         aria-haspopup="menu" aria-expanded={headMenuAnchor !== null}
         onClick={(event) => setHeadMenuAnchor(event.currentTarget)}>
@@ -1066,6 +1322,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
           <div className="ai-add-menu" role="menu">
             {onNew ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onNew(); }}><Plus size={14} aria-hidden />{t("ai.newSession")}</button> : null}
             {onAction && session.provider === "codex" ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); setHeadPending({ action: "rename", session }); }}><Pencil size={14} aria-hidden />{t("menu.rename")}</button> : null}
+            {/* 跨会话提问要引用另一条会话的 ID：在这里复制当前这条。 */}
+            <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); void navigator.clipboard.writeText(session.id); }}><Copy size={14} aria-hidden />{t("ai.copySessionId")}</button>
             {onAction ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onAction({ type: "pin", id: session.id, pinned: session.pinned !== true }); }}>
               {session.pinned === true ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}{session.pinned === true ? t("ai.sidebar.unpin") : t("ai.sidebar.pin")}
             </button> : null}
@@ -1081,22 +1339,30 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     <div className="ai-chat-viewport">
     {/* 列宽手柄挂在内容轴左右缘：命中区 12px、可见线 1px，拖拽对称放大。 */}
     <AiChatWidthHandles host={pane} />
-    <div ref={content} className="ai-session-content ai-chat-content" onScroll={trackScroll}>
+    <div ref={content} className="ai-session-content ai-chat-content" style={{ overflowAnchor: "none" }} onScroll={trackScroll}
+      onWheel={(event) => {
+        // 内容不足一屏时没有 scroll 事件，向上滚轮仍应启动历史加载。
+        olderScroll.current.intent(event.deltaY);
+        prefetchEarlier();
+      }}>
       <div className="ai-conversation">
       {/* 往上只有一个方向：窗口里还藏着已加载的记录就先放窗口，放完了再问后端要更早的一页。 */}
       {timeline.hidden > 0 || runtime.hasOlder ? <div className="ai-earlier">
-        <button type="button" className="ai-text-button" disabled={runtime.loading} onClick={showEarlier}>
+        {error ? <button type="button" className="ai-text-button" disabled={runtime.loading} onClick={() => showEarlier()}>
           <ChevronDown size={13} aria-hidden="true" />{timeline.hidden > 0 ? t("ai.runtime.showEarlier") : t("ai.runtime.loadOlder")}
-        </button>
-        {runtime.loading ? <span className="ai-muted" role="status">{t("ai.runtime.loading")}</span> : null}
+        </button> : null}
+        {runtime.loading && anchor ? <span className="ai-muted" role="status">{t("ai.runtime.loading")}</span> : null}
       </div> : null}
       {timeline.items.map((item) => item.kind === "process"
         ? <AiProcessGroup key={item.key} entries={item.entries} active={item.active} render={renderEntry} />
         : renderEntry(item.entry))}
       {/* 参考的回合错误行：未加盒的一行说明，圆圈叹号 + 灰字；重试由用户重发实现。 */}
       {latestTask?.error ? <div className="ai-turn-error" role="note"><CircleAlert size={14} aria-hidden /><p>{latestTask.error}</p></div> : null}
-      {running ? <AiLiveStats provider={session.provider} runId={runtime.runId} entries={runtime.entries} usage={runtime.usage}
-        statusText={compacting ? t("ai.compact.chipCompacting") : runtime.stopping ? t("ai.lifecycle.stopping") : t("ai.runtime.running")} /> : null}
+      {connectingTask ? <AiLiveStats provider={session.provider} runId={connectingTask.runId} entries={runtime.entries} usage={runtime.usage}
+        statusText={runtime.stopping ? t("ai.lifecycle.stopping") : t("ai.runtime.submitting")} planMode={options.mode === "plan" || options.planMode === true} />
+      : running ? <AiLiveStats provider={session.provider} runId={runtime.runId} entries={runtime.entries} usage={runtime.usage}
+        statusText={compacting ? t("ai.compact.chipCompacting") : runtime.stopping ? t("ai.lifecycle.stopping") : t("ai.runtime.running")}
+        planMode={options.mode === "plan" || options.planMode === true} /> : null}
       {finishedTask && turnStats ? <AiTurnStats runId={finishedTask.runId} usage={runtime.usage}
         lastAssistantText={turnStats.text} userEntryId={turnStats.userId} onJump={jumpToEntryById} /> : null}
       {!runtime.entries.length ? runtime.loading
@@ -1110,14 +1376,13 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         按「有没有已加载的用户消息」来隐藏，导航就永远没机会被点开、也就永远取不到索引。 */}
     {runtime.loaded && (runtime.entries.length || outline.turns.length) ? <AiMessageNav key={session.id} entries={runtime.entries} outline={outline} hasOlder={runtime.hasOlder}
       onRequestOutline={() => { if (workspace) void loadAiOutline(session.id, workspace).catch(() => {}); }} onJump={jumpToTurn} /> : null}
-    {taskList && taskList.items.length ? <AiTaskListChip taskList={taskList} running={running} onJump={jumpToEntryById} /> : null}
     </div>
     <footer className="ai-composer-dock">
     {/* 待答复的卡片钉在输入框上方：正文一路往下滚的时候，不能让它跟着滚出屏幕——那等于本轮卡住却看不见卡在哪。 */}
     {pendingCards.length ? <div className="ai-session-requests">{pendingCards.map((request) => <RequestCard key={request.requestId} request={request} stopping={runtime.stopping} />)}</div> : null}
     {openPlan && workspace ? <AiPlanApproval plan={openPlan} disabled={decidingPlan || runtime.stopping || sending} key={`${openPlan.planId}:${openPlan.revision}`}
-      onApprove={async () => { setDecidingPlan(true); try { await decideAiPlan(session, workspace!, openPlan, "approve"); } catch (cause) { setDecidingPlan(false); throw cause; } }}
-      onRequestChanges={async (feedback) => { setDecidingPlan(true); try { await decideAiPlan(session, workspace!, openPlan, "requestChanges", feedback); } catch (cause) { setDecidingPlan(false); throw cause; } }}
+      onApprove={async () => { setDecidingPlan(true); try { await decideAiPlan(session, workspace!, openPlan, "approve", undefined, options, extraDirs); } catch (cause) { setDecidingPlan(false); throw cause; } }}
+      onRequestChanges={async (feedback) => { setDecidingPlan(true); try { await decideAiPlan(session, workspace!, openPlan, "requestChanges", feedback, options, extraDirs); } catch (cause) { setDecidingPlan(false); throw cause; } }}
       onDefer={async () => { setDecidingPlan(true); try { await deferAiPlan(session.id, workspace!, openPlan.planId, openPlan.revision); } catch (cause) { setDecidingPlan(false); throw cause; } }} /> : null}
     {runtime.background && runtime.background.pending > 0 ? <section className="ai-background-strip" role="status">
       <Loader2 size={13} className="is-spinning" aria-hidden />
@@ -1139,17 +1404,66 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     </section> : null}
     {error || (runtime.error && runtime.error !== latestTask?.error ? runtime.error : null) ? <p className="ai-session-alert" role="alert">{error ?? runtime.error}</p> : null}
     {queuedTasks.length ? <section className="ai-task-queue" aria-label={t("ai.runtime.queue")} ref={queueHost}>
-        {queuedTasks.map((task, index) => <div key={task.runId} data-queue-id={task.runId} className="ai-task-queue-item" draggable
-          onDragStart={() => { draggedTask.current = task.runId; captureQueueFlip(); }} onDragEnd={() => { draggedTask.current = null; }}
-          onDragOver={(event) => { if (draggedTask.current && draggedTask.current !== task.runId) event.preventDefault(); }}
-          onDrop={(event) => { event.preventDefault(); const runId = draggedTask.current; draggedTask.current = null; if (runId && runId !== task.runId) void moveQueuedAiTask(runId, task.runId).catch((cause) => setError(String(cause))); }}>
-          <span className="ai-task-drag"><GripVertical size={12} />{index + 1}</span><p title={task.prompt}>{task.prompt || t("ai.runtime.queuedTask")}</p>
-          <button type="button" className="icon-button is-inline" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => setError(String(cause)))}><ChevronsUp size={13} /></button>
-          <button type="button" className="icon-button is-inline" aria-label={t("ai.runtime.editQueued")} title={t("ai.runtime.editQueued")} onClick={() => setEditingTask({ runId: task.runId, prompt: task.prompt ?? "" })}><Pencil size={13} /></button>
-          <button type="button" className="icon-button is-inline" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => setError(String(cause)))}><X size={13} /></button>
-        </div>)}
+        <header>
+          <button type="button" className="ai-task-queue-toggle" aria-expanded={queueExpanded} aria-controls={queueBodyId}
+            aria-label={t(queueExpanded ? "ai.runtime.collapseQueue" : "ai.runtime.expandQueue")}
+            title={t(queueExpanded ? "ai.runtime.collapseQueue" : "ai.runtime.expandQueue")}
+            onClick={() => setQueueExpanded((expanded) => !expanded)}>
+            {queueExpanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+            <ListOrdered size={14} aria-hidden /><strong>{t("ai.runtime.queue")}</strong><small>{queuedTasks.length}</small>
+          </button>
+          {ownedQueuedTasks.length ? <button type="button" className="ai-task-queue-clear" onClick={() => void clearQueuedAiTasks(session.id).catch((cause) => setError(String(cause)))}>{t("ai.runtime.clearQueue")}</button> : null}
+        </header>
+        <div className="ai-task-queue-list" id={queueBodyId} hidden={!queueExpanded}>
+        {queuedTasks.map((task, index) => { const owned = ownedQueued.has(task.runId); const ownedIndex = ownedQueuedTasks.findIndex((item) => item.runId === task.runId); return <div key={task.runId} data-queue-id={task.runId} aria-current={editingTask?.runId === task.runId ? "true" : undefined}
+          className={`ai-task-queue-item${owned ? "" : " is-external"}${editingTask?.runId === task.runId ? " is-editing" : ""}${queueDrop?.runId === task.runId ? ` is-drop-${queueDrop.edge}` : ""}`}
+          onDragOver={(event) => {
+            const runId = draggedTask.current;
+            if (!owned || !runId || runId === task.runId) return;
+            event.preventDefault(); event.dataTransfer.dropEffect = "move";
+            const box = event.currentTarget.getBoundingClientRect();
+            setQueueDrop({ runId: task.runId, edge: event.clientY < box.top + box.height / 2 ? "before" : "after" });
+          }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setQueueDrop(null); }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const runId = draggedTask.current;
+            const box = event.currentTarget.getBoundingClientRect();
+            const after = event.clientY >= box.top + box.height / 2;
+            const beforeRunId = after ? ownedQueuedTasks[ownedIndex + 1]?.runId ?? null : task.runId;
+            draggedTask.current = null; setQueueDrop(null);
+            if (owned && runId && runId !== task.runId && beforeRunId !== runId) {
+              // 落点提示会触发重渲染，FLIP 必须在真正提交排序前重新取位置。
+              captureQueueFlip();
+              void moveQueuedAiTask(runId, beforeRunId).catch((cause) => setError(String(cause)));
+            }
+          }}>
+          <button type="button" className="ai-task-drag" disabled={!owned} draggable={owned}
+            aria-label={t("ai.runtime.reorderQueued")} title={t("ai.runtime.reorderQueued")}
+            onDragStart={(event) => {
+              draggedTask.current = task.runId; setQueueDrop(null);
+              event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", task.runId);
+            }}
+            onDragEnd={() => { draggedTask.current = null; setQueueDrop(null); }}
+            onKeyDown={(event) => {
+              if (!owned || ownedIndex < 0 || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+              const beforeRunId = event.key === "ArrowUp"
+                ? ownedQueuedTasks[ownedIndex - 1]?.runId
+                : ownedQueuedTasks[ownedIndex + 2]?.runId ?? null;
+              if (event.key === "ArrowUp" && !beforeRunId || event.key === "ArrowDown" && ownedIndex >= ownedQueuedTasks.length - 1) return;
+              event.preventDefault(); captureQueueFlip();
+              void moveQueuedAiTask(task.runId, beforeRunId ?? null).catch((cause) => setError(String(cause)));
+            }}><GripVertical size={14} aria-hidden /><b>{index + 1}</b></button>
+          <p title={task.prompt}>{task.prompt || t("ai.runtime.queuedTask")}</p>
+          {owned ? <span className="ai-task-queue-actions">
+            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => setError(String(cause)))}><ChevronsUp size={13} /><span>{t("ai.runtime.runQueuedShort")}</span></button>
+            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.editQueued")} title={t("ai.runtime.editQueued")} onClick={() => beginQueuedEdit(task.runId, task.prompt ?? "")}><Pencil size={13} /><span>{t("ai.runtime.editQueuedShort")}</span></button>
+            <button type="button" className="ai-task-action is-danger" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => setError(String(cause)))}><X size={13} /><span>{t("ai.runtime.cancelQueuedShort")}</span></button>
+          </span> : <small className="ai-task-queue-owner">{t("ai.runtime.otherWindow")}</small>}
+        </div>; })}
+        </div>
       </section> : null}
-    <div className="ai-composer-wrap" ref={attachArea}>
+    <div className={`ai-composer-wrap${editingTask ? " is-queue-editing" : ""}`} ref={attachArea}>
     <AiComposerShell
       overlay={<>
         {dropArmed ? <div className="ai-composer-drop" role="status">{t("ai.chat.dropImages")}</div> : null}
@@ -1165,12 +1479,12 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         {session.provider === "claude" && !runtime.commands ? <p className="ai-popover-note">{t("ai.commands.discovery")}</p> : null}
       </div> : null}
       </>}
-      attachments={images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
-        {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
+      attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
+        {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
       </div> : null}
-      editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={`${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
+      editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
         aria-autocomplete="list" aria-controls={menuVisible ? menuId : undefined} aria-expanded={menuVisible} aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
-              disabled={!workspace || !cliDesktopAvailable() || sending || trust}
+              disabled={!workspace || !cliDesktopAvailable() || sending}
               onChange={(event) => updateDraft(event.target.value)}
               onPaste={(event) => {
                 const files = collectPastedImages(event.clipboardData);
@@ -1180,6 +1494,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
               }}
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                if (editingTask && event.key === "Escape") { event.preventDefault(); cancelQueuedEdit(); return; }
                 if (menuVisible && !event.ctrlKey && !event.metaKey && !event.altKey) {
                   if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setCommandIndex((selectedCommand + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length); return; }
                   if (event.key === "Tab" && !event.shiftKey || event.key === "Enter" && !event.shiftKey) { event.preventDefault(); chooseCommand(suggestions[selectedCommand].name); return; }
@@ -1203,19 +1518,37 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
                 // 回车直接发送（Shift+Enter 换行）；Ctrl/⌘+Enter 同样发送，兼容旧习惯但不作提示。
           if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }
               }} />}
-      footer={activeCommand && !menuVisible || commandNotice ? <div className="ai-composer-notices">
-        {activeCommand && !menuVisible ? <p className="ai-command-notice"><code>/{activeCommand.name} {activeCommand.argumentHint}</code> · {activeCommand.hintKey ? t(activeCommand.hintKey as Parameters<typeof t>[0]) : activeCommand.description}</p> : null}
+      footer={editingTask || activeCommand && !menuVisible || commandNotice ? <div className="ai-composer-notices">
+        {editingTask ? <p className="ai-queue-edit-notice"><Pencil size={12} aria-hidden />{t("ai.runtime.editingQueued")}</p>
+          : activeCommand && !menuVisible ? <p className="ai-command-notice"><code>/{activeCommand.name} {activeCommand.argumentHint}</code> · {activeCommand.hintKey ? t(activeCommand.hintKey as Parameters<typeof t>[0]) : activeCommand.description}</p> : null}
         {commandNotice ? <p className="ai-command-notice" role="status">{commandNotice}</p> : null}
       </div> : null}
       toolbarLeft={<>
         <button type="button" className="ai-add-button" aria-label={t("ai.chat.attach")} title={t("ai.chat.attach")}
-          disabled={!workspace || !cliDesktopAvailable() || sending || trust}
+          disabled={!workspace || !cliDesktopAvailable() || sending || !!editingTask}
           onClick={(event) => setAddMenuAnchor(event.currentTarget)}><Plus size={16} /></button>
-        <AiComposerOptions commandRef={composer} key={optionsKey} provider={session.provider} workspace={workspace} value={options} onChange={changeOptions} disabled={sending || trust || !cliDesktopAvailable()} actualModel={runtime.usage?.model ?? runtime.configuration?.model} />
+        <AiComposerOptions commandRef={composer} key={optionsKey} provider={session.provider} workspace={workspace} value={options} onChange={changeOptions} disabled={sending || !!editingTask || !cliDesktopAvailable()} actualModel={runtime.usage?.model ?? runtime.configuration?.model} />
+        {isPlanModeActive ? (
+          <span className="ai-composer-plan-badge" title={t("ai.chat.inPlanModeNotice")}>
+            <span className="ai-composer-plan-dot" />
+            {t("ai.chat.planModeActive")}
+            <button type="button" className="ai-composer-plan-exit" onClick={handleExitPlanMode} title={t("ai.chat.exitPlanMode")}>
+              <X size={11} />
+            </button>
+          </span>
+        ) : null}
       </>}
       toolbarRight={<>
-        {running && runtime.runId ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} disabled={runtime.stopping} onClick={() => void stopAiRun(runtime.runId!).catch((cause) => setError(String(cause)))}><Square size={13} fill="currentColor" /></button> : null}
-        <button type="button" className="ai-send-button" aria-label={t("ai.send")} title={t("ai.send")} disabled={!workspace || !cliDesktopAvailable() || !draft.trim() && !images.length || sending || trust} onClick={() => void send()}><Send size={16} /></button>
+        {/* 运行或排队中只留红色停止：并排再摆一颗禁用的发送，两颗圆钮挤在一起读作冲突。
+            排队占位没有 runId 可停，那颗停止按钮走队首任务（后端按会话精确取消）。 */}
+        {editingTask ? <>
+          <button type="button" className="icon-button is-inline ai-queue-edit-cancel" aria-label={t("dialog.cancel")} title={t("dialog.cancel")} disabled={sending} onClick={cancelQueuedEdit}><X size={14} /></button>
+          <button type="button" className="ai-send-button" aria-label={t("ai.runtime.saveQueued")} title={t("ai.runtime.saveQueued")} disabled={!draft.trim() || sending} onClick={() => void send()}><Check size={16} /></button>
+        </> : activity === "running" && ownedRunId && (running || connectingTask)
+          ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} disabled={runtime.stopping} onClick={() => void stopAiRun(ownedRunId).catch((cause) => setError(String(cause)))}><Square size={13} fill="currentColor" /></button>
+          : ownedQueuedTasks.length
+            ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} onClick={() => void stopAiRun(ownedQueuedTasks[0].runId).catch((cause) => setError(String(cause)))}><Square size={13} fill="currentColor" /></button>
+            : <button type="button" className="ai-send-button" aria-label={t("ai.send")} title={t("ai.send")} disabled={!workspace || !cliDesktopAvailable() || !draft.trim() && !images.length || sending} onClick={() => void send()}><Send size={16} /></button>}
       </>}
     />
     {addMenuAnchor ? (
@@ -1233,7 +1566,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     <div className="ai-composer-caption"><span title={workspace ?? undefined}>{workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}</span>
       {/* 本轮改过哪些文件属于「这一整趟的结果」，不属于某一条消息：收在底栏，点开往上浮。 */}
       {editSummary.fileCount ? <details className="ai-edit-summary"><summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t(editSummary.fileCount === 1 ? "ai.chat.editedFile" : "ai.chat.editedFiles", { count: editSummary.fileCount })}</strong>{editSummary.additions !== undefined ? <><span className="is-add">+{editSummary.additions}</span><span className="is-delete">-{editSummary.deletions}</span></> : null}</summary>
-        <ul>{editSummary.files.map((file) => <li key={file.path}>{file.kind ? <em className={`ai-edit-kind is-${file.kind}`}>{t(`ai.tool.${file.kind}`)}</em> : null}<AiFilePath path={file.path} className="ai-file-path"><code>{file.path}</code></AiFilePath>{file.additions !== undefined ? <span><b>+{file.additions}</b> <i>-{file.deletions}</i></span> : null}</li>)}</ul>
+        <ul>{editSummary.files.map((file) => <li key={file.path}>{file.kind ? <em className={`ai-edit-kind is-${file.kind}`}>{t(`ai.tool.${file.kind}`)}</em> : null}<code className="ai-file-path">{file.path}</code>{file.additions !== undefined ? <span><b>+{file.additions}</b> <i>-{file.deletions}</i></span> : null}</li>)}</ul>
       </details> : null}
       {extraDirs.length ? <details className="ai-edit-summary">
         <summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t("ai.chat.extraDirs", { count: extraDirs.length })}</strong></summary>
@@ -1257,15 +1590,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       }}>
       {headPending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: headPending.session.title })}</p> : null}
     </AiActionDialog> : null}
-    {trust ? <AiActionDialog title={t("ai.runtime.trustTitle")} confirm={t("ai.runtime.trustSend")}
-      onCancel={() => { setTrust(false); pendingSend.current = undefined; }}
-      onConfirm={() => void send(true, pendingSend.current)}>
-      <p className="dialog-body">{t("ai.runtime.trustHint")}</p><p className="dialog-note">{workspace}</p>
-    </AiActionDialog> : null}
-    {editingTask ? <AiActionDialog title={t("ai.runtime.editQueued")} confirm={t("dialog.confirm")} initialValue={editingTask.prompt} onCancel={() => setEditingTask(null)} onConfirm={(prompt) => {
-      void editQueuedAiTask(editingTask.runId, prompt).catch((cause) => setError(String(cause)));
-      setEditingTask(null);
-    }} /> : null}
     <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} />
   </section>
   </AiOpenFileProvider>;

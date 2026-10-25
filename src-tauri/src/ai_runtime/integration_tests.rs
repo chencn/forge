@@ -125,6 +125,65 @@ fn both_protocols_real_pipes_deny_allow_resume_and_interrupt() {
         }
     }
 }
+
+#[test]
+fn codex_reattaches_the_same_native_turn_without_starting_another() {
+    let fixture = Fixture::new();
+    let root = fixture.0.to_string_lossy().into_owned();
+    let mut first = Codex::new(root.clone(), "original request".into(), Some("native-session".into()));
+    let mut child = process(&fixture, "codex", "disconnect-recover");
+    let mut actions = first.start().unwrap();
+    let mut partial = String::new();
+    loop {
+        for action in std::mem::take(&mut actions) {
+            match action {
+                Action::Write(value) => child.write(&value).unwrap(),
+                Action::Emit { kind: "text", data } => partial.push_str(data["text"].as_str().unwrap()),
+                Action::Finish { .. } => panic!("disconnect unexpectedly finished the turn"),
+                _ => {}
+            }
+        }
+        if !actions.is_empty() { continue; }
+        match child.incoming.recv_timeout(Duration::from_secs(10)).unwrap() {
+            Input::Json(value) => actions = first.receive(value).unwrap(),
+            Input::Eof => break,
+            Input::Error(error) => panic!("{error}"),
+        }
+    }
+    assert!(first.turn_started(), "prompt was not accepted before disconnect");
+    assert_eq!(partial, "中断前");
+    child.terminate();
+
+    // 第二个 app-server 只允许 resume + turns/list；fixture 收到 turn/start 会退出 19。
+    let mut resumed = Codex::new(root, String::new(), Some("native-session".into())).with_recovery_turn("turn-1".into());
+    let mut child = process(&fixture, "codex", "disconnect-recover");
+    let mut actions = resumed.start().unwrap();
+    let mut output = String::new();
+    let mut completed = false;
+    for _ in 0..40 {
+        for action in std::mem::take(&mut actions) {
+            match action {
+                Action::Write(value) => child.write(&value).unwrap(),
+                Action::Emit { kind: "message", data } => output = data["text"].as_str().unwrap().into(),
+                Action::Finish { status, error } => {
+                    assert_eq!(status, "completed");
+                    assert!(error.is_none());
+                    completed = true;
+                }
+                _ => {}
+            }
+        }
+        if completed { break; }
+        match child.incoming.recv_timeout(Duration::from_secs(10)).unwrap() {
+            Input::Json(value) => actions = resumed.receive(value).unwrap(),
+            Input::Eof => panic!("recovery disconnected again"),
+            Input::Error(error) => panic!("{error}"),
+        }
+    }
+    assert!(completed && resumed.turn_started());
+    assert_eq!(output, "恢复完成");
+    child.terminate();
+}
 #[test]
 fn claude_context_snapshot_refreshes_during_the_turn_and_never_blocks_completion() {
     for scenario in ["context", "context-timeout", "context-unsupported"] {

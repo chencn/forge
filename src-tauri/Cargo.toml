@@ -49,6 +49,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 # 更新包缓存读回时重新验签用。updater 插件内部就是这一个版本，显式声明不额外下载。
 minisign-verify = "0.3"
+# 日志里找压缩事件的前缀标记：逐字节 `windows().any()` 比解析整行 JSON 还慢，
+# 大批量扫描要一次跳到标记处。已在依赖树里（regex/walkdir 的底层），不额外下载。
+memchr = "2"
 
 # 关掉 WebView2 自带的右键菜单（刷新 / 另存为 / 打印）：桌面应用里不该出现，
 # 应用自己的菜单在前端摆。两者都是 tauri 已经锁在依赖树里的版本，不额外下载。

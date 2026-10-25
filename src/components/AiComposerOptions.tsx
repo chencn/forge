@@ -8,7 +8,7 @@ import { loadAiCapabilities, refreshAiCapabilities, saveAiCustomModel } from "..
 import type { AiCapabilities, AiRunOptions } from "../lib/aiRuntime";
 import type { AiProvider } from "../lib/aiCli";
 import { cliDesktopAvailable } from "../lib/aiCli";
-import { resolveAiModel } from "../lib/aiOptions";
+import { aiNormalMode, resolveAiModel } from "../lib/aiOptions";
 import AiProviderIcon from "./AiProviderIcon";
 import Popover from "./Popover";
 import AiActionDialog from "./AiActionDialog";
@@ -28,11 +28,44 @@ interface AiComposerOptionsProps {
 const effortKeys = { none: "ai.chat.effort.none", minimal: "ai.chat.effort.minimal", low: "ai.chat.effort.low", medium: "ai.chat.effort.medium", high: "ai.chat.effort.high", xhigh: "ai.chat.effort.xhigh", max: "ai.chat.effort.max" } as const;
 /** Claude 的 --effort 是会话级参数，不随别名（例如 Haiku）被目录里的空档位列表挡住。 */
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * 已知模式一律用本地名字，中文界面里不夹 `auto`、`dontAsk` 这种半截英文。
+ * CLI 新增、我们还没命名的档位原样报出它的 id：不替别人的功能编名字，也不因为「没翻译」就把它藏掉。
+ */
+const modeKeys = {
+  default: "ai.chat.modeDefault",
+  plan: "ai.chat.planMode",
+  manual: "ai.chat.permissionAsk",
+  acceptEdits: "ai.chat.permissionEdits",
+  auto: "ai.chat.modeAuto",
+  dontAsk: "ai.chat.modeDontAsk",
+  bypassPermissions: "ai.chat.permissionFull",
+} as const;
+/** 档位名本身说不清放行了什么，鼠标停上去要能看见边界。 */
+const modeHintKeys = {
+  default: "ai.chat.modeDefaultHint",
+  plan: "ai.chat.planModeHint",
+  manual: "ai.chat.modeManualHint",
+  acceptEdits: "ai.chat.modeEditsHint",
+  auto: "ai.chat.modeAutoHint",
+  dontAsk: "ai.chat.modeDontAskHint",
+  bypassPermissions: "ai.chat.modeBypassHint",
+} as const;
+/** 探测没成功时的兜底表，只够把界面摆出来，不能当成这版 CLI 的事实。 */
+const FALLBACK_MODES: Record<AiProvider, string[]> = {
+  claude: ["manual", "plan", "acceptEdits", "auto", "dontAsk", "bypassPermissions"],
+  codex: ["default", "plan"],
+};
+/** 跳过全部工具审批的档位：点它要当面确认。 */
+const DANGEROUS_MODES = ["bypassPermissions"];
+/** 旧 /permissions 的四档别名 → Claude 的模式原话（Claude 的权限档和模式是同一条轴）。 */
+const CLAUDE_MODE_ALIASES: Record<string, string> = { read: "plan", ask: "manual", auto: "acceptEdits", full: "bypassPermissions" };
 
 /**
- * 输入框的「设置芯片」：模型 / 强度 / 权限收进一颗圆角芯片，点开向上弹出
+ * 输入框的「设置芯片」：模型 / 强度 / 模式 / 权限收进一颗圆角芯片，点开向上弹出
  * 参考样式的设置面板——可搜索的模型列表（勾选、等宽 id 提示、默认徽标）、
- * 强度与权限的分段控件、Fast 开关。自定义模型在设置页维护，
+ * 强度、模式和权限的分段控件、Fast 开关。模式档位来自 CLI 自己报出的取值，
+ * 计划模式是其中一项而不是一个开关。自定义模型在设置页维护，
  * 输入框里只负责选择，不提供增删或手动刷新入口。
  *
  * 兼容旧斜杠命令：`commandRef.execute` 仍支持 /model /effort /permissions /fast
@@ -44,7 +77,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   const [error, setError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<AiCapabilities | null>(null);
   const [loading, setLoading] = useState(false);
-  const [confirmFull, setConfirmFull] = useState(false);
+  const [pending, setPending] = useState<AiRunOptions | null>(null);
   const [open, setOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const root = useRef<HTMLDivElement>(null);
@@ -134,19 +167,44 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       fast: value.fast && !!targetModel?.serviceTiers?.some((tier) => tier.name.toLowerCase() === "fast"),
     });
   };
+  // Codex 的权限档（沙箱与审批）和协作模式是两条轴，两个控件并存；
+  // Claude 只有一个 --permission-mode，计划模式就排在这条列表里。
   const permissionOptions = useMemo(() => [
-    ...(provider === "codex" ? [{ value: "read", label: t("ai.chat.permissionRead") }] : []),
+    { value: "read", label: t("ai.chat.permissionRead") },
     { value: "ask", label: t("ai.chat.permissionAsk") },
     { value: "auto", label: t("ai.chat.permissionEdits") },
     { value: "full", label: t("ai.chat.permissionFull") },
-  ], [provider, t]);
+  ], [t]);
   const permission = value.permission ?? (provider === "codex" ? "inherit" : "ask");
+  const modeLabel = (id: string) => id in modeKeys ? t(modeKeys[id as keyof typeof modeKeys]) : id;
+  const modeHint = (id: string) => id in modeHintKeys ? t(modeHintKeys[id as keyof typeof modeHintKeys]) : undefined;
+  // 模式列表来自 CLI 亲口报的取值；没探测到才用兜底表，避免面板整个空掉。
+  // 只把「正常」档挪到第一格：CLI 的取值是字母序，照原样排会让完全访问抢在按需审批前面。
+  const modes = useMemo(() => {
+    const ids = capabilities?.modes?.length ? capabilities.modes : FALLBACK_MODES[provider];
+    const normal = aiNormalMode(provider);
+    return ids.includes(normal) ? [normal, ...ids.filter((id) => id !== normal)] : ids;
+  }, [capabilities, provider]);
+  // 旧会话只有 planMode/permission：按同一语义迁移成一项模式，而不是当成没选。
+  const mode = value.mode ?? (value.planMode ? "plan" : provider === "codex" ? "default" : CLAUDE_MODE_ALIASES[permission] ?? aiNormalMode(provider));
+  const setMode = (next: string) => {
+    // 选中新模式就把旧的计划模式布尔清掉：两者同义，留着会让徽标一直亮。
+    if (DANGEROUS_MODES.includes(next)) { setPending({ ...value, planMode: undefined, mode: next }); return; }
+    onChange({ ...value, planMode: undefined, mode: next });
+  };
   const setPermission = (next: string) => {
     if (next === "custom") return;
-    // 计划模式与完全访问互斥：计划只读，完全访问会绕过它。
-    if (next === "full") setConfirmFull(true);
-    else onChange({ ...value, permission: next as AiRunOptions["permission"] });
+    if (next === "full") { setPending({ ...value, permission: "full" }); return; }
+    onChange({ ...value, permission: next as AiRunOptions["permission"] });
   };
+  // CLI 升级后撤掉的档位不能继续显示成「用户正选着它」：退回正常档并说明原因。
+  // 只有实测回报过的列表才有资格下这个结论，兜底表不能反过来否定用户的记忆。
+  useEffect(() => {
+    if (!capabilities?.modes?.length || !capabilities.modesAuthoritative) return;
+    if (!value.mode || value.mode === aiNormalMode(provider) || capabilities.modes.includes(value.mode)) return;
+    onChange({ ...value, planMode: undefined, mode: aiNormalMode(provider) });
+    setError(t("ai.chat.modeRetired", { mode: value.mode }));
+  }, [capabilities, value, provider, t]);
 
   /** 模型列表按「默认 / 自定义 / 目录」分组，输入框按名称与 id 过滤。 */
   const query = modelQuery.trim().toLowerCase();
@@ -167,8 +225,8 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   const summaryParts = [
     model?.name ?? (configuredValue?.model || actualModel || t("ai.chat.model")),
     efforts.length ? effortLabel(configuredValue?.effort ?? model?.defaultEffort ?? "") : "",
-    value.permission ? permissionOptions.find((option) => option.value === value.permission)?.label ?? "" : "",
-    value.planMode ? t("ai.chat.planMode") : "",
+    modeLabel(mode),
+    provider === "codex" && value.permission ? permissionOptions.find((option) => option.value === value.permission)?.label ?? "" : "",
   ].filter(Boolean);
 
   useImperativeHandle(commandRef, () => ({ execute: async (command, rawArgs) => {
@@ -181,10 +239,6 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     }
     if (disabled) throw new Error(t("ai.commands.busy"));
     if (!arg && (command === "model" || command === "effort" || command === "permissions")) { setOpen(true); return; }
-    if (command === "permissions") {
-      if (!["ask", "auto", "full", ...(provider === "codex" ? ["read"] : [])].includes(arg)) throw invalid();
-      setPermission(arg); return;
-    }
     if (command === "fast" && (provider !== "codex" || !["", "on", "off"].includes(arg))) throw invalid();
     if (command === "fast" && (arg === "off" || !arg && fastEnabled)) {
       onChange({ ...value, fast: false });
@@ -207,6 +261,14 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       const allowed = provider === "claude" ? CLAUDE_EFFORTS : selected?.efforts ?? catalog.efforts;
       if (arg !== "default" && !allowed.includes(arg)) throw invalid();
       onChange({ ...value, effort: arg === "default" ? undefined : arg });
+    } else if (command === "permissions") {
+      // 参数先按这版 CLI 报出的模式原话匹配，再用旧别名兜住既有用法；
+      // 两边都不认就报错：没验证过的字符串不能当成模式发给 CLI。
+      const ids = catalog.modes?.length ? catalog.modes : FALLBACK_MODES[provider];
+      const alias = ids.includes(arg) ? arg : provider === "claude" ? CLAUDE_MODE_ALIASES[arg] : undefined;
+      if (alias && ids.includes(alias)) setMode(alias);
+      else if (provider === "codex" && ["read", "ask", "auto", "full"].includes(arg)) setPermission(arg);
+      else throw invalid();
     } else if (command === "fast") {
       const tier = (selected ?? catalog.models.find((item) => item.isDefault))?.serviceTiers?.find((item) => item.name.toLowerCase() === "fast");
       if (!tier) throw invalid();
@@ -283,23 +345,30 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
           </> : null}
           <div className="ai-settings-sep" aria-hidden />
           <div className="ai-settings-block">
-            <div className="ai-settings-header"><span>{t("ai.chat.permissions")}</span></div>
-            <div className="ai-segmented" role="group" aria-label={t("ai.chat.permissions")}>
-              {permissionOptions.map((option) => (
-                <button key={option.value} type="button" aria-pressed={permission === option.value} className={permission === option.value ? "is-on" : ""}
-                  onClick={() => setPermission(option.value)}>{option.label}</button>
-              ))}
+            <div className="ai-settings-header"><span>{t("ai.chat.mode")}</span></div>
+            <div className="ai-segmented" role="group" aria-label={t("ai.chat.mode")}>
+              {modes.map((option) => {
+                const active = mode === option;
+                return <button key={option} type="button" aria-pressed={active} className={active ? "is-on" : ""}
+                  disabled={disabled} title={modeHint(option)}
+                  onClick={() => setMode(option)}>{modeLabel(option)}</button>;
+              })}
             </div>
           </div>
-          <div className="ai-settings-sep" aria-hidden />
-          <label className="ai-switch-row" title={t("ai.chat.planModeHint")}>
-            <span>{t("ai.chat.planMode")}</span>
-            <button type="button" role="switch" aria-checked={value.planMode === true} disabled={disabled || permission === "full"}
-              onClick={() => onChange({ ...value, planMode: !value.planMode })}>
-              <span className="ai-switch-knob" aria-hidden />
-            </button>
-          </label>
-          {value.planMode ? <p className="ai-settings-source">{t("ai.chat.planModeHint")}</p> : null}
+          {/* Claude 的 --permission-mode 就是上面这条列表，没有第二条轴；Codex 的沙箱档与协作模式互不相干。 */}
+          {provider === "codex" ? <>
+            <div className="ai-settings-sep" aria-hidden />
+            <div className="ai-settings-block">
+              <div className="ai-settings-header"><span>{t("ai.chat.permissions")}</span></div>
+              <div className="ai-segmented" role="group" aria-label={t("ai.chat.permissions")}>
+                {permissionOptions.map((option) => (
+                  <button key={option.value} type="button" disabled={disabled} aria-pressed={permission === option.value} className={permission === option.value ? "is-on" : ""}
+                    onClick={() => setPermission(option.value)}>{option.label}</button>
+                ))}
+              </div>
+            </div>
+          </> : null}
+          {mode === "plan" ? <p className="ai-settings-source">{t("ai.chat.planModeHint")}</p> : null}
           {provider === "codex" ? <>
             <div className="ai-settings-sep" aria-hidden />
             <label className="ai-switch-row" title={t(fastAvailable ? "ai.chat.fastHint" : "ai.chat.fastUnavailable")}>
@@ -315,8 +384,8 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
         </div>
       </Popover>
     ) : null}
-    {confirmFull ? <AiActionDialog danger title={t("ai.chat.permissionFull")} confirm={t("ai.chat.confirmFull")} onCancel={() => setConfirmFull(false)}
-      onConfirm={() => { if (!disabled) onChange({ ...value, permission: "full", planMode: false }); setConfirmFull(false); }}>
+    {pending ? <AiActionDialog danger title={t("ai.chat.permissionFull")} confirm={t("ai.chat.confirmFull")} onCancel={() => setPending(null)}
+      onConfirm={() => { if (!disabled) onChange(pending); setPending(null); }}>
       <p className="dialog-body">{t("ai.chat.fullWarning")}</p>
     </AiActionDialog> : null}
   </div>;

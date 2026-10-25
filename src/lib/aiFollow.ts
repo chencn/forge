@@ -1,6 +1,56 @@
 /** 倒数这么多像素内都算「贴着底部」，别让用户为几个像素的对不齐动手。 */
 export const BOTTOM_SLOP = 80;
 
+/** 上翻历史的意图与分页锁；程序补偿只更新位置，不能改变用户滚动方向。 */
+export class OlderHistoryScroll {
+  private top = 0;
+  private upward = false;
+  private busy = false;
+  private failed = false;
+  private initial = true;
+  /** 上一次补页真实长出来的内容高度；0 表示还没测到过。 */
+  private page = 0;
+
+  scroll(top: number): number {
+    const delta = top - this.top;
+    this.top = top;
+    this.intent(delta);
+    return delta;
+  }
+
+  intent(delta: number) { if (delta !== 0) { this.upward = delta < 0; this.initial = false; } }
+
+  /** 补页落地后量一次：新内容比旧内容高出多少，那就是「一页」在本会话里的真实厚度。 */
+  measure(gain: number) { if (gain > 0) this.page = gain; }
+
+  /** 首屏按真实内容高度补到三屏；用户开始滚动后不再替他补底部空间。 */
+  shouldFill(contentHeight: number, height: number, available: boolean, loading: boolean): boolean {
+    if (height > 0 && contentHeight >= height * 3) this.initial = false;
+    return this.initial && !this.busy && !this.failed && !loading && available && height > 0;
+  }
+
+  preserve(top: number) { this.top = top; }
+  follow(top: number) { this.top = top; this.upward = false; }
+
+  shouldLoad(top: number, height: number, available: boolean, loading: boolean): boolean {
+    // 提前两页开始读，而不是等用户滑到顶才看见「正在读取记录…」。
+    // 一页按上次补页量到的真实高度算；还没量到时退回两屏，绝不低于原有提前量。
+    const lead = Math.max(this.page * 2, height * 2);
+    return this.upward && !this.busy && !this.failed && !loading && available
+      && height > 0 && top <= lead;
+  }
+
+  begin(initial = false): boolean {
+    if (this.busy) return false;
+    this.busy = true;
+    this.failed = false;
+    if (!initial) this.upward = true;
+    return true;
+  }
+
+  finish(failed = false) { this.busy = false; this.failed = failed; }
+}
+
 /**
  * 聊天滚动跟随的计数规则。
  *

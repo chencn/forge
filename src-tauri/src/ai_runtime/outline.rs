@@ -12,7 +12,7 @@ use super::events::Event;
 use super::store;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -24,9 +24,10 @@ const BLOCK: u64 = 1024 * 1024;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// 摘要保留这么多字符：一行导航放不下，完整内容本来就在正文里。
 const LABEL_CHARS: usize = 120;
-/// 只有这两类事件进索引。工具事件动辄上百 KB，为了让索引去解析它们等于把正文再读一遍。
+/// 索引只读用户、文件和任务状态，跳过庞大的工具输出。
 const USER_MARK: &[u8] = b"\"kind\":\"user\"";
 const FILES_MARK: &[u8] = b"\"kind\":\"files\"";
+const STATUS_MARK: &[u8] = b"\"kind\":\"status\"";
 
 /// 一轮用户消息在导航里的一行。
 #[derive(Serialize)]
@@ -60,6 +61,7 @@ fn summarize(text: &str) -> String {
 fn worth_parsing(line: &[u8]) -> bool {
     line.windows(USER_MARK.len()).any(|w| w == USER_MARK)
         || line.windows(FILES_MARK.len()).any(|w| w == FILES_MARK)
+        || line.windows(STATUS_MARK.len()).any(|w| w == STATUS_MARK)
 }
 
 /// 倒着扫 `events.jsonl`，取最近这么多轮用户消息。
@@ -89,6 +91,11 @@ pub fn turns(base: &Path, id: &str, root: &str) -> Result<Value, String> {
     let mut turns: Vec<Turn> = Vec::new();
     // 当前这一轮（还没遇到它的 user 事件）改过的文件路径。
     let mut paths: HashSet<String> = HashSet::new();
+    // 倒序先遇到最新状态；是否曾运行则累计，区分取消排队与取消执行。
+    let mut statuses = HashMap::<String, String>::new();
+    let mut started = HashSet::<String>::new();
+    let mut queued = HashSet::<String>::new();
+    let mut prompts = HashMap::<String, String>::new();
     // 跨块的半行：本次数据的开头那段属于更早一块还没读到的行，留下一次接上。
     let mut residual: Vec<u8> = Vec::new();
     let mut truncated = false;
@@ -134,6 +141,15 @@ pub fn turns(base: &Path, id: &str, root: &str) -> Result<Value, String> {
                 continue;
             }
             match event.kind.as_str() {
+                "status" => {
+                    let status = event.data["status"].as_str().unwrap_or_default();
+                    statuses.entry(event.run_id.clone()).or_insert_with(|| status.to_owned());
+                    if matches!(status, "running" | "completed") { started.insert(event.run_id.clone()); }
+                    if matches!(status, "queued" | "waitingExternal") { queued.insert(event.run_id.clone()); }
+                    if let Some(prompt) = event.data["prompt"].as_str() {
+                        prompts.entry(event.run_id).or_insert_with(|| prompt.to_owned());
+                    }
+                }
                 "files" => {
                     let value = &event.data;
                     if let Some(items) = value["paths"].as_array() {
@@ -144,19 +160,23 @@ pub fn turns(base: &Path, id: &str, root: &str) -> Result<Value, String> {
                 }
                 "user" => {
                     let text = event.data["text"].as_str().unwrap_or_default();
-                    let entry_id = match event.data["id"].as_str() {
-                        Some(item) => format!("{}:{}", event.run_id, item),
-                        None => format!("{}:{}", event.run_id, event.seq),
-                    };
-                    turns.push(Turn {
-                        seq: event.seq,
-                        entry_id,
-                        run_id: event.run_id,
-                        label: summarize(text),
-                        files: std::mem::take(&mut paths).len(),
-                    });
-                    if turns.len() >= MAX_TURNS {
-                        break;
+                    // CLI 自己以 user 角色写下的注入（AGENTS.md 指令、环境上下文、任务通知）不是一轮对话：
+                    // 旧日志里已经写进去的那些不能变成轮次标签。
+                    if let Some(spoken) = super::history::human_text(text) {
+                        let entry_id = match event.data["id"].as_str() {
+                            Some(item) => format!("{}:{}", event.run_id, item),
+                            None => format!("{}:{}", event.run_id, event.seq),
+                        };
+                        turns.push(Turn {
+                            seq: event.seq,
+                            entry_id,
+                            run_id: event.run_id,
+                            label: summarize(&spoken),
+                            files: std::mem::take(&mut paths).len(),
+                        });
+                        if turns.len() >= MAX_TURNS {
+                            break;
+                        }
                     }
                 }
                 _ => {}
@@ -171,24 +191,36 @@ pub fn turns(base: &Path, id: &str, root: &str) -> Result<Value, String> {
     if !truncated && position == 0 && turns.len() < MAX_TURNS && !residual.is_empty() && worth_parsing(&residual) {
         if let Ok(event) = serde_json::from_slice::<Event>(&residual) {
             if event.session_id == id && event.kind == "user" && store::valid_id(&event.run_id) {
-                let entry_id = match event.data["id"].as_str() {
-                    Some(item) => format!("{}:{}", event.run_id, item),
-                    None => format!("{}:{}", event.run_id, event.seq),
-                };
-                turns.push(Turn {
-                    seq: event.seq,
-                    entry_id,
-                    run_id: event.run_id,
-                    label: summarize(event.data["text"].as_str().unwrap_or_default()),
-                    files: std::mem::take(&mut paths).len(),
-                });
+                // 和主循环一样：系统注入不算真人的一轮。
+                let spoken = super::history::human_text(event.data["text"].as_str().unwrap_or_default());
+                if let Some(spoken) = spoken {
+                    let entry_id = match event.data["id"].as_str() {
+                        Some(item) => format!("{}:{}", event.run_id, item),
+                        None => format!("{}:{}", event.run_id, event.seq),
+                    };
+                    turns.push(Turn {
+                        seq: event.seq,
+                        entry_id,
+                        run_id: event.run_id,
+                        label: summarize(&spoken),
+                        files: std::mem::take(&mut paths).len(),
+                    });
+                }
             }
         }
+    }
+    let reached_limit = turns.len() >= MAX_TURNS;
+    turns.retain(|turn| {
+        !statuses.get(&turn.run_id).is_some_and(|status| matches!(status.as_str(), "queued" | "waitingExternal"))
+            && (!queued.contains(&turn.run_id) || started.contains(&turn.run_id))
+    });
+    for turn in &mut turns {
+        if let Some(prompt) = prompts.get(&turn.run_id) { turn.label = summarize(prompt); }
     }
     turns.reverse();
     // `complete` 为假时 `indexed` 只是「索引到的轮数」，不是会话总轮数；
     // 界面据此决定序号能不能当「第几条消息」讲。
-    let complete = position == 0 && turns.len() < MAX_TURNS;
+    let complete = position == 0 && !truncated && !reached_limit;
     Ok(serde_json::json!({
         "turns": turns,
         "indexed": turns.len(),
@@ -274,6 +306,25 @@ mod tests {
         let found = turns(&p, "s1", "root").unwrap();
         assert_eq!(turns_of(&found).iter().map(|t| t.1.clone()).collect::<Vec<_>>(), vec!["r1:1", "r1:native-9"]);
         fs::remove_dir_all(p).unwrap();
+    }
+
+    #[test]
+    fn queued_and_cancelled_unstarted_turns_stay_out_of_navigation() {
+        let p = fixture();
+        let mut handle = store::Store::open(&p, "s1", "root", Provider::Codex, "标题", "1").unwrap();
+        for (run, status) in [("pending", "queued"), ("cancelled", "cancelled"), ("started", "running")] {
+            handle.append(run, vec![
+                ("user".into(), json!({"text":"旧提示词"})),
+                ("status".into(), json!({"status":"queued"})),
+                ("status".into(), json!({"status":"queued","prompt":"最终提示词"})),
+                ("status".into(), json!({"status":status})),
+            ]).unwrap();
+        }
+        let found = turns(&p, "s1", "root").unwrap();
+        let rows = found["turns"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["runId"], "started");
+        assert_eq!(rows[0]["label"], "最终提示词");
     }
 
     #[test]

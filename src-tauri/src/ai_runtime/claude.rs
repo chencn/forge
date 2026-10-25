@@ -18,7 +18,7 @@ fn task_status(value: Option<&str>) -> &'static str {
 }
 
 /// Claude 的 TodoWrite / TaskCreate / TaskUpdate 统一成持久化 task_list 事件。
-fn task_event(tool_id: &str, name: &str, input: &Value) -> Option<Action> {
+pub(crate) fn task_event(tool_id: &str, name: &str, input: &Value) -> Option<Action> {
     let (replace, items) = match name {
         "TodoWrite" => {
             let items: Vec<_> = input["todos"].as_array()?.iter().enumerate().filter_map(|(index, item)| {
@@ -48,15 +48,45 @@ fn task_event(tool_id: &str, name: &str, input: &Value) -> Option<Action> {
     Some(Action::Emit { kind: "task_list", data: json!({"replace":replace,"items":items}) })
 }
 
-/// TaskCreate 的真实 taskId 只在工具结果里出现；用相同正文替换临时工具 ID，
+/// 从 TaskCreate 的结构化结果或人类可读回执里取真实任务 ID。
+/// Claude 版本不同，有的给 `{taskId:"7"}`，有的只给 `Task #7 created`。
+fn created_task_id(value: &Value) -> Option<String> {
+    if let Some(object) = value.as_object() {
+        for key in ["taskId", "task_id", "id"] {
+            if let Some(id) = object.get(key).and_then(|id| id.as_str()).map(str::trim).filter(|id| !id.is_empty()) {
+                return Some(id.to_owned());
+            }
+        }
+        for key in ["result", "data", "content", "text"] {
+            if let Some(id) = object.get(key).and_then(created_task_id) { return Some(id); }
+        }
+    }
+    if let Some(items) = value.as_array() {
+        return items.iter().find_map(created_task_id);
+    }
+    let text = value.as_str()?.trim();
+    if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+        if let Some(id) = created_task_id(&parsed) { return Some(id); }
+    }
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    for pair in words.windows(2) {
+        if pair[0].trim_matches(|c: char| !c.is_ascii_alphabetic()).eq_ignore_ascii_case("task") {
+            let id = pair[1].trim_start_matches('#').trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+            if !id.is_empty() { return Some(id.to_owned()); }
+        }
+    }
+    None
+}
+
+/// TaskCreate 的真实 taskId 只在工具结果里出现；显式替换临时工具 ID，
 /// 后续 TaskUpdate 才能命中同一项。
-fn created_task_event(tool: &Value, result: &Value) -> Option<Action> {
+fn created_task_event(tool: &Value, structured: Option<&Value>, output: &Value) -> Option<Action> {
     if tool["name"] != "TaskCreate" { return None; }
-    let id = result["taskId"].as_str().or_else(|| result["id"].as_str())?.trim();
+    let id = structured.and_then(created_task_id).or_else(|| created_task_id(output))?;
     let content = tool["input"]["subject"].as_str()?.trim();
     if id.is_empty() || content.is_empty() { return None; }
     Some(Action::Emit { kind: "task_list", data: json!({"replace":false,"items":[{
-        "id":id,"content":content,"status":task_status(result["status"].as_str()),"detail":tool["input"]["description"]
+        "id":id,"replacesId":tool["id"],"content":content,"status":task_status(structured.and_then(|value| value["status"].as_str())),"detail":tool["input"]["description"]
     }]}) })
 }
 
@@ -144,6 +174,8 @@ pub struct Claude {
     native: Option<String>,
     /// 提示词是否已经发出。用来拒绝重复的初始化响应，避免同一轮发两遍。
     sent: bool,
+    /// 收到 system/init 才说明 CLI 已经接收本轮用户输入；控制协议初始化回包不算开跑。
+    started: bool,
     /// 是否已被中断。置位后不再接受授权答复，也不再放行新请求。
     stopped: bool,
     /// 作用域（`parent_tool_use_id`）→ 当前消息 id。子代理有独立作用域，不能互相覆盖。
@@ -183,6 +215,7 @@ impl Claude {
             requested_model: None,
             native,
             sent: false,
+            started: false,
             stopped: false,
             messages: HashMap::new(),
             complete: HashSet::new(),
@@ -267,17 +300,15 @@ impl Claude {
             .as_str()
             .ok_or("Claude 工具缺少 ID")?
             .to_string();
-        // 同一个 tool_use 会走两条路各到一次：流式 content_block_start 先发，随后完整
-        // assistant 信封又带一遍。事件按 id 在前端会合并，但日志里同一条记两遍没有意义；
-        // 第二次只补全入参（完整信封的 input 是权威值），不再发事件。
-        if self.tools.contains_key(&id) {
-            self.tools.insert(id, block.clone());
+        // 完整信封会补齐流式开始时的空参数；只去重相同输入，否则文件路径永远传不到前端。
+        let updating = self.tools.contains_key(&id);
+        if self.tools.get(&id).is_some_and(|old| old["input"] == block["input"] && old["name"] == block["name"]) {
             return Ok(vec![]);
         }
         self.tools.insert(id.clone(), block.clone());
         let mut out = vec![Action::Emit {
             kind: "tool",
-            data: Self::scoped(json!({"id":id,"name":block["name"],"input":block["input"],"status":"running"}), scope),
+            data: Self::scoped(if updating { json!({"id":id,"name":block["name"],"input":block["input"]}) } else { json!({"id":id,"name":block["name"],"input":block["input"],"status":"running"}) }, scope),
         }];
         if let Some(event) = task_event(&id, block["name"].as_str().unwrap_or(""), &block["input"]) { out.push(event); }
         Ok(out)
@@ -356,6 +387,7 @@ impl Protocol for Claude {
                         return Err("Claude 恢复到了不同会话".into());
                     }
                     self.native = Some(id.clone());
+                    self.started = true;
                     out.push(Action::Bind(id));
                     self.terminal_commands = value["terminal_slash_commands"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect();
                     out.push(self.catalog_event());
@@ -394,7 +426,7 @@ impl Protocol for Claude {
                         out.push(Action::Emit { kind: "command_output", data: json!({"id":id,"text":text}) });
                     }
                 }
-                "compact_boundary" | "status" if value["subtype"] == "compact_boundary" || value["status"] == "compacting" => out.push(Action::Emit { kind: "compaction", data: json!({"metadata":value["compact_metadata"],"status":value["status"]}) }),
+                "compact_boundary" | "status" if value["subtype"] == "compact_boundary" || value["status"] == "compacting" => out.push(Action::Emit { kind: "compaction", data: json!({"metadata":value["compact_metadata"],"status":if value["subtype"] == "compact_boundary" { "completed" } else { "compacting" }}) }),
                 "api_retry" => out.push(Action::Emit {
                     kind: "retry",
                     data: json!({"attempt":value["attempt"],"error":value["error"]}),
@@ -557,12 +589,17 @@ impl Protocol for Claude {
                     }
                     // 结构化结果包含真实读取范围与补丁，不能只保留发给模型的文本摘要。
                     let mut result = Self::scoped(json!({"id":id,"output":block["content"],"status":if block["is_error"]==true {"failed"} else {"completed"}}), &scope);
-                    let structured = super::structured_tool_result(value.get("tool_use_result"), id, result_count);
+                    // 完成事件必须能独立投影：分页可能没有加载工具开始所在的旧页。
+                    if let Some(tool) = self.tools.get(id) {
+                        result["name"] = tool["name"].clone();
+                        result["input"] = tool["input"].clone();
+                    }
+                    let structured = super::structured_tool_result(value.get("tool_use_result").or_else(|| value.get("toolUseResult")), id, result_count);
                     if let Some(structured) = structured { result["result"] = structured.clone(); }
                     out.push(Action::Emit {kind:"tool",data:result});
                     if block["is_error"] != true {
-                        if let (Some(tool), Some(structured)) = (self.tools.get(id), structured) {
-                            if let Some(event) = created_task_event(tool, structured) { out.push(event); }
+                        if let Some(tool) = self.tools.get(id) {
+                            if let Some(event) = created_task_event(tool, structured, &block["content"]) { out.push(event); }
                         }
                     }
                     if block["is_error"] != true && !structured.is_some_and(|result| result["staged"] == true) {
@@ -771,6 +808,7 @@ impl Protocol for Claude {
             json!({"type":"control_request","request_id":"forge-interrupt","request":{"subtype":"interrupt"}}),
         )]
     }
+    fn turn_started(&self) -> bool { self.started }
     fn parked(&self) -> bool {
         self.parked
     }
@@ -778,6 +816,39 @@ impl Protocol for Claude {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn turn_is_started_only_after_claude_confirms_system_init() {
+        let mut protocol = Claude::new("root".into(), "hi".into(), None);
+        protocol.start().unwrap();
+        assert!(!protocol.turn_started());
+        // 控制协议握手只是允许发送 user 帧，真正接单边界是随后到达的 system/init。
+        protocol.receive(json!({"type":"control_response","response":{"request_id":"forge-initialize","subtype":"success","response":{"commands":[]}}})).unwrap();
+        assert!(!protocol.turn_started());
+        protocol.receive(json!({"type":"system","subtype":"init","session_id":"native"})).unwrap();
+        assert!(protocol.turn_started());
+    }
+    #[test]
+    fn completed_edit_is_self_contained_after_empty_stream_start() {
+        for field in ["tool_use_result", "toolUseResult"] {
+            let mut p = Claude::new("root".into(), "hi".into(), None);
+            p.receive(json!({"type":"stream_event","event":{"type":"content_block_start","index":0,
+                "content_block":{"type":"tool_use","id":"edit","name":"Edit","input":{}}}})).unwrap();
+            let input = json!({"file_path":"a.ts","old_string":"old","new_string":"new"});
+            p.receive(json!({"type":"assistant","message":{"id":"m","content":[
+                {"type":"tool_use","id":"edit","name":"Edit","input":input}
+            ]}})).unwrap();
+            let mut reply = json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"edit","content":"updated"}
+            ]}});
+            reply[field] = json!({"filePath":"a.ts","oldString":"old","newString":"new"});
+            let actions = p.receive(reply).unwrap();
+            assert!(actions.iter().any(|action| matches!(action, Action::Emit {kind:"tool",data}
+                if data["name"] == "Edit" && data["input"] == input && data["status"] == "completed"
+                    && data["result"]["filePath"] == "a.ts")));
+            assert!(actions.iter().any(|action| matches!(action, Action::Emit {kind:"files",data}
+                if data["paths"] == json!(["a.ts"]))));
+        }
+    }
     #[test]
     fn pasted_images_use_claude_base64_content_blocks() {
         let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}});
@@ -821,6 +892,17 @@ mod tests {
         }]}})).unwrap();
         assert!(updated.iter().any(|action| matches!(action, Action::Emit { kind:"task_list", data }
             if data["items"][0]["id"] == "7" && data["items"][0]["status"] == "active")));
+
+        // 部分 Claude 版本没有结构化 tool_use_result，只在可读回执里给真实 ID。
+        let mut text_only = Claude::new("root".into(), "hi".into(), None);
+        text_only.receive(json!({"type":"assistant","message":{"id":"message-text-task","content":[{
+            "type":"tool_use","id":"tool-text-create","name":"TaskCreate","input":{"subject":"修复状态机"}
+        }]}})).unwrap();
+        let rebound = text_only.receive(json!({"type":"user","message":{"content":[{
+            "type":"tool_result","tool_use_id":"tool-text-create","content":"Task #42 created successfully"
+        }]}})).unwrap();
+        assert!(rebound.iter().any(|action| matches!(action, Action::Emit { kind:"task_list", data }
+            if data["items"][0]["id"] == "42" && data["items"][0]["content"] == "修复状态机")));
     }
     #[test]
     fn multiple_tool_results_never_share_an_unmatched_top_level_result() {

@@ -46,8 +46,8 @@ Forge 已实现 Rust 直连本机 CLI 的聊天运行层与 React 界面。自�
 
 - 同一会话一个运行任务并带 FIFO 队列，不同会话最多八项并行；会话租约防止多个进程同时写入同一记录。外部 CLI 只有真实 task 活跃时才使同会话队首等待，空闲窗口不算运行。
 - 每回合独立进程，原生 ID 持久化用于下一回合恢复，不支持需要长期存活的后台代理任务。
-- stdout 单帧上限 1 MiB；stderr 只保留 32 KiB 诊断尾部；输入输出队列和事件批次有界。
-- 单条落盘事件上限 2 MiB；单会话日志上限 256 MiB；一页最多 500 条且原始字节不超 4 MiB（至少留一条，不返回空页）。方向由 `Window::After(seq)` / `Window::Before(seq)` 决定，不带游标时取最新一页，所以打开会话直接落在当前对话上；`has_more`（往后还有）与 `has_older`（往前还有）分开报，游标按方向各走各的。分页流式扫描日志，内存只保留请求页及状态，但仍需线性读取日志，尚无磁盘索引——连续性判定、活跃任务汇总和最新回合都要走完全程，早退省不掉这次扫描。
+- stdout 单帧上限 16 MiB（正常事件只有几 KB，但工具结果整段回显可能很大）；出站单条上限按「8 张 8 MiB 图片内联 base64」倒推，不能卡得比界面允许发出的请求更小；两侧超限都整轮失败并报出方向与 MiB 数。stderr 只保留 32 KiB 诊断尾部；输入输出队列和事件批次有界。
+- 单条落盘事件上限 2 MiB；超过时在落盘前裁剪过长的字符串（保留前段并加截断标记），不再让整轮因记录过大失败，裁剪后的内容同时用于广播，实时视图与重新打开的历史一致；单会话日志上限 256 MiB；一页最多 500 条且原始字节不超 4 MiB（至少留一条，不返回空页）。方向由 `Window::After(seq)` / `Window::Before(seq)` 决定，不带游标时取最新一页，所以打开会话直接落在当前对话上；`has_more`（往后还有）与 `has_older`（往前还有）分开报，游标按方向各走各的。分页流式扫描日志，内存只保留请求页及状态，但仍需线性读取日志，尚无磁盘索引——连续性判定、活跃任务汇总和最新回合都要走完全程，早退省不掉这次扫描。
 - 记录保存在应用本地数据目录的 `ai-sessions-v1` 下，包含版本化元数据与 JSONL 事件。另有只读原生历史适配器，只投影当前项目；镜像、追加游标和隐藏标记仍只写 Forge 数据目录，详见 [聊天扩展](chat-experience.md)。
 - 元数据原子替换；日志持久化后才广播。磁盘错误通过独立错误通道报告，避免未落盘事件占用后续持久化序号。
 - 尾部不完整写入仅在取得独占锁后修复；日志中段损坏保留原文件并报错。没有运行锁的旧 running 记录恢复为中断，不重发消息。
@@ -85,11 +85,13 @@ Forge 已实现 Rust 直连本机 CLI 的聊天运行层与 React 界面。自�
 
 - Codex 计划模式：`initialize.capabilities.experimentalApi` 只在计划/决策回合为 true；`turn/start.collaborationMode` 的 `settings.model` 必填，拿不到模型就失败关闭。完成的 `plan` item 才是权威正文，流式 `item/plan/delta` 只作预览。
 - 计划审阅：版本与 CAS 在会话目录 `plans.json`；批准/要求修改/暂不执行三种决策，`request_changes` 必须带反馈。决策回合先用 `thread/turns/list`（itemsView=full）核对计划 id 与正文指纹，正文变化或条目消失报 `codex plan is stale:` 并过期该版本；回合确认启动后才标记 applied，执行完成/失败另记。启动失败、排队决策被取消或停止都会把提交权退回待审；打开会话只回收超过 10 秒仍停在 submitting 的残留，避免与正在启动的决策抢版本。
-- Claude 计划模式：`--permission-mode plan` 叠加只读 `--allowedTools` 与显式 `--disallowedTools`；不产生类型化审阅记录。
+- Claude 计划模式：`--permission-mode plan` 叠加只读 `--allowedTools` 与显式 `--disallowedTools`；不产生类型化审阅记录。Claude 没有独立的只读档——`PermissionMode::Read` 同样映射成 `plan`，所以白名单对「计划模式」和「只读」两档一起生效，输入框的 `/permissions read` 在 Claude 上等于打开计划模式，而不是再摆一个同效开关。
 - Claude 后台任务：`system/background_tasks_changed` 与 `system/task_notification` 投影为后台任务事件；`result` 到达时仍有任务则不结束进程，任务清零后关闭 stdin，驻留期间的 EOF 按完成收尾。用户新消息仍走同会话 FIFO，不直接写入驻留进程。
-- 权限拒绝：`tool_result.is_error` 的拒绝文本与 `result.permission_denials` 结构化清单去重后成为 `permission_denied` 事件；确认目录后以 `--add-dir` 进入下一轮启动参数。Codex 不支持附加目录。
-- MCP：Claude `system/init.mcp_servers` 与工具名只做只读快照；Forge 没有 app 自有 MCP 服务，因此不复制 ccgui 的按会话注入。
+- 权限拒绝：Claude 由 `tool_result.is_error` 的拒绝文本与 `result.permission_denials` 结构化清单去重后成为 `permission_denied` 事件；Codex 直接用原生 `status:"declined"` 条目——fileChange 取 `changes` 里第一个绝对路径键，commandExecution 只报命令原文、不给目录按钮（没有可信路径就不做会报错的入口）。确认目录后 Claude 以 `--add-dir` 进入下一轮启动参数；Codex 走 `turn/start.sandboxPolicy`，且必须与 `config/read` 读回的生效 `writable_roots`、`network_access` 合并后再发：这份策略是整份替换而不是追加，只发自己那几条会顶掉用户项目里已配的设置。完全访问本就覆盖这些目录，只读沙箱收不下它们——后者当场说明原因，绝不静默丢掉用户点过的授权。
+- MCP：Claude 从 `system/init.mcp_servers` 读已加载服务与工具名；Codex 在回合起来后用 `mcpServerStatus/list`（`detail:"toolsAndAuthOnly"`）问一次全表，并接 `mcpServer/startupStatus/updated` 改写其中一台后整表重发——只发那一台会把多行表压成一行。探测排在 `turn/start` 之后：一台卡住的 MCP 服务不该挡在用户消息门口。探测失败或报空时整块不出现，不摆一张「都查过了」的空表。两家都只做只读展示，Forge 不向会话注入任意 MCP 命令。
+- Codex 权限扩大申请：`item/permissions/requestApproval` 进审批卡，卡片正文写清「申请授予什么」（`entries` 与新读的 `access` 与路径、`network.enabled`），批准就是把 CLI 申请的那份原样发回（`{"permissions": <申请的权限集>}`，作用域按协议默认 `turn`），拒绝才是空授予集。这条请求不给工具名，因此界面不会出现「本轮不再询问」：让 Forge 代答下一次同类申请，等于替 CLI 记住越权；答复里出现 `input` 或 `remember` 一律整条拒收。
 - Codex 异步提问：AgentMessage 上的 `questions` 进入提问卡，回答生成 `turn/steer`（携带 call id 与按题目标题的答案），其回包不参与握手状态机。
+- Codex 推理展示：完成条目里 `summary[]` 与 `content[]` 只发一份——有摘要用摘要，摘要为空才退回原始轨迹。两条流式通知 `item/reasoning/summaryTextDelta`（`summaryIndex`）与 `item/reasoning/textDelta`（`contentIndex`）是**两个独立索引空间**，前端按 `itemId-index` 分卡，所以两者绝不同时对接：并到同一个 id 会把两段不同文字串进同一张思考卡。`encrypted_content` 一律不解析、不声称展示供应商隐藏推理。CLI 侧自己跑掉的回合只能从原生日志恢复，那里的推理条目只有摘要，因此这类回合永远显示摘要。
 - 自动测试覆盖上述状态机、过期、去重、事件投影与模拟管道；真实账号的计划条目字段、后台任务行为、权限拒绝文案和 `turn/steer` 语义仍待人工验收。
 
 ## 人工验收步骤（尚未执行）

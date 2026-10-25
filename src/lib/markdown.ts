@@ -107,62 +107,51 @@ function splitHtmlLines(html: string): string[] {
   return out;
 }
 
-/**
- * 高亮并包一个代码块。
- *
- * `copyLabel` 只在聊天里传：文档预览的复制按钮另有实现（React 组件），而聊天正文是
- * 一次性注入的 HTML，得把按钮直接写进标记里。按钮用 `span[role=button]` 而不是
- * `<button>`——聊天的白名单把 `button`、`svg` 都禁掉了，图标只能靠 CSS 画。
- * 聊天路径同时把正文按行包进 `<span class="cl">`：CSS 计数器给每行一个行号
- * （对照参考实现），复制仍取 textContent——行号画在伪元素里，不会混进复制的文本。
- */
-/**
- * 高亮并包一个代码块。
- *
- * `copyLabel` 只在聊天里传：文档预览的复制按钮另有实现（React 组件），而聊天正文是
- * 一次性注入的 HTML，得把按钮直接写进标记里。按钮用 `span[role=button]` 而不是
- * `<button>`——聊天的白名单把 `button`、`svg` 都禁掉了，图标只能靠 CSS 画。
- * 聊天路径同时把正文按行包进 `<span class="cl">`：CSS 计数器给每行一个行号
- * （对照参考实现），复制仍取 textContent——行号画在伪元素里，不会混进复制的文本。
- *
- * 聊天路径的代码块收进 `<details class="code-fold">`：默认收起、点题头展开
- * （对照参考实现的折叠代码块）。`openBlocks` 为真（流式输出中）时保持展开——
- * 流式每次整段重渲染，不展开的话刚写的代码块会闪没了。
- */
-export function renderCodeBlock(text: string, lang: string | null | undefined, copyLabel?: string, openBlocks = false, startLine?: number): string {
-  const cleanLang = (lang || "").trim().split(/\s+/)[0].toLowerCase();
-  let highlighted: string;
+/** 按语言高亮；指定不了或高亮抛错时退回转义后的原文。 */
+function highlightCode(text: string, cleanLang: string): string {
   if (cleanLang && hljs.getLanguage(cleanLang)) {
     try {
-      highlighted = hljs.highlight(text, { language: cleanLang, ignoreIllegals: true }).value;
+      return hljs.highlight(text, { language: cleanLang, ignoreIllegals: true }).value;
     } catch {
-      highlighted = escapeHtml(text);
-    }
-  } else if (cleanLang === "plaintext" || cleanLang === "text" || cleanLang === "txt") {
-    highlighted = escapeHtml(text);
-  } else {
-    // 未显式指定语言或未知语言时，自动检测高亮
-    try {
-      highlighted = hljs.highlightAuto(text).value;
-    } catch {
-      highlighted = escapeHtml(text);
+      return escapeHtml(text);
     }
   }
+  if (cleanLang === "plaintext" || cleanLang === "text" || cleanLang === "txt") return escapeHtml(text);
+  // 未显式指定语言或未知语言时，自动检测高亮
+  try {
+    return hljs.highlightAuto(text).value;
+  } catch {
+    return escapeHtml(text);
+  }
+}
+
+/**
+ * 高亮并包一个代码块。
+ *
+ * `copyLabel` 只在聊天里传：文档预览的复制按钮另有实现（React 组件），而聊天正文是
+ * 一次性注入的 HTML，得把按钮直接写进标记里。按钮用 `span[role=button]` 而不是
+ * `<button>`——聊天的白名单把 `button`、`svg` 都禁掉了，图标只能靠 CSS 画。
+ *
+ * 正文代码块正常直出，不折叠、不套特殊题头卡片、不带折叠扣。
+ * 不对正文逐行包 `span.cl`，避免 `display: block` 与换行符在 `white-space: pre` 下
+ * 叠加导致单行代码占双倍行高。仅在显式传入真实文件行号（startLine）时才做切行编号。
+ */
+export function renderCodeBlock(text: string, lang: string | null | undefined, copyLabel?: string, _openBlocks = false, startLine?: number): string {
+  const cleanLang = (lang || "").trim().split(/\s+/)[0].toLowerCase();
+  const highlighted = highlightCode(text, cleanLang);
   const langClass = cleanLang ? ` language-${escapeHtml(cleanLang)}` : "";
   const tag = cleanLang ? `<span class="code-lang-tag">${escapeHtml(cleanLang)}</span>` : "";
   const copy = copyLabel
     ? `<span class="code-copy" role="button" tabindex="0" data-code-copy="1" aria-label="${escapeHtml(copyLabel)}">${escapeHtml(copyLabel)}</span>`
     : "";
-  // 行号：聊天代码块从 1 起；明细里的读取内容带真实文件行号（startLine），计数器直接从那一行起数。
-  const numbered = copyLabel || startLine !== undefined;
+  // 仅在明确指定了起始行号时才编号；普通正文代码段直接输出，避免每行产生双倍行高
+  const numbered = startLine !== undefined;
   const body = numbered
-    ? splitHtmlLines(highlighted).map((lineHtml) => `<span class="cl">${lineHtml}</span>`).join("\n")
+    ? splitHtmlLines(highlighted).map((lineHtml) => `<span class="cl">${lineHtml}</span>`).join("")
     : highlighted;
   const reset = startLine !== undefined && startLine > 1 ? ` style="counter-reset: ai-code-line ${startLine - 1}"` : "";
   const pre = `<pre><code class="hljs${langClass}"${reset}>${body}</code></pre>`;
-  if (!copyLabel) return `<div class="code-block-wrapper">${tag}${copy}${pre}</div>`;
-  const chevron = '<span class="code-fold-chevron" aria-hidden="true"></span>';
-  return `<div class="code-block-wrapper"><details class="code-fold"${openBlocks ? " open" : ""}><summary class="code-head">${tag}${chevron}${copy}</summary>${pre}</details></div>`;
+  return `<div class="code-block-wrapper">${tag}${copy}${pre}</div>`;
 }
 
 /**
@@ -235,6 +224,7 @@ export function renderMarkdown(
  *
  * @param source markdown 正文
  * @param copyLabel 逐代码块复制按钮的文案，随界面语言变化
+ * @param openBlocks 流式输出中保持代码块展开
  */
 export function renderChatMarkdown(source: string, copyLabel: string, openBlocks = false): string {
   const parser = new Marked({ gfm: true, breaks: false });

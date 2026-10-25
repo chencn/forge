@@ -91,10 +91,16 @@ struct Fragment {
 /// 事件里有没有可搜索的正文。工具入参与返回不算正文：那里搜出来的是 JSON 噪声。
 fn fragment(event: &Event) -> Option<Fragment> {
     let text = event.data["text"].as_str()?;
+    // user 记录里的系统注入不是正文：搜出来的是 CLI 自己写的提示词，
+    // 点进去还会跳到一条界面上根本不存在的气泡。
+    let text = match event.kind.as_str() {
+        "user" => super::history::human_text(text)?,
+        _ => text.to_owned(),
+    };
     Some(Fragment {
         seq: event.seq,
         kind: event.kind.clone(),
-        text: text.to_owned(),
+        text,
     })
 }
 
@@ -162,6 +168,20 @@ fn texts(path: &Path, max_bytes: u64) -> Result<(Vec<Fragment>, u64, bool), Stri
                 merged.insert(key, out.len());
                 out.push(piece);
             }
+        }
+    }
+    // 从原生日志捞回来的压缩摘要在读事件的那一层已经并进了它发生的位置，正文搜索扫的是原文，
+    // 所以命中要按同一份口径改报到那一条上：否则点进去跳的是一条界面上根本不存在的卡片。
+    // 只有真出现过压缩正文的会话才值得为这件事再扫一遍。
+    if out.iter().any(|piece| piece.kind == "compaction") {
+        let fold = store::compaction_fold(path);
+        if !fold.merged.is_empty() {
+            for piece in out.iter_mut() {
+                if let Some(anchor) = fold.merged.get(&piece.seq) {
+                    piece.seq = *anchor;
+                }
+            }
+            out.sort_by_key(|piece| piece.seq);
         }
     }
     Ok((out, read, truncated))

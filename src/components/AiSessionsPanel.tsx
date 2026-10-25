@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, ChevronsUp, Crosshair, Ellipsis, Eye, ListChevronsDownUp, ListChevronsUpDown, Loader2, RefreshCw, Search, Settings, SquarePen, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsUp, Copy, Crosshair, Ellipsis, Eye, ListChevronsDownUp, ListChevronsUpDown, Loader2, RefreshCw, Search, Settings, SquarePen, X } from "lucide-react";
 import { useI18n } from "../i18n";
 import { AI_NAMES, cliDesktopAvailable, refreshAiCli, useAiCli } from "../lib/aiCli";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
 import { AI_SEARCH_MIN_QUERY, isSearchQueryActive } from "../lib/aiSearch";
 import { useAiSessionSearch } from "../hooks/useAiSessionSearch";
-import { getAiSessionActivity, subscribeAiChanges } from "../lib/aiRuntime";
+import { getAiSessionActivity, getAiSessionLastStatus, subscribeAiChanges } from "../lib/aiRuntime";
 import {
   formatAiRelativeTime,
   moveAiSidebarSection,
@@ -126,6 +126,8 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       [
         // Claude 的标题由 CLI 自己的 /rename 管理，后端会拒绝；菜单里保留入口但置灰说明原因。
         { label: t("menu.rename"), disabled: session.provider !== "codex", hint: t("ai.renameManagedByCli"), onSelect: () => setPending({ action: "rename", session }) },
+        // 跨会话提问要把另一条会话的 ID 贴进来；侧栏详情气泡不吃指针，只能从这里复制。
+        { icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) },
         pinnedNow
           ? { label: t("ai.sidebar.unpin"), onSelect: () => onAction({ type: "pin", id: session.id, pinned: false }) }
           : { label: t("ai.sidebar.pin"), onSelect: () => onAction({ type: "pin", id: session.id, pinned: true }) },
@@ -153,6 +155,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       openInTab={openIds.includes(session.id)}
       timeLabel={timeLabelFor(session, section)}
       activity={getAiSessionActivity(session.id)}
+      lastStatus={getAiSessionLastStatus(session.id)}
       workspace={workspace}
       onOpen={onOpen}
       onMenu={openCardMenu}

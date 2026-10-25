@@ -7,7 +7,7 @@ import { availableAiProviders, cliDesktopAvailable, orderedAiProviders, useAiCli
 import type { AiProvider } from "../lib/aiCli";
 import { assetUrl } from "../lib/fs";
 import { useAiChatWidth } from "../lib/aiChatWidth";
-import { loadAiDraftProvider, saveAiDraftProvider } from "../lib/aiDraftSession";
+import { aiDraftOptionsKey, loadAiDraftProvider, saveAiDraftProvider } from "../lib/aiDraftSession";
 import { collectPastedImages } from "../lib/aiClipboard";
 import { clearDraft, loadDraft, saveDraft } from "../lib/aiDrafts";
 import { loadAiOptions, saveAiOptions } from "../lib/aiOptions";
@@ -64,7 +64,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   /** 选中的工具按工作区记忆；记住的已不可用时回落到第一个可用项。 */
   const [preferred, setPreferred] = useState<AiProvider | null>(() => loadAiDraftProvider(workspace));
   const provider = preferred && available.includes(preferred) ? preferred : available[0] ?? null;
-  const optionsKey = `forge:ai-draft-options:v1:${provider ?? "claude"}`;
+  const optionsKey = aiDraftOptionsKey(provider ?? "claude");
   const [options, setOptions] = useState<AiRunOptions>(() => loadAiOptions(optionsKey, provider ?? "claude"));
   // 两个引擎的档位不相同（Codex 只读、Fast、模型 id）；切工具必须换成那份配置，
   // 否则 Codex 的只读会被带进 Claude 并变成 plan 权限。
@@ -187,7 +187,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
             <AiComposerShell
               tall
               attachments={images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
-                {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
+                {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
                   onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
               </div> : null}
               editor={<textarea

@@ -82,9 +82,12 @@ export function useAiSessions(root: string | null, enabled = true) {
     if (!enabled || !root || !isTauri()) return;
     let cancelled = false;
     let pending = false;
+    let refreshAgain = false;
     // 单飞：窗口重新聚焦可能连着触发几次，上一轮没回来就不再发新的。
     const refresh = () => {
-      if (cancelled || pending) return;
+      if (cancelled) return;
+      // 在途列表可能读到旧标题；记住通知，完成后再取一次。
+      if (pending) { refreshAgain = true; return; }
       pending = true;
       void invoke<unknown[]>("ai_runtime_list", { workspace: root }).then((records) => {
       if (cancelled) return;
@@ -107,11 +110,13 @@ export function useAiSessions(root: string | null, enabled = true) {
       if (cancelled) return;
       stores.set(key, { ...get(key), storageError: true });
       listeners.forEach((listener) => listener());
-    }).finally(() => { pending = false; });
+    }).finally(() => { pending = false; if (refreshAgain) { refreshAgain = false; refresh(); } });
     };
     refresh(); refreshers.add(refresh);
     window.addEventListener("focus", refresh);
-    return () => { cancelled = true; refreshers.delete(refresh); window.removeEventListener("focus", refresh); };
+    // 首次发送改变持久化标题，不能等窗口重新聚焦才刷新标签。
+    window.addEventListener("ai-session-metadata", refresh);
+    return () => { cancelled = true; refreshers.delete(refresh); window.removeEventListener("focus", refresh); window.removeEventListener("ai-session-metadata", refresh); };
   }, [key, root, enabled]);
   /** 写回 localStorage 并通知订阅者。写失败只降级成「本次不持久化」，不阻断界面。 */
   const dispatch = useCallback((action: AiSessionAction) => {

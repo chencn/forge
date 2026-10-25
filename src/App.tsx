@@ -5288,8 +5288,6 @@ export default function App() {
           />
         </Suspense>
       ) : null}
-      {/* 生命周期确认框（后台继续 / 停止并关闭）由钩子自己渲染，放在最外层以覆盖全部标签。 */}
-      {aiLifecycle.dialog}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
       {dialog ? (
         <PromptDialog

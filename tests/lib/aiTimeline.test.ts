@@ -26,6 +26,14 @@ describe("AI 时间线折叠", () => {
     expect(items[1].kind === "entry" && items[1].entry.kind).toBe("request");
     expect(items.slice(2).map((item) => item.kind === "entry" ? item.entry.id : null)).toEqual(["t3", "t4"]);
   });
+  it("文件修改连同其他工具调用完整归入过程段中，避免切断过程流", () => {
+    const edit = (id: string, path: string) => entry(id, "tool", { name: "Edit", input: { file_path: path }, result: { type: "update", structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: [" ctx", "+x"] }] } });
+    const items = groupAiTimeline([...tools(3), edit("e1", "a.ts"), ...tools(2)]);
+    // e1 与前后的工具完整聚合成单个连续的过程段（总计 3 + 1 + 2 = 6 条），不在中间断裂
+    expect(items.map((item) => item.kind)).toEqual(["process"]);
+    expect(items[0].kind === "process" && items[0].entries).toHaveLength(6);
+    expect(items[0].kind === "process" && items[0].entries.map((e) => e.id)).toEqual(["r1-tool-0", "r1-tool-1", "r1-tool-2", "e1", "r1-tool-0", "r1-tool-1"]);
+  });
   it("换轮不并段：上一轮的工具不会和这一轮的折在一起", () => {
     const items = groupAiTimeline([...tools(4, "r1"), entry("u2", "user", { runId: "r2" }), ...tools(4, "r2")]);
     expect(items.map((item) => item.kind)).toEqual(["process", "entry", "process"]);

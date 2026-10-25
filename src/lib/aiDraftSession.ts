@@ -18,6 +18,11 @@ export interface AiDraftHandoff {
 
 const handoffs = new Map<string, AiDraftHandoff>();
 
+/** 草稿页没有会话 id，只按引擎保存；创建会话时必须从同一个键复制，不能回退到其他会话改写的全局默认。 */
+export function aiDraftOptionsKey(provider: AiProvider) {
+  return `forge:ai-draft-options:v1:${provider}`;
+}
+
 export function setAiDraftHandoff(sessionId: string, payload: AiDraftHandoff) {
   handoffs.set(sessionId, payload);
 }
@@ -45,6 +50,6 @@ export function saveAiDraftProvider(root: string | null, provider: AiProvider) {
 
 /** 草稿页配置的模型/强度/权限跟着会话走：创建时原样种到新会话的选项键下。 */
 export function seedAiSessionOptions(root: string | null, sessionId: string, provider: AiProvider) {
-  const draft = loadAiOptions(`${aiSessionStorageKey(root)}:options:draft`, provider);
+  const draft = loadAiOptions(aiDraftOptionsKey(provider), provider);
   saveAiOptions(`${aiSessionStorageKey(root)}:options:${sessionId}`, provider, draft);
 }

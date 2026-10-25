@@ -70,7 +70,13 @@ import type {
   CodexAuthMode,
 } from "../lib/aiCli";
 import { applyModelProvider, loadModelProviders } from "../lib/aiManage";
-import { emptyCodexCatalogIntent, normalizeCodexCatalogIntent, codexModelEfforts, readAiCliCodexCatalog, saveAiCliCodexCatalog } from "../lib/aiManage";
+import {
+  codexModelEfforts,
+  emptyCodexCatalogIntent,
+  normalizeCodexCatalogIntent,
+  readAiCliCodexCatalog,
+  saveAiCliCodexCatalog,
+} from "../lib/aiManage";
 import type { CodexCatalogIntent, CodexCatalogView, ModelProvider } from "../lib/aiManage";
 import CodexCatalogSection from "./CodexCatalogSection";
 import Select from "./Select";
@@ -459,10 +465,40 @@ function EnabledAiCliSettingsPanel() {
         setCatalogDraft(value.intent);
         setCatalogBaseline(normalizeCodexCatalogIntent(value.intent));
       })
-      .catch((error) => { if (active) setCatalogNotice({ error: true, text: t("ai.catalog.loadFailed", { message: String(error) }) }); })
+      .catch((error) => {
+        if (active) {
+          setCatalog(null);
+          setCatalogNotice({ error: true, text: t("ai.catalog.loadFailed", { message: String(error) }) });
+        }
+      })
       .finally(() => { if (active) setCatalogLoading(false); });
     return () => { active = false; };
   }, [current, catalogToken, t]);
+
+  const runCatalogSave = async (intent: CodexCatalogIntent) => {
+    if (catalogBusy) return;
+    setCatalogBusy(true); setCatalogNotice(null);
+    try {
+      const next = await saveAiCliCodexCatalog(intent);
+      setCatalog(next);
+      setCatalogDraft(next.intent);
+      setCatalogBaseline(normalizeCodexCatalogIntent(next.intent));
+      // 清单落盘会给 config.toml 加/删一行，原生配置编辑器里的那份快照已经过时。
+      if (fileOpen.codex) {
+        const loaded = files.codex?.content;
+        const rawDraft = fileDrafts.codex;
+        try {
+          const fresh = await readAiCliConfig("codex");
+          setFiles((value) => ({ ...value, codex: fresh }));
+          setFileDrafts((value) => rawDraft === loaded || loaded === undefined ? { ...value, codex: fresh.content } : value);
+        } catch { /* 编辑器保持原样，用户可自行重新加载。 */ }
+      }
+      await loadChecks("codex");
+      setCatalogNotice({ error: false, text: t("ai.catalog.saved") });
+    } catch (error) {
+      setCatalogNotice({ error: true, text: t("ai.catalog.saveFailed", { message: String(error) }) });
+    } finally { setCatalogBusy(false); }
+  };
 
   // 自定义模型只读 Forge 自己的存储；切回已读过的引擎直接复用，不重复探测 CLI。
   useEffect(() => {
@@ -521,33 +557,12 @@ function EnabledAiCliSettingsPanel() {
       : value);
   }, [current, store.loaded, store.settings, claudeConfig]);
 
-  const runCatalogSave = async (intent: CodexCatalogIntent) => {
-    if (catalogBusy) return;
-    setCatalogBusy(true); setCatalogNotice(null);
-    try {
-      const next = await saveAiCliCodexCatalog(intent);
-      setCatalog(next);
-      setCatalogDraft(next.intent);
-      setCatalogBaseline(normalizeCodexCatalogIntent(next.intent));
-      // 清单落盘会给 config.toml 加/删一行，原生配置编辑器里的那份快照已经过时。
-      if (fileOpen.codex) {
-        const loaded = files.codex?.content;
-        const rawDraft = fileDrafts.codex;
-        try {
-          const fresh = await readAiCliConfig("codex");
-          setFiles((value) => ({ ...value, codex: fresh }));
-          setFileDrafts((value) => rawDraft === loaded || loaded === undefined ? { ...value, codex: fresh.content } : value);
-        } catch { /* 编辑器保持原样，用户可自行重新加载。 */ }
-      }
-      await loadChecks("codex");
-      setCatalogNotice({ error: false, text: t("ai.catalog.saved") });
-    } catch (error) {
-      setCatalogNotice({ error: true, text: t("ai.catalog.saveFailed", { message: String(error) }) });
-    } finally { setCatalogBusy(false); }
-  };
-
-  const refreshStatus = async (provider: AiProvider) => {    await refreshAiCli(true).then(refreshAiCliUpdates);
+  const refreshStatus = async (provider: AiProvider) => {
+    await refreshAiCli(true).then(refreshAiCliUpdates);
     await loadChecks(provider);
+    if (provider === "codex") {
+      setCatalogToken((value) => value + 1);
+    }
   };
 
   const validateEnvDraft = (text: string): string | null => {
@@ -743,7 +758,6 @@ function EnabledAiCliSettingsPanel() {
   // 快照还没建立时，界面上已有的值只能算用户改出来的（读取失败时也要拦住离开）。
   const claudeDirty = claudeConfig !== null && (claudeBaseline === null || envSnapshot(claudeConfig.env) !== claudeBaseline);
   const codexDirty = codexDraft !== null && (codexBaseline === null || JSON.stringify(codexDraft) !== codexBaseline);
-  // 第五份草稿：模型清单意图。读回来后与后端合并过的意图比对，避免写法差异造成假“未保存”。
   const catalogDirty = catalog !== null && normalizeCodexCatalogIntent(catalogDraft) !== catalogBaseline;
   // 推理档位的合法值只由 Codex 自己的模型清单给出；清单没读回来时不给选项，免得写进一个 Codex 不认的档位。
   const codexEfforts = useMemo(() => {
@@ -754,9 +768,9 @@ function EnabledAiCliSettingsPanel() {
     return value !== "" && !pool.includes(value) ? [value, ...pool] : pool;
   }, [catalog, codexDraft?.model, codexDraft?.modelReasoningEffort]);
   const dirty = (["claude", "codex"] as AiProvider[]).some((provider) => envDirty(provider) || fileDirty(provider))
-    || claudeDirty || codexDirty || catalogDirty;
+    || claudeDirty || codexDirty || (current === "codex" ? catalogDirty : false);
   /** 「配置管理」这一块一次只展示一个 CLI 的结构化字段，徽标跟着当前选中的那个。 */
-  const manageUnsaved = current === "claude" ? claudeDirty : current === "codex" ? codexDirty : false;
+  const manageUnsaved = current === "claude" ? claudeDirty : current === "codex" ? (codexDirty || catalogDirty) : false;
   useUnsavedGuard(() => dirty);
   /** 重新读取会拿磁盘上的值覆盖草稿，所以脏的时候先确认；非空即待确认的动作。 */
   const [pendingReload, setPendingReload] = useState<(() => void) | null>(null);
@@ -1122,7 +1136,7 @@ function EnabledAiCliSettingsPanel() {
                             value={claudeEnvValue(claudeKeyName)} placeholder="sk-..."
                             readOnly={currentClaudeMode === "provider"}
                             onChange={(event) => patchClaudeEnv({ [claudeKeyName]: event.target.value })} />
-                          <button type="button" className="lsp-action ai-cli-secret-toggle"
+                          <button type="button" className="ai-cli-secret-toggle"
                             aria-label={t(secretShown.claude ? "ai.cfg.hideKey" : "ai.cfg.showKey")}
                             title={t(secretShown.claude ? "ai.cfg.hideKey" : "ai.cfg.showKey")}
                             onClick={() => setSecretShown((value) => ({ ...value, claude: !value.claude }))}>
@@ -1219,7 +1233,7 @@ function EnabledAiCliSettingsPanel() {
                             value={codexDraft.apiKey} placeholder="sk-..."
                             readOnly={currentCodexMode === "provider"}
                             onChange={(event) => editCodex({ apiKey: event.target.value })} />
-                          <button type="button" className="lsp-action ai-cli-secret-toggle"
+                          <button type="button" className="ai-cli-secret-toggle"
                             aria-label={t(secretShown.codex ? "ai.cfg.hideKey" : "ai.cfg.showKey")}
                             title={t(secretShown.codex ? "ai.cfg.hideKey" : "ai.cfg.showKey")}
                             onClick={() => setSecretShown((value) => ({ ...value, codex: !value.codex }))}>
@@ -1242,7 +1256,8 @@ function EnabledAiCliSettingsPanel() {
                       <strong>{t("ai.cfg.reasoning")}</strong>
                       <span className="ai-cli-hint">{t("ai.cfg.reasoningHint")}</span>
                     </div>
-                    <div className="ai-cli-grid">
+                    {/* 第一行（3 个短枚举选择框）：推理强度、思考摘要、详细级别同行 3 列紧凑展示，绝不拉满全行 */}
+                    <div className="ai-cli-grid is-triplet">
                       {codexEfforts.length ? (
                         <CodexEnumField label={t("ai.cfg.effort")} value={codexDraft.modelReasoningEffort}
                           hint={t("ai.cfg.effortHint")} values={codexEfforts}
@@ -1261,6 +1276,9 @@ function EnabledAiCliSettingsPanel() {
                       <CodexEnumField label={t("ai.cfg.verbosity")} value={codexDraft.modelVerbosity}
                         hint={t("ai.cfg.verbosityHint")} values={CODEX_VERBOSITY_VALUES} labels={CODEX_VERBOSITY_LABELS}
                         onPick={(value) => editCodex({ modelVerbosity: value })} />
+                    </div>
+                    {/* 第二行（2 个数字框）：上下文窗口与自动压缩阈值成对同行双列，杜绝单数字输入框独占全行 */}
+                    <div className="ai-cli-grid">
                       <CodexNumberField label={t("ai.cfg.contextWindow")} value={codexDraft.modelContextWindow}
                         hint={t("ai.cfg.contextWindowHint")} onPick={(value) => editCodex({ modelContextWindow: value })} />
                       <CodexNumberField label={t("ai.cfg.autoCompact")} value={codexDraft.modelAutoCompactTokenLimit}
@@ -1273,6 +1291,7 @@ function EnabledAiCliSettingsPanel() {
                       <strong>{t("ai.cfg.tools")}</strong>
                       <span className="ai-cli-hint">{t("ai.cfg.toolsHint")}</span>
                     </div>
+                    {/* 选项简短的枚举成对双列排布 */}
                     <div className="ai-cli-grid">
                       <CodexEnumField label={t("ai.cfg.webSearch")} value={codexDraft.webSearch}
                         hint={t("ai.cfg.webSearchHint")} values={CODEX_WEB_SEARCH_VALUES} labels={CODEX_WEB_SEARCH_LABELS}
@@ -1288,6 +1307,7 @@ function EnabledAiCliSettingsPanel() {
                       <strong>{t("ai.cfg.history")}</strong>
                       <span className="ai-cli-hint">{t("ai.cfg.historyHint")}</span>
                     </div>
+                    {/* 会话持久化与容量上限成对双列排布 */}
                     <div className="ai-cli-grid">
                       <CodexEnumField label={t("ai.cfg.persistence")} value={codexDraft.historyPersistence}
                         values={CODEX_PERSISTENCE_VALUES} labels={CODEX_PERSISTENCE_LABELS}
@@ -1297,34 +1317,37 @@ function EnabledAiCliSettingsPanel() {
                     </div>
                   </div>
 
-                  {IS_WINDOWS ? (
-                    <CodexEnumField label={t("ai.cfg.winSandbox")} value={codexDraft.windowsSandbox}
-                      hint={t("ai.cfg.winSandboxHint")} values={CODEX_WINDOWS_SANDBOX_VALUES} labels={CODEX_WINDOWS_SANDBOX_LABELS}
-                      onPick={(value) => editCodex({ windowsSandbox: value })} />
-                  ) : null}
-
-                  {codexDraft.providerDefined ? (
-                    <div className="ai-cli-row-switch">
-                      <span>{t("ai.cfg.websocket")}</span>
-                      <button type="button" role="switch" className="ai-enable-switch"
-                        aria-checked={codexDraft.supportsWebsockets === true} aria-label={t("ai.cfg.websocket")}
-                        onClick={() => editCodex({ supportsWebsockets: codexDraft.supportsWebsockets !== true })}>
-                        <span />
-                      </button>
+                  {/* 功能交互开关：成对双列排布，卡片定高居中，提示外挂下方，拒绝大长横条拉满全行 */}
+                  <div className="ai-cli-grid">
+                    <div className="ai-cli-switch-group">
+                      <div className="ai-cli-switch-card">
+                        <span className="ai-cli-switch-title">{t("ai.cfg.websocket")}</span>
+                        <button type="button" role="switch" className="ai-enable-switch"
+                          disabled={!codexDraft.providerDefined}
+                          aria-checked={codexDraft.providerDefined && codexDraft.supportsWebsockets === true}
+                          aria-label={t("ai.cfg.websocket")}
+                          onClick={() => codexDraft.providerDefined && editCodex({ supportsWebsockets: codexDraft.supportsWebsockets !== true })}>
+                          <span />
+                        </button>
+                      </div>
+                      <em className="ai-cli-hint">
+                        {codexDraft.providerDefined ? t("ai.cfg.websocketHint") : t("ai.cfg.websocketAbsent")}
+                      </em>
                     </div>
-                  ) : (
-                    <em className="ai-cli-hint">{t("ai.cfg.websocketAbsent")}</em>
-                  )}
 
-                  <div className="ai-cli-row-switch">
-                    <span>{t("ai.cfg.requestUserInput")}</span>
-                    <button type="button" role="switch" className="ai-enable-switch"
-                      aria-checked={codexDraft.defaultModeRequestUserInput} aria-label={t("ai.cfg.requestUserInput")}
-                      onClick={() => editCodex({ defaultModeRequestUserInput: !codexDraft.defaultModeRequestUserInput })}>
-                      <span />
-                    </button>
+                    <div className="ai-cli-switch-group">
+                      <div className="ai-cli-switch-card">
+                        <span className="ai-cli-switch-title">{t("ai.cfg.requestUserInput")}</span>
+                        <button type="button" role="switch" className="ai-enable-switch"
+                          aria-checked={codexDraft.defaultModeRequestUserInput}
+                          aria-label={t("ai.cfg.requestUserInput")}
+                          onClick={() => editCodex({ defaultModeRequestUserInput: !codexDraft.defaultModeRequestUserInput })}>
+                          <span />
+                        </button>
+                      </div>
+                      <em className="ai-cli-hint">{t("ai.cfg.requestUserInputHint")}</em>
+                    </div>
                   </div>
-                  <em className="ai-cli-hint">{t("ai.cfg.requestUserInputHint")}</em>
 
                   <div className="ai-cli-subgroup">
                     <div className="ai-cli-subgroup-head">
@@ -1335,21 +1358,46 @@ function EnabledAiCliSettingsPanel() {
                       ? <p className="ai-cli-warning">{t("ai.cfg.shadowedPermissions")}</p>
                       : codexDraft.shadowed ? <p className="ai-cli-warning">{t("ai.cfg.shadowed")}</p> : null}
 
-                    <label className="ai-cli-field">
-                      <span>{t("ai.cfg.approval")}</span>
-                      <Select value={codexDraft.approvalPolicy} label={t("ai.cfg.approval")} placeholder={t("ai.cfg.approval")}
-                        options={CODEX_APPROVAL_POLICIES.map((policy) => ({
-                          value: policy,
-                          label: policy ? t(`ai.cfg.approval.${policy}` as TranslationKey) : t("ai.cfg.approvalUnset"),
-                        }))}
-                        onChange={(policy) => editCodex({ approvalPolicy: policy })} />
-                    </label>
+                    {/* 审批策略与沙箱模式双列同行，绝不各占满一整行全宽 */}
+                    <div className="ai-cli-grid">
+                      <label className="ai-cli-field">
+                        <span>{t("ai.cfg.approval")}</span>
+                        <Select value={codexDraft.approvalPolicy} label={t("ai.cfg.approval")} placeholder={t("ai.cfg.approval")}
+                          options={CODEX_APPROVAL_POLICIES.map((policy) => ({
+                            value: policy,
+                            label: policy ? t(`ai.cfg.approval.${policy}` as TranslationKey) : t("ai.cfg.approvalUnset"),
+                          }))}
+                          onChange={(policy) => editCodex({ approvalPolicy: policy })} />
+                      </label>
 
+                      <label className="ai-cli-field">
+                        <span>{t("ai.cfg.sandboxMode")}</span>
+                        <Select value={codexDraft.sandboxMode} label={t("ai.cfg.sandboxMode")} placeholder={t("ai.cfg.sandboxMode")}
+                          disabled={codexDraft.shadowed}
+                          options={CODEX_SANDBOX_MODES.map((mode) => ({
+                            value: mode,
+                            label: mode ? t(`ai.cfg.sandbox.${mode}` as TranslationKey) : t("ai.cfg.sandboxUnset"),
+                          }))}
+                          onChange={(mode) => editCodex({ sandboxMode: mode })} />
+                        <em className="ai-cli-hint">{t("ai.cfg.sandboxModeHint")}</em>
+                      </label>
+                    </div>
+
+                    {/* Windows 沙箱后端：半宽网格展示，拒绝占满全行 */}
+                    {IS_WINDOWS ? (
+                      <div className="ai-cli-grid">
+                        <CodexEnumField label={t("ai.cfg.winSandbox")} value={codexDraft.windowsSandbox}
+                          hint={t("ai.cfg.winSandboxHint")} values={CODEX_WINDOWS_SANDBOX_VALUES} labels={CODEX_WINDOWS_SANDBOX_LABELS}
+                          onPick={(value) => editCodex({ windowsSandbox: value })} />
+                      </div>
+                    ) : null}
+
+                    {/* 细粒度审批列表：内嵌紧凑虚线卡片（与 codeg 一致） */}
                     {codexDraft.approvalPolicy === "granular" ? (
-                      <div className="ai-cli-subgroup">
+                      <div className="ai-cli-switch-list">
                         <span className="ai-cli-hint">{t("ai.cfg.granularHint")}</span>
                         {CODEX_GRANULAR_FIELDS.map((field) => (
-                          <div className="ai-cli-row-switch" key={field.key}>
+                          <div className="ai-cli-switch-item" key={field.key}>
                             <span>{t(field.label)}</span>
                             <button type="button" role="switch" className="ai-enable-switch"
                               aria-checked={codexDraft.granular[field.key]} aria-label={t(field.label)}
@@ -1361,20 +1409,9 @@ function EnabledAiCliSettingsPanel() {
                       </div>
                     ) : null}
 
-                    <label className="ai-cli-field">
-                      <span>{t("ai.cfg.sandboxMode")}</span>
-                      <Select value={codexDraft.sandboxMode} label={t("ai.cfg.sandboxMode")} placeholder={t("ai.cfg.sandboxMode")}
-                        disabled={codexDraft.shadowed}
-                        options={CODEX_SANDBOX_MODES.map((mode) => ({
-                          value: mode,
-                          label: mode ? t(`ai.cfg.sandbox.${mode}` as TranslationKey) : t("ai.cfg.sandboxUnset"),
-                        }))}
-                        onChange={(mode) => editCodex({ sandboxMode: mode })} />
-                      <em className="ai-cli-hint">{t("ai.cfg.sandboxModeHint")}</em>
-                    </label>
-
+                    {/* 工作区写保护辅助配置：对照 codeg 的内嵌虚线卡片 */}
                     {codexWorkspaceWriteApplies ? (
-                      <div className="ai-cli-subgroup">
+                      <div className="ai-cli-nested-box">
                         <label className="ai-cli-field">
                           <span>{t("ai.cfg.writableRoots")}</span>
                           <textarea className="ai-cli-env" rows={3} spellCheck={false}
@@ -1385,7 +1422,7 @@ function EnabledAiCliSettingsPanel() {
                             ? <em className="ai-cli-warning">{t("ai.cfg.writableRootsInvalid", { path: codexRelativeRoot })}</em>
                             : <em className="ai-cli-hint">{t("ai.cfg.writableRootsHint")}</em>}
                         </label>
-                        <div className="ai-cli-row-switch">
+                        <div className="ai-cli-switch-item">
                           <span>{t("ai.cfg.networkAccess")}</span>
                           <button type="button" role="switch" className="ai-enable-switch"
                             aria-checked={codexDraft.networkAccess} aria-label={t("ai.cfg.networkAccess")}
@@ -1393,7 +1430,7 @@ function EnabledAiCliSettingsPanel() {
                             <span />
                           </button>
                         </div>
-                        <div className="ai-cli-row-switch">
+                        <div className="ai-cli-switch-item">
                           <span>{t("ai.cfg.excludeTmpdir")}</span>
                           <button type="button" role="switch" className="ai-enable-switch"
                             aria-checked={codexDraft.excludeTmpdirEnvVar} aria-label={t("ai.cfg.excludeTmpdir")}
@@ -1401,7 +1438,7 @@ function EnabledAiCliSettingsPanel() {
                             <span />
                           </button>
                         </div>
-                        <div className="ai-cli-row-switch">
+                        <div className="ai-cli-switch-item">
                           <span>{t("ai.cfg.excludeSlashTmp")}</span>
                           <button type="button" role="switch" className="ai-enable-switch"
                             aria-checked={codexDraft.excludeSlashTmp} aria-label={t("ai.cfg.excludeSlashTmp")}
@@ -1427,12 +1464,12 @@ function EnabledAiCliSettingsPanel() {
               </div>
             </section>
 
-            {current ? (
+            {current && (current === "claude" || (customModels[current] ?? []).length > 0) ? (
               <section className="ai-cli-section" aria-label={t("ai.custom.title")}>
                 <div className="ai-cli-section-head">
                   <div>
                     <strong>{t("ai.custom.title")}</strong>
-                    <span className="ai-muted">{t("ai.custom.hint")}</span>
+                    <span className="ai-muted">{t(current === "claude" ? "ai.custom.hint" : "ai.custom.codexRetired")}</span>
                   </div>
                 </div>
                 {(customModels[current] ?? []).length ? (
@@ -1452,14 +1489,18 @@ function EnabledAiCliSettingsPanel() {
                     ? <p className={customNotice.error ? "ai-error" : "ai-success"} role="status">{customNotice.text}</p>
                     : <span />}
                   <div className="ai-cli-actions">
-                    <input className="text-input ai-custom-model-input" value={customDraft} maxLength={200} spellCheck={false}
-                      placeholder={t("ai.custom.placeholder")} aria-label={t("ai.custom.placeholder")}
-                      onChange={(event) => setCustomDraft(event.target.value)}
-                      onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void addCustomModel(); } }} />
-                    <button type="button" className="lsp-action" disabled={customBusy || !customDraft.trim()} onClick={() => void addCustomModel()}>
-                      {customBusy ? <Loader2 size={13} className="is-spinning" /> : <Plus size={13} />}
-                      {t("ai.custom.add")}
-                    </button>
+                    {current === "claude" ? (
+                      <>
+                        <input className="text-input ai-custom-model-input" value={customDraft} maxLength={200} spellCheck={false}
+                          placeholder={t("ai.custom.placeholder")} aria-label={t("ai.custom.placeholder")}
+                          onChange={(event) => setCustomDraft(event.target.value)}
+                          onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void addCustomModel(); } }} />
+                        <button type="button" className="lsp-action" disabled={customBusy || !customDraft.trim()} onClick={() => void addCustomModel()}>
+                          {customBusy ? <Loader2 size={13} className="is-spinning" /> : <Plus size={13} />}
+                          {t("ai.custom.add")}
+                        </button>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               </section>
@@ -1473,9 +1514,13 @@ function EnabledAiCliSettingsPanel() {
                 busy={catalogBusy}
                 dirty={catalogDirty}
                 currentModel={codexDraft?.model ?? ""}
+                readOnly={currentCodexMode === "provider"}
                 notice={catalogNotice}
                 onChange={setCatalogDraft}
-                onPickDefault={(slug) => editCodex({ model: slug })}
+                onPickDefault={(slug) => {
+                  editCodex({ model: slug });
+                  setCatalogDraft((prev) => ({ ...prev, default: slug }));
+                }}
                 onSave={() => void runCatalogSave(catalogDraft)}
                 onClear={() => void runCatalogSave(emptyCodexCatalogIntent())}
                 onReload={() => guard(() => setCatalogToken((value) => value + 1))} />

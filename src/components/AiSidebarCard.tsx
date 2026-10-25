@@ -31,6 +31,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   openInTab,
   timeLabel,
   activity,
+  lastStatus,
   workspace,
   onOpen,
   onMenu,
@@ -45,6 +46,8 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   /** 行尾相对时间；由上层按该行所属章节与排序模式决定读哪个时间戳。 */
   timeLabel?: string;
   activity: AiSessionActivity;
+  /** 最后一轮任务的终态；空闲会话据此显示完成绿 / 取消红（对照参考实现的状态点语义）。 */
+  lastStatus?: string | null;
   workspace: string | null;
   onOpen: (id: string) => void;
   onMenu: (session: AiSession, x: number, y: number) => void;
@@ -103,6 +106,8 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   const dotClass = activity === "running" ? "is-running"
     : activity === "queued" ? "is-queued"
     : activity === "conflict" || activity === "external" ? "is-alert"
+    : lastStatus === "completed" ? "is-completed"
+    : lastStatus === "failed" || lastStatus === "cancelled" ? "is-cancelled"
     : "is-idle";
 
   return (
