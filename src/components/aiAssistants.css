@@ -1244,18 +1244,26 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 /* 右侧消息导航：右缘竖直居中的一颗芯片 + 展开卡片。 */
 .ai-msgnav { position: absolute; right: 0; top: 40%; transform: translateY(-50%); z-index: 15;
   display: flex; align-items: center; gap: 4px; }
+.ai-msgnav.is-dragging { user-select: none; cursor: grabbing !important; }
+.ai-msgnav.is-dragging * { user-select: none !important; cursor: grabbing !important; }
 .ai-msgnav-chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 4px 0 8px;
   border: 1px solid var(--border-color); border-radius: var(--radius-pill) 0 0 var(--radius-pill);
   background: color-mix(in srgb, var(--bg-secondary) 70%, transparent); color: var(--text-tertiary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); cursor: grab;
   opacity: .65; transition: opacity 150ms, background-color 150ms, color 150ms; }
 .ai-msgnav-chip:hover, .ai-msgnav-chip:focus-visible, .ai-msgnav.is-open .ai-msgnav-chip { opacity: 1; background: var(--bg-secondary); color: var(--text-primary); }
+.ai-msgnav-chip:active { cursor: grabbing; }
 .ai-msgnav-chip-label { font-size: 11px; font-variant-numeric: tabular-nums; }
-.ai-msgnav-panel { width: 288px; max-width: calc(100vw - 48px); display: flex; flex-direction: column;
+/* 消息导航面板：与任务清单宽度统一为 320px */
+.ai-msgnav-panel { width: 320px; max-width: calc(100vw - 48px); display: flex; flex-direction: column;
   border: 1px solid var(--border-color); border-radius: 12px; background: var(--surface-island-strong);
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16); overflow: hidden; }
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16); overflow: hidden;
+  animation: ai-taskchip-pop 160ms cubic-bezier(0.16, 1, 0.3, 1); }
 .ai-msgnav-panel header { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  border-bottom: 1px solid var(--border-color); }
+  border-bottom: 1px solid var(--border-color); cursor: grab; user-select: none; }
+.ai-msgnav-panel header:active { cursor: grabbing; }
+.ai-msgnav-drag-handle { color: var(--text-tertiary); cursor: grab; flex: none; opacity: 0.6; }
+.ai-msgnav-panel header:hover .ai-msgnav-drag-handle { opacity: 1; }
 .ai-msgnav-panel header strong { font-size: 12.5px; font-weight: 500; }
 .ai-msgnav-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px;
   padding: 0 5px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-tertiary); font-size: 10.5px; }
@@ -1517,11 +1525,14 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-taskchip.is-dragging { user-select: none; cursor: grabbing !important; }
 .ai-taskchip.is-dragging * { user-select: none !important; cursor: grabbing !important; }
 
-/* 贴边小药丸：收起或展开时贴在右边缘 */
+/* 贴边小药丸：折叠状态下的浮动芯片，支持在视口任意位置拖动 */
+.ai-floating-chip { cursor: grab; user-select: none; border-radius: var(--radius-pill) !important; padding: 0 8px !important; }
+.ai-floating-chip:active { cursor: grabbing; }
+
 .ai-taskchip-chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 4px 0 8px;
   border: 1px solid var(--border-color); border-radius: var(--radius-pill) 0 0 var(--radius-pill);
   background: color-mix(in srgb, var(--bg-secondary) 70%, transparent); color: var(--text-tertiary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); cursor: grab;
   opacity: .75; transition: opacity 150ms, background-color 150ms, color 150ms; flex: none; }
 .ai-taskchip-chip:hover, .ai-taskchip-chip:focus-visible, .ai-taskchip.is-open .ai-taskchip-chip {
   opacity: 1; background: var(--bg-secondary); color: var(--text-primary); }

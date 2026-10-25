@@ -106,12 +106,51 @@ fn bounded_line(reader: &mut impl BufRead) -> Result<Option<(Value, u64)>, Strin
     let value = serde_json::from_slice(&bytes).map_err(|e| format!("原生历史存在损坏记录：{e}"))?;
     Ok(Some((value, count as u64)))
 }
+/// 早期 Forge 新建会话时把「Claude Code 会话 3」这类占位名写进了 CLI 原生历史
+/// （Claude 走 `--name`，Codex 走 `thread/name/set`）。它占着最高优先级，
+/// 真正的自动标题永远压不过它，所以识别出来一律忽略。
+pub fn is_placeholder_title(text: &str) -> bool {
+    static PLACEHOLDER: OnceLock<Regex> = OnceLock::new();
+    let pattern = PLACEHOLDER.get_or_init(|| {
+        Regex::new(r"(?i)^(claude code|codex)\s+(会话|會話|工作階段|工作阶段|session)\s*\d+$")
+            .expect("占位标题的模式必须能编译")
+    });
+    pattern.is_match(text.trim())
+}
+
+/// 会话自动标题：首条真人消息压成一行短标题，两个来源（发送时落库、原生历史解析）
+/// 共用同一套规则，否则列表每刷新一次就换一种写法。
+/// 取第一个非空行、折叠空白，尽量在句读或空格处断开，最长 30 个字符（按字符计，中文不切半）。
+pub fn auto_title(text: &str) -> Option<String> {
+    const MAX: usize = 30;
+    let collapsed = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let chars = collapsed.chars().collect::<Vec<_>>();
+    if chars.len() <= MAX {
+        return Some(collapsed);
+    }
+    // 断点取窗口内最后一个句读或空格，太靠前的不算（否则只剩一两个字）。
+    let end = chars[..MAX]
+        .iter()
+        .rposition(|c| matches!(c, '。' | '！' | '？' | '；' | '，' | '、' | ' ' | '.' | '!' | '?' | ';' | ','))
+        .map_or(MAX, |index| index + 1)
+        .max(MAX / 3);
+    let title = chars[..end].iter().collect::<String>();
+    let title = title.trim_end_matches([' ', '，', ',', '、', '；', ';', '：', ':', '。', '.']);
+    (!title.is_empty()).then_some(title.to_owned())
+}
+
 /// Claude 的标题记录。用户的 `/rename` 和 CLI 自动标题都按追加写，最新一条生效。
 fn capture_titles(value: &Value, custom: &mut Option<String>, ai: &mut Option<String>) {
-    if let Some(text) = value["customTitle"].as_str().filter(|text| !text.trim().is_empty()) {
+    if let Some(text) = value["customTitle"].as_str().filter(|text| !text.trim().is_empty() && !is_placeholder_title(text)) {
         *custom = Some(text.to_owned());
     }
-    if let Some(text) = value["aiTitle"].as_str().filter(|text| !text.trim().is_empty()) {
+    if let Some(text) = value["aiTitle"].as_str().filter(|text| !text.trim().is_empty() && !is_placeholder_title(text)) {
         *ai = Some(text.to_owned());
     }
 }
@@ -160,8 +199,8 @@ fn codex_thread_names(codex_home: &Path) -> HashMap<String, String> {
             continue;
         };
         let name = name.trim();
-        if !id.is_empty() && !name.is_empty() {
-            names.insert(id.to_owned(), name.chars().take(120).collect());
+        if !id.is_empty() && !name.is_empty() && !is_placeholder_title(name) {
+            names.insert(id.to_owned(), name.to_owned());
         }
     }
     names
@@ -242,11 +281,11 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
     }
     // 用户改过的标题（Claude 的 /rename）优先，其次 CLI 自己生成的标题，
     // 最后才是首条真人消息。都提不出来就留空，不再拿 UUID 冒充标题。
+    // 三种来源都过 auto_title，与发送时落的自动标题同一种写法。
     let title = custom_title
         .or(ai_title)
         .or(title)
-        .filter(|text| !text.trim().is_empty())
-        .map(|text| text.lines().next().unwrap_or("").trim().chars().take(120).collect::<String>())
+        .and_then(|text| auto_title(&text))
         .unwrap_or_default();
     Ok(Some(Candidate {
         source: Source {
@@ -345,7 +384,7 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                 continue;
             };
             if let Some(name) = codex_names.get(&candidate.source.native_id) {
-                candidate.title = name.clone();
+                candidate.title = auto_title(name).unwrap_or_default();
             }
             let source = candidate.source;
             let binding = binding_key(provider, &source.native_id);
@@ -365,8 +404,10 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                 // 用户手动改过并锁定过的标题，任何自动同步都不覆盖。
                 if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{id}.lock"))) {
                     if let Ok(mut meta) = Store::metadata(&base.join(id), root) {
+                        // 占位名是早期 Forge 自己写进去的，不是用户起的名字，必须让位给自动标题。
                         let follows = !meta.title_locked
                             && (provider == Provider::Claude
+                                || is_placeholder_title(&meta.title)
                                 || human_text(&meta.title).is_none()
                                 || codex_names.contains_key(&source.native_id));
                         if follows && meta.title != candidate.title {
@@ -1030,6 +1071,62 @@ mod tests {
         fs::write(&path, &content).unwrap();
         assert_eq!(inspect(&path, Provider::Claude, &workspace).unwrap().unwrap().title, "窗口外改的标题");
         fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// 早期 Forge 用 `--name` 把「Claude Code 会话 3」写成了 custom-title 记录，
+    /// Codex 那边同理写进 session_index。它占着最高优先级，必须忽略，
+    /// 否则首条消息生成的自动标题永远被占位名压住，列表里全是一排「会话 N」。
+    #[test]
+    fn forge_placeholder_native_titles_lose_to_the_first_prompt() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-claude-placeholder-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let native = temp.join("native");
+        for path in [&root, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let path = native.join("claude.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"user","cwd":root,"sessionId":"claude-placeholder","message":{"content":"修复登录页的跨域问题"}}),
+                json!({"type":"custom-title","customTitle":"Claude Code 会话 3"})
+            ),
+        )
+        .unwrap();
+        assert_eq!(inspect(&path, Provider::Claude, &workspace).unwrap().unwrap().title, "修复登录页的跨域问题");
+        // 用户在 CLI 里真的改过名，就不再是占位名，照旧以它为准。
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                json!({"type":"user","cwd":root,"sessionId":"claude-placeholder","message":{"content":"修复登录页的跨域问题"}}),
+                json!({"type":"custom-title","customTitle":"Claude Code 会话 3"}),
+                json!({"type":"custom-title","customTitle":"登录跨域"})
+            ),
+        )
+        .unwrap();
+        assert_eq!(inspect(&path, Provider::Claude, &workspace).unwrap().unwrap().title, "登录跨域");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// 自动标题要把长消息压成一行短名字：折叠空白、在句读或空格处断开，
+    /// 而不是从词中间硬切；发送时和解析原生历史都走这一个函数，写法必须一致。
+    #[test]
+    fn auto_title_cuts_at_a_boundary_and_collapses_whitespace() {
+        assert_eq!(auto_title("  修复   登录页\n的跨域问题  ").as_deref(), Some("修复 登录页 的跨域问题"));
+        assert_eq!(auto_title("排查任务队列。先看 FIFO 队首有没有卡住").as_deref(), Some("排查任务队列"));
+        // 短句里没有句读时按长度切，但切在空格上，不留半个词。
+        assert_eq!(
+            auto_title(&format!("{} 剩余部分后面还有很长的内容", "分".repeat(40))).as_deref(),
+            Some("分".repeat(30).as_str())
+        );
+        assert_eq!(auto_title("   "), None);
+        assert!(is_placeholder_title("Codex 会话 12"));
+        assert!(is_placeholder_title("Claude Code session 3"));
+        assert!(!is_placeholder_title("Codex 会话列表"));
     }
 
     /// Codex 的改名只追加在 session_index.jsonl；用户锁定过的标题不能被它覆盖。

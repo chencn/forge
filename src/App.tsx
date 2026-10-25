@@ -758,15 +758,11 @@ export default function App() {
     // 异步创建完成时用户可能已切换项目；后续状态必须仍写回发起创建的工程。
     const launchWorkspace = workspaceRoot;
     const launchRootKey = rootKey;
-    // 删除旧会话后也不会复用现存会话的默认名称。
-    let number = 1;
-    let title = t("ai.defaultTitle", { name: AI_NAMES[provider], number });
-    while (aiSessions.sessions.some((session) => session.title === title)) {
-      title = t("ai.defaultTitle", { name: AI_NAMES[provider], number: ++number });
-    }
     const requestedId = provider === "claude" ? crypto.randomUUID() : null;
     try {
-      const session = await invoke<AiSession>("ai_runtime_create", { provider, workspace: launchWorkspace, sessionId: requestedId, title });
+      // 新建时不给标题：名字等首条消息发出后由后端从消息里取，占位名会写进 CLI 原生历史，
+      // 把真正的自动标题永久压掉。
+      const session = await invoke<AiSession>("ai_runtime_create", { provider, workspace: launchWorkspace, sessionId: requestedId });
       seedAiSessionOptions(launchWorkspace, session.id, provider);
       setAiDraftHandoff(session.id, { text, images });
       dispatchAiSession({ type: "create", session });
@@ -3647,8 +3643,8 @@ export default function App() {
     ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => ({
       id: `ai|${session.id}`,
       kind: "ai" as const,
-      name: session.title,
-      title: `${AI_NAMES[session.provider]} · ${session.title}`,
+      name: session.title || t("ai.untitledSession"),
+      title: `${AI_NAMES[session.provider]} · ${session.title || t("ai.untitledSession")}`,
       dirty: false,
       icon: <AiProviderIcon provider={session.provider} size={14} />,
     })),

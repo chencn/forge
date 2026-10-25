@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Archive, ArrowUpRight, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, ListTodo, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
+import { Archive, ArrowUpRight, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, EyeOff, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, ListTodo, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
@@ -262,14 +262,17 @@ interface FloatingPos {
 }
 
 /**
- * 浮动挂件自由 2D 拖拽 Hook：
- * 支持在任何地方自由拖拽，自动限制在可视区域内（8px 安全边距）；
- * 面板展开状态切换时自动校验尺寸防右下边界溢出；
- * 点击与拖拽平滑解耦（微小位移视为点击）。
+ * 浮动挂件拖拽 Hook：
+ * 1. 展开状态下：面板支持在视口内任意位置自由 2D 拖拽（X 和 Y），并在窗口变化时防溢出；
+ * 2. 折叠状态下：拉手芯片【强制贴在右侧边缘】（right: 0, left: auto），仅支持沿右边缘上下滑动（Y 轴拖动）；
+ * 3. 点击与拖拽平滑解耦（位移超过 3px 判定为拖拽，松手不触发折叠/展开切换）。
  */
 function useFloatingDraggable(open: boolean) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<FloatingPos | null>(null);
+  // 面板展开时的 2D 位置
+  const [panelPos, setPanelPos] = useState<FloatingPos | null>(null);
+  // 折叠芯片时的 Y 轴位置（始终贴右边缘）
+  const [chipTop, setChipTop] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<{
     startX: number;
@@ -279,32 +282,33 @@ function useFloatingDraggable(open: boolean) {
     moved: boolean;
   } | null>(null);
 
-  // 展开时校验位置：避免展开后宽度/高度溢出父容器右下边界
+  // 展开时校验面板尺寸：避免展开后宽度/高度溢出父容器右下边界
   useLayoutEffect(() => {
-    if (!pos || !open || !containerRef.current) return;
+    if (!open || !containerRef.current) return;
     const container = containerRef.current;
     const parent = container.parentElement;
     if (!parent) return;
     const parentWidth = parent.clientWidth;
     const parentHeight = parent.clientHeight;
-    const width = container.offsetWidth;
-    const height = container.offsetHeight;
-    if (pos.left + width > parentWidth - 8 || pos.top + height > parentHeight - 8) {
-      setPos((prev) => {
-        if (!prev) return null;
-        return {
-          left: Math.max(8, Math.min(parentWidth - width - 8, prev.left)),
-          top: Math.max(8, Math.min(parentHeight - height - 8, prev.top)),
-        };
-      });
-    }
+    const width = container.offsetWidth || 320;
+    const height = container.offsetHeight || 200;
+
+    setPanelPos((prev) => {
+      // 若尚未拖过面板，默认以芯片当前的 top 贴在右侧视口内
+      const baseTop = prev ? prev.top : (chipTop !== null ? chipTop : Math.max(8, Math.round(parentHeight * 0.2)));
+      const baseLeft = prev ? prev.left : Math.max(8, parentWidth - width - 8);
+      return {
+        left: Math.max(8, Math.min(parentWidth - width - 8, baseLeft)),
+        top: Math.max(8, Math.min(parentHeight - height - 8, baseTop)),
+      };
+    });
   }, [open]);
 
   const startDrag = (event: React.PointerEvent) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
-    // 点击面板内部的具体交互按钮（如折叠按钮、重试按钮、列表项按钮等）时不启动拖拽
-    if (target.closest("button") && !target.closest(".ai-floating-chip")) {
+    // 点击面板内部具体按钮（折叠按钮、重试、关闭、列表项等）时不启动拖拽
+    if (open && target.closest("button")) {
       return;
     }
     const container = containerRef.current;
@@ -336,9 +340,18 @@ function useFloatingDraggable(open: boolean) {
         const parentHeight = parent ? parent.clientHeight : window.innerHeight;
         const currentWidth = container.offsetWidth || 32;
         const currentHeight = container.offsetHeight || 32;
-        const clampedLeft = Math.max(8, Math.min(parentWidth - currentWidth - 8, dragRef.current.initialLeft + deltaX));
+
         const clampedTop = Math.max(8, Math.min(parentHeight - currentHeight - 8, dragRef.current.initialTop + deltaY));
-        setPos({ left: clampedLeft, top: clampedTop });
+
+        if (open) {
+          // 展开状态：视口内 2D 自由拖动
+          const clampedLeft = Math.max(8, Math.min(parentWidth - currentWidth - 8, dragRef.current.initialLeft + deltaX));
+          setPanelPos({ left: clampedLeft, top: clampedTop });
+          setChipTop(clampedTop);
+        } else {
+          // 折叠状态：强制紧贴右侧边缘，仅上下拖动 Y 轴
+          setChipTop(clampedTop);
+        }
       }
     };
 
@@ -359,7 +372,12 @@ function useFloatingDraggable(open: boolean) {
 
   const isMoved = () => dragRef.current?.moved === true;
 
-  return { containerRef, pos, isDragging, startDrag, isMoved };
+  // 定位样式：展开时 2D 自由定位；折叠后强制贴右边（right: 0, left: auto）
+  const style: React.CSSProperties | undefined = open
+    ? (panelPos ? { left: `${panelPos.left}px`, top: `${panelPos.top}px`, right: "auto", bottom: "auto", transform: "none" } : undefined)
+    : (chipTop !== null ? { top: `${chipTop}px`, right: 0, left: "auto", bottom: "auto", transform: "none" } : undefined);
+
+  return { containerRef, style, isDragging, startDrag, isMoved };
 }
 
 /**
@@ -390,7 +408,7 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
   const rows = useMemo(() => buildNavRows(entries, outline), [entries, outline]);
   const visible = useMemo(() => visibleNavRows(rows, rendered), [rows, rendered]);
   const count = navCount(rows, outline, hasOlder);
-  const { containerRef, pos, isDragging, startDrag, isMoved } = useFloatingDraggable(open);
+  const { containerRef, style, isDragging, startDrag, isMoved } = useFloatingDraggable(open);
 
   const scrollToList = () => {
     if (grewAt.current) {
@@ -611,10 +629,11 @@ function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
 }
 
 /** Goal 是会话级控制器，固定在输入区上方；Task 仍是标题栏里的步骤概览。 */
-function AiGoalBar({ goal, busy, onStatus }: {
+function AiGoalBar({ goal, busy, onStatus, onHide }: {
   goal: AiThreadGoal;
   busy: boolean;
   onStatus: (status: "active" | "paused") => void;
+  onHide: () => void;
 }) {
   const { t } = useI18n();
   const status = {
@@ -640,14 +659,18 @@ function AiGoalBar({ goal, busy, onStatus }: {
       title={t(next === "paused" ? "ai.chat.pauseGoal" : "ai.chat.resumeGoal")}>
       {busy ? <Loader2 size={13} className="is-spinning" aria-hidden /> : next === "paused" ? <Pause size={13} aria-hidden /> : <Play size={13} aria-hidden />}
       <span>{t(next === "paused" ? "ai.chat.pause" : "ai.chat.resume")}</span>
+    </button> : goal.status === "complete" ? <button type="button" className="ai-goalbar-action" onClick={onHide}
+      aria-label={t("ai.chat.hideGoal")} title={t("ai.chat.hideGoal")}>
+      <EyeOff size={13} aria-hidden />
+      <span>{t("ai.chat.hideGoal")}</span>
     </button> : null}
   </section>;
 }
 
 /**
- * 任务清单贴边面板：
- * 贴在右侧边缘（消息导航旁边），有任务清单时默认展开，收起时为半圆药丸芯片；
- * 支持按住卡片头部或贴边芯片上下拖动位置（自动限制在视口边界内）；
+ * 任务清单悬浮面板：
+ * 有任务清单时默认展开，收起时为浮动药丸芯片；展开时不显示芯片拉手，折叠时才显示；
+ * 支持在视口内任意位置 2D 自由拖动（自动限制在视口边界内并防溢出）；
  * 点击条目可跳转至正文时间线中对应清单位置。
  */
 function AiTaskListChip({ taskList, running, onJump }: {
@@ -658,15 +681,7 @@ function AiTaskListChip({ taskList, running, onJump }: {
   const { t } = useI18n();
   // 有清单时默认展开
   const [open, setOpen] = useState(true);
-  // 用户拖动后的纵向像素位置；未拖动时按默认 CSS 贴边定位
-  const [top, setTop] = useState<number | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{
-    startY: number;
-    initialTop: number;
-    moved: boolean;
-  } | null>(null);
+  const { containerRef, pos, isDragging, startDrag, isMoved } = useFloatingDraggable(open);
 
   const visible = taskList.items.filter((item) => item.status !== "dropped" && item.content.trim());
   const completed = visible.filter((item) => item.status === "complete" || item.status === "completed").length;
@@ -685,62 +700,8 @@ function AiTaskListChip({ taskList, running, onJump }: {
     });
   };
 
-  // 支持拖动面板垂直位置：限制在父级可视区边界内
-  const startDrag = (event: React.PointerEvent) => {
-    if (event.button !== 0) return;
-    const target = event.target as HTMLElement;
-    // 点击关闭/折叠/跳转等具名按钮时不触发拖拽
-    if (target.closest("button") && !target.closest(".ai-taskchip-chip")) {
-      return;
-    }
-
-    const container = containerRef.current;
-    if (!container) return;
-
-    const parent = container.parentElement;
-    const parentRect = parent ? parent.getBoundingClientRect() : document.body.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
-    const currentTop = containerRect.top - parentRect.top;
-
-    dragRef.current = {
-      startY: event.clientY,
-      initialTop: currentTop,
-      moved: false,
-    };
-
-    const handlePointerMove = (e: PointerEvent) => {
-      if (!dragRef.current) return;
-      const deltaY = e.clientY - dragRef.current.startY;
-      if (!dragRef.current.moved && Math.abs(deltaY) > 3) {
-        dragRef.current.moved = true;
-        setIsDragging(true);
-      }
-      if (dragRef.current.moved) {
-        const parentHeight = parent ? parent.clientHeight : window.innerHeight;
-        const currentHeight = container.offsetHeight || 32;
-        // 留出 8px 上下安全边距
-        const clampedTop = Math.max(8, Math.min(parentHeight - currentHeight - 8, dragRef.current.initialTop + deltaY));
-        setTop(clampedTop);
-      }
-    };
-
-    const handlePointerUp = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
-      setTimeout(() => {
-        setIsDragging(false);
-        dragRef.current = null;
-      }, 0);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
-  };
-
   const handleChipClick = () => {
-    if (dragRef.current?.moved) return;
+    if (isMoved()) return;
     toggle();
   };
 
@@ -762,7 +723,7 @@ function AiTaskListChip({ taskList, running, onJump }: {
   return <div
     className={`ai-taskchip${open ? " is-open" : ""}${running ? " is-running" : ""}${allCompleted ? " is-all-completed" : ""}${isDragging ? " is-dragging" : ""}`}
     ref={containerRef}
-    style={top !== null ? { top: `${top}px`, transform: "none" } : undefined}
+    style={pos ? { left: `${pos.left}px`, top: `${pos.top}px`, right: "auto", bottom: "auto", transform: "none" } : undefined}
   >
     {open ? <div className="ai-taskchip-panel" role="region" aria-label={t("ai.chat.taskList")}>
       <header onPointerDown={startDrag} title={t("ai.chat.taskList")}>
@@ -802,28 +763,29 @@ function AiTaskListChip({ taskList, running, onJump }: {
           })}
         </ol>
       </div>
-    </div> : null}
-    <button type="button"
-      className={`ai-taskchip-chip${dirty ? " is-dirty" : ""}${open ? " is-active" : ""}${allCompleted && !running ? " is-success" : ""}`}
-      title={t("ai.chat.taskList")}
-      aria-label={t("ai.chat.taskList")}
-      aria-expanded={open}
-      onPointerDown={startDrag}
-      onClick={handleChipClick}
-    >
-      {running && activePlanItem ? (
-        <Loader2 size={12} className="ai-taskchip-icon is-spinning" aria-hidden />
-      ) : allCompleted && !running ? (
-        <CheckCircle2 size={12} className="ai-taskchip-icon is-complete" aria-hidden />
-      ) : (
-        <ListTodo size={12} className="ai-taskchip-icon" aria-hidden />
-      )}
-      <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
-      {running && activePlanItem && !open ? (
-        <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePosition}/{visible.length} · {activePlanItem.content}</span>
-      ) : null}
-      {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
-    </button>
+    </div> : (
+      <button type="button"
+        className={`ai-taskchip-chip ai-floating-chip${dirty ? " is-dirty" : ""}${allCompleted && !running ? " is-success" : ""}`}
+        title={t("ai.chat.taskList")}
+        aria-label={t("ai.chat.taskList")}
+        aria-expanded={false}
+        onPointerDown={startDrag}
+        onClick={handleChipClick}
+      >
+        {running && activePlanItem ? (
+          <Loader2 size={12} className="ai-taskchip-icon is-spinning" aria-hidden />
+        ) : allCompleted && !running ? (
+          <CheckCircle2 size={12} className="ai-taskchip-icon is-complete" aria-hidden />
+        ) : (
+          <ListTodo size={12} className="ai-taskchip-icon" aria-hidden />
+        )}
+        <span className="ai-taskchip-progress">{completed}/{visible.length}</span>
+        {running && activePlanItem ? (
+          <span className="ai-taskchip-active-text" title={activePlanItem.content}>{activePosition}/{visible.length} · {activePlanItem.content}</span>
+        ) : null}
+        {dirty ? <span className="ai-taskchip-dot" aria-hidden="true" /> : null}
+      </button>
+    )}
   </div>;
 }
 
@@ -907,6 +869,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [compactPrefs, setCompactPrefs] = useState(readCompactPrefs);
   const [error, setError] = useState<string | null>(null);
   const [goalUpdating, setGoalUpdating] = useState(false);
+  // 只记住当前会话里用户主动隐藏的 Goal；Goal 数据本身仍由运行时保留。
+  const [hiddenGoalKey, setHiddenGoalKey] = useState<string | null>(null);
   const content = useRef<HTMLDivElement>(null);
   const pane = useRef<HTMLElement>(null);
   /** 聊天列宽（左右手柄可调，持久化在 aiChatWidth）；列宽变化经 CSS 变量即时生效。 */
@@ -1347,6 +1311,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   /** 任务清单是会话级事实，不再依赖当前时间线页是否包含它的最后一次更新。 */
   const taskList = runtime.taskList?.items.some((item) => item.status !== "dropped" && item.content.trim()) ? runtime.taskList : null;
   const goal = runtime.goal?.objective.trim() ? runtime.goal : null;
+  const goalKey = goal ? `${goal.threadId}:${goal.createdAt}:${goal.objective}` : null;
+  const visibleGoal = goal && goalKey !== hiddenGoalKey ? goal : null;
   // 先折叠再开窗：反过来会把一整段过程劈成两半，两段各自都够不上折叠门槛，就都摊在屏幕上。
   // 传 running 是为了只留「正在想」那一条空思考：空正文的历史思考块摆成一排「思考」却点不出东西。
   const timeline = useMemo(() => windowAiTimeline(groupAiTimeline(timelineEntries, running), timelineLimit), [timelineEntries, running, timelineLimit]);
@@ -1581,7 +1547,9 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       onRequestOutline={() => { if (workspace) void loadAiOutline(session.id, workspace).catch(() => {}); }} onJump={jumpToTurn} /> : null}
     </div>
     <footer className="ai-composer-dock">
-    {goal ? <AiGoalBar goal={goal} busy={goalUpdating} onStatus={(status) => {
+    {visibleGoal ? <AiGoalBar goal={visibleGoal} busy={goalUpdating} onHide={() => {
+      if (goalKey) setHiddenGoalKey(goalKey);
+    }} onStatus={(status) => {
       if (!workspace || goalUpdating) return;
       setGoalUpdating(true); setError(null);
       void setAiGoalStatus(session.id, workspace, status)

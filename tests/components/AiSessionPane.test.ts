@@ -622,10 +622,11 @@ describe("AI conversation pane", () => {
       ],
     };
     const { html } = render();
-    // 渲染在右侧贴边浮动挂件中且默认展开
+    // 渲染在右侧浮动挂件中且默认展开
     expect(html).toContain('class="ai-taskchip is-open"');
     expect(html).toContain('class="ai-taskchip-panel"');
-    expect(html).toContain('class="ai-taskchip-chip');
+    // 展开状态下不显示拉手芯片（折叠时才显示拉手）
+    expect(html).not.toContain('class="ai-taskchip-chip');
     // 包含拖拽手柄、折叠按钮、清单项与统计进度
     expect(html).toContain('ai-taskchip-drag-handle');
     expect(html).toContain('ai-taskchip-collapse');
@@ -637,5 +638,19 @@ describe("AI conversation pane", () => {
     // 顶栏不包含任务清单，任务清单位于视口内与消息导航相邻
     const headerHtml = html.slice(html.indexOf('<header class="ai-session-pane-head">'), html.indexOf('</header>'));
     expect(headerHtml).not.toContain("ai-taskchip");
+  });
+  it("只在已完成 Goal 上提供用户主动的隐藏入口", () => {
+    h.state.goal = {
+      seq: 1, threadId: "native", objective: "完成验证", status: "complete",
+      tokenBudget: null, tokensUsed: 10, timeUsedSeconds: 2, createdAt: 1, updatedAt: 2,
+    };
+    const completed = render().html;
+    expect(completed).toContain('class="ai-goalbar is-complete"');
+    expect(completed).toContain("ai.chat.hideGoal");
+
+    h.state.goal = { ...h.state.goal, status: "active" };
+    const active = render().html;
+    expect(active).not.toContain("ai.chat.hideGoal");
+    expect(active).toContain("ai.chat.pauseGoal");
   });
 });

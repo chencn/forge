@@ -224,7 +224,9 @@ fn runtime_args(request: &SendRequest, claude_mode: &str, native: Option<&str>) 
     if let Some(id) = native {
         args.extend(["--resume".into(), id.into()]);
     } else {
-        args.extend(["--session-id".into(), request.session_id.clone(), "--name".into(), request.title.clone()]);
+        // 只带 `--session-id`，绝不带 `--name`：Claude 会把名字写成 custom-title 记录，
+        // 而 custom-title 压着 CLI 自己的 ai-title 和首条消息，会话就永远停在占位名上。
+        args.extend(["--session-id".into(), request.session_id.clone()]);
     }
     if let Some(model) = &request.model { args.extend(["--model".into(), model.clone()]); }
     if let Some(effort) = &request.effort { args.extend(["--effort".into(), effort.clone()]); }
@@ -409,20 +411,12 @@ fn stop_registered() -> Vec<Arc<Run>> {
     registry::flag_stop(&runs);
     runs
 }
-/// 新会话标题从首条用户消息生成（对照参考实现：发送第一条后立即改题，不等 CLI 刷新）：
-/// 取第一个非空行，去掉首尾空白，最长 60 个字符（按字符截，中文不切半）。
-pub(crate) fn title_from_prompt(prompt: &str) -> Option<String> {
-    let line = prompt.lines().map(str::trim).find(|line| !line.is_empty())?;
-    let cut: String = line.chars().take(60).collect();
-    let title = cut.trim().to_string();
-    if title.is_empty() { None } else { Some(title) }
-}
-
-/// 首条消息的标题同时更新原生来源，避免列表同步把新标题覆盖回默认名称。
+/// 新会话标题从首条用户消息生成（对照参考实现：发送第一条后立即改题，不等 CLI 刷新）。
+/// 规则与原生历史解析共用 `history::auto_title`，两个来源写出的必须是同一个字符串。
 /// 用户已经改过标题（`title_locked`）就不再动它。
 fn title_first_message(store: &mut store::Store, request: &SendRequest, include_user: bool) -> Result<(), String> {
     if !include_user || store.seq != 0 || request.plan_turn.is_some() || store.meta.title_locked { return Ok(()); }
-    if let Some(title) = title_from_prompt(&request.prompt) {
+    if let Some(title) = history::human_text(&request.prompt).as_deref().and_then(history::auto_title) {
         if title == store.meta.title { return Ok(()); }
         if store.meta.provider == Provider::Codex {
             let native = store.meta.native_id.as_deref().unwrap_or(&store.meta.session_id);
@@ -731,8 +725,11 @@ pub async fn ai_runtime_custom_models(app: AppHandle, provider: Provider) -> Res
 pub async fn ai_runtime_remove_model(app: AppHandle, provider: Provider, model: String) -> Result<(), String> {
     block(move || { enabled(&app)?; options::remove_model(&models_path(&app)?, provider, &model) }).await
 }
+/// 新建会话：只建记录，不起名。标题等首条用户消息发出后由 `title_first_message` 自动取，
+/// 也绝不把名字写回 CLI 原生历史——占位名一旦落成 custom-title / thread name，
+/// 就把真正的自动标题永久压掉了。
 #[tauri::command]
-pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: String, session_id: Option<String>, title: String) -> Result<Value, String> {
+pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: String, session_id: Option<String>) -> Result<Value, String> {
     block(move || {
         let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
         let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后创建会话")?;
@@ -740,20 +737,16 @@ pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: St
         enabled(&app)?;
         if !ai_cli::settings::enabled(&app, provider) { return Err("该 CLI 已在设置中停用，请先在设置中启用".into()); }
         let root = store::workspace(&workspace)?;
-        let title = title.trim();
-        if title.is_empty() || title.chars().count() > 120 { return Err("无效会话标题".into()); }
         let base = base(&app)?;
-        let record = if provider == Provider::Codex {
-            options::codex_create_thread(&root, title)?
+        let id = if provider == Provider::Codex {
+            options::codex_create_thread(&root)?.get("id").and_then(Value::as_str).ok_or("CLI 未返回会话 ID")?.to_owned()
         } else {
-            let id = session_id.filter(|id| store::valid_id(id)).ok_or("Claude 会话 ID 无效")?;
-            json!({"id":id,"title":title,"createdAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as u64})
+            session_id.filter(|id| store::valid_id(id)).ok_or("Claude 会话 ID 无效")?.to_owned()
         };
-        let id = record["id"].as_str().ok_or("CLI 未返回会话 ID")?;
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-        let mut target = store::Store::open(&base, id, &root, provider, title, "")?;
-        if provider == Provider::Codex { target.bind(id.to_owned())?; }
-        Ok(json!({"id":id,"provider":provider,"title":record["title"],"createdAt":record["createdAt"]}))
+        let mut target = store::Store::open(&base, &id, &root, provider, "", "")?;
+        if provider == Provider::Codex { target.bind(id.clone())?; }
+        Ok(json!({"id":id,"provider":provider,"title":target.meta.title,"createdAt":target.meta.created_at}))
     }).await
 }
 #[tauri::command]
@@ -1822,8 +1815,11 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                 if meta.provider == Provider::Codex {
                     if let Some(native) = codex_by_id.get(&meta.session_id) {
                         // 用户锁定过的标题以 Forge 为准；未锁定时原生线程名是权威来源。
+                        // 原生没有名字（新建还没发过消息，或名字是早期写下的占位名）就什么都不动。
                         if !meta.title_locked {
-                            if let Some(title) = native["title"].as_str() { meta.title = title.to_owned(); }
+                            if let Some(title) = native["title"].as_str().filter(|title| !title.trim().is_empty() && !history::is_placeholder_title(title)) {
+                                meta.title = title.to_owned();
+                            }
                         }
                         if let Some(created) = native["createdAt"].as_u64() { meta.created_at = created; }
                         let _ = store::Store { dir: entry.path(), meta: meta.clone(), seq: 0, poisoned: false }.save();

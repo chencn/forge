@@ -551,9 +551,11 @@ pub fn codex_threads(cwd: &str) -> Result<Vec<Value>, String> {
         let page = result["data"].as_array().ok_or("Codex 会话列表格式不兼容")?;
         threads.extend(page.iter().filter_map(|thread| {
             let id = thread["id"].as_str()?.to_owned();
-            let title = thread["name"].as_str().filter(|s| !s.trim().is_empty())
-                .or_else(|| thread["preview"].as_str().filter(|s| !s.trim().is_empty()))
-                .unwrap_or(&id).lines().next().unwrap_or(&id).chars().take(120).collect::<String>();
+            // 只认 CLI 里真实存在过的线程名。`preview` 是首条消息的裸片段、没有名字时更不能
+            // 拿 ID 冒充标题：那两个都和 Forge 的自动标题写法不同，列表每刷新一次就换一种字。
+            let title = thread["name"].as_str().map(str::trim).filter(|name| !name.is_empty())
+                .map(|name| name.chars().take(120).collect::<String>())
+                .unwrap_or_default();
             Some(json!({"id":id,"title":title,"createdAt":thread["createdAt"].as_i64().unwrap_or_default().max(0) as u64 * 1000,"status":thread["status"]}))
         }));
         cursor = result["nextCursor"].clone();
@@ -563,19 +565,18 @@ pub fn codex_threads(cwd: &str) -> Result<Vec<Value>, String> {
     Err("Codex 会话列表超过分页上限".into())
 }
 
-/// 新建空 Codex thread 并让 CLI 保存标题，返回 CLI 原生 ID。
+/// 新建空 Codex thread，返回 CLI 原生 ID。不命名：占位名会写进 `session_index.jsonl`，
+/// 而线程名在标题规则里优先级最高，等于把自动命名永久锁死成「Codex 会话 N」。
 fn codex_thread_start_params(cwd: &str) -> Value {
     json!({"cwd":cwd,"dynamicTools":super::codex::Codex::task_tools()})
 }
-pub fn codex_create_thread(cwd: &str, title: &str) -> Result<Value, String> {
+pub fn codex_create_thread(cwd: &str) -> Result<Value, String> {
     // dynamicTools 受 experimentalApi 门控，而且只能在 thread/start 注册；resume 无法补挂。
     let (mut process, deadline) = codex_management_process_with_experimental(cwd, "初始化 Codex 新会话", true)?;
     process.write(&json!({"id":2,"method":"thread/start","params":codex_thread_start_params(cwd)}))?;
     let result = response(&mut process, 2, deadline, "创建 Codex 会话")?;
     let id = result["thread"]["id"].as_str().ok_or("Codex 未返回 thread ID")?;
-    process.write(&json!({"id":3,"method":"thread/name/set","params":{"threadId":id,"name":title}}))?;
-    response(&mut process, 3, deadline, "设置 Codex 会话标题")?;
-    Ok(json!({"id":id,"title":title,"createdAt":result["thread"]["createdAt"].as_i64().unwrap_or_default().max(0) as u64 * 1000}))
+    Ok(json!({"id":id,"createdAt":result["thread"]["createdAt"].as_i64().unwrap_or_default().max(0) as u64 * 1000}))
 }
 
 pub fn codex_set_thread_name(cwd: &str, id: &str, title: &str) -> Result<(), String> {
