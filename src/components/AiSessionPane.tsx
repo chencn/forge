@@ -1274,8 +1274,10 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     </article>;
     return artifacts ? <Fragment key={entry.id}>{body}<AiReplyArtifacts summary={artifacts} /></Fragment> : body;
   };
+  // 原生历史里提不出标题时 meta 就是空的；标题行不能是一条空白。
+  const displayTitle = session.title || t("ai.untitledSession");
   return <AiOpenFileProvider onOpen={onOpenFile}>
-  <section ref={pane} className="ai-session-pane" aria-label={session.title}
+  <section ref={pane} className="ai-session-pane" aria-label={displayTitle}
     style={{ "--ai-content-width": `${chatWidth.width}px` } as CSSProperties}>
     <header className="ai-session-pane-head">
       <span className="ai-head-folder" title={workspace ?? undefined}>
@@ -1283,7 +1285,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         {workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}
       </span>
       <ChevronRight size={14} className="ai-head-sep" aria-hidden />
-      <span className="ai-head-title" title={session.title}>{session.title}</span>
+      <span className="ai-head-title" title={displayTitle}>{displayTitle}</span>
       {taskList ? <AiTaskListChip taskList={taskList} running={running} onJump={jumpToEntryById} /> : null}
       {onAction || onNew ? <button type="button" className="ai-head-menu" title={t("ai.sidebar.moreOptions")} aria-label={t("ai.sidebar.moreOptions")}
         aria-haspopup="menu" aria-expanded={headMenuAnchor !== null}
@@ -1294,7 +1296,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         <Popover anchor={headMenuAnchor} onClose={() => setHeadMenuAnchor(null)} minWidth={200}>
           <div className="ai-add-menu" role="menu">
             {onNew ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onNew(); }}><Plus size={14} aria-hidden />{t("ai.newSession")}</button> : null}
-            {onAction && session.provider === "codex" ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); setHeadPending({ action: "rename", session }); }}><Pencil size={14} aria-hidden />{t("menu.rename")}</button> : null}
+            {onAction ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); setHeadPending({ action: "rename", session }); }}><Pencil size={14} aria-hidden />{t("menu.rename")}</button> : null}
             {/* 跨会话提问要引用另一条会话的 ID：在这里复制当前这条。 */}
             <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); void navigator.clipboard.writeText(session.id); }}><Copy size={14} aria-hidden />{t("ai.copySessionId")}</button>
             {onAction ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onAction({ type: "pin", id: session.id, pinned: session.pinned !== true }); }}>
@@ -1557,7 +1559,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         if (onAction) onAction(headPending.action === "rename" ? { type: "rename", id: headPending.session.id, title } : { type: "delete", id: headPending.session.id });
         setHeadPending(null);
       }}>
-      {headPending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: headPending.session.title })}</p> : null}
+      {headPending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: headPending.session.title || t("ai.untitledSession") })}</p> : null}
     </AiActionDialog> : null}
     <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} />
   </section>

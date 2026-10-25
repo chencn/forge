@@ -124,8 +124,8 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
     const items: MenuItem[][] = [
       [{ icon: SquarePen, label: t("ai.newSession"), onSelect: onNew }],
       [
-        // Claude 的标题由 CLI 自己的 /rename 管理，后端会拒绝；菜单里保留入口但置灰说明原因。
-        { label: t("menu.rename"), disabled: session.provider !== "codex", hint: t("ai.renameManagedByCli"), onSelect: () => setPending({ action: "rename", session }) },
+        // Codex 的改名会同步写回原生线程名；Claude 没有写入口，只落 Forge 侧并加锁。
+        { label: t("menu.rename"), onSelect: () => setPending({ action: "rename", session }) },
         // 跨会话提问要把另一条会话的 ID 贴进来；侧栏详情气泡不吃指针，只能从这里复制。
         { icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) },
         pinnedNow
@@ -312,7 +312,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
           onAction(pending.action === "rename" ? { type: "rename", id: pending.session.id, title } : { type: "delete", id: pending.session.id });
           setPending(null);
         }}>
-        {pending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: pending.session.title })}</p> : null}
+        {pending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: pending.session.title || t("ai.untitledSession") })}</p> : null}
       </AiActionDialog> : null}
     </div>
   );

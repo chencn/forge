@@ -418,8 +418,9 @@ pub(crate) fn title_from_prompt(prompt: &str) -> Option<String> {
 }
 
 /// 首条消息的标题同时更新原生来源，避免列表同步把新标题覆盖回默认名称。
+/// 用户已经改过标题（`title_locked`）就不再动它。
 fn title_first_message(store: &mut store::Store, request: &SendRequest, include_user: bool) -> Result<(), String> {
-    if !include_user || store.seq != 0 || request.plan_turn.is_some() { return Ok(()); }
+    if !include_user || store.seq != 0 || request.plan_turn.is_some() || store.meta.title_locked { return Ok(()); }
     if let Some(title) = title_from_prompt(&request.prompt) {
         if title == store.meta.title { return Ok(()); }
         if store.meta.provider == Provider::Codex {
@@ -1770,7 +1771,10 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                 if meta.native_id.as_deref().is_some_and(|native| native != meta.session_id) { continue; }
                 if meta.provider == Provider::Codex {
                     if let Some(native) = codex_by_id.get(&meta.session_id) {
-                        if let Some(title) = native["title"].as_str() { meta.title = title.to_owned(); }
+                        // 用户锁定过的标题以 Forge 为准；未锁定时原生线程名是权威来源。
+                        if !meta.title_locked {
+                            if let Some(title) = native["title"].as_str() { meta.title = title.to_owned(); }
+                        }
                         if let Some(created) = native["createdAt"].as_u64() { meta.created_at = created; }
                         let _ = store::Store { dir: entry.path(), meta: meta.clone(), seq: 0, poisoned: false }.save();
                     }
@@ -1812,13 +1816,14 @@ pub async fn ai_runtime_rename(
         let _lease = store::Lease::acquire(&base.join(format!("{session_id}.lock")))?;
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
         let mut meta = store::Store::metadata(&dir, &root)?;
+        // Codex 有可写的原生线程名，顺手写回；Claude 没有写入口，只落 Forge 侧。
+        // 两者都置锁：之后原生历史同步不再拿 CLI 标题覆盖用户的选择。
         if meta.provider == Provider::Codex {
             let native = meta.native_id.as_deref().unwrap_or(&meta.session_id);
             options::codex_set_thread_name(&root, native, title.trim())?;
-        } else {
-            return Err("Claude 会话标题由 CLI 管理，请在 Claude Code 中使用 /rename".into());
         }
         meta.title = title.trim().into();
+        meta.title_locked = true;
         store::Store {
             dir,
             meta,
@@ -2090,6 +2095,27 @@ mod tests {
         let mut request = base_request();
         request.run_id = run_id.to_owned();
         request
+    }
+    /// 用户改过标题后，首条消息不能再把它换成提示词摘要。
+    #[test]
+    fn locked_title_survives_the_first_prompt() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-locked-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        for path in [&root, &base] { std::fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut target = store::Store::open(&base, "session", &workspace, Provider::Codex, "用户改的标题", "").unwrap();
+        target.meta.title_locked = true;
+        target.save().unwrap();
+        let mut request = base_request();
+        request.workspace = root.to_string_lossy().into_owned();
+        request.prompt = "第一条消息".into();
+        title_first_message(&mut target, &request, true).unwrap();
+        assert_eq!(target.meta.title, "用户改的标题");
+        std::fs::remove_dir_all(temp).unwrap();
     }
     #[test]
     fn codex_enqueue_keeps_selected_model_effort_fast_and_permission() {

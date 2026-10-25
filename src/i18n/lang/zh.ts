@@ -1069,7 +1069,7 @@ export const zh = {
   "ai.sidebar.factCreated": "创建时间",
   "ai.sidebar.factActivity": "最近活动",
   "ai.sidebar.factSessionId": "会话 ID",
-  "ai.renameManagedByCli": "Claude 会话标题由 CLI 的 /rename 管理",
+  "ai.untitledSession": "未命名会话",
   "ai.copySessionId": "复制会话 ID",
   "ai.welcome.titleBefore": "今天准备",
   "ai.welcome.titleAccent": "做些什么",

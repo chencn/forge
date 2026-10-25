@@ -1073,7 +1073,7 @@ export const en: Record<TranslationKey, string> = {
   "ai.sidebar.factCreated": "Created",
   "ai.sidebar.factActivity": "Last activity",
   "ai.sidebar.factSessionId": "Session ID",
-  "ai.renameManagedByCli": "Claude session titles are managed by the CLI's /rename command",
+  "ai.untitledSession": "Untitled session",
   "ai.copySessionId": "Copy session ID",
   "ai.welcome.titleBefore": "What are we ",
   "ai.welcome.titleAccent": "building",

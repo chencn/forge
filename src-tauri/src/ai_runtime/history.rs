@@ -34,7 +34,7 @@ pub struct Source {
 struct Candidate {
     /// 定位信息本体。
     source: Source,
-    /// 从历史里提取出的标题；提不出时用占位文案。
+    /// 从历史里提取出的标题；提不出时为空字符串，由界面显示「未命名会话」。
     title: String,
     /// 文件修改时间（毫秒），用于「最近优先」排序。
     modified: u64,
@@ -106,6 +106,66 @@ fn bounded_line(reader: &mut impl BufRead) -> Result<Option<(Value, u64)>, Strin
     let value = serde_json::from_slice(&bytes).map_err(|e| format!("原生历史存在损坏记录：{e}"))?;
     Ok(Some((value, count as u64)))
 }
+/// Claude 的标题记录。用户的 `/rename` 和 CLI 自动标题都按追加写，最新一条生效。
+fn capture_titles(value: &Value, custom: &mut Option<String>, ai: &mut Option<String>) {
+    if let Some(text) = value["customTitle"].as_str().filter(|text| !text.trim().is_empty()) {
+        *custom = Some(text.to_owned());
+    }
+    if let Some(text) = value["aiTitle"].as_str().filter(|text| !text.trim().is_empty()) {
+        *ai = Some(text.to_owned());
+    }
+}
+/// 长会话的改名记录追加在文件末尾，头部窗口看不到；只补读尾部这一段，
+/// 保持「列表发现不整份读」的边界。起点落在半行上时丢掉第一段。
+fn capture_tail_titles(path: &Path, custom: &mut Option<String>, ai: &mut Option<String>) {
+    const TAIL: u64 = 64 * 1024;
+    let Ok(mut file) = File::open(path) else {
+        return;
+    };
+    let Ok(length) = file.metadata().map(|meta| meta.len()) else {
+        return;
+    };
+    let start = length.saturating_sub(TAIL);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let mut bytes = Vec::new();
+    if file.take(TAIL).read_to_end(&mut bytes).is_err() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let body = if start == 0 {
+        text.as_ref()
+    } else {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    };
+    for line in body.lines() {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            capture_titles(&value, custom, ai);
+        }
+    }
+}
+/// Codex 把线程名单独写在 `session_index.jsonl`：在 Codex CLI 里改名只追加这一行，
+/// rollout 文件本身不变，所以只看历史文件永远读不到新标题。同一个 id 后写覆盖先写。
+fn codex_thread_names(codex_home: &Path) -> HashMap<String, String> {
+    let Ok(file) = File::open(codex_home.join("session_index.jsonl")) else {
+        return HashMap::new();
+    };
+    let mut names = HashMap::new();
+    for line in BufReader::new(file).lines().take(20000).flatten() {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let (Some(id), Some(name)) = (value["id"].as_str(), value["thread_name"].as_str()) else {
+            continue;
+        };
+        let name = name.trim();
+        if !id.is_empty() && !name.is_empty() {
+            names.insert(id.to_owned(), name.chars().take(120).collect());
+        }
+    }
+    names
+}
 fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candidate>, String> {
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
     if metadata.len() > MAX_FILE {
@@ -118,13 +178,17 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
     );
     let mut native = None;
     let mut title = None;
-    // Claude 会把自定义标题追加在首条用户消息之后；必须继续扫描，不能拿提示词冒充 CLI 标题。
+    // Claude 会把自定义标题和 CLI 生成的标题追加在首条用户消息之后；必须继续扫描，
+    // 不能拿提示词冒充 CLI 标题。两个字段都可能重复写，各自后写覆盖先写。
     let mut custom_title = None;
+    let mut ai_title = None;
     let mut belongs = false;
+    let mut head_bytes = 0u64;
     for _ in 0..64 {
-        let Some((value, _)) = bounded_line(&mut reader)? else {
+        let Some((value, count)) = bounded_line(&mut reader)? else {
             break;
         };
+        head_bytes += count;
         if provider == Provider::Codex {
             if value["type"] == "session_meta" {
                 let p = &value["payload"];
@@ -160,13 +224,15 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
                     title = human_text(&text(&value["message"]["content"]));
                 }
             }
-            if let Some(custom) = value["customTitle"].as_str() {
-                custom_title = Some(custom.into());
-            }
+            capture_titles(&value, &mut custom_title, &mut ai_title);
         }
         if provider == Provider::Codex && belongs && native.is_some() && title.as_ref().is_some_and(|s| !s.trim().is_empty()) {
             break;
         }
+    }
+    // 头部已经读到文件尾就不用再补读；没读到的部分才是改名可能落下的位置。
+    if provider == Provider::Claude && head_bytes < metadata.len() {
+        capture_tail_titles(path, &mut custom_title, &mut ai_title);
     }
     let Some(native_id) = native.filter(|id| store::valid_id(id) && id.len() <= 60) else {
         return Ok(None);
@@ -174,16 +240,14 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
     if !belongs {
         return Ok(None);
     }
+    // 用户改过的标题（Claude 的 /rename）优先，其次 CLI 自己生成的标题，
+    // 最后才是首条真人消息。都提不出来就留空，不再拿 UUID 冒充标题。
     let title = custom_title
+        .or(ai_title)
         .or(title)
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| native_id.clone())
-        .lines()
-        .next()
-        .unwrap_or("会话")
-        .chars()
-        .take(120)
-        .collect();
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| text.lines().next().unwrap_or("").trim().chars().take(120).collect::<String>())
+        .unwrap_or_default();
     Ok(Some(Candidate {
         source: Source {
             provider,
@@ -269,11 +333,20 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
             &mut budget,
             &mut paths,
         )?;
+        // 索引在 CODEX_HOME 根下，两个 sessions 目录共享同一份，读一次就够。
+        let codex_names = if provider == Provider::Codex {
+            directory.parent().map(codex_thread_names).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
         for path in paths {
             // 某一份历史损坏不该连累其他历史：跳过它，继续扫下一个。
-            let Ok(Some(candidate)) = inspect(&path, provider, root) else {
+            let Ok(Some(mut candidate)) = inspect(&path, provider, root) else {
                 continue;
             };
+            if let Some(name) = codex_names.get(&candidate.source.native_id) {
+                candidate.title = name.clone();
+            }
             let source = candidate.source;
             let binding = binding_key(provider, &source.native_id);
             let key = native_key(provider, &source.native_id);
@@ -287,11 +360,15 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                     }
                 }
                 // Claude 的 /rename 会把 customTitle 追加到原生日志；已有镜像也要跟随 CLI 标题。
-                // Codex 的标题归 Forge 管（用户可以改名），只有存下来的那条根本不是人话时才纠正：
-                // 早期版本把注入的「# AGENTS.md instructions」写进了 meta.json，会话列表至今挂着它。
+                // Codex 的线程名以 session_index.jsonl 为准（在 CLI 里改名不会改 rollout）。
+                // 非人话的旧标题（早期版本把注入的 AGENTS.md 指令存成了标题）也要纠正。
+                // 用户手动改过并锁定过的标题，任何自动同步都不覆盖。
                 if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{id}.lock"))) {
                     if let Ok(mut meta) = Store::metadata(&base.join(id), root) {
-                        let follows = provider == Provider::Claude || human_text(&meta.title).is_none();
+                        let follows = !meta.title_locked
+                            && (provider == Provider::Claude
+                                || human_text(&meta.title).is_none()
+                                || codex_names.contains_key(&source.native_id));
                         if follows && meta.title != candidate.title {
                             meta.title = candidate.title.clone();
                             Store { dir: base.join(id), meta, seq: 0, poisoned: false }.save()?;
@@ -917,6 +994,84 @@ mod tests {
         .unwrap();
         let candidate = inspect(&path, Provider::Codex, &workspace).unwrap().expect("候选历史");
         assert_eq!(candidate.title, "已修改的部分可能有些问题 需要优化");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// Claude 的标题优先级：用户 /rename > CLI 生成的 ai-title > 首条用户消息。
+    #[test]
+    fn claude_ai_title_beats_the_first_prompt_and_custom_title_wins() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-claude-ai-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let native = temp.join("native");
+        for path in [&root, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let path = native.join("claude.jsonl");
+        let push = |line: Value, extra: &mut String| extra.push_str(&format!("{line}\n"));
+        let mut content = String::new();
+        push(json!({"type":"user","cwd":root,"sessionId":"claude-ai-title","message":{"content":"first prompt"}}), &mut content);
+        push(json!({"type":"ai-title","aiTitle":"CLI 生成的标题"}), &mut content);
+        fs::write(&path, &content).unwrap();
+        assert_eq!(inspect(&path, Provider::Claude, &workspace).unwrap().unwrap().title, "CLI 生成的标题");
+
+        push(json!({"type":"custom-title","customTitle":"用户改的标题"}), &mut content);
+        // 之后 CLI 又生成一次标题也不能盖掉用户的 /rename。
+        push(json!({"type":"ai-title","aiTitle":"更新的生成标题"}), &mut content);
+        fs::write(&path, &content).unwrap();
+        assert_eq!(inspect(&path, Provider::Claude, &workspace).unwrap().unwrap().title, "用户改的标题");
+
+        // 头部只扫 64 条记录：把改名推到窗口之外，尾部补读仍要拿到最新标题。
+        for index in 0..80 {
+            push(json!({"type":"assistant","message":{"content":format!("filler-{index}")}}), &mut content);
+        }
+        push(json!({"type":"custom-title","customTitle":"窗口外改的标题"}), &mut content);
+        fs::write(&path, &content).unwrap();
+        assert_eq!(inspect(&path, Provider::Claude, &workspace).unwrap().unwrap().title, "窗口外改的标题");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// Codex 的改名只追加在 session_index.jsonl；用户锁定过的标题不能被它覆盖。
+    #[test]
+    fn codex_index_names_follow_renames_until_the_user_locks_the_title() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-codex-index-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let codex = temp.join("codex");
+        let sessions = codex.join("sessions");
+        for path in [&root, &base, &sessions] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let id = "codex-index-title";
+        fs::write(
+            sessions.join("rollout.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":id,"cwd":root,"source":"cli"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first prompt"}]}})
+            ),
+        )
+        .unwrap();
+        let index = codex.join("session_index.jsonl");
+        fs::write(&index, format!("{}\n", json!({"id":id,"thread_name":"CLI 里改的名字"}))).unwrap();
+        discover_in(&base, &workspace, vec![(Provider::Codex, sessions.clone())]).unwrap();
+        let meta = Store::metadata(&base.join(id), &workspace).unwrap();
+        assert_eq!(meta.title, "CLI 里改的名字");
+        assert!(!meta.title_locked);
+
+        // 用户在 Forge 里改名：写 meta 并加锁。
+        let mut store = Store::open(&base, id, &workspace, Provider::Codex, &meta.title, "").unwrap();
+        store.meta.title = "用户改的标题".into();
+        store.meta.title_locked = true;
+        store.save().unwrap();
+
+        // Codex CLI 再改名，Forge 也不能覆盖用户的标题。
+        fs::write(&index, format!("{}\n", json!({"id":id,"thread_name":"CLI 又改了一次"}))).unwrap();
+        discover_in(&base, &workspace, vec![(Provider::Codex, sessions)]).unwrap();
+        assert_eq!(Store::metadata(&base.join(id), &workspace).unwrap().title, "用户改的标题");
         fs::remove_dir_all(temp).unwrap();
     }
 

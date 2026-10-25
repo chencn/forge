@@ -1042,7 +1042,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "ai.sidebar.factCreated": "建立時間",
   "ai.sidebar.factActivity": "最近活動",
   "ai.sidebar.factSessionId": "會話 ID",
-  "ai.renameManagedByCli": "Claude 會話標題由 CLI 的 /rename 管理",
+  "ai.untitledSession": "未命名會話",
   "ai.copySessionId": "複製會話 ID",
   "ai.welcome.titleBefore": "今天準備",
   "ai.welcome.titleAccent": "做些什麼",

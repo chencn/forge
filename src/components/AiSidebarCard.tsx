@@ -61,6 +61,8 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   const closeTimer = useRef<number | null>(null);
   const pinned = session.pinned === true;
   const archived = session.archived === true;
+  // 原生历史里提不出标题时 meta 就是空的；列表上不能显示一条空白。
+  const title = session.title || t("ai.untitledSession");
 
   const clearTimers = () => {
     if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null; }
@@ -132,7 +134,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
           type="button"
           className="ai-scard-main"
           onClick={() => onOpen(session.id)}
-          title={`${AI_NAMES[session.provider]} · ${session.title}`}
+          title={`${AI_NAMES[session.provider]} · ${title}`}
           aria-current={selected ? "page" : undefined}
         >
           {/* 本行的导轨线：穿过图标轴线的 2px 竖线，上下各探出 1px 与相邻行接成连续一条。 */}
@@ -141,7 +143,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
             <AiProviderIcon provider={session.provider} size={12} />
             <span className="ai-scard-dot" />
           </span>
-          <span className={`ai-scard-title${openInTab ? " is-open" : ""}`}>{session.title}</span>
+          <span className={`ai-scard-title${openInTab ? " is-open" : ""}`}>{title}</span>
         </button>
         <div className="ai-scard-side">
           <span className="ai-scard-meta">
@@ -177,7 +179,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
         <div className="ai-scard-hover" role="tooltip" style={{ left: rowBox.left, top: rowBox.top }}>
           <div className="ai-scard-hover-body">
             <div className="ai-scard-hover-head">
-              <p className="ai-scard-hover-title">{session.title}</p>
+              <p className="ai-scard-hover-title">{title}</p>
               <div className="ai-scard-hover-chips">
                 <span className="ai-chip"><AiProviderIcon provider={session.provider} size={11} />{AI_NAMES[session.provider]}</span>
                 {archived ? <span className="ai-chip is-muted"><Archive size={11} />{t("ai.archived.view")}</span> : null}

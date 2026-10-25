@@ -175,6 +175,10 @@ pub struct Metadata {
     pub workspace: String,
     /// 会话标题，用户可重命名。
     pub title: String,
+    /// 用户手动改过标题后置位：首条消息、原生历史同步都不再覆盖它。
+    /// 旧文件没有这个字段，按未锁定处理。
+    #[serde(default)]
+    pub title_locked: bool,
     /// CLI 自己的会话 id，恢复对话时传给 CLI。
     pub native_id: Option<String>,
     /// 创建该会话时的 CLI 版本，用于解释协议差异。
@@ -306,6 +310,7 @@ impl Store {
                 provider,
                 workspace: root.into(),
                 title: title.into(),
+                title_locked: false,
                 native_id: None,
                 cli_version: version.into(),
                 created_at: std::time::SystemTime::now()
