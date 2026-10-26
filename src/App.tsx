@@ -172,9 +172,9 @@ import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
 import TerminalTabs from "./components/TerminalTabs";
 import AiSessionsPanel, { AiSessionsToolbar } from "./components/AiSessionsPanel";
 import AiProviderIcon from "./components/AiProviderIcon";
-import { forgetAiSessionWorkspace, useAiSessions } from "./hooks/useAiSessions";
+import { forgetAiSessionWorkspace, refreshAiSessionHistory, useAiSessions } from "./hooks/useAiSessions";
 import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
-import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
+import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, getAiSessionActivity, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
 import type { AiRuntimeEvent } from "./lib/aiRuntime";
 import { AI_NAMES } from "./lib/aiCli";
 import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
@@ -810,9 +810,15 @@ export default function App() {
   }, [settings.aiAssistantsEnabled]);
   const openAiSession = useCallback((id: string) => {
     if (!settings.aiAssistantsEnabled) return;
-    dispatchAiSession({ type: "open", id });
-    setActiveTab(`ai|${id}`);
-  }, [dispatchAiSession, setActiveTab, settings.aiAssistantsEnabled]);
+    const openRoot = rootKey;
+    const activate = () => {
+      // 运行中的子代理可能刚落盘、尚未进入前端目录；未知 ID 绝不能先切出一个空标签。
+      if (!dispatchAiSession({ type: "open", id })) return false;
+      setActiveTabByRoot((current) => ({ ...current, [openRoot]: `ai|${id}` }));
+      return true;
+    };
+    if (!activate()) void refreshAiSessionHistory().then(activate);
+  }, [dispatchAiSession, rootKey, settings.aiAssistantsEnabled]);
   /** 「新建会话」草稿标签是否打开，按根隔离；真正的会话在首条消息发出时才创建。 */
   const [aiDraftOpen, setAiDraftOpen] = useState<Record<string, boolean>>({});
   const openAiDraft = useCallback(() => {
@@ -3799,14 +3805,21 @@ export default function App() {
       dirty: false,
       icon: PANE_ICON[key],
     })),
-    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => ({
-      id: `ai|${session.id}`,
-      kind: "ai" as const,
-      name: session.title || t("ai.untitledSession"),
-      title: `${AI_NAMES[session.provider]} · ${session.title || t("ai.untitledSession")}`,
-      dirty: false,
-      icon: <AiProviderIcon provider={session.provider} size={14} />,
-    })),
+    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => {
+      const isRunning = getAiSessionActivity(session.id) === "running";
+      return {
+        id: `ai|${session.id}`,
+        kind: "ai" as const,
+        name: session.title || t("ai.untitledSession"),
+        title: `${AI_NAMES[session.provider]} · ${session.title || t("ai.untitledSession")}`,
+        dirty: false,
+        icon: (
+          <span className={`ai-tab-provider-icon${isRunning ? " is-running" : ""}`}>
+            <AiProviderIcon provider={session.provider} size={14} />
+          </span>
+        ),
+      };
+    }),
     ...(aiDraftOpen[rootKey] && settings.aiAssistantsEnabled
       ? [
           {

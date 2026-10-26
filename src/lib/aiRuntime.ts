@@ -1203,7 +1203,11 @@ export function ensureAiRuntimeListener(): Promise<void> {
     const unlisten = await listen<AiRuntimeEvent[]>("ai-runtime://events", ({ payload }) => {
       if (!Array.isArray(payload)) return;
       merge(payload, true);
-      if (typeof window !== "undefined" && payload.some((event) => event.kind === "user" || event.kind === "bound")) window.dispatchEvent(new Event("ai-session-metadata"));
+      // 子代理首条 agent 事件已经带可打开的 Forge sessionId；立即同步目录，不能等任务结束后
+      // 才让右侧栏的入口生效。后续状态事件也会顺带刷新持久化的 agent 摘要。
+      const metadataChanged = payload.some((event) => event.kind === "user" || event.kind === "bound"
+        || event.kind === "agent" && typeof event.data?.sessionId === "string" && event.data.sessionId !== "");
+      if (typeof window !== "undefined" && metadataChanged) window.dispatchEvent(new Event("ai-session-metadata"));
     });
     try { await listen<RuntimeFailure>("ai-runtime://errors", ({ payload }) => receiveFailure(payload)); }
     catch (error) { unlisten(); throw error; }

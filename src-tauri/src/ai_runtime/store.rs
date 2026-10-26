@@ -168,11 +168,11 @@ impl Lease {
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
     /// CLI 侧的子代理标识：Claude 的 agentId（task_notification 的 task_id）、
-    /// Codex 的 agentThreadId。停止与转发指令都靠它定位。
+    /// Codex 的 agent_path。停止与转发指令都靠它定位。
     pub native_agent_id: Option<String>,
-    /// 角色类型：Claude 的 subagent_type、Codex 的昵称。
+    /// 角色类型：Claude 的 subagent_type、Codex 的 agent_role；随机昵称不进入展示元数据。
     pub agent_type: Option<String>,
-    /// 展示标题：Claude 用 Agent 工具的 description，Codex 用 agent_path。
+    /// 展示标题：Claude 用 Agent 工具的 description，Codex 优先用 spawn_agent.task_name。
     pub title: String,
     /// 关联的父侧标识：Claude Agent tool_use 的 id（即 parent_tool_use_id）、
     /// Codex spawn_agent 的 call_id。子会话 id 由它派生，live 事件按它路由。

@@ -19,6 +19,7 @@ mod settings;
 mod shell_open;
 #[cfg(windows)]
 mod shell_sparse;
+mod single_instance;
 mod sys;
 mod term;
 mod term_layout;
@@ -33,15 +34,25 @@ pub fn run() {
     #[cfg(windows)]
     init_app_user_model_id();
 
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+
     // 卸载器在删文件之前调一次：把双击默认、ProgId、右键动词一并交还，
     // 否则卸载后双击 .txt 还会去找已经不存在的 forge.exe。
-    if std::env::args().skip(1).any(|arg| arg == "--uninstall-clean") {
+    if raw_args.iter().any(|arg| arg == "--uninstall-clean") {
         if let Err(error) = shell_open::clean_for_uninstall() {
             eprintln!("[forge] 卸载清理未完成：{error}");
         }
         return;
     }
+
+    // 单实例检查：若已有主实例在运行，将启动参数转交给主实例并在已有窗口中打开，随后本从实例立即退出。
+    // 这彻底避免了重复创建多余窗口，并防止从实例因独立初始化无法连接前端服务而弹报错页面。
+    if single_instance::try_forward(&raw_args) {
+        return;
+    }
+
     // build + run 拆开是为了在事件循环上挂 RunEvent::Exit 的退出清理（见下面的 app.run）。
+    let args_for_setup = raw_args.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // 更新检查/下载在设置页手动触发；relaunch 供装完新包后重启应用。
@@ -49,14 +60,14 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(watch::WatchSlot::default())
         .manage(shell_open::Pending::default())
-        .setup(|app| {
+        .setup(move |app| {
             ai_cli::settings::init(app.handle());
             tray::build(&app.handle().clone())?;
             disable_default_context_menu(app.handle());
             ai_runtime::start_queue_monitor(app.handle().clone())?;
-            // 这一份进程自己的窗口。资源管理器传来的路径记在这里，页面起来再取。
-            // 不占单实例锁：再启动一次就是另一个窗口，不会被这一份吃掉。
-            shell_open::deliver(app.handle(), &std::env::args().skip(1).collect::<Vec<_>>());
+            single_instance::start_server(app.handle().clone());
+            // 首次启动若带有路径参数，由主实例窗口打开
+            shell_open::deliver(app.handle(), &args_for_setup);
             Ok(())
         })
         // 关闭按钮归关闭按钮管，托盘还是退出，看设置里那一项怎么选。
@@ -271,6 +282,7 @@ pub fn run() {
     // 不在这儿杀掉，应用一退它们就全成孤儿。
     app.run(|_app, event| {
         if let tauri::RunEvent::Exit = event {
+            single_instance::stop_server();
             ai_runtime::reap_all_for_exit();
             lsp::reap_all_for_exit();
             proc::reap_all_for_exit();

@@ -1073,7 +1073,6 @@ export const en: Record<TranslationKey, string> = {
   "ai.agent.relayPlaceholder": "Message this subagent (relayed via the parent session)",
   "ai.agent.relayNotice": "Messages are relayed to this subagent through the parent session",
   "ai.agent.stop": "Stop subagent",
-  "ai.agent.summaryOnly": "Codex subagents expose activity summaries only",
   "ai.sidebar.pin": "Pin",
   "ai.sidebar.unpin": "Unpin",
   "ai.sidebar.sectionPinned": "Pinned",

@@ -119,8 +119,7 @@ fn apply_integration(
     let extras = normalize_extra_extensions(extra_extensions);
     #[cfg(windows)]
     {
-        let exe = std::env::current_exe().map_err(|error| err("SHELL_REG", error))?;
-        let exe = exe.display().to_string();
+        let exe = resolve_target_exe()?;
         registry::sync(
             open_folder,
             open_file,
@@ -135,6 +134,31 @@ fn apply_integration(
         let _ = (open_folder, open_file, default_file, label, extras);
         Ok(None)
     }
+}
+
+/// 解析用于注册到系统右键菜单的可执行文件路径。
+///
+/// 在本地开发（Debug）期间，如果用户系统上已安装了正式版 Forge，
+/// 必须优先绑定正式版可执行文件，防止调试过程自动将 `target/debug/forge.exe`
+/// 写入系统全局右键菜单从而覆盖正式版并引发脱离 Vite 服务时的启动报错。
+#[cfg(windows)]
+fn resolve_target_exe() -> Result<String, String> {
+    if cfg!(debug_assertions) {
+        if let Some(local_app) = std::env::var_os("LOCALAPPDATA") {
+            let installed = std::path::PathBuf::from(local_app).join("Forge").join("forge.exe");
+            if installed.is_file() {
+                return Ok(installed.display().to_string());
+            }
+        }
+        if let Some(prog_files) = std::env::var_os("ProgramFiles") {
+            let installed = std::path::PathBuf::from(prog_files).join("Forge").join("forge.exe");
+            if installed.is_file() {
+                return Ok(installed.display().to_string());
+            }
+        }
+    }
+    let exe = std::env::current_exe().map_err(|error| err("SHELL_REG", error))?;
+    Ok(exe.display().to_string())
 }
 
 /// 卸载前把所有接管过的关联交还。由 `--uninstall-clean` 调用。

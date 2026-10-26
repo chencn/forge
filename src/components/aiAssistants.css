@@ -621,6 +621,41 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   transform: translateX(-50%); background: var(--sidebar-border); pointer-events: none; }
 .ai-scard-icon { position: absolute; top: 50%; left: 14px; z-index: 1; display: flex; align-items: center;
   justify-content: center; width: 14px; height: 14px; transform: translate(-50%, -50%); pointer-events: none; }
+/* 运行中前面的供应商图标呼吸闪动 */
+.ai-scard-icon.is-running svg,
+.ai-tab-provider-icon.is-running svg,
+.ai-head-provider-icon.is-running svg {
+  animation: ai-icon-pulse 1.4s ease-in-out infinite;
+  transform-origin: center center;
+}
+.ai-scard-icon.is-running .ai-provider-icon.is-claude,
+.ai-tab-provider-icon.is-running .ai-provider-icon.is-claude,
+.ai-head-provider-icon.is-running .ai-provider-icon.is-claude {
+  filter: drop-shadow(0 0 4px rgba(217, 119, 87, 0.65));
+}
+.ai-scard-icon.is-running .ai-provider-icon.is-codex,
+.ai-tab-provider-icon.is-running .ai-provider-icon.is-codex,
+.ai-head-provider-icon.is-running .ai-provider-icon.is-codex {
+  filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.65));
+}
+@keyframes ai-icon-pulse {
+  0%, 100% { opacity: 0.38; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-scard-icon.is-running svg,
+  .ai-tab-provider-icon.is-running svg,
+  .ai-head-provider-icon.is-running svg {
+    animation: none;
+  }
+}
+.ai-tab-provider-icon,
+.ai-head-provider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
 .ai-scard-title { position: relative; min-width: 0; max-width: max-content; flex: 1; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 400; }
 .ai-scard-title.is-open { color: var(--sidebar-stripe); }
@@ -1758,18 +1793,13 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   color: var(--accent-violet-text, var(--accent-blue-text)); font-weight: 500; }
 
 /* ===== 子代理（subagent） ===== */
-/* 侧栏父行下的子代理行：缩进 + 图标 + 标题；点开进子代理会话视图。 */
-.ai-agent-subrow { display: flex; align-items: center; gap: 8px; width: calc(100% - 18px); margin: 2px 0 2px 18px; padding: 5px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
-.ai-agent-subrow:hover { background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent); color: var(--text-primary); }
-.ai-agent-subrow.is-active { background: color-mix(in srgb, var(--accent-color, var(--border-color)) 12%, transparent); color: var(--text-primary); }
-.ai-agent-subrow-icon { flex: none; display: inline-flex; color: var(--text-tertiary); }
-.ai-agent-subrow-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-agent-subrow-model { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-tertiary); }
 /* 右栏 Dock 的状态点沿用会话状态点语义色：运行中亮黄、完成绿、失败红、其余灰。 */
 .ai-agent-subrow-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-tertiary); }
 .ai-agent-subrow-dot[data-status="running"], .ai-agent-subrow-dot[data-status="starting"] { background: #facc15; box-shadow: 0 0 4px color-mix(in srgb, #facc15 60%, transparent); }
 .ai-agent-subrow-dot[data-status="completed"] { background: #4ade80; }
 .ai-agent-subrow-dot[data-status="failed"] { background: #f87171; }
+/* 右栏子代理行的模型标签；类名沿用现有 Dock 标记。 */
+.ai-agent-subrow-model { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-tertiary); }
 
 /* 右栏停靠的子代理列表区块（与任务清单/消息导航同一形态）。 */
 .ai-agentdock-body { display: flex; flex-direction: column; gap: 2px; }

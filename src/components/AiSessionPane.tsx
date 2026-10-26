@@ -1644,6 +1644,9 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         {workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}
       </span>
       <ChevronRight size={14} className="ai-head-sep" aria-hidden />
+      <span className={`ai-head-provider-icon${activity === "running" || running ? " is-running" : ""}`} aria-hidden>
+        <AiProviderIcon provider={session.provider} size={14} />
+      </span>
       <span className="ai-head-title" title={displayTitle}>{displayTitle}</span>
       <span className="ai-head-actions">
         {taskList ? <button ref={attachTaskListTrigger} type="button" className="ai-head-tasklist"
@@ -1723,8 +1726,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         prefetchEarlier();
       }}>
       <div className="ai-conversation">
-      {/* 子代理状态条：子会话自己的 agent 事件投影出它此刻的状态；Codex 的子代理
-          在父连接上只有摘要级活动，正文里没有逐步工具调用，如实说明。 */}
+      {/* 子代理状态条：实时状态来自父连接；Codex 的完整正文由终态 rollout 回填。 */}
       {isAgentSession ? (() => {
         const self = runtime.agents[0];
         const status = self?.status ?? session.agent?.status ?? "";
@@ -1737,7 +1739,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
           <strong>{t("ai.agent.session")}</strong>
           <span className="ai-agent-strip-status" data-status={status}>{label}</span>
           {self?.model ? <span className="ai-agent-strip-model">{self.model}</span> : null}
-          {session.provider === "codex" ? <span className="ai-agent-strip-note">{t("ai.agent.summaryOnly")}</span> : null}
         </div>;
       })() : null}
       {/* 往上只有一个方向：窗口里还藏着已加载的记录就先放窗口，放完了再问后端要更早的一页。 */}

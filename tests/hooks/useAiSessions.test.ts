@@ -36,4 +36,13 @@ describe("AI 会话总开关", () => {
     expect(restored.openIds).toEqual([session.id]);
     expect(storage.setItem).not.toHaveBeenCalled();
   });
+
+  it("打开动作明确报告会话是否存在，禁止调用方切到空标签", () => {
+    const storage = { getItem: vi.fn(() => JSON.stringify({ sessions: [session], openIds: [] })), setItem: vi.fn() };
+    vi.stubGlobal("localStorage", storage);
+    const result = useAiSessions("D:/known-ai-session", true);
+    // 右侧栏可能先于会话目录刷新收到子代理 ID；未知 ID 必须保持失败，刷新后才能重试。
+    expect(result.dispatch({ type: "open", id: "missing-session" })).toBe(false);
+    expect(result.dispatch({ type: "open", id: session.id })).toBe(true);
+  });
 });

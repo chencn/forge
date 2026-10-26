@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiRuntimeEvent } from "../../src/lib/aiRuntime";
 const h = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), callback: null as null | ((event: { payload: AiRuntimeEvent[] }) => void), errorCallback: null as null | ((event: { payload: { sessionId: string; runId: string; error: string } }) => void) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke, isTauri: () => true }));
@@ -12,6 +12,7 @@ beforeEach(() => {
   h.listen.mockImplementation(async (channel, callback) => { if (channel === "ai-runtime://events") h.callback = callback; else h.errorCallback = callback; return () => {}; });
   h.invoke.mockImplementation(async (command: string) => command === "ai_runtime_send" ? { status: "running" } : undefined);
 });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("AI runtime event store", () => {
   it("压缩身份延迟关联时合并已有卡片，增量与重放一致", async () => {
@@ -853,6 +854,15 @@ describe("AI runtime event store", () => {
 });
 
 describe("子代理事件的会话级投影", () => {
+  it("首次收到可打开的子代理事件时立即刷新会话目录", async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", { dispatchEvent });
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(1, "agent", { key: "child", title: "检查改动", status: "running", sessionId: "child-session" }));
+    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "ai-session-metadata" }));
+  });
+
   it("同 key 后写覆盖字段、状态去重，首见序号稳定排序", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");
     const state = projectAiEvents([

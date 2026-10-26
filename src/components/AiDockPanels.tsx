@@ -116,7 +116,8 @@ export function AiAgentDockPanel({ agents, provider, workspace, onOpen }: {
           onClick={() => agent.sessionId && onOpen(agent.sessionId)}>
           <span className="ai-agent-subrow-dot" data-status={agent.status} aria-hidden />
           <span className="ai-agentdock-title">{agent.title || t("ai.agent.untitled")}</span>
-          {agent.agentType ? <span className="ai-agentdock-type">{agent.agentType}</span> : null}
+          {/* 旧 Codex 事件曾把随机 nickname 写进 agentType；无法可靠迁移，Codex 一律不展示该旧字段。 */}
+          {provider === "claude" && agent.agentType ? <span className="ai-agentdock-type">{agent.agentType}</span> : null}
           {agent.model ? <span className="ai-agent-subrow-model">{agent.model}</span> : null}
           <span className="ai-agentdock-status" data-status={agent.status}>{agentStatusLabel(t, agent.status)}</span>
           <ArrowUpRight size={12} className="ai-taskchip-jump" aria-hidden />

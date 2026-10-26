@@ -1069,7 +1069,6 @@ export const zh = {
   "ai.agent.relayPlaceholder": "发送给该子代理（将经父会话转发）",
   "ai.agent.relayNotice": "消息将经父会话转发给该子代理",
   "ai.agent.stop": "停止子代理",
-  "ai.agent.summaryOnly": "Codex 子代理仅提供活动摘要",
   "ai.sidebar.pin": "置顶",
   "ai.sidebar.unpin": "取消置顶",
   "ai.sidebar.sectionPinned": "置顶",

@@ -1042,7 +1042,6 @@ export const zhTW: Record<TranslationKey, string> = {
   "ai.agent.relayPlaceholder": "傳送給該子代理（將經父會話轉發）",
   "ai.agent.relayNotice": "訊息將經父會話轉發給該子代理",
   "ai.agent.stop": "停止子代理",
-  "ai.agent.summaryOnly": "Codex 子代理僅提供活動摘要",
   "ai.sidebar.pin": "置頂",
   "ai.sidebar.unpin": "取消置頂",
   "ai.sidebar.sectionPinned": "置頂",

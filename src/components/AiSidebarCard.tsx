@@ -126,9 +126,9 @@ export const AiSidebarCard = memo(function AiSidebarCard({
           title={`${AI_NAMES[session.provider]} · ${title}`}
           aria-current={selected ? "page" : undefined}
         >
-          {/* 只保留供应商图标与连续导轨；状态小点会制造无意义的视觉噪声。 */}
+          {/* 只保留供应商图标与连续导轨；运行中图标呼吸闪动指示状态。 */}
           <span aria-hidden className="ai-scard-rail" />
-          <span aria-hidden className="ai-scard-icon">
+          <span aria-hidden className={`ai-scard-icon${activity === "running" ? " is-running" : ""}`}>
             <AiProviderIcon provider={session.provider} size={12} />
           </span>
           <span className={`ai-scard-title${openInTab ? " is-open" : ""}`}>{title}</span>

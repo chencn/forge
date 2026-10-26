@@ -29,6 +29,7 @@ vi.mock("../../src/hooks/useSettings", () => ({
   useSettings: () => ({ settings: { aiAssistantsEnabled: h.enabled }, patch: h.patch }),
 }));
 import AiSessionsPanel, { AiSessionsToolbar } from "../../src/components/AiSessionsPanel";
+import AiSidebarCard from "../../src/components/AiSidebarCard";
 import AiCliSettingsPanel, { AiAssistantsToggle, AiCliSettingsControls } from "../../src/components/AiCliSettingsPanel";
 import Select from "../../src/components/Select";
 import AiProviderIcon from "../../src/components/AiProviderIcon";
@@ -192,6 +193,16 @@ describe("统一会话侧栏", () => {
     expect(html.indexOf("Codex old")).toBeLessThan(html.indexOf("Claude old"));
   });
 
+  it("左侧会话列表只显示顶层会话，不显示子代理", () => {
+    const html = render([
+      { id: "parent", provider: "codex", title: "父会话", createdAt: 1 },
+      // 子代理由独立的右侧栏提供入口，不能重复占用左侧会话列表。
+      { id: "child", provider: "codex", title: "子代理任务", createdAt: 2, parentSessionId: "parent" },
+    ]);
+    expect(html).toContain("父会话");
+    expect(html).not.toContain("子代理任务");
+  });
+
   it("置顶的会话进「置顶」章节并排在最上面", () => {
     const html = render([
       { id: "p", provider: "claude", title: "钉住的", createdAt: 1, pinned: true, pinnedAt: 9 },
@@ -219,5 +230,36 @@ describe("统一会话侧栏", () => {
     expect(html).toContain("ai-provider-icon is-codex");
     expect(html).toContain('class="select-value">Codex');
     expect(html).toContain('aria-haspopup="listbox"');
+  });
+
+  it("会话卡片在运行中时图标带有 is-running 状态类，空闲时不带", () => {
+    const runningCard = renderToStaticMarkup(createElement(AiSidebarCard, {
+      session: { id: "test-run", provider: "claude", title: "Running Claude", createdAt: 1 },
+      selected: false,
+      openInTab: false,
+      activity: "running",
+      workspace: null,
+      onOpen: vi.fn(),
+      onMenu: vi.fn(),
+      onPin: vi.fn(),
+      onArchive: vi.fn(),
+    }));
+    // 运行态下供应商图标容器应带有 is-running 类名以触发呼吸闪动动画
+    expect(runningCard).toContain('class="ai-scard-icon is-running"');
+
+    const idleCard = renderToStaticMarkup(createElement(AiSidebarCard, {
+      session: { id: "test-idle", provider: "codex", title: "Idle Codex", createdAt: 2 },
+      selected: false,
+      openInTab: false,
+      activity: "idle",
+      workspace: null,
+      onOpen: vi.fn(),
+      onMenu: vi.fn(),
+      onPin: vi.fn(),
+      onArchive: vi.fn(),
+    }));
+    // 空闲态下供应商图标容器不带有 is-running 类名
+    expect(idleCard).toContain('class="ai-scard-icon"');
+    expect(idleCard).not.toContain("is-running");
   });
 });

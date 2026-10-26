@@ -20,9 +20,11 @@ const listeners = new Set<() => void>();
 /** 已删除的会话 id（带存储键前缀）。后端历史里仍有记录，靠它挡住重新导入。 */
 const deleted = new Set<string>();
 /** 各挂载实例注册的刷新函数，供工具栏「检测」按钮一次性触发全部。 */
-const refreshers = new Set<() => void>();
+const refreshers = new Set<() => Promise<void>>();
 /** 通知所有挂载中的会话面板去后端拉一次历史。 */
-export function refreshAiSessionHistory() { refreshers.forEach((refresh) => refresh()); }
+export async function refreshAiSessionHistory() {
+  await Promise.allSettled([...refreshers].map((refresh) => refresh()));
+}
 /** 工程从工作区列表真正关闭后停止轮询；普通切换不能调用，否则后台运行态会被冻结。 */
 export function forgetAiSessionWorkspace(root: string) {
   activityWorkspaces.delete(aiSessionStorageKey(root));
@@ -81,58 +83,68 @@ export function useAiSessions(root: string | null, enabled = true) {
   useEffect(() => {
     if (!enabled || !root || !isTauri()) return;
     let cancelled = false;
-    let pending = false;
+    let pending: Promise<void> | null = null;
     let refreshAgain = false;
     // 单飞：窗口重新聚焦可能连着触发几次，上一轮没回来就不再发新的。
-    const refresh = () => {
-      if (cancelled) return;
-      // 在途列表可能读到旧标题；记住通知，完成后再取一次。
-      if (pending) { refreshAgain = true; return; }
-      pending = true;
-      void invoke<unknown[]>("ai_runtime_list", { workspace: root }).then((records) => {
-      if (cancelled) return;
-      const persisted = parseAiSessions(JSON.stringify({ sessions: records, openIds: [] })).sessions;
-      const current = get(key);
-      // CLI 原生列表是 ID 与标题的权威来源；localStorage 只保留打开标签。
-      const sessions = persisted.filter((session) => !deleted.has(`${key}:${session.id}`)).sort((a, b) => b.createdAt - a.createdAt);
-      const ids = new Set(sessions.map((session) => session.id));
-      const openIds = current.state.openIds.filter((id) => ids.has(id));
-      // CLI 列表是身份权威；活动标签若已不存在，回退到最后一个仍打开的标签。
-      const activeId = current.state.activeId && ids.has(current.state.activeId) && openIds.includes(current.state.activeId)
-        ? current.state.activeId : openIds.at(-1) ?? null;
-      const state = { sessions, openIds, activeId };
-      if (JSON.stringify(state) === JSON.stringify(current.state)) return;
-      let storageError = false;
-      try { localStorage.setItem(key, JSON.stringify(state)); } catch { storageError = true; }
-      stores.set(key, { state, storageError });
-      listeners.forEach((listener) => listener());
-    }).catch(() => {
-      if (cancelled) return;
-      stores.set(key, { ...get(key), storageError: true });
-      listeners.forEach((listener) => listener());
-    }).finally(() => { pending = false; if (refreshAgain) { refreshAgain = false; refresh(); } });
+    const refresh = (): Promise<void> => {
+      if (cancelled) return Promise.resolve();
+      // 在途列表可能读到旧标题；把重复通知并入同一 Promise，调用方 await 后看到的是最后一轮结果。
+      if (pending) { refreshAgain = true; return pending; }
+      pending = (async () => {
+        do {
+          refreshAgain = false;
+          try {
+            const records = await invoke<unknown[]>("ai_runtime_list", { workspace: root });
+            if (cancelled) return;
+            const persisted = parseAiSessions(JSON.stringify({ sessions: records, openIds: [] })).sessions;
+            const current = get(key);
+            // CLI 原生列表是 ID 与标题的权威来源；localStorage 只保留打开标签。
+            const sessions = persisted.filter((session) => !deleted.has(`${key}:${session.id}`)).sort((a, b) => b.createdAt - a.createdAt);
+            const ids = new Set(sessions.map((session) => session.id));
+            const openIds = current.state.openIds.filter((id) => ids.has(id));
+            // CLI 列表是身份权威；活动标签若已不存在，回退到最后一个仍打开的标签。
+            const activeId = current.state.activeId && ids.has(current.state.activeId) && openIds.includes(current.state.activeId)
+              ? current.state.activeId : openIds.at(-1) ?? null;
+            const state = { sessions, openIds, activeId };
+            if (JSON.stringify(state) !== JSON.stringify(current.state)) {
+              let storageError = false;
+              try { localStorage.setItem(key, JSON.stringify(state)); } catch { storageError = true; }
+              stores.set(key, { state, storageError });
+              listeners.forEach((listener) => listener());
+            }
+          } catch {
+            if (cancelled) return;
+            stores.set(key, { ...get(key), storageError: true });
+            listeners.forEach((listener) => listener());
+          }
+        } while (refreshAgain && !cancelled);
+      })().finally(() => { pending = null; });
+      return pending;
     };
-    refresh(); refreshers.add(refresh);
+    void refresh(); refreshers.add(refresh);
     window.addEventListener("focus", refresh);
     // 首次发送改变持久化标题，不能等窗口重新聚焦才刷新标签。
     window.addEventListener("ai-session-metadata", refresh);
     return () => { cancelled = true; refreshers.delete(refresh); window.removeEventListener("focus", refresh); window.removeEventListener("ai-session-metadata", refresh); };
   }, [key, root, enabled]);
   /** 写回 localStorage 并通知订阅者。写失败只降级成「本次不持久化」，不阻断界面。 */
-  const dispatch = useCallback((action: AiSessionAction) => {
-    if (!enabled) return;
+  const dispatch = useCallback((action: AiSessionAction): boolean => {
+    if (!enabled) return false;
     // 删会话带走全部会话级缓存；发送历史和引擎默认项按工程/引擎共享，继续保留。
     if (action.type === "delete") {
       deleted.add(`${key}:${action.id}`);
       clearAiSessionStorage(root, action.id);
     }
-    const state = reduceAiSessions(get(key).state, action);
-    if (state === get(key).state) return;
+    const current = get(key);
+    const state = reduceAiSessions(current.state, action);
+    // open 的返回值是导航边界：未知会话不能让 App 切到一个没有内容的标签。
+    if (state === current.state) return action.type === "open" && current.state.sessions.some((session) => session.id === action.id);
     let storageError = false;
     try { localStorage.setItem(key, JSON.stringify(state)); }
     catch { storageError = true; }
     stores.set(key, { state, storageError });
     listeners.forEach((listener) => listener());
+    return true;
   }, [key, root, enabled]);
   return { ...snapshot.state, storageError: snapshot.storageError, dispatch };
 }

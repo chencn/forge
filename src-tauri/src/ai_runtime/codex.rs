@@ -99,6 +99,11 @@ pub struct Codex {
     /// Goal 状态写请求先等服务端确认，再回读完整快照，避免前端伪造原生状态。
     goal_sets: HashSet<u64>,
     next_goal_set: u64,
+    /// `spawn_agent` 的 call id → 用户定义的 task_name。SubAgentActivity 只给线程与路径，
+    /// 必须靠 call id 把真正的任务名接回来，不能拿随机 agentNickname 冒充标题。
+    pending_agent_titles: HashMap<String, String>,
+    /// 子代理线程 → 已解析标题。completed/interacted 的 item id 会变化，后续事件靠线程续用首个标题。
+    agent_titles: HashMap<String, String>,
 }
 /// `declined` 的 fileChange 条目里，changes 的键就是要写的那个文件。
 /// 只有整个键本身就是绝对路径才配得上「授予这个目录」：相对写法交给后端复核会直接报错，
@@ -108,6 +113,16 @@ fn absolute_file(value: Option<&str>) -> Option<String> {
     let bytes = path.as_bytes();
     let drive = path.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
     (drive || (path.starts_with('/') && path.len() > 1)).then(|| path.to_owned())
+}
+
+/// 把 Codex 的任务标识转成面向用户的名字。task_name 最权威，历史恢复时才退到 agent_path/role；
+/// agent_nickname 是随机内部代号，故意不进入这个函数。
+pub(super) fn subagent_title(task_name: Option<&str>, path: Option<&str>, role: Option<&str>) -> Option<String> {
+    let raw = task_name.and_then(|value| (!value.trim().is_empty()).then_some(value.trim()))
+        .or_else(|| path.and_then(|value| value.rsplit('/').find(|part| !part.trim().is_empty())).map(str::trim))
+        .or_else(|| role.and_then(|value| (!value.trim().is_empty()).then_some(value.trim())))?;
+    // task_name 的协议格式是 snake_case；空格比下划线更像真正的标题，连续空白顺手收敛。
+    Some(raw.replace('_', " ").split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// 把申请来的权限集翻成一句人话。卡片得让人看懂「批准等于给什么」，
@@ -249,6 +264,8 @@ impl Codex {
             next_goal_probe: 3_000_000,
             goal_sets: HashSet::new(),
             next_goal_set: 4_000_000,
+            pending_agent_titles: HashMap::new(),
+            agent_titles: HashMap::new(),
         }
     }
     pub fn with_options(mut self, model: Option<String>, effort: Option<String>) -> Self {
@@ -576,6 +593,13 @@ impl Protocol for Codex {
                             }
                         }
                         "commandExecution" | "fileChange" | "mcpToolCall" | "webSearch" | "dynamicToolCall" => {
+                            // app-server 先发 spawn_agent 的动态工具条目，再用同一个 call id 发
+                            // SubAgentActivity(started)。这里只缓存展示名，生命周期仍由后者驱动。
+                            if !done && item["type"] == "dynamicToolCall" && item["tool"] == "spawn_agent" {
+                                if let Some(title) = subagent_title(item["arguments"]["task_name"].as_str(), None, None) {
+                                    self.pending_agent_titles.insert(id.to_owned(), title);
+                                }
+                            }
                             let status = if !done {
                                 "running"
                             } else if item["status"] == "interrupted" {
@@ -692,18 +716,24 @@ impl Protocol for Codex {
                             };
                             if let (Some(thread_id), Some(status)) = (thread_id, status) {
                                 let path = item["agentPath"].as_str().or_else(|| item["agent_path"].as_str()).filter(|path| !path.is_empty());
+                                let role = item["agentRole"].as_str().or_else(|| item["agent_role"].as_str()).filter(|role| !role.trim().is_empty());
+                                let title = self.agent_titles.get(thread_id).cloned()
+                                    .or_else(|| self.pending_agent_titles.remove(id))
+                                    .or_else(|| subagent_title(None, path, role))
+                                    .unwrap_or_else(|| "子代理".into());
+                                self.agent_titles.entry(thread_id.to_owned()).or_insert_with(|| title.clone());
                                 let mut data = json!({
                                     "key": thread_id,
                                     "toolId": id,
-                                    "agentType": item["agentNickname"].as_str().or_else(|| item["agent_nickname"].as_str()),
+                                    "title": title,
                                     "model": item["model"],
                                     "effort": item["reasoningEffort"].as_str().or_else(|| item["reasoning_effort"].as_str()),
                                     "status": status,
                                     "activity": item["kind"],
                                 });
+                                if let Some(role) = role { data["agentType"] = json!(role); }
                                 if let Some(path) = path {
                                     data["agentId"] = json!(path);
-                                    data["title"] = json!(path);
                                 }
                                 out.push(Action::Emit { kind: "agent", data });
                             }
@@ -1280,15 +1310,21 @@ mod tests {
         p.receive(json!({"id":1,"result":{}})).unwrap();
         p.receive(json!({"id":2,"result":{"thread":{"id":"native"},"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}}})).unwrap();
         p.receive(json!({"id":3,"result":{"turn":{"id":"turn-1"}}})).unwrap();
-        // started 活动（item/completed 承载）→ running；agentPath 是标题也是可寻址名。
+        // spawn_agent 的 task_name 是真实展示名；started 活动会用同一个 call id 把它接回。
+        p.receive(json!({"method":"item/started","params":{"threadId":"native","item":{
+            "id":"call_spawn","type":"dynamicToolCall","tool":"spawn_agent","arguments":{"task_name":"review_backend"},
+            "status":"running"
+        }}})).unwrap();
+        // started 活动（item/completed 承载）→ running；agentPath 提供任务名与可寻址名，
+        // 随机 agentNickname 不能泄漏成用户看到的标题或类型。
         let started = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
             "id":"call_spawn","type":"subAgentActivity","kind":"started","model":"gpt-6-astra","reasoningEffort":"medium",
             "agentThreadId":"01a16be3-child","agentPath":"/root/backend_trace","agentNickname":"Lorentz"
         }}})).unwrap();
         assert!(started.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
             if data["key"] == "01a16be3-child" && data["status"] == "running"
-                && data["agentId"] == "/root/backend_trace" && data["title"] == "/root/backend_trace"
-                && data["agentType"] == "Lorentz" && data["model"] == "gpt-6-astra")));
+                && data["agentId"] == "/root/backend_trace" && data["title"] == "review backend"
+                && data.get("agentType").is_none() && data["model"] == "gpt-6-astra")));
         // completed 活动 → completed 终态。
         let done = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
             "id":"subagent-completed-turn-1","type":"subAgentActivity","kind":"completed",
@@ -1309,7 +1345,14 @@ mod tests {
             "agent_thread_id":"01a1-snake","agent_path":"/root/snake"
         }}})).unwrap();
         assert!(snake.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
-            if data["key"] == "01a1-snake" && data["title"] == "/root/snake")));
+            if data["key"] == "01a1-snake" && data["title"] == "snake")));
+        // 没有任务名、路径或角色时宁可显示稳定通用名，也不能显示随机 nickname。
+        let unnamed = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
+            "id":"call_spawn4","type":"subAgentActivity","kind":"started",
+            "agentThreadId":"01a1-unnamed","agentNickname":"Kepler"
+        }}})).unwrap();
+        assert!(unnamed.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "01a1-unnamed" && data["title"] == "子代理" && data.get("agentType").is_none())));
     }
     #[test]
     fn turn_is_started_only_after_codex_accepts_the_native_turn() {
