@@ -745,6 +745,8 @@ interface AiSessionPaneProps {
   onOpenFile?: AiOpenFile;
   /** 向右侧侧边栏上报子代理列表有没有内容；右栏据此决定显隐。 */
   onAgentDockAvailable?: (available: boolean) => void;
+  /** 打开子代理侧栏；父会话里的状态提示调用它，不直接操纵应用布局。 */
+  onOpenAgentDock?: () => void;
   /** 打开（或聚焦）另一条会话的标签：子代理视图跳转、返回父会话都用它。 */
   onOpenSession?: (id: string) => void;
   /** 父会话标题；子代理会话的面包屑用它，普通会话不传。 */
@@ -757,7 +759,7 @@ interface AiSessionPaneProps {
  * 组件本身不持有跨会话状态，所有会话数据都在 `lib/aiRuntime` 的全局 store 里，
  * 所以切走再切回来能直接看到后台仍在推进的进度。
  */
-export default function AiSessionPane({ session, workspace, onSettings, beforeSend, onAction, onNew, onOpenFile, onAgentDockAvailable, onOpenSession, parentTitle }: AiSessionPaneProps) {
+export default function AiSessionPane({ session, workspace, onSettings, beforeSend, onAction, onNew, onOpenFile, onAgentDockAvailable, onOpenAgentDock, onOpenSession, parentTitle }: AiSessionPaneProps) {
   const { t } = useI18n();
   /** 子代理会话：事件由父会话运行时路由进来，发送走经父转发，不直接驱动 CLI。 */
   const isAgentSession = !!session.parentSessionId;
@@ -1726,6 +1728,27 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         prefetchEarlier();
       }}>
       <div className="ai-conversation">
+      {/* 父会话必须自己声明已启动子代理；否则右栏收起时，用户完全不知道委派发生过。 */}
+      {!isAgentSession && runtime.agents.length ? (() => {
+        const liveAgents = runtime.agents.filter((agent) => agent.status === "running" || agent.status === "starting");
+        const highlighted = liveAgents[0] ?? runtime.agents[runtime.agents.length - 1];
+        const status = liveAgents.length ? "running" : highlighted.status;
+        const label = status === "running" || status === "starting" ? t("ai.runtime.running")
+          : status === "failed" ? t("ai.runtime.failed")
+          : status === "stopped" ? t("ai.runtime.cancelled")
+          : status ? t("ai.runtime.completed") : "";
+        return <div className={`ai-parent-agent-strip${liveAgents.length ? " is-running" : ""}`} role="status" aria-live="polite">
+          <button type="button" className="ai-parent-agent-trigger" aria-label={t("ai.agents.openDock")}
+            title={t("ai.agents.openDock")} disabled={!onOpenAgentDock} onClick={onOpenAgentDock}>
+            <Bot size={13} aria-hidden />
+            <strong>{t("ai.agent.nav")}</strong>
+            <span className="ai-parent-agent-count">{runtime.agents.length}</span>
+            <span className="ai-parent-agent-title" title={highlighted.title}>{highlighted.title || t("ai.agent.untitled")}</span>
+            <span className="ai-parent-agent-status" data-status={status}>{label}</span>
+            <ChevronRight size={13} aria-hidden />
+          </button>
+        </div>;
+      })() : null}
       {/* 子代理状态条：实时状态来自父连接；Codex 的完整正文由终态 rollout 回填。 */}
       {isAgentSession ? (() => {
         const self = runtime.agents[0];

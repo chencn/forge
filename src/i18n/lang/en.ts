@@ -1067,6 +1067,7 @@ export const en: Record<TranslationKey, string> = {
   "ai.agent.empty": "No subagents",
   "ai.agent.untitled": "Subagent",
   "ai.agent.open": "Open session",
+  "ai.agents.openDock": "Open subagents sidebar",
   "ai.agent.parent": "Parent session",
   "ai.agent.backToParent": "Back to parent session",
   "ai.agent.session": "Subagent session",

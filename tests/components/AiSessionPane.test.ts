@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
 import { loadDraft, rememberPrompt } from "../../src/lib/aiDrafts";
 
-const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
+const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
 vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Record<string, unknown>) => key === "ai.chat.editedFiles" ? `Edited ${vars?.count} files` : key }) }));
 vi.mock("../../src/lib/aiCli", () => ({ AI_NAMES: { codex: "Codex" }, cliDesktopAvailable: () => h.desktop }));
 vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiCapabilities: h.models, loadAiMessages: vi.fn(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn(), stopAiAgent: vi.fn() }));
@@ -33,13 +33,13 @@ beforeEach(() => {
   h.activity = "idle";
   h.ownedRun = null; h.ownedQueued = [];
   h.outline = { turns: [], complete: false, loaded: false, loading: false, error: null };
-  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.models.mockReset(); h.models.mockResolvedValue({ models: [{ id: "catalog-default", isDefault: true }] }); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.sanitize.mockClear();
+  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.models.mockReset(); h.models.mockResolvedValue({ models: [{ id: "catalog-default", isDefault: true }] }); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.openAgents.mockReset(); h.sanitize.mockClear();
   h.state = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: true, hasOlder: false, cursor: 0, nativeId: null, plans: [], agents: [] };
 });
 function render() {
   let pane!: ReactElement<any>;
   function Harness() {
-    pane = AiSessionPane({ session: { id: sessionId, title: "Test", provider: "codex", createdAt: 1 }, workspace: "D:/project", onSettings: vi.fn(), beforeSend: h.beforeSend });
+    pane = AiSessionPane({ session: { id: sessionId, title: "Test", provider: "codex", createdAt: 1 }, workspace: "D:/project", onSettings: vi.fn(), beforeSend: h.beforeSend, onOpenAgentDock: h.openAgents });
     return pane;
   }
   return { html: renderToStaticMarkup(createElement(Harness)), pane };
@@ -218,6 +218,16 @@ describe("AI conversation pane", () => {
     expect(html).not.toContain('aria-label="ai.chat.context 0%"');
     expect(html).toContain('class="ai-send-button is-stop"');
     expect(html).toContain('aria-label="ai.runtime.stop"');
+  });
+  it("在父会话内提示正在运行的子代理", () => {
+    // 右侧栏关闭时，父会话仍必须明确告诉用户已启动了哪个子代理，并提供打开侧栏的入口。
+    h.state.agents = [{ key: "agent-1", title: "检查子代理提示", status: "running", sessionId: "child-1", seq: 1, updatedAt: 1 }];
+    const { html, pane } = render();
+    expect(html).toContain("检查子代理提示");
+    expect(html).toContain('aria-label="ai.agents.openDock"');
+    const trigger = findAll(pane, "button").find((button) => button.props.className === "ai-parent-agent-trigger");
+    trigger?.props.onClick();
+    expect(h.openAgents).toHaveBeenCalledOnce();
   });
   it("连接阶段可中断，但不会伪装成可编辑队列", () => {
     h.state.status = "submitting"; h.state.runId = "connecting";

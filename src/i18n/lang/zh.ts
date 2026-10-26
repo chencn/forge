@@ -1063,6 +1063,7 @@ export const zh = {
   "ai.agent.empty": "没有子代理",
   "ai.agent.untitled": "子代理",
   "ai.agent.open": "打开会话",
+  "ai.agents.openDock": "打开子代理侧栏",
   "ai.agent.parent": "父会话",
   "ai.agent.backToParent": "返回父会话",
   "ai.agent.session": "子代理会话",

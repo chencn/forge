@@ -1793,6 +1793,18 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   color: var(--accent-violet-text, var(--accent-blue-text)); font-weight: 500; }
 
 /* ===== 子代理（subagent） ===== */
+/* 父会话里的常驻提示：右栏收起时仍能看到名称和状态，整行点击后打开右栏。 */
+.ai-parent-agent-strip { margin: 6px 0 10px; }
+.ai-parent-agent-trigger { width: 100%; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-secondary); color: var(--text-secondary); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.ai-parent-agent-trigger:hover { border-color: color-mix(in srgb, var(--text-tertiary) 40%, var(--border-color)); color: var(--text-primary); }
+.ai-parent-agent-trigger:disabled { cursor: default; }
+.ai-parent-agent-strip.is-running .ai-parent-agent-trigger { border-color: color-mix(in srgb, #facc15 35%, var(--border-color)); }
+.ai-parent-agent-count { flex: none; min-width: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--bg-tertiary); color: var(--text-tertiary); font-size: 10px; text-align: center; }
+.ai-parent-agent-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-parent-agent-status { flex: none; font-size: 11px; color: var(--text-tertiary); }
+.ai-parent-agent-status[data-status="running"], .ai-parent-agent-status[data-status="starting"] { color: #facc15; }
+.ai-parent-agent-status[data-status="completed"] { color: #4ade80; }
+.ai-parent-agent-status[data-status="failed"] { color: #f87171; }
 /* 右栏 Dock 的状态点沿用会话状态点语义色：运行中亮黄、完成绿、失败红、其余灰。 */
 .ai-agent-subrow-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-tertiary); }
 .ai-agent-subrow-dot[data-status="running"], .ai-agent-subrow-dot[data-status="starting"] { background: #facc15; box-shadow: 0 0 4px color-mix(in srgb, #facc15 60%, transparent); }

@@ -1036,6 +1036,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "ai.agent.empty": "沒有子代理",
   "ai.agent.untitled": "子代理",
   "ai.agent.open": "開啟會話",
+  "ai.agents.openDock": "開啟子代理側欄",
   "ai.agent.parent": "父會話",
   "ai.agent.backToParent": "返回父會話",
   "ai.agent.session": "子代理會話",

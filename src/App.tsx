@@ -5066,7 +5066,7 @@ export default function App() {
                         ) : activeAiSession ? (
                           // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
                           // 展开状态和本地事件订阅会串到新会话上。
-                          <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
+                          <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
                         ) : activeTab === "settings" ? (
                           <SettingsPage
                             workspace={workspaceRoot}
@@ -5304,7 +5304,7 @@ export default function App() {
                       </Suspense>
                     ) : activeAiSession ? (
                       // 同上：多工作区分支里的这颗也要按会话 id 重建。
-                      <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
+                      <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
                     ) : activeTab === "settings" ? (
                       <SettingsPage
                         workspace={workspaceRoot}
