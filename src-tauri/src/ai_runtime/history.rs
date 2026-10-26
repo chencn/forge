@@ -356,19 +356,31 @@ pub fn discover(base: &Path, root: &str) -> Result<(), String> {
 }
 fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Result<(), String> {
     let mut known = std::collections::HashMap::new();
+    let mut known_subagents = std::collections::HashMap::new();
     for entry in fs::read_dir(base)
         .map_err(|e| e.to_string())?
         .take(20000)
         .flatten()
     {
         if let Ok(meta) = Store::metadata(&entry.path(), root) {
-            if let Some(native) = meta.native_id {
+            if let Some(native) = &meta.native_id {
                 // 绑定按原生 ID 认人。Forge 自建会话的目录名是客户端 UUID，线程要等首条
                 // 消息才建出来，绑上之后两者必然不同——不登记就会在下一条消息后多出一份重复镜像。
                 // 旧版包装过 ID 的目录可能仍和真实 ID 目录并存，那种情况让名字等于原生 ID 的那个赢。
-                let key = binding_key(meta.provider, &native);
-                if meta.session_id == native || !known.contains_key(&key) {
-                    known.insert(key, meta.session_id);
+                let key = binding_key(meta.provider, native);
+                if &meta.session_id == native || !known.contains_key(&key) {
+                    known.insert(key, meta.session_id.clone());
+                }
+            }
+            // 补充已持久化 source 的历史 native_id，避免长会话因后续轮次更换 nativeId 丢失旧 thread 绑定
+            if let Ok(Some(src)) = self::source(base, &meta.session_id, root) {
+                let key = binding_key(meta.provider, &src.native_id);
+                known.entry(key).or_insert_with(|| meta.session_id.clone());
+            }
+            // 记录已知子代理会话与其父会话关联，按子代理 tool_id 直连匹配，摆脱脆弱的父 thread 反查
+            if let (Some(parent), Some(agent)) = (&meta.parent_session_id, &meta.agent) {
+                if !agent.tool_id.is_empty() {
+                    known_subagents.insert(agent.tool_id.clone(), (meta.session_id.clone(), parent.clone()));
                 }
             }
         }
@@ -394,7 +406,7 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                 // Codex 的子代理 rollout（source.subagent）会被 inspect 跳过；
                 // 父镜像存在时把它导入成子会话。
                 if provider == Provider::Codex {
-                    import_codex_subagent(base, &path, root, &known);
+                    import_codex_subagent(base, &path, root, &known, &known_subagents);
                 }
                 continue;
             };
@@ -558,7 +570,13 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
 /// 导入 Codex 的子代理 rollout（`session_meta.source.subagent`）。当前协议的首条 meta
 /// 就是子代理自身，父线程只能从 `thread_spawn.parent_thread_id` 取；后面的记录可能仍
 /// 带 fork 进来的父历史。实时事件会先创建空子会话，所以这里必须回填已有目录。
-fn import_codex_subagent(base: &Path, path: &Path, root: &str, known: &std::collections::HashMap<String, String>) {
+fn import_codex_subagent(
+    base: &Path,
+    path: &Path,
+    root: &str,
+    known: &std::collections::HashMap<String, String>,
+    known_subagents: &std::collections::HashMap<String, (String, String)>,
+) {
     let Ok(file) = File::open(path) else { return };
     let mut reader = BufReader::new(file.take(256 * 1024));
     let mut child_meta: Option<(Value, u64)> = None;
@@ -580,8 +598,12 @@ fn import_codex_subagent(base: &Path, path: &Path, root: &str, known: &std::coll
     let Some(parent_native) = spawn["parent_thread_id"].as_str().filter(|id| !id.is_empty()) else { return };
     if meta["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, root)) { return; }
     let Some(child_id) = meta["id"].as_str().filter(|id| !id.is_empty()) else { return };
-    let Some(parent_forge) = known.get(&binding_key(Provider::Codex, parent_native)) else { return };
-    let child = super::child_session_id(parent_forge, child_id);
+    let (child, parent_forge) = if let Some((existing_child, p)) = known_subagents.get(child_id) {
+        (existing_child.clone(), p.clone())
+    } else {
+        let Some(parent_forge) = known.get(&binding_key(Provider::Codex, parent_native)) else { return };
+        (super::child_session_id(parent_forge, child_id), parent_forge.clone())
+    };
     let agent_path = spawn["agent_path"].as_str().unwrap_or_default().to_owned();
     let agent_role = spawn["agent_role"].as_str().filter(|value| !value.trim().is_empty());
     // rollout 没有 spawn_agent 的 arguments；只能从持久化 path/role 恢复，随机 nickname 永不展示。
@@ -646,6 +668,12 @@ fn import_codex_subagent(base: &Path, path: &Path, root: &str, known: &std::coll
             _ => {}
         }
     }
+    // 若原生日志未显式写入 task_complete 等终态，但该子代理在 Forge 中已被父回合或外部标记为已终结（或已非 running），
+    // 采用已有终态进行导入，避免子代理正文永远处于空白。
+    let existing_status = target.meta.agent.as_ref().map(|info| info.status.clone());
+    let terminal = terminal.or_else(|| {
+        existing_status.as_deref().filter(|s| !s.is_empty() && *s != "running")
+    });
     let Some(status) = terminal else {
         // 运行中的 rollout 还会增长；先补标题，不导入半截正文，终态出现后再一次性落盘。
         let _ = target.save();
@@ -899,6 +927,39 @@ pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<supe
     let (events, more) = recover_summaries(target, &source, false)?;
     if !more { *previous = offset; }
     Ok(events)
+}
+
+/// 按需同步 Codex 子代理的原生历史 rollout。
+pub fn sync_subagent(base: &Path, id: &str, root: &str) -> Result<bool, String> {
+    let dir = base.join(id);
+    let Ok(meta) = Store::metadata(&dir, root) else { return Ok(false); };
+    if meta.provider != Provider::Codex { return Ok(false); }
+    let Some(agent) = &meta.agent else { return Ok(false); };
+    if agent.tool_id.is_empty() { return Ok(false); }
+    // 已经绑定并且已有历史事件时，无需重复从头全量导入
+    if meta.native_id.as_deref() == Some(&agent.tool_id) {
+        return Ok(false);
+    }
+    let Some(sessions_dir) = roots()?.into_iter().find_map(|(p, d)| if p == Provider::Codex { Some(d) } else { None }) else {
+        return Ok(false);
+    };
+    let mut target_path = None;
+    let mut budget = 5000usize;
+    let mut paths = vec![];
+    let _ = files(&sessions_dir, 4, &mut budget, &mut paths);
+    for path in paths {
+        if path.file_name().and_then(|n| n.to_str()).is_some_and(|name| name.contains(&agent.tool_id)) {
+            target_path = Some(path);
+            break;
+        }
+    }
+    let Some(path) = target_path else { return Ok(false); };
+    let parent_id = meta.parent_session_id.clone().unwrap_or_default();
+    let known = std::collections::HashMap::new();
+    let mut known_subagents = std::collections::HashMap::new();
+    known_subagents.insert(agent.tool_id.clone(), (id.to_string(), parent_id));
+    import_codex_subagent(base, &path, root, &known, &known_subagents);
+    Ok(true)
 }
 /// 跳过刚刚被 Forge 记录过的那段原生内容，避免同一轮消息显示两遍。
 pub fn mark_current(target: &mut Store, base: &Path) -> Result<Vec<super::events::Event>, String> {
@@ -1712,16 +1773,16 @@ mod tests {
 
         // 父快照里虽有 task_complete，子回合尚未结束时仍只能补标题，不能误导入或误报完成。
         fs::write(&native, records[..records.len() - 1].iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
-        import_codex_subagent(&base, &native, &workspace, &known);
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
         let running = Store::metadata(&base.join(&child), &workspace).unwrap();
         assert_eq!(running.agent.unwrap().status, "running");
         assert!(running.native_id.is_none());
         assert!(Store::page(&base, &child, &workspace, Window::After(0), 100, true).unwrap().events.is_empty());
 
         fs::write(&native, records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
-        import_codex_subagent(&base, &native, &workspace, &known);
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
         // 重复发现同一份 rollout 不能把子代理对话再追加一遍。
-        import_codex_subagent(&base, &native, &workspace, &known);
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
 
         let meta = Store::metadata(&base.join(&child), &workspace).unwrap();
         // agent_nickname 是随机代号，agent_path 也只是后备；必须保留实时阶段落盘的 task_name。

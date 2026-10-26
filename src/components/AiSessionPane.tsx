@@ -1378,7 +1378,9 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   // 底栏报的是「这一趟」的结果：只看最新那一轮，往上翻历史时它不该跟着变。
   const editSummary = useMemo(() => summarizeAiFileEdits(replyTurns.at(-1)?.items ?? []), [replyTurns]);
   // 子代理条目（带 parent 归属）不再平铺主时间线：按归属挂进对应 Task 委派卡展开看。
+  // 若当前本身就是子代理会话，则时间线即为其专属视图，必须完整展示，不进行 parent 过滤。
   const subagentChildren = useMemo(() => {
+    if (isAgentSession) return new Map<string, AiEntry[]>();
     const map = new Map<string, AiEntry[]>();
     for (const entry of runtime.entries) {
       if (!entry.parent) continue;
@@ -1387,8 +1389,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       else map.set(entry.parent, [entry]);
     }
     return map;
-  }, [runtime.entries]);
-  const timelineEntries = useMemo(() => runtime.entries.filter((entry) => !entry.parent), [runtime.entries]);
+  }, [isAgentSession, runtime.entries]);
+  const timelineEntries = useMemo(() => isAgentSession ? runtime.entries : runtime.entries.filter((entry) => !entry.parent), [isAgentSession, runtime.entries]);
   /** 任务清单是会话级事实，不再依赖当前时间线页是否包含它的最后一次更新。 */
   const taskList = runtime.taskList?.items.some((item) => item.status !== "dropped" && item.content.trim()) ? runtime.taskList : null;
   const taskListPhase = taskList?.runId ?? "none";
@@ -1785,7 +1787,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         lastAssistantText={turnStats.text} userEntryId={turnStats.userId} onJump={jumpToEntryById} /> : null}
       {!runtime.entries.length ? runtime.loading
         ? <p className="ai-chat-loading" role="status">{t("ai.runtime.loading")}</p>
-        : <p className="ai-chat-empty">{workspace ? t("ai.chat.emptyHint", { provider: AI_NAMES[session.provider] }) : t("ai.noWorkspace")}</p> : null}
+        : <p className="ai-chat-empty">{isAgentSession ? (session.agent?.title || t("ai.agent.empty")) : workspace ? t("ai.chat.emptyHint", { provider: AI_NAMES[session.provider] }) : t("ai.noWorkspace")}</p> : null}
       </div>
     </div>
     {/* 浮在滚动区下沿，所以放在滚动容器之外：往上翻页和流式增长都不该把它跟着推走。 */}

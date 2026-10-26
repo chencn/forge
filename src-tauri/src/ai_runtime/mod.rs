@@ -2096,11 +2096,18 @@ pub async fn ai_runtime_load(
         }
         let mut warning = None;
         let mut native_more = false;
-        // 子代理会话的事件全部由父会话运行时写入，没有要同步的原生历史；
-        // 它的 native_id 存的是子代理标识，按会话 id 去原生目录找只会报错。
+        // 子代理会话由独立 rollout 或父事件写入；若尚未完成原生正文导入，打开时按需触发快速回填。
         let dir = base.join(&session_id);
-        let agent_session = store::Store::metadata(&dir, &root).map(|meta| meta.agent.is_some()).unwrap_or(false);
-        if !agent_session && registry::for_session(&session_id).is_none() {
+        let meta = store::Store::metadata(&dir, &root).ok();
+        let agent_session = meta.as_ref().map(|m| m.agent.is_some()).unwrap_or(false);
+        if agent_session {
+            let needs_import = meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false);
+            if needs_import && !has_queued(&session_id) {
+                if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
+                    let _ = history::sync_subagent(&base, &session_id, &root);
+                }
+            }
+        } else if registry::for_session(&session_id).is_none() {
             let needs_sync = dir.join("native-source.json").exists();
             let needs_plans = dir.join("plans.json").exists();
             // 只有当会话存在原生历史映射文件或计划残留时，才需要获取租约进行同步与恢复；
