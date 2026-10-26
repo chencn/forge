@@ -143,10 +143,35 @@ impl Lease {
         let mut options = OpenOptions::new();
         options.create(true).truncate(false).read(true).write(true);
         #[cfg(windows)]
-        {
+        let file = {
             use std::os::windows::fs::OpenOptionsExt;
             options.share_mode(0);
-        }
+            // 在 Windows 独占打开模式下，同进程其他线程短命的检查（如历史同步检查）
+            // 或系统杀毒/索引可能在数十毫秒内短暂占用锁。进行短暂退避重试，消除瞬态冲突。
+            let mut last_error = None;
+            let mut acquired = None;
+            for attempt in 0..12 {
+                match options.open(path) {
+                    Ok(f) => {
+                        acquired = Some(f);
+                        break;
+                    }
+                    Err(e) if e.raw_os_error() == Some(32) && attempt < 11 => {
+                        last_error = Some(e);
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        break;
+                    }
+                }
+            }
+            acquired.ok_or_else(|| {
+                let msg = last_error.map(|e| e.to_string()).unwrap_or_else(|| "无法获取文件锁".into());
+                format!("项目或会话正在其他窗口运行，或记录不可访问：{msg}")
+            })?
+        };
+        #[cfg(not(windows))]
         let file = options
             .open(path)
             .map_err(|e| format!("项目或会话正在其他窗口运行，或记录不可访问：{e}"))?;

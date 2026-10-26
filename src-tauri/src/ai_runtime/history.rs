@@ -467,7 +467,10 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                 }
                 continue;
             }
-            let _lease = store::Lease::acquire(&base.join(format!("{key}.lock")))?;
+            // 若当前历史正在被其他进程使用而无法获得租约，跳过本条继续导入其他项，不连累整个列表。
+            let Ok(_lease) = store::Lease::acquire(&base.join(format!("{key}.lock"))) else {
+                continue;
+            };
             let mut target = Store::open(base, &key, root, provider, &candidate.title, "")?;
             target.bind(source.native_id.clone())?;
             target.meta.created_at = candidate.modified;

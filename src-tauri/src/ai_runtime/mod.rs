@@ -2098,24 +2098,31 @@ pub async fn ai_runtime_load(
         let mut native_more = false;
         // 子代理会话的事件全部由父会话运行时写入，没有要同步的原生历史；
         // 它的 native_id 存的是子代理标识，按会话 id 去原生目录找只会报错。
-        let agent_session = store::Store::metadata(&base.join(&session_id), &root).map(|meta| meta.agent.is_some()).unwrap_or(false);
+        let dir = base.join(&session_id);
+        let agent_session = store::Store::metadata(&dir, &root).map(|meta| meta.agent.is_some()).unwrap_or(false);
         if !agent_session && registry::for_session(&session_id).is_none() {
-            if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
-                // 没有本进程回合、也没有排队决策时，plans.json 里的 submitting 就是上次
-                // 进程没来得及确认的残留；退回待审，别让计划卡永远消失。
-                if !has_queued(&session_id) {
-                    let dir = base.join(&session_id);
-                    // 活着的提交者从 CAS 到 applied/revert 一直持有 claim；只有崩溃遗留才可恢复。
-                    let _ = plans::recover(&dir);
-                }
-                match history::sync(&base, &session_id, &root) {
-                    Ok(more) => native_more = more,
-                    Err(error) => warning = Some(error),
-                }
-                // 空闲会话重开时，补回曾被旧版本游标跳过的压缩摘要记录。
-                match history::repair_summaries(&base, &session_id, &root) {
-                    Ok(more) => native_more |= more,
-                    Err(error) => warning = Some(error),
+            let needs_sync = dir.join("native-source.json").exists();
+            let needs_plans = dir.join("plans.json").exists();
+            // 只有当会话存在原生历史映射文件或计划残留时，才需要获取租约进行同步与恢复；
+            // 纯净新建的会话既无原生历史也无计划残留，跳过无谓的持锁，彻底消除与并发发送任务之间的锁争用。
+            if (needs_sync || needs_plans) && !has_queued(&session_id) {
+                if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
+                    if needs_plans {
+                        // 没有本进程回合、也没有排队决策时，plans.json 里的 submitting 就是上次
+                        // 进程没来得及确认的残留；退回待审，别让计划卡永远消失。
+                        let _ = plans::recover(&dir);
+                    }
+                    if needs_sync {
+                        match history::sync(&base, &session_id, &root) {
+                            Ok(more) => native_more = more,
+                            Err(error) => warning = Some(error),
+                        }
+                        // 空闲会话重开时，补回曾被旧版本游标跳过的压缩摘要记录。
+                        match history::repair_summaries(&base, &session_id, &root) {
+                            Ok(more) => native_more |= more,
+                            Err(error) => warning = Some(error),
+                        }
+                    }
                 }
             }
         }
