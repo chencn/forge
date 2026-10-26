@@ -161,6 +161,30 @@ impl Lease {
     }
 }
 
+/// 子代理（subagent）会话的归属与状态摘要。挂在 `Metadata.agent` 上：
+/// 有这个字段的会话就是子会话，列表据此把它嵌套在父会话之下，
+/// 发送路径据此拒绝直连 CLI——子代理只能经父会话转发消息。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInfo {
+    /// CLI 侧的子代理标识：Claude 的 agentId（task_notification 的 task_id）、
+    /// Codex 的 agentThreadId。停止与转发指令都靠它定位。
+    pub native_agent_id: Option<String>,
+    /// 角色类型：Claude 的 subagent_type、Codex 的昵称。
+    pub agent_type: Option<String>,
+    /// 展示标题：Claude 用 Agent 工具的 description，Codex 用 agent_path。
+    pub title: String,
+    /// 关联的父侧标识：Claude Agent tool_use 的 id（即 parent_tool_use_id）、
+    /// Codex spawn_agent 的 call_id。子会话 id 由它派生，live 事件按它路由。
+    pub tool_id: String,
+    /// 子代理实际使用的模型（Claude 回执里的 resolvedModel、Codex SubAgentActivity 的 model）。
+    pub model: Option<String>,
+    /// `running` / `completed` / `failed` / `stopped`；由 CLI 的生命周期事件维护。
+    pub status: String,
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+}
+
 /// 会话目录里的元数据（`meta.json`）。历史列表直接读它，不必扫整个事件日志。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +220,12 @@ pub struct Metadata {
     /// 置顶时间（毫秒时间戳），置顶章节按它倒序。未置顶为 None。
     #[serde(default)]
     pub pinned_at: Option<u64>,
+    /// 父会话 id；只有子代理会话有值。旧文件没有这个字段按普通会话处理。
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    /// 子代理归属与状态；与 `parent_session_id` 同时出现。普通会话为 None。
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
 }
 
 /// 一个会话的存储句柄：目录、元数据与当前序号。
@@ -320,6 +350,8 @@ impl Store {
                 archived: false,
                 pinned: false,
                 pinned_at: None,
+                parent_session_id: None,
+                agent: None,
             }
         };
         if meta.provider != provider {

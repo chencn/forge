@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiCliStatus, AiProvider } from "../../src/lib/aiCli";
 import type { AiSession } from "../../src/lib/aiSessions";
-import { __resetAiSidebarViewForTest } from "../../src/lib/aiSidebarView";
+import { __resetAiSidebarViewForTest, toggleAiSidebarSection } from "../../src/lib/aiSidebarView";
 
 const h = vi.hoisted(() => ({
   desktop: true,
@@ -29,7 +29,7 @@ vi.mock("../../src/hooks/useSettings", () => ({
   useSettings: () => ({ settings: { aiAssistantsEnabled: h.enabled }, patch: h.patch }),
 }));
 import AiSessionsPanel, { AiSessionsToolbar } from "../../src/components/AiSessionsPanel";
-import AiCliSettingsPanel, { AiCliSettingsControls } from "../../src/components/AiCliSettingsPanel";
+import AiCliSettingsPanel, { AiAssistantsToggle, AiCliSettingsControls } from "../../src/components/AiCliSettingsPanel";
 import Select from "../../src/components/Select";
 import AiProviderIcon from "../../src/components/AiProviderIcon";
 
@@ -98,18 +98,17 @@ describe("AI 功能总开关", () => {
     expect(panel).toContain('<span class="ai-cli-grip" draggable="true"');
   });
 
-  it("关闭时只显示未选中的开关，不渲染安装管理或检测按钮", () => {    h.enabled = false;
+  it("关闭时只显示通用页的未选中开关，不渲染安装管理或检测按钮", () => {    h.enabled = false;
     expect(renderToStaticMarkup(createElement(AiCliSettingsPanel))).toBe("");
-    const html = renderToStaticMarkup(createElement(AiCliSettingsControls));
+    const html = renderToStaticMarkup(createElement(AiAssistantsToggle));
     expect(html).toContain('role="switch"');
     expect(html).toContain('aria-checked="false"');
-    expect(html).not.toContain('aria-label="ai.check"');
+    expect(renderToStaticMarkup(createElement(AiCliSettingsControls))).toBe("");
   });
 
-  it("开启时显示开关状态、检测按钮与工具管理卡片", () => {
-    const html = renderToStaticMarkup(createElement(AiCliSettingsControls));
-    expect(html).toContain('aria-checked="true"');
-    expect(html).toContain('aria-label="ai.check"');
+  it("开启时通用开关、AI 页检测按钮与工具管理卡片分别显示", () => {
+    expect(renderToStaticMarkup(createElement(AiAssistantsToggle))).toContain('aria-checked="true"');
+    expect(renderToStaticMarkup(createElement(AiCliSettingsControls))).toContain('aria-label="ai.check"');
     const panel = renderToStaticMarkup(createElement(AiCliSettingsPanel));
     expect(panel).toContain("ai-cli-page");
     expect(panel).toContain("ai-cli-list");
@@ -121,9 +120,9 @@ describe("AI 功能总开关", () => {
       h.enabled = enabled;
       let click = () => {};
       function Harness() {
-        const controls = AiCliSettingsControls();
-        click = controls.props.children[1].props.onClick;
-        return controls;
+        const toggle = AiAssistantsToggle();
+        click = toggle.props.children[0].props.onClick;
+        return toggle;
       }
       renderToStaticMarkup(createElement(Harness));
       click();
@@ -149,11 +148,11 @@ describe("版本查询来源提示", () => {
 });
 
 describe("统一会话侧栏", () => {
-  it("标题行是定位/展开/视图选项三颗按钮，列表区域不重复显示操作栏", () => {
+  it("标题行是定位/批量展开/视图选项三颗按钮，列表区域不重复显示操作栏", () => {
     const html = render();
     const header = html.match(/<header>(.*?)<\/header>/)?.[1] ?? "";
     expect(header).toContain('aria-label="ai.sidebar.locate"');
-    expect(header).toContain('aria-label="ai.sidebar.collapseAll"');
+    expect(header).toContain('aria-label="ai.sidebar.expandAll"');
     expect(header).toContain('aria-label="ai.sidebar.viewOptions"');
     const body = html.slice(html.indexOf("</header>") + 9);
     expect(body).not.toContain("ai-sessions-tools");
@@ -169,11 +168,17 @@ describe("统一会话侧栏", () => {
     expect(html).not.toContain("ai-session-group");
   });
 
-  it("没有会话时给出「会话」与「最近」两个章节的空提示", () => {
-    const html = render();
+  it("「最近」默认收起，点击分组后才展开内容", () => {
+    let html = render();
     expect(html).toContain("ai.sidebar.sectionSessions");
     expect(html).toContain("ai.sidebar.noUnarchived");
     expect(html).toContain("ai.sidebar.sectionRecent");
+    expect(html).toContain('aria-expanded="false"><span>ai.sidebar.sectionRecent</span>');
+    expect(html).not.toContain("ai.sidebar.noRecent");
+
+    toggleAiSidebarSection("recent");
+    html = render();
+    expect(html).toContain('aria-expanded="true"><span>ai.sidebar.sectionRecent</span>');
     expect(html).toContain("ai.sidebar.noRecent");
   });
 

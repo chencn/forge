@@ -23,6 +23,13 @@ export interface AiSession {
   pinnedAt?: number;
   /** 最近一次活动（毫秒时间戳），取自后端事件日志的修改时间；「最近」章节按它排序。 */
   lastActivity?: number;
+  /**
+   * 父会话 id；只有子代理会话有值。侧栏把它嵌在父会话行下，发送走经父转发，
+   * 不能像普通会话那样直接驱动 CLI。
+   */
+  parentSessionId?: string;
+  /** 子代理元数据（标题/状态/类型）；与 `parentSessionId` 同时出现。 */
+  agent?: { title: string; status: string; agentType?: string | null; nativeAgentId?: string | null; toolId: string; model?: string | null };
 }
 /** 一个工作区下的全部会话、打开标签和最后活动标签；一起存储才能准确恢复编辑区。 */
 export interface AiSessionState {
@@ -60,11 +67,18 @@ export function parseAiSessions(raw: string | null): AiSessionState {
       seen.add(item.id);
       return true;
       // 归档位/置顶位缺失或写成别的值都按未归档/未置顶处理；老缓存不需要迁移脚本。
-    }).map(({ id, provider, title, createdAt, archived, pinned, pinnedAt, lastActivity }) => ({
+    }).map(({ id, provider, title, createdAt, archived, pinned, pinnedAt, lastActivity, parentSessionId, agent }) => ({
       id, provider, title, createdAt,
       ...(archived === true ? { archived: true } : {}),
       ...(pinned === true ? { pinned: true, ...(Number.isFinite(pinnedAt) && (pinnedAt as number) > 0 ? { pinnedAt: pinnedAt as number } : {}) } : {}),
       ...(Number.isFinite(lastActivity) && (lastActivity as number) > 0 ? { lastActivity: lastActivity as number } : {}),
+      // 子代理字段只认完整形状：parentSessionId 存在且合法才透传，坏了按普通会话丢弃。
+      ...(() => {
+        const info = agent as AiSession["agent"] | undefined;
+        return typeof parentSessionId === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(parentSessionId)
+          && !!info && typeof info.title === "string" && info.title.trim() && typeof info.status === "string"
+          ? { parentSessionId, agent: info } : {};
+      })(),
     }));
     const open = Array.isArray(openIds) ? [...new Set(openIds.filter((id): id is string => typeof id === "string" && seen.has(id)))] : [];
     // 旧版没有 activeId；迁移时沿用最后一个打开标签，避免升级后丢失当前会话。

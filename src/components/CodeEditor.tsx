@@ -10,6 +10,9 @@ import type { RunConfiguration } from "../lib/runConfigs";
 import { useSettings } from "../hooks/useSettings";
 import { translate, useI18n } from "../i18n";
 import type { OpenDocument, RevealTarget } from "../hooks/useDocuments";
+import ContextMenu from "./ContextMenu";
+import type { MenuAnchor } from "./ContextMenu";
+import { useAiInputMenu } from "./AiInputContext";
 import {
   changeBaselineKey,
   gutterChanges,
@@ -202,6 +205,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
 ) {
   const { t } = useI18n();
   const { settings } = useSettings();
+  const aiInputMenu = useAiInputMenu();
+  const [contextMenu, setContextMenu] = useState<MenuAnchor | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   /** 编辑器实例换过一次就 +1：挂模型那一支靠它认出「实例是新的，得重挂」。 */
   const [wiringNonce, setWiringNonce] = useState(0);
@@ -705,7 +710,31 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
 
   return (
     <div className="code-host">
-      <div ref={hostRef} className="code-editor" />
+      <div ref={hostRef} className="code-editor" onContextMenuCapture={(event) => {
+        const editor = editorRef.current;
+        const model = editor?.getModel();
+        const selection = editor?.getSelection();
+        if (!editor || !model || !selection || selection.isEmpty() || !document?.path) return;
+        event.preventDefault(); event.stopPropagation();
+        const text = model.getValueInRange(selection);
+        const readOnly = editor.getOption(monaco.editor.EditorOption.readOnly);
+        // 选到下一行第 1 列时，实际没有包含下一行正文，引用范围不能虚增一行。
+        const endLine = selection.endColumn === 1 && selection.endLineNumber > selection.startLineNumber
+          ? selection.endLineNumber - 1 : selection.endLineNumber;
+        setContextMenu({ x: event.clientX, y: event.clientY, items: [
+          { label: t("action.copy"), onSelect: () => void navigator.clipboard.writeText(text) },
+          { label: t("menu.cut"), disabled: readOnly, onSelect: () => {
+            void navigator.clipboard.writeText(text);
+            editor.executeEdits("context-menu", [{ range: selection, text: "", forceMoveMarkers: true }]);
+          } },
+          { label: t("action.paste"), disabled: readOnly, onSelect: () => void navigator.clipboard.readText().then((value) => {
+            editor.executeEdits("context-menu", [{ range: selection, text: value, forceMoveMarkers: true }]);
+          }).catch(() => {}) },
+          { label: t("action.selectAll"), onSelect: () => editor.setSelection(model.getFullModelRange()) },
+          { separator: true },
+          aiInputMenu({ kind: "file", path: document.path, startLine: selection.startLineNumber, endLine }),
+        ] });
+      }} />
       <div className="run-gutter-layer">
         {pins.map((pin) => (
           <button
@@ -746,6 +775,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
           />
         ))}
       </div>
+      {contextMenu ? <ContextMenu anchor={contextMenu} onClose={() => setContextMenu(null)} /> : null}
     </div>
   );
 });

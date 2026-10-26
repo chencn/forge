@@ -11,6 +11,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
+import { useAiInputMenu } from "./AiInputContext";
 import TermFindBar from "./TermFindBar";
 import type { RunController } from "../hooks/useRunSessions";
 import type { ProcSessionId } from "../lib/proc";
@@ -53,6 +54,7 @@ function fontFamilyOf(options: TerminalSettings): string {
 export default function RunPane({ run, dark, onOpenFile }: RunPaneProps) {
   const { settings, patch } = useSettings();
   const { t } = useI18n();
+  const aiInputMenu = useAiInputMenu();
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -409,6 +411,7 @@ export default function RunPane({ run, dark, onOpenFile }: RunPaneProps) {
             }
           },
         },
+        aiInputMenu({ kind: "text", text: rawSelection, source: t("panel.run") }),
         {
           label: t("run.selectAllOutput"),
           disabled: !hasOutput,

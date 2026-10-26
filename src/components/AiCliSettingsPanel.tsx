@@ -85,13 +85,26 @@ import { hasAiRuns, stopAllAiRuns } from "../lib/aiRuntime";
 import AiProviderIcon from "./AiProviderIcon";
 import type { TranslationKey } from "../i18n/lang/zh";
 
-/**
- * 设置页「AI 助手」模块标题行右侧的控件：检测按钮 + 总开关。
- *
- * 关闭总开关时如果还有会话在跑，先弹确认框，等用户明确「停止并关闭」再走
- * `stopAllAiRuns` → 写设置这条路径，避免设置先落盘、进程却还在跑。
- */
+/** AI 助手页标题栏只负责重新检测；总开关属于应用级设置，放在「通用」。 */
 export function AiCliSettingsControls() {
+  const { t } = useI18n();
+  const { settings } = useSettings();
+  const cli = useAiCli();
+  if (!settings.aiAssistantsEnabled) return null;
+  return <div className="ai-settings-controls">
+    <button type="button" className="icon-button is-inline"
+      disabled={!cliDesktopAvailable() || cli.checking || cli.operation !== null}
+      onClick={() => void refreshAiCli(true).then(refreshAiCliUpdates)} title={t("ai.check")} aria-label={t("ai.check")}>
+      {cli.checking ? <Loader2 size={14} className="is-spinning" /> : <RefreshCw size={14} />}
+    </button>
+  </div>;
+}
+
+/**
+ * 「通用」里的 AI 总开关。关闭时若仍有会话运行，必须先停止进程再落设置，
+ * 不能只把导航和活动栏藏掉后留下后台任务。
+ */
+export function AiAssistantsToggle() {
   const { t } = useI18n();
   const { settings, patch } = useSettings();
   const cli = useAiCli();
@@ -105,11 +118,6 @@ export function AiCliSettingsControls() {
     finally { setDisabling(false); }
   };
   return <div className="ai-settings-controls">
-    {settings.aiAssistantsEnabled ? <button type="button" className="icon-button is-inline"
-      disabled={!cliDesktopAvailable() || cli.checking || cli.operation !== null}
-      onClick={() => void refreshAiCli(true).then(refreshAiCliUpdates)} title={t("ai.check")} aria-label={t("ai.check")}>
-      {cli.checking ? <Loader2 size={14} className="is-spinning" /> : <RefreshCw size={14} />}
-    </button> : null}
     <button type="button" role="switch" className="ai-enable-switch"
       aria-checked={settings.aiAssistantsEnabled} aria-label={t("ai.enable")}
       title={t(cli.operation ? "ai.operationRunning" : "ai.enable")}

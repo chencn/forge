@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, PanelRight } from "lucide-react";
 import { useWindowControls } from "../lib/window";
 import { useI18n } from "../i18n";
 import appMark from "../../src-tauri/icons/icon.svg";
@@ -10,6 +10,11 @@ interface TitleBarProps {
   /** 侧栏工具窗口当前宽度，收起按钮要跟着它左右走。 */
   sidebarWidth: number;
   onToggleSidebar: () => void;
+  /** 右侧工具窗口是否有可显示的入口；没有内容时不显示无效按钮。 */
+  rightSidebarAvailable: boolean;
+  /** 右侧内容面板当前是否展开。 */
+  rightSidebarOpen: boolean;
+  onToggleRightSidebar: () => void;
   /** 主工具栏左段：工程芯片。 */
   project: ReactNode;
   /** 主工具栏左段：分支芯片。 */
@@ -32,6 +37,9 @@ export default function TitleBar({
   sidebarOpen,
   sidebarWidth,
   onToggleSidebar,
+  rightSidebarAvailable,
+  rightSidebarOpen,
+  onToggleRightSidebar,
   project,
   branch,
   conflict,
@@ -98,6 +106,17 @@ export default function TitleBar({
       </div>
 
       <div className="titlebar-actions">
+        {rightSidebarAvailable ? (
+          <button
+            type="button"
+            className={`icon-button is-toolbar${rightSidebarOpen ? " is-on" : ""}`}
+            onClick={onToggleRightSidebar}
+            title={t(rightSidebarOpen ? "sidebar.hide" : "sidebar.show")}
+            aria-pressed={rightSidebarOpen}
+          >
+            <PanelRight size={17} />
+          </button>
+        ) : null}
         {settings}
 
         <span className="titlebar-divider" />

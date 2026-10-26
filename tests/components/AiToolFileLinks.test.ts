@@ -9,7 +9,7 @@ vi.mock("../../src/i18n", () => ({
 }));
 
 import { AiFilePath, AiOpenFileProvider } from "../../src/components/AiFileLink";
-import { AiToolSummary } from "../../src/components/AiToolDetails";
+import { AiToolCall, AiToolSummary } from "../../src/components/AiToolDetails";
 
 function entry(over: Partial<AiEntry>): AiEntry {
   return { id: "e1", runId: "r1", kind: "tool", text: "", status: "completed", ...over };
@@ -78,5 +78,18 @@ describe("AiToolSummary 的文件路径", () => {
       createElement(AiFilePath, { path: "src/a.ts", line: 3, children: "src/a.ts" })
     );
     expect(html).toBe("<span>src/a.ts</span>");
+  });
+});
+
+describe("AiToolCall 的运行态展开", () => {
+  it.each([
+    ["命令", { name: "exec", input: "npm test" }],
+    ["文件修改", { name: "Edit", input: { file_path: "src/a.ts", old_string: "a", new_string: "b" } }],
+  ])("只有正在执行的%s默认展开", (_label, tool) => {
+    const running = withProvider(undefined, createElement(AiToolCall, { entry: entry({ ...tool, status: "running" }) }));
+    const completed = withProvider(undefined, createElement(AiToolCall, { entry: entry({ ...tool, status: "completed" }) }));
+    // 展开规则绑定运行阶段；历史完成项不能继承运行时的敞开状态。
+    expect(running).toMatch(/<details[^>]* open=""/);
+    expect(completed).not.toMatch(/<details[^>]* open=""/);
   });
 });

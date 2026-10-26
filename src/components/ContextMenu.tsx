@@ -32,7 +32,8 @@ export interface MenuAnchor {
 }
 
 const MENU_WIDTH = 244;
-const ITEM_HEIGHT = 34;
+// 与 CSS 的 --menu-item-height 同步，DOM 尚未量到尺寸时定位也不能沿用旧的高行距。
+const ITEM_HEIGHT = 28;
 const SEP_HEIGHT = 9;
 /** 指针从父层跨进子层要走过两层之间那条缝，这段时间里子层不能被判成「已离开」。 */
 const SUBMENU_GRACE_MS = 220;
@@ -160,7 +161,7 @@ function MenuList({
               ) : (
                 <span className="menu-icon-spacer" />
               )}
-              <span>{item.label}</span>
+              <span className="menu-item-label">{item.label}</span>
               {item.shortcut ? <span className="menu-accel">{item.shortcut}</span> : null}
               {item.children ? <ChevronRight size={13} aria-hidden="true" /> : null}
             </button>

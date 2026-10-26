@@ -34,6 +34,11 @@ pub enum Control {
         status: String,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
+    /// 停止单个后台子代理（Claude 的 stop_task 控制请求）；task_id 即 CLI 侧 agentId。
+    AgentStop {
+        task_id: String,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
 }
 
 /// 一次运行在全局登记表里的条目。UI 命令通过它判断能否停止、停止哪个项目。

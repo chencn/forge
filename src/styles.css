@@ -407,9 +407,11 @@ svg.is-spinning,
 }
 
 .workbench-row {
+  --right-rail-width: 30px;
   flex: 1;
   min-width: 0;
   min-height: 0;
+  position: relative;
   display: flex;
   background-color: var(--app-bg);
 }
@@ -489,6 +491,12 @@ span.entry-icon > svg {
     0 2px 6px rgba(0, 0, 0, 0.1),
     0 18px 42px rgba(0, 0, 0, 0.18);
   animation: layer-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 每一层右键菜单都遵守定位代码的 244px 宽度契约，长文案只能在行内省略，不能撑宽子菜单。 */
+.context-menu {
+  width: min(244px, calc(100vw - 16px));
+  min-width: 0;
 }
 
 /* 锚定弹层的位置由 Popover 组件按锚点算，这里只管高度与滚动。 */
@@ -615,6 +623,34 @@ span.entry-icon > svg {
 
 .ws-dot.is-running {
   background: var(--accent-green);
+  animation: ws-running-pulse 1.25s ease-in-out infinite;
+}
+
+/* 项目列表里的 AI 活动压成一个图标；右下角沿用运行绿点，不再铺状态文字。 */
+.ai-project-activity {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--accent-blue);
+}
+
+.ai-project-activity .ws-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  box-shadow: 0 0 0 1.5px var(--bg-primary);
+}
+
+@keyframes ws-running-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-dot.is-running { animation: none; }
 }
 
 .ws-dot.is-dirty {
@@ -649,10 +685,11 @@ span.entry-icon > svg {
 .menu-item,
 .popover-item {
   width: 100%;
+  min-height: var(--menu-item-height);
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 9px;
+  padding: 0 9px;
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text-primary);
@@ -676,6 +713,14 @@ span.entry-icon > svg {
 
 .menu-item svg {
   flex: none;
+}
+
+.menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .menu-icon-spacer {
@@ -784,10 +829,11 @@ span.entry-icon > svg {
 
 .select-option {
   width: 100%;
+  min-height: var(--menu-item-height);
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 0 8px;
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   text-align: left;
@@ -1763,51 +1809,47 @@ span.entry-icon > svg {
   color: var(--accent-red);
 }
 
-/* 右下角的 Maven。只有探测到工程之后才挂上，样式跟旁边的状态格对齐。 */
-.status-maven {
-  display: inline-flex;
-  align-items: center;
-  align-self: stretch;
-  padding: 0 3px;
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
+/* ===== 右侧：活动栏 + 工具窗口，结构照左侧镜像。入口只给有内容的块，
+   打开着的那块内容没了整条栏就退场。 ===== */
+
+/* 只缩窄右侧图标栏；展开前后始终占同样的 30px。 */
+.activity-rail.is-right {
+  width: var(--right-rail-width);
+  margin-left: 0;
 }
-.status-maven.is-on,
-.status-maven:hover {
-  color: var(--text-primary);
+.activity-rail.is-right .rail-button {
+  width: 26px;
+  height: 28px;
+}
+.activity-rail.is-right .status-notification-area {
+  display: flex;
+  justify-content: center;
 }
 
-.maven-pane,
-.notify-pane {
-  flex: none;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  margin: var(--workbench-gap);
-  border-radius: var(--island-radius);
-  background: var(--bg-primary);
-  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
-  overflow: hidden;
+/* portal 挂载点摊平成 panel-body 的直接子节点。 */
+.right-dock-slot {
+  display: contents;
 }
+
+/* 右侧工具窗口是工作区中的正常一列，宽度由自己的拖拽状态控制。 */
+.tool-window.is-right {
+  margin: var(--workbench-gap) 0;
+}
+
+/* Maven 内容铺在 panel-body 里，自身不再当岛。 */
+.panel-body .maven-pane {
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .maven-pane {
   color: var(--maven-fg);
   font-size: 13px;
   line-height: 1.35;
-}
-.maven-pane .tool-window-head {
-  height: 32px;
-  gap: 8px;
-  padding: 0 12px;
-}
-.maven-pane .tool-window-title {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0;
-  color: var(--maven-fg);
 }
 .maven-brand {
   flex: none;
@@ -2274,6 +2316,7 @@ span.entry-icon > svg {
   gap: 4px;
   padding: 6px 0;
   background-color: var(--app-bg);
+  touch-action: none;
 }
 
 .rail-button {
@@ -2285,7 +2328,31 @@ span.entry-icon > svg {
   border-radius: 6px;
   color: var(--text-muted);
   transition: background 120ms ease-out, color 120ms ease-out;
+  cursor: default;
+  user-select: none;
 }
+
+/* 普通悬停保持箭头，移动超过拖拽阈值后才显示抓取状态。 */
+.rail-button.is-dragging {
+  z-index: 1;
+  opacity: 0.46;
+  cursor: grabbing;
+}
+
+.rail-button.is-drop-before::before,
+.rail-button.is-drop-after::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent-blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 25%, transparent);
+}
+
+.rail-button.is-drop-before::before { top: -3px; }
+.rail-button.is-drop-after::before { bottom: -3px; }
 
 .rail-button:hover {
   background: var(--bg-hover);
@@ -2467,6 +2534,13 @@ span.entry-icon > svg {
   min-height: 0;
   overflow-y: auto;
   background: transparent;
+}
+
+/* 会话列表自己负责滚动；父层必须提供完整的可用高度，否则“最近”的 auto 外边距没有空间可推到底。 */
+.panel-body.is-ai-sessions {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* 参照 IDEA `ProgressDialogUI.kt` 的居中模态进度框（用于批量删除文件 / 递归删除大目录）。 */
@@ -3098,10 +3172,11 @@ span.entry-icon > svg {
 .run-row-main {
   flex: 1;
   min-width: 0;
+  min-height: var(--menu-item-height);
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 7px;
+  padding: 0 7px;
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text-primary);
@@ -4093,24 +4168,14 @@ span.entry-icon > svg {
   margin: var(--workbench-gap) var(--workbench-gap) var(--workbench-gap) 0;
 }
 
-.workbench-row:not(:has(.tool-window)) .editor-stack {
+.workbench-row:not(:has(> .tool-window.is-left)) .editor-stack {
   margin-left: var(--workbench-gap);
 }
 
-.editor-stack:has(+ .panel-splitter.is-vertical),
-.editor-stack:has(+ .maven-pane),
-.editor-stack:has(+ .notify-pane) {
+.editor-stack:has(+ .panel-splitter.is-vertical) {
   margin-right: 0;
 }
 
-.panel-splitter.is-vertical + .maven-pane,
-.panel-splitter.is-vertical + .notify-pane {
-  margin-left: 0;
-}
-
-.notify-pane:has(+ .maven-pane) {
-  margin-right: 0;
-}
 
 .editor-region {
   /* 空编辑区那张告示页钉在这一层。没有这层定位的话，它会飘到整个主体上，侧栏和活动条都点不到。
@@ -5826,7 +5891,8 @@ span.entry-icon > svg {
   align-items: center;
   gap: 5px;
   width: 100%;
-  padding: 5px 8px;
+  min-height: var(--menu-item-height);
+  padding: 0 8px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-size: 12px;
@@ -5849,7 +5915,8 @@ span.entry-icon > svg {
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 5px 8px;
+  min-height: var(--menu-item-height);
+  padding: 0 8px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-size: 12.5px;
@@ -6729,6 +6796,15 @@ span.entry-icon > svg {
     inset: 0 auto 0 0;
     box-shadow: var(--island-shadow);
     animation: slide-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* 右栏必须继续占工作区宽度，不能套用左栏的窄窗悬浮规则。 */
+  .tool-window.is-right {
+    position: static;
+    inset: auto;
+    z-index: auto;
+    margin: var(--workbench-gap) 0;
+    animation: none;
   }
 
   .workbench-row > .tool-window + .panel-splitter.is-vertical {

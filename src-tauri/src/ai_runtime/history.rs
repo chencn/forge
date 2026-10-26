@@ -120,7 +120,8 @@ pub fn is_placeholder_title(text: &str) -> bool {
 
 /// 会话自动标题：首条真人消息压成一行短标题，两个来源（发送时落库、原生历史解析）
 /// 共用同一套规则，否则列表每刷新一次就换一种写法。
-/// 取第一个非空行、折叠空白，尽量在句读或空格处断开，最长 30 个字符（按字符计，中文不切半）。
+/// 取第一个非空行、折叠空白；超过 30 个字符时先按第一句断开，其次断在空格上，
+/// 都没有才硬切（按字符计，中文不切半）。
 pub fn auto_title(text: &str) -> Option<String> {
     const MAX: usize = 30;
     let collapsed = text
@@ -134,15 +135,18 @@ pub fn auto_title(text: &str) -> Option<String> {
     if chars.len() <= MAX {
         return Some(collapsed);
     }
-    // 断点取窗口内最后一个句读或空格，太靠前的不算（否则只剩一两个字）。
+    if let Some(end) = chars[..MAX].iter().position(|c| matches!(c, '。' | '！' | '？' | '；')) {
+        return Some(chars[..=end].iter().collect());
+    }
+    // 断点太靠前的空格不算（否则标题只剩一两个词）。
     let end = chars[..MAX]
         .iter()
-        .rposition(|c| matches!(c, '。' | '！' | '？' | '；' | '，' | '、' | ' ' | '.' | '!' | '?' | ';' | ','))
-        .map_or(MAX, |index| index + 1)
-        .max(MAX / 3);
+        .rposition(|c| matches!(c, ' ' | ',' | '，' | '、'))
+        .filter(|index| *index + 1 >= MAX / 3)
+        .unwrap_or(MAX);
     let title = chars[..end].iter().collect::<String>();
-    let title = title.trim_end_matches([' ', '，', ',', '、', '；', ';', '：', ':', '。', '.']);
-    (!title.is_empty()).then_some(title.to_owned())
+    let title = title.trim();
+    (!title.is_empty()).then(|| title.to_owned())
 }
 
 /// Claude 的标题记录。用户的 `/rename` 和 CLI 自动标题都按追加写，最新一条生效。
@@ -200,7 +204,7 @@ fn codex_thread_names(codex_home: &Path) -> HashMap<String, String> {
         };
         let name = name.trim();
         if !id.is_empty() && !name.is_empty() && !is_placeholder_title(name) {
-            names.insert(id.to_owned(), name.to_owned());
+            names.insert(id.to_owned(), name.chars().take(120).collect());
         }
     }
     names
@@ -381,10 +385,22 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
         for path in paths {
             // 某一份历史损坏不该连累其他历史：跳过它，继续扫下一个。
             let Ok(Some(mut candidate)) = inspect(&path, provider, root) else {
+                // Codex 的子代理 rollout（source.subagent）会被 inspect 跳过；
+                // 父镜像存在时把它导入成子会话。
+                if provider == Provider::Codex {
+                    import_codex_subagent(base, &path, root, &known);
+                }
                 continue;
             };
+            // 标题到底出自线程名，决定已有镜像跟不跟着改（下面 follows 用）。
+            let mut title_from_thread_name = false;
             if let Some(name) = codex_names.get(&candidate.source.native_id) {
-                candidate.title = auto_title(name).unwrap_or_default();
+                // 早期 Forge 把整条首条消息原样写成了线程名，这种名字按 auto_title 收窄就行；
+                // 从首条消息标题起不来的（用户在 CLI 里自己改的）原样保留，一个字不动。
+                if candidate.title.is_empty() || !name.starts_with(&candidate.title) {
+                    candidate.title = name.clone();
+                    title_from_thread_name = true;
+                }
             }
             let source = candidate.source;
             let binding = binding_key(provider, &source.native_id);
@@ -404,12 +420,18 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                 // 用户手动改过并锁定过的标题，任何自动同步都不覆盖。
                 if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{id}.lock"))) {
                     if let Ok(mut meta) = Store::metadata(&base.join(id), root) {
-                        // 占位名是早期 Forge 自己写进去的，不是用户起的名字，必须让位给自动标题。
+                        // 占位名、原生 ID 当标题、剥完注入不剩人话的旧标题，都是早期版本自己写坏的，
+                        // 不是用户起的名字，必须让位给自动标题。
+                        // 已经加锁的用户标题一律不动；没锁但明显是同一条首句消息换过写法截出来的
+                        // （旧版本按 60 / 120 字硬截），也按自动标题纠正——人自己起的名字对不上这个形状。
                         let follows = !meta.title_locked
                             && (provider == Provider::Claude
+                                || meta.title == source.native_id
                                 || is_placeholder_title(&meta.title)
                                 || human_text(&meta.title).is_none()
-                                || codex_names.contains_key(&source.native_id));
+                                || title_from_thread_name
+                                || (!candidate.title.is_empty()
+                                    && auto_title(&meta.title).as_deref() == Some(candidate.title.as_str())));
                         if follows && meta.title != candidate.title {
                             meta.title = candidate.title.clone();
                             Store { dir: base.join(id), meta, seq: 0, poisoned: false }.save()?;
@@ -434,6 +456,9 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
                         save_source(base, id, &source)?;
                     }
                 }
+                if provider == Provider::Claude {
+                    import_claude_subagents(base, id, &source.path, &source.native_id, root);
+                }
                 continue;
             }
             let _lease = store::Lease::acquire(&base.join(format!("{key}.lock")))?;
@@ -442,10 +467,163 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
             target.meta.created_at = candidate.modified;
             target.save()?;
             save_source(base, &key, &source)?;
-            known.insert(binding, key);
+            known.insert(binding, key.clone());
+            if provider == Provider::Claude {
+                import_claude_subagents(base, &key, &source.path, &source.native_id, root);
+            }
         }
     }
     Ok(())
+}
+
+/// 子代理文件里的行都是它自己的对话（`isSidechain:true` 只是标记）；投影时剥掉
+/// 标记复用主解析器，其余规则（meta 过滤、工具配对）与父会话完全一致。
+fn project_sidechain(provider: Provider, value: &Value, offset: u64, projection: &mut ProjectionState) -> Vec<(String, Value)> {
+    if provider == Provider::Claude && value["isSidechain"] == true {
+        let mut stripped = value.clone();
+        if let Some(object) = stripped.as_object_mut() { object.remove("isSidechain"); }
+        return project_with_state(provider, &stripped, offset, projection);
+    }
+    project_with_state(provider, value, offset, projection)
+}
+
+/// 导入 Claude 的 `subagents/agent-*.jsonl`：每个文件是一个子代理的完整对话，
+/// 同名 `.meta.json` 带归属（toolUseId/agentType/description/finished）。
+/// 子会话 id 与 live 路由用同一规则派生，目录已存在（正在运行或已导入）就跳过。
+fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, native_id: &str, root: &str) {
+    let Some(project_dir) = native_path.parent() else { return };
+    let dir = project_dir.join(native_id).join("subagents");
+    let Ok(entries) = fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.extension().is_some_and(|extension| extension == "jsonl") { continue; }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("agent-") { continue; }
+        if fs::metadata(&path).map(|meta| meta.len() > MAX_FILE).unwrap_or(true) { continue; }
+        let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_owned();
+        if agent_id.is_empty() { continue; }
+        let info: Value = fs::read(path.with_file_name(format!("agent-{agent_id}.meta.json")))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or(Value::Null);
+        let key = info["toolUseId"].as_str().filter(|value| !value.is_empty()).unwrap_or(&agent_id).to_owned();
+        let child = super::child_session_id(parent_id, &key);
+        if base.join(&child).exists() { continue; }
+        let title = info["description"].as_str().map(str::trim).filter(|text| !text.is_empty()).unwrap_or("子代理").to_owned();
+        let Ok(mut target) = Store::open(base, &child, root, Provider::Claude, &title, "") else { continue };
+        let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |duration| duration.as_millis() as u64);
+        target.meta.parent_session_id = Some(parent_id.to_owned());
+        target.meta.agent = Some(store::AgentInfo {
+            native_agent_id: Some(agent_id.clone()),
+            agent_type: info["agentType"].as_str().map(str::to_owned),
+            title: title.clone(),
+            tool_id: key.clone(),
+            model: None,
+            status: if info["finished"] == true { "completed".into() } else { "stopped".into() },
+            started_at: modified,
+            ended_at: None,
+        });
+        let _ = target.save();
+        let Ok(file) = File::open(&path) else { continue };
+        let mut reader = BufReader::new(file);
+        let mut projection = ProjectionState::default();
+        let mut batch = vec![];
+        let mut lines = 0u64;
+        while let Ok(Some((value, _))) = bounded_line(&mut reader) {
+            // 子代理文件里每行的 sessionId 仍是父会话；对不上说明这不是它的记录。
+            if value["sessionId"].as_str().is_some_and(|session| session != native_id) { continue; }
+            batch.extend(project_sidechain(Provider::Claude, &value, lines, &mut projection));
+            lines += 1;
+            if batch.len() >= 128 {
+                if target.append("native", std::mem::take(&mut batch)).is_err() { break; }
+            }
+            if lines >= 20000 { break; }
+        }
+        let _ = target.append("native", batch);
+        let _ = target.append("native", vec![("agent".into(), json!({"key":key,"status":"completed","imported":true}))]);
+    }
+}
+
+/// 导入 Codex 的子代理 rollout（`session_meta.source.subagent`）。文件头部带一份父
+/// 历史副本（fork_turns=all），真正的子代理内容在第二条 session_meta 之后；只在父
+/// 镜像已存在、子会话目录还没建过时导入。头部预算与 inspect 一致。
+fn import_codex_subagent(base: &Path, path: &Path, root: &str, known: &std::collections::HashMap<String, String>) {
+    let Ok(file) = File::open(path) else { return };
+    let mut reader = BufReader::new(file.take(256 * 1024));
+    let mut first_meta: Option<(String, String)> = None;
+    let mut child_meta: Option<(Value, u64)> = None;
+    let mut scanned = 0u64;
+    while let Ok(Some((value, count))) = bounded_line(&mut reader) {
+        if value["type"] == "session_meta" {
+            let p = &value["payload"];
+            if first_meta.is_none() {
+                first_meta = Some((p["id"].as_str().unwrap_or_default().to_owned(), p["cwd"].as_str().unwrap_or_default().to_owned()));
+            }
+            let spawn = &p["source"]["subagent"]["thread_spawn"];
+            if !spawn.is_null() || p["source"] == "subagent" || p["thread_source"] == "subagent" {
+                child_meta = Some((p.clone(), scanned + count));
+                break;
+            }
+        }
+        scanned += count;
+        if scanned > 256 * 1024 { return; }
+    }
+    let Some((meta, body_start)) = child_meta else { return };
+    let Some((parent_native, cwd)) = first_meta else { return };
+    if !same_root(&cwd, root) { return; }
+    let spawn = &meta["source"]["subagent"]["thread_spawn"];
+    let Some(child_id) = meta["id"].as_str().filter(|id| !id.is_empty()) else { return };
+    let Some(parent_forge) = known.get(&binding_key(Provider::Codex, &parent_native)) else { return };
+    if spawn["parent_thread_id"].as_str().is_some_and(|id| id != parent_native) { return; }
+    let child = super::child_session_id(parent_forge, child_id);
+    if base.join(&child).exists() { return; }
+    let agent_path = spawn["agent_path"].as_str().unwrap_or_default().to_owned();
+    let title = if agent_path.is_empty() { "子代理".to_owned() } else { agent_path.trim_start_matches("/root/").to_owned() };
+    let Ok(mut target) = Store::open(base, &child, root, Provider::Codex, &title, "") else { return };
+    target.meta.parent_session_id = Some(parent_forge.clone());
+    target.meta.agent = Some(store::AgentInfo {
+        native_agent_id: (!agent_path.is_empty()).then(|| agent_path.clone()),
+        agent_type: spawn["agent_nickname"].as_str().map(str::to_owned),
+        title: title.clone(),
+        tool_id: child_id.to_owned(),
+        model: None,
+        status: "stopped".into(),
+        started_at: 0,
+        ended_at: None,
+    });
+    let _ = target.save();
+    let Ok(mut file) = File::open(path) else { return };
+    if file.seek(SeekFrom::Start(body_start)).is_err() { return; }
+    let length = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let mut reader = BufReader::new(file.take((length - body_start).min(MAX_FILE)));
+    let mut projection = ProjectionState::default();
+    let mut batch = vec![];
+    let mut lines = 0u64;
+    let mut answered = false;
+    while let Ok(Some((value, _))) = bounded_line(&mut reader) {
+        if value["type"] == "session_meta" {
+            // 子代理自己的 meta 已经消费过；出现新 meta 说明文件形状与预期不符。
+            continue;
+        }
+        if value["payload"]["type"].as_str() == Some("agent_message")
+            && value["payload"]["content"].to_string().contains("FINAL_ANSWER") {
+            answered = true;
+        }
+        batch.extend(project_with_state(Provider::Codex, &value, lines, &mut projection));
+        lines += 1;
+        if batch.len() >= 128 {
+            if target.append("native", std::mem::take(&mut batch)).is_err() { break; }
+        }
+        if lines >= 20000 { break; }
+    }
+    let _ = target.append("native", batch);
+    if answered {
+        if let Some(info) = target.meta.agent.as_mut() { info.status = "completed".into(); }
+        let _ = target.save();
+    }
+    let _ = target.append("native", vec![("agent".into(), json!({"key":child_id,"status":if answered {"completed"} else {"stopped"},"imported":true}))]);
 }
 fn save_source(base: &Path, id: &str, source: &Source) -> Result<(), String> {
     crate::sys::write_atomic(
@@ -1112,17 +1290,24 @@ mod tests {
         fs::remove_dir_all(temp).unwrap();
     }
 
-    /// 自动标题要把长消息压成一行短名字：折叠空白、在句读或空格处断开，
-    /// 而不是从词中间硬切；发送时和解析原生历史都走这一个函数，写法必须一致。
+    /// 自动标题要把长消息压成一行短名字：只取第一行、折叠空白，超长时先断在第一句，
+    /// 其次断在空格上，都没有才硬切。发送时和解析原生历史都走这一个函数，写法必须一致。
     #[test]
     fn auto_title_cuts_at_a_boundary_and_collapses_whitespace() {
-        assert_eq!(auto_title("  修复   登录页\n的跨域问题  ").as_deref(), Some("修复 登录页 的跨域问题"));
-        assert_eq!(auto_title("排查任务队列。先看 FIFO 队首有没有卡住").as_deref(), Some("排查任务队列"));
-        // 短句里没有句读时按长度切，但切在空格上，不留半个词。
+        assert_eq!(auto_title("  修复   登录页\n的跨域问题  ").as_deref(), Some("修复 登录页"));
         assert_eq!(
-            auto_title(&format!("{} 剩余部分后面还有很长的内容", "分".repeat(40))).as_deref(),
+            auto_title("先修复登录跨域。后面的内容太长就不再进标题里了一直往下堆很多字").as_deref(),
+            Some("先修复登录跨域。")
+        );
+        // 既没句读也没空格：硬切到 30 个字符，中文不切半。
+        assert_eq!(
+            auto_title(&"分".repeat(40)).as_deref(),
             Some("分".repeat(30).as_str())
         );
+        // 空格断点太靠前的不算，否则标题只剩一两个词；还是硬切到 30 个字符。
+        let hard = auto_title("改 a 完之后还要回归所有平台的登录与排队流程一起验一遍并且要覆盖旧标签").unwrap();
+        assert_eq!(hard.chars().count(), 30);
+        assert!(hard.starts_with("改 a 完之后"));
         assert_eq!(auto_title("   "), None);
         assert!(is_placeholder_title("Codex 会话 12"));
         assert!(is_placeholder_title("Claude Code session 3"));
@@ -1169,6 +1354,85 @@ mod tests {
         fs::write(&index, format!("{}\n", json!({"id":id,"thread_name":"CLI 又改了一次"}))).unwrap();
         discover_in(&base, &workspace, vec![(Provider::Codex, sessions)]).unwrap();
         assert_eq!(Store::metadata(&base.join(id), &workspace).unwrap().title, "用户改的标题");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// 镜像里还写着早期占位名（Claude 的 custom-title、Codex 的线程名），或者线程名就是
+    /// 整条首句消息：下一次发现要把它换成自动标题，用户锁过的名字一个都不动。
+    #[test]
+    fn discovery_replaces_placeholder_titles_with_the_auto_title() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-auto-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let claude = temp.join("claude");
+        let codex = temp.join("codex");
+        let sessions = codex.join("sessions");
+        for path in [&root, &base, &claude, &sessions] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let prompt = "先修复登录跨域。后面的内容太长就不再进标题里了一直往下堆很多字";
+        let want = auto_title(prompt).unwrap();
+        fs::write(
+            claude.join("claude.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"user","cwd":root,"sessionId":"claude-old","message":{"content":prompt}}),
+                json!({"type":"custom-title","customTitle":"Claude Code 会话 3"})
+            ),
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("codex-placeholder.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":"codex-placeholder","cwd":root,"source":"cli"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}})
+            ),
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("codex-dump.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":"codex-dump","cwd":root,"source":"cli"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}})
+            ),
+        )
+        .unwrap();
+        fs::write(
+            sessions.join("codex-named.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":"codex-named","cwd":root,"source":"cli"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}})
+            ),
+        )
+        .unwrap();
+        // 占位名那一行按老版本的样子留在索引里；另一条的索引名是整条首句消息。
+        fs::write(
+            codex.join("session_index.jsonl"),
+            format!("{}\n{}\n", json!({"id":"codex-placeholder","thread_name":"Codex 会话 4"}), json!({"id":"codex-dump","thread_name":prompt})),
+        )
+        .unwrap();
+        for (id, provider, title) in [
+            ("claude-old", Provider::Claude, "Claude Code 会话 3"),
+            ("codex-placeholder", Provider::Codex, "Codex 会话 4"),
+            ("codex-dump", Provider::Codex, prompt),
+            // 用户自己起的名字（还没加锁的那批旧数据）：对不上首句消息的形状，一个字不动。
+            ("codex-named", Provider::Codex, "登录跨域"),
+        ] {
+            let mut mirror = Store::open(&base, id, &workspace, provider, title, "").unwrap();
+            mirror.bind(id.to_owned()).unwrap();
+        }
+        discover_in(&base, &workspace, vec![(Provider::Claude, claude), (Provider::Codex, sessions)]).unwrap();
+        for id in ["claude-old", "codex-placeholder", "codex-dump"] {
+            let meta = Store::metadata(&base.join(id), &workspace).unwrap();
+            assert_eq!(meta.title, want, "{id}");
+            assert!(!meta.title_locked, "{id} 的标题是自动取的，不能加锁");
+        }
+        assert_eq!(Store::metadata(&base.join("codex-named"), &workspace).unwrap().title, "登录跨域");
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -1224,6 +1488,20 @@ mod tests {
         let failed = project(Provider::Codex, &json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch","output":"denied","status":"failed"}}), 0);
         assert_eq!(recorded[0].1["status"], "recorded");
         assert_eq!(failed[0].1["status"], "failed");
+    }
+
+    #[test]
+    fn sidechain_lines_project_as_the_agents_own_conversation() {
+        let mut projection = ProjectionState::default();
+        let line = json!({
+            "isSidechain":true,"agentId":"agent-1","sessionId":"parent-session","type":"user",
+            "message":{"role":"user","content":"从 1 输出到 100"}
+        });
+        let events = project_sidechain(Provider::Claude, &line, 0, &mut projection);
+        // 剥掉 isSidechain 标记后照常投影：任务正文成为子会话的第一条用户消息。
+        assert!(events.iter().any(|(kind, data)| kind == "user" && data["text"] == "从 1 输出到 100"));
+        // 主解析器对同一条（未剥标记）仍然保持静默：父会话镜像不收子代理的行。
+        assert!(project(Provider::Claude, &line, 0).is_empty());
     }
 
     #[test]
@@ -1435,4 +1713,3 @@ mod tests {
         );
     }
 }
-

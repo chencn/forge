@@ -78,6 +78,8 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
   --radius-pill: 999px;
+  /* 所有普通单行菜单共用这一档；多行内容只把它当最小高度。 */
+  --menu-item-height: 28px;
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 0px;
   --header-height: 2.5rem;

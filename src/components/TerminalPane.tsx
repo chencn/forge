@@ -4,6 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 import { Plus, RotateCw, TerminalSquare } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
+import { useAiInputMenu } from "./AiInputContext";
 import { errorText, openExternal } from "../lib/fs";
 import { describeError } from "../lib/errors";
 import {
@@ -93,6 +94,7 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
   const [weights, setWeights] = useState<Record<string, number>>({});
   const panesRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
+  const aiInputMenu = useAiInputMenu();
   const shellRef = useRef(settings.terminal.shell);
   shellRef.current = settings.terminal.shell;
   const cwdRef = useRef(cwd);
@@ -194,7 +196,8 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
     if (sessionId !== activeId) setActiveTermFor(cwdRef.current, sessionId);
     const control = termControl(sessionId);
     const grouped = (active?.members.length ?? 0) > 1;
-    const selection = control?.selection().trim() ?? "";
+    const rawSelection = control?.selection() ?? "";
+    const selection = rawSelection.trim();
     const selectedUrl = isHttpUrl(selection) ? selection : null;
 
     setMenu({
@@ -222,6 +225,7 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
             if (text) void navigator.clipboard.writeText(text);
           },
         },
+        aiInputMenu({ kind: "text", text: rawSelection, source: t("panel.terminal") }),
         {
           label: t("action.paste"),
           onSelect: () => {

@@ -31,9 +31,15 @@ use registry::{Control, Run};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{atomic::Ordering, mpsc, Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Arc, Mutex, OnceLock,
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 前端发起一轮对话的请求。`deny_unknown_fields` 让多余字段直接失败，
@@ -589,6 +595,97 @@ pub async fn ai_runtime_save_image_file(app: AppHandle, path: String) -> Result<
     .await
 }
 
+const MAX_TEXT_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
+static TEXT_ATTACHMENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/** 长选区只落到系统临时目录；工作区和项目源码目录永远不会收到这些中转文件。 */
+fn save_text_attachment_to(directory: PathBuf, text: &str) -> Result<Value, String> {
+    if text.trim().is_empty() {
+        return Err("临时附件内容不能为空".into());
+    }
+    if text.len() > MAX_TEXT_ATTACHMENT_BYTES {
+        return Err("临时附件不能超过 16 MB".into());
+    }
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("创建临时附件目录失败：{error}"))?;
+    let directory = fs::canonicalize(&directory)
+        .map_err(|error| format!("读取临时附件目录失败：{error}"))?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = TEXT_ATTACHMENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let path = directory.join(format!("context-{}-{stamp}-{sequence}.txt", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("创建临时附件失败：{error}"))?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| format!("保存临时附件失败：{error}"))?;
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "directory": directory.to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+pub async fn ai_runtime_save_text_attachment(app: AppHandle, text: String) -> Result<Value, String> {
+    block(move || {
+        enabled(&app)?;
+        save_text_attachment_to(std::env::temp_dir().join("forge-ai-context"), &text)
+    })
+    .await
+}
+
+fn file_line_count(path: &str) -> Result<u64, String> {
+    let path = PathBuf::from(path.trim());
+    if !path.is_absolute() || path.as_os_str().len() > 32_768 {
+        return Err("文件路径必须是绝对路径".into());
+    }
+    let mut file = fs::File::open(&path).map_err(|error| format!("读取文件失败：{error}"))?;
+    if !file
+        .metadata()
+        .map_err(|error| format!("读取文件信息失败：{error}"))?
+        .is_file()
+    {
+        return Err("目标不是文件".into());
+    }
+    // 按换行字节流式计数，不把大文件整份读进内存；空文件在编辑器里也有第 1 行。
+    let mut lines = 1_u64;
+    let mut previous_was_cr = false;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("读取文件失败：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        for byte in &buffer[..read] {
+            match *byte {
+                b'\r' => {
+                    lines = lines.saturating_add(1);
+                    previous_was_cr = true;
+                }
+                b'\n' if previous_was_cr => previous_was_cr = false,
+                b'\n' => lines = lines.saturating_add(1),
+                _ => previous_was_cr = false,
+            }
+        }
+    }
+    Ok(lines)
+}
+
+#[tauri::command]
+pub async fn ai_runtime_file_line_count(app: AppHandle, path: String) -> Result<u64, String> {
+    block(move || {
+        enabled(&app)?;
+        file_line_count(&path)
+    })
+    .await
+}
+
 /// 输入框里撤掉一张还没发出去的附件；已经进历史的由后端拒绝，只能随会话删除。
 #[tauri::command]
 pub async fn ai_runtime_delete_image(app: AppHandle, path: String) -> Result<(), String> {
@@ -815,6 +912,12 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
         request.mode = Some(options::canonical_mode(&catalog, request.provider, request.mode.as_deref(), request.plan_mode, request.permission)?);
         validate(&request)?;
         let base = base(&app)?;
+        // 子代理会话没有直连 CLI 的通道：直接发送一律拒绝，统一走转发命令。
+        if let Ok(meta) = store::Store::metadata(&base.join(&request.session_id), &root) {
+            if meta.agent.is_some() {
+                return Err("子代理会话不能直接发送消息：请在子代理窗口发送，将由父会话转发".into());
+            }
+        }
         // 计划决策先抢提交权：双击或两个窗口只能有一个进入队列。
         // 执行正文完全由后端生成，前端无法在批准时夹带额外指令。
         if let Some(plan) = request.plan.clone() {
@@ -966,7 +1069,7 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
     let session_id = request.session_id.clone();
     let spawned = std::thread::Builder::new().name("forge-ai-runtime".into()).spawn(move || {
         let session_lease = session_lease;
-        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: 0, compaction_index: 0, compaction_done: false };
+        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: 0, compaction_index: 0, compaction_done: false, agents: HashMap::new() };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.execute(request, controls, include_user)));
         let outcome = match result { Ok(result) => result, Err(_) => Err("AI 运行线程异常退出，未自动重发".into()) };
         if let Err(error) = &outcome { worker.fail_plan_claim(error); }
@@ -1016,6 +1119,31 @@ fn schedule_next(app: &AppHandle, session_id: &str) -> Result<(), String> {
     }
 }
 
+/// 子代理在 Worker 里的登记项：子会话存储句柄加上一份状态去重副本。
+/// `Store::append` 每次从文件尾对齐序号，句柄可以长期持有；状态副本用来挡掉
+/// CLI 的重复生命周期通知（started/completed 成对、REPLACE 全量刷新）。
+struct AgentRoute {
+    store: store::Store,
+    last_status: String,
+}
+
+/// 子会话 id 由父会话 id 与路由 key（Claude 的 parent_tool_use_id、Codex 的
+/// agentThreadId）派生：前缀截到 48 字符保证总长不超 `valid_id` 的 80 上限，
+/// 后缀是 key 的稳定散列，同一代理跨轮重建得到同一个 id。
+fn child_session_id(parent: &str, key: &str) -> String {
+    // 目录名会跨版本持久化，不能依赖 Rust 未承诺算法稳定的 DefaultHasher。
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{}-ag{:012x}", &parent[..parent.len().min(48)], hash & 0xffff_ffff_ffff)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
 /// 一轮运行的执行上下文：负责把协议动作落成事件、写进存储并发给前端。
 struct Worker {
     /// 用于读取数据目录并发事件给前端。
@@ -1046,6 +1174,9 @@ struct Worker {
     summary_start: u64,
     compaction_index: u64,
     compaction_done: bool,
+    /// 子代理 key → 子会话句柄。协议层产出 `agent` 事件与带 `agentKey` 的条目，
+    /// 这里负责建子会话、路由事件、维护状态。
+    agents: HashMap<String, AgentRoute>,
 }
 impl Worker {
     fn queue(&mut self, kind: &str, data: Value) -> Result<(), String> {
@@ -1085,6 +1216,19 @@ impl Worker {
                 Action::Write(value) => process.write(&value)?,
                 Action::CloseInput => process.close_input(),
                 Action::Emit { kind, mut data } => {
+                    // 子代理条目：协议层带 agentKey 的写进子会话，不进父时间线。
+                    if let Some(key) = data.get("agentKey").and_then(Value::as_str).map(str::to_owned) {
+                        if let Some(object) = data.as_object_mut() {
+                            object.remove("agentKey");
+                            object.remove("parent");
+                        }
+                        self.route_agent(&key, kind, data)?;
+                        continue;
+                    }
+                    if kind == "agent" {
+                        self.agent_event(data)?;
+                        continue;
+                    }
                     if kind == "turn" {
                         self.native_turn_id = data["nativeTurnId"].as_str().map(str::to_owned);
                     }
@@ -1184,6 +1328,106 @@ impl Worker {
             }
         }
         Ok(terminal)
+    }
+    /// 维护一个子代理的生命周期：首见时建子会话，之后更新元数据状态并把
+    /// `agent` 事件同时写进子会话（状态条）与父会话（委派卡、子代理列表）。
+    /// CLI 会成对/重复发生命周期通知，状态与信息都没变的那次不落盘。
+    fn agent_event(&mut self, data: Value) -> Result<(), String> {
+        let Some(key) = data["key"].as_str().map(str::to_owned).filter(|key| !key.is_empty()) else {
+            return Ok(());
+        };
+        if !self.agents.contains_key(&key) {
+            let base = self.store.dir.parent().ok_or("会话存储路径无效")?.to_path_buf();
+            let title = data["title"].as_str().map(str::trim).filter(|title| !title.is_empty()).unwrap_or("子代理").to_owned();
+            let child = child_session_id(&self.run.session_id, &key);
+            {
+                let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                let mut target = store::Store::open(&base, &child, &self.run.workspace, self.store.meta.provider, &title, "")?;
+                target.meta.parent_session_id = Some(self.run.session_id.clone());
+                let fresh = target.seq == 0;
+                {
+                    // 子会话可能在上一个父回合里已存在（SendMessage 复活续聊）：
+                    // 保留已落盘的元数据，只补这次通知里新出现的字段。
+                    let info = target.meta.agent.get_or_insert_with(|| store::AgentInfo {
+                        native_agent_id: None, agent_type: None, title: title.clone(), tool_id: key.clone(),
+                        model: None, status: "running".into(), started_at: now_ms(), ended_at: None,
+                    });
+                    if info.title.trim().is_empty() { info.title = title.clone(); }
+                    if info.native_agent_id.is_none() {
+                        info.native_agent_id = data["agentId"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
+                    }
+                    if info.agent_type.is_none() {
+                        info.agent_type = data["agentType"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
+                    }
+                    if info.model.is_none() {
+                        info.model = data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()).map(str::to_owned);
+                    }
+                    info.status = "running".into();
+                    info.ended_at = None;
+                }
+                target.save()?;
+                // spawn 通知若带任务正文（Claude 的 Agent 工具入参），作为子会话的
+                // 第一条用户消息：子代理视图打开时能看到它被安排了什么，而不只是工具活动。
+                if fresh {
+                    if let Some(prompt) = data["prompt"].as_str().map(str::trim).filter(|prompt| !prompt.is_empty()) {
+                        let events = target.append(&self.run.id, vec![("user".into(), json!({"text": prompt, "agentTask": true}))])?;
+                        let _ = self.app.emit(CHANNEL, &events);
+                    }
+                }
+                self.agents.insert(key.clone(), AgentRoute { store: target, last_status: "running".into() });
+            }
+            // 父侧卡片与抽屉靠它跳进子会话；派生规则不暴露给前端。
+            let mut data = data;
+            if let Some(object) = data.as_object_mut() { object.insert("sessionId".into(), json!(child)); }
+            self.queue("agent", data)?;
+            return Ok(());
+        }
+        let status = data["status"].as_str().unwrap_or("running").to_owned();
+        let has_payload = ["result", "usage", "detail"].iter().any(|field| data.get(field).is_some_and(|value| !value.is_null()));
+        let (meta_changed, append) = {
+            let route = self.agents.get_mut(&key).expect("agent route exists");
+            let Some(info) = route.store.meta.agent.as_mut() else { return Ok(()); };
+            let mut changed = false;
+            for (field, slot) in [
+                (data["agentId"].as_str().filter(|value| !value.is_empty()), &mut info.native_agent_id),
+                (data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()), &mut info.model),
+                (data["agentType"].as_str().filter(|value| !value.is_empty()), &mut info.agent_type),
+            ] {
+                if let Some(value) = field {
+                    if slot.as_deref() != Some(value) { *slot = Some(value.to_owned()); changed = true; }
+                }
+            }
+            if info.status != status {
+                info.status = status.clone();
+                if matches!(status.as_str(), "completed" | "failed" | "stopped") { info.ended_at = Some(now_ms()); }
+                changed = true;
+            }
+            let append = route.last_status != status || has_payload;
+            route.last_status = status.clone();
+            (changed, append)
+        };
+        if append {
+            let route = self.agents.get_mut(&key).expect("agent route exists");
+            if meta_changed { route.store.save()?; }
+            let mut data = data;
+            if let Some(object) = data.as_object_mut() {
+                object.insert("sessionId".into(), json!(route.store.meta.session_id));
+            }
+            let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+            let events = route.store.append(&self.run.id, vec![("agent".into(), data.clone())])?;
+            let _ = self.app.emit(CHANNEL, &events);
+            self.queue("agent", data)?;
+        }
+        Ok(())
+    }
+    /// 把子代理的对话事件写进它的子会话。句柄未建（生命周期事件还没到）就丢弃：
+    /// 协议保证 spawn 通知先于任何子代理输出。
+    fn route_agent(&mut self, key: &str, kind: &str, data: Value) -> Result<(), String> {
+        let Some(route) = self.agents.get_mut(key) else { return Ok(()); };
+        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+        let events = route.store.append(&self.run.id, vec![(kind.to_owned(), data)])?;
+        let _ = self.app.emit(CHANNEL, &events);
+        Ok(())
     }
     /// 计划回合产出的权威正文：登记 revision 后立刻广播审阅卡片。
     fn record_plan(&mut self, title: String, content: String, native_plan_id: String) -> Result<(), String> {
@@ -1367,6 +1611,19 @@ impl Worker {
                             .and_then(|_| self.flush());
                         let _ = reply.send(result);
                     }
+                    Control::AgentStop { task_id, reply } => {
+                        // 停止单个后台子代理（Claude stop_task）。回包是普通
+                        // control_response，request_id 不在已知集合里会被静默忽略。
+                        let result = (|| {
+                            if stopping.is_some() || self.run.cancelled.load(Ordering::Acquire) {
+                                return Err("任务正在停止，子代理已一并停止".into());
+                            }
+                            self.actions(&mut *protocol, vec![Action::Write(
+                                json!({"type":"control_request","request_id":format!("forge-stop-{task_id}"),"request":{"subtype":"stop_task","task_id":task_id}}),
+                            )], &mut process).map(|_| ())
+                        })();
+                        let _ = reply.send(result);
+                    }
                 }
             }
             if self.flushed.elapsed() >= Duration::from_millis(32) {
@@ -1487,6 +1744,29 @@ impl Worker {
         }
         self.pending.clear();
         self.finish_plan_execution(status);
+        // CLI 进程退出后它的子代理不可能还活着：仍标 running 的子会话落一个
+        // 诚实的终态，否则子代理列表永远显示「运行中」。已完成的子代理不动。
+        for (_, mut route) in std::mem::take(&mut self.agents) {
+            let key = route.store.meta.agent.as_ref().map(|info| info.tool_id.clone()).unwrap_or_default();
+            let was_running = route.store.meta.agent.as_mut().is_some_and(|info| {
+                if matches!(info.status.as_str(), "" | "running") {
+                    info.status = "stopped".into();
+                    info.ended_at = Some(now_ms());
+                    true
+                } else { false }
+            });
+            if !was_running { continue; }
+            let settled = (|| {
+                route.store.save()?;
+                let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                let events = route.store.append(&self.run.id, vec![("agent".into(), json!({"key":key,"status":"stopped"}))])?;
+                let _ = self.app.emit(CHANNEL, &events);
+                Ok::<(), String>(())
+            })();
+            if let Err(cause) = settled {
+                let _ = self.app.emit("ai-runtime://errors", json!({"sessionId":route.store.meta.session_id,"runId":self.run.id,"error":cause}));
+            }
+        }
         let history_result = self.flush().and_then(|_| {
             let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
             let base = self.store.dir.parent().ok_or("会话路径无效")?.to_path_buf();
@@ -1618,6 +1898,113 @@ pub async fn ai_runtime_respond(
     .await
 }
 
+/// 子代理消息的转发序号：同一毫秒内的两次转发也要有互不相同的 run id。
+static FORWARD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 在子代理会话窗口里发送消息。两个 CLI 都没有客户端直发子代理的通道
+/// （Claude 的 send_task_message 在本地引擎抛 Unsupported，Codex 明确禁止对子线程
+/// turn/start），唯一通路是把消息包装成指令注入父会话，由父模型调 SendMessage /
+/// followup_task 转达。父会话时间线会留下这条转发，用户能看到完整链路。
+#[tauri::command]
+pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, workspace: String, prompt: String) -> Result<Value, String> {
+    block(move || {
+        enabled(&app)?;
+        let prompt = prompt.trim().to_owned();
+        if prompt.is_empty() || prompt.len() > 64 * 1024 {
+            return Err("消息不能为空，且不能超过 64 KiB".into());
+        }
+        if !store::valid_id(&session_id) {
+            return Err("无效会话 ID".into());
+        }
+        let root = store::workspace(&workspace)?;
+        let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
+        let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后发送")?;
+        if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后发送".into()); }
+        let base = base(&app)?;
+        let dir = base.join(&session_id);
+        let meta = store::Store::metadata(&dir, &root)?;
+        let agent = meta.agent.clone().ok_or("这条会话不是子代理会话")?;
+        let parent_id = meta.parent_session_id.clone().ok_or("子代理会话缺少父会话")?;
+        let parent_dir = base.join(&parent_id);
+        let parent = store::Store::metadata(&parent_dir, &meta.workspace)?;
+        let address = agent.native_agent_id.clone()
+            .ok_or("该子代理还没有可寻址的标识，等它启动完成后再发送")?;
+        let instruction = match parent.provider {
+            Provider::Claude => format!(
+                "[子代理消息转发] 用户在子代理「{title}」的会话窗口里输入了一条消息。请用 SendMessage 工具（to 参数填 \"{address}\"）把下面的消息原样转发给它，等待它的回复后把结果汇报给用户；不要自己代替它回答。\n\n用户消息：\n{prompt}",
+                title = agent.title, address = address, prompt = prompt,
+            ),
+            Provider::Codex => format!(
+                "[子代理消息转发] 用户在子代理「{title}」的会话窗口里输入了一条消息。请调用 functions.collaboration.followup_task（target 参数填 \"{address}\"）把下面的消息发给它，等待它的 FINAL_ANSWER 后把结果汇报给用户；不要自己代替它回答。\n\n用户消息：\n{prompt}",
+                title = agent.title, address = address, prompt = prompt,
+            ),
+        };
+        // 用户输入先落进子会话（标记 relay），界面立刻能看到自己发了什么；
+        // 子代理的回复仍由父会话运行时按 agentKey 路由回来。
+        {
+            let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+            let mut child = store::Store::open_for_append(&base, &session_id, &meta.workspace, meta.provider, &meta.title, "")?;
+            let events = child.append("relay", vec![("user".into(), json!({"text": prompt, "relay": true}))])?;
+            let _ = app.emit(CHANNEL, &events);
+        }
+        let request = SendRequest {
+            session_id: parent_id,
+            run_id: format!("fwd-{}-{}", now_ms(), FORWARD_SEQ.fetch_add(1, Ordering::Relaxed)),
+            provider: parent.provider,
+            workspace: parent.workspace,
+            title: parent.title,
+            prompt: instruction,
+            images: vec![],
+            trusted: true,
+            model: None,
+            effort: None,
+            // 转发回合不覆盖任何档位：Claude 沿用 manual 审批流，Codex 让线程保持自己的设置。
+            permission: options::PermissionMode::Inherit,
+            fast: None,
+            service_tier: None,
+            codex_grant: None,
+            command: None,
+            plan_mode: false,
+            mode: None,
+            plan: None,
+            additional_dirs: vec![],
+            plan_turn: None,
+        };
+        dispatch_task(&app, &request, &request.workspace, &base)
+    })
+    .await
+}
+
+/// 停止单个后台子代理。只有 Claude 提供了 stop_task 控制请求；Codex 的
+/// interrupt_agent 是模型侧工具，客户端没有通道，只能停整个父回合。
+#[tauri::command]
+pub async fn ai_runtime_agent_stop(app: AppHandle, session_id: String, workspace: String) -> Result<(), String> {
+    block(move || {
+        enabled(&app)?;
+        if !store::valid_id(&session_id) {
+            return Err("无效会话 ID".into());
+        }
+        let root = store::workspace(&workspace)?;
+        let base = base(&app)?;
+        let meta = store::Store::metadata(&base.join(&session_id), &root)?;
+        if meta.provider != Provider::Claude {
+            return Err("Codex 子代理暂不支持单独停止；请停止当前对话回合".into());
+        }
+        let agent = meta.agent.ok_or("这条会话不是子代理会话")?;
+        let address = agent.native_agent_id.ok_or("该子代理还没有可停止的标识")?;
+        let parent_id = meta.parent_session_id.clone().ok_or("子代理会话缺少父会话")?;
+        let run = registry::for_session(&parent_id).ok_or("父会话当前没有运行，子代理已随之结束")?;
+        let (reply, receive) = mpsc::sync_channel(1);
+        run.controls
+            .try_send(Control::AgentStop { task_id: address, reply })
+            .map_err(|_| "运行繁忙或已经结束".to_string())?;
+        receive
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "停止请求未确认；请勿重复操作".to_string())?
+    })
+    .await
+}
+
 /// 暂停或继续 Codex 原生 Goal。活动回合复用现有 app-server；空闲会话走短连接并落盘权威快照。
 #[tauri::command]
 pub async fn ai_runtime_set_goal_status(
@@ -1688,7 +2075,10 @@ pub async fn ai_runtime_load(
         }
         let mut warning = None;
         let mut native_more = false;
-        if registry::for_session(&session_id).is_none() {
+        // 子代理会话的事件全部由父会话运行时写入，没有要同步的原生历史；
+        // 它的 native_id 存的是子代理标识，按会话 id 去原生目录找只会报错。
+        let agent_session = store::Store::metadata(&base.join(&session_id), &root).map(|meta| meta.agent.is_some()).unwrap_or(false);
+        if !agent_session && registry::for_session(&session_id).is_none() {
             if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
                 // 没有本进程回合、也没有排队决策时，plans.json 里的 submitting 就是上次
                 // 进程没来得及确认的残留；退回待审，别让计划卡永远消失。
@@ -1811,7 +2201,8 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
             if !store::valid_id(&id) { continue; }
             if let Ok(mut meta)=store::Store::metadata(&entry.path(),&root) {
                 // 旧版包装 ID 不再进入 UI；原生历史已按真实 ID 重建只读镜像。
-                if meta.native_id.as_deref().is_some_and(|native| native != meta.session_id) { continue; }
+                // 子会话的 native_id 存的是子代理标识，不适用这条过滤规则。
+                if meta.agent.is_none() && meta.native_id.as_deref().is_some_and(|native| native != meta.session_id) { continue; }
                 if meta.provider == Provider::Codex {
                     if let Some(native) = codex_by_id.get(&meta.session_id) {
                         // 用户锁定过的标题以 Forge 为准；未锁定时原生线程名是权威来源。
@@ -1834,7 +2225,7 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                     .map(|duration| duration.as_millis() as u64)
                     .filter(|ts| *ts > 0)
                     .unwrap_or(meta.created_at);
-                sessions.push(json!({"id":meta.session_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&meta.session_id).map(|v|v["status"].clone())}));
+                sessions.push(json!({"id":meta.session_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&meta.session_id).map(|v|v["status"].clone()),"parentSessionId":meta.parent_session_id,"agent":meta.agent}));
             }
         }
         sessions.sort_by_key(|item| std::cmp::Reverse(item["createdAt"].as_u64().unwrap_or_default()));
@@ -2010,6 +2401,17 @@ pub fn reap_all_for_exit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn child_session_ids_are_stable_valid_and_scoped() {
+        // 同一个 key 跨轮派生出同一个 id：live 路由与历史导入天然对齐。
+        assert_eq!(child_session_id("parent", "toolu_agent_1"), child_session_id("parent", "toolu_agent_1"));
+        assert_eq!(child_session_id("parent", "toolu_agent_1"), "parent-ag6e5aab0af93c");
+        assert_ne!(child_session_id("parent", "toolu_agent_1"), child_session_id("parent", "toolu_agent_2"));
+        assert_ne!(child_session_id("parent-a", "key"), child_session_id("parent-b", "key"));
+        let id = child_session_id(&"p".repeat(80), "key");
+        assert!(store::valid_id(&id), "{id} 必须能当目录名");
+        assert!(id.starts_with(&"p".repeat(48)), "父会话前缀要能看出来源");
+    }
     #[test]
     fn project_close_identity_does_not_require_existing_directory() {
         assert!(same_workspace_path("missing/root/", "missing/root"));
@@ -2280,5 +2682,35 @@ mod tests {
         assert!(args.contains(&"--disallowedTools".into()));
         assert!(args.contains(&"Edit".into()));
         assert!(args.contains(&"Write".into()));
+    }
+
+    #[test]
+    fn long_text_attachment_is_utf8_and_stays_in_system_temp() {
+        let root = std::env::temp_dir().join(format!("forge-ai-context-test-{}", std::process::id()));
+        let saved = save_text_attachment_to(root.clone(), "第一行\nsecond line").unwrap();
+        let path = PathBuf::from(saved["path"].as_str().unwrap());
+        let directory = PathBuf::from(saved["directory"].as_str().unwrap());
+        assert!(path.starts_with(std::fs::canonicalize(std::env::temp_dir()).unwrap()));
+        assert_eq!(directory, std::fs::canonicalize(&root).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "第一行\nsecond line");
+        let next = save_text_attachment_to(root.clone(), "下一份").unwrap();
+        assert_ne!(saved["path"], next["path"]);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn text_attachment_rejects_empty_and_oversized_content() {
+        let root = std::env::temp_dir().join(format!("forge-ai-context-limit-test-{}", std::process::id()));
+        assert!(save_text_attachment_to(root.clone(), "   ").is_err());
+        assert!(save_text_attachment_to(root, &"x".repeat(MAX_TEXT_ATTACHMENT_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn file_lines_are_counted_without_loading_the_whole_file() {
+        let path = std::env::temp_dir().join(format!("forge-ai-line-count-{}.txt", std::process::id()));
+        std::fs::write(&path, b"one\r\ntwo\rthree\n").unwrap();
+        assert_eq!(file_line_count(path.to_str().unwrap()).unwrap(), 4);
+        std::fs::remove_file(path).ok();
+        assert!(file_line_count("relative.txt").is_err());
     }
 }

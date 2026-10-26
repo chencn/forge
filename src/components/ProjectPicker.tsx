@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ChevronDown, FolderOpen, LogOut, X } from "lucide-react";
+import { ChevronDown, FolderOpen, LogOut, Sparkles, X } from "lucide-react";
 import Popover from "./Popover";
 import ProjectAvatar from "./ProjectAvatar";
 import { basenameOf, samePath } from "../lib/format";
@@ -108,6 +108,11 @@ export default function ProjectPicker({
               {openFolders.map((item) => {
                 const isCurrent = root !== null && samePath(item.path, root);
                 const folderName = basenameOf(item.path);
+                const aiActivity = [
+                  item.aiRunning ? t("ai.runtime.projectRunning", { count: item.aiRunning }) : "",
+                  item.aiQueued ? t("ai.runtime.projectQueued", { count: item.aiQueued }) : "",
+                  item.aiExternal ? t("ai.runtime.projectExternal", { count: item.aiExternal }) : "",
+                ].filter(Boolean).join(" · ");
                 return (
                   <div
                     key={item.path}
@@ -129,18 +134,18 @@ export default function ProjectPicker({
                   >
                     <ProjectAvatar name={folderName} path={item.path} size={20} />
                     <span className="popover-item-label">{folderName}</span>
-                    {item.aiRunning || item.aiQueued || item.aiExternal ? (
+                    {aiActivity ? (
                       <span
-                        className="ai-project-running"
-                        title={t("project.runningDot")}
-                        aria-label={t("project.runningDot")}
-                      >{[
-                        item.aiRunning ? t("ai.runtime.projectRunning", { count: item.aiRunning }) : "",
-                        item.aiQueued ? t("ai.runtime.projectQueued", { count: item.aiQueued }) : "",
-                        item.aiExternal ? t("ai.runtime.projectExternal", { count: item.aiExternal }) : "",
-                      ].filter(Boolean).join(" · ")}</span>
+                        className="ai-project-activity"
+                        title={aiActivity}
+                        aria-label={aiActivity}
+                      >
+                        {/* 行内只留一个 AI 标记；绿色点承担“仍在活动”的即时状态。 */}
+                        <Sparkles size={15} aria-hidden="true" />
+                        <span className="ws-dot is-running" aria-hidden="true" />
+                      </span>
                     ) : item.running ? (
-                      <span className="ai-project-running" title={t("project.runningDot")} aria-label={t("project.runningDot")}>{t("ai.runtime.running")}</span>
+                      <span className="ws-dot is-running" title={t("project.runningDot")} aria-label={t("project.runningDot")} />
                     ) : null}
                     {item.dirty ? (
                       <span

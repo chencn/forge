@@ -840,6 +840,31 @@ describe("AI runtime event store", () => {
   });
 });
 
+describe("子代理事件的会话级投影", () => {
+  it("同 key 后写覆盖字段、状态去重，首见序号稳定排序", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const state = projectAiEvents([
+      event(1, "agent", { key: "toolu_a", title: "输出数字", status: "starting", prompt: "从 1 数到 100" }),
+      event(2, "agent", { key: "toolu_a", agentId: "a70f", resolvedModel: "gemini-flash", status: "running" }),
+      event(3, "agent", { key: "toolu_b", title: "另一个代理", status: "running", sessionId: "child-b" }),
+      // 同 key 同状态且没有新载荷：投影仍收敛为两条，不该复制出重复项。
+      event(4, "agent", { key: "toolu_a", status: "running" }),
+      event(5, "agent", { key: "toolu_a", status: "completed", result: "Agent finished", sessionId: "child-a" }),
+    ]);
+    expect(state.agents).toHaveLength(2);
+    expect(state.agents[0]).toMatchObject({
+      key: "toolu_a", title: "输出数字", agentId: "a70f", model: "gemini-flash",
+      status: "completed", result: "Agent finished", sessionId: "child-a", seq: 1,
+    });
+    expect(state.agents[1]).toMatchObject({ key: "toolu_b", status: "running", sessionId: "child-b" });
+    // 增量投影与全量重放得到同一份子代理列表。
+    const incremental = projectAiEvents([event(6, "agent", { key: "toolu_b", status: "completed" })], state, true);
+    expect(incremental.agents).toMatchObject([
+      { key: "toolu_a", status: "completed" }, { key: "toolu_b", status: "completed" },
+    ]);
+  });
+});
+
 describe("消息导航的索引与跳转", () => {
   it("导航索引只在第一次展开时扫一次，失败后还能重试", async () => {
     const api = await import("../../src/lib/aiRuntime");

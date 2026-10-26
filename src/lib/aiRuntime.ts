@@ -290,6 +290,29 @@ export interface AiModelTaskItem { id: string; content: string; status: string; 
 /** 会话级模型任务快照；seq 用来防止迟到的分页响应覆盖实时进展。 */
 export interface AiModelTaskList { seq: number; runId: string; items: AiModelTaskItem[] }
 
+/** 会话里的一个子代理（Claude Agent 工具 / Codex collaboration）。由 `agent` 事件
+ * 聚合：同 key 只保留最新状态，列表按首次出现的顺序排。 */
+export interface AiAgentSummary {
+  /** 路由 key：Claude 的 Agent tool_use id、Codex 的 agentThreadId。 */
+  key: string;
+  /** 子会话 id；点开子代理视图就是打开它。 */
+  sessionId?: string;
+  title: string;
+  agentType?: string;
+  /** Claude 回执的 resolvedModel / Codex SubAgentActivity 的 model。 */
+  model?: string;
+  /** running / starting / completed / failed / stopped。 */
+  status: string;
+  /** CLI 侧可寻址标识（Claude agentId、Codex agent_path）；停止与转发用。 */
+  agentId?: string;
+  /** 终态带回的摘要（task_notification 的 summary / FINAL_ANSWER 相关文本）。 */
+  result?: string;
+  /** 首次出现的序号，用于稳定排序。 */
+  seq: number;
+  /** 最近一次更新的序号。 */
+  updatedAt: number;
+}
+
 export type AiThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
 /** Codex 原生线程 Goal；它描述长期目标，不承担 Task 清单的逐步进度。 */
 export interface AiThreadGoal {
@@ -345,6 +368,8 @@ export interface AiRuntimeSnapshot {
   configuration?: AiRunOptions & { permissionMode?: string };
   /** 本会话的全部计划版本，按 planId/revision 去重；界面取最新一版。 */
   plans: AiPlanReview[];
+  /** 会话里的子代理列表（会话级状态，不随分页丢失）。 */
+  agents: AiAgentSummary[];
   /** 后台任务进度；没有后台任务时为 undefined。 */
   background?: AiBackground;
   /** 最近一次被权限系统拒绝的调用。 */
@@ -410,7 +435,7 @@ interface Page {
   /** 计划审阅记录；事件分页之外的独立事实源。 */
   plans?: AiPlanReview[];
 }
-const EMPTY: AiRuntimeSnapshot = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: false, hasOlder: false, cursor: 0, nativeId: null, plans: [] };
+const EMPTY: AiRuntimeSnapshot = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: false, hasOlder: false, cursor: 0, nativeId: null, plans: [], agents: [] };
 const stores = new Map<string, State>();
 const deleted = new Set<string>();
 /** 已关闭标签等待释放正文缓存；活动任务结束后由事件合并路径完成释放。 */
@@ -680,6 +705,8 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   let mcpServers = incremental ? previous.mcpServers : undefined;
   let modelTasks = incremental ? previous.taskList : undefined;
   let goal = incremental ? previous.goal : undefined;
+  // 子代理列表是会话级状态：同 key 后写覆盖字段，首见序号保住稳定排序。
+  const agents = new Map<string, AiAgentSummary>(incremental ? previous.agents.map((agent) => [agent.key, { ...agent }]) : []);
   /** 每轮当前所处的压缩段（entry id）；用户消息一旦出现即视为新段落。 */
   const compactionEpisodes = new Map<string, string>();
   if (incremental) {
@@ -855,6 +882,24 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       // 清除与更新共用一个事件类型；坏载荷不能误清除当前 Goal。
       const summary = goalSummaryFromEvent(event);
       if (summary) goal = summary.goal ?? undefined;
+    } else if (event.kind === "agent" && typeof data.key === "string" && data.key) {
+      const key = data.key;
+      const current = agents.get(key);
+      const next: AiAgentSummary = {
+        key,
+        ...(current ?? {}),
+        ...(typeof data.sessionId === "string" && data.sessionId ? { sessionId: data.sessionId } : {}),
+        ...(typeof data.title === "string" && data.title.trim() ? { title: data.title } : { title: current?.title ?? "" }),
+        ...(typeof data.agentType === "string" && data.agentType ? { agentType: data.agentType } : {}),
+        ...(typeof data.model === "string" && data.model ? { model: data.model } : {}),
+        ...(typeof data.resolvedModel === "string" && data.resolvedModel ? { model: data.resolvedModel } : {}),
+        ...(typeof data.agentId === "string" && data.agentId ? { agentId: data.agentId } : {}),
+        ...(typeof data.result === "string" && data.result ? { result: data.result } : {}),
+        status: typeof data.status === "string" && data.status ? data.status : current?.status ?? "running",
+        seq: current?.seq ?? event.seq,
+        updatedAt: event.seq,
+      };
+      agents.set(key, next);
     } else if (["retry", "compaction", "notice", "plan"].includes(event.kind)) {
       if (event.kind === "compaction") { staleContext(); if (usage) usage = { ...usage, context: undefined }; }
       // 普通 notice 一条一格（本轮可能有多次自动允许/自动拒绝）；retry/plan 仍按类型合并。
@@ -964,7 +1009,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   const latest = taskList.at(-1);
   if (active) { runId = active.runId; status = "running"; error = active.error ?? null; }
   else if (latest) { runId = latest.runId; status = latest.status; error = latest.error ?? null; }
-  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, goal, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
+  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, goal, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), agents: [...agents.values()].sort((a, b) => a.seq - b.seq), background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
 }
 function applySummary(state: State) {
   const summary = state.summary;
@@ -1502,6 +1547,20 @@ export async function respondAiRequest(runId: string, requestId: string, answer:
 /** Goal 是 Codex 线程状态；这里只暴露用户能直接控制的暂停与继续。 */
 export async function setAiGoalStatus(sessionId: string, workspace: string, status: "active" | "paused") {
   await invoke("ai_runtime_set_goal_status", { sessionId, workspace, status });
+}
+/**
+ * 在子代理会话里发消息。两个 CLI 都没有客户端直发子代理的通道，后端会把这条消息
+ * 包装成指令注入父会话，由父模型调 SendMessage / followup_task 转达。父会话时间线
+ * 会留下转发痕迹；子代理的回复仍按事件路由回子会话。
+ */
+export async function sendAiAgentMessage(sessionId: string, workspace: string, prompt: string): Promise<void> {
+  await ensureAiRuntimeListener();
+  releaseRequested.delete(sessionId);
+  await invoke("ai_runtime_agent_forward", { sessionId, workspace, prompt });
+}
+/** 停止单个后台子代理（Claude stop_task）。Codex 子代理不支持单独停止，由后端拒绝。 */
+export async function stopAiAgent(sessionId: string, workspace: string): Promise<void> {
+  await invoke("ai_runtime_agent_stop", { sessionId, workspace });
 }
 /** 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。 */
 export async function deleteAiRuntimeSession(sessionId: string, workspace: string) { await invoke("ai_runtime_delete", { sessionId, workspace }); deleted.add(sessionId); releaseRequested.delete(sessionId); pendingStreaming.delete(sessionId); for (const task of stores.get(sessionId)?.snapshot.tasks ?? []) stoppingRunIds.delete(task.runId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); changed(); }

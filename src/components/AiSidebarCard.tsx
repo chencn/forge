@@ -18,12 +18,11 @@ function formatAbsolute(timestamp: number | undefined): string {
 }
 
 /**
- * 侧栏会话卡片：竖向导轨线、工具图标 + 状态点、标题、相对时间，
+ * 侧栏会话卡片：竖向导轨线、供应商图标、标题、相对时间，
  * 悬停时右侧时间换成「置顶 / 归档」两颗快捷按钮，停住 0.5s 浮出详情气泡。
  *
  * 结构与视觉对照参考实现（sidebar-conversation-card）：行高 2rem、内层胶囊 1.9375rem、
- * 图标轴线 0.875rem、标题左缩进 1.75rem；参考实现按会话携带的标签画胶囊，forge 的
- * 会话暂无标签体系，这一段留空。右键菜单与重命名/删除对话框由上层统一持有。
+ * 图标轴线 0.875rem、标题左缩进 1.75rem。右键菜单与重命名/删除对话框由上层统一持有。
  */
 export const AiSidebarCard = memo(function AiSidebarCard({
   session,
@@ -31,7 +30,6 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   openInTab,
   timeLabel,
   activity,
-  lastStatus,
   workspace,
   onOpen,
   onMenu,
@@ -46,8 +44,6 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   /** 行尾相对时间；由上层按该行所属章节与排序模式决定读哪个时间戳。 */
   timeLabel?: string;
   activity: AiSessionActivity;
-  /** 最后一轮任务的终态；空闲会话据此显示完成绿 / 取消红（对照参考实现的状态点语义）。 */
-  lastStatus?: string | null;
   workspace: string | null;
   onOpen: (id: string) => void;
   onMenu: (session: AiSession, x: number, y: number) => void;
@@ -105,13 +101,6 @@ export const AiSidebarCard = memo(function AiSidebarCard({
     return () => { window.removeEventListener("scroll", measure, true); window.removeEventListener("resize", measure); };
   }, [hoverOpen]);
 
-  const dotClass = activity === "running" ? "is-running"
-    : activity === "queued" ? "is-queued"
-    : activity === "conflict" || activity === "external" ? "is-alert"
-    : lastStatus === "completed" ? "is-completed"
-    : lastStatus === "failed" || lastStatus === "cancelled" ? "is-cancelled"
-    : "is-idle";
-
   return (
     <div
       ref={row}
@@ -137,11 +126,10 @@ export const AiSidebarCard = memo(function AiSidebarCard({
           title={`${AI_NAMES[session.provider]} · ${title}`}
           aria-current={selected ? "page" : undefined}
         >
-          {/* 本行的导轨线：穿过图标轴线的 2px 竖线，上下各探出 1px 与相邻行接成连续一条。 */}
+          {/* 只保留供应商图标与连续导轨；状态小点会制造无意义的视觉噪声。 */}
           <span aria-hidden className="ai-scard-rail" />
-          <span aria-hidden className={`ai-scard-icon ${dotClass}`}>
+          <span aria-hidden className="ai-scard-icon">
             <AiProviderIcon provider={session.provider} size={12} />
-            <span className="ai-scard-dot" />
           </span>
           <span className={`ai-scard-title${openInTab ? " is-open" : ""}`}>{title}</span>
         </button>

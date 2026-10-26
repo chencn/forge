@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { ReactNode, Ref } from "react";
+import type { ReactNode } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -9,10 +9,8 @@ import {
   Package,
   Play,
   Plus,
-  RefreshCw,
   Square,
   SquareTerminal,
-  X,
 } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
@@ -40,13 +38,9 @@ interface Props {
   error: string | null;
   refreshing: boolean;
   running: boolean;
-  onClose: () => void;
-  onReload: () => void;
   onRun: (config: RunConfiguration) => void;
   onStop: () => void;
   onOpenFile: (path: string) => void;
-  width: number;
-  paneRef: Ref<HTMLElement>;
 }
 
 export default function MavenPane({
@@ -55,13 +49,9 @@ export default function MavenPane({
   error,
   refreshing,
   running,
-  onClose,
-  onReload,
   onRun,
   onStop,
   onOpenFile,
-  width,
-  paneRef,
 }: Props) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(project));
@@ -131,31 +121,7 @@ export default function MavenPane({
   };
 
   return (
-    <section
-      ref={paneRef}
-      className="maven-pane island"
-      style={{ width }}
-      aria-label={t("maven.title")}
-    >
-      <header className="tool-window-head">
-        <MavenIcon size={16} className="maven-brand" />
-        <span className="tool-window-title">
-          {project ? `${t("maven.title")} · ${project.artifactId}` : t("maven.title")}
-        </span>
-        <span className="status-spacer" />
-        <button
-          type="button"
-          className="icon-button is-inline"
-          title={t("maven.reload")}
-          disabled={!workspace || refreshing}
-          onClick={onReload}
-        >
-          <RefreshCw size={14} className={refreshing ? "is-spinning" : undefined} />
-        </button>
-        <button type="button" className="icon-button is-inline" title={t("maven.close")} onClick={onClose}>
-          <X size={14} />
-        </button>
-      </header>
+    <section className="maven-pane" aria-label={t("maven.title")}>
       <div className="maven-toolbar">
         <button
           type="button"

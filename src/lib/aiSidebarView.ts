@@ -41,7 +41,7 @@ interface AiSidebarViewState {
 const DEFAULT_STATE: AiSidebarViewState = {
   sortMode: "created",
   sectionOrder: DEFAULT_SECTION_ORDER,
-  collapsed: {},
+  collapsed: { recent: true },
   showRecent: true,
   recentFilter: "all",
   recentLimit: null,
@@ -61,7 +61,8 @@ function load(): AiSidebarViewState {
     if (!raw) return DEFAULT_STATE;
     const data = JSON.parse(raw) as Partial<AiSidebarViewState>;
     const sortMode = data.sortMode === "updated" ? "updated" : "created";
-    const collapsed: AiSidebarViewState["collapsed"] = {};
+    // 「最近」是侧栏底部抽屉：每次打开应用先收起，用户点标题后才在本次运行中展开。
+    const collapsed: AiSidebarViewState["collapsed"] = { recent: true };
     for (const key of AI_SIDEBAR_SECTION_KEYS) {
       if (data.collapsed?.[key] === true) collapsed[key] = true;
     }

@@ -14,7 +14,7 @@ import PromptDialog from "./PromptDialog";
 import AiActionDialog from "./AiActionDialog";
 import CopyButton from "./CopyButton";
 import AiCommitSettingsPanel from "./AiCommitSettingsPanel";
-import AiCliSettingsPanel, { AiCliSettingsControls } from "./AiCliSettingsPanel";
+import AiCliSettingsPanel, { AiAssistantsToggle, AiCliSettingsControls } from "./AiCliSettingsPanel";
 import ModelProvidersPanel from "./ModelProvidersPanel";
 import SkillsPanel from "./SkillsPanel";
 import McpPanel from "./McpPanel";
@@ -72,10 +72,11 @@ import {
 } from "../lib/updater";
 import type { DownloadReport, UpdateInfo } from "../lib/updater";
 
-/** 设置窗口左侧的模块，一行一个。`aiCli` 即「AI 编程助手」，标题行额外挂总开关。 */
+/** 设置窗口左侧的模块，一行一个。AI 相关四页只在总开关开启后出现。 */
 export type SettingsModule = "general" | "editor" | "terminal" | "lsp" | "aiCommit" | "aiCli" | "modelProviders" | "skills" | "mcp" | "about";
 
 const MODULES: SettingsModule[] = ["general", "editor", "terminal", "lsp", "aiCommit", "aiCli", "modelProviders", "skills", "mcp", "about"];
+const AI_MODULES = new Set<SettingsModule>(["aiCli", "modelProviders", "skills", "mcp"]);
 
 const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   general: "settings.general",
@@ -214,7 +215,9 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
   const { settings, patch } = useSettings();
   const { config, patchServer, probes, reprobe, probing } = useLspConfig();
   const sessions = useLspSessionStatuses();
-  const [module, setModule] = useState<SettingsModule>(initialModule ?? "general");
+  const [module, setModule] = useState<SettingsModule>(() =>
+    initialModule && (settings.aiAssistantsEnabled || !AI_MODULES.has(initialModule)) ? initialModule : "general"
+  );
   /** 「重置所有设置」的二次确认框；确认后才把整份设置写回默认值。 */
   const [confirmReset, setConfirmReset] = useState(false);
   /** 内置文本后缀。用来拦住用户把已有格式再追加一遍。 */
@@ -222,6 +225,9 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
   const [extraDraft, setExtraDraft] = useState("");
   /** AI 各页有未保存草稿时，先记下想跳去的模块，等确认框决定去不去。 */
   const [pendingModule, setPendingModule] = useState<SettingsModule | null>(null);
+  const visibleModules = settings.aiAssistantsEnabled
+    ? MODULES
+    : MODULES.filter((key) => !AI_MODULES.has(key));
 
   // 面板卸载就会丢掉草稿，所以离开前问一句；目标就是当前页时不用管。
   const navigate = (next: SettingsModule) => {
@@ -231,9 +237,14 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
 
   useEffect(() => {
     if (initialModule) {
-      setModule(initialModule);
+      setModule(!settings.aiAssistantsEnabled && AI_MODULES.has(initialModule) ? "general" : initialModule);
     }
   }, [initialModule]);
+
+  useEffect(() => {
+    // 重置设置或其他窗口关闭总开关时，不能继续停在已经从导航中移除的页面。
+    if (!settings.aiAssistantsEnabled && AI_MODULES.has(module)) setModule("general");
+  }, [module, settings.aiAssistantsEnabled]);
 
   useEffect(() => {
     if (!IS_WINDOWS) return;
@@ -528,7 +539,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
     <div className="settings-page">
         <nav className="settings-nav" aria-label={t("settings.title")}>
           <p className="settings-nav-title">{t("settings.title")}</p>
-          {MODULES.map((key) => (
+          {visibleModules.map((key) => (
             <button
               key={key}
               type="button"
@@ -544,7 +555,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
           <header className="settings-head">
             <span className="settings-head-title">{t(MODULE_LABEL[module])}</span>
             <span className="settings-head-spacer" />
-            {/* AI 助手页把检测与总开关放在标题行，和其他页面的「恢复默认值」同位。 */}
+            {/* AI 页这里只保留 CLI 检测；应用级总开关归到「通用」。 */}
             {module === "aiCli" ? <AiCliSettingsControls /> : null}
             {/* IDEA 把「恢复默认值」放在通用页标题行右端；点开先过一遍确认框。 */}
             {module === "general" ? (
@@ -584,6 +595,11 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
 
           {module === "general" ? (
             <div className="settings-rows">
+              <div className="settings-row">
+                <span className="settings-label">{t("ai.enable")}</span>
+                <AiAssistantsToggle />
+              </div>
+
               <div className="settings-row">
                 <span className="settings-label">{t("theme.label")}</span>
                 <Select

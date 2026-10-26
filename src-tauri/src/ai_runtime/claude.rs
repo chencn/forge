@@ -211,6 +211,9 @@ pub struct Claude {
     parked: bool,
     /// 已经报过的权限拒绝，按工具/路径去重，避免 result 与 tool_result 各报一次。
     denied: HashSet<String>,
+    /// 子代理 agentId → Agent 工具调用 id。task_notification 只带 task_id（即 agentId）
+    /// 时靠它找回 key；同一 agent 复活续聊会覆盖旧值，与 CLI 的地址语义一致。
+    agent_ids: HashMap<String, String>,
 }
 impl Claude {
     pub fn new(_cwd: String, prompt: String, native: Option<String>) -> Self {
@@ -237,6 +240,7 @@ impl Claude {
             background: 0,
             parked: false,
             denied: HashSet::new(),
+            agent_ids: HashMap::new(),
         }
     }
     pub fn with_plan(mut self, plan: bool) -> Self {
@@ -292,13 +296,62 @@ impl Claude {
             json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":response}}),
         )
     }
-    /// 子代理的消息（`parent_tool_use_id` 非空）打上归属：前端据此把这些条目折进
-    /// 对应 Task 委派卡的迷你时间线，而不是平铺进主对话。主对话 scope 为空，不带此字段。
+    /// 子代理的消息（`parent_tool_use_id` 非空）打上归属。`parent` 供旧日志的委派卡
+    /// 分组兼容，`agentKey` 是运行时路由子会话的信号：带它的条目会写进子代理会话，
+    /// 不再平铺进主对话。
     fn scoped(mut data: Value, scope: &str) -> Value {
         if !scope.is_empty() {
             data["parent"] = json!(scope);
+            data["agentKey"] = json!(scope);
         }
         data
+    }
+    /// Agent（旧名 Task）工具即子代理委派。除普通工具事件外，再发一条 `agent`
+    /// 生命周期事件：运行时据此建子会话，前端据此画委派卡与子代理列表。
+    fn agent_spawn_event(block: &Value) -> Option<Action> {
+        if !matches!(block["name"].as_str(), Some("Agent") | Some("Task")) { return None; }
+        let title = block["input"]["description"].as_str()
+            .or_else(|| block["input"]["prompt"].as_str())
+            .map(str::trim).filter(|text| !text.is_empty())
+            .unwrap_or("子代理");
+        // 任务正文截一段带出：子会话的第一条用户消息靠它，子代理视图才知道自己被安排了什么。
+        let prompt = block["input"]["prompt"].as_str().map(str::trim).filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(4000).collect::<String>());
+        Some(Action::Emit { kind: "agent", data: json!({
+            "key": block["id"],
+            "title": title,
+            "agentType": block["input"]["subagent_type"],
+            "model": block["input"]["model"],
+            "background": block["input"]["run_in_background"],
+            "prompt": prompt,
+            "status": "starting",
+        }) })
+    }
+    /// Agent 工具的回执：后台启动回执带 agentId/resolvedModel，子会话由此绑定 CLI 侧
+    /// 身份并开始接收路由事件；同步代理的回执（AgentOutput）就是最终报告与运行总量。
+    fn agent_result_event(&mut self, id: &str, structured: Option<&Value>, ok: bool) -> Option<Action> {
+        if !self.tools.get(id).is_some_and(|tool| matches!(tool["name"].as_str(), Some("Agent") | Some("Task"))) { return None; }
+        let structured = structured?;
+        if let Some(agent_id) = structured["agentId"].as_str().filter(|value| !value.is_empty()) {
+            self.agent_ids.insert(agent_id.to_owned(), id.to_owned());
+        }
+        if structured["isAsync"] == true || structured["status"] == "async_launched" {
+            return Some(Action::Emit { kind: "agent", data: json!({
+                "key": id, "agentId": structured["agentId"],
+                "resolvedModel": structured["resolvedModel"],
+                "status": "running",
+            }) });
+        }
+        let text = structured["content"].as_array().map(|blocks| blocks.iter()
+            .filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join("\n"))
+            .filter(|text| !text.is_empty());
+        Some(Action::Emit { kind: "agent", data: json!({
+            "key": id, "agentId": structured["agentId"],
+            "resolvedModel": structured["resolvedModel"],
+            "status": if ok { "completed" } else { "failed" },
+            "result": text,
+            "usage": {"totalTokens": structured["totalTokens"], "toolUses": structured["totalToolUseCount"], "durationMs": structured["totalDurationMs"]},
+        }) })
     }
     fn tool(&mut self, block: &Value, scope: &str) -> Result<Vec<Action>, String> {
         let id = block["id"]
@@ -315,6 +368,9 @@ impl Claude {
             kind: "tool",
             data: Self::scoped(if updating { json!({"id":id,"name":block["name"],"input":block["input"]}) } else { json!({"id":id,"name":block["name"],"input":block["input"],"status":"running"}) }, scope),
         }];
+        if scope.is_empty() {
+            if let Some(event) = Self::agent_spawn_event(block) { out.push(event); }
+        }
         if let Some(event) = task_event(&id, block["name"].as_str().unwrap_or(""), &block["input"]) { out.push(event); }
         Ok(out)
     }
@@ -324,8 +380,11 @@ impl Claude {
 }
 impl Protocol for Claude {
     fn start(&mut self) -> Result<Vec<Action>, String> {
+        // forwardSubagentText：让 CLI 把子代理的正文与思考也实时转发出来
+        // （默认只转发 tool_use/tool_result 块）。子代理会话视图靠它拿到全文；
+        // 旧版 CLI 不认识此字段时按 Zod 默认行为丢弃，不影响握手。
         Ok(vec![Action::Write(
-            json!({"type":"control_request","request_id":"forge-initialize","request":{"subtype":"initialize","hooks":null}}),
+            json!({"type":"control_request","request_id":"forge-initialize","request":{"subtype":"initialize","hooks":null,"forwardSubagentText":true}}),
         )])
     }
     fn receive(&mut self, value: Value) -> Result<Vec<Action>, String> {
@@ -420,10 +479,29 @@ impl Protocol for Claude {
                         out.push(Action::CloseInput);
                     }
                 }
-                "task_notification" => out.push(Action::Emit {
-                    kind: "background",
-                    data: json!({"pending":self.background,"settled":self.parked,"task":value["task"]}),
-                }),
+                "task_notification" => {
+                    out.push(Action::Emit {
+                        kind: "background",
+                        data: json!({"pending":self.background,"settled":self.parked,"task":value["task"]}),
+                    });
+                    // 子代理终态的权威信号：task_id 即 agentId，tool_use_id 指回发起的
+                    // Agent 调用；同一 task_id 可多次通知（复活续聊），后者覆盖前者。
+                    let task_id = value["task_id"].as_str().or_else(|| value["taskId"].as_str()).filter(|id| !id.is_empty());
+                    let key = value["tool_use_id"].as_str().or_else(|| value["toolUseId"].as_str()).map(str::to_owned)
+                        .or_else(|| task_id.and_then(|id| self.agent_ids.get(id).cloned()));
+                    if let (Some(task_id), Some(key)) = (task_id, key) {
+                        let status = match value["status"].as_str() {
+                            Some("completed") => "completed",
+                            Some("failed") => "failed",
+                            _ => "stopped",
+                        };
+                        out.push(Action::Emit { kind: "agent", data: json!({
+                            "key": key, "agentId": task_id, "status": status,
+                            "result": value["summary"],
+                            "usage": value["usage"],
+                        }) });
+                    }
+                }
                 "commands_changed" => { if let Some(event) = self.update_commands(&value["commands"]) { out.push(event); } }
                 "local_command_output" => {
                     if let (Some(id), Some(text)) = (value["uuid"].as_str(), value["content"].as_str()) {
@@ -601,6 +679,9 @@ impl Protocol for Claude {
                     }
                     let structured = super::structured_tool_result(value.get("tool_use_result").or_else(|| value.get("toolUseResult")), id, result_count);
                     if let Some(structured) = structured { result["result"] = structured.clone(); }
+                    if scope.is_empty() {
+                        if let Some(event) = self.agent_result_event(id, structured, block["is_error"] != true) { out.push(event); }
+                    }
                     out.push(Action::Emit {kind:"tool",data:result});
                     if block["is_error"] != true {
                         if let Some(tool) = self.tools.get(id) {
@@ -1028,6 +1109,58 @@ mod tests {
                 ..
             }
         )));
+    }
+    #[test]
+    fn agent_tool_lifecycle_becomes_agent_events_with_keys() {
+        let mut p = Claude::new("root".into(), "hi".into(), None);
+        // Agent tool_use（主线程作用域）→ starting 事件，带标题与任务正文。
+        let spawn = p.receive(json!({"type":"assistant","message":{"id":"m","content":[
+            {"type":"tool_use","id":"toolu_agent_1","name":"Agent","input":{
+                "description":"输出数字","prompt":"从 1 输出到 100","subagent_type":"general-purpose","run_in_background":true
+            }}
+        ]}})).unwrap();
+        assert!(spawn.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "toolu_agent_1" && data["status"] == "starting"
+                && data["title"] == "输出数字" && data["agentType"] == "general-purpose"
+                && data["prompt"].as_str().is_some_and(|text| text.contains("100")))));
+        // 后台启动回执 → running + agentId 绑定。
+        let launched = p.receive(json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"toolu_agent_1","content":"Async agent launched"}
+        ]},"tool_use_result":{"isAsync":true,"status":"async_launched","agentId":"a70f6004","resolvedModel":"gemini-flash","canContinueAgent":true}})).unwrap();
+        assert!(launched.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "toolu_agent_1" && data["agentId"] == "a70f6004" && data["status"] == "running")));
+        // task_notification 只带 task_id 时，靠 agentId → key 映射找回归属。
+        let done = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"a70f6004",
+            "status":"completed","summary":"Agent finished","usage":{"total_tokens":10555,"duration_ms":5880}})).unwrap();
+        assert!(done.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "toolu_agent_1" && data["status"] == "completed" && data["result"] == "Agent finished")));
+        // 子代理流事件带 agentKey：运行时据此把条目路由进子会话。
+        p.receive(json!({"type":"stream_event","parent_tool_use_id":"toolu_agent_1","event":{
+            "type":"message_start","message":{"id":"child-message"}}})).unwrap();
+        let text = p.receive(json!({"type":"stream_event","parent_tool_use_id":"toolu_agent_1","event":{
+            "type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"child"}}})).unwrap();
+        assert!(text.iter().any(|a| matches!(a, Action::Emit{kind:"text",data} if data["agentKey"] == "toolu_agent_1")));
+    }
+    #[test]
+    fn sync_agent_receipt_maps_to_completed_with_report() {
+        let mut p = Claude::new("root".into(), "hi".into(), None);
+        p.receive(json!({"type":"assistant","message":{"id":"m","content":[
+            {"type":"tool_use","id":"tool_sync","name":"Agent","input":{"description":"查一下","prompt":"去查"}}
+        ]}})).unwrap();
+        let done = p.receive(json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"tool_sync","content":"ok"}
+        ]},"tool_use_result":{"agentId":"ab07","content":[{"type":"text","text":"最终报告"}],"totalTokens":42,"totalToolUseCount":3,"totalDurationMs":1000}})).unwrap();
+        assert!(done.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "tool_sync" && data["status"] == "completed" && data["result"] == "最终报告")));
+        // 失败的同步回执映射 failed，不能谎报完成。
+        p.receive(json!({"type":"assistant","message":{"id":"m2","content":[
+            {"type":"tool_use","id":"tool_err","name":"Agent","input":{"description":"再查","prompt":"再"}}
+        ]}})).unwrap();
+        let failed = p.receive(json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"tool_err","is_error":true,"content":"boom"}
+        ]},"tool_use_result":{"agentId":"ab08"}})).unwrap();
+        assert!(failed.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "tool_err" && data["status"] == "failed")));
     }
     #[test]
     fn subagent_scope_events_carry_parent_for_delegation_grouping() {

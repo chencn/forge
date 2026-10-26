@@ -13,6 +13,8 @@ interface PopoverProps {
    * 不传则不设上限，维持旧行为。实际取值还会再压到视口内，避免出屏。
    */
   maxWidth?: number;
+  /** 可选横向边界；窄侧栏里的弹层不得越过所属面板。 */
+  boundary?: HTMLElement | null;
   /**
    * 默认带一层全屏遮罩：点外面收，代价是遮罩期间底下的区域吃不到点击。
    * 悬停展开的读数明细传 false——它跟着指针自己会走，不需要拦截点击。
@@ -28,7 +30,7 @@ const EDGE = 8;
  * 横向一律从锚点的左边缘往右开——锚点待在窄容器里时弹层就盖到旁边的区域上，
  * 不为了留在容器内而挪到锚点左边；只有右边缘会出屏时才整块往回收。
  */
-export default function Popover({ anchor, onClose, children, minWidth, maxWidth, modal = true }: PopoverProps) {
+export default function Popover({ anchor, onClose, children, minWidth, maxWidth, boundary, modal = true }: PopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
 
@@ -37,14 +39,18 @@ export default function Popover({ anchor, onClose, children, minWidth, maxWidth,
     const measure = () => {
       const rect = anchor.getBoundingClientRect();
       const panel = ref.current?.getBoundingClientRect();
-      // 下限取「显式下限」与「锚点宽」的较大者；上限存在时再夹一层，且不能低于下限本身。
-      const floor = Math.max(minWidth ?? 0, rect.width);
-      const ceiling = Math.max(floor, Math.min(maxWidth ?? Infinity, window.innerWidth - 2 * EDGE));
+      const boundaryRect = boundary?.getBoundingClientRect();
+      const leftEdge = Math.max(EDGE, boundaryRect?.left ?? EDGE);
+      const rightEdge = Math.min(window.innerWidth - EDGE, boundaryRect?.right ?? window.innerWidth - EDGE);
+      const available = Math.max(0, rightEdge - leftEdge);
+      // 显式下限也必须服从所属面板边界，否则窄侧栏里的弹层会压进相邻编辑区。
+      const floor = Math.min(Math.max(minWidth ?? 0, rect.width), available);
+      const ceiling = Math.max(floor, Math.min(maxWidth ?? Infinity, available));
       const width = Math.min(ceiling, Math.max(floor, panel?.width ?? 0));
       const natural = panel?.height ?? 320;
       const below = window.innerHeight - rect.bottom - GAP - EDGE;
       const flip = natural > below && rect.top > natural;
-      const left = Math.max(EDGE, Math.min(rect.left, window.innerWidth - width - EDGE));
+      const left = Math.max(leftEdge, Math.min(rect.left, rightEdge - width));
       const top = flip ? Math.max(EDGE, rect.top - GAP - natural) : rect.bottom + GAP;
       // 位置没变就别换那个对象：换一次就是一次父层重渲染，而下面那个观察器是按尺寸变化触发的。
       setBox((current) =>
@@ -61,12 +67,13 @@ export default function Popover({ anchor, onClose, children, minWidth, maxWidth,
      */
     const observer = new ResizeObserver(measure);
     if (ref.current) observer.observe(ref.current);
+    if (boundary) observer.observe(boundary);
     window.addEventListener("resize", measure);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [anchor, minWidth, maxWidth]);
+  }, [anchor, boundary, minWidth, maxWidth]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

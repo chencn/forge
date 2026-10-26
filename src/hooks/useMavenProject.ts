@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { mavenScan } from "../lib/maven";
 import type { MavenProject } from "../lib/maven";
 
@@ -142,7 +142,15 @@ export function useMavenProject() {
   return useSyncExternalStore(subscribe, snapshot);
 }
 
-/** 探测还没结束、或者这个文件夹不是 Maven 工程时，右下角不占那一格。 */
+/**
+ * 把 Maven 扫描绑定到工作区生命周期。入口位置可以调整，但扫描所有权必须留在
+ * 常驻的 App 层；否则依赖检测结果才会挂载的 Maven 面板永远没有机会启动检测。
+ */
+export function useMavenDetection(workspace: string | null) {
+  useEffect(() => watchMaven(workspace), [workspace]);
+}
+
+/** 探测还没结束、或者这个文件夹不是 Maven 工程时，右侧活动栏不显示 Maven 入口。 */
 export function mavenIconVisible(current: MavenStore, workspace: string | null): boolean {
   if (!workspace || current.root !== workspace) return false;
   if (current.project) return true;

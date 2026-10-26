@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import hljs from "highlight.js";
 import type { AiEntry } from "../lib/aiRuntime";
 import { useI18n } from "../i18n";
@@ -8,7 +8,7 @@ import { AI_CLOCK_AFTER_MS, formatAiClock, useAiElapsed } from "../lib/aiClock";
 import { useAiDiffViewMode } from "../lib/aiDiffView";
 import AiDiffEditor from "./AiDiffEditor";
 import type { AiRequestAnswer } from "../lib/aiApprovals";
-import { Bot, Brain, ChevronRight, FileText, FilePenLine, Layers, MessageCircleQuestionMark, Search, Terminal, FolderOpen } from "lucide-react";
+import { ArrowUpRight, Bot, Brain, ChevronRight, FileText, FilePenLine, Layers, MessageCircleQuestionMark, Search, Terminal, FolderOpen } from "lucide-react";
 import { renderCodeBlock } from "../lib/markdown";
 import AiMarkdown from "./AiMarkdown";
 import { AiQuestionCard } from "./AiQuestionCard";
@@ -110,11 +110,11 @@ function AiQuestionRecord({ entry }: { entry: AiEntry }) {
  * 历史里 CLI 原生文件不带这些过程（子代理记录在独立的 subagents 目录，forge 不导入），
  * 那些旧会话的卡片就只有任务原文与最终结果，如实少显示。
  */
-function AiDelegationCard({ entry, subagents }: { entry: AiEntry; subagents?: AiEntry[] }) {
+function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
   const [open, setOpen] = useState<boolean | null>(null);
   const input = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
-  const agent = String(input.subagent_type ?? input.agent_type ?? t("ai.tool.delegation"));
+  const agentName = String(input.subagent_type ?? input.agent_type ?? t("ai.tool.delegation"));
   const description = typeof input.description === "string" ? input.description : "";
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
   const running = entry.status === "running";
@@ -140,7 +140,7 @@ function AiDelegationCard({ entry, subagents }: { entry: AiEntry; subagents?: Ai
     <button type="button" className="ai-delegation-main" aria-expanded={expanded} onClick={() => setOpen(!expanded)}>
       <span className="ai-delegation-marker" aria-hidden><Bot size={16} /></span>
       <span className="ai-delegation-body">
-        <span className="ai-delegation-name"><strong>{agent}</strong></span>
+        <span className="ai-delegation-name"><strong>{agentName}</strong></span>
         {description ? <span className="ai-delegation-task" title={description}>{description}</span> : null}
         {currentAction ? <span className="ai-delegation-progress" aria-hidden="true">{currentAction}</span> : null}
       </span>
@@ -148,6 +148,12 @@ function AiDelegationCard({ entry, subagents }: { entry: AiEntry; subagents?: Ai
       <span className="ai-delegation-status">{status}</span>
       <ChevronRight size={14} className={`ai-detail-chevron${expanded ? " is-open" : ""}`} aria-hidden />
     </button>
+    {/* 子代理已升级为独立会话：这里给一个直达入口，与右栏子代理列表同源。 */}
+    {agent && onOpenAgent ? <button type="button" className="ai-delegation-open"
+      title={t("ai.agent.open")} aria-label={t("ai.agent.open")}
+      onClick={() => onOpenAgent(agent.sessionId)}>
+      {t("ai.agent.open")}<ArrowUpRight size={12} aria-hidden />
+    </button> : null}
     {expanded ? <div className="ai-delegation-detail">
       {subagents?.length ? <div className="ai-delegation-timeline">
         {subagents.map((child) => {
@@ -197,22 +203,16 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
 }
 
 /** 折叠时不构造文件 diff 和完整 JSON，避免每个流式事件重做大文件工作。 */
-export function AiToolCall({ entry, subagents, hasRequest }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean }) {
+export function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
   const view = describeAiTool(entry, false);
   const fileEdit = ["edit", "add", "delete", "move"].includes(view.kind);
-  const [open, setOpen] = useState(fileEdit);
-  /** 用户手动开关过后就不再自动展开；程序置位的那次不算用户意图。 */
-  const touched = useRef(false);
-  const programmatic = useRef(false);
-  useEffect(() => {
-    // 文件修改与失败调用默认展开；流式过程中后识别成修改也要打开，但绝不覆盖用户手动收起。
-    if ((fileEdit || entry.status === "failed") && !touched.current && !open) {
-      programmatic.current = true;
-      setOpen(true);
-    }
-  }, [entry.status, fileEdit, open]);
-  if (DELEGATION_TOOL.test(entry.name ?? "")) return <AiDelegationCard entry={entry} subagents={subagents} />;
+  const phase = entry.status ?? "pending";
+  const defaultOpen = phase === "running" && (fileEdit || view.kind === "command");
+  const [disclosure, setDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
+  // 手动开关只属于当前状态阶段；离开 running 后旧选择失效，完成项立即恢复默认折叠。
+  const open = disclosure?.phase === phase ? disclosure.open : defaultOpen;
+  if (DELEGATION_TOOL.test(entry.name ?? "")) return <AiDelegationCard entry={entry} subagents={subagents} agent={agent} onOpenAgent={onOpenAgent} />;
   // 历史里的提问工具（没有请求卡的那份记录）才按问答记录渲染；实时里请求卡和工具条目
   // 是同一次提问的两条协议记录，这里再画一张就是「显示两次」——有请求卡就让位。
   if (QUESTION_TOOL.test(entry.name ?? "") && questionToolItems(entry).length) {
@@ -223,16 +223,7 @@ export function AiToolCall({ entry, subagents, hasRequest }: { entry: AiEntry; s
   }
   const status = entry.status === "failed" ? t("ai.runtime.failed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
   return <details className={`ai-tool is-${entry.status ?? "pending"}`} data-kind={view.kind} open={open}
-    onToggle={(event) => {
-      const next = event.currentTarget.open;
-      if (programmatic.current) {
-        programmatic.current = false;
-        setOpen(next);
-        return;
-      }
-      touched.current = true;
-      setOpen(next);
-    }}>
+    onToggle={(event) => setDisclosure({ phase, open: event.currentTarget.open })}>
     <summary className="ai-row-head">
       {/* 命令行与思考行使用同一阅读顺序：类型 → 箭头 → 摘要。 */}
       <AiToolSummary entry={entry} disclosure={view.kind === "command"

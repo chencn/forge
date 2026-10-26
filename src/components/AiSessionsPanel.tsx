@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, ChevronsUp, Copy, Crosshair, Ellipsis, Eye, ListChevronsDownUp, ListChevronsUpDown, Loader2, RefreshCw, Search, Settings, SquarePen, X } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, ChevronsUp, Copy, Crosshair, Ellipsis, Eye, ListChevronsDownUp, ListChevronsUpDown, Loader2, RefreshCw, Search, Settings, SquarePen, X } from "lucide-react";
 import { useI18n } from "../i18n";
 import { AI_NAMES, cliDesktopAvailable, refreshAiCli, useAiCli } from "../lib/aiCli";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
 import { AI_SEARCH_MIN_QUERY, isSearchQueryActive } from "../lib/aiSearch";
 import { useAiSessionSearch } from "../hooks/useAiSessionSearch";
-import { getAiSessionActivity, getAiSessionLastStatus, subscribeAiChanges } from "../lib/aiRuntime";
+import { getAiSessionActivity, subscribeAiChanges } from "../lib/aiRuntime";
 import {
   formatAiRelativeTime,
   moveAiSidebarSection,
@@ -94,23 +94,36 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
     return () => registerAiSidebarListCommands(null);
   }, [activeId]);
 
-  /** 置顶章节：按置顶时间倒序，归档的不进来。 */
+  /** 置顶章节：按置顶时间倒序，归档的不进来。子代理行不占章节位，只嵌在父行下。 */
+  const isChild = (session: AiSession) => !!session.parentSessionId;
   const pinned = useMemo(() => sessions
-    .filter((session) => session.pinned === true && session.archived !== true)
+    .filter((session) => session.pinned === true && session.archived !== true && !isChild(session))
     .sort((a, b) => (b.pinnedAt ?? b.createdAt) - (a.pinnedAt ?? a.createdAt)), [sessions]);
   /** 「会话」章节：全部未置顶会话，按当前排序模式；已归档的仅在开关打开时带出。 */
   const listed = useMemo(() => sessions
-    .filter((session) => session.pinned !== true && (view.showArchived || session.archived !== true))
+    .filter((session) => session.pinned !== true && !isChild(session) && (view.showArchived || session.archived !== true))
     .sort((a, b) => view.sortMode === "updated"
       ? (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt) || b.createdAt - a.createdAt
       : b.createdAt - a.createdAt), [sessions, view.sortMode, view.showArchived]);
   /** 「最近」章节：未置顶未归档，按最近活动；可用工具筛选（全部 / Claude / Codex）。 */
   const recent = useMemo(() => sessions
-    .filter((session) => session.pinned !== true && session.archived !== true &&
+    .filter((session) => session.pinned !== true && session.archived !== true && !isChild(session) &&
       (view.recentFilter === "all" || session.provider === view.recentFilter))
     .sort((a, b) => (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt)), [sessions, view.recentFilter]);
   const recentShown = recent.slice(0, view.recentLimit ?? RECENT_PAGE_SIZE);
   const recentRemaining = recent.length - recentShown.length;
+  /** 父会话 id → 子代理行（父行下缩进嵌套）；子代理不进置顶/最近，按创建时间排。 */
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, AiSession[]>();
+    for (const session of sessions) {
+      if (!session.parentSessionId) continue;
+      const list = map.get(session.parentSessionId);
+      if (list) list.push(session);
+      else map.set(session.parentSessionId, [session]);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.createdAt - b.createdAt);
+    return map;
+  }, [sessions]);
 
   /** 行尾相对时间读哪个时间戳，由该行所在章节与排序模式共同决定（对照参考实现）。 */
   const timeLabelFor = (session: AiSession, section: AiSidebarSectionKey): string =>
@@ -155,7 +168,6 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       openInTab={openIds.includes(session.id)}
       timeLabel={timeLabelFor(session, section)}
       activity={getAiSessionActivity(session.id)}
-      lastStatus={getAiSessionLastStatus(session.id)}
       workspace={workspace}
       onOpen={onOpen}
       onMenu={openCardMenu}
@@ -163,6 +175,27 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       onArchive={(target) => onAction({ type: "archive", id: target.id, archived: target.archived !== true })}
     />
   );
+
+  /** 父行下的子代理行：缩进 + 机器人图标 + 状态点 + 标题；点开进子代理会话视图。 */
+  const agentRow = (child: AiSession, section: AiSidebarSectionKey): ReactNode => (
+    <button type="button" key={`${section}:agent:${child.id}`}
+      className={`ai-agent-subrow${activeId === `ai|${child.id}` ? " is-active" : ""}`}
+      data-session-id={child.id}
+      title={child.agent?.title ?? child.title}
+      onClick={() => onOpen(child.id)}>
+      <span className="ai-agent-subrow-icon" aria-hidden><Bot size={12} /></span>
+      <span className="ai-agent-subrow-dot" data-status={child.agent?.status ?? ""} aria-hidden />
+      <span className="ai-agent-subrow-title">{child.title || child.agent?.title}</span>
+      {child.agent?.model ? <span className="ai-agent-subrow-model">{child.agent.model}</span> : null}
+    </button>
+  );
+  /** 章节行 = 会话卡 + 嵌在它下面的子代理行；子代理不单独占章节位。 */
+  const cardWithAgents = (session: AiSession, section: AiSidebarSectionKey): ReactNode[] => [
+    card(session, section),
+    ...(childrenByParent.get(session.id) ?? [])
+      .filter((child) => view.showArchived || child.archived !== true)
+      .map((child) => agentRow(child, section)),
+  ];
 
   const sectionLabel = (section: AiSidebarSectionKey): string =>
     section === "pinned" ? t("ai.sidebar.sectionPinned")
@@ -176,7 +209,9 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   const sectionBlock = (section: AiSidebarSectionKey, rows: ReactNode[], emptyHint: string): ReactNode => {
     const expanded = view.collapsed[section] !== true;
     const showNewChat = section === "sessions" || section === "recent";
-    return <section key={section} className="ai-ssection has-gap">
+    return <section key={section} className={`ai-ssection has-gap${
+      section === "recent" ? ` is-recent${expanded ? " is-expanded" : ""}` : ""
+    }`}>
       <div className="ai-ssection-head">
         <button type="button" className="ai-ssection-toggle" aria-expanded={expanded} onClick={() => toggleAiSidebarSection(section)}>
           <span>{sectionLabel(section)}</span>
@@ -213,15 +248,15 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   };
 
   const sections: ReactNode[] = [];
-  if (pinned.length > 0) sections.push(sectionBlock("pinned", pinned.map((session) => card(session, "pinned")), ""));
+  if (pinned.length > 0) sections.push(sectionBlock("pinned", pinned.flatMap((session) => cardWithAgents(session, "pinned")), ""));
   for (const id of view.sectionOrder) {
     if (id === "sessions") {
-      sections.push(sectionBlock("sessions", listed.map((session) => card(session, "sessions")),
+      sections.push(sectionBlock("sessions", listed.flatMap((session) => cardWithAgents(session, "sessions")),
         view.showArchived ? t("ai.noSessions") : t("ai.sidebar.noUnarchived")));
       continue;
     }
     if (id === "recent" && view.showRecent) {
-      const rows: ReactNode[] = recentShown.map((session) => card(session, "recent"));
+      const rows: ReactNode[] = recentShown.flatMap((session) => cardWithAgents(session, "recent"));
       // 已展开超过第一页才给「收起」入口；展开数被删到一页以内时收起按钮就该消失，
       // 否则留下一个点了没有可见效果的开关（对照参考的 canReset 判定）。
       const canReset = view.recentLimit !== null && recentShown.length > RECENT_PAGE_SIZE;

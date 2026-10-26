@@ -678,6 +678,56 @@ impl Protocol for Codex {
                                 }
                             }
                         }
+                        // rollout 里是 PascalCase，app-server 线格式是 camelCase，都认。
+                        "subAgentActivity" | "SubAgentActivity" if done => {
+                            // multi-agent v2：子代理在父连接上只有摘要级活动
+                            // （`SubAgentActivity` item），细粒度转写不转发。
+                            // app-server 线格式是 camelCase，rollout 的 snake_case 做兼容。
+                            // key 用 agentThreadId 路由子会话；agentPath 是可寻址名（转发消息用）。
+                            let thread_id = item["agentThreadId"].as_str().or_else(|| item["agent_thread_id"].as_str()).filter(|id| !id.is_empty());
+                            let status = match item["kind"].as_str().unwrap_or("") {
+                                "completed" => Some("completed"),
+                                "started" | "interacted" => Some("running"),
+                                _ => None,
+                            };
+                            if let (Some(thread_id), Some(status)) = (thread_id, status) {
+                                let path = item["agentPath"].as_str().or_else(|| item["agent_path"].as_str()).filter(|path| !path.is_empty());
+                                let mut data = json!({
+                                    "key": thread_id,
+                                    "toolId": id,
+                                    "agentType": item["agentNickname"].as_str().or_else(|| item["agent_nickname"].as_str()),
+                                    "model": item["model"],
+                                    "effort": item["reasoningEffort"].as_str().or_else(|| item["reasoning_effort"].as_str()),
+                                    "status": status,
+                                    "activity": item["kind"],
+                                });
+                                if let Some(path) = path {
+                                    data["agentId"] = json!(path);
+                                    data["title"] = json!(path);
+                                }
+                                out.push(Action::Emit { kind: "agent", data });
+                            }
+                        }
+                        "collabAgentToolCall" if done => {
+                            // multi-agent v1（collab 工具）best-effort：每个接收方的最新
+                            // 状态转成 agent 事件。线形状未在本机实证，字段缺失就静默跳过。
+                            for (thread_id, state) in item["agentsStates"].as_object().into_iter().flatten() {
+                                let status = match state["status"].as_str().unwrap_or("") {
+                                    "completed" => "completed",
+                                    "errored" | "failed" => "failed",
+                                    "shutdown" | "interrupted" => "stopped",
+                                    _ => "running",
+                                };
+                                out.push(Action::Emit { kind: "agent", data: json!({
+                                    "key": thread_id,
+                                    "toolId": id,
+                                    "title": state["name"].as_str().or_else(|| state["task"].as_str()),
+                                    "agentId": state["target"].as_str(),
+                                    "status": status,
+                                    "detail": state["message"],
+                                }) });
+                            }
+                        }
                         "contextCompaction" => {
                             let text = item.get("message").or_else(|| item.get("summary")).or_else(|| item.get("text")).and_then(|v| v.as_str()).unwrap_or("");
                             self.remember_compaction();
@@ -1223,6 +1273,44 @@ impl Protocol for Codex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sub_agent_activity_items_become_agent_events() {
+        let mut p = Codex::new("root".into(), "派活".into(), Some("native".into()));
+        p.start().unwrap();
+        p.receive(json!({"id":1,"result":{}})).unwrap();
+        p.receive(json!({"id":2,"result":{"thread":{"id":"native"},"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}}})).unwrap();
+        p.receive(json!({"id":3,"result":{"turn":{"id":"turn-1"}}})).unwrap();
+        // started 活动（item/completed 承载）→ running；agentPath 是标题也是可寻址名。
+        let started = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
+            "id":"call_spawn","type":"subAgentActivity","kind":"started","model":"gpt-6-astra","reasoningEffort":"medium",
+            "agentThreadId":"01a16be3-child","agentPath":"/root/backend_trace","agentNickname":"Lorentz"
+        }}})).unwrap();
+        assert!(started.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "01a16be3-child" && data["status"] == "running"
+                && data["agentId"] == "/root/backend_trace" && data["title"] == "/root/backend_trace"
+                && data["agentType"] == "Lorentz" && data["model"] == "gpt-6-astra")));
+        // completed 活动 → completed 终态。
+        let done = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
+            "id":"subagent-completed-turn-1","type":"subAgentActivity","kind":"completed",
+            "agentThreadId":"01a16be3-child","agentPath":"/root/backend_trace"
+        }}})).unwrap();
+        assert!(done.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "01a16be3-child" && data["status"] == "completed")));
+        // 未知活动类型与 item/started（未完成）不产事件。
+        assert!(p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
+            "id":"call_x","type":"subAgentActivity","kind":"mystery","agentThreadId":"t"
+        }}})).unwrap().iter().all(|a| !matches!(a, Action::Emit{kind:"agent",..})));
+        assert!(p.receive(json!({"method":"item/started","params":{"threadId":"native","item":{
+            "id":"call_spawn2","type":"subAgentActivity","kind":"started","agentThreadId":"t2"
+        }}})).unwrap().iter().all(|a| !matches!(a, Action::Emit{kind:"agent",..})));
+        // rollout 的 snake_case 字段做兼容。
+        let snake = p.receive(json!({"method":"item/completed","params":{"threadId":"native","item":{
+            "id":"call_spawn3","type":"SubAgentActivity","kind":"started",
+            "agent_thread_id":"01a1-snake","agent_path":"/root/snake"
+        }}})).unwrap();
+        assert!(snake.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
+            if data["key"] == "01a1-snake" && data["title"] == "/root/snake")));
+    }
     #[test]
     fn turn_is_started_only_after_codex_accepts_the_native_turn() {
         let mut protocol = Codex::new("root".into(), "hi".into(), Some("native".into()));
