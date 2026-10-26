@@ -599,7 +599,7 @@ describe("AI conversation pane", () => {
     expect(chip).toContain("ai.chat.editedFile");
     expect(chip).not.toContain("ai.chat.editedFiles");
   });
-  it("任务清单默认展开，运行结束后仍保持展开", () => {
+  it("运行中的任务清单默认展开，运行结束后默认收起", () => {
     h.state.taskList = {
       runId: "run",
       seq: 1,
@@ -615,6 +615,7 @@ describe("AI conversation pane", () => {
     h.activity = "running";
     h.ownedRun = "run";
     // 清单开关必须反映当前运行阶段，不能只依赖一次性的 DOM anchor。
+    // 历史任务项可能来不及全部改成终态；是否结束以真实回合状态为准。
     expect(render().html).toContain('class="ai-head-tasklist" title="ai.chat.taskList · 运行测试套件" aria-label="ai.chat.taskList" aria-haspopup="dialog" aria-expanded="true"');
 
     h.state.status = "idle";
@@ -622,7 +623,7 @@ describe("AI conversation pane", () => {
     h.state.tasks = [{ runId: "run", status: "completed", seq: 1 }];
     h.activity = "idle";
     h.ownedRun = null;
-    expect(render().html).toContain('class="ai-head-tasklist" title="ai.chat.taskList · 运行测试套件" aria-label="ai.chat.taskList" aria-haspopup="dialog" aria-expanded="true"');
+    expect(render().html).toContain('class="ai-head-tasklist" title="ai.chat.taskList · 运行测试套件" aria-label="ai.chat.taskList" aria-haspopup="dialog" aria-expanded="false"');
 
     // 停靠化之后任务清单是右侧工具窗口里的正文（标题栏由框架统一提供）。
     const html = renderToStaticMarkup(createElement(AiTaskListDockPanel, {
@@ -639,6 +640,22 @@ describe("AI conversation pane", () => {
     expect(html).toContain("33%");
     // 会话页正文不再包含任务清单：它停靠在右侧侧边栏（portal 渲染）。
     expect(render().html).not.toContain("ai-taskchip-body");
+
+    // 任务全部已完成时：即使仍在执行中也绝不默认展开，避免遮挡聊天界面。
+    h.state.status = "running";
+    h.state.runId = "run";
+    h.activity = "running";
+    h.ownedRun = "run";
+    h.state.taskList = {
+      runId: "run",
+      seq: 2,
+      items: [
+        { id: "1", content: "检查代码结构", status: "completed" },
+        { id: "2", content: "运行测试套件", status: "completed" },
+        { id: "3", content: "汇总检查报告", status: "completed" },
+      ],
+    };
+    expect(render().html).toContain('aria-haspopup="dialog" aria-expanded="false"');
   });
   it("只在已完成 Goal 上提供用户主动的隐藏入口", () => {
     h.state.goal = {

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useI18n } from "../i18n";
 import { openExternal } from "../lib/fs";
 import { renderChatMarkdown, repairStreamingMarkdown } from "../lib/markdown";
@@ -17,7 +17,7 @@ function positive(value: string | null): number | undefined {
  * {@link renderChatMarkdown}。复制按钮和链接都不由 React 渲染——它们是注入的 HTML 字符串
  * 的一部分，所以只能靠根节点上的一次委托来响应，而不是逐块挂 onClick。
  */
-export default function AiMarkdown({ text, streaming }: { text: string; streaming?: boolean }) {
+export default memo(function AiMarkdown({ text, streaming }: { text: string; streaming?: boolean }) {
   const { t } = useI18n();
   const openFile = useAiOpenFile();
   const copyLabel = t("action.copy");
@@ -82,4 +82,4 @@ export default function AiMarkdown({ text, streaming }: { text: string; streamin
       copy(button, event);
     }}
   />;
-}
+});

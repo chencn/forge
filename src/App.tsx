@@ -829,7 +829,9 @@ export default function App() {
     // 异步创建完成时用户可能已切换项目；后续状态必须仍写回发起创建的工程。
     const launchWorkspace = workspaceRoot;
     const launchRootKey = rootKey;
-    const requestedId = provider === "claude" ? crypto.randomUUID() : null;
+    // 两个 CLI 都用前端生成的会话 ID 建记录：Codex 的原生线程要等首条消息真的跑起来
+    // 才存在（空线程不落盘），在这里预建只会留下一个既不能恢复也不能改名的幽灵 ID。
+    const requestedId = crypto.randomUUID();
     try {
       // 新建时不给标题：名字等首条消息发出后由后端从消息里取，占位名会写进 CLI 原生历史，
       // 把真正的自动标题永久压掉。

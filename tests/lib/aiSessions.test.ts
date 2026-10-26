@@ -33,12 +33,14 @@ describe("AI 会话本地状态", () => {
     expect(parseAiSessions("null")).toEqual(EMPTY_AI_SESSIONS);
     const state = parseAiSessions(JSON.stringify({
       sessions: [null, {}, session, session, { ...session, id: "other", provider: "unknown" },
-        { ...session, id: "bad\nid" }, { ...session, id: "empty", title: " " },
+        { ...session, id: "bad\nid" }, { ...session, id: "untitled", title: "" },
+        { ...session, id: "too-long", title: "x".repeat(121) },
         { ...session, id: "bad-time", createdAt: "1000" }],
       openIds: [session.id, "missing", session.id, null],
     }));
     // 旧数据没有 activeId 时迁移到最后一个有效打开标签。
-    expect(state).toEqual({ sessions: [session], openIds: [session.id], activeId: session.id });
+    // 空标题是「还没发第一条消息」的正常状态，不能被当成损坏记录丢掉。
+    expect(state).toEqual({ sessions: [session, { ...session, id: "untitled", title: "" }], openIds: [session.id], activeId: session.id });
   });
 
   it("只恢复安全字段，忽略注入的内容", () => {

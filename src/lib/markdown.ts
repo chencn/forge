@@ -108,7 +108,7 @@ function splitHtmlLines(html: string): string[] {
 }
 
 /** 按语言高亮；指定不了或高亮抛错时退回转义后的原文。 */
-function highlightCode(text: string, cleanLang: string): string {
+function highlightCode(text: string, cleanLang: string, streaming = false): string {
   if (cleanLang && hljs.getLanguage(cleanLang)) {
     try {
       return hljs.highlight(text, { language: cleanLang, ignoreIllegals: true }).value;
@@ -117,6 +117,10 @@ function highlightCode(text: string, cleanLang: string): string {
     }
   }
   if (cleanLang === "plaintext" || cleanLang === "text" || cleanLang === "txt") return escapeHtml(text);
+  // 流式输出中或大段代码时跳过开销极大的 highlightAuto 全语言回溯试探，避免拖垮渲染主线程
+  if (streaming || text.length > 2500) {
+    return escapeHtml(text);
+  }
   // 未显式指定语言或未知语言时，自动检测高亮
   try {
     return hljs.highlightAuto(text).value;
@@ -136,9 +140,9 @@ function highlightCode(text: string, cleanLang: string): string {
  * 不对正文逐行包 `span.cl`，避免 `display: block` 与换行符在 `white-space: pre` 下
  * 叠加导致单行代码占双倍行高。仅在显式传入真实文件行号（startLine）时才做切行编号。
  */
-export function renderCodeBlock(text: string, lang: string | null | undefined, copyLabel?: string, _openBlocks = false, startLine?: number): string {
+export function renderCodeBlock(text: string, lang: string | null | undefined, copyLabel?: string, openBlocks = false, startLine?: number): string {
   const cleanLang = (lang || "").trim().split(/\s+/)[0].toLowerCase();
-  const highlighted = highlightCode(text, cleanLang);
+  const highlighted = highlightCode(text, cleanLang, openBlocks);
   const langClass = cleanLang ? ` language-${escapeHtml(cleanLang)}` : "";
   const tag = cleanLang ? `<span class="code-lang-tag">${escapeHtml(cleanLang)}</span>` : "";
   const copy = copyLabel
@@ -214,6 +218,41 @@ export function renderMarkdown(
   });
 }
 
+/** 聊天 Markdown 渲染结果的 LRU 缓存，容量 500 条 */
+const CHAT_MARKDOWN_CACHE_LIMIT = 500;
+const chatMarkdownCache = new Map<string, string>();
+
+let activeChatCopyLabel = "";
+let activeChatOpenBlocks = false;
+
+const chatParser = new Marked({ gfm: true, breaks: false });
+chatParser.use({
+  renderer: {
+    code({ text, lang }) {
+      return renderCodeBlock(text, lang, activeChatCopyLabel, activeChatOpenBlocks);
+    },
+    checkbox({ checked }) {
+      // GFM 任务列表复选框：用无害的只读 span 替换 input，避免被聊天的 DOMPurify 白名单删除。
+      return checked
+        ? '<span class="ai-task-checkbox is-checked" aria-hidden="true"></span> '
+        : '<span class="ai-task-checkbox" aria-hidden="true"></span> ';
+    },
+    link({ href, title, tokens }) {
+      const inner = this.parser.parseInline(tokens);
+      const file = parseFileLink(href);
+      if (file) {
+        const position = file.line !== undefined ? `:${file.line}${file.column !== undefined ? `:${file.column}` : ""}` : "";
+        const titleAttr = title ?? `${file.path}${position}`;
+        const line = file.line !== undefined ? ` data-file-line="${file.line}"` : "";
+        const column = file.column !== undefined ? ` data-file-column="${file.column}"` : "";
+        return `<a class="ai-file-link" href="#" data-file-path="${escapeHtml(file.path)}"${line}${column} title="${escapeHtml(titleAttr)}">${inner}</a>`;
+      }
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+      return `<a href="${escapeHtml(href)}"${titleAttr}>${inner}</a>`;
+    },
+  },
+});
+
 /**
  * 渲染聊天正文成可安全注入的 HTML。
  *
@@ -227,37 +266,31 @@ export function renderMarkdown(
  * @param openBlocks 流式输出中保持代码块展开
  */
 export function renderChatMarkdown(source: string, copyLabel: string, openBlocks = false): string {
-  const parser = new Marked({ gfm: true, breaks: false });
-  parser.use({
-    renderer: {
-      code({ text, lang }) {
-        return renderCodeBlock(text, lang, copyLabel, openBlocks);
-      },
-      checkbox({ checked }) {
-        // GFM 任务列表复选框：用无害的只读 span 替换 input，避免被聊天的 DOMPurify 白名单删除。
-        return checked
-          ? '<span class="ai-task-checkbox is-checked" aria-hidden="true"></span> '
-          : '<span class="ai-task-checkbox" aria-hidden="true"></span> ';
-      },
-      link({ href, title, tokens }) {
-        const inner = this.parser.parseInline(tokens);
-        const file = parseFileLink(href);
-        if (file) {
-          const position = file.line !== undefined ? `:${file.line}${file.column !== undefined ? `:${file.column}` : ""}` : "";
-          const titleAttr = title ?? `${file.path}${position}`;
-          const line = file.line !== undefined ? ` data-file-line="${file.line}"` : "";
-          const column = file.column !== undefined ? ` data-file-column="${file.column}"` : "";
-          return `<a class="ai-file-link" href="#" data-file-path="${escapeHtml(file.path)}"${line}${column} title="${escapeHtml(titleAttr)}">${inner}</a>`;
-        }
-        const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
-        return `<a href="${escapeHtml(href)}"${titleAttr}>${inner}</a>`;
-      },
-    },
-  });
-  return DOMPurify.sanitize(parser.parse(source, { async: false }), {
+  if (!source) return "";
+  // 非流式（稳定落定态）直接查 LRU 缓存，耗时 0ms 且不重复 sanitize
+  const cacheKey = !openBlocks ? `${copyLabel}:${source}` : null;
+  if (cacheKey) {
+    const cached = chatMarkdownCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+  }
+
+  activeChatCopyLabel = copyLabel;
+  activeChatOpenBlocks = openBlocks;
+  const parsed = chatParser.parse(source, { async: false });
+  const sanitized = DOMPurify.sanitize(parsed, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ["img", "picture", "source", "video", "audio", "iframe", "object", "embed", "style", "form", "input", "button", "svg", "math", "link", "meta", "base"],
     FORBID_ATTR: ["style", "src", "srcset", "autofocus", "background", "poster", "ping"],
     // data-file-* 是上面给本地文件链接打的标记，html 档默认保留 data-*，这里只补一条说明。
   });
+
+  if (cacheKey) {
+    if (chatMarkdownCache.size >= CHAT_MARKDOWN_CACHE_LIMIT) {
+      const firstKey = chatMarkdownCache.keys().next().value;
+      if (firstKey) chatMarkdownCache.delete(firstKey);
+    }
+    chatMarkdownCache.set(cacheKey, sanitized);
+  }
+
+  return sanitized;
 }

@@ -176,7 +176,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
     />
   );
 
-  /** 父行下的子代理行：缩进 + 机器人图标 + 状态点 + 标题；点开进子代理会话视图。 */
+  /** 父行下的子代理行：缩进 + 机器人图标 + 标题；点开进子代理会话视图。 */
   const agentRow = (child: AiSession, section: AiSidebarSectionKey): ReactNode => (
     <button type="button" key={`${section}:agent:${child.id}`}
       className={`ai-agent-subrow${activeId === `ai|${child.id}` ? " is-active" : ""}`}
@@ -184,7 +184,6 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       title={child.agent?.title ?? child.title}
       onClick={() => onOpen(child.id)}>
       <span className="ai-agent-subrow-icon" aria-hidden><Bot size={12} /></span>
-      <span className="ai-agent-subrow-dot" data-status={child.agent?.status ?? ""} aria-hidden />
       <span className="ai-agent-subrow-title">{child.title || child.agent?.title}</span>
       {child.agent?.model ? <span className="ai-agent-subrow-model">{child.agent.model}</span> : null}
     </button>
@@ -209,9 +208,8 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   const sectionBlock = (section: AiSidebarSectionKey, rows: ReactNode[], emptyHint: string): ReactNode => {
     const expanded = view.collapsed[section] !== true;
     const showNewChat = section === "sessions" || section === "recent";
-    return <section key={section} className={`ai-ssection has-gap${
-      section === "recent" ? ` is-recent${expanded ? " is-expanded" : ""}` : ""
-    }`}>
+    // 类型类名负责分配章节高度；展开类名让每个章节只滚自己的行列表。
+    return <section key={section} className={`ai-ssection has-gap is-${section}${expanded ? " is-expanded" : ""}`}>
       <div className="ai-ssection-head">
         <button type="button" className="ai-ssection-toggle" aria-expanded={expanded} onClick={() => toggleAiSidebarSection(section)}>
           <span>{sectionLabel(section)}</span>

@@ -6,7 +6,7 @@ export interface AiSession {
   id: string;
   /** 该会话属于哪个 CLI，决定图标与恢复时走哪套协议。 */
   provider: AiProvider;
-  /** 列表里显示的名字；用户可重命名，最长 120 字符。 */
+  /** 列表里显示的名字；新建还没发过消息时为空串，界面按「未命名会话」显示；用户可重命名，最长 120 字符。 */
   title: string;
   /** 创建时间（毫秒时间戳），列表按它倒序排列。 */
   createdAt: number;
@@ -62,7 +62,7 @@ export function parseAiSessions(raw: string | null): AiSessionState {
       if (!item || typeof item !== "object" || typeof item.id !== "string" ||
           !/^[a-zA-Z0-9-]{1,80}$/.test(item.id) || seen.has(item.id) ||
           (item.provider !== "claude" && item.provider !== "codex") ||
-          typeof item.title !== "string" || !item.title.trim() || item.title.length > 120 ||
+          typeof item.title !== "string" || item.title.length > 120 ||
           !Number.isFinite(item.createdAt) || item.createdAt < 0) return false;
       seen.add(item.id);
       return true;

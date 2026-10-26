@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Archive, Bot, Brain, Check, CheckCircle2, ChevronLeft, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, EyeOff, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -98,7 +98,7 @@ function AiCompactionSummaryBody({ id, text }: { id: string; text: string }) {
  * 这样」，比 token 差值次一级。耗时只报 CLI 自己给的，不拿前端看到两个状态的时刻差
  * 去冒充。数字认不出就不显示——没有数字比编一个数字好。
  */
-function AiCompactionDivider({ entry }: { entry: AiEntry }) {
+const AiCompactionDivider = memo(function AiCompactionDivider({ entry }: { entry: AiEntry }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const bodyId = useId();
@@ -125,9 +125,9 @@ function AiCompactionDivider({ entry }: { entry: AiEntry }) {
     </div>
     {facts.summary && open ? <AiCompactionSummaryBody id={bodyId} text={facts.summary} /> : null}
   </div>;
-}
+});
 
-function TimelineNotice({ entry }: { entry: AiEntry }) {
+const TimelineNotice = memo(function TimelineNotice({ entry }: { entry: AiEntry }) {
   const { t } = useI18n();
   const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
   if (entry.name === "plan_review" || entry.name === "plan_draft") return <AiPlanEntry entry={entry} />;
@@ -152,8 +152,9 @@ function TimelineNotice({ entry }: { entry: AiEntry }) {
     </section>;
   }
   return <details className="ai-timeline-notice"><summary><ChevronRight className="ai-detail-chevron" size={13} />{entry.name === "retry" ? t("ai.chat.retry") : t("ai.chat.notice")}</summary>{entry.text ? <AiMarkdown text={entry.text} /> : <pre>{detail(entry.input)}</pre>}</details>;
-}
-function RequestCard({ request, stopping }: { request: AiRequest; stopping: boolean }) {
+});
+
+const RequestCard = memo(function RequestCard({ request, stopping }: { request: AiRequest; stopping: boolean }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [answered, setAnswered] = useState(false);
@@ -197,7 +198,7 @@ function RequestCard({ request, stopping }: { request: AiRequest; stopping: bool
       </>}
     {error ? <p className="ai-error" role="alert">{error}</p> : null}
   </section>;
-}
+});
 
 /** 用户消息的长文折叠线：超过这个行数先收起，底部渐隐提示还有更多。 */
 const USER_MESSAGE_CLIP_LINES = 18;
@@ -236,7 +237,7 @@ function renderUserText(text: string): ReactNode[] {
  * 对照参考实现：正文是纯文本（不走 markdown），过长的消息先按高度收起并留一条
  * 渐隐边，展开后才见全文——一整屏贴进来的日志不会把时间线顶出十屏。
  */
-function AiUserMessage({ text, images }: { text: string; images?: { node: ReactNode; key: string }[] }) {
+const AiUserMessage = memo(function AiUserMessage({ text, images }: { text: string; images?: { node: ReactNode; key: string }[] }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -261,10 +262,10 @@ function AiUserMessage({ text, images }: { text: string; images?: { node: ReactN
     </div> : null}
     {long && expanded ? <button type="button" className="ai-user-msg-expand" onClick={() => setExpanded(false)}>{t("ai.chat.collapseMessage")}</button> : null}
   </div>;
-}
+});
 
 /** 思考只在当前生成阶段自动展开；阶段结束后收起，历史正文仍可由用户手动打开。 */
-function AiReasoningEntry({ entry, live }: { entry: AiEntry; live: boolean }) {
+const AiReasoningEntry = memo(function AiReasoningEntry({ entry, live }: { entry: AiEntry; live: boolean }) {
   const { t } = useI18n();
   const phase = live ? "running" : "completed";
   const [disclosure, setDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
@@ -282,7 +283,7 @@ function AiReasoningEntry({ entry, live }: { entry: AiEntry; live: boolean }) {
     </summary>
     <AiMarkdown text={entry.text} />
   </details>;
-}
+});
 
 interface FloatingPos {
   left: number;
@@ -507,7 +508,7 @@ function AiLiveStats({ provider, runId, entries, usage, statusText, planMode }: 
  * 完成态全部默认收起；头部给「N 个文件 + 总 ±行数」，
  * 展开是逐文件卡——点文件跳编辑器。统计口径与底栏汇总同源（只算真实完成的补丁）。
  */
-function AiReplyArtifacts({ summary }: { summary: AiEditSummary }) {
+const AiReplyArtifacts = memo(function AiReplyArtifacts({ summary }: { summary: AiEditSummary }) {
   const { t } = useI18n();
   const added = summary.files.filter((file) => file.kind === "add");
   const changed = summary.files.filter((file) => file.kind !== "add");
@@ -556,14 +557,14 @@ function AiReplyArtifacts({ summary }: { summary: AiEditSummary }) {
     {card(t("ai.chat.filesAdded"), added, openNew, () => setOpenNew(!openNew), <FilePlus2 size={14} aria-hidden />)}
     {card(t("ai.chat.filesChanged"), changed, openChanged, () => setOpenChanged(!openChanged), <FilePenLine size={14} aria-hidden />)}
   </div>;
-}
+});
 
 /**
  * 回合完成后的操作行（对照参考实现的 TurnStats，砍掉协议不支持的分叉/转任务）：
  * 耗时、token 数、复制最后一段回复、跳回本轮的用户消息。回合失败也有这一行——
  * 失败原因另有错误行，这里的统计与动作同样成立。
  */
-function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
+const AiTurnStats = memo(function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
   runId: string;
   usage?: import("../lib/aiUsage").AiUsage;
   lastAssistantText: string | undefined;
@@ -593,10 +594,10 @@ function AiTurnStats({ runId, usage, lastAssistantText, userEntryId, onJump }: {
       <ChevronsUp size={12} aria-hidden />
     </button> : null}
   </div>;
-}
+});
 
 /** Goal 是会话级控制器，固定在输入区上方；Task 仍是标题栏里的步骤概览。 */
-function AiGoalBar({ goal, busy, onStatus, onHide }: {
+const AiGoalBar = memo(function AiGoalBar({ goal, busy, onStatus, onHide }: {
   goal: AiThreadGoal;
   busy: boolean;
   onStatus: (status: "active" | "paused") => void;
@@ -632,7 +633,100 @@ function AiGoalBar({ goal, busy, onStatus, onHide }: {
       <span>{t("ai.chat.hideGoal")}</span>
     </button> : null}
   </section>;
+});
+
+interface AiChatEntryRowProps {
+  entry: AiEntry;
+  request?: AiRequest;
+  stopping: boolean;
+  artifacts?: AiEditSummary;
+  streaming: boolean;
+  liveThinking: boolean;
+  agentSession?: string;
+  subagents?: AiEntry[];
+  hasRequest: boolean;
+  onOpenSession?: (id: string) => void;
+  onLightbox: (path: string) => void;
+  onImageLoad: () => void;
 }
+
+/** 单条会话记录渲染单元：深度 memo 记忆化保护，防止任何外层状态变动拖慢整条历史时间线 */
+const AiChatEntryRow = memo(function AiChatEntryRow({
+  entry,
+  request,
+  stopping,
+  artifacts,
+  streaming,
+  liveThinking,
+  agentSession,
+  subagents,
+  hasRequest,
+  onOpenSession,
+  onLightbox,
+  onImageLoad,
+}: AiChatEntryRowProps) {
+  const { t } = useI18n();
+  if (entry.kind === "request") {
+    return request ? <RequestCard key={entry.id} request={request} stopping={stopping} /> : null;
+  }
+  const body = (
+    <article data-entry-id={entry.id} className={`ai-chat-entry is-${entry.kind}`}>
+      {entry.kind === "user" ? (
+        <AiUserMessage
+          text={entry.text}
+          images={entry.images?.map((path) => ({
+            key: path,
+            node: (
+              <button
+                type="button"
+                className="ai-msg-image"
+                aria-label={t("ai.chat.previewImage")}
+                title={t("ai.chat.previewImage")}
+                onClick={() => onLightbox(path)}
+              >
+                <img
+                  src={assetUrl(path, 0)}
+                  alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")}
+                  onLoad={onImageLoad}
+                  onError={(event) => {
+                    event.currentTarget.alt = t("ai.chat.imageMissing");
+                    event.currentTarget.classList.add("is-missing");
+                  }}
+                />
+              </button>
+            ),
+          }))}
+        />
+      ) : entry.kind === "assistant" || entry.kind === "command" ? (
+        <>
+          {entry.kind === "command" ? <small className="ai-muted">{t("ai.commands.output")}</small> : null}
+          <AiMarkdown text={entry.text} streaming={streaming} />
+        </>
+      ) : entry.kind === "tool" ? (
+        <AiToolCall
+          entry={entry}
+          subagents={subagents}
+          hasRequest={hasRequest}
+          agent={agentSession ? { sessionId: agentSession } : undefined}
+          onOpenAgent={onOpenSession}
+        />
+      ) : entry.kind === "reasoning" ? (
+        <AiReasoningEntry entry={entry} live={liveThinking} />
+      ) : entry.kind === "notice" ? (
+        <TimelineNotice entry={entry} />
+      ) : null}
+    </article>
+  );
+
+  return artifacts ? (
+    <Fragment key={entry.id}>
+      {body}
+      <AiReplyArtifacts summary={artifacts} />
+    </Fragment>
+  ) : (
+    body
+  );
+});
 
 interface AiSessionPaneProps {
   /** 要渲染的会话；切换会话时由上层用 `key` 强制重建，不靠 props 变化。 */
@@ -824,10 +918,10 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     window.addEventListener("pointerdown", dismiss, true);
     return () => window.removeEventListener("pointerdown", dismiss, true);
   }, [menuVisible]);
-  /** 改输入框就顺手落一次盘：存不下只是下次重启看不到半截话，不值得打扰发送；空了就删键，别攒一堆空记录。 */
-  const commitDraft = (text: string) => {
+  /** 改输入框就顺手落一次盘（内部防抖 300ms）：存不下只是下次重启看不到半截话，不值得打扰发送；空了就删键，别攒一堆空记录。 */
+  const commitDraft = (text: string, immediate = false) => {
     setDraft(text);
-    if (text) saveDraft(workspace, session.id, text); else clearDraft(workspace, session.id);
+    if (text) saveDraft(workspace, session.id, text, immediate); else clearDraft(workspace, session.id);
   };
   const updateDraft = (text: string) => {
     // 编辑队列时输入框只是临时工作区，不能拿队列正文覆盖持久草稿。
@@ -946,7 +1040,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [pendingJump, setPendingJump] = useState<{ id: string; waiting: boolean } | null>(null);
   // 历史 running 可能属于另一个 Forge 进程；动画和停止按钮只能认实时探针给出的本进程 run id。
   const running = runtime.status === "running" && activity === "running" && runtime.runId === ownedRunId;
-  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); setImages([]); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; }, [optionsKey, session.id, workspace]);
+  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); setImages([]); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; setTaskListDisclosure(null); }, [optionsKey, session.id, workspace]);
   /**
    * 新建会话的交接：草稿欢迎页在创建会话时把首条消息（含附件）留在这里，
    * 会话页挂载后先回填输入框与附件，再触发一次正常发送——信任确认、未保存检查
@@ -1296,10 +1390,14 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   /** 任务清单是会话级事实，不再依赖当前时间线页是否包含它的最后一次更新。 */
   const taskList = runtime.taskList?.items.some((item) => item.status !== "dropped" && item.content.trim()) ? runtime.taskList : null;
   const taskListPhase = taskList?.runId ?? "none";
+  const taskItems = taskList?.items.filter((item) => item.status !== "dropped" && item.content.trim()) ?? [];
+  const completedTasks = taskItems.filter((item) => item.status === "complete" || item.status === "completed").length;
+  const allTasksCompleted = taskItems.length > 0 && completedTasks === taskItems.length;
   const [taskListAnchor, setTaskListAnchor] = useState<HTMLButtonElement | null>(null);
   const [taskListDisclosure, setTaskListDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
-  // 每份新清单默认展开；同一清单从运行到结束不重置用户手动选择的折叠状态。
-  const taskListOpen = !!taskList && (taskListDisclosure?.phase === taskListPhase ? taskListDisclosure.open : true);
+  // 仅在执行中且未全部完成时默认打开；已完成、空闲或点击进入历史会话时不默认弹开，用户在当前阶段手动操作后保持其状态。
+  const taskListDefaultOpen = running && !allTasksCompleted;
+  const taskListOpen = !!taskList && (taskListDisclosure?.phase === taskListPhase ? taskListDisclosure.open : taskListDefaultOpen);
   const attachTaskListTrigger = useCallback((node: HTMLButtonElement | null) => setTaskListAnchor(node), []);
   const setTaskListOpen = (open: boolean) => setTaskListDisclosure({ phase: taskListPhase, open });
   const goal = runtime.goal?.objective.trim() ? runtime.goal : null;
@@ -1309,9 +1407,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     onAgentDockAvailable?.(dockAgents);
     return () => onAgentDockAvailable?.(false);
   }, [onAgentDockAvailable, dockAgents]);
-  const taskItems = taskList?.items.filter((item) => item.status !== "dropped" && item.content.trim()) ?? [];
-  const completedTasks = taskItems.filter((item) => item.status === "complete" || item.status === "completed").length;
-  const allTasksCompleted = taskItems.length > 0 && completedTasks === taskItems.length;
   const currentTask = taskItems.find((item) => item.status === "in_progress" || item.status === "active")
     ?? taskItems.find((item) => item.status !== "complete" && item.status !== "completed");
   // 标题栏只承担扫视摘要：正文保留完整标题，这里最多露六个字符再收尾。
@@ -1397,7 +1492,10 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       timeline.hidden > 0 || runtime.requests.length > timelineLimit || runtime.hasOlder, runtime.loading)) showEarlier();
   };
   // 每次补页提交后检查：不足两屏的短页会继续补，不需要点击按钮或再滚一下。
-  useEffect(() => { prefetchEarlier(); });
+  // 仅在条目、请求、分页或加载状态变化时触发，严禁用户打字或光标操作时触发强制重排。
+  useEffect(() => {
+    prefetchEarlier();
+  }, [runtime.entries.length, runtime.requests.length, runtime.loaded, runtime.loading, runtime.hasOlder, timeline.hidden, timelineLimit, pendingJump]);
   const trackScroll = () => {
     const element = content.current;
     if (!element) return;
@@ -1461,31 +1559,71 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     for (const agent of runtime.agents) if (agent.sessionId) map.set(agent.key, agent.sessionId);
     return map;
   }, [runtime.agents]);
-  const renderEntry = (entry: AiEntry): ReactNode => {
-    if (entry.kind === "request") {
-      const request = requestsById.get(entry.requestId ?? "");
-      return request ? <RequestCard key={entry.id} request={request} stopping={runtime.stopping} /> : null;
+  const handleImageLoad = useCallback(() => {
+    /* 图片加载完才撑开高度：首屏贴底时不补这一下，打开带图的会话就停在底部上面一截。 */
+    if (!anchor) scrollToBottom();
+  }, [anchor]);
+
+  const renderEntry = useCallback((entry: AiEntry): ReactNode => {
+    if (entry.kind === "user") {
+      return <article key={entry.id} data-entry-id={entry.id} className="ai-chat-entry is-user">
+        <AiUserMessage
+          text={entry.text}
+          images={entry.images?.map((path) => ({
+            key: path,
+            node: (
+              <button
+                type="button"
+                className="ai-msg-image"
+                aria-label={t("ai.chat.previewImage")}
+                title={t("ai.chat.previewImage")}
+                onClick={() => setLightbox(path)}
+              >
+                <img
+                  src={assetUrl(path, 0)}
+                  alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")}
+                  onLoad={handleImageLoad}
+                  onError={(event) => {
+                    event.currentTarget.alt = t("ai.chat.imageMissing");
+                    event.currentTarget.classList.add("is-missing");
+                  }}
+                />
+              </button>
+            ),
+          }))}
+        />
+      </article>;
     }
-    // 回合末尾的文件汇总卡：只挂在顶层条目之后（折在过程组/浏览组里就成了套娃），
-    // 且正在跑的那一轮不挂——它还在改。统计口径同底栏（真实完成的补丁、按路径去重）。
-    const artifacts = artifactsByLastEntry.get(entry.id);
-    const body = <article key={entry.id} data-entry-id={entry.id} className={`ai-chat-entry is-${entry.kind}`}>
-      {entry.kind === "user" ? <AiUserMessage text={entry.text} images={entry.images?.map((path) => ({ key: path, node: <button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(path)}><img src={assetUrl(path, 0)} alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")} onLoad={() => { /* 图片加载完才撑开高度：首屏贴底时不补这一下，打开带图的会话就停在底部上面一截。 */ if (!anchor) scrollToBottom(); }} onError={(event) => { /* 文件被清掉时不编占位图：把 alt 换成一句实话，坏图本来就会显示 alt。 */ event.currentTarget.alt = t("ai.chat.imageMissing"); event.currentTarget.classList.add("is-missing"); }} /></button> }))} /> : entry.kind === "assistant" || entry.kind === "command" ? <>
-        {entry.kind === "command" ? <small className="ai-muted">{t("ai.commands.output")}</small> : null}
-        <AiMarkdown text={entry.text} streaming={entry.id === streamingEntryId} />
-      </> : entry.kind === "tool" ? (() => {
-        // 委派卡直达子会话的入口：Agent 工具 id 就是子代理路由 key。
-        const agentSession = !isAgentSession && entry.toolId ? agentSessionsByKey.get(entry.toolId) : undefined;
-        return <AiToolCall entry={entry} subagents={subagentChildren.get(entry.toolId ?? "")} hasRequest={requestToolIds.has(entry.toolId ?? "") || questionRequestRuns.has(entry.runId)}
-          agent={agentSession ? { sessionId: agentSession } : undefined} onOpenAgent={onOpenSession} />;
-      })() : entry.kind === "reasoning" ? <AiReasoningEntry entry={entry} live={entry.id === liveThinkingId} />
-        : entry.kind === "notice" ? <TimelineNotice entry={entry} />
-        // 「已报告的文件变动」fallback 行撤掉：一级已有每次修改的明细行 + 回合末尾的汇总卡，
-        // 再铺一条只报文件名的清单是三份重复（有修改文件显示就不要它）。
-        : null}
-    </article>;
-    return artifacts ? <Fragment key={entry.id}>{body}<AiReplyArtifacts summary={artifacts} /></Fragment> : body;
-  };
+    return <AiChatEntryRow
+      key={entry.id}
+      entry={entry}
+      request={requestsById.get(entry.requestId ?? "")}
+      stopping={runtime.stopping}
+      artifacts={artifactsByLastEntry.get(entry.id)}
+      streaming={entry.id === streamingEntryId}
+      liveThinking={entry.id === liveThinkingId}
+      agentSession={!isAgentSession && entry.toolId ? agentSessionsByKey.get(entry.toolId) : undefined}
+      subagents={subagentChildren.get(entry.toolId ?? "")}
+      hasRequest={requestToolIds.has(entry.toolId ?? "") || questionRequestRuns.has(entry.runId)}
+      onOpenSession={onOpenSession}
+      onLightbox={setLightbox}
+      onImageLoad={handleImageLoad}
+    />;
+  }, [
+    requestsById,
+    runtime.stopping,
+    artifactsByLastEntry,
+    streamingEntryId,
+    liveThinkingId,
+    isAgentSession,
+    agentSessionsByKey,
+    subagentChildren,
+    requestToolIds,
+    questionRequestRuns,
+    onOpenSession,
+    handleImageLoad,
+    t,
+  ]);
   // 原生历史里提不出标题时 meta 就是空的；标题行不能是一条空白。
   const displayTitle = session.title || t("ai.untitledSession");
   return <AiOpenFileProvider onOpen={onOpenFile}>
@@ -1534,7 +1672,9 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         </button> : null}
       </span>
       {taskList && taskListOpen && taskListAnchor ? (
-        <Popover anchor={taskListAnchor} boundary={pane.current} onClose={() => setTaskListOpen(false)} minWidth={320} maxWidth={360}>
+        // 清单会在运行时自动展开；保持非模态，避免全屏遮罩吞掉用户对正文和其他面板的点击。
+        <Popover anchor={taskListAnchor} boundary={pane.current} onClose={() => setTaskListOpen(false)}
+          minWidth={320} maxWidth={360} modal={false} role="dialog">
           <section className="ai-head-tasklist-popover" aria-label={t("ai.chat.taskList")}>
             <header>
               <ListOrdered size={14} aria-hidden />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { parseToolDiff } from "../lib/aiTools";
 
 /**
@@ -73,7 +73,7 @@ export function alignDiffSides(diff: string, startLine?: number): {
   return { original: oldLines.join("\n"), modified: newLines.join("\n"), oldNos, newNos };
 }
 
-export default function AiDiffEditor({ diff, original, modified, path, sideBySide, height = 320 }: {
+export default memo(function AiDiffEditor({ diff, original, modified, path, sideBySide, height = 320 }: {
   /** unified diff；与 original/modified 二选一。 */
   diff?: string;
   /** 改动前/后的完整文本（补丁 old/new、新建文件 original="" modified=content）。 */
@@ -149,4 +149,4 @@ export default function AiDiffEditor({ diff, original, modified, path, sideBySid
   }, [sides, path, sideBySide]);
 
   return <div className={`ai-diff-editor${ready ? "" : " is-loading"}`} style={{ height: height ?? contentHeight }} ref={host} />;
-}
+});

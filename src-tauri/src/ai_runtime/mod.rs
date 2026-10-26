@@ -55,8 +55,6 @@ pub struct SendRequest {
     provider: Provider,
     /// 工作区根路径；后端会规范化并校验它确实存在。
     workspace: String,
-    /// 会话标题；新会话用它写入元数据，已有会话以存储里的为准。
-    title: String,
     /// 用户本轮输入。
     prompt: String,
     /// 由图片沙箱生成并复核的本地图片路径。
@@ -417,21 +415,40 @@ fn stop_registered() -> Vec<Arc<Run>> {
     registry::flag_stop(&runs);
     runs
 }
-/// 新会话标题从首条用户消息生成（对照参考实现：发送第一条后立即改题，不等 CLI 刷新）。
+/// 把当前标题推给 Codex 原生线程，并记下已同步的那个名字。
+/// CLI 只给磁盘上真实存在（跑过回合、有 rollout）的线程改名，所以调用方一律按
+/// 尽力而为处理：这一刻推不动，回合结束还会再推一次。
+fn push_codex_title(store: &mut store::Store) -> Result<(), String> {
+    if store.meta.provider != Provider::Codex || store.meta.title.trim().is_empty() { return Ok(()); }
+    if store.meta.native_title_synced.as_deref() == Some(store.meta.title.as_str()) { return Ok(()); }
+    let native = store.meta.native_id.clone().ok_or("Codex 会话尚未建立，无法命名")?;
+    let title = store.meta.title.clone();
+    options::codex_set_thread_name(&store.meta.workspace, &native, &title)?;
+    store.meta.native_title_synced = Some(title);
+    store.save()
+}
+/// 会话的第一条消息：标题立刻换成首句摘要，不等 CLI 也不等原生历史刷新。
 /// 规则与原生历史解析共用 `history::auto_title`，两个来源写出的必须是同一个字符串。
 /// 用户已经改过标题（`title_locked`）就不再动它。
 fn title_first_message(store: &mut store::Store, request: &SendRequest, include_user: bool) -> Result<(), String> {
     if !include_user || store.seq != 0 || request.plan_turn.is_some() || store.meta.title_locked { return Ok(()); }
     if let Some(title) = history::human_text(&request.prompt).as_deref().and_then(history::auto_title) {
         if title == store.meta.title { return Ok(()); }
-        if store.meta.provider == Provider::Codex {
-            let native = store.meta.native_id.as_deref().unwrap_or(&store.meta.session_id);
-            options::codex_set_thread_name(&store.meta.workspace, native, &title)?;
-        }
         store.meta.title = title;
         store.save()?;
+        // 命名绝不能吃掉用户这条消息：线程还没建出来时这一步本来就会失败。
+        let _ = push_codex_title(store);
     }
     Ok(())
+}
+/// 旧版 create 预建的 Codex 线程是个幽灵 ID：进程早已退出，磁盘上没有 rollout，
+/// 拿它去 `thread/resume` 必然「no rollout found」。这类会话一条消息都没发过，
+/// 丢掉这个 ID，首条消息自己 `thread/start` 出真正存在的线程。
+fn drop_phantom_thread(store: &mut store::Store) -> Result<(), String> {
+    if store.meta.provider != Provider::Codex || store.seq != 0 { return Ok(()); }
+    if store.meta.native_id.as_deref() != Some(store.meta.session_id.as_str()) { return Ok(()); }
+    store.meta.native_id = None;
+    store.save()
 }
 
 fn append_task_status(app: &AppHandle, request: &SendRequest, status: &str, extra: Value, include_user: bool) -> Result<(), String> {
@@ -440,7 +457,9 @@ fn append_task_status(app: &AppHandle, request: &SendRequest, status: &str, extr
     let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
     // 排队、取消、状态回写都可能发生在某一轮正在跑的时候，这里没有租约，
     // 绝不能走 `Store::open` 的「上次运行未正常结束」修复：那会把还活着的回合写成 cancelled。
-    let (mut store, tasks) = store::Store::open_for_append_with_tasks(&base, &request.session_id, &root, request.provider, &request.title, "")?;
+    // 发送路径一律不种子标题：命名只由 `title_first_message` 和原生历史发现决定，
+    // 客户端传来的旧标签名会把过期占位写进新建的 meta.json。
+    let (mut store, tasks) = store::Store::open_for_append_with_tasks(&base, &request.session_id, &root, request.provider, "", "")?;
     // 用户消息永远落盘：它是这条排队项的正文，跳过就等于把消息弄丢了。
     if !include_user && status_already_recorded(tasks.get(&request.run_id), status, &extra) { return Ok(()); }
     // 会话的第一条事件（seq 归零说明日志刚建）：标题自动换成首条消息的摘要，
@@ -532,9 +551,6 @@ fn validate(request: &SendRequest) -> Result<(), String> {
     }
     if request.prompt.trim().is_empty() && request.images.is_empty() && request.plan.is_none() || request.prompt.len() > 64 * 1024 {
         return Err("消息和图片不能同时为空，且消息不能超过 64 KiB".into());
-    }
-    if request.title.trim().is_empty() || request.title.chars().count() > 120 {
-        return Err("无效会话标题".into());
     }
     Ok(())
 }
@@ -822,9 +838,11 @@ pub async fn ai_runtime_custom_models(app: AppHandle, provider: Provider) -> Res
 pub async fn ai_runtime_remove_model(app: AppHandle, provider: Provider, model: String) -> Result<(), String> {
     block(move || { enabled(&app)?; options::remove_model(&models_path(&app)?, provider, &model) }).await
 }
-/// 新建会话：只建记录，不起名。标题等首条用户消息发出后由 `title_first_message` 自动取，
-/// 也绝不把名字写回 CLI 原生历史——占位名一旦落成 custom-title / thread name，
-/// 就把真正的自动标题永久压掉了。
+/// 新建会话：只建记录，不起名也不碰 CLI。标题等首条用户消息发出后由 `title_first_message`
+/// 自动取；占位名一旦落成 custom-title / thread name，就把真正的自动标题永久压掉了。
+/// Codex 也不在这里 `thread/start`：空线程只活在那个已退出的进程内存里，磁盘上没有
+/// rollout，之后既不能 `thread/resume` 也不能 `thread/name/set`（实测 0.164.0 一律
+/// 回「no rollout found」）。真正的线程由首条消息那一轮自己建出来再绑上。
 #[tauri::command]
 pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: String, session_id: Option<String>) -> Result<Value, String> {
     block(move || {
@@ -835,14 +853,9 @@ pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: St
         if !ai_cli::settings::enabled(&app, provider) { return Err("该 CLI 已在设置中停用，请先在设置中启用".into()); }
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
-        let id = if provider == Provider::Codex {
-            options::codex_create_thread(&root)?.get("id").and_then(Value::as_str).ok_or("CLI 未返回会话 ID")?.to_owned()
-        } else {
-            session_id.filter(|id| store::valid_id(id)).ok_or("Claude 会话 ID 无效")?.to_owned()
-        };
+        let id = session_id.filter(|id| store::valid_id(id)).ok_or("会话 ID 无效")?.to_owned();
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-        let mut target = store::Store::open(&base, &id, &root, provider, "", "")?;
-        if provider == Provider::Codex { target.bind(id.clone())?; }
+        let target = store::Store::open(&base, &id, &root, provider, "", "")?;
         Ok(json!({"id":id,"provider":provider,"title":target.meta.title,"createdAt":target.meta.created_at}))
     }).await
 }
@@ -1008,7 +1021,7 @@ fn emit_plan_record(app: &AppHandle, request: &SendRequest, root: &str, base: &s
     let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
     // 这里可能正有一轮在跑（决策已排队），不能用 Store::open 的「上次运行未结束」修复：
     // 那会把仍在跑的回合误写成 cancelled。
-    let mut store = store::Store::open_for_append(&base, &request.session_id, root, request.provider, &request.title, "")?;
+    let mut store = store::Store::open_for_append(&base, &request.session_id, root, request.provider, "", "")?;
     let events = store.append(&request.run_id, vec![("plan_review".into(), serde_json::to_value(record).map_err(|e| e.to_string())?)])?;
     let _ = app.emit(CHANNEL, &events);
     Ok(())
@@ -1059,8 +1072,9 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
         // CLI resume 只依赖原生会话 ID；Forge 镜像是否已经分页读完不能阻塞发送。
         // 历史继续由 ai_runtime_load 惰性同步，避免大会话在发送路径上反复扫描。
-        let mut target = store::Store::open_existing(&base, &request.session_id, &root, request.provider, &request.title, "")?;
-        // 标题失败发生在 reserve 之前，不能留下没有工作线程的运行登记。
+        let mut target = store::Store::open_existing(&base, &request.session_id, &root, request.provider, "", "")?;
+        // 这两步都发生在 reserve 之前：失败就不能留下没有工作线程的运行登记。
+        drop_phantom_thread(&mut target)?;
         title_first_message(&mut target, &request, include_user)?;
         target
     };
@@ -1080,6 +1094,8 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
         worker.finish(status, error);
         let next_app = worker.app.clone();
         drop(session_lease);
+        // 回合跑过之后线程在 CLI 那边才真实存在，欠着的改名在这里补上（不占会话锁）。
+        worker.sync_native_title();
         worker_run.finish();
         let _ = schedule_next(&next_app, &session_id);
     });
@@ -1790,6 +1806,12 @@ impl Worker {
             );
         }
     }
+    /// 回合结束后补推标题。命名是锦上添花：CLI 不可用、线程仍不存在，都留给下一次
+    /// 回合再试，绝不为此打扰用户。
+    fn sync_native_title(&mut self) {
+        let Ok(_io) = store::IO_LOCK.lock() else { return };
+        let _ = push_codex_title(&mut self.store);
+    }
 }
 /// 这条授权请求能否由本轮已记下的规则代答。
 ///
@@ -1952,7 +1974,6 @@ pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, worksp
             run_id: format!("fwd-{}-{}", now_ms(), FORWARD_SEQ.fetch_add(1, Ordering::Relaxed)),
             provider: parent.provider,
             workspace: parent.workspace,
-            title: parent.title,
             prompt: instruction,
             images: vec![],
             trusted: true,
@@ -2194,25 +2215,29 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
         let codex_by_id: HashMap<String, Value> = codex.into_iter().filter_map(|item| Some((item["id"].as_str()?.to_owned(), item))).collect();
         let _io=store::IO_LOCK.lock().map_err(|e|e.to_string())?;
         let mut sessions=vec![];
-        for entry in std::fs::read_dir(base).map_err(|e|e.to_string())?.take(20000) {
+        for entry in std::fs::read_dir(&base).map_err(|e|e.to_string())?.take(20000) {
             let entry=entry.map_err(|e|e.to_string())?;
             if !entry.file_type().map_err(|e|e.to_string())?.is_dir() { continue; }
             let id=entry.file_name().to_string_lossy().into_owned();
             if !store::valid_id(&id) { continue; }
             if let Ok(mut meta)=store::Store::metadata(&entry.path(),&root) {
-                // 旧版包装 ID 不再进入 UI；原生历史已按真实 ID 重建只读镜像。
+                // Codex 会话在 CLI 侧的身份是原生线程 ID；目录名只是 Forge 主键，
+                // 自建会话的目录名和它天生不同（线程要等首条消息才建出来）。
+                let native = meta.native_id.clone().unwrap_or_default();
+                // 旧版把 ID 包过一层，那条会话已按真实 ID 重建过镜像：只有真实 ID 的目录
+                // 也在时才收起这个旧壳，否则同一次会话会在列表里出现两条。
                 // 子会话的 native_id 存的是子代理标识，不适用这条过滤规则。
-                if meta.agent.is_none() && meta.native_id.as_deref().is_some_and(|native| native != meta.session_id) { continue; }
+                if meta.agent.is_none() && !native.is_empty() && native != meta.session_id && base.join(&native).is_dir() { continue; }
                 if meta.provider == Provider::Codex {
-                    if let Some(native) = codex_by_id.get(&meta.session_id) {
+                    if let Some(thread) = codex_by_id.get(&native).filter(|_| !native.is_empty()) {
                         // 用户锁定过的标题以 Forge 为准；未锁定时原生线程名是权威来源。
                         // 原生没有名字（新建还没发过消息，或名字是早期写下的占位名）就什么都不动。
                         if !meta.title_locked {
-                            if let Some(title) = native["title"].as_str().filter(|title| !title.trim().is_empty() && !history::is_placeholder_title(title)) {
+                            if let Some(title) = thread["title"].as_str().filter(|title| !title.trim().is_empty() && !history::is_placeholder_title(title)) {
                                 meta.title = title.to_owned();
                             }
                         }
-                        if let Some(created) = native["createdAt"].as_u64() { meta.created_at = created; }
+                        if let Some(created) = thread["createdAt"].as_u64() { meta.created_at = created; }
                         let _ = store::Store { dir: entry.path(), meta: meta.clone(), seq: 0, poisoned: false }.save();
                     }
                 }
@@ -2225,7 +2250,7 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                     .map(|duration| duration.as_millis() as u64)
                     .filter(|ts| *ts > 0)
                     .unwrap_or(meta.created_at);
-                sessions.push(json!({"id":meta.session_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&meta.session_id).map(|v|v["status"].clone()),"parentSessionId":meta.parent_session_id,"agent":meta.agent}));
+                sessions.push(json!({"id":meta.session_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&native).map(|v|v["status"].clone()),"parentSessionId":meta.parent_session_id,"agent":meta.agent}));
             }
         }
         sessions.sort_by_key(|item| std::cmp::Reverse(item["createdAt"].as_u64().unwrap_or_default()));
@@ -2252,22 +2277,17 @@ pub async fn ai_runtime_rename(
         }
         let _lease = store::Lease::acquire(&base.join(format!("{session_id}.lock")))?;
         let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-        let mut meta = store::Store::metadata(&dir, &root)?;
-        // Codex 有可写的原生线程名，顺手写回；Claude 没有写入口，只落 Forge 侧。
-        // 两者都置锁：之后原生历史同步不再拿 CLI 标题覆盖用户的选择。
-        if meta.provider == Provider::Codex {
-            let native = meta.native_id.as_deref().unwrap_or(&meta.session_id);
-            options::codex_set_thread_name(&root, native, title.trim())?;
-        }
-        meta.title = title.trim().into();
-        meta.title_locked = true;
-        store::Store {
-            dir,
-            meta,
-            seq: 0,
-            poisoned: false,
-        }
-        .save()
+        let meta = store::Store::metadata(&dir, &root)?;
+        let mut target = store::Store { dir, meta, seq: 0, poisoned: false };
+        // 改名先落 Forge 侧：这是用户自己的动作，不能被 CLI 的可用性挡下来。
+        // 置锁后原生历史同步不再拿 CLI 标题覆盖用户的选择。
+        target.meta.title = title.trim().into();
+        target.meta.title_locked = true;
+        target.save()?;
+        // Codex 有可写的原生线程名就顺手推一次；线程还没建出来（这条会话没跑过回合）
+        // 或 CLI 报错，都留给回合结束补推。Claude 没有原生写入口，改名只落 Forge 侧。
+        let _ = push_codex_title(&mut target);
+        Ok(())
     })
     .await
 }
@@ -2486,7 +2506,6 @@ mod tests {
             run_id: "run".into(),
             provider: Provider::Claude,
             workspace: "root".into(),
-            title: "title".into(),
             prompt: "hello".into(),
             images: vec![],
             trusted: false,
@@ -2521,7 +2540,6 @@ mod tests {
             run_id: "run".into(),
             provider: Provider::Codex,
             workspace: "root".into(),
-            title: "title".into(),
             prompt: "hello".into(),
             images: vec![],
             trusted: true,
@@ -2563,6 +2581,79 @@ mod tests {
         request.prompt = "第一条消息".into();
         title_first_message(&mut target, &request, true).unwrap();
         assert_eq!(target.meta.title, "用户改的标题");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+    /// 新建会话的空标题必须发得出去，并在首条消息后自动题名。
+    #[test]
+    fn untitled_session_names_itself_from_the_first_prompt() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-untitled-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        for path in [&root, &base] { std::fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        // 与 ai_runtime_create 一致：新会话不带任何名字。
+        let mut target = store::Store::open(&base, "session", &workspace, Provider::Claude, "", "").unwrap();
+        let mut request = base_request();
+        request.provider = Provider::Claude;
+        request.workspace = root.to_string_lossy().into_owned();
+        request.prompt = "修复登录页的跨域问题".into();
+        assert!(validate(&request).is_ok());
+        title_first_message(&mut target, &request, true).unwrap();
+        assert_eq!(target.meta.title, "修复登录页的跨域问题");
+        assert_eq!(store::Store::metadata(&base.join("session"), &workspace).unwrap().title, "修复登录页的跨域问题");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+    /// 首条消息的命名不能被 CLI 侧改名拖住：这一刻 Codex 线程还不存在，
+    /// 原生改名只能尽力而为，标题必须已经落在 Forge 侧。
+    #[test]
+    fn first_message_names_the_session_before_any_thread_exists() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-lazy-title-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        for path in [&root, &base] { std::fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut target = store::Store::open(&base, "session", &workspace, Provider::Codex, "", "").unwrap();
+        let mut request = base_request();
+        request.workspace = root.to_string_lossy().into_owned();
+        request.prompt = "把侧栏最大宽度调小一点".into();
+        title_first_message(&mut target, &request, true).unwrap();
+        assert_eq!(target.meta.title, "把侧栏最大宽度调小一点");
+        assert_eq!(target.meta.native_title_synced, None, "线程都还没有，不能声称已同步给 CLI");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+    /// 旧版 create 预建的线程 ID 是幽灵（磁盘上什么都没有），拿它 resume 必失败；
+    /// 只有一条消息都没发过的会话才丢，跑过回合的和原生 ID 本来就不同的都不动。
+    #[test]
+    fn only_an_untouched_phantom_thread_id_is_dropped() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-phantom-thread-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        for path in [&root, &base] { std::fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut target = store::Store::open(&base, "session", &workspace, Provider::Codex, "", "").unwrap();
+        target.bind("session".into()).unwrap();
+        drop_phantom_thread(&mut target).unwrap();
+        assert_eq!(target.meta.native_id, None, "空会话的幽灵 ID 必须丢掉，让首条消息新建线程");
+
+        target.bind("thread-real".into()).unwrap();
+        target.append("run", vec![("user".into(), json!({"text":"第一条"}))]).unwrap();
+        drop_phantom_thread(&mut target).unwrap();
+        assert_eq!(target.meta.native_id.as_deref(), Some("thread-real"), "跑过回合的会话不能改绑");
+
+        // Claude 的目录名就是原生会话 ID，这条规则不该碰它。
+        let mut claude = store::Store::open(&base, "claude-session", &workspace, Provider::Claude, "", "").unwrap();
+        claude.bind("claude-session".into()).unwrap();
+        drop_phantom_thread(&mut claude).unwrap();
+        assert_eq!(claude.meta.native_id.as_deref(), Some("claude-session"));
         std::fs::remove_dir_all(temp).unwrap();
     }
     #[test]

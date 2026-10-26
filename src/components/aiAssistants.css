@@ -563,16 +563,25 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 @keyframes ai-skeleton-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .ai-sidebar-skeleton { animation: none; } }
 
-/* 列表滚动区使用纵向流，让默认收起的「最近」章节吃掉空白并贴在底边。 */
-.ai-sidebar-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 0 6px 6px; }
+/* 外层只负责分区，禁止整体滚动；各章节的行列表在自己的高度预算内滚动。 */
+.ai-sidebar-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 6px 6px; }
+/* 搜索态没有章节壳，结果列表直接接管同一块高度和滚动。 */
+.ai-sidebar-scroll > .ai-search-results { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 
 /* 章节标题行：32px 高，标签 + 悬停浮现的箭头；右侧悬停浮现「新建」等动作。
    粘性吸顶：长列表滚动时当前章节始终可见（工具窗背景与正文同为 bg-primary）。 */
-.ai-ssection { min-width: 0; }
+.ai-ssection { min-width: 0; min-height: 0; }
 .ai-ssection.has-gap { padding-top: 12px; }
+/* 会话/最近按剩余空间 3:2 分配；最近收起或隐藏后，会话自然占满。
+   置顶是辅助区，最多拿走面板 1/5，避免大量置顶把两个主列表挤出面板。 */
+.ai-ssection.is-expanded { display: flex; flex-direction: column; }
+.ai-ssection.is-sessions.is-expanded { flex: 3 1 0; }
+.ai-ssection.is-recent.is-expanded { flex: 2 1 0; max-height: 40%; }
+.ai-ssection.is-pinned.is-expanded { flex: 0 1 auto; max-height: 20%; }
+.ai-ssection.is-expanded > .ai-ssection-rows { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* 只有收起态贴底；展开后恢复普通文档流，标题跟着内容回到「会话」章节下方。 */
 .ai-ssection.is-recent:not(.is-expanded) { margin-top: auto; }
-.ai-ssection-head { position: sticky; top: 0; z-index: 5; height: 32px; background: var(--bg-primary); }
+.ai-ssection-head { position: sticky; top: 0; z-index: 5; flex: none; height: 32px; background: var(--bg-primary); }
 .ai-ssection-toggle { display: flex; align-items: center; gap: 6px; height: 100%; width: 100%; padding: 0 8px;
   border: 0; border-radius: 6px; background: transparent;
   color: color-mix(in srgb, var(--sidebar-fg) 50%, transparent);
@@ -1749,14 +1758,14 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   color: var(--accent-violet-text, var(--accent-blue-text)); font-weight: 500; }
 
 /* ===== 子代理（subagent） ===== */
-/* 侧栏父行下的子代理行：缩进 + 图标 + 状态点 + 标题；点开进子代理会话视图。 */
+/* 侧栏父行下的子代理行：缩进 + 图标 + 标题；点开进子代理会话视图。 */
 .ai-agent-subrow { display: flex; align-items: center; gap: 8px; width: calc(100% - 18px); margin: 2px 0 2px 18px; padding: 5px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
 .ai-agent-subrow:hover { background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent); color: var(--text-primary); }
 .ai-agent-subrow.is-active { background: color-mix(in srgb, var(--accent-color, var(--border-color)) 12%, transparent); color: var(--text-primary); }
 .ai-agent-subrow-icon { flex: none; display: inline-flex; color: var(--text-tertiary); }
 .ai-agent-subrow-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-agent-subrow-model { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-tertiary); }
-/* 状态点沿用会话状态点的语义色：运行中亮黄、完成绿、失败红、其余灰。 */
+/* 右栏 Dock 的状态点沿用会话状态点语义色：运行中亮黄、完成绿、失败红、其余灰。 */
 .ai-agent-subrow-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-tertiary); }
 .ai-agent-subrow-dot[data-status="running"], .ai-agent-subrow-dot[data-status="starting"] { background: #facc15; box-shadow: 0 0 4px color-mix(in srgb, #facc15 60%, transparent); }
 .ai-agent-subrow-dot[data-status="completed"] { background: #4ade80; }

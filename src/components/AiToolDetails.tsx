@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import hljs from "highlight.js";
 import type { AiEntry } from "../lib/aiRuntime";
 import { useI18n } from "../i18n";
@@ -203,7 +203,7 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
 }
 
 /** 折叠时不构造文件 diff 和完整 JSON，避免每个流式事件重做大文件工作。 */
-export function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
+export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
   const view = describeAiTool(entry, false);
   const fileEdit = ["edit", "add", "delete", "move"].includes(view.kind);
@@ -235,7 +235,7 @@ export function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }:
     </summary>
     {open ? <AiToolDetails entry={entry} /> : null}
   </details>;
-}
+});
 
 /** 展开才序列化的大块内容：JSON/代码按语言高亮（复用聊天那套 hljs），认不出的语言保持素文本。 */
 export function CodeText({ text, lang, startLine }: { text: string; lang?: string; startLine?: number }) {
@@ -502,7 +502,7 @@ export function isExploreEntry(entry: AiEntry): boolean {
  * 连续的读取/搜索/列目录折成一条「浏览 · N 文件 · M 搜索」组行（对照参考实现的
  * Explored 组行）：组内子行保持各自的行级状态与可展开明细，运行中的子行使整组摊开。
  */
-export function AiExploreGroup({ entries, render }: { entries: AiEntry[]; render: (entry: AiEntry) => ReactNode }) {
+export const AiExploreGroup = memo(function AiExploreGroup({ entries, render }: { entries: AiEntry[]; render: (entry: AiEntry) => ReactNode }) {
   const { t } = useI18n();
   const [open, setOpen] = useState<boolean | null>(null);
   const active = entries.some((entry) => entry.status === "running");
@@ -526,4 +526,4 @@ export function AiExploreGroup({ entries, render }: { entries: AiEntry[]; render
     </button>
     {expanded ? <div className="ai-explore-children">{entries.map(render)}</div> : null}
   </div>;
-}
+});

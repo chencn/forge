@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { useI18n } from "../i18n";
 import { PROCESS_PAGE, pageProcess } from "../lib/aiTimeline";
@@ -24,7 +24,7 @@ interface AiProcessGroupProps {
  * 头部对照参考 ActivityHeader：标题在跑时微光、细分用等宽字体、箭头收在文字后；
  * 完成后的总耗时与失败跳转也在这里（对照参考的 elapsed 与 jump-to-failure）。
  */
-export default function AiProcessGroup({ entries, active, render }: AiProcessGroupProps) {
+export default memo(function AiProcessGroup({ entries, active, render }: AiProcessGroupProps) {
   const { t } = useI18n();
   // null 表示用户没表过态：跑着的段摊开，跑完的段收起来。
   const [open, setOpen] = useState<boolean | null>(null);
@@ -123,4 +123,4 @@ export default function AiProcessGroup({ entries, active, render }: AiProcessGro
       {page.hidden > 0 ? <button type="button" className="ai-text-button" onClick={() => setShown(shown + PROCESS_PAGE)}>{t("ai.chat.showEarlierSteps", { count: page.hidden })}</button> : null}
     </> : null}
   </section>;
-}
+});

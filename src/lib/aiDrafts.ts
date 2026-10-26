@@ -18,7 +18,36 @@ const MAX_HISTORY = 50;
 /** 单条历史最多这么多字符：再长的是粘贴的物料，不是想复述的话。 */
 const MAX_HISTORY_ITEM = 2_000;
 
+let draftTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingDraft: { workspace: string | null; sessionId: string; text: string } | null = null;
+
+/** 立即清空并写入尚未保存的草稿（切会话/发送/卸载前调用）。 */
+export function flushDraft(): void {
+  if (draftTimer) {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+  }
+  if (!pendingDraft) return;
+  const { workspace, sessionId, text } = pendingDraft;
+  pendingDraft = null;
+  const key = draftKey(workspace, sessionId);
+  try {
+    if (!text) localStorage.removeItem(key);
+    else localStorage.setItem(key, text.slice(0, MAX_DRAFT));
+  } catch {
+    // 写失败只丢一次跨重启恢复，不影响运行。
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", flushDraft);
+}
+
 export function loadDraft(workspace: string | null, sessionId: string): string {
+  // 如果内存里有尚未防抖刷盘的本会话草稿，优先使用
+  if (pendingDraft && pendingDraft.sessionId === sessionId) {
+    return pendingDraft.text;
+  }
   try {
     return localStorage.getItem(draftKey(workspace, sessionId)) ?? "";
   } catch {
@@ -27,15 +56,30 @@ export function loadDraft(workspace: string | null, sessionId: string): string {
   }
 }
 
-/** 空草稿直接删键，免得每打空一个字都留一条值为 "" 的记录。 */
-export function saveDraft(workspace: string | null, sessionId: string, text: string): void {
-  const key = draftKey(workspace, sessionId);
-  try {
-    if (!text) localStorage.removeItem(key);
-    else localStorage.setItem(key, text.slice(0, MAX_DRAFT));
-  } catch {
-    // 写失败只丢一次跨重启恢复，内存里的草稿照样能发出去，不值得弹错误。
+/** 空草稿直接删键；输入过程做 300ms 防抖，严禁每次按键同步阻塞 localStorage I/O。 */
+export function saveDraft(workspace: string | null, sessionId: string, text: string, immediate = false): void {
+  if (immediate) {
+    if (pendingDraft && pendingDraft.sessionId === sessionId) {
+      pendingDraft = null;
+      if (draftTimer) {
+        clearTimeout(draftTimer);
+        draftTimer = null;
+      }
+    }
+    const key = draftKey(workspace, sessionId);
+    try {
+      if (!text) localStorage.removeItem(key);
+      else localStorage.setItem(key, text.slice(0, MAX_DRAFT));
+    } catch {
+      // 容错
+    }
+    return;
   }
+  pendingDraft = { workspace, sessionId, text };
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    flushDraft();
+  }, 300);
 }
 
 export function loadPromptHistory(workspace: string | null): string[] {
@@ -66,6 +110,13 @@ export function rememberPrompt(workspace: string | null, text: string): void {
 }
 
 export function clearDraft(workspace: string | null, sessionId: string): void {
+  if (pendingDraft && pendingDraft.sessionId === sessionId) {
+    pendingDraft = null;
+    if (draftTimer) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+  }
   try {
     localStorage.removeItem(draftKey(workspace, sessionId));
   } catch {

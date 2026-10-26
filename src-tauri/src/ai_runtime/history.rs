@@ -16,6 +16,9 @@ use std::sync::OnceLock;
 const MAX_LINE: u64 = 2 * 1024 * 1024;
 /// 单个原生历史文件上限。超过就跳过，避免为了列个标题去读几百 MB。
 const MAX_FILE: u64 = 256 * 1024 * 1024;
+/// 历史投影检查点只是可重建缓存；卡住大小，坏文件直接退回事件日志重建。
+const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
+const CHECKPOINT_VERSION: u32 = 1;
 
 /// 一份原生历史的定位信息：哪个 CLI、哪个原生会话、文件在哪、属于哪个项目。
 #[derive(Clone, Serialize, Deserialize)]
@@ -360,9 +363,12 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
     {
         if let Ok(meta) = Store::metadata(&entry.path(), root) {
             if let Some(native) = meta.native_id {
-                // 旧版 Forge 包装过 native ID；不再复用，重新建立原生 ID 镜像。
-                if meta.session_id == native {
-                    known.insert(binding_key(meta.provider, &native), meta.session_id);
+                // 绑定按原生 ID 认人。Forge 自建会话的目录名是客户端 UUID，线程要等首条
+                // 消息才建出来，绑上之后两者必然不同——不登记就会在下一条消息后多出一份重复镜像。
+                // 旧版包装过 ID 的目录可能仍和真实 ID 目录并存，那种情况让名字等于原生 ID 的那个赢。
+                let key = binding_key(meta.provider, &native);
+                if meta.session_id == native || !known.contains_key(&key) {
+                    known.insert(key, meta.session_id);
                 }
             }
         }
@@ -631,9 +637,36 @@ fn save_source(base: &Path, id: &str, source: &Source) -> Result<(), String> {
         &serde_json::to_string(source).map_err(|e| e.to_string())?,
     )
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct ProjectionState {
     pending_task_creates: HashMap<String, Value>,
+}
+
+/// 原生游标之外还要保留跨批投影状态；否则 TaskCreate 与结果分属两批时会丢关联。
+/// `mirror_length` 让下一次同步只重放 Forge 日志新增的尾巴，而不是每批从 0 扫描。
+#[derive(Serialize, Deserialize)]
+struct HistoryCheckpoint {
+    version: u32,
+    session_id: String,
+    mirror_length: u64,
+    source_offset: u64,
+    projection: ProjectionState,
+}
+
+fn checkpoint_path(base: &Path, id: &str) -> PathBuf {
+    base.join(id).join("history.idx")
+}
+
+fn read_checkpoint(base: &Path, id: &str, mirror_length: u64) -> Option<HistoryCheckpoint> {
+    let path = checkpoint_path(base, id);
+    if fs::metadata(&path).ok()?.len() > MAX_CHECKPOINT_BYTES {
+        return None;
+    }
+    let value: HistoryCheckpoint = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    (value.version == CHECKPOINT_VERSION
+        && value.session_id == id
+        && value.mirror_length <= mirror_length)
+        .then_some(value)
 }
 
 fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
@@ -641,9 +674,15 @@ fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     if !path.exists() {
         return Ok((0, ProjectionState::default()));
     }
-    let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
-    let mut offset = 0;
-    let mut state = ProjectionState::default();
+    let mirror_length = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    let cached = read_checkpoint(base, id, mirror_length);
+    let (start, mut offset, mut state) = cached
+        .map(|value| (value.mirror_length, value.source_offset, value.projection))
+        .unwrap_or_else(|| (0, 0, ProjectionState::default()));
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file);
     while let Some((event, _)) = bounded_line(&mut reader)? {
         if event["kind"] == "history_checkpoint" {
             offset = event["data"]["offset"].as_u64().ok_or("原生历史游标损坏")?;
@@ -652,7 +691,9 @@ fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
             let data = &event["data"];
             if let Some(id) = data["id"].as_str() {
                 if data["name"] == "TaskCreate" {
-                    state.pending_task_creates.insert(id.to_owned(), data.clone());
+                    state
+                        .pending_task_creates
+                        .insert(id.to_owned(), data.clone());
                 } else if data.get("output").is_some() {
                     // 工具结果已经消费了这次创建；无论是否成功提取真实 ID，都不能串到后续结果。
                     state.pending_task_creates.remove(id);
@@ -662,6 +703,32 @@ fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     }
     Ok((offset, state))
 }
+
+fn save_checkpoint(
+    base: &Path,
+    id: &str,
+    source_offset: u64,
+    projection: &ProjectionState,
+) -> Result<(), String> {
+    let mirror_length = fs::metadata(base.join(id).join("events.jsonl"))
+        .map_err(|e| e.to_string())?
+        .len();
+    let value = HistoryCheckpoint {
+        version: CHECKPOINT_VERSION,
+        session_id: id.to_owned(),
+        mirror_length,
+        source_offset,
+        projection: ProjectionState {
+            pending_task_creates: projection.pending_task_creates.clone(),
+        },
+    };
+    let text = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_CHECKPOINT_BYTES {
+        return Err("原生历史检查点超过容量上限".into());
+    }
+    crate::sys::write_atomic(&checkpoint_path(base, id), &text)
+}
+
 /// 调用方需持有 `IO_LOCK` 与会话租约；一批事件与检查点合并成一次持久追加。
 pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     let Some(source) = source(base, id, root)? else {
@@ -686,6 +753,8 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
         return Err("原生历史尾部已变化；保留现有镜像".into());
     }
     if size == offset {
+        // 旧版本没有旁路检查点：首次重建后也要落缓存，否则已同步完的长会话每次打开仍会全扫。
+        let _ = save_checkpoint(base, id, offset, &projection);
         return Ok(false);
     }
     let mut file = File::open(&source.path).map_err(|e| e.to_string())?;
@@ -739,6 +808,8 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     }
     batch.push(("history_checkpoint".into(), json!({"offset":offset})));
     target.append("native", batch)?;
+    // 缓存写失败不改变同步结果：事件日志仍是事实源，下次只会退回全量重建一次。
+    let _ = save_checkpoint(base, id, offset, &projection);
     Ok(offset < size)
 }
 fn complete_offset(path: &Path) -> Result<u64, String> {
@@ -1354,6 +1425,38 @@ mod tests {
         fs::write(&index, format!("{}\n", json!({"id":id,"thread_name":"CLI 又改了一次"}))).unwrap();
         discover_in(&base, &workspace, vec![(Provider::Codex, sessions)]).unwrap();
         assert_eq!(Store::metadata(&base.join(id), &workspace).unwrap().title, "用户改的标题");
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// Forge 自建会话的目录名是客户端 UUID，Codex 线程要等首条消息才建出来：
+    /// 绑定之后两者必然不同，发现必须认这条绑定，不能按原生 ID 再开一份重复镜像。
+    #[test]
+    fn discovery_reuses_a_forge_session_bound_to_a_different_native_thread() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-codex-divergent-binding-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let sessions = temp.join("codex").join("sessions");
+        for path in [&root, &base, &sessions] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let native = "01a10000-0000-4000-8000-000000000001";
+        let forge_id = "9f3c1e2a-1111-4222-8333-444455556666";
+        let mut store = Store::open(&base, forge_id, &workspace, Provider::Codex, "修复登录页的跨域问题", "").unwrap();
+        store.bind(native.to_string()).unwrap();
+        fs::write(
+            sessions.join("rollout.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":native,"cwd":root,"source":"cli"}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"修复登录页的跨域问题"}]}})
+            ),
+        )
+        .unwrap();
+        discover_in(&base, &workspace, vec![(Provider::Codex, sessions)]).unwrap();
+        assert!(!base.join(native).exists(), "按原生 ID 又建了一份重复镜像");
+        assert_eq!(Store::metadata(&base.join(forge_id), &workspace).unwrap().native_id.as_deref(), Some(native));
         fs::remove_dir_all(temp).unwrap();
     }
 

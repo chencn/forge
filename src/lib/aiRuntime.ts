@@ -1239,14 +1239,21 @@ export async function loadAiMessages(sessionId: string, workspace: string, refre
     patch(sessionId, { loading: true, error: null });
     try {
       await ensureAiRuntimeListener();
-      let page = await invoke<Page>("ai_runtime_load", { sessionId, workspace, limit: PAGE_LIMIT });
+      // 已加载会话只追本地最大序号之后的尾巴；标签切换不能反复搬运并投影同一页旧历史。
+      // 空会话没有可靠游标，仍取最新页，避免外部一次写入长历史后从文件开头补到结尾。
+      const incrementalRefresh = refresh && state.snapshot.loaded && state.maxSeq > 0;
+      let page = await invoke<Page>("ai_runtime_load", {
+        sessionId, workspace, ...(incrementalRefresh ? { afterSeq: state.maxSeq } : {}), limit: PAGE_LIMIT,
+      });
       if (deleted.has(sessionId)) return;
       const initialPage = page;
       merge(page.events);
       mergePageTaskList(state, page);
       mergePageGoal(state, page);
       // 首屏已成功就保存向前游标；后续补采失败也不能让已显示的历史无法翻页。
-      patch(sessionId, { hasOlder: page.hasOlder && page.events.length > 0, cursor: page.events.length ? page.nextSeq : 0 });
+      if (!incrementalRefresh) {
+        patch(sessionId, { hasOlder: page.hasOlder && page.events.length > 0, cursor: page.events.length ? page.nextSeq : 0 });
+      }
       // 最新页之后可能还有原生补采；按事件游标续读，保留最初的向前分页边界。
       while (page.hasMore) {
         const afterSeq = page.events.at(-1)?.seq;
@@ -1271,7 +1278,16 @@ export async function loadAiMessages(sessionId: string, workspace: string, refre
         mergeActiveTasks(state, state.activeSummary.tasks, state.activeSummary.seq);
       }
       // 空会话没有游标可言；此时 nextSeq 是 0，留着它只会让「更早」按钮点亮又翻不出东西。
-      patch(sessionId, { loaded: true, hasOlder: initialPage.hasOlder && initialPage.events.length > 0, cursor: initialPage.events.length ? initialPage.nextSeq : 0, nativeId: state.snapshot.nativeId ?? page.nativeId, ...(page.warning || initialPage.warning ? { error: page.warning ?? initialPage.warning } : {}) });
+      patch(sessionId, {
+        loaded: true,
+        // 增量刷新只推进尾部，向前分页边界必须保持原值。
+        ...(!incrementalRefresh ? {
+          hasOlder: initialPage.hasOlder && initialPage.events.length > 0,
+          cursor: initialPage.events.length ? initialPage.nextSeq : 0,
+        } : {}),
+        nativeId: state.snapshot.nativeId ?? page.nativeId,
+        ...(page.warning || initialPage.warning ? { error: page.warning ?? initialPage.warning } : {}),
+      });
     } catch (error) { if (!deleted.has(sessionId)) patch(sessionId, { error: String(error) }); throw error; }
     finally { state.loading = null; if (!deleted.has(sessionId)) patch(sessionId, { loading: false }); }
   })();
@@ -1443,7 +1459,7 @@ export async function sendAiMessage(session: AiSession, workspace: string, promp
   updateTask(session.id, { runId, status: "submitting", prompt, seq });
   try {
     // Fast 是二态开关；未开启就明确关闭，不能暗中继承配置中的服务等级。
-    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, workspace, title: session.title, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), mode: options.mode ?? (options.planMode ? "plan" : null), fast: options.fast ?? false, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
+    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, workspace, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), mode: options.mode ?? (options.planMode ? "plan" : null), fast: options.fast ?? false, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
     const current = store(session.id).snapshot.tasks.find((task) => task.runId === runId);
     const accepted = result?.status;
     // 只接受「后端说这一轮还没结束」的返回值：排队/等待外部/立即运行。
@@ -1471,7 +1487,7 @@ export async function decideAiPlan(session: AiSession, workspace: string, plan: 
   updateTask(session.id, { runId, status: "submitting", prompt: decision === "approve" ? "" : feedback?.trim() ?? "", seq });
   try {
     const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: {
-      sessionId: session.id, runId, provider: session.provider, workspace, title: session.title,
+      sessionId: session.id, runId, provider: session.provider, workspace,
       // 计划决策只替换执行正文，模型、强度、权限和授权目录仍使用用户当前选择。
       prompt: "", images: [], trusted: true, model: options.model || null, effort: options.effort || null,
       permission: options.permission ?? "inherit", fast: options.fast ?? false, additionalDirs,

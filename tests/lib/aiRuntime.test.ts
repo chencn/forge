@@ -625,6 +625,18 @@ describe("AI runtime event store", () => {
     emit(event(601, "text", { id: "m", text: "继续更新" }));
     await vi.waitFor(() => expect(runtime.useAiRuntime(session.id).entries[0]?.text).toBe("后台输出继续更新"));
   });
+  it("刷新已加载会话只请求本地最大序号之后的增量", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ events: [event(500, "text", { id: "tail", text: "已有尾页" })],
+      hasOlder: true, hasMore: false, nextSeq: 500, latestSeq: 500, latestRunId: "run", status: "completed", nativeId: session.id });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    h.invoke.mockResolvedValueOnce({ events: [], hasOlder: false, hasMore: false, nextSeq: 500,
+      latestSeq: 500, latestRunId: "run", status: "completed", nativeId: session.id });
+    await runtime.loadAiMessages(session.id, "D:/project", true);
+    // 标签重开仍要同步原生历史，但旧尾页已经在内存里，不得再搬运一次。
+    expect(h.invoke.mock.calls.at(-1)?.[1]).toEqual({ sessionId: session.id, workspace: "D:/project", afterSeq: 500, limit: 500 });
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ cursor: 500, hasOlder: true });
+  });
   it.each(["completed", "cancelled", "failed"])("does not revive a %s turn from an older running summary", async (status) => {
     const runtime = await import("../../src/lib/aiRuntime");
     await runtime.ensureAiRuntimeListener();

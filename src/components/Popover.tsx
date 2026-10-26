@@ -15,9 +15,11 @@ interface PopoverProps {
   maxWidth?: number;
   /** 可选横向边界；窄侧栏里的弹层不得越过所属面板。 */
   boundary?: HTMLElement | null;
+  /** 非模态弹层也可能包含可操作控件；角色不能由是否存在遮罩推断。 */
+  role?: "dialog" | "tooltip";
   /**
    * 默认带一层全屏遮罩：点外面收，代价是遮罩期间底下的区域吃不到点击。
-   * 悬停展开的读数明细传 false——它跟着指针自己会走，不需要拦截点击。
+   * 需要与底下界面并行操作的浮动面板传 false；语义角色由 role 单独声明。
    */
   modal?: boolean;
 }
@@ -30,7 +32,7 @@ const EDGE = 8;
  * 横向一律从锚点的左边缘往右开——锚点待在窄容器里时弹层就盖到旁边的区域上，
  * 不为了留在容器内而挪到锚点左边；只有右边缘会出屏时才整块往回收。
  */
-export default function Popover({ anchor, onClose, children, minWidth, maxWidth, boundary, modal = true }: PopoverProps) {
+export default function Popover({ anchor, onClose, children, minWidth, maxWidth, boundary, role, modal = true }: PopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
 
@@ -91,7 +93,7 @@ export default function Popover({ anchor, onClose, children, minWidth, maxWidth,
       <div
         ref={ref}
         className="popover is-anchored"
-        role={modal ? "dialog" : "tooltip"}
+        role={role ?? (modal ? "dialog" : "tooltip")}
         style={
           box
             ? {

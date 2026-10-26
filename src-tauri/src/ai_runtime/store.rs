@@ -203,6 +203,10 @@ pub struct Metadata {
     /// 旧文件没有这个字段，按未锁定处理。
     #[serde(default)]
     pub title_locked: bool,
+    /// 已经写回 CLI 的线程名。Codex 只给磁盘上真实存在的线程改名（回合跑过才有 rollout），
+    /// 所以标题与它不一致就是还欠一次原生同步，由回合结束或下一次改名补上。
+    #[serde(default)]
+    pub native_title_synced: Option<String>,
     /// CLI 自己的会话 id，恢复对话时传给 CLI。
     pub native_id: Option<String>,
     /// 创建该会话时的 CLI 版本，用于解释协议差异。
@@ -341,6 +345,7 @@ impl Store {
                 workspace: root.into(),
                 title: title.into(),
                 title_locked: false,
+                native_title_synced: None,
                 native_id: None,
                 cli_version: version.into(),
                 created_at: std::time::SystemTime::now()

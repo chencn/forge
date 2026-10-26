@@ -565,20 +565,8 @@ pub fn codex_threads(cwd: &str) -> Result<Vec<Value>, String> {
     Err("Codex 会话列表超过分页上限".into())
 }
 
-/// 新建空 Codex thread，返回 CLI 原生 ID。不命名：占位名会写进 `session_index.jsonl`，
-/// 而线程名在标题规则里优先级最高，等于把自动命名永久锁死成「Codex 会话 N」。
-fn codex_thread_start_params(cwd: &str) -> Value {
-    json!({"cwd":cwd,"dynamicTools":super::codex::Codex::task_tools()})
-}
-pub fn codex_create_thread(cwd: &str) -> Result<Value, String> {
-    // dynamicTools 受 experimentalApi 门控，而且只能在 thread/start 注册；resume 无法补挂。
-    let (mut process, deadline) = codex_management_process_with_experimental(cwd, "初始化 Codex 新会话", true)?;
-    process.write(&json!({"id":2,"method":"thread/start","params":codex_thread_start_params(cwd)}))?;
-    let result = response(&mut process, 2, deadline, "创建 Codex 会话")?;
-    let id = result["thread"]["id"].as_str().ok_or("Codex 未返回 thread ID")?;
-    Ok(json!({"id":id,"createdAt":result["thread"]["createdAt"].as_i64().unwrap_or_default().max(0) as u64 * 1000}))
-}
-
+/// 给真实存在的 Codex 线程改名。CLI 只接受磁盘上有 rollout 的线程：
+/// 空线程（一条消息都没发过）在 Codex 那边根本不存在，调用方必须按尽力而为处理。
 pub fn codex_set_thread_name(cwd: &str, id: &str, title: &str) -> Result<(), String> {
     let (mut process, deadline) = codex_management_process(cwd, "初始化 Codex 会话重命名")?;
     process.write(&json!({"id":2,"method":"thread/name/set","params":{"threadId":id,"name":title}}))?;
@@ -817,14 +805,6 @@ fn parse_models(value: &Value) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn codex_thread_creation_registers_forge_task_tool() {
-        // 预创建线程是 Forge 新会话的真实入口；动态工具必须在这里一次性注册。
-        let params = codex_thread_start_params("D:/project");
-        assert_eq!(params["cwd"], "D:/project");
-        assert_eq!(params["dynamicTools"][0]["name"], "forge");
-        assert_eq!(params["dynamicTools"][0]["tools"][0]["name"], "update_tasks");
-    }
     #[test]
     fn project_trust_reads_only_matching_project_with_normalized_windows_path() {
         let config: toml::Value = "[projects.'D:\\app\\code\\forge']\ntrust_level = 'trusted'\n[projects.'D:\\app\\code\\other']\ntrust_level = 'untrusted'".parse().unwrap();
