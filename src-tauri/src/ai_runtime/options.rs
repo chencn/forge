@@ -509,6 +509,13 @@ fn codex_management_process(cwd: &str, operation: &str) -> Result<(Process, Inst
     codex_management_process_with_experimental(cwd, operation, false)
 }
 
+/// 只读原生 Hook 加载、诊断和信任状态；不创建线程，也不触发生命周期命令。
+pub fn codex_hooks(cwd: &str) -> Result<Value, String> {
+    let (mut process, deadline) = codex_management_process(cwd, "初始化 Codex Hooks 查询")?;
+    process.write(&json!({"id":2,"method":"hooks/list","params":{"cwds":[cwd]}}))?;
+    response(&mut process, 2, deadline, "读取 Codex Hooks 状态")
+}
+
 /// 让 Codex 现场读一份模型目录，把它的判决原样带回来：`Ok(())` = 这份目录被接受，
 /// `Err` = CLI 的报错原文（`unknown variant …, expected one of …` / `invalid type: null, …`）。
 ///

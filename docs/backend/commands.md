@@ -164,8 +164,9 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 
 | 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
 | --- | --- | --- | --- | --- |
-| `ai_cli_claude_hooks_read` | — | `Value`（`hooks` 段） | 读 `~/.claude/settings.json`；文件或 `hooks` 键缺失回空对象，JSON 坏或非对象报错 | `ai_cli/settings.rs:506` |
-| `ai_cli_claude_hooks_save` | `hooks` | `Value`（写后的 `hooks` 段） | 浅校验（事件名 → 数组 → 规则对象）后只替换 `hooks` 键，其余键原样保留；空对象删掉该键；写前 `backup_and_write` | `ai_cli/settings.rs:511` |
+| `ai_cli_hooks_read` | `provider` | `{path, hooks}` | Claude 读 settings.json，Codex 读 CODEX_HOME/hooks.json；缺文件或键回空对象，坏文件/树结构报错 | `ai_cli/settings.rs` |
+| `ai_cli_hooks_save` | `provider, hooks, expected` | `{path, hooks}` | 校验命令字段和 Codex 事件约束；比较基线 expected，外部改动拒绝覆盖；只替换 hooks，其余字段保留，写前备份并原子落盘 | `ai_cli/settings.rs` |
+| `ai_cli_codex_hooks_status` | — | 原生 `HooksListResponse`（data 含 hooks/errors/warnings） | 只读 hooks/list，返回来源、启停、信任与诊断；不创建线程、不调用模型、不写信任配置 | `ai_cli/settings.rs`、`ai_runtime/options.rs::codex_hooks` |
 | `ai_session_checkpoint_save` | `sessionId, workspace, paths[]` | `{id, files[]}` | 把目标文件的当前内容存成快照：单文件 8 MiB、一次最多 32 个文件、只收绝对路径、按大小写不敏感去重；落 `checkpoints/<id>/`，向会话日志追加 `checkpoint` 事件并广播 | `ai_runtime/mod.rs:2415` |
 | `ai_session_checkpoint_restore` | `sessionId, workspace, checkpointId` | `{restored, undo}` | 先把相关文件现状存成新快照（`source: "restore"`、`restoreOf` 指回来源）并追加事件，再写回目标文件；`checkpointId` 必须以 `ckpt-` 开头 | `ai_runtime/mod.rs:2435` |
 
@@ -190,7 +191,7 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 | `src-tauri/src/history.rs` | `History` `:25-33`、`migrate_from_settings` `:38-63`、`load_in` `:71-81`、`save_in` `:84-89`、`read` `:92-97`、`history_load` / `history_save` `:101-117`、单测 4 条 `:119` 起 |
 | `src-tauri/src/tray.rs` | `tray_labels` `:68-76`、`app_exit` `:122-126` |
 | `src-tauri/src/ai_runtime/checkpoint.rs` | 上限 `MAX_FILE_BYTES` 8 MiB 与 `MAX_FILES` 32 `:16-18`、`normalize_paths` `:35`、`take_snapshot` `:54`、`record` `:88`、`restore` `:98`、`append_event` `:127`、链式恢复测试 `:181` |
-| `src-tauri/src/ai_cli/settings.rs` | `read_claude_root_at` `:467`、`read_claude_hooks_at` `:477`、`save_claude_hooks_at` `:484`、两条命令 `:506` / `:511` |
+| `src-tauri/src/ai_cli/settings.rs` | `hooks_path`、`read_hooks_at`、`save_hooks_at`、`ai_cli_hooks_read` / `ai_cli_hooks_save` / `ai_cli_codex_hooks_status` |
 | `src-tauri/src/sys.rs` | `hide_console` 的 `CREATE_NO_WINDOW` `:5-11`、`write_atomic` 的 tmp+rename `:25-33`、`which_program` 的 Windows 扩展名候选 `:65-76`、`capture_text`（stdout 空了取 stderr）`:80-101`、`group` 的 ppid 走树与按程序归并 `:154-212`、`win::private_set_of` `:305-316`、`win::snapshot` `:319-341`、`sys_memory` `:369-376`、单测 4 条 `:378` 起 |
 | `src-tauri/src/watch.rs` | `fs_watch_start` `:83-144`、`fs_watch_stop` `:146-169`、`SETTLE` / `BATCH_CAP` `:19-22` |
 | `src/lib/fs.ts` | `findFiles` / `searchText` `:226-233`、搜索结果的 TS 镜像 `:147-223` |

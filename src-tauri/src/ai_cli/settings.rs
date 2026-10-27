@@ -462,36 +462,85 @@ pub async fn ai_cli_claude_settings_save(env: BTreeMap<String, String>) -> Resul
     }).await
 }
 
-/// 读 Claude settings.json 全文为 JSON 对象：文件或内容缺失就是空对象，坏文件/非对象报错。
-/// hooks 的读写共用这条入口，两边的容错口径不许各自漂移。
-fn read_claude_root_at(path: &Path) -> Result<serde_json::Value, String> {
-    if !path.exists() { return Ok(serde_json::json!({})); }
-    let text = fs::read_to_string(path).map_err(|error| format!("读取 Claude 配置失败：{error}"))?;
-    if text.trim().is_empty() { return Ok(serde_json::json!({})); }
+/// Hooks 只管理用户级文件；Codex 的 hooks.json 与 config.toml 同目录，不能写进 TOML。
+fn hooks_path(provider: Provider) -> Result<PathBuf, String> {
+    let path = config_path(provider)?;
+    Ok(if provider == Provider::Codex { path.with_file_name("hooks.json") } else { path })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksConfig {
+    pub path: String,
+    pub hooks: serde_json::Value,
+}
+
+/// 只有缺文件视为空配置；已存在的坏文件（包括空文件）必须先修复，不能被保存覆盖。
+fn read_hooks_root_at(path: &Path) -> Result<serde_json::Value, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::json!({})),
+        Err(error) => return Err(format!("读取 Hooks 配置失败：{error}")),
+    };
     let root: serde_json::Value = serde_json::from_str(&text).map_err(|error| format!("JSON 格式错误：{error}"))?;
-    if !root.is_object() { return Err("Claude 配置必须是 JSON 对象".into()); }
+    if !root.is_object() { return Err("Hooks 配置必须是 JSON 对象".into()); }
     Ok(root)
 }
 
-/// 读 Claude settings.json 的 `hooks` 段：文件或键缺失就是空对象，坏文件报错不炸面板。
-pub(crate) fn read_claude_hooks_at(path: &Path) -> Result<serde_json::Value, String> {
-    Ok(read_claude_root_at(path)?.get("hooks").cloned().unwrap_or_else(|| serde_json::json!({})))
+fn hooks_from_root(root: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let hooks = root.get("hooks").cloned().unwrap_or_else(|| serde_json::json!({}));
+    validate_hooks(&hooks, None)?;
+    Ok(hooks)
 }
 
-/// 把 `hooks` 段整体写回 settings.json，其余键原样保留；空对象表示删掉这一段。
-/// 结构只做浅校验（事件名 → 规则数组 → 规则对象），细节合法性由 CLI 自己把关：
-/// 用户手改的 prompt 型 hook 等字段面板不认识，原样留在树里，不能在这里弄丢。
-pub(crate) fn save_claude_hooks_at(path: &Path, hooks: serde_json::Value) -> Result<(), String> {
+/// 读取只校验树的形状，保存再校验可编辑字段；未知事件、类型和字段不作投影，避免丢配置。
+fn validate_hooks(hooks: &serde_json::Value, provider: Option<Provider>) -> Result<(), String> {
     let Some(entries) = hooks.as_object() else { return Err("hooks 必须是 JSON 对象".into()); };
     for (event, rules) in entries {
         let Some(rules) = rules.as_array() else { return Err(format!("hooks.{event} 必须是数组")); };
         for rule in rules {
             if !rule.is_object() { return Err(format!("hooks.{event} 里的每条规则必须是对象")); }
+            if rule.get("matcher").is_some_and(|value| !value.is_null() && !value.is_string()) {
+                return Err(format!("hooks.{event}.matcher 必须是字符串"));
+            }
+            let handlers = rule.get("hooks").and_then(serde_json::Value::as_array)
+                .ok_or_else(|| format!("hooks.{event}.hooks 必须是数组"))?;
+            for hook in handlers {
+                if !hook.is_object() { return Err(format!("hooks.{event}.hooks 条目必须是对象")); }
+                if provider.is_none() || hook["type"] != "command" { continue; }
+                if hook["command"].as_str().is_none_or(|command| command.trim().is_empty()) {
+                    return Err(format!("hooks.{event}.command 不能为空"));
+                }
+                if let Some(timeout) = hook.get("timeout").filter(|value| !value.is_null()) {
+                    if timeout.as_u64().is_none() { return Err(format!("hooks.{event}.timeout 必须是非负整数秒")); }
+                    if provider == Some(Provider::Codex) && matches!(event.as_str(), "SessionEnd" | "Interrupt")
+                        && timeout.as_u64().is_some_and(|value| value > 3) {
+                        return Err(format!("Codex {event} 的超时不能超过 3 秒"));
+                    }
+                }
+                if hook.get("async").is_some_and(|value| !value.is_boolean()) {
+                    return Err(format!("hooks.{event}.async 必须是布尔值"));
+                }
+                if provider == Some(Provider::Codex) && event == "SessionEnd" && hook["async"] == true {
+                    return Err("Codex SessionEnd 仅支持同步命令".into());
+                }
+            }
         }
     }
-    let mut root = read_claude_root_at(path)?;
-    let object = root.as_object_mut().ok_or("Claude 配置必须是 JSON 对象")?;
-    if entries.is_empty() {
+    Ok(())
+}
+
+pub(crate) fn read_hooks_at(path: &Path) -> Result<HooksConfig, String> {
+    Ok(HooksConfig { path: path.display().to_string(), hooks: hooks_from_root(&read_hooks_root_at(path)?)? })
+}
+
+/// 保存时重读文件保留其它配置，并比较原 hooks，避免覆盖用户在编辑期间的外部修改。
+pub(crate) fn save_hooks_at(path: &Path, provider: Provider, hooks: serde_json::Value, expected: serde_json::Value) -> Result<HooksConfig, String> {
+    validate_hooks(&hooks, Some(provider))?;
+    let mut root = read_hooks_root_at(path)?;
+    if hooks_from_root(&root)? != expected { return Err("Hooks 配置已被外部修改，请重新读取后再保存".into()); }
+    let object = root.as_object_mut().ok_or("Hooks 配置必须是 JSON 对象")?;
+    if hooks.as_object().is_some_and(|entries| entries.is_empty()) {
         object.remove("hooks");
     } else {
         object.insert("hooks".into(), hooks);
@@ -499,21 +548,24 @@ pub(crate) fn save_claude_hooks_at(path: &Path, hooks: serde_json::Value) -> Res
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|error| format!("无法创建配置目录：{error}"))?;
     }
-    backup_and_write(path, &serde_json::to_string_pretty(&root).map_err(|error| error.to_string())?)
+    backup_and_write(path, &serde_json::to_string_pretty(&root).map_err(|error| error.to_string())?)?;
+    read_hooks_at(path)
 }
 
 #[tauri::command]
-pub async fn ai_cli_claude_hooks_read() -> Result<serde_json::Value, String> {
-    block(move || read_claude_hooks_at(&config_path(Provider::Claude)?)).await
+pub async fn ai_cli_hooks_read(provider: Provider) -> Result<HooksConfig, String> {
+    block(move || read_hooks_at(&hooks_path(provider)?)).await
 }
 
 #[tauri::command]
-pub async fn ai_cli_claude_hooks_save(hooks: serde_json::Value) -> Result<serde_json::Value, String> {
-    block(move || {
-        let path = config_path(Provider::Claude)?;
-        save_claude_hooks_at(&path, hooks)?;
-        read_claude_hooks_at(&path)
-    }).await
+pub async fn ai_cli_hooks_save(provider: Provider, hooks: serde_json::Value, expected: serde_json::Value) -> Result<HooksConfig, String> {
+    block(move || save_hooks_at(&hooks_path(provider)?, provider, hooks, expected)).await
+}
+
+/// 状态查询与落盘分开：CLI 不可用不能把已保存的配置误报成保存失败。
+#[tauri::command]
+pub async fn ai_cli_codex_hooks_status() -> Result<serde_json::Value, String> {
+    block(move || crate::ai_runtime::options::codex_hooks(&home()?.display().to_string())).await
 }
 
 /// 读 Codex 的 API Key。文件损坏时报错但不阻断其余字段的编辑。
@@ -1129,6 +1181,95 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("forge-ai-cli-{name}-{}-{stamp}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir.join("config.toml")
+    }
+
+    #[test]
+    fn hooks_round_trip_isolates_providers_and_preserves_native_documents() {
+        let config = temp_config("hooks-roundtrip");
+        let claude = config.with_file_name("settings.json");
+        let codex = config.with_file_name("hooks.json");
+        let original = serde_json::json!({
+            "env": {"KEEP": "yes"}, "description": "keep root",
+            "hooks": {
+                "Stop": [{"customRule": true, "hooks": [
+                    {"type":"command","command":"echo old","customHandler":42},
+                    {"type":"prompt","prompt":"keep prompt"}
+                ]}],
+                "FutureEvent": [{"hooks":[{"type":"future","custom":[1,2]}]}]
+            }
+        });
+        fs::write(&claude, serde_json::to_string(&original).unwrap()).unwrap();
+        fs::write(&config, "# keep TOML\n[hooks.state.example]\nenabled = false\ntrusted_hash = 'keep'\n").unwrap();
+        let toml_before = fs::read(&config).unwrap();
+        let baseline = read_hooks_at(&claude).unwrap();
+        let mut edited = baseline.hooks.clone();
+        edited["Stop"][0]["hooks"][0]["command"] = serde_json::json!("echo new");
+        let saved = save_hooks_at(&claude, Provider::Claude, edited.clone(), baseline.hooks).unwrap();
+        assert_eq!(saved.hooks, edited);
+        let mut expected = original.clone();
+        expected["hooks"] = edited;
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&claude).unwrap()).unwrap(), expected);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(claude.with_file_name("settings.json.forge.bak")).unwrap()).unwrap(), original);
+        let claude_before = fs::read(&claude).unwrap();
+        let hooks = serde_json::json!({"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"echo codex","async":true,"timeout":7}]}]});
+        assert_eq!(read_hooks_at(&codex).unwrap().hooks, serde_json::json!({}));
+        assert_eq!(save_hooks_at(&codex, Provider::Codex, hooks.clone(), serde_json::json!({})).unwrap().hooks, hooks);
+        assert_eq!(fs::read(&claude).unwrap(), claude_before);
+        assert_eq!(fs::read(&config).unwrap(), toml_before);
+        assert_eq!(read_hooks_at(&codex).unwrap().path, codex.display().to_string());
+    }
+
+    #[test]
+    fn hooks_save_detects_external_edits_and_merges_unrelated_settings() {
+        let path = temp_config("hooks-conflict").with_file_name("settings.json");
+        let hooks = serde_json::json!({"Stop":[{"hooks":[{"type":"command","command":"echo hook"}]}]});
+        fs::write(&path, r#"{"env":{"EXTERNAL":"new"}}"#).unwrap();
+        save_hooks_at(&path, Provider::Claude, hooks.clone(), serde_json::json!({})).unwrap();
+        let root: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(root["env"]["EXTERNAL"], "new");
+        let before = fs::read(&path).unwrap();
+        assert!(save_hooks_at(&path, Provider::Claude, serde_json::json!({}), serde_json::json!({})).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        save_hooks_at(&path, Provider::Claude, serde_json::json!({}), hooks).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(), serde_json::json!({"env":{"EXTERNAL":"new"}}));
+    }
+
+    #[test]
+    fn hooks_invalid_documents_are_never_overwritten_or_backed_up() {
+        let path = temp_config("hooks-invalid").with_file_name("hooks.json");
+        for text in ["", "{bad", "[]", r#"{"hooks":null}"#, r#"{"hooks":{"Stop":{}}}"#,
+            r#"{"hooks":{"Stop":[{"hooks":[null]}]}}"#] {
+            fs::write(&path, text).unwrap();
+            assert!(read_hooks_at(&path).is_err(), "{text}");
+            assert!(save_hooks_at(&path, Provider::Codex, serde_json::json!({}), serde_json::json!({})).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+            assert!(!path.with_file_name("hooks.json.forge.bak").exists());
+        }
+    }
+
+    #[test]
+    fn hooks_codex_enforces_command_and_event_constraints_before_writing() {
+        let path = temp_config("hooks-validation").with_file_name("hooks.json");
+        fs::write(&path, r#"{"description":"keep"}"#).unwrap();
+        let before = fs::read(&path).unwrap();
+        for (event, handler) in [
+            ("Stop", serde_json::json!({"type":"command","command":"  "})),
+            ("Stop", serde_json::json!({"type":"command","command":"echo x","timeout":1.5})),
+            ("Stop", serde_json::json!({"type":"command","command":"echo x","timeout":-1})),
+            ("Stop", serde_json::json!({"type":"command","command":"echo x","timeout":"1e2"})),
+            ("Stop", serde_json::json!({"type":"command","command":"echo x","async":"true"})),
+            ("SessionEnd", serde_json::json!({"type":"command","command":"echo x","timeout":4})),
+            ("Interrupt", serde_json::json!({"type":"command","command":"echo x","timeout":4})),
+            ("SessionEnd", serde_json::json!({"type":"command","command":"echo x","async":true})),
+        ] {
+            let hooks = serde_json::json!({(event):[{"hooks":[handler]}]});
+            assert!(save_hooks_at(&path, Provider::Codex, hooks, serde_json::json!({})).is_err(), "{event}");
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        // 原生允许 null 使用默认超时，0 会归一为 1 秒；保持原文，由 CLI 给出有效值。
+        let hooks = serde_json::json!({"SessionEnd":[{"matcher":null,"hooks":[{"type":"command","command":"echo x","timeout":null}]}],
+            "Interrupt":[{"hooks":[{"type":"command","command":"echo y","timeout":0,"async":true}]}]});
+        assert_eq!(save_hooks_at(&path, Provider::Codex, hooks.clone(), serde_json::json!({})).unwrap().hooks, hooks);
     }
 
     #[test]

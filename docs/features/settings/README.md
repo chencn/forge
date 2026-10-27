@@ -143,15 +143,33 @@ JSON 非法或未写成对象时不允许保存。栏顶一条汇总，标题行
 
 ## Hooks
 
-仅 Claude，读写 `~/.claude/settings.json` 的 `hooks` 键。结构是
-`{ 事件名: [{ matcher, hooks: [{ type, command, timeout }] }] }`。面板列出 8 类事件：
-PreToolUse、PostToolUse、UserPromptSubmit、Notification、Stop、SubagentStop、SessionStart、PreCompact。
-每行可改 matcher、command 与 timeout（正整数，清空即删掉这个字段），行尾删除；规则里没有 hook 了
-连规则一起删，事件空了整段删。只编辑 `type: "command"` 的条目，prompt 型与面板不认识的字段
-原样留在树里，保存只替换 `hooks` 键，文件其余部分不动。列出的 8 类之外的事件不显示，但保存时原样保留。
-新规则先追加一条空 matcher、空 command 的 command 型 hook，再就地填。离开未保存时有未保存拦截。
-读走 `ai_cli_claude_hooks_read`，写走 `ai_cli_claude_hooks_save`；后端只做浅校验
-（事件名 → 数组 → 规则对象），空对象表示删掉整个 `hooks` 键，细节合法性交给 CLI。写回前照常用 `backup_and_write`。
+面板按 Claude / Codex 切换，只管理用户级配置。Claude 修改 `~/.claude/settings.json` 的 `hooks` 键；
+Codex 修改 `$CODEX_HOME/hooks.json`（默认 `~/.codex/hooks.json`），不把规则写入 `config.toml`。
+路径分别遵循现有 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 解析，界面展示实际文件路径。
+两种文件均使用 `{ "hooks": { 事件名: [{ matcher, hooks: [{ type, command, timeout }] }] } }`。
+
+Claude 保留面板现有 8 个可编辑事件：PreToolUse、PostToolUse、UserPromptSubmit、Notification、Stop、
+SubagentStop、SessionStart、PreCompact。Codex 0.164.0 已用隔离 CLI 验证 14 个磁盘事件：
+PreModelRequest、PostModelRequest、PreToolUse、PermissionRequest、PostToolUse、PreCompact、PostCompact、
+SessionStart、SessionEnd、UserPromptSubmit、SubagentStart、SubagentStop、Stop、Interrupt。
+
+只编辑 command 类型。其它类型、未支持事件和未知字段保留，并可在只读原文中查看。
+每条命令支持 matcher、command、timeout，Codex 另可编辑 async；SessionEnd 仅同步，
+SessionEnd / Interrupt 超时不超过 3 秒。不使用 matcher 的 Codex 事件会禁用该输入框。
+超时为非负整数秒，空值删除字段；Codex 将 0 归一为 1 秒，普通事件省略时默认 600 秒，
+SessionEnd / Interrupt 默认 1 秒。新增规则的空命令或非法超时阻止保存。
+删除最后一条 handler 时删除对应规则，事件空时移除该事件。
+
+读写走 `ai_cli_hooks_read(provider)` / `ai_cli_hooks_save(provider, hooks, expected)`，返回 `{path, hooks}`。
+保存时比较读取基线，发现外部修改则报错；重读文件保留其它设置，只替换 `hooks` 键，空对象移除该键。
+缺文件视为空配置，已有文件的坏 JSON、空文件或错误树结构拒绝覆盖；写前备份，落盘用原子写入。
+切换 CLI、重新读取或离开设置页时保护未保存内容；保存期间禁止编辑和导航，旧响应不覆盖新页面。
+
+Codex 加载状态独立走 `ai_cli_codex_hooks_status`，只调用原生 `hooks/list`，不创建线程或调用模型。
+展示原生解析错误、警告、启停和信任状态；查询失败不影响已保存结果。旧 CLI 不提供该接口时显示查询失败。
+新增规则为 untrusted，修改已信任规则会变为 modified；用户需在 Codex 原生 `/hooks` 中确认信任。
+原生启停与信任保存在 config.toml 的 `hooks.state`，本面板只读展示，不写入伪造的 hooks.json enabled 字段。
+`hooks/list` 会重读磁盘，但活跃线程的执行刷新时机尚未验证，保存提示不承诺立即生效。
 
 ## 入口与版面
 
@@ -188,8 +206,8 @@ shell 一行最宽 420px。字号一行是 `number` 输入，`min=10 max=28`，�
 | `src/components/SettingsPage.tsx` | 模块常量与 AI 模块集合 `:78-81`、终端光标与页签布局标签表 `:98-108`、各栏候选值与语言服务档位标签 `:109-168`、`probeRank` `:174` 与 `runtimeOf` `:190`、`Props` 里的项目根与启动回调 `:206-214`、日志订阅 `:315-322`、进栏自动探测 `:332-339`、`explain` 解码上游错误 `:347`、`runInstall` `:360-379`、重启 `:382-394`、`wakeNote` 把结构化结果写成卡片回执 `:407-418`、启动 `:420-434`、`lspRows` `:437-439`、`shellProbe` `:451-463`、标题行的重新探测 `:578-595`、「语言服务」栏 `:1048-1214`、卡片标题取语言显示名 `:1082`、「语言服务」前缀 `:1096`、安装按钮 `:1127-1145`、启动／重启按钮 `:1147-1174`、「日志」按钮 `:1176-1185`、带复制的回执两行 `:1197-1208`、快捷键栏接线 `:897`、Hooks 栏接线 `:1221`、三个弹窗的接线 `:1363-1399` |
 | `src/lib/shortcuts.ts` | 8 条注册表 `:21-30`、本地存储键与覆盖读写 `:32-59`、进程内广播 `:61-70`、`parseCombo` `:91`、`comboFromEvent` `:129` 与 `comboMatchesEvent` `:146`、`comboOwner` 与 `comboSignature` `:170` / `:181` |
 | `src/components/ShortcutSettingsPanel.tsx` | 捕获 effect `:39-66`（window 捕获、Esc 取消、撞键不落盘）、单条还原与全部还原 `:68-79`、列表 `:84-120` |
-| `src/components/HooksSettingsPanel.tsx` | 8 类事件 `:19-28`、`collectRows` `:69`、`patchRow` `:93`、`removeRow` `:121`、`appendRow` `:141`、读 / 存 / 未保存拦截 `:149-207` |
-| `src-tauri/src/ai_cli/settings.rs` | `read_claude_root_at` `:467`、`read_claude_hooks_at` `:477`、`save_claude_hooks_at` `:484`（浅校验后只替换 `hooks` 键）、两条命令 `:506` / `:511` |
+| `src/components/HooksSettingsPanel.tsx` | `CLAUDE_EVENTS` / `CODEX_EVENTS`、原生树编辑、CLI 切换与未保存保护、加载与信任状态 |
+| `src-tauri/src/ai_cli/settings.rs` | `hooks_path`、`read_hooks_at` / `save_hooks_at`、校验与外部修改检查、三条 Hooks 命令 |
 | `src/lib/monacoEnv.ts` | 语言显示名的来源：`LANGUAGE_LABELS` `:87-122`、`languageLabel` `:125`、`languageNames` `:135`（一项服务管多种语言时并列）；这个模块不许 import monaco-editor |
 | `src/App.tsx` | `useHistory` `:373`、`workspaceRoot` 初值 `:386-390`、`lastFolder` 写回 `:1173`、`recentFolders` 写入 `:2237` 与下拉读取 `:4840`、`recentBranches` `:3682` / `:4311`、`commitMessages` `:4569`、快捷键覆盖订阅 `:1934`、各键位匹配 `:1988-2052` / `:2557` |
 | `src/lib/lspClient.ts` | 会话表与协议客户端；`starting` 键锁 `:220`、`startServer` `:223` 与 `launchSession` `:235` 把失败原因原样回传、`WakeResult` `:994` 与 `wakeLsp` `:1011` 是「启动」按钮的执行路径（确认项目根 → 启动进程 → 握手 → 同步文档，每一步失败都带 detail）、输出日志的保留与并入见 `appendLog` `:338` / `adoptLogs` / `lspLogs` `:362` / `watchLspLogs` / `clearLspLogs` `:375` |

@@ -2218,16 +2218,35 @@ span.entry-icon > svg {
 .settings-shortcut kbd.shortcut-capture { color: var(--accent-blue); border-color: var(--accent-blue); font-family: inherit; }
 .settings-note.is-error { color: var(--accent-red, #d13438); }
 
-/* Hooks 设置页：事件小节 + matcher/命令/超时一行一条。 */
+/* 按面板可用宽度换行；长命令和无空格路径不能撑宽设置页。 */
+.hooks-settings { min-width: 0; overflow-wrap: anywhere; }
+.hooks-toolbar { flex-wrap: wrap; }
+.hooks-toolbar .settings-label { width: auto; }
+.hooks-toolbar .button { flex-shrink: 0; }
+.hooks-path { margin: 0; font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.hooks-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.hooks-raw { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
 .hooks-event { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--border-light); }
 .hooks-event:first-of-type { border-top: none; }
 .hooks-event-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hooks-event-head .settings-label { width: auto; min-width: 0; flex-shrink: 1; }
 .hooks-event-head .button { margin-left: auto; }
 .hooks-event-empty { margin: 0; }
-.hooks-row { display: flex; gap: 6px; align-items: center; }
-.hooks-matcher { width: 200px; flex: none; }
-.hooks-command { flex: 1; min-width: 120px; }
+.hooks-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; min-width: 0; }
+.hooks-row + .hooks-row { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--border-light); }
+.hooks-matcher { width: 200px; min-width: 0; max-width: 100%; flex: 1 1 200px; }
+/* soft wrap 只改变显示，不向保存的命令插入换行。 */
+.hooks-command { width: 100%; min-width: 0; flex: 2 1 280px; height: auto; min-height: 52px; padding: 5px 8px; resize: vertical; font-family: var(--font-mono); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .hooks-timeout { width: 76px; flex: none; }
+.hooks-async { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; white-space: nowrap; }
+.hooks-async input { margin: 0; }
+.hooks-actions { display: flex; justify-content: flex-end; }
+.hooks-status { display: grid; gap: 10px; min-width: 0; }
+.hooks-status p { margin: 0; }
+.hooks-status-item { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
+.hooks-status-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.hooks-status-meta > :first-child { color: var(--text-secondary); }
+.hooks-status-command { margin: 0; min-width: 0; font-family: var(--font-mono); font-size: inherit; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
 
 /* 关于页：版本号这类纯文本值，字号与左侧标签一致。 */
