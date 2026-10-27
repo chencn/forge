@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiSessionStorageKey } from "../../src/lib/aiSessions";
-import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearAiSessionStorage, clearDraft, clearDraftImages, flushDraft, loadDraft, loadDraftImages, loadPromptHistory, rememberPrompt, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
+import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearAiSessionStorage, clearDraft, clearDraftImages, flushDraft, loadDraft, loadDraftImages, loadPromptHistory, rememberPrompt, saveDraft, saveDraftImages, subscribeDraftImages, updateDraftImages } from "../../src/lib/aiDrafts";
 import type { DraftState } from "../../src/lib/aiDrafts";
 
 const ROOT = "D:\\app\\code\\forge";
@@ -106,6 +106,63 @@ describe("AI 草稿持久化", () => {
   it("超长草稿只留前面一段", () => {
     saveDraft(ROOT, "s1", "a".repeat(25_000));
     expect(loadDraft(ROOT, "s1")).toHaveLength(20_000);
+  });
+  it("重新打开页面后收到异步附件追加，合并最新列表且不串项目", () => {
+    const first = { path: "C:/cache/first.png", name: "first.png" };
+    const second = { path: "C:/cache/second.png", name: "second.png" };
+    saveDraftImages(ROOT, "s1", [first]);
+    const snapshots: unknown[] = [];
+    const stop = subscribeDraftImages("d:/app/code/forge/", "s1", () => snapshots.push(loadDraftImages(ROOT, "s1")));
+    const other = vi.fn();
+    const stopOther = subscribeDraftImages("D:/other", "s1", other);
+    try {
+      // 旧页面的复制任务稍后完成，必须保留新页面先加入的附件。
+      updateDraftImages(ROOT, "s1", (current) => [...current, second]);
+      expect(loadDraftImages(ROOT, "s1")).toEqual([first, second]);
+      expect(snapshots).toEqual([[first, second]]);
+      expect(other).not.toHaveBeenCalled();
+      clearAiSessionStorage(ROOT, "s1");
+      expect(snapshots).toEqual([[first, second], []]);
+    } finally { stop(); stopOther(); }
+    saveDraftImages(ROOT, "s1", [first]);
+    expect(snapshots).toHaveLength(2);
+  });
+  it("附件持久化失败时仍能在本窗口切换页面并手动移除", () => {
+    const attachment = { path: "C:/cache/keep.png", name: "keep.png" };
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+      removeItem: () => { throw new Error("blocked"); },
+    });
+    saveDraftImages(ROOT, "blocked-session", [attachment]);
+    expect(loadDraftImages(ROOT, "blocked-session")).toEqual([attachment]);
+    clearDraftImages(ROOT, "blocked-session");
+    expect(loadDraftImages(ROOT, "blocked-session")).toEqual([]);
+  });
+  it("其他窗口保存附件后通知当前订阅，取消订阅后不再接收", () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    const key = `${aiSessionStorageKey(ROOT)}:draft-images:window-session`;
+    const image = { path: "C:/cache/window.png", name: "window.png" };
+    const snapshots: unknown[] = [];
+    const stop = subscribeDraftImages(ROOT, "window-session", () => snapshots.push(loadDraftImages(ROOT, "window-session")));
+    const changed = (storageKey: string | null) => {
+      const event = new Event("storage");
+      Object.defineProperty(event, "key", { value: storageKey });
+      target.dispatchEvent(event);
+    };
+    try {
+      localStorage.setItem(key, JSON.stringify([image]));
+      changed("unrelated-key");
+      expect(snapshots).toEqual([]);
+      changed(key);
+      expect(snapshots).toEqual([[image]]);
+      store.clear();
+      changed(null);
+      expect(snapshots).toEqual([[image], []]);
+    } finally { stop(); vi.unstubAllGlobals(); }
+    changed(key);
+    expect(snapshots).toHaveLength(2);
   });
   it("存储坏了不影响挂载，读取退回空草稿", () => {
     vi.stubGlobal("localStorage", {

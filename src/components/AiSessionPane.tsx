@@ -20,7 +20,7 @@ import { useAiChatWidth } from "../lib/aiChatWidth";
 import { compactionFacts } from "../lib/aiCompaction";
 import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiCapabilities, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiAgentMessage, sendAiMessage, setAiGoalStatus, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
 import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiThreadGoal } from "../lib/aiRuntime";
-import { buildNavRows, NAV_PAGE, navCount, visibleNavRows } from "../lib/aiMessageNav";
+import { buildNavRows, NAV_PAGE, visibleNavRows, parseNavPrompt } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
 import { AiAgentDockPanel, AiTaskListDockPanel } from "./AiDockPanels";
@@ -29,7 +29,7 @@ import { openAiPlan } from "../lib/aiPlan";
 import { requestPath } from "../lib/aiApprovals";
 import type { AiPermissionAnswer } from "../lib/aiApprovals";
 import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash, resolveNativeCommand } from "../lib/aiCommands";
-import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadDraftImages, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft, saveDraftImages } from "../lib/aiDrafts";
+import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft, saveDraftImages, updateDraftImages, useDraftImages, type DraftImageAttachment } from "../lib/aiDrafts";
 import type { PromptBrowse } from "../lib/aiDrafts";
 import { compactDecision, COMPACT_COMMAND_TEXT, readCompactPrefs, writeCompactPrefs } from "../lib/aiCompact";
 import { isNearBottom, OlderHistoryScroll, trackFollow, unseenCount } from "../lib/aiFollow";
@@ -328,99 +328,113 @@ const AiReasoningEntry = memo(function AiReasoningEntry({ entry, live }: { entry
   </details>;
 });
 
-interface FloatingPos {
-  left: number;
-  top: number;
+/**
+ * 轮次预览气泡浮层：展示技能标签、上下文路径与用户提问正文多行摘要。
+ */
+function AiTurnPeekPopover({
+  row,
+  onJump,
+}: {
+  row: AiNavRow;
+  onJump: (row: AiNavRow) => void;
+}) {
+  const { t } = useI18n();
+  const parsed = useMemo(() => parseNavPrompt(row.text, row.label), [row.text, row.label]);
+
+  return (
+    <div
+      className="ai-turn-popover"
+      role="tooltip"
+      onClick={(event) => {
+        event.stopPropagation();
+        onJump(row);
+      }}
+    >
+      <div className="ai-turn-popover-head">
+        {parsed.badge ? <span className="ai-turn-badge">{parsed.badge}</span> : null}
+        <span className="ai-turn-ordinal">#{row.ordinal}</span>
+        {row.files ? <span className="ai-turn-files">{t("ai.nav.files", { count: row.files })}</span> : null}
+      </div>
+      {parsed.path ? (
+        <div className="ai-turn-path" title={parsed.path}>
+          {parsed.path}
+        </div>
+      ) : null}
+      <div className="ai-turn-body">
+        {parsed.body}
+      </div>
+      {!row.loaded ? (
+        <div className="ai-turn-hint">
+          {t("ai.runtime.loadOlder")}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
- * 消息导航的拖拽状态：展开后可在会话视口内移动，收起后始终贴住右缘并垂直居中。
- * 位移超过 3px 才视为拖拽，避免松手时误触发展开或收起。
+ * 左侧伴随式单轮双横杠锚点：
+ * 默认形态为双水平横线（=）；悬停时右侧浮现提示词预览卡片；点击平滑滚动直达该轮提问。
  */
-function useFloatingMessageNav(open: boolean) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [panelPos, setPanelPos] = useState<FloatingPos | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const dragRef = useRef<{
-    startX: number;
-    startY: number;
-    initialLeft: number;
-    initialTop: number;
-    moved: boolean;
-  } | null>(null);
+function AiTurnAnchor({
+  row,
+  isActive,
+  isPending,
+  onJump,
+}: {
+  row: AiNavRow;
+  isActive: boolean;
+  isPending: boolean;
+  onJump: (row: AiNavRow) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const hoverTimer = useRef<number | null>(null);
 
-  // 未拖拽时折叠态和展开态都由 CSS 用组件中心点对齐内容中线；
-  // 折叠后丢弃手动位置，下次展开恢复真正的垂直居中。
-  useLayoutEffect(() => {
-    if (!open) setPanelPos(null);
-  }, [open]);
-
-  const startDrag = (event: React.PointerEvent) => {
-    // 收起态必须固定在右侧垂直中点，只有展开后的卡片允许拖动。
-    if (!open) return;
-    if (event.button !== 0) return;
-    const target = event.target as HTMLElement;
-    // 面板里的折叠、重试和导航按钮保留自己的点击行为。
-    if (open && target.closest("button")) return;
-    const container = containerRef.current;
-    if (!container) return;
-    const parent = container.parentElement;
-    const parentRect = parent?.getBoundingClientRect() ?? document.body.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
-    dragRef.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      initialLeft: containerRect.left - parentRect.left,
-      initialTop: containerRect.top - parentRect.top,
-      moved: false,
-    };
-
-    const handlePointerMove = (pointerEvent: PointerEvent) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      const deltaX = pointerEvent.clientX - drag.startX;
-      const deltaY = pointerEvent.clientY - drag.startY;
-      if (!drag.moved && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
-        drag.moved = true;
-        setIsDragging(true);
-      }
-      if (!drag.moved) return;
-      const parentWidth = parent?.clientWidth ?? window.innerWidth;
-      const parentHeight = parent?.clientHeight ?? window.innerHeight;
-      const width = container.offsetWidth || 32;
-      const height = container.offsetHeight || 32;
-      const top = Math.max(8, Math.min(parentHeight - height - 8, drag.initialTop + deltaY));
-      const left = Math.max(8, Math.min(parentWidth - width - 8, drag.initialLeft + deltaX));
-      setPanelPos({ left, top });
-    };
-
-    const handlePointerUp = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
-      window.setTimeout(() => {
-        setIsDragging(false);
-        dragRef.current = null;
-      }, 0);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
+  const handleMouseEnter = () => {
+    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+    // 稍微防抖（60ms），平滑掠过时不突兀闪现
+    hoverTimer.current = window.setTimeout(() => setHovered(true), 60);
   };
 
-  // panelPos 只代表用户拖动后的左上角；默认态不能覆盖 CSS 的中心点定位。
-  const style: CSSProperties | undefined = open && panelPos
-    ? { left: panelPos.left, top: panelPos.top, right: "auto", bottom: "auto", transform: "none" }
-    : undefined;
+  const handleMouseLeave = () => {
+    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+    // 留出 120ms 缓冲，方便鼠标斜向移入卡片查看或点击
+    hoverTimer.current = window.setTimeout(() => setHovered(false), 120);
+  };
 
-  return { containerRef, style, isDragging, startDrag, isMoved: () => dragRef.current?.moved === true };
+  useEffect(() => () => {
+    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+  }, []);
+
+  return (
+    <div
+      className={`ai-turn-anchor-wrapper${hovered ? " is-hovered" : ""}`}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      <button
+        type="button"
+        className={`ai-turn-anchor${isActive ? " is-active" : ""}`}
+        title={`#${row.ordinal} ${row.label}`}
+        aria-label={`#${row.ordinal} ${row.label}`}
+        onClick={() => onJump(row)}
+      >
+        {isPending ? (
+          <Loader2 size={11} className="is-spinning" />
+        ) : (
+          <span className="ai-turn-line" aria-hidden="true" />
+        )}
+      </button>
+      {hovered ? <AiTurnPeekPopover row={row} onJump={onJump} /> : null}
+    </div>
+  );
 }
 
 /**
- * 会话内消息导航：收起时贴在正文右缘，展开后列出各轮用户消息，并可跳到尚未加载的历史轮次。
+ * 会话内消息导航：停靠在正文左侧装订线上，展示低调优雅的双横杠轮次锚点，
+ * hover 浮出提示词详情预览卡片，点击快速定位。
  */
-function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: {
+function AiMessageNav({ entries, outline, hasOlder: _hasOlder, onRequestOutline, onJump }: {
   entries: AiEntry[];
   outline: AiOutlineSnapshot;
   hasOlder: boolean;
@@ -428,7 +442,6 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
   onJump: (row: AiNavRow) => Promise<void> | void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [rendered, setRendered] = useState(NAV_PAGE);
@@ -436,14 +449,7 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
   const grewAt = useRef(0);
   const rows = useMemo(() => buildNavRows(entries, outline), [entries, outline]);
   const visible = useMemo(() => visibleNavRows(rows, rendered), [rows, rendered]);
-  const count = navCount(rows, outline, hasOlder);
-  const { containerRef, style, isDragging, startDrag, isMoved } = useFloatingMessageNav(open);
 
-  useLayoutEffect(() => {
-    if (!open) return;
-    const element = list.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [open]);
   useLayoutEffect(() => {
     if (!grewAt.current) return;
     const element = list.current;
@@ -451,18 +457,13 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
     grewAt.current = 0;
   }, [visible]);
 
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    // 轮次索引只在用户第一次展开导航时读取。
-    if (next && !outline.loaded && !outline.loading) onRequestOutline();
-  };
   const grow = () => {
     const element = list.current;
     if (!element || rows.length <= visible.length || element.scrollTop > 60) return;
     grewAt.current = element.scrollHeight;
     setRendered((value) => value + NAV_PAGE);
   };
+
   const jump = async (row: AiNavRow) => {
     setActiveId(row.id);
     if (row.loaded) { await onJump(row); return; }
@@ -470,41 +471,32 @@ function AiMessageNav({ entries, outline, hasOlder, onRequestOutline, onJump }: 
     try { await onJump(row); } finally { setPendingId(null); }
   };
 
-  return <div className={`ai-msgnav${open ? " is-open" : ""}${isDragging ? " is-dragging" : ""}`}
-    ref={containerRef} style={style}>
-    {open ? <div className="ai-msgnav-panel">
-      <header onPointerDown={startDrag} title={t("ai.nav.title")}>
-        <GripVertical size={13} className="ai-msgnav-drag-handle" aria-hidden />
-        <strong>{t("ai.nav.title")}</strong>
-        <span className="ai-msgnav-count">{count}</span>
-        <button type="button" className="ai-msgnav-collapse" aria-label={t("ai.sidebar.collapseAll")} onClick={() => setOpen(false)}>
-          <ChevronRight size={14} className="is-flipped" aria-hidden />
-        </button>
-      </header>
-      {outline.loaded && !outline.complete ? <p className="ai-msgnav-note">{t("ai.nav.partial")}</p> : null}
-      {rows.length > visible.length ? <p className="ai-msgnav-note">{t("ai.nav.older", { count: rows.length - visible.length })}</p> : null}
-      {outline.loading ? <p className="ai-msgnav-note" role="status"><Loader2 size={11} className="is-spinning" aria-hidden />{t("ai.runtime.loading")}</p> : null}
-      {outline.error ? <p className="ai-msgnav-note" role="alert">{outline.error}<button type="button" className="ai-text-button" onClick={onRequestOutline}>{t("ai.nav.retry")}</button></p> : null}
-      <div className="ai-msgnav-list" role="list" ref={list} onScroll={grow}>
-        {visible.map((row) => <div key={row.id} role="listitem" className="ai-msgnav-rowwrap">
-          <button type="button" className={row.id === activeId ? "is-active" : ""} onClick={() => void jump(row)}>
-            <span className="ai-msgnav-ordinal" aria-hidden>{row.id === pendingId ? <Loader2 size={11} className="is-spinning" /> : row.ordinal}</span>
-            <span className="ai-msgnav-label" title={row.label}>{row.label || t("ai.message")}</span>
-            {row.files ? <span className="ai-msgnav-files">{t("ai.nav.files", { count: row.files })}</span> : null}
-          </button>
-          {row.id === activeId && row.paths?.length ? <div className="ai-msgnav-files-card">
-            {row.paths.slice(0, 8).map((path) => <code key={path} className="ai-msgnav-file">{path.split(/[\\/]/).pop() || path}</code>)}
-            {row.paths.length > 8 ? <span className="ai-msgnav-files-more">+{row.paths.length - 8}</span> : null}
-          </div> : null}
-        </div>)}
-        {!rows.length && !outline.loading && !outline.error ? <p className="ai-msgnav-empty">{t("ai.nav.empty")}</p> : null}
+  // 鼠标移入轨道时若索引未完全加载，触发按需加载
+  const handleRailEnter = () => {
+    if (!outline.loaded && !outline.loading) onRequestOutline();
+  };
+
+  if (!rows.length) return null;
+
+  return (
+    <nav
+      className="ai-turn-nav"
+      aria-label={t("ai.nav.title")}
+      onMouseEnter={handleRailEnter}
+    >
+      <div className="ai-turn-nav-track" ref={list} onScroll={grow}>
+        {visible.map((row) => (
+          <AiTurnAnchor
+            key={row.id}
+            row={row}
+            isActive={row.id === activeId}
+            isPending={row.id === pendingId}
+            onJump={(target) => void jump(target)}
+          />
+        ))}
       </div>
-    </div> : <button type="button" className="ai-msgnav-chip" title={t("ai.nav.title")} aria-label={t("ai.nav.title")} aria-expanded={false}
-      onClick={() => { if (!isMoved()) toggle(); }}>
-      <ListOrdered size={12} aria-hidden />
-      <span className="ai-msgnav-chip-label">{count}</span>
-    </button>}
-  </div>;
+    </nav>
+  );
 }
 
 /** 本轮 token 的起点快照：tok/s =（当前累计 − 起点）/ 已跑时长；键随 runId 换新。 */
@@ -859,10 +851,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [contextMenu, setContextMenu] = useState<MenuAnchor | null>(null);
   /** ↑↓ 召回停在历史的哪一条；`stash` 是走出历史时要还回去的那行，用户在召回件上改的字也存这里。 */
   const [browse, setBrowse] = useState<PromptBrowse | null>(null);
-  const [images, setImages] = useState<PastedImage[]>(() => loadDraftImages(workspace, session.id)
-    .map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) })));
-  /** 异步附件可能在组件刚卸载后才保存完成；ref 让落盘不依赖 React 是否还接受 setState。 */
-  const imagesRef = useRef(images);
+  const attachments = useDraftImages(workspace, session.id);
+  const images = useMemo(() => attachments.map((image) => ({ ...image, preview: assetUrl(image.path, 0) })), [attachments]);
   // 异步保存尚未回填 state 时也要占名额，防止连续粘贴越过上限。
   const pendingImages = useRef(0);
   /** 每条消息的附件上限。初值只是后端还没答话时的兜底，真实数字来自 `ai_runtime_image_limits`。 */
@@ -987,14 +977,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setCommandNotice(null);
   };
   /** 附件变化立即写入草稿；切标签会卸载组件，不能只靠 React state 扛过去。 */
-  const updateImages = (change: (current: PastedImage[]) => PastedImage[]) => {
-    replaceImages(change(imagesRef.current));
-  };
-  const replaceImages = (next: PastedImage[]) => {
-    imagesRef.current = next;
-    setImages(next);
-    saveDraftImages(workspace, session.id, next);
-  };
+  const updateImages = (change: (current: DraftImageAttachment[]) => DraftImageAttachment[]) => updateDraftImages(workspace, session.id, change);
+  const replaceImages = (next: PastedImage[]) => saveDraftImages(workspace, session.id, next);
   /** 输入变化后同步 @ 提及建议：命中 @token 就按查询词搜一次文件（260ms 防抖，只认文件）。 */
   const syncMention = (text: string, caret: number) => {
     const found = editingTask || sending || !workspace ? null : mentionAt(text, caret);
@@ -1159,7 +1143,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const running = runtime.status === "running" && activity === "running" && runtime.runId === ownedRunId;
   // 视觉上的运行态：无论是否独占控制权，只要会话处于运行中，就必须展示底部的运行状态条与图标呼吸动画。
   const visualRunning = running || activity === "running" || runtime.status === "running";
-  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); const restoredImages = loadDraftImages(workspace, session.id).map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) })); imagesRef.current = restoredImages; setImages(restoredImages); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; setTaskListDisclosure(null); }, [optionsKey, session.id, workspace]);
+  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; setTaskListDisclosure(null); }, [optionsKey, session.id, workspace]);
   /**
    * 新建会话的交接：草稿欢迎页在创建会话时把首条消息（含附件）留在这里，
    * 会话页挂载后先回填输入框与附件，再触发一次正常发送——信任确认、未保存检查
@@ -1401,7 +1385,13 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       void loadAiMessages(session.id, workspace, true).catch(() => {});
       // 首条消息落盘后后端会把标题换成消息摘要：刷一次会话列表，侧栏与标签立即跟上。
       refreshAiSessionHistory();
-      if (override === undefined) { commitDraft(""); replaceImages([]); setBrowse(null); setShowHelp(false); }
+      if (override === undefined) {
+        // 文件引用或新输入可能在发送在途时加入，不能把下一条草稿一起清空。
+        if (loadDraft(workspace, session.id) === draft) commitDraft("");
+        // 只消费本次发送的附件；异步保存后来补进的路径仍属于下一条草稿。
+        updateImages((current) => current.filter((image) => !images.some((sent) => sent.path === image.path)));
+        setBrowse(null); setShowHelp(false);
+      }
       rememberPrompt(workspace, text);
       setAnchor(null); setAtBottom(true); scrollToBottom();
     } catch (cause) { setError(String(cause)); }

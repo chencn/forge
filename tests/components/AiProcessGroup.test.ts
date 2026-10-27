@@ -9,6 +9,8 @@ vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Rec
 vi.mock("react", async (original) => {
   const react = await original<typeof import("react")>();
   return { ...react,
+    // 此测试直接驱动渲染函数的事件回调；memo 包装不属于折叠与分页的行为契约。
+    memo: <T,>(component: T) => component,
     useState: (initial: unknown) => {
       const index = h.index++;
       if (!(index in h.states)) h.states[index] = typeof initial === "function" ? (initial as () => unknown)() : initial;
@@ -106,5 +108,14 @@ describe("AiProcessGroup", () => {
     const open = render(tools(3), false);
     expect(open.seen).toHaveLength(3);
     expect(moreButton(open.tree)).toBeUndefined();
+  });
+  it("连续的读取条目聚合成浏览组，且组头包含导轨轴线节点 ai-entry-dot 保持对齐", () => {
+    const reads: AiEntry[] = [
+      { id: "r1", runId: "r1", kind: "tool", text: "", name: "Read", input: { file_path: "a.ts" }, status: "completed" },
+      { id: "r2", runId: "r1", kind: "tool", text: "", name: "Read", input: { file_path: "b.ts" }, status: "completed" },
+    ];
+    const { html } = render(reads, true);
+    expect(html).toContain("ai-explore-group");
+    expect(html).toContain("ai-entry-dot");
   });
 });

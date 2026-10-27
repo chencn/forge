@@ -1,3 +1,4 @@
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { aiSessionStorageKey } from "./aiSessions";
 
 /**
@@ -120,9 +121,17 @@ export function clearDraft(workspace: string | null, sessionId: string): void {
 }
 
 /** 读取尚未发送的图片附件；损坏条目直接跳过，不能让一条坏缓存挡住输入框。 */
-export function loadDraftImages(workspace: string | null, sessionId: string): DraftImageAttachment[] {
+// 存储被禁用或配额耗尽时仍保留本窗口的附件，不能因为持久化失败直接清空输入框。
+const imageFallbacks = new Map<string, string>();
+function draftImagesSnapshot(workspace: string | null, sessionId: string): string {
+  const key = draftImagesKey(workspace, sessionId);
+  if (imageFallbacks.has(key)) return imageFallbacks.get(key)!;
+  try { return localStorage.getItem(key) ?? "[]"; } catch { return "[]"; }
+}
+
+function parseDraftImages(raw: string): DraftImageAttachment[] {
   try {
-    const items: unknown = JSON.parse(localStorage.getItem(draftImagesKey(workspace, sessionId)) ?? "[]");
+    const items: unknown = JSON.parse(raw);
     if (!Array.isArray(items)) return [];
     return items.flatMap((item): DraftImageAttachment[] => {
       if (!item || typeof item !== "object") return [];
@@ -136,21 +145,56 @@ export function loadDraftImages(workspace: string | null, sessionId: string): Dr
   }
 }
 
+export function loadDraftImages(workspace: string | null, sessionId: string): DraftImageAttachment[] {
+  return parseDraftImages(draftImagesSnapshot(workspace, sessionId));
+}
+
+const imageListeners = new Map<string, Set<() => void>>();
+
+/** 卸载页面的异步保存也能通知重新挂载的输入框；其他原生窗口走 storage 事件。 */
+export function subscribeDraftImages(workspace: string | null, sessionId: string, listener: () => void): () => void {
+  const key = draftImagesKey(workspace, sessionId);
+  let listeners = imageListeners.get(key);
+  if (!listeners) { listeners = new Set(); imageListeners.set(key, listeners); }
+  listeners.add(listener);
+  const changed = (event: StorageEvent) => { if (event.key === null || event.key === key) listener(); };
+  if (typeof window !== "undefined") window.addEventListener("storage", changed);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) imageListeners.delete(key);
+    if (typeof window !== "undefined") window.removeEventListener("storage", changed);
+  };
+}
+
+export function useDraftImages(workspace: string | null, sessionId: string): DraftImageAttachment[] {
+  const subscribe = useCallback((listener: () => void) => subscribeDraftImages(workspace, sessionId, listener), [workspace, sessionId]);
+  const snapshot = useCallback(() => draftImagesSnapshot(workspace, sessionId), [workspace, sessionId]);
+  // 使用稳定的字符串快照，不能每次 getSnapshot 都 JSON.parse 生成新数组。
+  const raw = useSyncExternalStore(subscribe, snapshot, snapshot);
+  return useMemo(() => parseDraftImages(raw), [raw]);
+}
+
 /** 附件增删频率很低，立即落盘，保证切标签发生在下一帧也不会丢路径。 */
 export function saveDraftImages(workspace: string | null, sessionId: string, images: readonly DraftImageAttachment[]): void {
+  const key = draftImagesKey(workspace, sessionId);
+  const raw = JSON.stringify(images.slice(0, MAX_STORED_IMAGES).map(({ path, name }) => ({ path, name })));
   try {
-    if (!images.length) localStorage.removeItem(draftImagesKey(workspace, sessionId));
-    else localStorage.setItem(draftImagesKey(workspace, sessionId), JSON.stringify(images.slice(0, MAX_STORED_IMAGES)
-      .map(({ path, name }) => ({ path, name }))));
+    if (!images.length) localStorage.removeItem(key);
+    else localStorage.setItem(key, raw);
+    imageFallbacks.delete(key);
   } catch {
-    // 本轮仍保留内存状态；存储失败只影响跨标签/重启恢复。
+    imageFallbacks.set(key, raw);
   }
+  imageListeners.get(key)?.forEach((listener) => listener());
+}
+
+/** 异步追加和移除均基于最新草稿，不能合并旧组件持有的附件副本。 */
+export function updateDraftImages(workspace: string | null, sessionId: string, change: (current: DraftImageAttachment[]) => DraftImageAttachment[]): void {
+  saveDraftImages(workspace, sessionId, change(loadDraftImages(workspace, sessionId)));
 }
 
 export function clearDraftImages(workspace: string | null, sessionId: string): void {
-  try { localStorage.removeItem(draftImagesKey(workspace, sessionId)); } catch {
-    // 与正文草稿一致：缓存删不掉不能阻止发送成功后的主状态迁移。
-  }
+  saveDraftImages(workspace, sessionId, []);
 }
 
 /** 删除会话时清掉所有按会话隔离的本地状态；工程级发送历史和引擎默认项继续保留。 */
@@ -158,8 +202,8 @@ export function clearAiSessionStorage(workspace: string | null, sessionId: strin
   const prefix = aiSessionStorageKey(workspace);
   // 同时取消防抖写入，不能在删除会话后由定时器重新创建草稿。
   clearDraft(workspace, sessionId);
+  clearDraftImages(workspace, sessionId);
   try {
-    localStorage.removeItem(draftImagesKey(workspace, sessionId));
     localStorage.removeItem(dirsKey(workspace, sessionId));
     localStorage.removeItem(`${prefix}:options:${sessionId}`);
   } catch {

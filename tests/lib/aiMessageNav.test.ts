@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNavRows, navCount, navLabel, NAV_PAGE, visibleNavRows } from "../../src/lib/aiMessageNav";
+import { buildNavRows, navCount, navLabel, NAV_PAGE, parseNavPrompt, visibleNavRows } from "../../src/lib/aiMessageNav";
 import type { AiEntry, AiOutlineSnapshot, AiOutlineTurn } from "../../src/lib/aiRuntime";
 
 const EMPTY: AiOutlineSnapshot = { turns: [], complete: false, loaded: false, loading: false, error: null };
@@ -100,3 +100,33 @@ describe("消息导航的条数", () => {
     expect(navCount(buildNavRows([], { ...EMPTY, turns, loaded: true }), { ...EMPTY, turns, loaded: true }, false)).toBe("3+");
   });
 });
+
+describe("提示词结构化解析与正文保留", () => {
+  it("正文加载时保留完整的用户提示词 text 供悬停卡片预览", () => {
+    const prompt = "[$code-review]\n(C:\\test\\path)\n我将运行代码审查流程。";
+    const rows = buildNavRows([user("r1:1", prompt)], EMPTY);
+    expect(rows[0].text).toBe(prompt);
+  });
+
+  it("能从提示词中提取技能胶囊 [$xxx]、路径上下文以及正文", () => {
+    const raw = "[$code-review]\n(C:\\Users\\shengganbao\\.agents\\skills\\code-review)\n我将运行代码审查流程。首先确认 git 状态。";
+    const parsed = parseNavPrompt(raw, "回退标题");
+    expect(parsed.badge).toBe("[$code-review]");
+    expect(parsed.path).toBe("(C:\\Users\\shengganbao\\.agents\\skills\\code-review)");
+    expect(parsed.body).toBe("我将运行代码审查流程。首先确认 git 状态。");
+  });
+
+  it("斜杠命令格式如 /review 也能被正确识别为技能胶囊", () => {
+    const parsed = parseNavPrompt("/review src/components", "回退标题");
+    expect(parsed.badge).toBe("/review");
+    expect(parsed.body).toBe("src/components");
+  });
+
+  it("没有技能标识或路径的普通提问直接作为正文呈现", () => {
+    const parsed = parseNavPrompt("帮我实现一个左侧伴随式导航组件", "回退标题");
+    expect(parsed.badge).toBeUndefined();
+    expect(parsed.path).toBeUndefined();
+    expect(parsed.body).toBe("帮我实现一个左侧伴随式导航组件");
+  });
+});
+

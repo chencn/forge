@@ -234,7 +234,7 @@ export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasReques
           const preview = toolFilePreviews(entry).find((item) => item.id === target.id);
           if (preview) openPreview(preview);
         }}>
-        {targets.length === 1 ? <AiToolSummary entry={entry} /> : <><span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span><span className="ai-tool-name">{target.path}</span></>}
+        {targets.length === 1 ? <AiToolSummary entry={entry} /> : <><span aria-hidden className="ai-entry-dot" /><span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span><span className="ai-tool-name">{target.path}</span></>}
         <AiToolFigure entry={entry} view={view} />
         {status ? <span className="ai-tool-status">{status}</span> : null}
         <ArrowUpRight size={14} aria-hidden />
@@ -307,6 +307,7 @@ export function AiToolSummary({ entry, icon = true, disclosure }: { entry: AiEnt
   return <>
     {/* ai-tool-glyph：活动导轨上的行不需要这枚图标（环就是图形），CSS 在导轨内隐藏它。 */}
     {icon ? <Icon className="ai-tool-glyph" size={13} aria-hidden /> : null}
+    <span aria-hidden className="ai-entry-dot" />
     <span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span>
     {disclosure}
     {/* 读取文件：在文件名签名/前面显示读取的行数（如 128 行） */}
@@ -534,6 +535,7 @@ export const AiExploreGroup = memo(function AiExploreGroup({ entries, render }: 
   return <div className={`ai-explore-group${active ? " is-active" : ""}${expanded ? " is-open" : ""}`}>
     <button type="button" className="ai-row-head ai-explore-head" aria-expanded={expanded} onClick={() => setOpen(!expanded)}>
       <Layers size={13} aria-hidden className="ai-tool-glyph" />
+      <span aria-hidden className="ai-entry-dot" />
       <span className="ai-row-label">{t("ai.chat.exploredTitle")}</span>
       <span className="ai-explore-count">{[files ? t("ai.chat.exploreFiles", { count: files }) : "", searches ? t("ai.chat.exploreSearches", { count: searches }) : ""].filter(Boolean).join(" · ")}</span>
       <ChevronRight size={14} className={`ai-detail-chevron${expanded ? " is-open" : ""}`} aria-hidden />

@@ -13,6 +13,8 @@ export interface AiNavRow {
   ordinal: number;
   /** 首行摘要。 */
   label: string;
+  /** 该轮用户的原始提示词全文（已加载正文时存在）；供悬浮卡片提取技能/路径及多行预览。 */
+  text?: string;
   /** 该轮改过的文件数，按路径去重。 */
   files: number;
   /** 该轮改过的文件路径；只有已加载进正文的那几轮才有（索引只存数量）。 */
@@ -30,13 +32,54 @@ export function navLabel(text: string | undefined): string {
   return line.slice(0, LABEL_CHARS);
 }
 
+/** 拆解用户提示词中的技能胶囊、路径上下文与正文。 */
+export interface ParsedNavPrompt {
+  /** 技能或命令标识，例如 "[$code-review]" 或 "/review" */
+  badge?: string;
+  /** 伴随的路径上下文，例如 "(C:\Users\...)" */
+  path?: string;
+  /** 提示词正文文本（保留多行，去除技能标识与路径） */
+  body: string;
+}
+
+/**
+ * 解析用户提示词结构：提取技能胶囊（如 `[$code-review]`）、上下文路径以及主要提问内容。
+ */
+export function parseNavPrompt(text: string | undefined, fallbackLabel: string): ParsedNavPrompt {
+  if (!text || !text.trim()) {
+    return { body: fallbackLabel };
+  }
+  const trimmed = text.trim();
+  // 匹配开头的技能标识 [$xxx] 或斜杠命令 /xxx
+  const badgeMatch = trimmed.match(/^(\[\$[^\]]+\]|\/[\w-]+)/);
+  if (!badgeMatch) {
+    return { body: trimmed };
+  }
+  const badge = badgeMatch[1];
+  let rest = trimmed.slice(badge.length).trim();
+  let path: string | undefined;
+
+  // 匹配紧随其后的括号路径，如 (C:\Users\... 或 (/path/to/...
+  const pathMatch = rest.match(/^(\([^)]+\))/);
+  if (pathMatch) {
+    path = pathMatch[1];
+    rest = rest.slice(path.length).trim();
+  }
+
+  return {
+    badge,
+    path,
+    body: rest || fallbackLabel,
+  };
+}
+
 /** 已加载正文里每一轮的摘要与改动文件；文件数按路径去重，口径同 `summarizeAiFileEdits`。 */
 function groupLoadedEntries(entries: AiEntry[]) {
-  const rows = new Map<string, { label: string; files: Set<string>; seq?: number }>();
-  let current: { label: string; files: Set<string>; seq?: number } | null = null;
+  const rows = new Map<string, { label: string; text?: string; files: Set<string>; seq?: number }>();
+  let current: { label: string; text?: string; files: Set<string>; seq?: number } | null = null;
   for (const entry of entries) {
     if (entry.kind === "user") {
-      current = { label: navLabel(entry.text), files: new Set(), seq: entry.seq };
+      current = { label: navLabel(entry.text), text: entry.text, files: new Set(), seq: entry.seq };
       rows.set(entry.id, current);
     } else if (entry.kind === "files" && current) {
       // 一轮的文件改动都排在它的 user 条目之后，所以正文只要加载到这一轮就必然加载到全部。
@@ -67,10 +110,27 @@ export function buildNavRows(entries: AiEntry[], outline: AiOutlineSnapshot): Ai
   };
   for (const turn of outline.turns) {
     const hit = loaded.get(turn.entryId);
-    push({ id: turn.entryId, seq: turn.seq, label: hit?.label || turn.label, files: hit ? hit.files.size : turn.files,
-      paths: hit ? [...hit.files] : undefined, loaded: !!hit });
+    push({
+      id: turn.entryId,
+      seq: turn.seq,
+      label: hit?.label || turn.label,
+      text: hit?.text,
+      files: hit ? hit.files.size : turn.files,
+      paths: hit ? [...hit.files] : undefined,
+      loaded: !!hit,
+    });
   }
-  for (const [id, row] of loaded) push({ id, seq: row.seq, label: row.label, files: row.files.size, paths: [...row.files], loaded: true });
+  for (const [id, row] of loaded) {
+    push({
+      id,
+      seq: row.seq,
+      label: row.label,
+      text: row.text,
+      files: row.files.size,
+      paths: [...row.files],
+      loaded: true,
+    });
+  }
   // 没有序号的是本机刚按下、还没落进日志的那几轮，它们本来就最新，排到最后正合适。
   gathered.sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER));
   return gathered.map((row, index) => ({ ...row, ordinal: index + 1 }));

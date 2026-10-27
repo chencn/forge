@@ -261,7 +261,23 @@
 /* 路径能点开：摘要与明细里的目标都用同一条按钮样式，默认外观全部抹掉。 */
 .ai-file-target { appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
 .ai-file-target:hover { text-decoration: underline; text-underline-offset: 2px; }
-.ai-file-preview-trigger { width: 100%; }
+.ai-file-preview-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  padding: 3px 0;
+}
+.ai-file-preview-trigger > svg {
+  flex: none;
+  opacity: 0.7;
+  transition: opacity 150ms;
+}
+.ai-file-preview-trigger:hover > svg {
+  opacity: 1;
+}
 .ai-tool-target { color: var(--accent-blue-text); }
 .ai-tool-status { flex: none; font-size: 11px; color: var(--text-tertiary); }
 .ai-tool.is-failed .ai-tool-status { color: var(--accent-red-text); }
@@ -1043,33 +1059,64 @@ details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
 .ai-tool-status { margin-left: auto; flex: none; font-size: 11px; color: var(--text-tertiary); }
 .ai-tool.is-failed .ai-tool-status { color: var(--accent-red-text); }
 /* 导轨终点：最后一段的收头圆点（参考 data-end 环点）。 */
-.ai-process-body .ai-chat-entry:last-child::after { content: ""; position: absolute; left: 11px; bottom: calc(50% - 3px);
+.ai-process-body .ai-chat-entry:last-child::after,
+.ai-process-body .ai-explore-group:last-child::after { content: ""; position: absolute; left: 11px; bottom: calc(50% - 3px);
   width: 6px; height: 6px; border-radius: 50%; background: var(--bg-primary);
   border: 1.5px solid color-mix(in srgb, var(--text-tertiary) 60%, transparent); box-sizing: border-box; }
 @keyframes ai-activity-shimmer { from { background-position: 250% 0; } to { background-position: -250% 0; } }
 
 /* 工具行活动导轨：行前 1px 竖线 + 状态环；失败自动展开的明细收进圆角卡。 */
 .ai-process-body { position: relative; display: flex; flex-direction: column; min-width: 0; gap: 0; margin: 0; padding-left: 0; border-left: 0; }
-/* 导轨布局（参考 activity-item，轴线 14px 与参考逐像素一致）：环/点钉在轴线上，行文字从 32px 起。 */
-.ai-process-body .ai-chat-entry { position: relative; margin: 0 0 2px; padding-left: 32px; }
-.ai-process-body .ai-chat-entry::before { content: ""; position: absolute; left: 14px; top: -6px; bottom: -6px;
+/* 导轨布局（参考 activity-item，轴线 14px 与参考逐像素一致）：环/点钉在轴线上，行文字从 32px 起。
+   工具行、思考行与浏览组行均按统一缩进接入导轨，保持竖线与文本绝对垂直对齐。 */
+.ai-process-body .ai-chat-entry,
+.ai-process-body .ai-explore-group { position: relative; margin: 0 0 2px; padding-left: 32px; }
+.ai-process-body .ai-chat-entry::before,
+.ai-process-body .ai-explore-group::before { content: ""; position: absolute; left: 14px; top: -6px; bottom: -6px;
   width: 1px; transform: translateX(-50%);
   background: color-mix(in srgb, var(--text-primary) 12%, transparent); }
-.ai-process-body .ai-chat-entry:last-child::before { bottom: 50%; }
-/* 思考行的标记双形态：散行用大脑图标（与文字同行）；活动导轨内用回实心小轴点——
-   轴上的节点语言要统一（工具是环、思考是点），13px 图标挤在 20px 环之间只会糊成一团。 */
+.ai-process-body .ai-chat-entry:last-child::before,
+.ai-process-body .ai-explore-group:last-child::before { bottom: 50%; }
+/* 节点标记双形态：散行用行内图标（与文字同行）；活动导轨内隐藏行内图标，用回 14px 轴线上的点与环——
+   轴上的节点语言要统一（工具是环、思考是点），文字统一从 32px 起始，彻底消除多图标推挤与未对齐。 */
 .ai-entry-icon { flex: none; color: var(--text-tertiary); }
 .ai-entry-dot { display: none; }
-.ai-process-body .ai-entry-icon { display: none; }
+.ai-process-body .ai-entry-icon,
+.ai-process-body .ai-tool-glyph { display: none; }
 .ai-process-body .ai-entry-dot { display: block; position: absolute; left: 11px; top: 11px;
   width: 6px; height: 6px; border-radius: 50%;
   background: color-mix(in srgb, var(--text-tertiary) 60%, transparent); }
+/* 工具行与浏览组轴线标记：空心环 */
+.ai-process-body .ai-chat-entry.is-tool .ai-entry-dot,
+.ai-process-body .ai-explore-head .ai-entry-dot {
+  background: var(--bg-primary);
+  border: 1.5px solid color-mix(in srgb, var(--text-tertiary) 70%, transparent);
+  box-sizing: border-box;
+}
+/* 运行中：实心蓝点 / 蓝环脉动 */
+.ai-process-body .ai-chat-entry.is-tool.is-running .ai-entry-dot,
+.ai-process-body .ai-chat-entry.is-tool .ai-tool.is-running .ai-entry-dot,
+.ai-process-body .ai-explore-group.is-active .ai-explore-head .ai-entry-dot {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 25%, transparent);
+  animation: ai-live-pulse 1.4s ease-in-out infinite;
+}
+/* 失败态：红环 */
+.ai-process-body .ai-chat-entry.is-tool.is-failed .ai-entry-dot,
+.ai-process-body .ai-chat-entry.is-tool .ai-tool.is-failed .ai-entry-dot {
+  border-color: var(--accent-red-text);
+  background: var(--accent-red-text);
+}
 /* 展开明细与行文字同一条起点，不再额外左探。 */
 .ai-process-body .ai-tool-details, .ai-process-body .ai-reasoning > .ai-message-markdown { margin-left: 0; }
 /* 运行中的工具行：图标轻微脉动，状态语义仍在行尾与过程组头上。 */
 .ai-tool.is-running .ai-tool-glyph, .ai-explore-group.is-active .ai-explore-head .ai-tool-glyph { animation: ai-live-pulse 1.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
   .ai-tool.is-running .ai-tool-glyph, .ai-explore-group.is-active .ai-explore-head .ai-tool-glyph { animation: none; }
+  .ai-process-body .ai-chat-entry.is-tool.is-running .ai-entry-dot,
+  .ai-process-body .ai-chat-entry.is-tool .ai-tool.is-running .ai-entry-dot,
+  .ai-process-body .ai-explore-group.is-active .ai-explore-head .ai-entry-dot { animation: none; }
   .ai-process-group.is-active .ai-process-head strong { animation: none; color: var(--text-primary); background: none; }
 }
 .ai-tool > summary, .ai-reasoning > summary { padding: 5px 0 5px 0; }
@@ -1326,58 +1373,176 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-taskdock-active { display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
   color: var(--text-tertiary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .ai-taskdock-active + .is-complete, .ai-taskdock-meta > .is-complete { margin-left: auto; }
-/* 会话内消息导航：右缘芯片展开为可拖动卡片，保持正文和导航在同一个视线范围内。 */
-.ai-msgnav { position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 15;
-  display: flex; align-items: center; gap: 4px; }
-.ai-msgnav.is-dragging { user-select: none; cursor: grabbing !important; }
-.ai-msgnav.is-dragging * { user-select: none !important; cursor: grabbing !important; }
-.ai-msgnav-chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px;
-  border: 1px solid var(--border-color); border-radius: var(--radius-pill) 0 0 var(--radius-pill);
-  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent); color: var(--text-tertiary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); cursor: grab; user-select: none;
-  opacity: .65; transition: opacity 150ms, background-color 150ms, color 150ms; }
-.ai-msgnav-chip:hover, .ai-msgnav-chip:focus-visible { opacity: 1; background: var(--bg-secondary); color: var(--text-primary); }
-.ai-msgnav-chip:active { cursor: grabbing; }
-.ai-msgnav-chip-label { font-size: 11px; font-variant-numeric: tabular-nums; }
-@keyframes ai-msgnav-pop {
-  from { opacity: 0; transform: scale(.96) translateX(4px); }
-  to { opacity: 1; transform: scale(1) translateX(0); }
+/* ===== 会话内消息导航：左侧装订线伴随式单线锚点 + 悬浮详情卡片 (Codex/Zed 模式) ===== */
+.ai-turn-nav {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  background: transparent !important;
+  box-shadow: none !important;
 }
-.ai-msgnav-panel { width: 320px; max-width: calc(100vw - 48px); display: flex; flex-direction: column;
-  border: 1px solid var(--border-color); border-radius: 12px; background: var(--surface-island-strong);
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16); overflow: hidden;
-  animation: ai-msgnav-pop 160ms cubic-bezier(0.16, 1, 0.3, 1); }
-.ai-msgnav-panel header { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  border-bottom: 1px solid var(--border-color); cursor: grab; user-select: none; }
-.ai-msgnav-panel header:active { cursor: grabbing; }
-.ai-msgnav-drag-handle { flex: none; color: var(--text-tertiary); cursor: grab; opacity: .6; }
-.ai-msgnav-panel header:hover .ai-msgnav-drag-handle { opacity: 1; }
-.ai-msgnav-panel header strong { font-size: 12.5px; font-weight: 500; }
-.ai-msgnav-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px;
-  padding: 0 5px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-tertiary); font-size: 10.5px; }
-.ai-msgnav-collapse { margin-left: auto; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
-  border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); cursor: pointer; }
-.ai-msgnav-collapse:hover { color: var(--text-primary); background: var(--bg-tertiary); }
-.ai-msgnav-collapse .is-flipped { transform: scaleX(-1); }
-.ai-msgnav-list { max-height: min(420px, 70vh); overflow-y: auto; overscroll-behavior: contain;
-  padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-@media (prefers-reduced-motion: reduce) { .ai-msgnav-panel { animation: none; } }
-/* 滚动区之上的状态行：还有多少更早的没列出来、索引正在扫、扫失败了给一颗重试。
-   钉在列表外面，往上加一档时也一直看得见「上面还有」，不会以为会话只有这么长。 */
-.ai-msgnav-note { margin: 0; padding: 7px 10px 3px; display: flex; align-items: center; gap: 6px;
-  color: var(--text-tertiary); font-size: 11px; }
-.ai-msgnav-note .ai-text-button { margin-left: auto; }
-.ai-msgnav-list button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 7px;
-  border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); font: inherit;
-  font-size: 12px; text-align: left; cursor: pointer; }
-.ai-msgnav-list button:hover { background: var(--bg-tertiary); }
-.ai-msgnav-list button.is-active { background: color-mix(in srgb, var(--accent-blue) 10%, transparent); }
-.ai-msgnav-ordinal { flex: none; display: grid; place-items: center; width: 20px; height: 20px;
-  border: 1px solid var(--border-color); border-radius: 999px; color: var(--text-tertiary);
-  font-family: var(--font-mono); font-size: 10px; }
-.ai-msgnav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-msgnav-files { flex: none; color: var(--text-tertiary); font-size: 10.5px; }
-.ai-msgnav-empty { margin: 0; padding: 10px; color: var(--text-tertiary); font-size: 11.5px; text-align: center; }
+.ai-turn-nav-track {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(440px, 60vh);
+  overflow-y: auto;
+  overflow-x: visible;
+  padding: 4px 2px;
+  scrollbar-width: none;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.ai-turn-nav-track::-webkit-scrollbar {
+  display: none;
+}
+.ai-turn-anchor-wrapper,
+.ai-turn-anchor-wrapper:hover,
+.ai-turn-anchor-wrapper.is-hovered {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+/* 锚点按钮完全透明：无论是默认态还是 hover / focus / active 态，均绝不显示任何背景框 */
+.ai-turn-anchor,
+.ai-turn-anchor:hover,
+.ai-turn-anchor:focus,
+.ai-turn-anchor:focus-visible,
+.ai-turn-anchor:active,
+.ai-turn-anchor.is-active,
+.ai-turn-anchor-wrapper:hover .ai-turn-anchor,
+.ai-turn-anchor-wrapper.is-hovered .ai-turn-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 26px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent !important;
+  background-color: transparent !important;
+  cursor: pointer;
+}
+/* 每一轮消息一条线：默认态为 9px 短横线刻度，无任何背景色 */
+.ai-turn-line {
+  display: block;
+  width: 9px;
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--text-tertiary);
+  opacity: 0.42;
+  pointer-events: none;
+  transition: width 160ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms ease, opacity 140ms ease;
+}
+/* 选中态：长度不伸长，跟正常态一样保持 9px 短横线，仅提升对比度 */
+.ai-turn-anchor.is-active .ai-turn-line {
+  width: 9px;
+  opacity: 0.9;
+  background-color: var(--text-primary);
+}
+/* 仅悬停（hover）时拉长线条至 24px 并提亮，移出即恢复短横线 */
+.ai-turn-anchor:hover .ai-turn-line,
+.ai-turn-anchor:focus-visible .ai-turn-line,
+.ai-turn-anchor-wrapper:hover .ai-turn-anchor .ai-turn-line,
+.ai-turn-anchor-wrapper.is-hovered .ai-turn-anchor .ai-turn-line {
+  width: 24px;
+  opacity: 1;
+  background-color: var(--text-primary);
+}
+
+/* 轮次预览气泡卡片：悬浮在锚点右侧，展示技能/路径/多行提问 */
+@keyframes ai-turn-pop {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px) scale(.98); }
+  to { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
+}
+.ai-turn-popover {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 10px;
+  width: 330px;
+  max-width: min(380px, calc(100vw - 48px));
+  padding: 12px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-island-strong);
+  /* 阴影向右下方轻度微投，左侧扩散内缩以严格杜绝向左漫射黑色弥散渐变 */
+  box-shadow: 6px 6px 14px -3px rgba(0, 0, 0, 0.08), 2px 2px 5px -1px rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+  user-select: none;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: ai-turn-pop 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-turn-popover { animation: none; }
+}
+.ai-turn-popover:hover {
+  border-color: color-mix(in srgb, var(--accent-blue, #3b82f6) 40%, var(--border-color));
+}
+.ai-turn-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+.ai-turn-badge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.ai-turn-ordinal {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ai-turn-files {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.ai-turn-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.ai-turn-body {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ai-turn-hint {
+  font-size: 10.5px;
+  color: var(--accent-blue, #3b82f6);
+  padding-top: 2px;
+}
 
 /* 导航跳转后的定位闪烁。 */
 @keyframes ai-entry-flash { 0% { background: color-mix(in srgb, var(--accent-blue) 18%, transparent); } 100% { background: transparent; } }
@@ -1453,13 +1618,35 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 
 /* 「浏览 · N 文件 · M 搜索」组行（对照 Explored 组行）：子行走虚线导轨（参考 activity-child）。 */
 .ai-explore-group { position: relative; }
-.ai-explore-head { width: 100%; background: none; border: 0; }
+.ai-explore-head {
+  width: 100%;
+  background: none;
+  border: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  padding: 3px 0;
+  text-align: left;
+}
+.ai-explore-head .ai-detail-chevron {
+  flex: none;
+  margin-top: 0;
+  opacity: 0.65;
+  color: var(--text-tertiary);
+  transition: opacity 150ms, transform 150ms;
+}
+.ai-explore-head:hover .ai-detail-chevron,
+.ai-explore-group.is-open .ai-explore-head .ai-detail-chevron { opacity: 1; }
+.ai-explore-group.is-open .ai-explore-head .ai-detail-chevron { transform: rotate(90deg); }
 .ai-explore-count { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--text-tertiary); }
-.ai-explore-children { position: relative; margin: 0; }
-.ai-explore-children .ai-chat-entry { padding-left: 26px; }
-.ai-explore-children .ai-chat-entry::before { left: 14px; width: 0; background: none;
+.ai-explore-children { position: relative; margin: 2px 0 2px -32px; }
+.ai-explore-children .ai-chat-entry { padding-left: 46px; }
+.ai-explore-children .ai-chat-entry::before { left: 28px; width: 0; background: none;
   border-left: 1px dashed color-mix(in srgb, var(--text-primary) 18%, transparent); }
+.ai-explore-children .ai-chat-entry .ai-entry-dot { left: 25px; }
 
 /* 明细分块卡（对照 DetailBox 的分节题头）：命令/动作/读取/补丁各一节。 */
 .ai-tool-section { margin: 0 0 8px; border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);

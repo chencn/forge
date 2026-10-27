@@ -9,7 +9,7 @@ import { assetUrl } from "../lib/fs";
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { aiDraftOptionsKey, loadAiDraftProvider, saveAiDraftProvider } from "../lib/aiDraftSession";
 import { collectPastedImages } from "../lib/aiClipboard";
-import { clearDraft, loadDraft, loadDraftImages, saveDraft, saveDraftImages } from "../lib/aiDrafts";
+import { clearDraft, loadDraft, saveDraft, updateDraftImages, useDraftImages, type DraftImageAttachment } from "../lib/aiDrafts";
 import { loadAiOptions, saveAiOptions } from "../lib/aiOptions";
 import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash } from "../lib/aiCommands";
 import type { AiRunOptions } from "../lib/aiRuntime";
@@ -72,10 +72,8 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   // 否则 Codex 的只读会被带进 Claude 并变成 plan 权限。
   useEffect(() => { if (provider) setOptions(loadAiOptions(optionsKey, provider)); }, [optionsKey, provider]);
   const [draft, setDraft] = useState(() => loadDraft(workspace, "draft"));
-  const [images, setImages] = useState<PastedImage[]>(() => loadDraftImages(workspace, "draft")
-    .map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) })));
-  /** 图片复制可能晚于标签卸载完成；ref 保证异步结果仍能独立写入草稿。 */
-  const imagesRef = useRef(images);
+  const attachments = useDraftImages(workspace, "draft");
+  const images = useMemo(() => attachments.map((image) => ({ ...image, preview: assetUrl(image.path, 0) })), [attachments]);
   /** 异步保存尚未回填 state 时也要占名额，防止连续粘贴越过上限。 */
   const pendingImages = useRef(0);
   /** 每条消息的附件上限；真实数字来自后端。 */
@@ -102,9 +100,6 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
 
   useEffect(() => {
     setDraft(loadDraft(workspace, "draft"));
-    const restoredImages = loadDraftImages(workspace, "draft").map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) }));
-    imagesRef.current = restoredImages;
-    setImages(restoredImages);
   }, [workspace]);
   useEffect(() => {
     if (!menuVisible) return;
@@ -138,14 +133,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
     setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setError(null);
   };
   /** 新建页也会在切标签时卸载；每次附件变更都要和正文一样进入工作区草稿。 */
-  const updateImages = (change: (current: PastedImage[]) => PastedImage[]) => {
-    replaceImages(change(imagesRef.current));
-  };
-  const replaceImages = (next: PastedImage[]) => {
-    imagesRef.current = next;
-    setImages(next);
-    saveDraftImages(workspace, "draft", next);
-  };
+  const updateImages = (change: (current: DraftImageAttachment[]) => DraftImageAttachment[]) => updateDraftImages(workspace, "draft", change);
   const chooseCommand = (name: string) => { updateDraft(completeCommand(draft, name)); input.current?.focus(); };
   const changeOptions = (next: AiRunOptions) => {
     setOptions(next);
@@ -213,8 +201,10 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
       if (beforeSend && !await beforeSend()) return;
       // 创建会话与草稿清理是一笔事务：上层确认创建成功后，才允许丢掉正文和附件。
       await onLaunch(provider, draft, images.map((image) => image.path));
-      updateDraft("");
-      replaceImages([]);
+      // 创建期间新输入的正文和文件引用留给下一条消息。
+      if (loadDraft(workspace, "draft") === draft) updateDraft("");
+      // 发送期间新加入的附件不属于这条消息，继续留在草稿。
+      updateImages((current) => current.filter((image) => !images.some((sent) => sent.path === image.path)));
     } catch (cause) {
       setError(String(cause));
     } finally {

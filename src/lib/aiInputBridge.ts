@@ -77,7 +77,8 @@ export async function deliverAiInput(
   const current = loadDraft(workspace, target.id);
   // 输入框上限是 16000；已有草稿占掉的空间也要算进去，不能追加后再被浏览器截断。
   const prepared = await prepareAiInput(payload, Math.max(0, Math.min(INLINE_AI_TEXT_LIMIT, 16_000 - current.length - 2)));
-  const text = appendAiInputText(current, prepared.text);
+  // 落盘或统计行数期间输入框仍能编辑，异步结果必须追加到最新草稿。
+  const text = appendAiInputText(loadDraft(workspace, target.id), prepared.text);
   saveDraft(workspace, target.id, text);
   if (prepared.additionalDir) {
     const dirs = loadAdditionalDirs(workspace, target.id);

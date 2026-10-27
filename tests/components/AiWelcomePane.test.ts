@@ -31,7 +31,7 @@ vi.mock("../../src/components/AiComposerOptions", () => ({ default: ({ commandRe
 } }));
 
 import AiWelcomePane from "../../src/components/AiWelcomePane";
-import { loadDraftImages, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
+import { loadDraft, loadDraftImages, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
 
 type Node = ReactElement<Record<string, unknown>>;
 
@@ -148,5 +148,29 @@ describe("AI new-session composer", () => {
     await vi.waitFor(() => expect(h.launch).toHaveBeenCalled());
     expect(h.launch).toHaveBeenCalledWith("codex", "分析这张图", ["C:/cache/paste-1.png"]);
     expect(loadDraftImages("D:/project", "draft")).toEqual([]);
+  });
+  it("创建失败后附件仍保留，创建在途时补入的附件不会被清空", async () => {
+    const first = { path: "C:/cache/first.png", name: "first.png" };
+    const next = { path: "C:/cache/next.png", name: "next.png" };
+    saveDraftImages("D:/project", "draft", [first]);
+    h.launch.mockRejectedValueOnce(new Error("创建失败"));
+    const send = () => {
+      const input = nodes(render().tree).find((node) => "editor" in node.props)!.props.editor as Node;
+      (input.props.onKeyDown as (event: Record<string, unknown>) => void)({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    };
+    send();
+    await vi.waitFor(() => expect(h.launch).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(loadDraftImages("D:/project", "draft")).toEqual([first]);
+    let finish!: () => void;
+    h.launch.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    send();
+    await vi.waitFor(() => expect(h.launch).toHaveBeenCalledTimes(2));
+    saveDraftImages("D:/project", "draft", [first, next]);
+    const input = nodes(render().tree).find((node) => "editor" in node.props)!.props.editor as Node;
+    (input.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: "下一条文件引用：D:/project/next.ts" } });
+    finish();
+    await vi.waitFor(() => expect(loadDraftImages("D:/project", "draft")).toEqual([next]));
+    expect(loadDraft("D:/project", "draft")).toBe("下一条文件引用：D:/project/next.ts");
   });
 });

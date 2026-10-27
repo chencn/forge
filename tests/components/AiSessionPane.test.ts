@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
 import { loadDraft, loadDraftImages, rememberPrompt, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
 
-const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
+const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, invoke: vi.fn(), send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Record<string, unknown>) => key === "ai.chat.editedFiles" ? `Edited ${vars?.count} files` : key }) }));
 vi.mock("../../src/lib/aiCli", () => ({ AI_NAMES: { codex: "Codex" }, cliDesktopAvailable: () => h.desktop }));
 vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiCapabilities: h.models, loadAiMessages: () => Promise.resolve(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn(), stopAiAgent: vi.fn() }));
@@ -33,6 +34,7 @@ beforeEach(() => {
   h.activity = "idle";
   h.ownedRun = null; h.ownedQueued = [];
   h.outline = { turns: [], complete: false, loaded: false, loading: false, error: null };
+  h.invoke.mockReset(); h.invoke.mockResolvedValue(undefined);
   sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.models.mockReset(); h.models.mockResolvedValue({ models: [{ id: "catalog-default", isDefault: true }] }); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.openAgents.mockReset(); h.sanitize.mockClear();
   h.state = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: true, hasOlder: false, cursor: 0, nativeId: null, plans: [], agents: [] };
 });
@@ -391,6 +393,59 @@ describe("AI conversation pane", () => {
     expect(h.send.mock.calls[0][6]).toEqual(["C:/cache/paste-1.png"]);
     await vi.waitFor(() => expect(loadDraftImages("D:/project", sessionId)).toEqual([]));
   });
+  it("发送失败后重开会话仍保留附件，重试成功才清理", async () => {
+    const attachment = { path: "C:/cache/retry.png", name: "retry.png" };
+    saveDraftImages("D:/project", sessionId, [attachment]);
+    h.send.mockRejectedValueOnce(new Error("send failed"));
+    textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(loadDraftImages("D:/project", sessionId)).toEqual([attachment]);
+    textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(loadDraftImages("D:/project", sessionId)).toEqual([]));
+  });
+  it("粘贴保存晚于页面重开时，附件追加到新页面的列表并允许手动移除", async () => {
+    let finish!: (saved: { path: string }) => void;
+    h.invoke.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    vi.stubGlobal("FileReader", class {
+      result = "data:image/png;base64,YQ==";
+      onload: (() => void) | null = null;
+      readAsDataURL() { this.onload?.(); }
+    });
+    const preventDefault = vi.fn();
+    textarea(render().pane).props.onPaste({ clipboardData: { files: [new File(["image"], "pasted.png", { type: "image/png" })], items: [] }, preventDefault });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_save_pasted_image", { dataUrl: "data:image/png;base64,YQ==" });
+    // 新挂载的页面先加入另一张图，旧页面的在途保存随后才结束。
+    render();
+    saveDraftImages("D:/project", sessionId, [{ path: "C:/cache/new-page.png", name: "new-page.png" }]);
+    finish({ path: "C:/cache/pasted.png" });
+    await vi.waitFor(() => expect(loadDraftImages("D:/project", sessionId)).toEqual([
+      { path: "C:/cache/new-page.png", name: "new-page.png" }, { path: "C:/cache/pasted.png", name: "pasted.png" },
+    ]));
+    const reopened = render();
+    expect(pictures(reopened.pane).map((image) => image.props.src)).toEqual(["asset://C:/cache/new-page.png", "asset://C:/cache/pasted.png"]);
+    const remove = findAll(reopened.pane, "button").filter((button) => button.props["aria-label"] === "ai.chat.removeImage");
+    remove[1].props.onClick();
+    expect(loadDraftImages("D:/project", sessionId)).toEqual([{ path: "C:/cache/new-page.png", name: "new-page.png" }]);
+    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_delete_image", { path: "C:/cache/pasted.png" });
+  });
+  it("发送在途时新保存的附件留给下一条消息", async () => {
+    const sent = { path: "C:/cache/sent.png", name: "sent.png" };
+    const next = { path: "C:/cache/next.png", name: "next.png" };
+    saveDraftImages("D:/project", sessionId, [sent]);
+    let finish!: () => void;
+    h.send.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalledTimes(1));
+    saveDraftImages("D:/project", sessionId, [sent, next]);
+    textarea(render().pane).props.onChange({ target: { value: "下一条文件引用：D:/project/next.ts" } });
+    finish();
+    await vi.waitFor(() => expect(loadDraftImages("D:/project", sessionId)).toEqual([next]));
+    expect(h.send.mock.calls[0][6]).toEqual([sent.path]);
+    expect(textarea(render().pane).props.value).toBe("下一条文件引用：D:/project/next.ts");
+  });
   it("不再有信任确认挡路：首条消息直接发出，不弹窗", async () => {
     textarea(render().pane).props.onChange({ target: { value: "直接发这条" } });
     textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
@@ -693,5 +748,21 @@ describe("AI conversation pane", () => {
     const active = render().html;
     expect(active).not.toContain("ai.chat.hideGoal");
     expect(active).toContain("ai.chat.pauseGoal");
+  });
+  it("左侧消息导航渲染 Codex/Zed 风格的单刻度线锚点与轨道", () => {
+    h.state.entries = [
+      { id: "u1", runId: "r1", seq: 1, kind: "user", text: "第一轮提问" },
+      { id: "a1", runId: "r1", seq: 2, kind: "assistant", text: "第一轮回答" },
+      { id: "u2", runId: "r2", seq: 3, kind: "user", text: "第二轮提问" },
+    ];
+    const { html } = render();
+    // 渲染左侧导航轨道
+    expect(html).toContain('class="ai-turn-nav"');
+    expect(html).toContain('class="ai-turn-nav-track"');
+    // 每轮提问对应一个刻度锚点
+    expect(html.match(/class="ai-turn-anchor"/g)).toHaveLength(2);
+    expect(html.match(/class="ai-turn-anchor-wrapper"/g)).toHaveLength(2);
+    // 每一条信息一条线（单刻度线，hover 时拉长而非背景框）
+    expect(html.match(/class="ai-turn-line"/g)).toHaveLength(2);
   });
 });
