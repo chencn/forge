@@ -142,6 +142,21 @@ export type AiSessionAction =
   | { type: "pin"; id: string; pinned: boolean };
 
 /**
+ * 一条会话连同它各级子代理的 id。子代理自己还能再派生子代理（Codex 的 delegate 实测会套两层），
+ * 只收直接子级会把孙代理留成没人认领的死记录：后端删不掉、侧栏又看不见（列表按 parentSessionId
+ * 把子代理藏在父行下），本地缓存也会一直占着。删除和会话级缓存清理都按这一组走。
+ */
+export function sessionSubtree(sessions: AiSession[], id: string): string[] {
+  const ids = [id];
+  for (let cursor = 0; cursor < ids.length; cursor++) {
+    for (const item of sessions) {
+      if (item.parentSessionId === ids[cursor] && !ids.includes(item.id)) ids.push(item.id);
+    }
+  }
+  return ids;
+}
+
+/**
  * 会话状态机。所有分支都返回原引用（而不是新对象）当状态没变，
  * 这样 `useSyncExternalStore` 能直接跳过重渲染。
  */
@@ -161,7 +176,8 @@ export function reduceAiSessions(state: AiSessionState, action: AiSessionAction)
   }
   if (action.type === "delete") {
     // 子代理跟着父一起走：后端已经把它们的记录删了，本地主动收掉才不用等下一次刷新才收起标签。
-    const sessions = state.sessions.filter((item) => item.id !== action.id && item.parentSessionId !== action.id);
+    const doomed = new Set(sessionSubtree(state.sessions, action.id));
+    const sessions = state.sessions.filter((item) => !doomed.has(item.id));
     const openIds = state.openIds.filter((id) => sessions.some((item) => item.id === id));
     return { sessions, openIds, activeId: state.activeId && openIds.includes(state.activeId) ? state.activeId : openIds.at(-1) ?? null };
   }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { aiSessionStorageKey, parseAiSessions, reduceAiSessions } from "../lib/aiSessions";
+import { aiSessionStorageKey, parseAiSessions, reduceAiSessions, sessionSubtree } from "../lib/aiSessions";
 import type { AiSessionAction, AiSessionState } from "../lib/aiSessions";
 import { clearAiSessionStorage } from "../lib/aiDrafts";
 import { ensureAiRuntimeListener, refreshAiSessionActivity } from "../lib/aiRuntime";
@@ -133,7 +133,8 @@ export function useAiSessions(root: string | null, enabled = true) {
     // 删会话带走全部会话级缓存；发送历史和引擎默认项按工程/引擎共享，继续保留。
     if (action.type === "delete") {
       // 子代理的记录与草稿跟着父一起清：后端已经把它们的目录删了，本地留着就是没人认的死键。
-      const doomed = [action.id, ...get(key).state.sessions.filter((item) => item.parentSessionId === action.id).map((item) => item.id)];
+      // 整棵子树都要清——孙代理的父是子代理，只收直接子级会把它的缓存留在原处。
+      const doomed = sessionSubtree(get(key).state.sessions, action.id);
       for (const id of doomed) {
         deleted.add(`${key}:${id}`);
         clearAiSessionStorage(root, id);

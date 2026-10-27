@@ -2464,8 +2464,12 @@ pub async fn ai_runtime_outline(
     })
     .await
 }
-/// 一条会话的删除组：它自己、它的子代理，以及旧版本按 `native-<provider>-<原生 ID>` 建的
-/// 同一原生会话镜像壳。子代理不嵌套，扫一层就够。
+/// 一条会话的删除组：它自己、各级子代理，以及旧版本按 `native-<provider>-<原生 ID>` 建的
+/// 同一原生会话镜像壳。
+///
+/// 子代理会嵌套——Codex 的 delegate 能让子代理再开子代理，所以这里按 parent 链接滚到
+/// 不动点；只扫一层会把孙代理留在磁盘上，父会话删完后它既进不了侧栏的父子结构，
+/// 也再没有别的入口能带走。
 ///
 /// 镜像壳必须一起走：列表只在「真 ID 的目录还在」时收起它，真删把原生文件和真 ID 目录
 /// 一起带走后，它会带着当年的旧标题重新浮出来，变成一条再也打不开的幽灵行。
@@ -2476,24 +2480,31 @@ fn session_group(base: &Path, root: &str, session_id: &str) -> Result<Vec<String
         .and_then(|meta| meta.native_id)
         .into_iter()
         .collect();
-    let mut aliases: Vec<(String, String)> = Vec::new();
+    let mut links: Vec<(String, Option<String>, Option<String>)> = Vec::new();
     for entry in std::fs::read_dir(base).map_err(|e| e.to_string())?.take(20000).flatten() {
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
-        let child_id = entry.file_name().to_string_lossy().into_owned();
-        if !store::valid_id(&child_id) || child_id == session_id { continue; }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !store::valid_id(&id) || id == session_id { continue; }
         if let Ok(meta) = store::Store::metadata(&entry.path(), root) {
-            if meta.parent_session_id.as_deref() == Some(session_id) {
-                natives.extend(meta.native_id.clone());
-                group.push(child_id);
-            } else if let Some(native) = meta.native_id {
-                aliases.push((child_id, native));
-            }
+            links.push((id, meta.parent_session_id, meta.native_id));
         }
     }
-    for (dir, native) in aliases {
-        if natives.iter().any(|known| *known == native) && !group.contains(&dir) { group.push(dir); }
+    // 每一轮把新收进来的成员的子代理与同原生 id 的镜像壳再扫一遍，直到没有新增。
+    loop {
+        let before = group.len();
+        for (id, parent, native) in &links {
+            if group.iter().any(|member| member == id) { continue; }
+            let follows = parent.as_deref().is_some_and(|p| group.iter().any(|member| member == p))
+                || native.as_deref().is_some_and(|n| natives.iter().any(|known| known == n));
+            if follows {
+                if let Some(native) = native {
+                    if !natives.iter().any(|known| known == native) { natives.push(native.clone()); }
+                }
+                group.push(id.clone());
+            }
+        }
+        if group.len() == before { return Ok(group); }
     }
-    Ok(group)
 }
 /// 本项目里已归档的顶层会话；子代理随父一起走，不单独列出来。
 fn archived_session_ids(base: &Path, root: &str) -> Result<Vec<String>, String> {
@@ -2946,10 +2957,20 @@ mod tests {
         let mut shell = store::Store::open(&base, "native-codex-thread-1", &workspace, Provider::Codex, "# AGENTS.md 旧标题", "").unwrap();
         shell.meta.native_id = Some("thread-1".into());
         shell.save().unwrap();
+        // 子代理还能再派生子代理（Codex 的 delegate 实测会套两层）：孙代理也得跟着走。
+        let mut grandchild = store::Store::open(&base, "grandchild", &workspace, Provider::Codex, "孙代理", "").unwrap();
+        grandchild.meta.parent_session_id = Some("child".into());
+        grandchild.meta.native_id = Some("thread-3".into());
+        grandchild.save().unwrap();
         store::Store::open(&base, "away", &workspace, Provider::Claude, "收起来的", "").unwrap();
         assert!(store::Store::set_archived(&base, "away", &workspace, true).unwrap());
         // 组的首项是它自己，然后子代理，最后镜像壳：停运行、清排队、删原生都按这一组走。
-        assert_eq!(session_group(&base, &workspace, "parent").unwrap(), vec!["parent".to_string(), "child".to_string(), "native-codex-thread-1".to_string()]);
+        assert_eq!(
+            session_group(&base, &workspace, "parent").unwrap(),
+            vec!["parent".to_string(), "child".to_string(), "grandchild".to_string(), "native-codex-thread-1".to_string()]
+        );
+        // 从子代理这一层单独删也要带走孙代理，不能只靠父会话那一次扫描。
+        assert_eq!(session_group(&base, &workspace, "child").unwrap(), vec!["child".to_string(), "grandchild".to_string()]);
         // 「归档会话」页只列顶层会话；把子代理也列出来，一条父会话会显示成两行。
         assert_eq!(archived_session_ids(&base, &workspace).unwrap(), vec!["away".to_string()]);
         // 归属对不上就扫不到子代理——另一个项目的记录不该被这次删除带走。

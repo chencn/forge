@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { aiSessionStorageKey, EMPTY_AI_SESSIONS, loadNativePurgeDefault, parseAiSessions, reduceAiSessions, saveNativePurgeDefault } from "../../src/lib/aiSessions";
+import { aiSessionStorageKey, EMPTY_AI_SESSIONS, loadNativePurgeDefault, parseAiSessions, reduceAiSessions, saveNativePurgeDefault, sessionSubtree } from "../../src/lib/aiSessions";
 import type { AiSession } from "../../src/lib/aiSessions";
 
 const session: AiSession = { id: "session-1", title: "Claude Code 会话 1", provider: "claude", createdAt: 1000 };
@@ -125,6 +125,26 @@ describe("会话删除与「连带删原生」", () => {
     expect(after.sessions).toEqual([]);
     expect(after.openIds).toEqual([]);
     expect(after.activeId).toBeNull();
+  });
+
+  it("子代理再生出的孙代理也一起走：只收一层会留一条侧栏进不去的死记录", () => {
+    const child: AiSession = {
+      id: "child", provider: "codex", title: "子代理", createdAt: 2000, parentSessionId: session.id,
+      agent: { title: "子代理", status: "completed", toolId: "t1" },
+    };
+    const grandchild: AiSession = {
+      id: "grandchild", provider: "codex", title: "孙代理", createdAt: 3000, parentSessionId: child.id,
+      agent: { title: "孙代理", status: "completed", toolId: "t2" },
+    };
+    let state = reduceAiSessions(EMPTY_AI_SESSIONS, { type: "create", session: grandchild });
+    state = reduceAiSessions(state, { type: "create", session: child });
+    state = reduceAiSessions(state, { type: "create", session });
+    expect(sessionSubtree(state.sessions, session.id)).toEqual([session.id, "child", "grandchild"]);
+    // 从中间那一层单独删也要带走下面整棵子树。
+    expect(sessionSubtree(state.sessions, "child")).toEqual(["child", "grandchild"]);
+    const after = reduceAiSessions(state, { type: "delete", id: session.id });
+    expect(after.sessions).toEqual([]);
+    expect(after.openIds).toEqual([]);
   });
 
   it("真删勾选按 CLI 各记一份：一次 Codex 的选择不该扩到 Claude", () => {
