@@ -15,8 +15,10 @@ pub const MAX_IMAGES: usize = 8;
 /// 没有会话引用的图片最多留多久：粘贴后没发出去、或从输入框移除却没删成的残件最终会被收走。
 /// 进过历史的消息另有 `.ref` 标记，不受这个窗口影响。
 const ORPHAN_RETENTION: u64 = 30 * 24 * 60 * 60;
-/// 会话日志超过这个大小就不为清理读穿：留下的文件仍能被历史回显，跳过的代价只是几个文件。
-const MAX_RELEASE_SCAN: u64 = 32 * 1024 * 1024;
+/// 删除是 `release_session` 唯一的调用点，而带 `.ref` 标记的图片除了这里没人会收：
+/// 上限一旦先跳过，这条会话的附件就永久留在沙箱里。所以只把它当失控日志的保险丝，
+/// 不当性能门槛（逐行流式读，1 GiB 也只是一次顺序读）。
+const MAX_RELEASE_SCAN: u64 = 1024 * 1024 * 1024;
 const REFERENCE_SUFFIX: &str = ".ref";
 /// 清理一个进程只跑一次：授权在每次加载会话时重建，靠这个开关避免重复扫目录。
 static PURGED: AtomicBool = AtomicBool::new(false);
@@ -302,7 +304,8 @@ pub fn mark_events(app: &AppHandle, events: &[Event]) {
 }
 
 /// 删会话前把它引用的图片一起收走，否则沙箱里只剩没人看得见的文件。
-/// 日志超过预算就整份跳过：宁可留下文件，也不为清理把一次删除拖成长扫描。
+/// 这里是这些带 `.ref` 标记的文件唯一的删除入口，所以扫描不按大小提前收工：
+/// 提前跳过等于让这条会话的附件永远留在原地。
 pub fn release_session(app: &AppHandle, session_dir: &Path) {
     let Ok(file) = File::open(session_dir.join("events.jsonl")) else {
         return;
