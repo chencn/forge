@@ -1123,7 +1123,7 @@ export const zh = {
   "ai.agent.empty": "没有子代理",
   "ai.agent.noEntriesSettled": "该子代理未产生独立的对话交互记录",
   "ai.agent.noEntriesPending": "等待子代理产生对话记录…",
-  "ai.agent.returnParent": "返回主会话（{title}）",
+  "ai.agent.returnParent": "返回主会话",
   "ai.agent.untitled": "子代理",
   "ai.agent.numbered": "子代理{index}",
   "ai.agent.numberedCount": "子代理 ({count})",

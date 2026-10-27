@@ -312,10 +312,11 @@ impl Claude {
         }
         data
     }
-    /// Agent（旧名 Task）工具即子代理委派。除普通工具事件外，再发一条 `agent`
+    /// 真正的子代理委派工具仅为 `Agent`。除普通工具事件外，再发一条 `agent`
     /// 生命周期事件：运行时据此建子会话，前端据此画委派卡与子代理列表。
+    /// 注意：Task 是后台任务概念（或任务清单），绝不能当作子代理派生。
     fn agent_spawn_event(block: &Value) -> Option<Action> {
-        if !matches!(block["name"].as_str(), Some("Agent") | Some("Task")) { return None; }
+        if block["name"].as_str() != Some("Agent") { return None; }
         // 标题只承担扫视：description 取首行再截断，回退到 prompt 时压成一行短标题——
         // 最长 4000 字的正文进了 meta.title 会一直顶在侧栏提示与子会话头上。
         let title = match block["input"]["description"].as_str().map(str::trim).filter(|text| !text.is_empty()) {
@@ -338,7 +339,7 @@ impl Claude {
     /// Agent 工具的回执：后台启动回执带 agentId/resolvedModel，子会话由此绑定 CLI 侧
     /// 身份并开始接收路由事件；同步代理的回执（AgentOutput）就是最终报告与运行总量。
     fn agent_result_event(&mut self, id: &str, structured: Option<&Value>, ok: bool) -> Option<Action> {
-        if !self.tools.get(id).is_some_and(|tool| matches!(tool["name"].as_str(), Some("Agent") | Some("Task"))) { return None; }
+        if !self.tools.get(id).is_some_and(|tool| tool["name"].as_str() == Some("Agent")) { return None; }
         let structured = structured?;
         if let Some(agent_id) = structured["agentId"].as_str().filter(|value| !value.is_empty()) {
             self.agent_ids.insert(agent_id.to_owned(), id.to_owned());
@@ -499,9 +500,10 @@ impl Protocol for Claude {
                         .or_else(|| task_id.and_then(|id| self.agent_ids.get(id).cloned()));
                     if let (Some(task_id), Some(key)) = (task_id, key) {
                         // 过滤非子代理调用：普通后台 Bash 等工具也会产生 task_notification，
-                        // 必须严格校验该调用来源于真正的 Agent / Task 工具或已登记的子代理，绝不能将普通 Shell 命令广播为子代理。
+                        // 必须严格校验该调用来源于真正的 Agent 工具（已通过 agent_spawn/agent_result 注册或工具名为 Agent），
+                        // 绝不能将普通 Shell 命令广播为子代理。
                         let is_agent_tool = self.agent_ids.contains_key(task_id)
-                            || self.tools.get(&key).is_some_and(|tool| matches!(tool["name"].as_str(), Some("Agent") | Some("Task")));
+                            || self.tools.get(&key).is_some_and(|tool| tool["name"].as_str() == Some("Agent"));
                         if is_agent_tool {
                             let status = match value["status"].as_str() {
                                 Some("completed") => "completed",

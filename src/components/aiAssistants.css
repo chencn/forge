@@ -193,7 +193,6 @@
 /* 正在跑的这一轮和排队：属于输入区的状态，不混进对话列。 */
 /* 没有归属到某一回合的错误兜在这里：贴着输入区，而不是塞在消息之间。 */
 .ai-session-alert { margin: 0 0 8px; padding: 7px 10px; border: 1px solid var(--accent-red, var(--border-color)); border-radius: 6px; background: var(--accent-red-bg, transparent); color: var(--accent-red-text); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-@keyframes ai-progress-pulse { 50% { opacity: .3; } }
 /* 附件与斜杠按钮同尺寸同排；回形针是图标不是文字，所以靠 grid 居中。 */
 /* 拖拽悬停时盖住输入区的提示：输入框本身已经是定位父级，不再另套壳。 */
 .ai-composer-drop { position: absolute; inset: 4px; z-index: 20; display: flex; align-items: center; justify-content: center; border: 1px dashed color-mix(in srgb, var(--accent-blue) 50%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--bg-primary) 80%, transparent); color: var(--text-tertiary); font-size: 12px; pointer-events: none; }
@@ -257,7 +256,7 @@
 .ai-detail-chevron { flex: none; color: var(--text-tertiary); }
 .ai-chat-entry details[open] > summary > .ai-detail-chevron { transform: rotate(90deg); }
 .ai-tool > summary:hover, .ai-reasoning > summary:hover, .ai-timeline-notice > summary:hover { color: var(--text-primary); }
-.ai-tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 20px; }
 /* 路径能点开：摘要与明细里的目标都用同一条按钮样式，默认外观全部抹掉。 */
 .ai-file-target { appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
 .ai-file-target:hover { text-decoration: underline; text-underline-offset: 2px; }
@@ -268,7 +267,9 @@
   gap: 6px;
   flex-wrap: nowrap;
   white-space: nowrap;
-  padding: 3px 0;
+  padding: 2px 0;
+  min-height: 24px;
+  box-sizing: border-box;
 }
 .ai-file-preview-trigger > svg {
   flex: none;
@@ -367,11 +368,12 @@ button.ai-context-trigger { cursor: pointer; }
 button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-options-trigger[aria-expanded="true"] { background: var(--bg-tertiary); color: var(--text-primary); }
 .ai-context-ring { display: block; width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--text-secondary) var(--context-fill), var(--border-color) 0); mask: radial-gradient(transparent 5px, #000 5.5px); }
 .ai-context-ring.is-unknown { opacity: .6; }
-/* 芯片上的两个附加状态：到阈值时一个点，正在压缩时整圈呼吸——数字旁边就该说数字的事。 */
+/* 芯片上的两个附加状态：到阈值时一个点，正在压缩时标准转圈（对齐 Git 提交加载动效，杜绝呼吸闪烁） */
 .ai-context-badge { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-amber-text); }
 .ai-context-trigger.is-urgent { color: var(--accent-amber-text); }
 .ai-context-trigger.is-compacting { color: var(--text-primary); }
-.ai-context-trigger.is-compacting .ai-context-ring { animation: ai-progress-pulse 1.6s ease-in-out infinite; }
+.ai-context-trigger.is-compacting .ai-context-ring { animation: spin 1.2s linear infinite; transform-origin: 50% 50%; }
+.ai-context-trigger .ai-context-spinner { flex: none; color: currentColor; }
 .ai-context-state { flex: none; font-size: 10px; font-weight: 500; }
 /* 压缩住在 token 芯片点开的浮层里：占用、来源、动作是同一件事，不该在输入框上方再多一条横幅。 */
 .ai-compact-panel { display: grid; gap: 7px; padding-bottom: 14px; border-bottom: 1px solid var(--border-color); }
@@ -1042,28 +1044,29 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-process-head::after { content: ""; flex: 1; height: 1px; min-width: 24px;
   background: color-mix(in srgb, var(--text-primary) 10%, transparent); }
 
-/* 过程行（对照 ActivityRow）：箭头收在文字后、悬停浮现、展开旋转；状态推到行尾。 */
-.ai-row-head { display: flex; align-items: flex-start; gap: 7px; list-style: none; padding: 2px 0;
-  min-width: 0; cursor: pointer; flex-wrap: wrap; }
-.ai-row-head .ai-detail-chevron { flex: none; margin-top: 5px; opacity: 0; color: var(--text-tertiary);
+/* 过程行（对照 ActivityRow）：箭头收在文字后、悬停浮现、展开旋转；子项全行垂直居中严格对齐在同一水平线。 */
+.ai-row-head { display: flex; align-items: center; gap: 7px; list-style: none; padding: 2px 0;
+  min-height: 24px; box-sizing: border-box; min-width: 0; cursor: pointer; flex-wrap: nowrap; }
+.ai-row-head .ai-detail-chevron { flex: none; opacity: 0; color: var(--text-tertiary);
   transition: opacity 150ms, transform 150ms; }
 .ai-row-head:hover .ai-detail-chevron, .ai-row-head:focus-visible .ai-detail-chevron,
 details[open] > .ai-row-head .ai-detail-chevron { opacity: 1; }
 details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
-.ai-row-label { flex: none; font-weight: 500; color: var(--text-tertiary); font-size: 13px; }
+/* 操作标签（如「修改文件」、「读取文件」）：采用与整行一致的 20px 行高，消除破坏中文字体基线的 line-height: 1 */
+.ai-row-label { flex: none; font-weight: 500; color: var(--text-tertiary); font-size: 13px; line-height: 20px; }
 /* 命令行的等宽正文（对照 Command 行）：截断出省略号，完整命令在明细里。 */
 .ai-tool-cmd { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secondary); }
-/* 工具行内紧随文件名的徽标：读取行数与加减行差异（实时动态变化） */
-.ai-tool-inline-badge { display: inline-flex; align-items: center; gap: 4px; flex: none;
-  font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.4;
-  padding: 1px 5px; border-radius: 4px; user-select: none; }
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secondary); line-height: 20px; }
+/* 工具行内紧随文件名的徽标：读取行数与加减行差异（16px 高度贴合文字，配合 1px 下移补偿，与两边文字严格对齐在同一水平线） */
+.ai-tool-inline-badge { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none;
+  font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; line-height: 16px;
+  height: 16px; padding: 0 5px; border-radius: 4px; user-select: none; box-sizing: border-box; margin-top: 1px; }
 .ai-tool-inline-badge.is-read { color: var(--text-tertiary);
   background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent); }
-.ai-tool-inline-badge.is-edit { display: inline-flex; gap: 5px;
+.ai-tool-inline-badge.is-edit { display: inline-flex; align-items: center; gap: 5px;
   background: color-mix(in srgb, var(--bg-tertiary) 50%, transparent); }
-.ai-tool-inline-badge.is-edit .is-add { color: var(--accent-green-text, #10b981); }
-.ai-tool-inline-badge.is-edit .is-delete { color: var(--accent-red-text, #ef4444); }
+.ai-tool-inline-badge.is-edit .is-add { color: var(--accent-green-text, #10b981); line-height: 1; }
+.ai-tool-inline-badge.is-edit .is-delete { color: var(--accent-red-text, #ef4444); line-height: 1; }
 .ai-tool-inline-badge.is-live { background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 25%, transparent);
   animation: ai-badge-pulse 1.4s ease-in-out infinite; }
@@ -1101,7 +1104,8 @@ details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
 .ai-process-body .ai-explore-group:last-child::before { bottom: 50%; }
 /* 节点标记双形态：散行用行内图标（与文字同行）；活动导轨内隐藏行内图标，用回 14px 轴线上的点与环——
    轴上的节点语言要统一（工具是环、思考是点），文字统一从 32px 起始，彻底消除多图标推挤与未对齐。 */
-.ai-entry-icon { flex: none; color: var(--text-tertiary); }
+.ai-entry-icon,
+.ai-tool-glyph { flex: none; display: inline-flex; align-items: center; color: var(--text-tertiary); }
 .ai-entry-dot { display: none; }
 .ai-process-body .ai-entry-icon,
 .ai-process-body .ai-tool-glyph { display: none; }
@@ -1429,6 +1433,8 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
   padding: 12px 14px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
   box-sizing: border-box;
   animation: ai-sidedock-fade 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1475,13 +1481,17 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   display: none !important;
 }
 
-/* 侧栏顶栏：纯文本「进程  M/N」 + 「...」与收起按钮（对照 6.png） */
+/* 侧栏顶栏：纯文本「进程  M/N」 + 「...」与收起按钮（对照 6.png，粘性吸顶常驻卡片顶端） */
 .ai-taskdock-header {
+  position: sticky;
+  top: -12px;
+  z-index: 2;
+  background: var(--surface-island-strong, var(--bg-primary, #ffffff));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 2px 8px;
-  margin-bottom: 4px;
+  padding: 12px 2px 8px;
+  margin: -12px -2px 4px;
 }
 .ai-taskdock-header-title {
   display: flex;
@@ -1631,11 +1641,10 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   padding-top: 0;
   border-top: none;
 }
+/* 智能体协同分区列表：平铺展示，由外层卡片统一滚动，彻底杜绝嵌套双滚动条 */
 .ai-taskdock-agents-list {
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 240px);
-  overflow-y: auto;
 }
 .ai-taskdock-agents-header {
   font-size: 12px;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type Ref } from "react";
+import { Loader2 } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { AiProvider } from "../lib/aiCli";
 import { contextPercent, formatTokenCount } from "../lib/aiUsage";
@@ -105,7 +106,11 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
       aria-expanded={open}
       onClick={(event) => { opener.current = event.currentTarget; setAnchor(event.currentTarget); setOpen((value) => !value); }}
     >
-      <span className={`ai-context-ring${percent === undefined ? " is-unknown" : ""}`} style={{ "--context-fill": `${Math.min(100, Math.max(0, percent ?? 0))}%` } as CSSProperties} aria-hidden="true" />
+      {compacting ? (
+        <Loader2 size={12} className="is-spinning ai-context-spinner" aria-hidden="true" />
+      ) : (
+        <span className={`ai-context-ring${percent === undefined ? " is-unknown" : ""}`} style={{ "--context-fill": `${Math.min(100, Math.max(0, percent ?? 0))}%` } as CSSProperties} aria-hidden="true" />
+      )}
       <span>{chipLabel}</span>
       {compacting ? <strong className="ai-context-state">{t("ai.compact.chipCompacting")}</strong> : compact.action === "suggest" ? <span className="ai-context-badge" aria-hidden="true" /> : null}
     </button>

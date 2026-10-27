@@ -1127,7 +1127,7 @@ export const en: Record<TranslationKey, string> = {
   "ai.agent.empty": "No subagents",
   "ai.agent.noEntriesSettled": "This subagent did not produce an independent conversation log",
   "ai.agent.noEntriesPending": "Waiting for subagent conversation output…",
-  "ai.agent.returnParent": "Back to parent session ({title})",
+  "ai.agent.returnParent": "Back to parent session",
   "ai.agent.untitled": "Subagent",
   "ai.agent.numbered": "Subagent {index}",
   "ai.agent.numberedCount": "Subagents ({count})",

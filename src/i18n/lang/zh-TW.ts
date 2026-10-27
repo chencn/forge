@@ -1096,7 +1096,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "ai.agent.empty": "沒有子代理",
   "ai.agent.noEntriesSettled": "該子代理未產生獨立的對話互動記錄",
   "ai.agent.noEntriesPending": "等待子代理產生對話記錄…",
-  "ai.agent.returnParent": "返回主會話（{title}）",
+  "ai.agent.returnParent": "返回主會話",
   "ai.agent.untitled": "子代理",
   "ai.agent.numbered": "子代理{index}",
   "ai.agent.numberedCount": "子代理 ({count})",

@@ -1014,7 +1014,11 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   const latest = taskList.at(-1);
   if (active) { runId = active.runId; status = "running"; error = active.error ?? null; }
   else if (latest) { runId = latest.runId; status = latest.status; error = latest.error ?? null; }
-  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, goal, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), agents: [...agents.values()].sort((a, b) => a.seq - b.seq), background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
+  // 过滤幽灵子代理：仅保留具有有效代理类型、独立模型定义、派生会话或在当前时间线上拥有真正归属输出的子代理
+  const validAgents = [...agents.values()]
+    .filter((agent) => Boolean(agent.agentType || agent.model || agent.sessionId || entries.some((entry) => entry.parent === agent.key)))
+    .sort((a, b) => a.seq - b.seq);
+  return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, goal, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), agents: validAgents, background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
 }
 function applySummary(state: State) {
   const summary = state.summary;

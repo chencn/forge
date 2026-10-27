@@ -1474,6 +1474,14 @@ impl Worker {
         };
         if self.broken_agents.contains(&key) { return Ok(()); }
         if !self.agents.contains_key(&key) {
+            // 防护孤立通知：只有包含合法子代理特征（带 agentType 或 prompt 任务内容）时才允许注册新建，
+            // 绝不为孤立的普通后台工具/命令通知无中生有创建子会话目录。
+            let is_valid_spawn = data.get("agentType").is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+                || data.get("prompt").is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+                || self.store.meta.provider == Provider::Codex;
+            if !is_valid_spawn {
+                return Ok(());
+            }
             let Some(base) = self.store.dir.parent().map(Path::to_path_buf) else {
                 return self.notice_safely("会话存储路径无效，子代理无法登记".into());
             };

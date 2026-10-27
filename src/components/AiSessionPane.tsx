@@ -1905,9 +1905,10 @@ export default function AiSessionPane({
                 type="button"
                 className="ai-agent-return-button"
                 onClick={() => onOpenSession(session.parentSessionId!)}
+                title={parentTitle || t("ai.agent.parent")}
               >
                 <ArrowLeft size={13} aria-hidden />
-                <span>{t("ai.agent.returnParent", { title: parentTitle || t("ai.agent.parent") })}</span>
+                <span>{t("ai.agent.returnParent")}</span>
               </button>
             ) : null}
           </div>
