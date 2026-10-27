@@ -43,6 +43,8 @@ import ExplorerTree from "./components/ExplorerTree";
 import EntryIcon from "./components/EntryIcon";
 import EditorTabs from "./components/EditorTabs";
 import type { TabItem, TabKind } from "./components/EditorTabs";
+import { createEditorSplit, partitionEditorTabs, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
+import type { AiFilePreview } from "./lib/aiFilePreview";
 import LspStatusBar from "./components/LspStatusBar";
 import type { CommitFileAction } from "./components/GitPanel";
 import type { CommitAction, FileAction, RefAction, RefTarget } from "./components/GitLogPane";
@@ -180,10 +182,10 @@ import type { TranslationKey } from "./i18n/lang/zh";
 import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
 import TerminalTabs from "./components/TerminalTabs";
 import AiSessionsPanel, { AiSessionsToolbar } from "./components/AiSessionsPanel";
-import AiProviderIcon from "./components/AiProviderIcon";
+import { AiTabProviderIcon } from "./components/AiProviderIcon";
 import { forgetAiSessionWorkspace, refreshAiSessionHistory, useAiSessions } from "./hooks/useAiSessions";
 import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
-import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, getAiSessionActivity, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
+import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
 import type { AiRuntimeEvent } from "./lib/aiRuntime";
 import { AI_NAMES } from "./lib/aiCli";
 import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
@@ -223,6 +225,7 @@ const SearchEverywhere = lazy(() => import("./components/SearchEverywhere"));
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
 const AiSessionPane = lazy(() => import("./components/AiSessionPane"));
 const AiWelcomePane = lazy(() => import("./components/AiWelcomePane"));
+const AiFilePreviewPane = lazy(() => import("./components/AiFilePreviewPane"));
 
 /** 对话框除了文案，还要记住它作用在哪个条目上、新建落在哪个目录里。 */
 type PendingDialog = DialogRequest & {
@@ -793,9 +796,6 @@ export default function App() {
     // 项目一激活就读取 Codex 的有效配置；会话输入区随后直接复用，不要求用户重新设置。
     void refreshAiProjectConfig(workspaceRoot).catch(() => {});
   }, [settings.aiAssistantsEnabled, workspaceRoot]);
-  const activeAiSession = settings.aiAssistantsEnabled && activeTab?.startsWith("ai|")
-    ? aiSessions.sessions.find((session) => session.id === activeTab.slice(3)) ?? null
-    : null;
   const setActiveTab = useCallback((next: string | null) => {
     setActiveTabByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
   }, []);
@@ -854,6 +854,12 @@ export default function App() {
       seedAiSessionOptions(launchWorkspace, session.id, provider);
       setAiDraftHandoff(session.id, { text, images });
       dispatchAiSession({ type: "create", session });
+      // 草稿被会话替换时继承原分组，不能让副栏发送后突然跳回主栏。
+      setEditorSplits((current) => {
+        const split = current[launchRootKey];
+        if (!split) return current;
+        return { ...current, [launchRootKey]: replaceEditorSplitTab(split, "ai|draft", `ai|${session.id}`) };
+      });
       setAiDraftOpen((current) => ({ ...current, [launchRootKey]: false }));
       setActiveTabByRoot((current) => ({ ...current, [launchRootKey]: `ai|${session.id}` }));
     } catch (cause) {
@@ -944,9 +950,16 @@ export default function App() {
   const [commitGearAnchor, setCommitGearAnchor] = useState<HTMLElement | null>(null);
   /** 未合并那一节的 Resolve 链接与冲突行菜单开的是同一层弹层。 */
   const [resolveOpen, setResolveOpen] = useState(false);
-  /** 双栏拆分编辑器（IDEA 的 Split Right / Split Down） */
-  const [editorSplit, setEditorSplit] = useState<{ direction: "horizontal" | "vertical"; ratio: number } | null>(null);
-  const [secondaryTab, setSecondaryTab] = useState<string | null>(null);
+  /** 分组按工作区隔离，切换项目后不能把另一个项目的标签挂进副栏。 */
+  const [editorSplits, setEditorSplits] = useState<Record<string, EditorSplitState | null>>({});
+  const editorSplit = editorSplits[rootKey] ?? null;
+  const setEditorSplit = useCallback((update: EditorSplitState | null | ((current: EditorSplitState | null) => EditorSplitState | null)) => {
+    const key = rootKeyRef.current;
+    setEditorSplits((current) => ({ ...current, [key]: typeof update === "function" ? update(current[key] ?? null) : update }));
+  }, []);
+  const secondaryTab = activeTab && editorSplit?.tabIds.includes(activeTab) ? activeTab : editorSplit?.tabId ?? null;
+  const [aiFilePreviewsByRoot, setAiFilePreviewsByRoot] = useState<Record<string, AiFilePreview[]>>({});
+  const aiFilePreviews = useMemo(() => aiFilePreviewsByRoot[rootKey] ?? [], [aiFilePreviewsByRoot, rootKey]);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const splitDragRef = useRef<{
     startX: number;
@@ -1085,16 +1098,6 @@ export default function App() {
     activeTab && activeTab.startsWith("diff|")
       ? (diffs.find((tab) => tab.id === activeTab.slice(5)) ?? null)
       : null;
-  /** 副栏文档解析：拆分模式下副栏选中的文档或比对 */
-  const secondaryShownDoc =
-    secondaryTab && secondaryTab.startsWith("doc|") ? secondaryTab.slice(4) : null;
-  const secondaryActiveDoc = secondaryShownDoc
-    ? (visibleDocs.find((doc) => samePath(doc.path, secondaryShownDoc)) ?? null)
-    : null;
-  const secondaryActiveDiffTab =
-    secondaryTab && secondaryTab.startsWith("diff|")
-      ? (diffs.find((tab) => tab.id === secondaryTab.slice(5)) ?? null)
-      : null;
   /**
    * 侧栏「定位文件位置」对准当前打开的文件；比对则对准工作区里还在的那份。
    * 没有这样的文件，或路径不在工程根下（外部库、临时打开）时留空，按钮置灰。
@@ -1124,19 +1127,6 @@ export default function App() {
     };
   }, [activeDoc?.path, git]);
 
-  /** 副编辑器必须按自己的文档计算行变更基线，不能复用主栏当前文件。 */
-  const secondaryChangeBaseline = useMemo(() => {
-    const path = secondaryActiveDoc?.path;
-    if (!path || !git.root) return null;
-    const request = lineChangeBaseline(git.root, path, git.status?.changes ?? []);
-    if (!request) return null;
-    return {
-      root: git.root,
-      head: git.lastCommit?.hash ?? "",
-      path: git.absoluteOf(request.relativePath),
-      allowEmpty: request.allowEmpty,
-    };
-  }, [secondaryActiveDoc?.path, git]);
 
   /**
    * 侧栏蓝底只来自选中，不因「这篇正开着」再涂一档。
@@ -2099,6 +2089,8 @@ export default function App() {
         }
         return next;
       });
+      setEditorSplits((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !samePath(key, targetRoot))));
+      setAiFilePreviewsByRoot((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !samePath(key, targetRoot))));
       for (const key of Array.from(diffChainsByRoot.current.keys())) {
         if (samePath(key, targetRoot)) diffChainsByRoot.current.delete(key);
       }
@@ -2509,16 +2501,9 @@ export default function App() {
     await flushDirtyDocs();
   }, [docs, flushDirtyDocs, saveDoc]);
 
-  /** 双栏拆分操作：支持向右拆分或向下拆分。 */
-  const splitEditor = useCallback((id: string, direction: "horizontal" | "vertical") => {
-    setEditorSplit({ direction, ratio: 50 });
-    setSecondaryTab(id);
-  }, []);
-
   const closeSplit = useCallback(() => {
     setEditorSplit(null);
-    setSecondaryTab(null);
-  }, []);
+  }, [setEditorSplit]);
 
   /** 查看某文件的本地历史快照。 */
   const showLocalHistory = useCallback((path: string) => {
@@ -3136,16 +3121,6 @@ export default function App() {
         : undefined,
     [stepChain]
   );
-
-  /** 跳到源码：把这份比对对应的那个工作区文件开进编辑器；对不出来就没有这一项。 */
-  const diffOpenFile = useMemo(() => {
-    const absolute = activeDiffTab?.openIn;
-    if (!absolute) return undefined;
-    return () => {
-      setActiveTab(`doc|${absolute}`);
-      void docs.open(absolute);
-    };
-  }, [activeDiffTab?.openIn, docs.open, setActiveTab]);
 
   /** 删除确认落在整批选中上：文案报第一条的名字，真正删的是这一批的路径。 */
   const confirmDelete = useCallback((selection: FsEntry[]) => {
@@ -3831,6 +3806,11 @@ export default function App() {
       dirty: false,
       icon: <FileDiff size={13} className="entry-icon" aria-hidden="true" />,
     })),
+    ...aiFilePreviews.map((preview) => ({
+      id: `ai-file|${preview.id}`, kind: "diff" as const, name: basenameOf(preview.path),
+      title: preview.path, filePath: preview.path, dirty: false,
+      icon: <FileDiff size={13} className="entry-icon" aria-hidden="true" />,
+    })),
     ...BOTTOM_ORDER.filter((key) => places[key] === "tabbed").map((key) => ({
       id: `pane|${key}`,
       kind: "pane" as const,
@@ -3839,21 +3819,14 @@ export default function App() {
       dirty: false,
       icon: PANE_ICON[key],
     })),
-    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => {
-      const isRunning = getAiSessionActivity(session.id) === "running";
-      return {
-        id: `ai|${session.id}`,
-        kind: "ai" as const,
-        name: session.title || t("ai.untitledSession"),
-        title: `${AI_NAMES[session.provider]} · ${session.title || t("ai.untitledSession")}`,
-        dirty: false,
-        icon: (
-          <span className={`ai-tab-provider-icon${isRunning ? " is-running" : ""}`}>
-            <AiProviderIcon provider={session.provider} size={14} />
-          </span>
-        ),
-      };
-    }),
+    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => ({
+      id: `ai|${session.id}`,
+      kind: "ai" as const,
+      name: session.title || t("ai.untitledSession"),
+      title: `${AI_NAMES[session.provider]} · ${session.title || t("ai.untitledSession")}`,
+      dirty: false,
+      icon: <AiTabProviderIcon sessionId={session.id} provider={session.provider} />,
+    })),
     ...(aiDraftOpen[rootKey] && settings.aiAssistantsEnabled
       ? [
           {
@@ -3891,7 +3864,7 @@ export default function App() {
         ]
       : []),
     ],
-    [aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], settings.aiAssistantsEnabled, diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
+    [aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], settings.aiAssistantsEnabled, diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
   );
 
   // 栏上有哪些标签由上面那份目录说，排在哪儿由 tabOrder 说：新开一颗落在当前这颗右边，拖动改这个数组。
@@ -3923,6 +3896,27 @@ export default function App() {
       .map((id) => byId.get(id))
       .filter((tab): tab is TabItem => tab !== undefined);
   }, [tabCatalog, tabOrder]);
+
+  const editorGroups = partitionEditorTabs(tabs, editorSplit);
+  const primaryTab = editorSplit
+    ? (editorGroups.primary.some((tab) => tab.id === activeTab) ? activeTab
+      : editorGroups.primary.find((tab) => tab.id === editorSplit.primaryActiveId)?.id ?? editorGroups.primary.at(-1)?.id ?? null)
+    : activeTab;
+  const dockAiTab = activeTab?.startsWith("ai|") ? activeTab
+    : primaryTab?.startsWith("ai|") ? primaryTab : secondaryTab?.startsWith("ai|") ? secondaryTab : null;
+  const splitEditor = useStable((id: string, direction: "horizontal" | "vertical") => {
+    setEditorSplit(createEditorSplit(tabCatalog.map((tab) => tab.id), activeTab, id, direction,
+      editorSplit ? { ...editorSplit, primaryActiveId: primaryTab } : null).split);
+    selectTab(id);
+  });
+
+  // 只在目录真正移除标签后清理归属；脏文件取消关闭时，分组保持原样。
+  useEffect(() => {
+    if (!editorSplit) return;
+    const kept = editorSplit.tabIds.filter((id) => tabCatalog.some((tab) => tab.id === id));
+    if (kept.length === editorSplit.tabIds.length) return;
+    setEditorSplit(kept.length ? { ...editorSplit, tabIds: kept, tabId: kept.includes(editorSplit.tabId) ? editorSplit.tabId : kept[kept.length - 1] } : null);
+  }, [catalogKey, editorSplit, setEditorSplit]);
 
   /** 拖完一颗：落到目标那颗原来的位子上。 */
   const reorderTab = useCallback((from: string, to: string) => {
@@ -3958,12 +3952,14 @@ export default function App() {
   const selectTab = useCallback(
     (id: string) => {
       setActiveTab(id);
+      setEditorSplit((current) => current ? current.tabIds.includes(id)
+        ? { ...current, tabId: id } : { ...current, primaryActiveId: id } : null);
       if (id.startsWith("doc|")) docs.setActivePath(id.slice(4));
       // 已打开的 AI 标签再次被选中也要更新持久化活动项，不能只在首次 open 时记录；
       // 草稿标签背后没有会话，只切换显示。
       else if (id.startsWith("ai|") && id !== "ai|draft") dispatchAiSession({ type: "open", id: id.slice(3) });
     },
-    [docs, dispatchAiSession]
+    [docs, dispatchAiSession, setEditorSplit]
   );
 
   /**
@@ -3974,7 +3970,11 @@ export default function App() {
    */
   const closeTab = useCallback(
     (id: string, kind: TabKind) => {
-      if (kind === "doc") closeDocTab(id.slice(4));
+      if (id.startsWith("ai-file|")) {
+        const key = rootKeyRef.current;
+        setAiFilePreviewsByRoot((current) => ({ ...current, [key]: (current[key] ?? []).filter((preview) => preview.id !== id.slice(8)) }));
+      }
+      else if (kind === "doc") closeDocTab(id.slice(4));
       else if (kind === "diff") closeDiff(id.slice(5));
       else if (kind === "pane") hidePane(id.slice(5) as BottomPane);
       // 草稿标签背后没有会话也没有任务，直接收掉即可。
@@ -3993,7 +3993,11 @@ export default function App() {
   const dropTabs = useCallback(
     (list: TabItem[]) => {
       for (const tab of list) {
-        if (tab.kind === "pane") hidePane(tab.id.slice(5) as BottomPane);
+        if (tab.id.startsWith("ai-file|")) {
+          const key = rootKeyRef.current;
+          setAiFilePreviewsByRoot((current) => ({ ...current, [key]: (current[key] ?? []).filter((preview) => preview.id !== tab.id.slice(8)) }));
+        }
+        else if (tab.kind === "pane") hidePane(tab.id.slice(5) as BottomPane);
         else if (tab.id === "ai|draft") setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: false }));
         else if (tab.kind === "ai") aiLifecycle.closeSession(tab.id.slice(3), () => dispatchAiSession({ type: "close", id: tab.id.slice(3) }));
         else if (tab.kind === "settings") {
@@ -4221,14 +4225,21 @@ export default function App() {
     </section>
   );
 
-  /**
-   * 编辑区主栏的视图条件链：拆分模式的主栏与未拆分的整栏共用同一份。
-   * 两条分支曾经各自维护一份近乎相同的 80 行链，改一处漏一处的隐患就在这里收口；
-   * 副栏是另一条更短的链（只有 diff / 文档 / 空页），行为不同，不并进来。
-   */
-  const primaryEditorSurface = () => (
+  /** 两栏只按各自的活动标签渲染；所有标签类型共用这一条分派链。 */
+  const editorSurface = (id: string | null) => {
+    const preview = id?.startsWith("ai-file|") ? aiFilePreviews.find((item) => item.id === id.slice(8)) : null;
+    const activeDiffTab = id?.startsWith("diff|") ? diffs.find((tab) => tab.id === id.slice(5)) : null;
+    const activeDoc = id?.startsWith("doc|") ? visibleDocs.find((doc) => samePath(doc.path, id.slice(4))) : null;
+    const activePane = id?.startsWith("pane|") ? id.slice(5) as BottomPane : null;
+    const activeAiSession = settings.aiAssistantsEnabled && id?.startsWith("ai|")
+      ? aiSessions.sessions.find((session) => session.id === id.slice(3)) : null;
+    const baselineRequest = activeDoc && git.root ? lineChangeBaseline(git.root, activeDoc.path, git.status?.changes ?? []) : null;
+    const surfaceBaseline = id === activeTab ? changeBaseline : baselineRequest && git.root ? {
+      root: git.root, head: git.lastCommit?.hash ?? "", path: git.absoluteOf(baselineRequest.relativePath), allowEmpty: baselineRequest.allowEmpty,
+    } : null;
+    return (
     <>
-      {activeDiffTab ? (
+      {preview ? <AiFilePreviewPane key={preview.id} preview={preview} documentText={docs.documents.find((doc) => samePath(doc.path, preview.path) && !doc.loading && !doc.error)?.contents} /> : activeDiffTab ? (
         <DiffPane
           leftLabel={activeDiffTab.leftLabel}
           rightLabel={activeDiffTab.rightLabel}
@@ -4237,16 +4248,20 @@ export default function App() {
           modified={activeDiffTab.modified}
           language={activeDiffTab.language}
           notice={activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined}
-          group={activeDiffGroup}
+          group={activeDiffTab ? diffGroupOf(activeDiffTab) : undefined}
           landOn={activeDiffTab.landOn}
-          onOpenFile={diffOpenFile}
-          onClose={closeActiveDiff}
+          onOpenFile={activeDiffTab.openIn ? () => {
+            const path = activeDiffTab.openIn!;
+            selectTab(`doc|${path}`);
+            void docs.open(path);
+          } : undefined}
+          onClose={() => closeDiff(activeDiffTab.id)}
         />
       ) : activePane && places[activePane] === "tabbed" ? (
         paneFrame(activePane, false)
-      ) : activeTab === "run-configs" ? (
+      ) : id === "run-configs" ? (
         <RunConfigsPage configs={configs} />
-      ) : activeTab === "ai|draft" ? (
+      ) : id === "ai|draft" ? (
         // 新建会话草稿页：会话还不存在，首条消息发出时才创建并切到会话页。
         <Suspense fallback={null}>
           <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
@@ -4254,8 +4269,8 @@ export default function App() {
       ) : activeAiSession ? (
         // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
         // 展开状态和本地事件订阅会串到新会话上。
-        <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
-      ) : activeTab === "settings" ? (
+        <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} dockActive={dockAiTab === id} onAgentDockAvailable={dockAiTab === id ? setAgentDockAvailable : undefined} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
+      ) : id === "settings" ? (
         <SettingsPage
           workspace={workspaceRoot}
           initialModule={settingsModule}
@@ -4266,7 +4281,7 @@ export default function App() {
         <DocPane
           document={activeDoc}
           onChange={docs.update}
-          onSave={() => void saveActive()}
+          onSave={() => void saveDoc(activeDoc.path)}
           onBlur={() => {
             if (settings.editor.savePolicy === "blur") void saveAllRef.current();
           }}
@@ -4296,13 +4311,14 @@ export default function App() {
               ? httpSide.text
               : null
           }
-          changeBaseline={changeBaseline}
+          changeBaseline={surfaceBaseline}
         />
       ) : (
         <WelcomeScreen keymap={settings.editor.keymap} workspace={workspaceRoot !== null} />
       )}
     </>
-  );
+    );
+  };
 
   /** 切分支成功才记进「最近」，失败的签出不该留在列表里。 */
   const checkoutBranch = useCallback(
@@ -4560,6 +4576,19 @@ export default function App() {
     const opened = line ? docs.openHit(resolved, line, column) : docs.open(resolved);
     void opened.catch((cause: unknown) => reportError(errorText(cause)));
   });
+  /** 工具文件预览与手工拆分共用分组转换，原会话留在主栏。 */
+  const aiPreviewFile = useStable((preview: AiFilePreview, sourceTab: string) => {
+    const path = resolveFileLink({ path: preview.path }, workspaceRoot);
+    if (!path) return;
+    const key = rootKeyRef.current;
+    const tabId = `ai-file|${preview.id}`;
+    setAiFilePreviewsByRoot((current) => ({ ...current, [key]: [
+      ...(current[key] ?? []).filter((item) => item.id !== preview.id), { ...preview, path },
+    ] }));
+    const current = editorSplit ? { ...editorSplit, tabIds: editorSplit.tabIds.filter((id) => id !== sourceTab), primaryActiveId: sourceTab } : null;
+    setEditorSplit(createEditorSplit([...tabCatalog.map((tab) => tab.id), tabId], sourceTab, tabId, "horizontal", current).split);
+    setActiveTab(tabId);
+  });
   const panelOpenSource = useStable((change: GitChange) => {
     const absolute = git.absoluteOf(change.path);
     setActiveTab(`doc|${absolute}`);
@@ -4799,14 +4828,6 @@ export default function App() {
     void compareCommits(left, right)
   );
   const logOptions = useStable((next: BranchSettings) => patch({ branches: next }));
-  const closeActiveDiff = useStable(() => {
-    if (activeDiffTab) closeDiff(activeDiffTab.id);
-  });
-  /** 比对链那一组按钮的容器：每次现造对象同样会顶穿 memo，跟着这一份留住。 */
-  const activeDiffGroup = useMemo(
-    () => (activeDiffTab ? diffGroupOf(activeDiffTab) : undefined),
-    [activeDiffTab, diffGroupOf]
-  );
 
   return (
     <div className="app-shell">
@@ -5172,21 +5193,22 @@ export default function App() {
               >
                 <div
                   className="editor-split-pane is-primary"
+                  onPointerDownCapture={() => { if (primaryTab && activeTab !== primaryTab) selectTab(primaryTab); }}
                   style={
                     editorSplit.direction === "horizontal"
                       ? { width: `${editorSplit.ratio}%`, flex: "none" }
                       : { height: `${editorSplit.ratio}%`, flex: "none" }
                   }
                 >
-                  {tabs.length > 0 ? (
+                  {editorGroups.primary.length > 0 ? (
                     <EditorTabs
-                      tabs={tabs}
-                      activeId={activeTab}
+                      tabs={editorGroups.primary}
+                      activeId={primaryTab}
                       onSelect={selectTab}
                       onReorder={reorderTab}
                       onClose={closeTab}
-                      onCloseOthers={closeOtherTabs}
-                      onCloseAll={closeAllTabs}
+                      onCloseOthers={(id) => dropTabs(editorGroups.primary.filter((tab) => tab.id !== id))}
+                      onCloseAll={() => dropTabs(editorGroups.primary)}
                       onSave={(path) => void saveDoc(path)}
                       onSaveAll={() => void flushDirtyDocs()}
                       isDirty={docs.dirty}
@@ -5201,7 +5223,7 @@ export default function App() {
                   <div className="editor-pane-body">
                     <ErrorBoundary label={t("editor.region")} onError={reportError}>
                       <Suspense fallback={null}>
-                        {primaryEditorSurface()}
+                        {editorSurface(primaryTab)}
                       </Suspense>
                     </ErrorBoundary>
                   </div>
@@ -5247,28 +5269,28 @@ export default function App() {
 
                 <div
                   className="editor-split-pane is-secondary"
+                  onPointerDownCapture={() => { if (secondaryTab && activeTab !== secondaryTab) selectTab(secondaryTab); }}
                   style={
                     editorSplit.direction === "horizontal"
                       ? { width: `${100 - editorSplit.ratio}%`, flex: "none" }
                       : { height: `${100 - editorSplit.ratio}%`, flex: "none" }
                   }
                 >
-                  {tabs.length > 0 ? (
+                  {editorGroups.secondary.length > 0 ? (
                     <EditorTabs
-                      tabs={tabs}
+                      tabs={editorGroups.secondary}
                       activeId={secondaryTab}
-                      onSelect={(id) => setSecondaryTab(id)}
+                      onSelect={selectTab}
                       onReorder={reorderTab}
-                      onClose={(id, kind) => {
-                        if (id === secondaryTab) closeSplit();
-                        else closeTab(id, kind);
-                      }}
-                      onCloseOthers={closeOtherTabs}
-                      onCloseAll={closeAllTabs}
+                      onClose={closeTab}
+                      onCloseOthers={(id) => dropTabs(editorGroups.secondary.filter((tab) => tab.id !== id))}
+                      onCloseAll={() => dropTabs(editorGroups.secondary)}
                       onSave={(path) => void saveDoc(path)}
                       onSaveAll={() => void flushDirtyDocs()}
                       isDirty={docs.dirty}
                       onRevealInSidebar={revealInTree}
+                      onSplitRight={(id) => splitEditor(id, "horizontal")}
+                      onSplitDown={(id) => splitEditor(id, "vertical")}
                       onCloseSplit={closeSplit}
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
@@ -5277,65 +5299,7 @@ export default function App() {
                   <div className="editor-pane-body">
                     <ErrorBoundary label={t("editor.region")} onError={reportError}>
                       <Suspense fallback={null}>
-                        {secondaryActiveDiffTab ? (
-                          <DiffPane
-                            leftLabel={secondaryActiveDiffTab.leftLabel}
-                            rightLabel={secondaryActiveDiffTab.rightLabel}
-                            path={secondaryActiveDiffTab.path}
-                            original={secondaryActiveDiffTab.original}
-                            modified={secondaryActiveDiffTab.modified}
-                            language={secondaryActiveDiffTab.language}
-                            notice={
-                              secondaryActiveDiffTab.notice
-                                ? describeError(secondaryActiveDiffTab.notice, t)
-                                : undefined
-                            }
-                            group={activeDiffGroup}
-                            landOn={secondaryActiveDiffTab.landOn}
-                            onOpenFile={diffOpenFile}
-                            onClose={closeSplit}
-                          />
-                        ) : secondaryActiveDoc ? (
-                          <DocPane
-                            document={secondaryActiveDoc}
-                            onChange={docs.update}
-                            onSave={() => void saveDoc(secondaryActiveDoc.path)}
-                            onBlur={() => {
-                              if (settings.editor.savePolicy === "blur") void saveAllRef.current();
-                            }}
-                            onView={docs.setView}
-                            onOpenLocal={openLocalFile}
-                            reveal={null}
-                            onRevealDone={() => {}}
-                            runConfigs={configs.configs}
-                            projectRoot={workspaceRoot ?? ""}
-                            openPaths={docs.documents.map((item) => item.path)}
-                            onRunConfig={(picked) => {
-                              if (picked.length > 1) {
-                                configs.select(picked[0].id);
-                                setRunChooser((signal) => signal + 1);
-                                return;
-                              }
-                              configs.select(picked[0].id);
-                              run.start(picked[0]);
-                              focusPane("run");
-                            }}
-                            onRunScript={runScript}
-                            onRunHttp={runHttp}
-                            httpResponse={
-                              settings.httpResponse === "split" &&
-                              httpSide !== null &&
-                              samePath(httpSide.path, secondaryActiveDoc.path)
-                                ? httpSide.text
-                                : null
-                            }
-                            changeBaseline={secondaryChangeBaseline}
-                          />
-                        ) : (
-                          <div className="tool-window-empty">
-                            <p>{t("editor.selectToView")}</p>
-                          </div>
-                        )}
+                        {editorSurface(secondaryTab)}
                       </Suspense>
                     </ErrorBoundary>
                   </div>
@@ -5362,7 +5326,7 @@ export default function App() {
                   />
                 ) : null}
                 <ErrorBoundary label={t("editor.region")} onError={reportError}>
-                  <Suspense fallback={null}>{primaryEditorSurface()}</Suspense>
+                  <Suspense fallback={null}>{editorSurface(activeTab)}</Suspense>
                 </ErrorBoundary>
               </>
             )}

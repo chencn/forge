@@ -2,6 +2,10 @@ import type { TranslationKey } from "./zh";
 
 export const zhTW: Record<TranslationKey, string> = {
   "app.name": "Forge",
+  "ai.filePreview.readRange": "讀取範圍：第 {start}–{end} 行",
+  "ai.filePreview.loading": "正在讀取完整檔案…",
+  "ai.filePreview.readFragment": "無法讀取完整檔案，以下顯示當時讀取的片段。",
+  "ai.filePreview.patchOnly": "無法從目前檔案準確還原當次完整差異，以下顯示當時記錄的補丁或替換片段。",
   "app.tagline": "程式碼編輯器",
   "sidebar.hide": "收起側欄",
   "sidebar.show": "展開側欄",

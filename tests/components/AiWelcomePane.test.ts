@@ -31,6 +31,7 @@ vi.mock("../../src/components/AiComposerOptions", () => ({ default: ({ commandRe
 } }));
 
 import AiWelcomePane from "../../src/components/AiWelcomePane";
+import { loadDraftImages, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
 
 type Node = ReactElement<Record<string, unknown>>;
 
@@ -131,5 +132,21 @@ describe("AI new-session composer", () => {
     const failedInput = nodes(failed.tree).find((node) => "editor" in node.props)!.props.editor as Node;
     expect(failedInput.props.value).toBe("不要丢掉我");
     expect(h.launch).toHaveBeenCalledTimes(1);
+  });
+  it("切走新建页再回来仍恢复附件并随首条消息交接", async () => {
+    saveDraft("D:/project", "draft", "分析这张图", true);
+    saveDraftImages("D:/project", "draft", [{ path: "C:/cache/paste-1.png", name: "screen.png" }]);
+
+    const ready = render();
+    expect(ready.html).toContain('src="C:/cache/paste-1.png"');
+    const input = nodes(ready.tree).find((node) => "editor" in node.props)!.props.editor as Node;
+    (input.props.onKeyDown as (event: Record<string, unknown>) => void)({
+      key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+      nativeEvent: {}, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(h.launch).toHaveBeenCalled());
+    expect(h.launch).toHaveBeenCalledWith("codex", "分析这张图", ["C:/cache/paste-1.png"]);
+    expect(loadDraftImages("D:/project", "draft")).toEqual([]);
   });
 });

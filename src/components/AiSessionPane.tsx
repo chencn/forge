@@ -29,7 +29,7 @@ import { openAiPlan } from "../lib/aiPlan";
 import { requestPath } from "../lib/aiApprovals";
 import type { AiPermissionAnswer } from "../lib/aiApprovals";
 import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash, resolveNativeCommand } from "../lib/aiCommands";
-import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft } from "../lib/aiDrafts";
+import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadDraftImages, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft, saveDraftImages } from "../lib/aiDrafts";
 import type { PromptBrowse } from "../lib/aiDrafts";
 import { compactDecision, COMPACT_COMMAND_TEXT, readCompactPrefs, writeCompactPrefs } from "../lib/aiCompact";
 import { isNearBottom, OlderHistoryScroll, trackFollow, unseenCount } from "../lib/aiFollow";
@@ -51,13 +51,12 @@ import { applyMention, mentionAt, mentionPathOf, splitMentionTokens } from "../l
 import { findFiles } from "../lib/fs";
 import AiContextChip from "./AiContextChip";
 import { aiNormalMode, loadAiOptions, saveAiOptions } from "../lib/aiOptions";
-import AiToolDetails, { AiToolCall, AiToolSummary, CodeText } from "./AiToolDetails";
-import AiDiffEditor from "./AiDiffEditor";
+import AiToolDetails, { AiToolCall, AiToolSummary } from "./AiToolDetails";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
 import { useAiInputMenu } from "./AiInputContext";
-import { useAiDiffViewMode } from "../lib/aiDiffView";
-import { AiOpenFileProvider, type AiOpenFile } from "./AiFileLink";
+import { AiOpenFileProvider, useAiFilePreview, type AiOpenFile } from "./AiFileLink";
+import { editedFilePreview, type AiFilePreview } from "../lib/aiFilePreview";
 import { aiSessionStorageKey } from "../lib/aiSessions";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
 import { watchAiInputDelivery } from "../lib/aiInputBridge";
@@ -542,7 +541,7 @@ function AiLiveStats({ provider, runId, entries, usage, statusText, planMode }: 
     <span>{statusText}</span>
     {planMode ? <span className="ai-live-item ai-live-mode">{t("ai.chat.planModeActive")}</span> : null}
     {elapsed !== undefined && elapsed >= 10000 ? <span className="ai-live-item"><Timer size={12} aria-hidden />{formatAiClock(elapsed)}</span> : null}
-    {edits.fileCount ? <span className="ai-live-item is-wide"><FilePenLine size={12} aria-hidden />{edits.fileCount}F{edits.additions !== undefined ? <> +{edits.additions}/−{edits.deletions ?? 0}</> : null}</span> : null}
+    {edits.fileCount ? <span className="ai-live-item is-wide"><FilePenLine size={12} aria-hidden />{edits.fileCount}F{edits.additions ? <> +{edits.additions}</> : null}{edits.deletions ? <> −{edits.deletions}</> : null}</span> : null}
     {speed !== undefined ? <span className="ai-live-item is-wider"><Plane size={12} aria-hidden />{speed.toFixed(1)} tok/s</span> : null}
   </div>;
 }
@@ -552,47 +551,36 @@ function AiLiveStats({ provider, runId, entries, usage, statusText, planMode }: 
  * 完成态全部默认收起；头部给「N 个文件 + 总 ±行数」，
  * 展开是逐文件卡——点文件跳编辑器。统计口径与底栏汇总同源（只算真实完成的补丁）。
  */
-const AiReplyArtifacts = memo(function AiReplyArtifacts({ summary }: { summary: AiEditSummary }) {
+const AiReplyArtifacts = memo(function AiReplyArtifacts({ summary, id }: { summary: AiEditSummary; id: string }) {
   const { t } = useI18n();
+  const openPreview = useAiFilePreview();
   const added = summary.files.filter((file) => file.kind === "add");
   const changed = summary.files.filter((file) => file.kind !== "add");
   const [openNew, setOpenNew] = useState(false);
   const [openChanged, setOpenChanged] = useState(false);
-  /** 行内展开的文件：点行就地预览它的 diff（改动/删除）或建档内容（新增），不跳编辑器。 */
-  const [expanded, setExpanded] = useState<string | null>(null);
   if (!added.length && !changed.length) return null;
-  const [sideBySide] = useAiDiffViewMode();
-  const preview = (file: AiEditedFile) => {
-    if (file.kind === "add" && file.content !== undefined) {
-      return <CodeText text={file.content} lang={file.path.split(".").pop()} />;
-    }
-    return <>{file.diff !== undefined ? <AiDiffEditor diff={file.diff} path={file.path} sideBySide={sideBySide === "split"} /> : null}
-      {file.fragments?.map((fragment, index) => <div key={index}>{fragment.before !== undefined ? <CodeText text={fragment.before} lang={file.path.split(".").pop()} /> : null}{fragment.after !== undefined ? <CodeText text={fragment.after} lang={file.path.split(".").pop()} /> : null}</div>)}</>;
-  };
   const card = (title: string, files: AiEditedFile[], open: boolean, toggle: () => void, icon: ReactNode) => files.length ? <details className={`ai-artifact-card${open ? " is-open" : ""}`} open={open}
     onToggle={(event) => { const next = event.currentTarget.open; if (next !== open) toggle(); }}>
     <summary>
       {icon}
       <strong>{title}</strong>
       <span className="ai-artifact-count">{t("ai.chat.filesCount", { count: files.length })}</span>
-      {summary.additions !== undefined ? <span className="ai-artifact-diff"><span className="is-add">+{files.reduce((sum, file) => sum + (file.additions ?? 0), 0)}</span><span className="is-delete">−{files.reduce((sum, file) => sum + (file.deletions ?? 0), 0)}</span></span> : null}
+      {/* 零值不占位：只渲染实际发生的新增和删除。 */}
+      {files.some((file) => file.additions || file.deletions) ? <span className="ai-artifact-diff">{files.some((file) => file.additions) ? <span className="is-add">+{files.reduce((sum, file) => sum + (file.additions ?? 0), 0)}</span> : null}{files.some((file) => file.deletions) ? <span className="is-delete">−{files.reduce((sum, file) => sum + (file.deletions ?? 0), 0)}</span> : null}</span> : null}
       <ChevronRight size={14} className="ai-detail-chevron" aria-hidden />
     </summary>
     <div className="ai-artifact-files">
       {files.map((file) => {
         const name = file.path.split(/[\\/]/).pop() || file.path;
         const dir = file.path.slice(0, file.path.length - name.length - 1);
-        const canPreview = (file.kind === "add" && file.content !== undefined) || file.diff !== undefined || !!file.fragments?.length;
-        return <div key={file.path} className={`ai-artifact-file is-${file.kind ?? "edit"}${expanded === file.path ? " is-expanded" : ""}`}>
-          <button type="button" className="ai-artifact-file-main" disabled={!canPreview}
-            aria-expanded={expanded === file.path}
-            title={canPreview ? t("ai.chat.previewChange") : undefined}
-            onClick={() => setExpanded((current) => current === file.path ? null : file.path)}>
+        return <div key={file.path} className={`ai-artifact-file is-${file.kind ?? "edit"}`}>
+          <button type="button" className="ai-artifact-file-main" disabled={!openPreview}
+            title={t("ai.chat.previewChange")}
+            onClick={() => openPreview?.(editedFilePreview(file, id))}>
             <span className="ai-artifact-file-name">{name}</span>
             {dir ? <span className="ai-artifact-file-dir">{dir}</span> : null}
           </button>
-          {file.additions !== undefined ? <span className="ai-artifact-file-diff"><b>+{file.additions}</b>{file.deletions ? <i>−{file.deletions}</i> : null}</span> : file.kind === "delete" ? <span className="ai-artifact-file-diff">{t("ai.tool.delete")}</span> : null}
-          {expanded === file.path ? <div className="ai-artifact-preview">{preview(file)}</div> : null}
+          {file.additions || file.deletions ? <span className="ai-artifact-file-diff">{file.additions ? <b>+{file.additions}</b> : null}{file.deletions ? <i>−{file.deletions}</i> : null}</span> : file.kind === "delete" ? <span className="ai-artifact-file-diff">{t("ai.tool.delete")}</span> : null}
         </div>;
       })}
     </div>
@@ -771,7 +759,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
   return artifacts ? (
     <Fragment key={entry.id}>
       {body}
-      <AiReplyArtifacts summary={artifacts} />
+      <AiReplyArtifacts summary={artifacts} id={entry.id} />
     </Fragment>
   ) : (
     body
@@ -793,6 +781,10 @@ interface AiSessionPaneProps {
   onNew?: () => void;
   /** 点在回复或工具卡片里的文件路径：跳到编辑器对应行。 */
   onOpenFile?: AiOpenFile;
+  /** 读取或修改记录在右侧编辑组打开，保留当次工具的范围与补丁。 */
+  onPreviewFile?: (preview: AiFilePreview) => void;
+  /** 同时显示多个会话时，共用代理停靠区只由当前会话占用。 */
+  dockActive?: boolean;
   /** 向右侧侧边栏上报子代理列表有没有内容；右栏据此决定显隐。 */
   onAgentDockAvailable?: (available: boolean) => void;
   /** 打开子代理侧栏；父会话里的状态提示调用它，不直接操纵应用布局。 */
@@ -809,7 +801,7 @@ interface AiSessionPaneProps {
  * 组件本身不持有跨会话状态，所有会话数据都在 `lib/aiRuntime` 的全局 store 里，
  * 所以切走再切回来能直接看到后台仍在推进的进度。
  */
-export default function AiSessionPane({ session, workspace, onSettings, beforeSend, onAction, onNew, onOpenFile, onAgentDockAvailable, onOpenAgentDock, onOpenSession, parentTitle }: AiSessionPaneProps) {
+export default function AiSessionPane({ session, workspace, onSettings, beforeSend, onAction, onNew, onOpenFile, onPreviewFile, dockActive = true, onAgentDockAvailable, onOpenAgentDock, onOpenSession, parentTitle }: AiSessionPaneProps) {
   const { t } = useI18n();
   /** 子代理会话：事件由父会话运行时路由进来，发送走经父转发，不直接驱动 CLI。 */
   const isAgentSession = !!session.parentSessionId;
@@ -867,7 +859,10 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [contextMenu, setContextMenu] = useState<MenuAnchor | null>(null);
   /** ↑↓ 召回停在历史的哪一条；`stash` 是走出历史时要还回去的那行，用户在召回件上改的字也存这里。 */
   const [browse, setBrowse] = useState<PromptBrowse | null>(null);
-  const [images, setImages] = useState<PastedImage[]>([]);
+  const [images, setImages] = useState<PastedImage[]>(() => loadDraftImages(workspace, session.id)
+    .map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) })));
+  /** 异步附件可能在组件刚卸载后才保存完成；ref 让落盘不依赖 React 是否还接受 setState。 */
+  const imagesRef = useRef(images);
   // 异步保存尚未回填 state 时也要占名额，防止连续粘贴越过上限。
   const pendingImages = useRef(0);
   /** 每条消息的附件上限。初值只是后端还没答话时的兜底，真实数字来自 `ai_runtime_image_limits`。 */
@@ -990,6 +985,15 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     // 直接在召回来的那行上改字：位置留住，改动记进 stash，走出历史时还回得到用户自己打的字。
     if (browse) setBrowse(browseTyped(text, { text, browse }).browse);
     setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setCommandNotice(null);
+  };
+  /** 附件变化立即写入草稿；切标签会卸载组件，不能只靠 React state 扛过去。 */
+  const updateImages = (change: (current: PastedImage[]) => PastedImage[]) => {
+    replaceImages(change(imagesRef.current));
+  };
+  const replaceImages = (next: PastedImage[]) => {
+    imagesRef.current = next;
+    setImages(next);
+    saveDraftImages(workspace, session.id, next);
   };
   /** 输入变化后同步 @ 提及建议：命中 @token 就按查询词搜一次文件（260ms 防抖，只认文件）。 */
   const syncMention = (text: string, caret: number) => {
@@ -1151,9 +1155,11 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
    * 补完之前不能说够不着。
    */
   const [pendingJump, setPendingJump] = useState<{ id: string; waiting: boolean } | null>(null);
-  // 历史 running 可能属于另一个 Forge 进程；动画和停止按钮只能认实时探针给出的本进程 run id。
+  // 历史 running 可能属于另一个 Forge 进程；停止按钮必须认实时探针给出的本进程 run id。
   const running = runtime.status === "running" && activity === "running" && runtime.runId === ownedRunId;
-  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); setImages([]); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; setTaskListDisclosure(null); }, [optionsKey, session.id, workspace]);
+  // 视觉上的运行态：无论是否独占控制权，只要会话处于运行中，就必须展示底部的运行状态条与图标呼吸动画。
+  const visualRunning = running || activity === "running" || runtime.status === "running";
+  useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); const restoredImages = loadDraftImages(workspace, session.id).map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) })); imagesRef.current = restoredImages; setImages(restoredImages); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; setTaskListDisclosure(null); }, [optionsKey, session.id, workspace]);
   /**
    * 新建会话的交接：草稿欢迎页在创建会话时把首条消息（含附件）留在这里，
    * 会话页挂载后先回填输入框与附件，再触发一次正常发送——信任确认、未保存检查
@@ -1165,7 +1171,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     const payload = draftHandoff.current;
     if (!payload) return;
     draftHandoff.current = null;
-    if (payload.images.length) setImages(payload.images.map((path) => ({ path, preview: assetUrl(path, 0), name: path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage") })));
+    if (payload.images.length) replaceImages(payload.images.map((path) => ({ path, preview: assetUrl(path, 0), name: path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage") })));
     if (payload.text) commitDraft(payload.text);
     setArmedSend(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在会话页挂载时消费一次交接载荷。
@@ -1198,7 +1204,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     void Promise.allSettled(tasks).then((results) => {
       const saved = results.flatMap((result): PastedImage[] => result.status === "fulfilled" ? [result.value] : []);
       const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-      if (saved.length) setImages((current) => [...current, ...saved]);
+      if (saved.length) updateImages((current) => [...current, ...saved]);
       setError(failed ? String(failed.reason) : null);
     }).finally(() => { pendingImages.current = Math.max(0, pendingImages.current - tasks.length); });
   };
@@ -1395,7 +1401,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       void loadAiMessages(session.id, workspace, true).catch(() => {});
       // 首条消息落盘后后端会把标题换成消息摘要：刷一次会话列表，侧栏与标签立即跟上。
       refreshAiSessionHistory();
-      if (override === undefined) { commitDraft(""); setBrowse(null); setImages([]); setShowHelp(false); }
+      if (override === undefined) { commitDraft(""); replaceImages([]); setBrowse(null); setShowHelp(false); }
       rememberPrompt(workspace, text);
       setAnchor(null); setAtBottom(true); scrollToBottom();
     } catch (cause) { setError(String(cause)); }
@@ -1745,7 +1751,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   ]);
   // 原生历史里提不出标题时 meta 就是空的；标题行不能是一条空白。
   const displayTitle = session.title || t("ai.untitledSession");
-  return <AiOpenFileProvider onOpen={onOpenFile}>
+  return <AiOpenFileProvider onOpen={onOpenFile} onPreview={onPreviewFile}>
   <section ref={pane} className="ai-session-pane" aria-label={displayTitle}
     style={{ "--ai-content-width": `${chatWidth.width}px` } as CSSProperties}>
     <header className="ai-session-pane-head">
@@ -1763,7 +1769,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         {workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}
       </span>
       <ChevronRight size={14} className="ai-head-sep" aria-hidden />
-      <span className={`ai-head-provider-icon${activity === "running" || running ? " is-running" : ""}`} aria-hidden>
+      <span className={`ai-head-provider-icon${visualRunning ? " is-running" : ""}`} aria-hidden>
         <AiProviderIcon provider={session.provider} size={14} />
       </span>
       <span className="ai-head-title" title={displayTitle}>{displayTitle}</span>
@@ -1896,7 +1902,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       {latestTask?.error ? <div className="ai-turn-error" role="note"><CircleAlert size={14} aria-hidden /><p>{latestTask.error}</p></div> : null}
       {connectingTask ? <AiLiveStats provider={session.provider} runId={connectingTask.runId} entries={runtime.entries} usage={runtime.usage}
         statusText={runtime.stopping ? t("ai.lifecycle.stopping") : t("ai.runtime.submitting")} planMode={options.mode === "plan" || options.planMode === true} />
-      : running ? <AiLiveStats provider={session.provider} runId={runtime.runId} entries={runtime.entries} usage={runtime.usage}
+      : visualRunning ? <AiLiveStats provider={session.provider} runId={runtime.runId ?? ownedRunId} entries={runtime.entries} usage={runtime.usage}
         statusText={compacting ? t("ai.compact.chipCompacting") : runtime.stopping ? t("ai.lifecycle.stopping") : t("ai.runtime.running")}
         planMode={options.mode === "plan" || options.planMode === true} /> : null}
       {finishedTask && turnStats ? <AiTurnStats runId={finishedTask.runId} usage={runtime.usage}
@@ -1912,7 +1918,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     {showMessageNav ? <AiMessageNav key={session.id} entries={runtime.entries} outline={outline} hasOlder={runtime.hasOlder}
       onRequestOutline={() => { if (workspace) void loadAiOutline(session.id, workspace).catch(() => {}); }} onJump={jumpToTurn} /> : null}
     {/* 子代理列表同样停靠右栏：只在父会话显示（子会话自己就是那个代理）。 */}
-    {!isAgentSession && runtime.agents.length && dockSlots.agents ? createPortal(
+    {dockActive && !isAgentSession && runtime.agents.length && dockSlots.agents ? createPortal(
       <AiAgentDockPanel key={session.id} agents={runtime.agents} provider={session.provider} workspace={workspace}
         onOpen={(id) => onOpenSession?.(id)} />,
       dockSlots.agents,
@@ -2005,7 +2011,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         {mentionVisible ? <AiMentionMenu id={`${menuId}-mention`} items={mentionItems} selected={Math.min(mentionIndex, mentionItems.length - 1)} onChoose={acceptMention} /> : null}
       </>}
       attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
-        {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
+        {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
       </div> : null}
       editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={isAgentSession ? t("ai.agent.relayPlaceholder") : editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
         aria-autocomplete="list" aria-controls={menuVisible ? menuId : undefined} aria-expanded={menuVisible} aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
@@ -2120,8 +2126,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     ) : null}
     <div className="ai-composer-caption"><span title={workspace ?? undefined}>{workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}</span>
       {/* 本轮改过哪些文件属于「这一整趟的结果」，不属于某一条消息：收在底栏，点开往上浮。 */}
-      {editSummary.fileCount ? <details className="ai-edit-summary"><summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t(editSummary.fileCount === 1 ? "ai.chat.editedFile" : "ai.chat.editedFiles", { count: editSummary.fileCount })}</strong>{editSummary.additions !== undefined ? <><span className="is-add">+{editSummary.additions}</span><span className="is-delete">-{editSummary.deletions}</span></> : null}</summary>
-        <ul>{editSummary.files.map((file) => <li key={file.path}>{file.kind ? <em className={`ai-edit-kind is-${file.kind}`}>{t(`ai.tool.${file.kind}`)}</em> : null}<code className="ai-file-path">{file.path}</code>{file.additions !== undefined ? <span><b>+{file.additions}</b> <i>-{file.deletions}</i></span> : null}</li>)}</ul>
+      {editSummary.fileCount ? <details className="ai-edit-summary"><summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t(editSummary.fileCount === 1 ? "ai.chat.editedFile" : "ai.chat.editedFiles", { count: editSummary.fileCount })}</strong>{editSummary.additions ? <span className="is-add">+{editSummary.additions}</span> : null}{editSummary.deletions ? <span className="is-delete">-{editSummary.deletions}</span> : null}</summary>
+        <ul>{editSummary.files.map((file) => <li key={file.path}>{file.kind ? <em className={`ai-edit-kind is-${file.kind}`}>{t(`ai.tool.${file.kind}`)}</em> : null}<button type="button" className="ai-file-target" disabled={!onPreviewFile} onClick={() => onPreviewFile?.(editedFilePreview(file, `${session.id}:summary`))}><code className="ai-file-path">{file.path}</code></button>{file.additions || file.deletions ? <span>{file.additions ? <b>+{file.additions}</b> : null} {file.deletions ? <i>-{file.deletions}</i> : null}</span> : null}</li>)}</ul>
       </details> : null}
       {extraDirs.length ? <details className="ai-edit-summary">
         <summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t("ai.chat.extraDirs", { count: extraDirs.length })}</strong></summary>

@@ -43,6 +43,9 @@ export function alignDiffSides(diff: string, startLine?: number): {
         // 各自游标直接跳到 hunk 起点——Monaco 只比对送进去的文本，跳过的区间不影响对齐。
         oldAt = Number(hunk[1]);
         newAt = Number(hunk[2]);
+      } else if (/^(?:@@|diff --git |index |--- |\+\+\+ |\\ No newline)/.test(line.text)) {
+        // 补丁的定位标题和元信息不是源码，原生 apply_patch 也遵循这条边界。
+        continue;
       } else if (!inHunk) {
         // 没有 hunk 头的裸补丁：空格开头的上下文行两侧同现，丢了它两侧就错位。
         const body = line.text.replace(/^ /, "");
@@ -73,7 +76,7 @@ export function alignDiffSides(diff: string, startLine?: number): {
   return { original: oldLines.join("\n"), modified: newLines.join("\n"), oldNos, newNos };
 }
 
-export default memo(function AiDiffEditor({ diff, original, modified, path, sideBySide, height = 320 }: {
+export default memo(function AiDiffEditor({ diff, original, modified, path, sideBySide, height = 320, revealChange = false }: {
   /** unified diff；与 original/modified 二选一。 */
   diff?: string;
   /** 改动前/后的完整文本（补丁 old/new、新建文件 original="" modified=content）。 */
@@ -83,7 +86,9 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
   path: string;
   sideBySide: boolean;
   /** 不传则按内容行数自适应（88–320px）。 */
-  height?: number;
+  height?: number | "100%";
+  /** 独立标签打开后直接滚到首处改动，聊天行内预览保持原来的滚动行为。 */
+  revealChange?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -102,6 +107,7 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
     let cancelled = false;
     let editor: import("../lib/monacoEditor").monaco.editor.IStandaloneDiffEditor | null = null;
     let models: Array<{ dispose(): void }> = [];
+    let diffSubscription: { dispose(): void } | undefined;
     void Promise.all([import("../lib/monacoEditor"), import("../lib/monacoEnv")]).then(([{ monaco }, { languageForPath, monoFont }]) => {
       if (cancelled) return;
       const element = host.current;
@@ -129,6 +135,19 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
       const left = monaco.editor.createModel(sides.original, languageForPath(path), uri("original"));
       const right = monaco.editor.createModel(sides.modified, languageForPath(path), uri("modified"));
       editor.setModel({ original: left, modified: right });
+      if (revealChange) {
+        const view = editor;
+        let revealed = false;
+        const reveal = () => {
+          if (revealed) return;
+          const first = view.getLineChanges()?.[0];
+          if (!first) return;
+          revealed = true;
+          view.getModifiedEditor().revealLineInCenter(Math.max(1, first.modifiedStartLineNumber));
+        };
+        diffSubscription = view.onDidUpdateDiff(reveal);
+        reveal();
+      }
       // 行号显示真实文件行号：模型从 1 起数，但每行的文件行号来自对齐映射
       // （hunk 之间跳过的区间不占号，所以不是简单的 start + n）。
       const { oldNos, newNos } = sides;
@@ -143,10 +162,11 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
     });
     return () => {
       cancelled = true;
+      diffSubscription?.dispose();
       editor?.dispose();
       models.forEach((model) => model.dispose());
     };
-  }, [sides, path, sideBySide]);
+  }, [sides, path, sideBySide, revealChange]);
 
   return <div className={`ai-diff-editor${ready ? "" : " is-loading"}`} style={{ height: height ?? contentHeight }} ref={host} />;
 });

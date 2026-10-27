@@ -46,4 +46,10 @@ describe("alignDiffSides", () => {
     expect(rows(original)).toEqual(["a", "c"]);
     expect(rows(modified)).toEqual(["b", "c"]);
   });
+
+  it("原生 apply_patch 上下文标题不是源文件正文", () => {
+    const { original, modified } = alignDiffSides("@@ function example\n keep\n-old\n+new\n tail");
+    expect(rows(original)).toEqual(["keep", "old", "tail"]);
+    expect(rows(modified)).toEqual(["keep", "new", "tail"]);
+  });
 });

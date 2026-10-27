@@ -1,13 +1,17 @@
 import { createContext, useContext, type ReactNode } from "react";
+import type { AiFilePreview } from "../lib/aiFilePreview";
 
 /** AI 回复里点开文件：路径是消息里写的原样，由上层按工程根还原。 */
 export type AiOpenFile = (path: string, line?: number, column?: number) => void;
 
 const AiOpenFileContext = createContext<AiOpenFile | null>(null);
+const AiFilePreviewContext = createContext<((preview: AiFilePreview) => void) | null>(null);
 
-export function AiOpenFileProvider({ onOpen, children }: { onOpen?: AiOpenFile; children: ReactNode }) {
-  return <AiOpenFileContext.Provider value={onOpen ?? null}>{children}</AiOpenFileContext.Provider>;
+export function AiOpenFileProvider({ onOpen, onPreview, children }: { onOpen?: AiOpenFile; onPreview?: (preview: AiFilePreview) => void; children: ReactNode }) {
+  return <AiOpenFileContext.Provider value={onOpen ?? null}><AiFilePreviewContext.Provider value={onPreview ?? null}>{children}</AiFilePreviewContext.Provider></AiOpenFileContext.Provider>;
 }
+
+export const useAiFilePreview = () => useContext(AiFilePreviewContext);
 
 export function useAiOpenFile(): AiOpenFile | null {
   return useContext(AiOpenFileContext);

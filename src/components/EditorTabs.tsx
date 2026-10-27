@@ -183,25 +183,24 @@ export default function EditorTabs({
         onSelect: () => onRevealInSidebar(target),
       });
     }
-    if (tab.kind === "doc" || tab.kind === "diff") {
-      if (onSplitRight) {
-        items.push({
-          label: t("menu.splitRight"),
-          onSelect: () => onSplitRight(tab.id),
-        });
-      }
-      if (onSplitDown) {
-        items.push({
-          label: t("menu.splitDown"),
-          onSelect: () => onSplitDown(tab.id),
-        });
-      }
-      if (isSplit && onCloseSplit) {
-        items.push({
-          label: t("menu.unsplit"),
-          onSelect: () => onCloseSplit(),
-        });
-      }
+    // 拆分属于标签容器能力，所有标签类型共用同一个入口。
+    if (onSplitRight) {
+      items.push({
+        label: t("menu.splitRight"),
+        onSelect: () => onSplitRight(tab.id),
+      });
+    }
+    if (onSplitDown) {
+      items.push({
+        label: t("menu.splitDown"),
+        onSelect: () => onSplitDown(tab.id),
+      });
+    }
+    if (isSplit && onCloseSplit) {
+      items.push({
+        label: t("menu.unsplit"),
+        onSelect: () => onCloseSplit(),
+      });
     }
     if (tab.kind === "doc" && onShowLocalHistory) {
       items.push({

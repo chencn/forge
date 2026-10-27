@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { AiEntry } from "../../src/lib/aiRuntime";
@@ -10,6 +10,7 @@ vi.mock("../../src/i18n", () => ({
 
 import { AiFilePath, AiOpenFileProvider } from "../../src/components/AiFileLink";
 import { AiToolCall, AiToolSummary } from "../../src/components/AiToolDetails";
+import type { AiFilePreview } from "../../src/lib/aiFilePreview";
 
 function entry(over: Partial<AiEntry>): AiEntry {
   return { id: "e1", runId: "r1", kind: "tool", text: "", status: "completed", ...over };
@@ -91,5 +92,55 @@ describe("AiToolCall 的运行态展开", () => {
     // 展开规则绑定运行阶段；历史完成项不能继承运行时的敞开状态。
     expect(running).toMatch(/<details[^>]* open=""/);
     expect(completed).not.toMatch(/<details[^>]* open=""/);
+  });
+});
+
+describe("AI 文件操作打开独立预览", () => {
+  function buttons(root: unknown): Array<ReactElement<{ onClick?: () => void; children?: ReactNode }>> {
+    if (Array.isArray(root)) return root.flatMap(buttons);
+    if (!root || typeof root !== "object" || !("props" in root)) return [];
+    const node = root as ReactElement<{ onClick?: () => void; children?: ReactNode }>;
+    return [...(node.type === "button" ? [node] : []), ...buttons(node.props.children)];
+  }
+
+  function renderCall(tool: AiEntry, onPreview: (preview: AiFilePreview) => void) {
+    let tree: ReactNode;
+    function Harness() {
+      // 通过真实组件的点击边界验证传给编辑区的数据，SSR 只负责提供 Hook/Context。
+      tree = (AiToolCall as unknown as { type: (props: { entry: AiEntry }) => ReactNode }).type({ entry: tool });
+      return tree;
+    }
+    renderToStaticMarkup(createElement(AiOpenFileProvider, { onPreview, children: createElement(Harness) }));
+    return buttons(tree!);
+  }
+
+  it("读取行点击发送完整读取范围到预览入口", () => {
+    const open = vi.fn();
+    const controls = renderCall(entry({ name: "Read", input: { file_path: "a.ts" },
+      result: { type: "text", file: { startLine: 12, numLines: 5, content: "read fragment" } },
+    }), open);
+    expect(controls).toHaveLength(1);
+    controls[0].props.onClick!();
+    expect(open).toHaveBeenCalledExactlyOnceWith({ id: "e1:0", kind: "read", path: "a.ts", start: 12, end: 16, source: "read fragment" });
+  });
+
+  it("修改行点击保留当次补丁，不依赖当前 Git 改动", () => {
+    const open = vi.fn();
+    const controls = renderCall(entry({ name: "Edit", input: { file_path: "a.ts" }, result: {
+      type: "update", structuredPatch: [{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ["-old", "+new"] }],
+    } }), open);
+    controls[0].props.onClick!();
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ kind: "change", path: "a.ts", patches: [expect.objectContaining({ diff: "@@ -3,1 +3,1 @@\n-old\n+new", proposed: false })] }));
+  });
+
+  it("多文件操作分别打开对应的文件", () => {
+    const open = vi.fn();
+    const controls = renderCall(entry({ input: { changes: [
+      { path: "a.ts", kind: "add", diff: "+first" },
+      { path: "b.ts", kind: "update", diff: "-old\n+second" },
+    ] } }), open);
+    expect(controls).toHaveLength(2);
+    controls[1].props.onClick!();
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ kind: "change", path: "b.ts", patches: [expect.objectContaining({ diff: "-old\n+second" })] }));
   });
 });

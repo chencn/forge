@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiSessionStorageKey } from "../../src/lib/aiSessions";
-import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearAiSessionStorage, clearDraft, loadDraft, loadPromptHistory, rememberPrompt, saveDraft } from "../../src/lib/aiDrafts";
+import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearAiSessionStorage, clearDraft, clearDraftImages, flushDraft, loadDraft, loadDraftImages, loadPromptHistory, rememberPrompt, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
 import type { DraftState } from "../../src/lib/aiDrafts";
 
 const ROOT = "D:\\app\\code\\forge";
@@ -9,12 +9,18 @@ const PROMPTS = `${aiSessionStorageKey(ROOT)}:prompts`;
 let store: Map<string, string>;
 
 beforeEach(() => {
+  vi.useFakeTimers();
   store = new Map();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => { store.set(key, value); },
     removeItem: (key: string) => { store.delete(key); },
   });
+});
+afterEach(() => {
+  // 模拟窗口退出，刷完当前存储的待写入项，避免跨用例遗留防抖任务。
+  flushDraft();
+  vi.useRealTimers();
 });
 
 describe("AI 草稿持久化", () => {
@@ -29,6 +35,38 @@ describe("AI 草稿持久化", () => {
     saveDraft("D:\\app\\code\\forge\\", "s1", "带尾斜杠");
     expect(loadDraft("d:/app/code/forge", "s1")).toBe("带尾斜杠");
     expect(loadDraft("D:\\app\\code\\other", "s1")).toBe("");
+  });
+  it("快速切换项目与会话时，每份草稿都能延迟落盘", () => {
+    saveDraft(ROOT, "s1", "第一条");
+    saveDraft(ROOT, "s2", "第二条");
+    saveDraft("D:/other", "s1", "其他项目");
+    expect(loadDraft(ROOT, "s1")).toBe("第一条");
+    expect(loadDraft("D:/other", "s1")).toBe("其他项目");
+    expect(store.size).toBe(0);
+    vi.advanceTimersByTime(300);
+    expect(store.get(`${aiSessionStorageKey(ROOT)}:draft:s1`)).toBe("第一条");
+    expect(store.get(`${aiSessionStorageKey(ROOT)}:draft:s2`)).toBe("第二条");
+    expect(store.get(`${aiSessionStorageKey("D:/other")}:draft:s1`)).toBe("其他项目");
+  });
+  it("发送清空与删除会话取消各自的待写入项，不影响其他项目", () => {
+    saveDraft(ROOT, "s1", "已发送");
+    saveDraft(ROOT, "s2", "已删除");
+    saveDraft("D:/other", "s1", "继续编辑");
+    clearDraft(ROOT, "s1");
+    clearAiSessionStorage(ROOT, "s2");
+    vi.advanceTimersByTime(300);
+    expect(loadDraft(ROOT, "s1")).toBe("");
+    expect(loadDraft(ROOT, "s2")).toBe("");
+    expect(loadDraft("D:/other", "s1")).toBe("继续编辑");
+    expect([...store.keys()]).toEqual([`${aiSessionStorageKey("D:/other")}:draft:s1`]);
+  });
+  it("立即写入一份草稿后，不会被旧的防抖值覆盖", () => {
+    saveDraft(ROOT, "s1", "旧值");
+    saveDraft(ROOT, "s2", "另一份");
+    saveDraft(ROOT, "s1", "新值", true);
+    vi.advanceTimersByTime(300);
+    expect(loadDraft(ROOT, "s1")).toBe("新值");
+    expect(loadDraft(ROOT, "s2")).toBe("另一份");
   });
   it("清空草稿是删键，不是留一条空记录", () => {
     saveDraft(ROOT, "s1", "x");
@@ -46,10 +84,24 @@ describe("AI 草稿持久化", () => {
   it("删除会话同时清理草稿、附加目录和会话选项", () => {
     const prefix = aiSessionStorageKey(ROOT);
     saveDraft(ROOT, "s1", "draft");
+    saveDraftImages(ROOT, "s1", [{ path: "C:/cache/paste-1.png", name: "screen.png" }]);
     store.set(`${prefix}:dirs:s1`, '["D:/extra"]');
     store.set(`${prefix}:options:s1`, '{"model":"chosen"}');
     clearAiSessionStorage(ROOT, "s1");
     expect([...store.keys()].filter((key) => key.includes(":s1"))).toEqual([]);
+  });
+  it("按会话保存待发送附件，并忽略损坏缓存", () => {
+    const images = [{ path: "C:/cache/paste-1.png", name: "screen.png" }];
+    saveDraftImages(ROOT, "s1", images);
+    expect(loadDraftImages(ROOT, "s1")).toEqual(images);
+    expect(loadDraftImages(ROOT, "s2")).toEqual([]);
+
+    store.set(`${aiSessionStorageKey(ROOT)}:draft-images:s2`, JSON.stringify([
+      null, { path: 42, name: "bad" }, { path: "C:/cache/file-2.webp", name: "diagram.webp" },
+    ]));
+    expect(loadDraftImages(ROOT, "s2")).toEqual([{ path: "C:/cache/file-2.webp", name: "diagram.webp" }]);
+    clearDraftImages(ROOT, "s1");
+    expect(loadDraftImages(ROOT, "s1")).toEqual([]);
   });
   it("超长草稿只留前面一段", () => {
     saveDraft(ROOT, "s1", "a".repeat(25_000));

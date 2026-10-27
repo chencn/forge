@@ -3,12 +3,12 @@ import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
-import { loadDraft, rememberPrompt } from "../../src/lib/aiDrafts";
+import { loadDraft, loadDraftImages, rememberPrompt, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
 
 const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
 vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Record<string, unknown>) => key === "ai.chat.editedFiles" ? `Edited ${vars?.count} files` : key }) }));
 vi.mock("../../src/lib/aiCli", () => ({ AI_NAMES: { codex: "Codex" }, cliDesktopAvailable: () => h.desktop }));
-vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiCapabilities: h.models, loadAiMessages: vi.fn(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn(), stopAiAgent: vi.fn() }));
+vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiCapabilities: h.models, loadAiMessages: () => Promise.resolve(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn(), stopAiAgent: vi.fn() }));
 vi.mock("../../src/lib/fs", () => ({ openExternal: vi.fn(), assetUrl: (path: string) => `asset://${path}` }));
 vi.mock("dompurify", () => ({ default: { sanitize: h.sanitize } }));
 import AiSessionPane from "../../src/components/AiSessionPane";
@@ -377,6 +377,19 @@ describe("AI conversation pane", () => {
     expect(loadDraft("D:/project", sessionId)).toBe("写到一半");
     expect(loadDraft("D:/project", "别的会话")).toBe("");
     expect(textarea(render().pane).props.value).toBe("写到一半");
+  });
+  it("restores staged image attachments after switching away and still sends their cached paths", async () => {
+    // 切换标签会卸载会话面板；这里直接摆出上一次挂载已落盘的草稿附件，模拟重新挂载。
+    saveDraftImages("D:/project", sessionId, [{ path: "C:/cache/paste-1.png", name: "screen.png" }]);
+    saveDraft("D:/project", sessionId, "继续看这张图", true);
+
+    const restored = render();
+    expect(restored.html).toContain('src="asset://C:/cache/paste-1.png"');
+    textarea(restored.pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
+
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalled());
+    expect(h.send.mock.calls[0][6]).toEqual(["C:/cache/paste-1.png"]);
+    await vi.waitFor(() => expect(loadDraftImages("D:/project", sessionId)).toEqual([]));
   });
   it("不再有信任确认挡路：首条消息直接发出，不弹窗", async () => {
     textarea(render().pane).props.onChange({ target: { value: "直接发这条" } });

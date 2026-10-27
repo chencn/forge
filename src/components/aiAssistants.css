@@ -261,6 +261,7 @@
 /* 路径能点开：摘要与明细里的目标都用同一条按钮样式，默认外观全部抹掉。 */
 .ai-file-target { appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
 .ai-file-target:hover { text-decoration: underline; text-underline-offset: 2px; }
+.ai-file-preview-trigger { width: 100%; }
 .ai-tool-target { color: var(--accent-blue-text); }
 .ai-tool-status { flex: none; font-size: 11px; color: var(--text-tertiary); }
 .ai-tool.is-failed .ai-tool-status { color: var(--accent-red-text); }
@@ -626,18 +627,21 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 /* 运行中前面的供应商图标呼吸闪动 */
 .ai-scard-icon.is-running svg,
 .ai-tab-provider-icon.is-running svg,
-.ai-head-provider-icon.is-running svg {
+.ai-head-provider-icon.is-running svg,
+.ai-live-stats .ai-provider-icon {
   animation: ai-icon-pulse 1.4s ease-in-out infinite;
   transform-origin: center center;
 }
 .ai-scard-icon.is-running .ai-provider-icon.is-claude,
 .ai-tab-provider-icon.is-running .ai-provider-icon.is-claude,
-.ai-head-provider-icon.is-running .ai-provider-icon.is-claude {
+.ai-head-provider-icon.is-running .ai-provider-icon.is-claude,
+.ai-live-stats .ai-provider-icon.is-claude {
   filter: drop-shadow(0 0 4px rgba(217, 119, 87, 0.65));
 }
 .ai-scard-icon.is-running .ai-provider-icon.is-codex,
 .ai-tab-provider-icon.is-running .ai-provider-icon.is-codex,
-.ai-head-provider-icon.is-running .ai-provider-icon.is-codex {
+.ai-head-provider-icon.is-running .ai-provider-icon.is-codex,
+.ai-live-stats .ai-provider-icon.is-codex {
   filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.65));
 }
 @keyframes ai-icon-pulse {
@@ -647,7 +651,8 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 @media (prefers-reduced-motion: reduce) {
   .ai-scard-icon.is-running svg,
   .ai-tab-provider-icon.is-running svg,
-  .ai-head-provider-icon.is-running svg {
+  .ai-head-provider-icon.is-running svg,
+  .ai-live-stats .ai-provider-icon {
     animation: none;
   }
 }

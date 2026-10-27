@@ -32,7 +32,7 @@ import AiSessionsPanel, { AiSessionsToolbar } from "../../src/components/AiSessi
 import AiSidebarCard from "../../src/components/AiSidebarCard";
 import AiCliSettingsPanel, { AiAssistantsToggle, AiCliSettingsControls } from "../../src/components/AiCliSettingsPanel";
 import Select from "../../src/components/Select";
-import AiProviderIcon from "../../src/components/AiProviderIcon";
+import AiProviderIcon, { AiTabProviderIcon } from "../../src/components/AiProviderIcon";
 
 function installed(provider: AiProvider): AiCliStatus {
   return { provider, installed: true, version: "1.2.3", path: null, source: "external", latestVersion: null, latestSource: null,
@@ -261,5 +261,27 @@ describe("统一会话侧栏", () => {
     // 空闲态下供应商图标容器不带有 is-running 类名
     expect(idleCard).toContain('class="ai-scard-icon"');
     expect(idleCard).not.toContain("is-running");
+  });
+
+  it("Tab 标签上的供应商图标自订阅运行状态：running 时带 is-running，否则不带", async () => {
+    const aiRuntime = await import("../../src/lib/aiRuntime");
+    const spy = vi.spyOn(aiRuntime, "useAiSessionActivity").mockReturnValue("idle");
+
+    const idleMarkup = renderToStaticMarkup(createElement(AiTabProviderIcon, {
+      sessionId: "tab-test",
+      provider: "claude",
+    }));
+    expect(idleMarkup).toContain('class="ai-tab-provider-icon"');
+    expect(idleMarkup).not.toContain("is-running");
+
+    spy.mockReturnValue("running");
+    const runningMarkup = renderToStaticMarkup(createElement(AiTabProviderIcon, {
+      sessionId: "tab-test",
+      provider: "codex",
+    }));
+    expect(runningMarkup).toContain('class="ai-tab-provider-icon is-running"');
+    expect(runningMarkup).toContain('ai-provider-icon is-codex');
+
+    spy.mockRestore();
   });
 });

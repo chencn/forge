@@ -1,5 +1,6 @@
 import { useId } from "react";
 import type { AiProvider } from "../lib/aiCli";
+import { useAiSessionActivity } from "../lib/aiRuntime";
 
 // Lobe Icons (@lobehub/icons-static-svg 1.97.0), MIT.
 // 来源和许可见 public/licenses/lobe-icons.txt。图标随应用打包，不请求远程图片。
@@ -36,4 +37,18 @@ export default function AiProviderIcon({ provider, size = 16 }: AiProviderIconPr
     fill="#D97757" fillRule="evenodd" aria-hidden="true" focusable="false">
     <path d={CLAUDE_PATH} clipRule="evenodd" />
   </svg>;
+}
+
+/**
+ * 标签页上的 AI 供应商图标：自订阅会话活动状态，运行中自动加上 is-running 呼吸闪动动画，
+ * 避免外层 tabCatalog 的 useMemo 阻断更新，确保与侧栏、正文状态保持完全同步。
+ */
+export function AiTabProviderIcon({ sessionId, provider }: { sessionId: string; provider: AiProvider }) {
+  const activity = useAiSessionActivity(sessionId);
+  const isRunning = activity === "running";
+  return (
+    <span className={`ai-tab-provider-icon${isRunning ? " is-running" : ""}`}>
+      <AiProviderIcon provider={provider} size={14} />
+    </span>
+  );
 }

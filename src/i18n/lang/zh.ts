@@ -1,5 +1,9 @@
 export const zh = {
   "app.name": "Forge",
+  "ai.filePreview.readRange": "读取范围：{start}–{end} 行",
+  "ai.filePreview.loading": "正在读取完整文件…",
+  "ai.filePreview.readFragment": "完整文件无法读取，以下显示当时读取的片段。",
+  "ai.filePreview.patchOnly": "无法从当前文件准确还原当次完整差异，以下显示当时记录的补丁或替换片段。",
   "app.tagline": "代码编辑器",
 
   "sidebar.hide": "收起侧栏",

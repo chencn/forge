@@ -12,6 +12,8 @@ import { ArrowUpRight, Bot, Brain, ChevronRight, FileText, FilePenLine, Layers, 
 import { renderCodeBlock } from "../lib/markdown";
 import AiMarkdown from "./AiMarkdown";
 import { AiQuestionCard } from "./AiQuestionCard";
+import { useAiFilePreview } from "./AiFileLink";
+import { toolFilePreviews } from "../lib/aiFilePreview";
 
 /** 摘要只有一个目标时才整行可点：多个时摘要拼在一起，点了不知道开哪个。 */
 function summaryTarget(view: ToolView): { path: string; line?: number } | null {
@@ -206,6 +208,7 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
 export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
   const view = describeAiTool(entry, false);
+  const openPreview = useAiFilePreview();
   const fileEdit = ["edit", "add", "delete", "move"].includes(view.kind);
   const phase = entry.status ?? "pending";
   const defaultOpen = phase === "running" && (fileEdit || view.kind === "command");
@@ -222,6 +225,22 @@ export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasReques
     </div>;
   }
   const status = entry.status === "failed" ? t("ai.runtime.failed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
+  // 文件操作整行打开独立预览；命令、搜索和审批等仍使用原有详情。
+  if (openPreview && (view.kind === "read" || fileEdit)) {
+    const targets = toolFilePreviews(entry, false);
+    if (targets.length) return <div className={`ai-tool is-${phase}`} data-kind={view.kind}>
+      {targets.map((target) => <button type="button" key={target.id} className="ai-row-head ai-file-target ai-file-preview-trigger"
+        title={target.path} onClick={() => {
+          const preview = toolFilePreviews(entry).find((item) => item.id === target.id);
+          if (preview) openPreview(preview);
+        }}>
+        {targets.length === 1 ? <AiToolSummary entry={entry} /> : <><span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span><span className="ai-tool-name">{target.path}</span></>}
+        <AiToolFigure entry={entry} view={view} />
+        {status ? <span className="ai-tool-status">{status}</span> : null}
+        <ArrowUpRight size={14} aria-hidden />
+      </button>)}
+    </div>;
+  }
   return <details className={`ai-tool is-${entry.status ?? "pending"}`} data-kind={view.kind} open={open}
     onToggle={(event) => setDisclosure({ phase, open: event.currentTarget.open })}>
     <summary className="ai-row-head">
@@ -297,15 +316,10 @@ export function AiToolSummary({ entry, icon = true, disclosure }: { entry: AiEnt
       </span>
     ) : null}
     {/* 修改文件：在文件名前面显示增减行数，流式修改中支持实时动态变化 */}
-    {diffCounts ? (
+    {diffCounts && (diffCounts.additions > 0 || diffCounts.deletions > 0) ? (
       <span className={`ai-tool-inline-badge is-edit${running ? " is-live" : ""}`}>
-        <span className="is-add">+{diffCounts.additions}</span>
-        <span className="is-delete">−{diffCounts.deletions}</span>
-      </span>
-    ) : running && ["edit", "add", "delete", "move"].includes(view.kind) ? (
-      <span className="ai-tool-inline-badge is-edit is-live">
-        <span className="is-add">+0</span>
-        <span className="is-delete">−0</span>
+        {diffCounts.additions > 0 ? <span className="is-add">+{diffCounts.additions}</span> : null}
+        {diffCounts.deletions > 0 ? <span className="is-delete">−{diffCounts.deletions}</span> : null}
       </span>
     ) : null}
     {questionSummary ? <span className="ai-tool-name" title={questionSummary}>{questionSummary}</span>

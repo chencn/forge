@@ -54,7 +54,7 @@ export function describeAiTool(entry: AiEntry, details = true): ToolView {
   }
   if (entry.name === "Read") {
     view.kind = "read"; view.summary = path ?? "";
-    const start = number(file.startLine), count = number(file.numLines);
+    const start = number(file.startLine) ?? number(input.offset), count = number(file.numLines) ?? number(input.limit);
     view.actions.push({ kind: "read", target: path ?? "", start: start ?? number(input.offset), end: start !== undefined && count !== undefined ? start + Math.max(0, count - 1) : undefined });
     if (result.type === "text" && typeof file.content === "string" && start !== undefined && count !== undefined) {
       view.source = { path: path ?? "", content: file.content, start, end: start + Math.max(0, count - 1), total: number(file.totalLines), truncated: file.truncatedByTokenCap === true };

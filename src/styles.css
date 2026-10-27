@@ -4753,6 +4753,14 @@ span.entry-icon > svg {
   border-top: 1px solid var(--border-color);
 }
 
+.ai-file-preview-pane { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
+.ai-file-preview-head { display: flex; flex-wrap: wrap; gap: 12px; flex: none; padding: 8px 12px; border-bottom: 1px solid var(--border-color); font-size: 12px; overflow-wrap: anywhere; }
+.ai-file-preview-editor, .ai-file-preview-patches { flex: 1; min-height: 0; overflow: auto; }
+.ai-file-preview-editor { height: 100%; }
+.ai-file-preview-pane > .ai-diff-editor { flex: 1; min-height: 0; }
+/* 读取记录使用整行底色和装订线标记，光标离开后仍能辨认读取范围。 */
+.ai-file-read-highlight { background: color-mix(in srgb, var(--accent-blue) 12%, transparent); }
+.ai-file-read-gutter { border-left: 3px solid var(--accent-blue); }
 .editor-pane-body {
   display: flex;
   flex-direction: column;

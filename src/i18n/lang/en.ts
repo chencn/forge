@@ -2,6 +2,10 @@ import type { TranslationKey } from "./zh";
 
 export const en: Record<TranslationKey, string> = {
   "app.name": "Forge",
+  "ai.filePreview.readRange": "Read lines: {start}–{end}",
+  "ai.filePreview.loading": "Loading the complete file…",
+  "ai.filePreview.readFragment": "The complete file is unavailable. Showing the recorded read fragment.",
+  "ai.filePreview.patchOnly": "The full change cannot be reconstructed accurately from the current file. Showing the recorded patch or replacement fragments.",
   "app.tagline": "Code editor",
 
   "sidebar.hide": "Collapse sidebar",

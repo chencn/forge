@@ -8,6 +8,7 @@ import { aiSessionStorageKey } from "./aiSessions";
  * 「我在这个项目里说过什么」，跟哪个标签无关）。
  */
 const draftKey = (workspace: string | null, sessionId: string) => `${aiSessionStorageKey(workspace)}:draft:${sessionId}`;
+const draftImagesKey = (workspace: string | null, sessionId: string) => `${aiSessionStorageKey(workspace)}:draft-images:${sessionId}`;
 const historyKey = (workspace: string | null) => `${aiSessionStorageKey(workspace)}:prompts`;
 const dirsKey = (workspace: string | null, sessionId: string) => `${aiSessionStorageKey(workspace)}:dirs:${sessionId}`;
 
@@ -17,9 +18,15 @@ const MAX_DRAFT = 20_000;
 const MAX_HISTORY = 50;
 /** 单条历史最多这么多字符：再长的是粘贴的物料，不是想复述的话。 */
 const MAX_HISTORY_ITEM = 2_000;
+/** 这里只是坏数据防护，不是产品上限；真实附件上限仍由后端下发。 */
+const MAX_STORED_IMAGES = 64;
+
+/** 草稿只保存可重建预览的稳定字段，禁止把大体积 data URL 塞进 localStorage。 */
+export interface DraftImageAttachment { path: string; name: string }
 
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingDraft: { workspace: string | null; sessionId: string; text: string } | null = null;
+// 分栏与快速切换会交错编辑多个输入框，防抖期间也必须按完整存储键隔离。
+const pendingDrafts = new Map<string, string>();
 
 /** 立即清空并写入尚未保存的草稿（切会话/发送/卸载前调用）。 */
 export function flushDraft(): void {
@@ -27,16 +34,15 @@ export function flushDraft(): void {
     clearTimeout(draftTimer);
     draftTimer = null;
   }
-  if (!pendingDraft) return;
-  const { workspace, sessionId, text } = pendingDraft;
-  pendingDraft = null;
-  const key = draftKey(workspace, sessionId);
-  try {
-    if (!text) localStorage.removeItem(key);
-    else localStorage.setItem(key, text.slice(0, MAX_DRAFT));
-  } catch {
-    // 写失败只丢一次跨重启恢复，不影响运行。
+  for (const [key, text] of pendingDrafts) {
+    try {
+      if (!text) localStorage.removeItem(key);
+      else localStorage.setItem(key, text);
+    } catch {
+      // 写失败只丢一次跨重启恢复，不影响运行。
+    }
   }
+  pendingDrafts.clear();
 }
 
 if (typeof window !== "undefined") {
@@ -44,12 +50,11 @@ if (typeof window !== "undefined") {
 }
 
 export function loadDraft(workspace: string | null, sessionId: string): string {
-  // 如果内存里有尚未防抖刷盘的本会话草稿，优先使用
-  if (pendingDraft && pendingDraft.sessionId === sessionId) {
-    return pendingDraft.text;
-  }
+  const key = draftKey(workspace, sessionId);
+  // 同一份规范化键贯穿内存与磁盘，避免相同会话 ID 跨项目串用。
+  if (pendingDrafts.has(key)) return pendingDrafts.get(key)!;
   try {
-    return localStorage.getItem(draftKey(workspace, sessionId)) ?? "";
+    return localStorage.getItem(key) ?? "";
   } catch {
     // 读不到就当没有：草稿是可丢的缓存，不该因为存储坏了拦住聊天面板挂载。
     return "";
@@ -58,24 +63,19 @@ export function loadDraft(workspace: string | null, sessionId: string): string {
 
 /** 空草稿直接删键；输入过程做 300ms 防抖，严禁每次按键同步阻塞 localStorage I/O。 */
 export function saveDraft(workspace: string | null, sessionId: string, text: string, immediate = false): void {
+  const key = draftKey(workspace, sessionId);
+  const value = text.slice(0, MAX_DRAFT);
+  if (!value) { clearDraft(workspace, sessionId); return; }
   if (immediate) {
-    if (pendingDraft && pendingDraft.sessionId === sessionId) {
-      pendingDraft = null;
-      if (draftTimer) {
-        clearTimeout(draftTimer);
-        draftTimer = null;
-      }
-    }
-    const key = draftKey(workspace, sessionId);
+    pendingDrafts.delete(key);
     try {
-      if (!text) localStorage.removeItem(key);
-      else localStorage.setItem(key, text.slice(0, MAX_DRAFT));
+      localStorage.setItem(key, value);
     } catch {
       // 容错
     }
     return;
   }
-  pendingDraft = { workspace, sessionId, text };
+  pendingDrafts.set(key, value);
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     flushDraft();
@@ -110,25 +110,56 @@ export function rememberPrompt(workspace: string | null, text: string): void {
 }
 
 export function clearDraft(workspace: string | null, sessionId: string): void {
-  if (pendingDraft && pendingDraft.sessionId === sessionId) {
-    pendingDraft = null;
-    if (draftTimer) {
-      clearTimeout(draftTimer);
-      draftTimer = null;
-    }
-  }
+  const key = draftKey(workspace, sessionId);
+  pendingDrafts.delete(key);
   try {
-    localStorage.removeItem(draftKey(workspace, sessionId));
+    localStorage.removeItem(key);
   } catch {
     // 删不掉无所谓：键已经不属于任何会话。
+  }
+}
+
+/** 读取尚未发送的图片附件；损坏条目直接跳过，不能让一条坏缓存挡住输入框。 */
+export function loadDraftImages(workspace: string | null, sessionId: string): DraftImageAttachment[] {
+  try {
+    const items: unknown = JSON.parse(localStorage.getItem(draftImagesKey(workspace, sessionId)) ?? "[]");
+    if (!Array.isArray(items)) return [];
+    return items.flatMap((item): DraftImageAttachment[] => {
+      if (!item || typeof item !== "object") return [];
+      const { path, name } = item as Record<string, unknown>;
+      return typeof path === "string" && path.length > 0 && path.length <= 32_768
+        && typeof name === "string" && name.length > 0 && name.length <= 512
+        ? [{ path, name }] : [];
+    }).slice(0, MAX_STORED_IMAGES);
+  } catch {
+    return [];
+  }
+}
+
+/** 附件增删频率很低，立即落盘，保证切标签发生在下一帧也不会丢路径。 */
+export function saveDraftImages(workspace: string | null, sessionId: string, images: readonly DraftImageAttachment[]): void {
+  try {
+    if (!images.length) localStorage.removeItem(draftImagesKey(workspace, sessionId));
+    else localStorage.setItem(draftImagesKey(workspace, sessionId), JSON.stringify(images.slice(0, MAX_STORED_IMAGES)
+      .map(({ path, name }) => ({ path, name }))));
+  } catch {
+    // 本轮仍保留内存状态；存储失败只影响跨标签/重启恢复。
+  }
+}
+
+export function clearDraftImages(workspace: string | null, sessionId: string): void {
+  try { localStorage.removeItem(draftImagesKey(workspace, sessionId)); } catch {
+    // 与正文草稿一致：缓存删不掉不能阻止发送成功后的主状态迁移。
   }
 }
 
 /** 删除会话时清掉所有按会话隔离的本地状态；工程级发送历史和引擎默认项继续保留。 */
 export function clearAiSessionStorage(workspace: string | null, sessionId: string): void {
   const prefix = aiSessionStorageKey(workspace);
+  // 同时取消防抖写入，不能在删除会话后由定时器重新创建草稿。
+  clearDraft(workspace, sessionId);
   try {
-    localStorage.removeItem(draftKey(workspace, sessionId));
+    localStorage.removeItem(draftImagesKey(workspace, sessionId));
     localStorage.removeItem(dirsKey(workspace, sessionId));
     localStorage.removeItem(`${prefix}:options:${sessionId}`);
   } catch {

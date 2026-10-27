@@ -9,7 +9,7 @@ import { assetUrl } from "../lib/fs";
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { aiDraftOptionsKey, loadAiDraftProvider, saveAiDraftProvider } from "../lib/aiDraftSession";
 import { collectPastedImages } from "../lib/aiClipboard";
-import { clearDraft, loadDraft, saveDraft } from "../lib/aiDrafts";
+import { clearDraft, loadDraft, loadDraftImages, saveDraft, saveDraftImages } from "../lib/aiDrafts";
 import { loadAiOptions, saveAiOptions } from "../lib/aiOptions";
 import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash } from "../lib/aiCommands";
 import type { AiRunOptions } from "../lib/aiRuntime";
@@ -72,7 +72,10 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   // 否则 Codex 的只读会被带进 Claude 并变成 plan 权限。
   useEffect(() => { if (provider) setOptions(loadAiOptions(optionsKey, provider)); }, [optionsKey, provider]);
   const [draft, setDraft] = useState(() => loadDraft(workspace, "draft"));
-  const [images, setImages] = useState<PastedImage[]>([]);
+  const [images, setImages] = useState<PastedImage[]>(() => loadDraftImages(workspace, "draft")
+    .map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) })));
+  /** 图片复制可能晚于标签卸载完成；ref 保证异步结果仍能独立写入草稿。 */
+  const imagesRef = useRef(images);
   /** 异步保存尚未回填 state 时也要占名额，防止连续粘贴越过上限。 */
   const pendingImages = useRef(0);
   /** 每条消息的附件上限；真实数字来自后端。 */
@@ -97,7 +100,12 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   const selectedCommand = Math.min(commandIndex, Math.max(0, suggestions.length - 1));
   const menuVisible = suggestions.length > 0 && !sending;
 
-  useEffect(() => { setDraft(loadDraft(workspace, "draft")); }, [workspace]);
+  useEffect(() => {
+    setDraft(loadDraft(workspace, "draft"));
+    const restoredImages = loadDraftImages(workspace, "draft").map(({ path, name }) => ({ path, name, preview: assetUrl(path, 0) }));
+    imagesRef.current = restoredImages;
+    setImages(restoredImages);
+  }, [workspace]);
   useEffect(() => {
     if (!menuVisible) return;
     const dismiss = (event: PointerEvent) => {
@@ -129,6 +137,15 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
     commitDraft(text);
     setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setError(null);
   };
+  /** 新建页也会在切标签时卸载；每次附件变更都要和正文一样进入工作区草稿。 */
+  const updateImages = (change: (current: PastedImage[]) => PastedImage[]) => {
+    replaceImages(change(imagesRef.current));
+  };
+  const replaceImages = (next: PastedImage[]) => {
+    imagesRef.current = next;
+    setImages(next);
+    saveDraftImages(workspace, "draft", next);
+  };
   const chooseCommand = (name: string) => { updateDraft(completeCommand(draft, name)); input.current?.focus(); };
   const changeOptions = (next: AiRunOptions) => {
     setOptions(next);
@@ -154,7 +171,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
     void Promise.allSettled(tasks).then((results) => {
       const saved = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
       const failed = results.find((result) => result.status === "rejected");
-      if (saved.length) setImages((current) => [...current, ...saved]);
+      if (saved.length) updateImages((current) => [...current, ...saved]);
       setError(failed ? String((failed as PromiseRejectedResult).reason) : null);
     }).finally(() => { pendingImages.current = Math.max(0, pendingImages.current - tasks.length); });
   };
@@ -197,7 +214,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
       // 创建会话与草稿清理是一笔事务：上层确认创建成功后，才允许丢掉正文和附件。
       await onLaunch(provider, draft, images.map((image) => image.path));
       updateDraft("");
-      setImages([]);
+      replaceImages([]);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -256,7 +273,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
                 onChoose={chooseCommand} menuRef={commandMenu} showDiscovery={provider === "claude"} /> : null}
               attachments={images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
                 {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
-                  onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
+                  onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
               </div> : null}
               editor={<textarea
                 ref={input}
