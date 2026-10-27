@@ -164,11 +164,11 @@ export function AiTaskListDockPanel({
                       onClick={() => onOpenSession(agent.sessionId!)}
                       title={titleText}
                     >
-                      <span className="ai-taskdock-agent-title">{numberedName}</span>
+                      <span className="ai-taskdock-agent-title">{titleText}</span>
                     </button>
                   ) : (
                     <span className="ai-taskdock-agent-title" title={titleText}>
-                      {numberedName}
+                      {titleText}
                     </span>
                   )}
                 </div>

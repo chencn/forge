@@ -61,6 +61,8 @@ interface EditorTabsProps {
   onShowLocalHistory?: (path: string) => void;
   /** 页签栏右侧自定义操作区（如当前激活 AI 会话的三个点菜单）。 */
   actions?: ReactNode;
+  /** 页签右键菜单扩展项（如 AI 会话的复制 ID、发给进行中会话）。 */
+  onContextMenuItems?: (tab: TabItem) => MenuItem[];
 }
 
 /**
@@ -93,6 +95,7 @@ export default function EditorTabs({
   isSplit,
   onShowLocalHistory,
   actions,
+  onContextMenuItems,
 }: EditorTabsProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
@@ -159,6 +162,7 @@ export default function EditorTabs({
   };
 
   const menuFor = (tab: TabItem): MenuItem[] => {
+    const custom = onContextMenuItems ? onContextMenuItems(tab) : [];
     const path = tab.kind === "doc" ? tab.id.slice(4) : tab.title;
     const items: MenuItem[] = [];
     if (tab.kind === "doc") {
@@ -210,6 +214,10 @@ export default function EditorTabs({
         label: t("menu.localHistory"),
         onSelect: () => onShowLocalHistory(path),
       });
+    }
+    // 标签特定的扩展操作（如 AI 会话的复制 ID、发给进行中会话）排在标签基础操作之后，不占用菜单首位
+    if (custom.length > 0) {
+      items.push(...custom);
     }
     return items;
   };

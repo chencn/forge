@@ -2260,7 +2260,9 @@ pub async fn ai_runtime_load(
         let meta = store::Store::metadata(&dir, &root).ok();
         let agent_session = meta.as_ref().map(|m| m.agent.is_some()).unwrap_or(false);
         if agent_session {
-            let needs_import = meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false);
+            let events_len = dir.join("events.jsonl").metadata().map(|m| m.len()).unwrap_or(0);
+            // 只要事件日志尚无实质性事件内容（<= 256 字节），或者尚未记录 native_id，打开时均触发按需回填
+            let needs_import = events_len <= 256 || meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false);
             // 父会话正在运行时跳过回填：rollout 还没有终态，导不出正文，只会白扫
             // 一遍历史目录，还会跟 live 路由抢子会话的元数据（见 revise_agent_meta）。
             let parent_busy = meta.as_ref()

@@ -5,9 +5,11 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
+  Archive,
   Bell,
   Check,
   CheckCheck,
+  Copy,
   Eraser,
   FilePlus,
   FolderPlus,
@@ -184,13 +186,13 @@ import AiSessionsPanel, { AiSessionsToolbar } from "./components/AiSessionsPanel
 import { AiTabProviderIcon } from "./components/AiProviderIcon";
 import { forgetAiSessionWorkspace, refreshAiSessionHistory, useAiSessions } from "./hooks/useAiSessions";
 import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
-import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
+import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, getAiSessionActivity, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
 import type { AiRuntimeEvent } from "./lib/aiRuntime";
 import { AI_NAMES } from "./lib/aiCli";
 import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
 import type { AiProvider } from "./lib/aiCli";
 import type { AiSession } from "./lib/aiSessions";
-import { deliverAiInput, routeAiTargets, type AiInputTarget } from "./lib/aiInputBridge";
+import { buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputTarget } from "./lib/aiInputBridge";
 import {
   TOOL_RAIL_GROUP,
   loadToolRailLayout,
@@ -4034,7 +4036,44 @@ export default function App() {
         />
       );
     },
-    [settings.aiAssistantsEnabled, aiSessions.sessions, aiLifecycle, workspaceRoot, dispatchAiSession, openAiDraft, openSettingsTab]
+    [settings.aiAssistantsEnabled, aiSessions.sessions, workspaceRoot, aiLifecycle, dispatchAiSession, openAiDraft, openSettingsTab]
+  );
+
+  /** AI 会话标签右键菜单提供复制 ID、发送 ID 和归档操作。 */
+  const renderTabContextMenuItems = useCallback(
+    (tab: TabItem): MenuItem[] => {
+      if (tab.kind !== "ai" || tab.id === "ai|draft" || !settings.aiAssistantsEnabled) {
+        return [];
+      }
+      const sessionId = tab.id.slice(3);
+      const session = aiSessions.sessions.find((s) => s.id === sessionId);
+      if (!session) return [];
+      const archivedNow = session.archived === true;
+      // 子代理绝不提供复制会话 ID 与跨会话发送操作
+      const isSubagent = !!session.parentSessionId;
+      const sendItem = !isSubagent
+        ? buildSendSessionIdMenuItem({
+            sourceSession: session,
+            sessions: aiSessions.sessions,
+            openIds: aiSessions.openIds,
+            activeId: activeTab,
+            workspace: workspaceRoot,
+            onOpen: openAiSession,
+            isRunning: (id) => getAiSessionActivity(id) === "running",
+            t,
+          })
+        : null;
+      return [
+        ...(!isSubagent
+          ? [{ icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) }]
+          : []),
+        ...(sendItem ? [sendItem] : []),
+        archivedNow
+          ? { icon: Archive, label: t("ai.archived.restore"), onSelect: () => void aiLifecycle.act({ type: "archive", id: session.id, archived: false }, workspaceRoot, dispatchAiSession) }
+          : { icon: Archive, label: t("ai.archived.button"), onSelect: () => void aiLifecycle.act({ type: "archive", id: session.id, archived: true }, workspaceRoot, dispatchAiSession) },
+      ];
+    },
+    [settings.aiAssistantsEnabled, aiSessions.sessions, aiSessions.openIds, activeTab, workspaceRoot, openAiSession, t, aiLifecycle, dispatchAiSession]
   );
 
   /**
@@ -4276,7 +4315,19 @@ export default function App() {
       ) : activeAiSession ? (
         // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
         // 展开状态和本地事件订阅会串到新会话上。
-        <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
+        <AiSessionPane
+          key={activeAiSession.id}
+          session={activeAiSession}
+          workspace={workspaceRoot}
+          beforeSend={beforeAiSend}
+          onSettings={() => openSettingsTab("aiCli")}
+          onNew={openAiDraft}
+          onOpenFile={aiOpenFile}
+          onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)}
+          onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
+          onOpenSession={openAiSession}
+          parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null}
+        />
       ) : id === "settings" ? (
         <SettingsPage
           workspace={workspaceRoot}
@@ -5222,6 +5273,7 @@ export default function App() {
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
                       actions={renderTabActions(primaryTab)}
+                      onContextMenuItems={renderTabContextMenuItems}
                     />
                   ) : null}
                   <div className="editor-pane-body">
@@ -5299,6 +5351,7 @@ export default function App() {
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
                       actions={renderTabActions(secondaryTab)}
+                      onContextMenuItems={renderTabContextMenuItems}
                     />
                   ) : null}
                   <div className="editor-pane-body">
@@ -5329,6 +5382,7 @@ export default function App() {
                     onSplitDown={(id) => splitEditor(id, "vertical")}
                     onShowLocalHistory={showLocalHistory}
                     actions={renderTabActions(activeTab)}
+                    onContextMenuItems={renderTabContextMenuItems}
                   />
                 ) : null}
                 <ErrorBoundary label={t("editor.region")} onError={reportError}>

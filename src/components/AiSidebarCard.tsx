@@ -5,6 +5,7 @@ import { AI_NAMES } from "../lib/aiCli";
 import type { AiSession } from "../lib/aiSessions";
 import type { AiSessionActivity } from "../lib/aiRuntime";
 import AiProviderIcon from "./AiProviderIcon";
+import CopyButton from "./CopyButton";
 
 /** 指针要在行上停留多久才弹详情气泡；扫过列表时不该一路开花。 */
 const HOVER_OPEN_DELAY_MS = 500;
@@ -112,6 +113,8 @@ export const AiSidebarCard = memo(function AiSidebarCard({
       onBlur={hoverLeave}
       onContextMenu={(event) => {
         event.preventDefault();
+        // 阻止右键事件冒泡至外层列表容器，避免卡片菜单被容器背景菜单覆盖
+        event.stopPropagation();
         // 右键菜单接管这一行：先收掉气泡，两层浮层不该叠在同一处（对照参考）。
         clearTimers();
         setHoverOpen(false);
@@ -164,7 +167,13 @@ export const AiSidebarCard = memo(function AiSidebarCard({
         </div>
       </div>
       {hoverOpen && rowBox ? (
-        <div className="ai-scard-hover" role="tooltip" style={{ left: rowBox.left, top: rowBox.top }}>
+        <div
+          className="ai-scard-hover"
+          role="tooltip"
+          style={{ left: rowBox.left, top: rowBox.top }}
+          onMouseEnter={hoverEnter}
+          onMouseLeave={hoverLeave}
+        >
           <div className="ai-scard-hover-body">
             <div className="ai-scard-hover-head">
               <p className="ai-scard-hover-title">{title}</p>
@@ -177,7 +186,16 @@ export const AiSidebarCard = memo(function AiSidebarCard({
               <div className="ai-scard-hover-fact"><dt>{t("ai.sidebar.factWorkspace")}</dt><dd dir="ltr">{workspace ?? "—"}</dd></div>
               <div className="ai-scard-hover-fact"><dt>{t("ai.sidebar.factCreated")}</dt><dd>{formatAbsolute(session.createdAt)}</dd></div>
               <div className="ai-scard-hover-fact"><dt>{t("ai.sidebar.factActivity")}</dt><dd>{formatAbsolute(session.lastActivity ?? session.createdAt)}</dd></div>
-              <div className="ai-scard-hover-fact"><dt>{t("ai.sidebar.factSessionId")}</dt><dd dir="ltr" className="ai-scard-hover-mono">{session.id}</dd></div>
+              {/* 子代理不是对外独立会话，气泡中不展示会话 ID */}
+              {!session.parentSessionId ? (
+                <div className="ai-scard-hover-fact">
+                  <dt>{t("ai.sidebar.factSessionId")}</dt>
+                  <dd dir="ltr" className="ai-scard-hover-mono ai-scard-hover-id-row">
+                    <span className="ai-scard-hover-id-text">{session.id}</span>
+                    <CopyButton text={session.id} />
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           </div>
         </div>

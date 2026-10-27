@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendAiInputText, deliverAiInput, formatAiFileReference, routeAiTargets, watchAiInputDelivery } from "../../src/lib/aiInputBridge";
+import {
+  appendAiInputText,
+  buildSendSessionIdMenuItem,
+  deliverAiInput,
+  deliverAiSessionId,
+  formatAiFileReference,
+  getOngoingAiSessionTargets,
+  routeAiTargets,
+  validateAiSessionIdDelivery,
+  watchAiInputDelivery,
+} from "../../src/lib/aiInputBridge";
 import { flushDraft, loadAdditionalDirs, loadDraft, saveDraft } from "../../src/lib/aiDrafts";
 
 const h = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -72,5 +82,123 @@ describe("AI 输入投递路由", () => {
     await expect(deliverAiInput(ROOT, target, { kind: "text", text: "x".repeat(13_000) })).rejects.toThrow("磁盘写入失败");
     expect(loadDraft(ROOT, target.id)).toBe("保留原问题");
     expect(loadAdditionalDirs(ROOT, target.id)).toEqual([]);
+  });
+});
+
+describe("跨会话发送会话 ID", () => {
+  it("严格遵守约束：同 Provider 互通，异构 Provider 拒绝发送", () => {
+    expect(validateAiSessionIdDelivery("codex", "claude")).toEqual({
+      allowed: false,
+      reason: "ai.sendSessionId.codexToClaudeBlocked",
+    });
+    expect(validateAiSessionIdDelivery("claude", "codex")).toEqual({
+      allowed: false,
+      reason: "ai.sendSessionId.codexToClaudeBlocked",
+    });
+    expect(validateAiSessionIdDelivery("claude", "claude")).toEqual({ allowed: true });
+    expect(validateAiSessionIdDelivery("codex", "codex")).toEqual({ allowed: true });
+  });
+
+  it("筛选进行中会话时排除自身、子代理与异构 Provider，只保留同 Provider 打开或运行中的会话", () => {
+    const list = [
+      { id: "source", title: "源Codex", provider: "codex" as const },
+      { id: "tab-claude", title: "标签Claude", provider: "claude" as const },
+      { id: "tab-codex-1", title: "标签Codex1", provider: "codex" as const },
+      { id: "running-codex-2", title: "运行中Codex2", provider: "codex" as const },
+      { id: "subagent", title: "子代理", provider: "codex" as const, parentSessionId: "tab-codex-1" },
+      { id: "closed-idle", title: "未打开且空闲", provider: "codex" as const },
+    ];
+    const openIds = ["source", "tab-claude", "tab-codex-1"];
+    const isRunning = (id: string) => id === "running-codex-2";
+    const targets = getOngoingAiSessionTargets(list, openIds, { id: "source", provider: "codex" }, isRunning);
+    // tab-claude 被严格屏蔽过滤；subagent 和 closed-idle 排除；只留下 tab-codex-1 与 running-codex-2
+    expect(targets.map((t) => t.id)).toEqual(["tab-codex-1", "running-codex-2"]);
+  });
+
+  it("跨 Provider 违规时 deliverAiSessionId 拒绝发送，合法时写入草稿并激活标签", async () => {
+    const sourceCodex = { id: "codex-99", provider: "codex" as const };
+    const targetClaude = { id: "claude-88", title: "目标Claude", provider: "claude" as const };
+    const onOpen = vi.fn();
+
+    await expect(
+      deliverAiSessionId(ROOT, sourceCodex, targetClaude, onOpen)
+    ).rejects.toThrow();
+    expect(onOpen).not.toHaveBeenCalled();
+
+    const targetCodex = { id: "codex-88", title: "目标Codex", provider: "codex" as const };
+    saveDraft(ROOT, targetCodex.id, "原有问题");
+    await deliverAiSessionId(ROOT, sourceCodex, targetCodex, onOpen);
+    expect(loadDraft(ROOT, targetCodex.id)).toBe("原有问题\n\ncodex-99");
+    expect(onOpen).toHaveBeenCalledWith("codex-88");
+  });
+
+  it("buildSendSessionIdMenuItem 无目标时直接返回 null（不在菜单中渲染灰色项目）", () => {
+    const source = { id: "s1", title: "源", provider: "codex" as const };
+    const t = (k: string) => k;
+    const item = buildSendSessionIdMenuItem({
+      sourceSession: source,
+      sessions: [source],
+      openIds: ["s1"],
+      workspace: ROOT,
+      t: t as any,
+    });
+    expect(item).toBeNull();
+  });
+
+  it("buildSendSessionIdMenuItem 仅有异构目标时全部屏蔽并返回 null（严禁展示置灰菜单）", () => {
+    const source = { id: "s1", title: "源Codex", provider: "codex" as const };
+    const target = { id: "s2", title: "目标Claude", provider: "claude" as const };
+    const t = (k: string) => k;
+    const item = buildSendSessionIdMenuItem({
+      sourceSession: source,
+      sessions: [source, target],
+      openIds: ["s1", "s2"],
+      workspace: ROOT,
+      t: t as any,
+    });
+    // 异构目标被直接屏蔽剔除，因此无可用候选，返回 null
+    expect(item).toBeNull();
+  });
+
+  it("buildSendSessionIdMenuItem 单目标且同 Provider 时返回可直接发送的一级菜单项", () => {
+    const source = { id: "s1", title: "源Codex", provider: "codex" as const };
+    const target = { id: "s2", title: "目标Codex", provider: "codex" as const };
+    const t = (k: string) => k;
+    const item = buildSendSessionIdMenuItem({
+      sourceSession: source,
+      sessions: [source, target],
+      openIds: ["s1", "s2"],
+      workspace: ROOT,
+      t: t as any,
+    });
+    expect(item).not.toBeNull();
+    expect(item!.disabled).toBeFalsy();
+    expect(item!.label).toContain("目标Codex");
+  });
+
+  it("buildSendSessionIdMenuItem 多同 Provider 目标时展示子菜单，屏蔽异构项且当前激活标签排在首位", () => {
+    const source = { id: "s1", title: "源", provider: "codex" as const };
+    const target1 = { id: "s2", title: "Codex会话1", provider: "codex" as const };
+    const target2 = { id: "s3", title: "Claude会话", provider: "claude" as const };
+    const target3 = { id: "s4", title: "Codex会话2", provider: "codex" as const };
+    const t = (k: string, vars?: any) => (vars?.title ? `${vars.title} (当前)` : k);
+    const item = buildSendSessionIdMenuItem({
+      sourceSession: source,
+      sessions: [source, target1, target2, target3],
+      openIds: ["s1", "s2", "s3", "s4"],
+      activeId: "ai|s4",
+      workspace: ROOT,
+      t: t as any,
+    });
+    expect(item).not.toBeNull();
+    // target2 (Claude) 必须被彻底屏蔽过滤，只保留 target1 和 target3 两个 Codex 目标
+    expect(item!.children).toHaveLength(2);
+    // target3 (s4) 是当前激活的，排在第 1 项
+    expect(item!.children![0].label).toContain("Codex会话2 (当前)");
+    expect(item!.children![0].disabled).toBeFalsy();
+
+    // target1 (s2) 是 Codex，允许发送
+    expect(item!.children![1].label).toBe("Codex会话1");
+    expect(item!.children![1].disabled).toBeFalsy();
   });
 });

@@ -30,6 +30,7 @@ import ContextMenu, { flatMenu } from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import Popover from "./Popover";
 import { refreshAiSessionHistory } from "../hooks/useAiSessions";
+import { buildSendSessionIdMenuItem } from "../lib/aiInputBridge";
 
 /**
  * AI 会话侧栏列表。结构与视觉对照参考实现（codeg 的 sidebar + conversation list）：
@@ -122,13 +123,30 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   const openCardMenu = (session: AiSession, x: number, y: number) => {
     const pinnedNow = session.pinned === true;
     const archivedNow = session.archived === true;
+    // 子代理是主会话委派任务，禁止复制或发送子代理 ID
+    const isSubagent = !!session.parentSessionId;
+    const sendItem = !isSubagent
+      ? buildSendSessionIdMenuItem({
+          sourceSession: session,
+          sessions,
+          openIds,
+          activeId,
+          workspace,
+          onOpen,
+          isRunning: (id) => getAiSessionActivity(id) === "running",
+          t,
+        })
+      : null;
     const items: MenuItem[][] = [
       [{ icon: SquarePen, label: t("ai.newSession"), onSelect: onNew }],
       [
         // Codex 的改名会同步写回原生线程名；Claude 没有写入口，只落 Forge 侧并加锁。
         { label: t("menu.rename"), onSelect: () => setPending({ action: "rename", session }) },
-        // 跨会话提问要把另一条会话的 ID 贴进来；侧栏详情气泡不吃指针，只能从这里复制。
-        { icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) },
+        // 跨会话提问要把另一条会话的 ID 贴进来；子代理不具备独立会话身份，禁止复制或向外发送
+        ...(!isSubagent
+          ? [{ icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) }]
+          : []),
+        ...(sendItem ? [sendItem] : []),
         pinnedNow
           ? { label: t("ai.sidebar.unpin"), onSelect: () => onAction({ type: "pin", id: session.id, pinned: false }) }
           : { label: t("ai.sidebar.pin"), onSelect: () => onAction({ type: "pin", id: session.id, pinned: true }) },

@@ -498,16 +498,22 @@ impl Protocol for Claude {
                     let key = value["tool_use_id"].as_str().or_else(|| value["toolUseId"].as_str()).map(str::to_owned)
                         .or_else(|| task_id.and_then(|id| self.agent_ids.get(id).cloned()));
                     if let (Some(task_id), Some(key)) = (task_id, key) {
-                        let status = match value["status"].as_str() {
-                            Some("completed") => "completed",
-                            Some("failed") => "failed",
-                            _ => "stopped",
-                        };
-                        out.push(Action::Emit { kind: "agent", data: json!({
-                            "key": key, "agentId": task_id, "status": status,
-                            "result": value["summary"],
-                            "usage": value["usage"],
-                        }) });
+                        // 过滤非子代理调用：普通后台 Bash 等工具也会产生 task_notification，
+                        // 必须严格校验该调用来源于真正的 Agent / Task 工具或已登记的子代理，绝不能将普通 Shell 命令广播为子代理。
+                        let is_agent_tool = self.agent_ids.contains_key(task_id)
+                            || self.tools.get(&key).is_some_and(|tool| matches!(tool["name"].as_str(), Some("Agent") | Some("Task")));
+                        if is_agent_tool {
+                            let status = match value["status"].as_str() {
+                                Some("completed") => "completed",
+                                Some("failed") => "failed",
+                                _ => "stopped",
+                            };
+                            out.push(Action::Emit { kind: "agent", data: json!({
+                                "key": key, "agentId": task_id, "status": status,
+                                "result": value["summary"],
+                                "usage": value["usage"],
+                            }) });
+                        }
                     }
                 }
                 "commands_changed" => { if let Some(event) = self.update_commands(&value["commands"]) { out.push(event); } }
@@ -800,8 +806,15 @@ impl Protocol for Claude {
                         let tool = denial["tool_name"].as_str().map(str::trim).filter(|tool| !tool.is_empty()).map(str::to_owned);
                         let path = tool_path(&json!({"input":denial["tool_input"]}));
                         if tool.is_none() && path.is_none() { continue; }
+                        // 提取命令文本或拒绝原因，避免向前端发射空说明导致的空白提示横幅
+                        let text = denial["tool_input"]["command"].as_str()
+                            .or_else(|| denial["message"].as_str())
+                            .or_else(|| denial["reason"].as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
                         if self.denied.insert(format!("{tool:?}:{path:?}")) {
-                            out.push(Action::Emit { kind: "permission_denied", data: json!({"tool":tool,"path":path,"text":""}) });
+                            out.push(Action::Emit { kind: "permission_denied", data: json!({"tool":tool,"path":path,"text":text}) });
                         }
                     }
                 }

@@ -446,6 +446,9 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-activity { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; max-width: 8em; min-width: 0; font-size: 10px; line-height: 1; color: var(--accent-green-text); }
 .ai-activity > i { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
 .ai-activity > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 页签栏空间狭窄，只展示纯净状态指示圆点与排队数，严禁被截断成半截丑陋文字 */
+.editor-tab .ai-activity { flex: none; max-width: none; }
+.editor-tab .ai-activity > span { display: none; }
 .ai-activity.is-external { color: var(--accent-orange-text, #c88622); }
 /* 未知是「没有信息」而不是「出了问题」，弱化到辅助色，不与标题争优先级。 */
 .ai-activity.is-unknown { color: var(--text-tertiary); }
@@ -719,7 +722,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 /* 悬停详情气泡：贴行右侧、宽 256px、只读不吃指针。 */
 .ai-scard-hover { position: fixed; z-index: 260; width: 288px; max-width: calc(100vw - 24px);
   border: 1px solid var(--border-color); border-radius: 16px; background: var(--surface-island-strong);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2); padding: 12px; pointer-events: none; }
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2); padding: 12px; pointer-events: auto; }
 .ai-scard-hover-body { min-width: 0; display: flex; flex-direction: column; gap: 12px;
   font-size: 13px; color: var(--text-primary); user-select: none; }
 .ai-scard-hover-head { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -736,6 +739,8 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-scard-hover-fact dt { color: var(--text-tertiary); font-size: 12px; margin-bottom: 2px; }
 .ai-scard-hover-fact dd { margin: 0; font-size: 12.5px; overflow-wrap: anywhere; }
 .ai-scard-hover-mono { font-family: var(--font-mono); font-size: 11.5px; }
+.ai-scard-hover-id-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ai-scard-hover-id-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 「最近」章节的加载更多行：几何与会话卡片一致，箭头落在同一轴线。 */
 .ai-srecent-more { position: relative; height: 32px; }
@@ -1435,7 +1440,7 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   .ai-side-dock { animation: none; }
 }
 
-/* 展开态：正文区域向左挤压避让，右侧预留 324px 避免遮挡卡片，滚动条位于最右边缘 */
+/* 展开态：左侧保留 32px 消息导航槽，右侧预留 324px 避让卡片；两边都从正文宽度扣除。 */
 .ai-session-pane.is-docked .ai-session-content,
 .ai-chat-viewport.is-docked .ai-session-content {
   width: 100% !important;
@@ -1444,9 +1449,9 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 }
 .ai-session-pane.is-docked .ai-conversation,
 .ai-chat-viewport.is-docked .ai-conversation {
-  margin-left: 0 !important;
+  margin-left: 32px !important;
   margin-right: 324px !important;
-  width: calc(100% - 324px) !important;
+  width: calc(100% - 356px) !important;
   max-width: none !important;
 }
 
@@ -1910,8 +1915,11 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-background-strip { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; }
 .ai-permission-denied { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--accent-amber-text); border-radius: 7px; background: var(--accent-amber-bg); color: var(--text-primary); font-size: 11.5px; }
 .ai-permission-denied > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.ai-permission-header { display: flex; align-items: center; gap: 6px; }
+.ai-permission-tool { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: 10px; font-weight: 600; background: color-mix(in srgb, var(--accent-amber-text) 16%, transparent); color: var(--accent-amber-text); }
 .ai-permission-denied code { overflow-wrap: anywhere; color: var(--text-secondary); font-size: 10.5px; }
 .ai-permission-denied p { margin: 0; color: var(--text-secondary); font-size: 10.5px; overflow-wrap: anywhere; }
+.ai-permission-text { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-primary) !important; background: color-mix(in srgb, var(--bg-primary) 50%, transparent); padding: 4px 6px; border-radius: 4px; }
 .ai-permission-denied .button { flex: none; }
 .ai-extra-dirs li { display: flex; align-items: center; gap: 6px; }
 .ai-extra-dirs code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -2042,6 +2050,7 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-question-collapse:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .ai-question-collapse > svg { transition: transform 150ms ease-out; }
 .ai-question-collapse > svg.is-open { transform: rotate(180deg); }
+
 .ai-question.is-collapsed { padding-bottom: 12px; }
 
 /* ===== 子代理委派卡：迷你时间线（对照 agent-row 嵌套时间线）与任务清单芯片 ===== */
@@ -2357,10 +2366,66 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-agent-strip-model { font-size: 11px; color: var(--text-tertiary); }
 .ai-agent-strip-note { margin-left: auto; font-size: 11px; color: var(--text-tertiary); }
 
-/* 输入框上方的转发说明行。 */
-.ai-agent-relay-notice { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; color: var(--text-tertiary); }
-
 /* 委派卡上的「打开会话」直达入口（在主按钮之外，避免按钮嵌套）。 */
 .ai-delegation { position: relative; }
 .ai-delegation-open { position: absolute; top: 8px; right: 40px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-secondary); font: inherit; font-size: 11px; cursor: pointer; }
 .ai-delegation-open:hover { color: var(--text-primary); border-color: color-mix(in srgb, var(--text-tertiary) 40%, var(--border-color)); }
+
+/* 子代理空会话占位卡片：说明子代理状态并提供一键返回主会话操作。 */
+.ai-agent-empty-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 40px auto;
+  max-width: 360px;
+  padding: 24px 20px;
+  text-align: center;
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-secondary) 60%, transparent);
+}
+.ai-agent-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.ai-agent-empty-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.ai-agent-empty-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+.ai-agent-return-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms, border-color 140ms;
+}
+.ai-agent-return-button:hover {
+  background: var(--bg-tertiary);
+  border-color: color-mix(in srgb, var(--text-secondary) 30%, var(--border-color));
+}

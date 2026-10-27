@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArrowRight, Bot, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EyeOff, FilePenLine, FilePlus2, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Plane, Play, Plus, Send, Square, Target, Timer, X } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, Bot, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EyeOff, FilePenLine, FilePlus2, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Plane, Play, Plus, Send, Square, Target, Timer, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
@@ -830,7 +830,21 @@ interface AiSessionPaneProps {
  * 组件本身不持有跨会话状态，所有会话数据都在 `lib/aiRuntime` 的全局 store 里，
  * 所以切走再切回来能直接看到后台仍在推进的进度。
  */
-export default function AiSessionPane({ session, workspace, onSettings: _onSettings, beforeSend, onAction: _onAction, onNew: _onNew, onOpenFile, onPreviewFile, dockActive: _dockActive = true, onAgentDockAvailable: _onAgentDockAvailable, onOpenAgentDock: _onOpenAgentDock, onOpenSession, parentTitle: _parentTitle }: AiSessionPaneProps) {
+export default function AiSessionPane({
+  session,
+  workspace,
+  onSettings: _onSettings,
+  beforeSend,
+  onAction: _onAction,
+  onNew: _onNew,
+  onOpenFile,
+  onPreviewFile,
+  dockActive: _dockActive = true,
+  onAgentDockAvailable: _onAgentDockAvailable,
+  onOpenAgentDock: _onOpenAgentDock,
+  onOpenSession,
+  parentTitle,
+}: AiSessionPaneProps) {
   const { t } = useI18n();
   /** 子代理会话：事件由父会话运行时路由进来，发送走经父转发，不直接驱动 CLI。 */
   const isAgentSession = !!session.parentSessionId;
@@ -1838,8 +1852,8 @@ export default function AiSessionPane({ session, workspace, onSettings: _onSetti
           </button>
         </div>;
       })() : null}
-      {/* 子代理状态条：实时状态来自父连接；Codex 的完整正文由终态 rollout 回填。 */}
-      {isAgentSession ? (() => {
+      {/* 子代理状态条：实时状态来自父连接；仅在已有正文条目时在顶部展示，无条目时由下方专属空状态呈现 */}
+      {isAgentSession && runtime.entries.length > 0 ? (() => {
         // 按会话 id 认领自己；万一父日志里混进别的 key，也不至于拿别人的状态。
         const self = runtime.agents.find((agent) => agent.sessionId === session.id) ?? runtime.agents[0];
         const status = self?.status ?? session.agent?.status ?? "";
@@ -1875,7 +1889,33 @@ export default function AiSessionPane({ session, workspace, onSettings: _onSetti
         lastAssistantText={turnStats.text} userEntryId={turnStats.userId} onJump={jumpToEntryById} /> : null}
       {!runtime.entries.length ? runtime.loading
         ? <p className="ai-chat-loading" role="status">{t("ai.runtime.loading")}</p>
-        : <p className="ai-chat-empty">{isAgentSession ? (session.agent?.title || t("ai.agent.empty")) : workspace ? t("ai.chat.emptyHint", { provider: AI_NAMES[session.provider] }) : t("ai.noWorkspace")}</p> : null}
+        : isAgentSession ? (
+          <div className="ai-agent-empty-pane" role="region" aria-label={t("ai.agent.session")}>
+            <div className="ai-agent-empty-icon">
+              <Bot size={28} aria-hidden />
+            </div>
+            <p className="ai-agent-empty-title">{session.agent?.title || t("ai.agent.empty")}</p>
+            <p className="ai-muted ai-agent-empty-desc">
+              {session.agent?.status === "completed" || session.agent?.status === "stopped" || session.agent?.status === "failed"
+                ? t("ai.agent.noEntriesSettled")
+                : t("ai.agent.noEntriesPending")}
+            </p>
+            {session.parentSessionId && onOpenSession ? (
+              <button
+                type="button"
+                className="ai-agent-return-button"
+                onClick={() => onOpenSession(session.parentSessionId!)}
+              >
+                <ArrowLeft size={13} aria-hidden />
+                <span>{t("ai.agent.returnParent", { title: parentTitle || t("ai.agent.parent") })}</span>
+              </button>
+            ) : null}
+          </div>
+        ) : workspace ? (
+          <p className="ai-chat-empty">{t("ai.chat.emptyHint", { provider: AI_NAMES[session.provider] })}</p>
+        ) : (
+          <p className="ai-chat-empty">{t("ai.noWorkspace")}</p>
+        ) : null}
       </div>
     </div>
     {/* 浮在滚动区下沿，所以放在滚动容器之外：往上翻页和流式增长都不该把它跟着推走。 */}
@@ -1923,9 +1963,12 @@ export default function AiSessionPane({ session, workspace, onSettings: _onSetti
     {runtime.permissionDenied && denialKey !== dismissedDenial ? <section className="ai-permission-denied" role="status">
       <CircleAlert size={14} aria-hidden />
       <div>
-        <strong>{t("ai.permission.denied")}</strong>
+        <div className="ai-permission-header">
+          <strong>{t("ai.permission.denied")}</strong>
+          {runtime.permissionDenied.tool ? <span className="ai-permission-tool">{runtime.permissionDenied.tool}</span> : null}
+        </div>
         {runtime.permissionDenied.path ? <code>{runtime.permissionDenied.path}</code> : null}
-        {runtime.permissionDenied.text ? <p>{runtime.permissionDenied.text}</p> : null}
+        {runtime.permissionDenied.text ? <p className="ai-permission-text">{runtime.permissionDenied.text}</p> : null}
       </div>
       {runtime.permissionDenied.path ? <button type="button" className="button is-primary" disabled={sending || runtime.stopping}
         onClick={() => void grantDirectory(runtime.permissionDenied!.path!).then(() => setDismissedDenial(denialKey)).catch((cause) => setError(String(cause)))}>
@@ -1988,7 +2031,7 @@ export default function AiSessionPane({ session, workspace, onSettings: _onSetti
       attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
         {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
       </div> : null}
-      editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={isAgentSession ? t("ai.agent.relayPlaceholder") : editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
+      editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
         aria-autocomplete="list" aria-controls={menuVisible ? menuId : undefined} aria-expanded={menuVisible} aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
               disabled={!workspace || !cliDesktopAvailable() || sending}
               onContextMenu={requestEditorMenu}
@@ -2050,20 +2093,17 @@ export default function AiSessionPane({ session, workspace, onSettings: _onSetti
                 // 回车直接发送（Shift+Enter 换行）；Ctrl/⌘+Enter 同样发送，兼容旧习惯但不作提示。
           if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }
               }} />}
-      footer={editingTask || isAgentSession || activeCommand && !menuVisible || commandNotice ? <div className="ai-composer-notices">
+      footer={editingTask || activeCommand && !menuVisible || commandNotice ? <div className="ai-composer-notices">
         {editingTask ? <p className="ai-queue-edit-notice"><Pencil size={12} aria-hidden />{t("ai.runtime.editingQueued")}</p>
-          : isAgentSession ? <p className="ai-agent-relay-notice"><Bot size={12} aria-hidden />{t("ai.agent.relayNotice")}</p>
           : activeCommand && !menuVisible ? <p className="ai-command-notice"><code>/{activeCommand.name} {activeCommand.argumentHint}</code> · {activeCommand.hintKey ? t(activeCommand.hintKey as Parameters<typeof t>[0]) : activeCommand.description}</p> : null}
         {commandNotice ? <p className="ai-command-notice" role="status">{commandNotice}</p> : null}
       </div> : null}
       toolbarLeft={<>
-        {/* 转发模式没有附件与档位选择：模型与权限跟随父会话，界面不再给第二套。 */}
-        {!isAgentSession ? <>
-          <button type="button" className="ai-add-button" aria-label={t("ai.chat.attach")} title={t("ai.chat.attach")}
-            disabled={!workspace || !cliDesktopAvailable() || sending || !!editingTask}
-            onClick={(event) => setAddMenuAnchor(event.currentTarget)}><Plus size={16} /></button>
-          <AiComposerOptions commandRef={composer} key={optionsKey} provider={session.provider} workspace={workspace} value={options} onChange={changeOptions} disabled={sending || !!editingTask || !cliDesktopAvailable()} actualModel={runtime.usage?.model ?? runtime.configuration?.model} />
-        </> : null}
+        {/* 子代理沿用普通会话的输入框布局；转发协议不支持附件和档位变更，因此控件只保留位置并禁用。 */}
+        <button type="button" className="ai-add-button" aria-label={t("ai.chat.attach")} title={t("ai.chat.attach")}
+          disabled={!workspace || !cliDesktopAvailable() || sending || !!editingTask || isAgentSession}
+          onClick={(event) => setAddMenuAnchor(event.currentTarget)}><Plus size={16} /></button>
+        <AiComposerOptions commandRef={composer} key={optionsKey} provider={session.provider} workspace={workspace} value={options} onChange={changeOptions} disabled={sending || !!editingTask || !cliDesktopAvailable() || isAgentSession} actualModel={runtime.usage?.model ?? runtime.configuration?.model} />
         {isPlanModeActive ? (
           <span className="ai-composer-plan-badge" title={t("ai.chat.inPlanModeNotice")}>
             <span className="ai-composer-plan-dot" />

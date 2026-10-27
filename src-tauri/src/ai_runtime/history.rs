@@ -539,7 +539,13 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
         if info["finished"] != true { continue; }
         let key = info["toolUseId"].as_str().filter(|value| !value.is_empty()).unwrap_or(&agent_id).to_owned();
         let child = super::child_session_id(parent_id, &key);
-        if base.join(&child).exists() { continue; }
+        let child_dir = base.join(&child);
+        let events_path = child_dir.join("events.jsonl");
+        // 若子会话目录已存在且已有实质性的事件数据（大于 256 字节），才跳过；
+        // 否则说明之前 live 仅占位创建但未落盘完整历史，允许继续回填
+        if child_dir.exists() && events_path.metadata().map(|meta| meta.len() > 256).unwrap_or(false) {
+            continue;
+        }
         let title = info["description"].as_str().map(str::trim).filter(|text| !text.is_empty()).unwrap_or("子代理").to_owned();
         let Ok(mut target) = Store::open(base, &child, root, Provider::Claude, &title, "") else { continue };
         let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok()
@@ -946,10 +952,110 @@ pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<supe
     Ok(events)
 }
 
-/// 按需同步 Codex 子代理的原生历史 rollout。
+/// 按需同步 Claude 子代理的原生历史记录（从父会话关联目录下的 subagents 提取）。
+fn sync_claude_subagent(
+    base: &Path,
+    child_id: &str,
+    meta: &store::Metadata,
+    root: &str,
+) -> Result<bool, String> {
+    let parent_id = meta.parent_session_id.as_deref().unwrap_or_default();
+    if parent_id.is_empty() { return Ok(false); }
+    let Some(agent) = &meta.agent else { return Ok(false); };
+
+    // 获取父会话原生 ID：优先读取父会话 metadata.native_id，若无再从 native-source 查
+    let source_opt = source(base, parent_id, root).ok().flatten();
+    let parent_meta = Store::metadata(&base.join(parent_id), root).ok();
+    let parent_native_id = parent_meta
+        .as_ref()
+        .and_then(|m| m.native_id.clone())
+        .or_else(|| source_opt.as_ref().map(|s| s.native_id.clone()));
+    let Some(parent_native_id) = parent_native_id else { return Ok(false); };
+
+    // 收集所有可能的 subagents 目录路径（包含本地创建与外部发现的项目目录）
+    let mut candidate_dirs = Vec::new();
+    if let Some(src) = &source_opt {
+        if let Some(parent) = src.path.parent() {
+            candidate_dirs.push(parent.join(&parent_native_id).join("subagents"));
+            candidate_dirs.push(parent.join("subagents"));
+        }
+    }
+    if let Ok(all_roots) = roots() {
+        for (provider, projects_dir) in all_roots {
+            if provider == Provider::Claude && projects_dir.is_dir() {
+                if let Ok(entries) = fs::read_dir(&projects_dir) {
+                    for entry in entries.flatten() {
+                        let project_path = entry.path();
+                        if project_path.is_dir() {
+                            candidate_dirs.push(project_path.join(&parent_native_id).join("subagents"));
+                            candidate_dirs.push(project_path.join("subagents"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for subagents_dir in candidate_dirs {
+        if !subagents_dir.is_dir() { continue; }
+        let Ok(entries) = fs::read_dir(&subagents_dir) else { continue; };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|extension| extension == "jsonl") { continue; }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("agent-") { continue; }
+            let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_owned();
+            if agent_id.is_empty() { continue; }
+            let info: Value = fs::read(path.with_file_name(format!("agent-{agent_id}.meta.json")))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or(Value::Null);
+            let key = info["toolUseId"].as_str().filter(|v| !v.is_empty()).unwrap_or(&agent_id);
+            if key != agent.tool_id && Some(&agent_id) != agent.native_agent_id.as_ref() {
+                continue;
+            }
+
+            let title = info["description"].as_str().map(str::trim).filter(|text| !text.is_empty()).unwrap_or(&meta.title).to_owned();
+            let Ok(mut target) = Store::open(base, child_id, root, Provider::Claude, &title, "") else { return Ok(false); };
+            // 若子会话已有事件数据且序列号递增，无需重复全量灌入
+            if target.dir.join("events.jsonl").metadata().map(|m| m.len() > 256).unwrap_or(false) && target.seq > 2 {
+                return Ok(false);
+            }
+
+            let Ok(file) = File::open(&path) else { return Ok(false); };
+            let mut reader = BufReader::new(file);
+            let mut projection = ProjectionState::default();
+            let mut batch = vec![];
+            let mut lines = 0u64;
+            while let Ok(Some((value, _))) = bounded_line(&mut reader) {
+                if value["sessionId"].as_str().is_some_and(|session| session != parent_native_id) { continue; }
+                batch.extend(project_sidechain(Provider::Claude, &value, lines, &mut projection));
+                lines += 1;
+                if batch.len() >= 128 {
+                    if target.append("native", std::mem::take(&mut batch)).is_err() { break; }
+                }
+                if lines >= 20000 { break; }
+            }
+            let _ = target.append("native", batch);
+            let _ = target.append("native", vec![("agent".into(), json!({"key": agent.tool_id, "status": "completed", "imported": true}))]);
+            if let Some(mut ag) = target.meta.agent.clone() {
+                ag.status = "completed".into();
+                target.meta.agent = Some(ag);
+                let _ = target.save();
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 按需同步子代理（Claude/Codex）的原生历史 rollout。
 pub fn sync_subagent(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     let dir = base.join(id);
     let Ok(meta) = Store::metadata(&dir, root) else { return Ok(false); };
+    if meta.provider == Provider::Claude {
+        return sync_claude_subagent(base, id, &meta, root);
+    }
     if meta.provider != Provider::Codex { return Ok(false); }
     let Some(agent) = &meta.agent else { return Ok(false); };
     if agent.tool_id.is_empty() { return Ok(false); }
@@ -1874,6 +1980,76 @@ mod tests {
         let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
         assert_eq!(page.events.iter().filter(|event| event.kind == "user" && event.data["text"] == "从 1 输出到 100").count(), 1);
         assert_eq!(page.events.iter().filter(|event| event.kind == "message" && event.data["text"] == "1 到 100 输出完毕").count(), 1);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn claude_subagent_history_fills_an_existing_live_session() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-history-claude-live-subagent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("native");
+        for path in [&root, &base, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let parent_forge = "claude-parent-live";
+        let parent_native = "claude-native-live";
+        let mut parent = Store::open(&base, parent_forge, &workspace, Provider::Claude, "父会话", "").unwrap();
+        parent.bind(parent_native.into()).unwrap();
+
+        // 模拟真实 Claude projects 目录结构，且父会话绝不落盘 native-source.json（纯本地新建会话场景）
+        let claude_home = temp.join("claude_home");
+        let project_dir = claude_home.join("projects").join("dummy-project");
+        let subagents = project_dir.join(parent_native).join("subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_home);
+
+        // 模拟 live 阶段预先创建了空子代理会话
+        let tool_id = "toolu_live_99";
+        let child = super::super::child_session_id(parent_forge, tool_id);
+        let mut child_store = Store::open(&base, &child, &workspace, Provider::Claude, "子代理任务", "").unwrap();
+        child_store.meta.parent_session_id = Some(parent_forge.into());
+        child_store.meta.agent = Some(store::AgentInfo {
+            native_agent_id: Some("agent-live-1".into()),
+            agent_type: Some("general-purpose".into()),
+            title: "子代理任务".into(),
+            tool_id: tool_id.into(),
+            model: None,
+            status: "running".into(),
+            started_at: 100,
+            ended_at: None,
+        });
+        child_store.save().unwrap();
+
+        // 准备 Claude CLI 落盘的子代理 native 文件到 Claude 项目目录下
+        let lines = [
+            json!({"type":"user","sessionId":parent_native,"isSidechain":true,"message":{"role":"user","content":"执行子任务"}}),
+            json!({"type":"assistant","sessionId":parent_native,"isSidechain":true,"message":{"id":"m-1","content":[{"type":"text","text":"子任务完成"}]}}),
+        ];
+        fs::write(subagents.join("agent-live-1.jsonl"), lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+        fs::write(subagents.join("agent-live-1.meta.json"), json!({
+            "toolUseId": tool_id, "agentType": "general-purpose", "description": "执行子任务", "finished": true
+        }).to_string()).unwrap();
+
+        // 按需同步执行回填
+        let synced = sync_claude_subagent(&base, &child, &child_store.meta, &workspace).unwrap();
+        assert!(synced, "应成功同步子代理历史");
+
+        // 再次同步应被幂等保护忽略
+        let meta_after = Store::metadata(&base.join(&child), &workspace).unwrap();
+        assert_eq!(meta_after.agent.as_ref().unwrap().status, "completed");
+        let synced_again = sync_claude_subagent(&base, &child, &meta_after, &workspace).unwrap();
+        assert!(!synced_again, "重复同步不应重复追加");
+
+        let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
+        assert_eq!(page.events.iter().filter(|e| e.kind == "user" && e.data["text"] == "执行子任务").count(), 1);
+        assert_eq!(page.events.iter().filter(|e| e.kind == "message" && e.data["text"] == "子任务完成").count(), 1);
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
         fs::remove_dir_all(temp).unwrap();
     }
 

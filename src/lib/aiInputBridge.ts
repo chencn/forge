@@ -1,9 +1,141 @@
 import { invoke } from "@tauri-apps/api/core";
+import { SendHorizontal } from "lucide-react";
+import type { AiProvider } from "./aiCli";
+import type { TranslationKey } from "../i18n/lang/zh";
+import type { MenuItem } from "../components/ContextMenu";
 import { loadAdditionalDirs, loadDraft, saveAdditionalDirs, saveDraft } from "./aiDrafts";
 
 export interface AiInputTarget {
   id: string;
   title: string;
+}
+
+export interface AiOngoingTargetCandidate {
+  id: string;
+  title: string;
+  provider: AiProvider;
+  parentSessionId?: string;
+}
+
+/**
+ * 校验跨会话投递会话 ID 的合法性。
+ * 铁律约束：仅同 Provider 互通（Claude -> Claude，Codex -> Codex），异构直接拒绝。
+ */
+export function validateAiSessionIdDelivery(
+  sourceProvider: AiProvider,
+  targetProvider: AiProvider,
+): { allowed: boolean; reason?: TranslationKey } {
+  if (sourceProvider !== targetProvider) {
+    return { allowed: false, reason: "ai.sendSessionId.codexToClaudeBlocked" };
+  }
+  return { allowed: true };
+}
+
+/**
+ * 筛选出可以接收会话 ID 的「正在进行的会话」列表（对齐发送到输入框逻辑）：
+ * 1. 仅限已在标签栏打开（openIds）或运行中的会话；
+ * 2. 排除源会话自身以及子代理；
+ * 3. 严格同 Provider 过滤，非自身所属 Provider 彻底屏蔽。
+ */
+export function getOngoingAiSessionTargets<T extends AiOngoingTargetCandidate>(
+  sessions: readonly T[],
+  openIds: readonly string[],
+  sourceSession: { id: string; provider?: AiProvider } | string,
+  isRunning?: (id: string) => boolean,
+  sourceProvider?: AiProvider,
+): T[] {
+  const sourceId = typeof sourceSession === "string" ? sourceSession : sourceSession.id;
+  const provider = typeof sourceSession === "string" ? sourceProvider : sourceSession.provider;
+  return sessions.filter((s) =>
+    s.id !== sourceId &&
+    !s.parentSessionId &&
+    (!provider || s.provider === provider) &&
+    (openIds.includes(s.id) || (isRunning ? isRunning(s.id) : false))
+  );
+}
+
+/**
+ * 将源会话的 ID 快捷发送到目标会话的输入草稿中，并激活/聚焦目标标签。
+ * 校验失败（如 codex -> claude）时直接拒绝。
+ */
+export async function deliverAiSessionId(
+  workspace: string | null,
+  source: { id: string; provider: AiProvider },
+  target: { id: string; title: string; provider: AiProvider },
+  onOpen?: (id: string) => void,
+): Promise<void> {
+  const check = validateAiSessionIdDelivery(source.provider, target.provider);
+  if (!check.allowed) {
+    throw new Error(check.reason ?? "Codex 会话不能发送给 Claude 会话");
+  }
+  await deliverAiInput(workspace, { id: target.id, title: target.title }, { kind: "text", text: source.id });
+  onOpen?.(target.id);
+}
+
+export interface BuildSendSessionIdMenuOptions<T extends AiOngoingTargetCandidate> {
+  sourceSession: T;
+  sessions: readonly T[];
+  openIds: readonly string[];
+  activeId?: string | null;
+  workspace: string | null;
+  onOpen?: (id: string) => void;
+  isRunning?: (id: string) => boolean;
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
+}
+
+/**
+ * 构建「发送会话 ID 给正在进行的会话」的菜单项。
+ * 集中封装目标选择、同 Provider 屏蔽与单目标/多目标菜单形态。
+ * 若没有可用候选会话，返回 null（彻底不在菜单中展示，严禁出现灰色无用项）。
+ */
+export function buildSendSessionIdMenuItem<T extends AiOngoingTargetCandidate>({
+  sourceSession,
+  sessions,
+  openIds,
+  activeId,
+  workspace,
+  onOpen,
+  isRunning,
+  t,
+}: BuildSendSessionIdMenuOptions<T>): MenuItem | null {
+  const candidates = getOngoingAiSessionTargets(sessions, openIds, sourceSession, isRunning);
+
+  // 无可用同 Provider 进行中会话时彻底隐藏，不生成无用的灰色菜单项
+  if (candidates.length === 0) {
+    return null;
+  }
+  if (candidates.length === 1) {
+    const target = candidates[0];
+    const targetTitle = target.title || t("ai.untitledSession");
+    return {
+      icon: SendHorizontal,
+      label: `${t("ai.sendSessionIdToOngoing")} (${targetTitle})`,
+      onSelect: () => void deliverAiSessionId(workspace, sourceSession, target, onOpen),
+    };
+  }
+  // 多个目标时展示子菜单；若有当前激活的标签排在首位
+  const sorted = [...candidates].sort((a, b) => {
+    const aActive = activeId === `ai|${a.id}` ? 2 : (openIds.includes(a.id) || (isRunning?.(a.id) ?? false)) ? 1 : 0;
+    const bActive = activeId === `ai|${b.id}` ? 2 : (openIds.includes(b.id) || (isRunning?.(b.id) ?? false)) ? 1 : 0;
+    return bActive - aActive;
+  });
+  const counts = new Map<string, number>();
+  for (const item of sorted) counts.set(item.title, (counts.get(item.title) ?? 0) + 1);
+
+  return {
+    icon: SendHorizontal,
+    label: t("ai.sendSessionIdToOngoing"),
+    children: sorted.map((target) => {
+      const isCurrent = activeId === `ai|${target.id}`;
+      const baseTitle = target.title || t("ai.untitledSession");
+      const titleWithId = counts.get(target.title) === 1 ? baseTitle : `${baseTitle} · ${target.id.slice(0, 8)}`;
+      const label = isCurrent ? t("ai.sendSessionId.current", { title: titleWithId }) : titleWithId;
+      return {
+        label,
+        onSelect: () => void deliverAiSessionId(workspace, sourceSession, target, onOpen),
+      };
+    }),
+  };
 }
 
 export type AiInputPayload =
