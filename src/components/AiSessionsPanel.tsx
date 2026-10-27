@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, ChevronsUp, Copy, Crosshair, Ellipsis, Eye, 
 import { useI18n } from "../i18n";
 import { AI_NAMES, cliDesktopAvailable, refreshAiCli, useAiCli } from "../lib/aiCli";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
+import { loadNativePurgeDefault, saveNativePurgeDefault } from "../lib/aiSessions";
 import { AI_SEARCH_MIN_QUERY, isSearchQueryActive } from "../lib/aiSearch";
 import { useAiSessionSearch } from "../hooks/useAiSessionSearch";
 import { getAiSessionActivity, subscribeAiChanges } from "../lib/aiRuntime";
@@ -76,8 +77,8 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   /** 任务状态在 lib/aiRuntime 的全局 store 里；订阅它的变更让状态点与旋转图标即时跟上。 */
   const [, bumpActivity] = useReducer((tick: number) => tick + 1, 0);
   useEffect(() => subscribeAiChanges(bumpActivity), []);
-  /** 等待确认的重命名/删除目标；非空时弹出对话框。 */
-  const [pending, setPending] = useState<{ action: "rename" | "delete"; session: AiSession } | null>(null);
+  /** 等待确认的重命名/删除目标；非空时弹出对话框。删除那一支多带这次的「连带原生」勾选态。 */
+  const [pending, setPending] = useState<{ action: "rename"; session: AiSession } | { action: "delete"; session: AiSession; purgeNative: boolean } | null>(null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const [recentFilterAnchor, setRecentFilterAnchor] = useState<HTMLElement | null>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -154,7 +155,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
           ? { label: t("ai.archived.restore"), onSelect: () => onAction({ type: "archive", id: session.id, archived: false }) }
           : { label: t("ai.archived.button"), onSelect: () => onAction({ type: "archive", id: session.id, archived: true }) },
       ],
-      [{ label: t("menu.delete"), danger: true, onSelect: () => setPending({ action: "delete", session }) }],
+      [{ label: t("menu.delete"), danger: true, onSelect: () => setPending({ action: "delete", session, purgeNative: loadNativePurgeDefault(session.provider) }) }],
     ];
     setMenu({ x, y, items: flatMenu(items) });
   };
@@ -327,11 +328,22 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       {pending ? <AiActionDialog title={t(pending.action === "rename" ? "menu.rename" : "ai.deleteSession")}
         confirm={t(pending.action === "rename" ? "dialog.confirm" : "menu.delete")}
         initialValue={pending.action === "rename" ? pending.session.title : undefined} danger={pending.action === "delete"}
+        // 「连带删 CLI 原生记录」只有删除才给；重命名是纯本地改动，没什么可勾的。
+        nativePurge={pending.action === "delete" ? {
+          checked: pending.purgeNative,
+          // 勾选按 CLI 记住：连删几条同类会话不必每次重勾，也不会把 Codex 的选择带到 Claude 上。
+          onChange: (value) => { saveNativePurgeDefault(pending.session.provider, value); setPending({ ...pending, purgeNative: value }); },
+          label: t("ai.deletePurgeNative"),
+        } : undefined}
         onCancel={() => setPending(null)} onConfirm={(title) => {
-          onAction(pending.action === "rename" ? { type: "rename", id: pending.session.id, title } : { type: "delete", id: pending.session.id });
+          onAction(pending.action === "rename"
+            ? { type: "rename", id: pending.session.id, title }
+            : { type: "delete", id: pending.session.id, purgeNative: pending.purgeNative });
           setPending(null);
         }}>
-        {pending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: pending.session.title || t("ai.untitledSession") })}</p> : null}
+        {pending.action === "delete" ? <p className="dialog-body">
+          {t(pending.purgeNative ? "ai.deleteConfirmPurge" : "ai.deleteConfirm", { name: pending.session.title || t("ai.untitledSession") })}
+        </p> : null}
       </AiActionDialog> : null}
     </div>
   );

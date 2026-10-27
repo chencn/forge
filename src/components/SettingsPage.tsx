@@ -15,6 +15,7 @@ import AiActionDialog from "./AiActionDialog";
 import CopyButton from "./CopyButton";
 import AiCommitSettingsPanel from "./AiCommitSettingsPanel";
 import AiCliSettingsPanel, { AiAssistantsToggle, AiCliSettingsControls } from "./AiCliSettingsPanel";
+import AiArchivedSessionsPanel from "./AiArchivedSessionsPanel";
 import ModelProvidersPanel from "./ModelProvidersPanel";
 import SkillsPanel from "./SkillsPanel";
 import McpPanel from "./McpPanel";
@@ -74,11 +75,11 @@ import {
 } from "../lib/updater";
 import type { DownloadReport, UpdateInfo } from "../lib/updater";
 
-/** 设置窗口左侧的模块，一行一个。AI 相关五页只在总开关开启后出现。 */
-export type SettingsModule = "general" | "editor" | "shortcuts" | "terminal" | "lsp" | "aiCommit" | "aiCli" | "modelProviders" | "skills" | "mcp" | "hooks" | "about";
+/** 设置窗口左侧的模块，一行一个。AI 相关六页只在总开关开启后出现。 */
+export type SettingsModule = "general" | "editor" | "shortcuts" | "terminal" | "lsp" | "aiCommit" | "aiCli" | "aiArchived" | "modelProviders" | "skills" | "mcp" | "hooks" | "about";
 
-const MODULES: SettingsModule[] = ["general", "editor", "shortcuts", "terminal", "lsp", "aiCommit", "aiCli", "modelProviders", "skills", "mcp", "hooks", "about"];
-const AI_MODULES = new Set<SettingsModule>(["aiCli", "modelProviders", "skills", "mcp", "hooks"]);
+const MODULES: SettingsModule[] = ["general", "editor", "shortcuts", "terminal", "lsp", "aiCommit", "aiCli", "aiArchived", "modelProviders", "skills", "mcp", "hooks", "about"];
+const AI_MODULES = new Set<SettingsModule>(["aiCli", "aiArchived", "modelProviders", "skills", "mcp", "hooks"]);
 
 const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   general: "settings.general",
@@ -88,6 +89,7 @@ const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   lsp: "settings.lsp",
   aiCommit: "settings.aiCommit",
   aiCli: "ai.title",
+  aiArchived: "settings.aiArchived",
   modelProviders: "settings.modelProviders",
   skills: "settings.skills",
   mcp: "settings.mcp",
@@ -1215,6 +1217,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
 
           {module === "aiCommit" ? <AiCommitSettingsPanel /> : null}
           {module === "aiCli" ? <AiCliSettingsPanel /> : null}
+          {module === "aiArchived" ? <AiArchivedSessionsPanel workspace={workspace} /> : null}
           {module === "modelProviders" ? <ModelProvidersPanel /> : null}
           {module === "skills" ? <SkillsPanel /> : null}
           {module === "mcp" ? <McpPanel /> : null}

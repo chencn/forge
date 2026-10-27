@@ -573,6 +573,36 @@ pub fn codex_set_thread_name(cwd: &str, id: &str, title: &str) -> Result<(), Str
     response(&mut process, 2, deadline, "重命名 Codex 会话")?;
     Ok(())
 }
+/// 真删除用的原生线程删除。一次 app-server 连接里连发 N 条，各自成败：
+/// 批量清空归档时不能因为一条失败把其余一起丢掉。
+///
+/// 实测 0.164.0（临时 `CODEX_HOME`，隔离验证）：`thread/delete` 会把 rollout 文件
+/// 从 `sessions/` 或 `archived_sessions/` 真删掉并回 `{}`；而「磁盘上没有这个线程的
+/// rollout」回 `-32600 no rollout found for thread id …`——从没发过消息的空线程根本不
+/// 落盘，删过的线程再删也是这句。原生记录本来就不存在，与删除成功等价，按 `Ok` 交回。
+pub fn codex_delete_threads(cwd: &str, ids: &[String]) -> Result<Vec<Result<(), String>>, String> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let (mut process, mut deadline) = codex_management_process(cwd, "初始化 Codex 会话删除")?;
+    let mut outcomes = Vec::with_capacity(ids.len());
+    for (index, id) in ids.iter().enumerate() {
+        let request_id = index as u64 + 2;
+        outcomes.push(
+            match process.write(&json!({"id":request_id,"method":"thread/delete","params":{"threadId":id}})) {
+                Err(error) => Err(error),
+                Ok(()) => match response(&mut process, request_id, deadline, "删除 Codex 原生会话") {
+                    Ok(_) => Ok(()),
+                    Err(error) if error.contains("no rollout found") => Ok(()),
+                    Err(error) => Err(error),
+                },
+            },
+        );
+        // 一条一个 15 秒预算，别让前面慢的线程把最后一条的时限吃光。
+        deadline = Instant::now() + Duration::from_secs(15);
+    }
+    Ok(outcomes)
+}
 /// 在没有活动回合时通过短生命周期 app-server 修改 Goal，并回读服务端完整快照。
 pub fn codex_set_goal_status(cwd: &str, thread_id: &str, status: &str) -> Result<Value, String> {
     if !matches!(status, "active" | "paused") {

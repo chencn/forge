@@ -159,18 +159,27 @@ fn read_tombstones(base: &Path) -> std::collections::HashMap<String, u64> {
 
 fn write_tombstones(base: &Path, map: &mut std::collections::HashMap<String, u64>) -> Result<(), String> {
     let cutoff = now_ms().saturating_sub(TOMBSTONE_TTL_MS);
+    let mut dropped: Vec<String> = map.iter().filter(|(_, at)| **at <= cutoff).map(|(id, _)| id.clone()).collect();
     map.retain(|_, at| *at > cutoff);
     // 超限时只留最新的那批：墓碑的使命是挡住删除后几秒内的迟到写入，旧条目没有价值。
     if map.len() > TOMBSTONE_MAX {
         let mut entries: Vec<(String, u64)> = map.drain().collect();
         entries.sort_by_key(|(_, at)| *at);
         let skip = entries.len() - TOMBSTONE_MAX;
+        dropped.extend(entries.iter().take(skip).map(|(id, _)| id.clone()));
         map.extend(entries.into_iter().skip(skip));
     }
     let path = tombstones_path(base);
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_vec(map).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    // 墓碑过期后，它守着的那两个锁文件也可以一起走。锁的用途是挡住删除后几秒内的迟到
+    // 追加，30 天过去、会话目录早没了，留着只是每次扫 base 都多两个空文件。
+    for id in dropped {
+        let _ = fs::remove_file(base.join(format!("{id}.lock")));
+        let _ = fs::remove_file(events_lock_path(base, &id));
+    }
+    Ok(())
 }
 
 /// 删除会话后登记墓碑。调用方应持有 IO_LOCK，与创建路径的检查互斥。
@@ -1637,11 +1646,20 @@ mod tests {
         // 墓碑只挡在案的 id，别的会话照常创建。
         let mut other = Store::open(&base, "other", "root", TestProvider, "t", "").unwrap();
         other.append("run", vec![("user".into(), json!({"text": "ok"}))]).unwrap();
-        // 过期墓碑失效：时间戳拨回 TTL 之前，重建放行。
+        // 过期墓碑失效：时间戳拨回 TTL 之前，重建放行；它守着的两个锁文件一起回收，
+        // 30 天过去目录早没了，留着只是每次扫 base 都多两个空文件。
+        fs::write(base.join("stale.lock"), b"").unwrap();
+        fs::write(events_lock_path(&base, "stale"), b"").unwrap();
         let mut map = read_tombstones(&base);
         map.insert("stale".into(), now_ms().saturating_sub(TOMBSTONE_TTL_MS + 1));
         write_tombstones(&base, &mut map).unwrap();
         Store::open(&base, "stale", "root", TestProvider, "t", "").unwrap();
+        assert!(!base.join("stale.lock").exists());
+        assert!(!events_lock_path(&base, "stale").exists());
+        // 没过期的墓碑不碰它的锁：那次删除还在挡迟到的写入。
+        fs::write(base.join("session.lock"), b"").unwrap();
+        write_tombstones(&base, &mut read_tombstones(&base)).unwrap();
+        assert!(base.join("session.lock").exists());
     }
 
     #[test]

@@ -1591,8 +1591,24 @@ export async function sendAiAgentMessage(sessionId: string, workspace: string, p
 export async function stopAiAgent(sessionId: string, workspace: string): Promise<void> {
   await invoke("ai_runtime_agent_stop", { sessionId, workspace });
 }
-/** 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。 */
-export async function deleteAiRuntimeSession(sessionId: string, workspace: string) { await invoke("ai_runtime_delete", { sessionId, workspace }); deleted.add(sessionId); releaseRequested.delete(sessionId); pendingStreaming.delete(sessionId); for (const task of stores.get(sessionId)?.snapshot.tasks ?? []) stoppingRunIds.delete(task.runId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); changed(); }
+/** 删除后把这条会话在本窗口里忘掉：迟到事件、活动位、大纲都不该再认得它。 */
+function forgetAiRuntimeSession(sessionId: string) { deleted.add(sessionId); releaseRequested.delete(sessionId); pendingStreaming.delete(sessionId); for (const task of stores.get(sessionId)?.snapshot.tasks ?? []) stoppingRunIds.delete(task.runId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); }
+/**
+ * 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。
+ * `purgeNative` 为真时后端先连 CLI 原生记录一起删掉（Codex 发 `thread/delete`，Claude 删
+ * `projects` 里那条 jsonl），任一条失败就整笔中止；默认只删 Forge 镜像。
+ */
+export async function deleteAiRuntimeSession(sessionId: string, workspace: string, purgeNative = false) { await invoke("ai_runtime_delete", { sessionId, workspace, purgeNative }); forgetAiRuntimeSession(sessionId); changed(); }
+/**
+ * 一次性删掉本项目所有已归档会话（后端连各自的子代理一起删）。
+ * 逐条结果原样交回：原生没删干净的会话会留在 `failed` 里，界面必须报出是哪几条、为什么。
+ */
+export async function deleteArchivedAiRuntimeSessions(workspace: string, purgeNative: boolean): Promise<{ deleted: string[]; failed: { id: string; title: string; error: string }[] }> {
+  const result = await invoke<{ deleted: string[]; failed: { id: string; title: string; error: string }[] }>("ai_runtime_delete_archived", { workspace, purgeNative });
+  for (const id of result.deleted ?? []) forgetAiRuntimeSession(id);
+  changed();
+  return result;
+}
 /**
  * 归档 / 取消归档。后端只改 `meta.json` 的一个布尔位，事件日志与 CLI 原生会话都不动，
  * 所以这里的失败只会让本地状态没变——本地列表始终以 `ai_runtime_list` 为准。

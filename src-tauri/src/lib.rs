@@ -262,6 +262,7 @@ pub fn run() {
             ai_runtime::ai_runtime_respond,
             ai_runtime::ai_runtime_set_goal_status,
             ai_runtime::ai_runtime_delete,
+            ai_runtime::ai_runtime_delete_archived,
             ai_runtime::ai_runtime_list,
             ai_runtime::ai_runtime_rename,
             ai_runtime::ai_runtime_archive,

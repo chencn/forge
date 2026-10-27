@@ -1197,17 +1197,24 @@ fn revise_agent_meta(
 }
 
 /// 只恢复当前父会话的 Claude 路由；读取旧状态不代表重新启动代理。
-fn load_claude_agent_routes(base: &Path, parent: &str, root: &str) -> Result<HashMap<String, AgentRoute>, String> {
+fn load_claude_agent_routes(base: &Path, parent: &str, root: &str) -> Result<(HashMap<String, AgentRoute>, Vec<String>), String> {
     let mut routes = HashMap::new();
+    let mut warnings = vec![];
     for entry in fs::read_dir(base).map_err(|e| e.to_string())?.take(20000).flatten() {
         let Ok(meta) = store::Store::metadata(&entry.path(), root) else { continue; };
         if meta.provider != Provider::Claude || meta.parent_session_id.as_deref() != Some(parent) { continue; }
         let Some(info) = &meta.agent else { continue; };
         if info.tool_id.is_empty() || store::is_tombstoned(base, &meta.session_id) { continue; }
-        let target = store::Store::open_for_append(base, &meta.session_id, root, Provider::Claude, &meta.title, "")?;
-        routes.insert(info.tool_id.clone(), AgentRoute { store: target, last_status: info.status.clone(), meta_broken: false, history_warned: false });
+        let restored = store::Store::open_for_append(base, &meta.session_id, root, Provider::Claude, &meta.title, "");
+        match restored {
+            Ok(target) => {
+                let last_status = target.meta.agent.as_ref().map(|info| info.status.clone()).unwrap_or_default();
+                routes.insert(info.tool_id.clone(), AgentRoute { store: target, last_status, meta_broken: false, history_warned: false });
+            }
+            Err(cause) => warnings.push(format!("子代理「{}」路由恢复失败：{cause}", meta.title)),
+        }
     }
-    Ok(routes)
+    Ok((routes, warnings))
 }
 
 /// 进程退出时 starting 与 running 都是未结束；不能把未启动成功的代理永远挂住。
@@ -1536,7 +1543,8 @@ impl Worker {
             }
         }
         let status = data["status"].as_str().unwrap_or("running").to_owned();
-        let has_payload = ["result", "usage", "detail"].iter().any(|field| data.get(field).is_some_and(|value| !value.is_null()));
+        // 相同状态仍可能补回 agentId/model；丢掉身份更新会让下一父回合无法恢复路由。
+        let has_payload = ["result", "usage", "detail", "agentId", "resolvedModel", "agentType", "model", "title"].iter().any(|field| data.get(field).is_some_and(|value| !value.is_null()));
         {
             let route = self.agents.get_mut(&key).expect("agent route exists");
             let append = route.last_status != status || has_payload;
@@ -1766,14 +1774,24 @@ impl Worker {
         let mut claude_agents = vec![];
         if request.provider == Provider::Claude {
             let base = self.store.dir.parent().ok_or("会话路径无效")?;
-            self.agents = {
+            let restored = {
                 let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-                load_claude_agent_routes(base, &self.run.session_id, &self.run.workspace)?
+                load_claude_agent_routes(base, &self.run.session_id, &self.run.workspace)
             };
+            match restored {
+                Ok((routes, warnings)) => {
+                    self.agents = routes;
+                    for warning in warnings { self.notice_safely(warning)?; }
+                }
+                Err(cause) => { self.notice_safely(format!("子代理路由恢复失败：{cause}"))?; }
+            }
+            // 旧父进程已退出，遗留活动态先同时写入父子时间线；本轮 SendMessage 才能重启。
+            let interrupted: Vec<_> = self.agents.iter().filter(|(_, route)| matches!(route.last_status.as_str(), "" | "starting" | "running")).map(|(key, _)| key.clone()).collect();
+            for key in interrupted { self.agent_event(json!({"key":key,"status":"stopped"}))?; }
             let snapshots: Vec<_> = self.agents.iter().filter_map(|(key, route)| {
                 let info = route.store.meta.agent.as_ref()?;
                 claude_agents.push((key.clone(), info.native_agent_id.clone()));
-                Some(json!({"key":key,"sessionId":route.store.meta.session_id,"title":info.title,"agentType":info.agent_type,"agentId":info.native_agent_id,"status":info.status}))
+                Some(json!({"key":key,"sessionId":route.store.meta.session_id,"title":info.title,"agentType":info.agent_type,"agentId":info.native_agent_id,"status":route.last_status}))
             }).collect();
             for snapshot in snapshots { self.queue("agent", snapshot)?; }
         }
@@ -1999,6 +2017,22 @@ impl Worker {
             let _ = self.app.emit("ai-runtime://errors", json!({
                 "sessionId":self.run.session_id,"runId":self.run.id,"error":cause
             }));
+        }
+        // Claude 先落齐 stdout 的实时批次，再补原生缺口；反过来会让同一消息分属两个回合。
+        if self.store.meta.provider == Provider::Claude {
+            if let Some(base) = self.store.dir.parent().map(Path::to_path_buf) {
+                let children: Vec<_> = self.agents.values().map(|route| route.store.meta.session_id.clone()).collect();
+                for child in children {
+                    let result = (|| {
+                        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                        history::sync_claude_agent(&base, &child, &self.run.workspace)
+                    })();
+                    match result {
+                        Ok(events) => { if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); } }
+                        Err(cause) => { let _ = self.notice_safely(format!("子代理历史补齐失败：{cause}")); }
+                    }
+                }
+            }
         }
         // CLI 进程退出后它的子代理不可能还活着：仍标 running 的子会话落一个
         // 诚实的终态，否则子代理列表永远显示「运行中」。已完成的子代理不动。
@@ -2343,16 +2377,16 @@ pub async fn ai_runtime_load(
         let agent_session = meta.as_ref().map(|m| m.agent.is_some()).unwrap_or(false);
         if agent_session {
             let events_len = dir.join("events.jsonl").metadata().map(|m| m.len()).unwrap_or(0);
-            // 只要事件日志尚无实质性事件内容（<= 256 字节），或者尚未记录 native_id，打开时均触发按需回填
+            // Claude 子会话也可能只有部分实时正文；每次空闲打开都按增量游标补齐。
             let needs_import = events_len <= 256 || meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false)
-                || meta.as_ref().is_some_and(|m| m.provider == Provider::Codex) && dir.join("native-source.json").exists();
+                || meta.as_ref().is_some_and(|m| m.provider == Provider::Claude) || dir.join("native-source.json").exists();
             // 运行中由 Worker 消费并广播；打开视图不抢增量游标。空闲时继续补齐尾部。
             let parent_busy = meta.as_ref()
                 .and_then(|m| m.parent_session_id.clone())
                 .is_some_and(|parent| registry::for_session(&parent).is_some());
             if needs_import && !parent_busy && !has_queued(&session_id) {
                 if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
-                    let _ = history::sync_subagent(&base, &session_id, &root);
+                    if let Err(cause) = history::sync_subagent(&base, &session_id, &root) { warning = Some(cause); }
                 }
             }
         } else if registry::for_session(&session_id).is_none() {
@@ -2430,11 +2464,133 @@ pub async fn ai_runtime_outline(
     })
     .await
 }
+/// 一条会话的删除组：它自己、它的子代理，以及旧版本按 `native-<provider>-<原生 ID>` 建的
+/// 同一原生会话镜像壳。子代理不嵌套，扫一层就够。
+///
+/// 镜像壳必须一起走：列表只在「真 ID 的目录还在」时收起它，真删把原生文件和真 ID 目录
+/// 一起带走后，它会带着当年的旧标题重新浮出来，变成一条再也打不开的幽灵行。
+fn session_group(base: &Path, root: &str, session_id: &str) -> Result<Vec<String>, String> {
+    let mut group = vec![session_id.to_owned()];
+    let mut natives: Vec<String> = store::Store::metadata(&base.join(session_id), root)
+        .ok()
+        .and_then(|meta| meta.native_id)
+        .into_iter()
+        .collect();
+    let mut aliases: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(base).map_err(|e| e.to_string())?.take(20000).flatten() {
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        let child_id = entry.file_name().to_string_lossy().into_owned();
+        if !store::valid_id(&child_id) || child_id == session_id { continue; }
+        if let Ok(meta) = store::Store::metadata(&entry.path(), root) {
+            if meta.parent_session_id.as_deref() == Some(session_id) {
+                natives.extend(meta.native_id.clone());
+                group.push(child_id);
+            } else if let Some(native) = meta.native_id {
+                aliases.push((child_id, native));
+            }
+        }
+    }
+    for (dir, native) in aliases {
+        if natives.iter().any(|known| *known == native) && !group.contains(&dir) { group.push(dir); }
+    }
+    Ok(group)
+}
+/// 本项目里已归档的顶层会话；子代理随父一起走，不单独列出来。
+fn archived_session_ids(base: &Path, root: &str) -> Result<Vec<String>, String> {
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir(base).map_err(|e| e.to_string())?.take(20000).flatten() {
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !store::valid_id(&id) { continue; }
+        if let Ok(meta) = store::Store::metadata(&entry.path(), root) {
+            if meta.archived && meta.parent_session_id.is_none() { ids.push(id); }
+        }
+    }
+    Ok(ids)
+}
+/// 停掉这一组会话的运行与排队。子代理必须各自停：只停父会话会让子进程在镜像删除后
+/// 继续往原生历史里写，Codex 那边还可能把刚删掉的线程再落一次盘。
+fn stop_group(app: &AppHandle, workspace: &str, root: &str, group: &[String]) -> Result<(), String> {
+    let _guard = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
+    for id in group {
+        let id = id.as_str();
+        cancel_queued(app, |request| request.session_id == id && request.workspace == workspace)?;
+        if let Some(run) = registry::for_session(id) {
+            if run.workspace != root {
+                return Err("项目归属不匹配".into());
+            }
+            run.stop()?;
+        }
+    }
+    Ok(())
+}
+/// 删除时对 CLI 原生记录的态度。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purge {
+    /// 只删 Forge 镜像：原生留在 CLI 里，靠屏蔽标记不再导回来。
+    Off,
+    /// 由这一次删除去删原生：任一条失败就整笔中止，Forge 镜像一行不动。
+    Now,
+    /// 调用方已经替这一组删过原生（批量删除的前置 pass）：这里不再删，也不必留屏蔽标记。
+    Done,
+}
+/// 删一个会话目录及其旁路产物：附件回收、墓碑，以及原生 id 的屏蔽或撤除。
+/// 调用方需已停好这一组的运行。锁文件留在原地不删——那是删除后挡住迟到写入的一部分，
+/// 见 `store::events_lock_path`；它们随墓碑一起过期，见 `store::write_tombstones`。
+fn remove_session_dir(app: &AppHandle, base: &Path, root: &str, session_id: &str, native_gone: bool) -> Result<(), String> {
+    let _lease = store::Lease::acquire(&base.join(format!("{session_id}.lock")))?;
+    let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+    // 与无租约的排队状态追加共用跨进程锁；删除赢得锁后，旧窗口只能得到“会话不存在”。
+    let _events = crate::sys::ExclusiveFileLock::acquire(&store::events_lock_path(base, session_id))?;
+    // 只校验归属，不在即将删除的日志里补写“中断”事件，也避免重入同一事件锁。
+    store::Store::page(base, session_id, root, store::Window::After(0), 1, true)?;
+    let dir = base.join(session_id);
+    if dir.exists() {
+        // 目录一删，事件日志里引用的附件就再没人认得了：先把它们收走，别留在沙箱里当孤儿。
+        images::release_session(app, &dir);
+        // 原生还在就靠屏蔽标记挡住「再发现」；原生已经删掉，标记反而该撤——
+        // 它没有过期机制，留着就是只增不减。
+        if native_gone {
+            history::unhide(base, session_id, root);
+        } else {
+            history::hide(base, session_id, root)?;
+        }
+        std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+        // 删除落一条墓碑：迟到的创建请求（排队投递、旧标签 create、子代理注册）
+        // 会在 load() 的 create 路径把目录凭空重建出来，变成打不开的幽灵会话。
+        store::record_tombstone(base, session_id)?;
+    }
+    Ok(())
+}
+/// 删除一条会话，连它的子代理一起。`Purge::Now` 会先删 CLI 原生记录，
+/// 任一条失败就整笔中止、Forge 镜像一行不动。
+///
+/// 顺序不能反：先删镜像再删原生，一旦原生失败就留下「镜像没了、原生还在但被
+/// `hidden-native` 永久屏蔽」——用户以为删干净了，实际既没删到 CLI，也再也导不回来。
+fn delete_session(app: &AppHandle, base: &Path, workspace: &str, root: &str, session_id: &str, purge: Purge) -> Result<(), String> {
+    let group = session_group(base, root, session_id)?;
+    stop_group(app, workspace, root, &group)?;
+    if purge == Purge::Now {
+        let outcomes = history::purge_natives(base, root, &group)?;
+        if let Some(error) = outcomes.into_iter().find_map(Result::err) {
+            return Err(error);
+        }
+    }
+    let native_gone = purge != Purge::Off;
+    remove_session_dir(app, base, root, session_id, native_gone)?;
+    // 子代理尽力而为：拿不到租约或归属对不上时，父会话已经删掉，孤儿既进不了侧栏
+    // （isChild 过滤）也失去了随父消失的 dock 入口，留在磁盘上只会被发现流程反复扫描。
+    for child in group.iter().skip(1) {
+        let _ = remove_session_dir(app, base, root, child, native_gone);
+    }
+    Ok(())
+}
 #[tauri::command]
 pub async fn ai_runtime_delete(
     app: AppHandle,
     session_id: String,
     workspace: String,
+    purge_native: Option<bool>,
 ) -> Result<(), String> {
     block(move || {
         if !store::valid_id(&session_id) {
@@ -2442,55 +2598,61 @@ pub async fn ai_runtime_delete(
         }
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
-        let _guard = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
-        cancel_queued(&app, |request| request.session_id == session_id && request.workspace == workspace)?;
-        if let Some(run) = registry::for_session(&session_id) {
-            if run.workspace != root {
-                return Err("项目归属不匹配".into());
-            }
-            run.stop()?;
+        delete_session(&app, &base, &workspace, &root, &session_id, if purge_native.unwrap_or(false) { Purge::Now } else { Purge::Off })
+    })
+    .await
+}
+/// 设置页「归档会话」用：一次性删掉本项目里所有已归档会话（含各自的子代理）。
+///
+/// 逐条复用 `delete_session` 的完整序列，不另写快路径。原生删除合并成一次：
+/// N 个 Codex 线程走同一根 app-server 连接，而不是每条会话各起一个进程。
+/// 单条失败只把那条留在列表里如实上报，不把整批的成功与否混成一锅。
+#[tauri::command]
+pub async fn ai_runtime_delete_archived(
+    app: AppHandle,
+    workspace: String,
+    purge_native: Option<bool>,
+) -> Result<Value, String> {
+    block(move || {
+        enabled(&app)?;
+        let root = store::workspace(&workspace)?;
+        let base = base(&app)?;
+        let mut groups = Vec::new();
+        for id in archived_session_ids(&base, &root)? {
+            groups.push(session_group(&base, &root, &id)?);
         }
-        let _lease = store::Lease::acquire(&base.join(format!("{session_id}.lock")))?;
-        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-        // 与无租约的排队状态追加共用跨进程锁；删除赢得锁后，旧窗口只能得到“会话不存在”。
-        let _events = crate::sys::ExclusiveFileLock::acquire(&store::events_lock_path(&base, &session_id))?;
-        // 只校验归属，不在即将删除的日志里补写“中断”事件，也避免重入同一事件锁。
-        store::Store::page(&base, &session_id, &root, store::Window::After(0), 1, true)?;
-        let dir = base.join(&session_id);
-        if dir.exists() {
-            // 目录一删，事件日志里引用的附件就再没人认得了：先把它们收走，别留在沙箱里当孤儿。
-            images::release_session(&app, &dir);
-            history::hide(&base, &session_id, &root)?;
-            std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
-            // 删除落一条墓碑：迟到的创建请求（排队投递、旧标签 create、子代理注册）
-            // 会在 load() 的 create 路径把目录凭空重建出来，变成打不开的幽灵会话。
-            store::record_tombstone(&base, &session_id)?;
+        // 先把所有运行停掉再动原生记录：还挂着的线程删不掉，也可能删完又被写回来。
+        for group in &groups {
+            stop_group(&app, &workspace, &root, group)?;
         }
-        // 子代理随父一起走：孤儿既进不了侧栏（isChild 过滤）也失去了随父会话消失的
-        // dock 入口，留在磁盘上只会被发现流程反复扫描。子代理不嵌套，扫一层就够。
-        let mut children = vec![];
-        for entry in std::fs::read_dir(&base).map_err(|e| e.to_string())?.take(20000).flatten() {
-            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
-            let child_id = entry.file_name().to_string_lossy().into_owned();
-            if !store::valid_id(&child_id) || child_id == session_id { continue; }
-            if let Ok(meta) = store::Store::metadata(&entry.path(), &root) {
-                if meta.parent_session_id.as_deref() == Some(session_id.as_str()) {
-                    children.push(child_id);
+        let flat: Vec<String> = groups.iter().flatten().cloned().collect();
+        let mut failures: HashMap<String, String> = HashMap::new();
+        let purge = purge_native.unwrap_or(false);
+        if purge {
+            let outcomes = history::purge_natives(&base, &root, &flat)?;
+            for (id, outcome) in flat.into_iter().zip(outcomes) {
+                if let Err(error) = outcome {
+                    failures.insert(id, error);
                 }
             }
         }
-        for child in children {
-            let Ok(_lease) = store::Lease::acquire(&base.join(format!("{child}.lock"))) else { continue };
-            let Ok(_events) = crate::sys::ExclusiveFileLock::acquire(&store::events_lock_path(&base, &child)) else { continue };
-            let dir = base.join(&child);
-            if dir.exists() {
-                images::release_session(&app, &dir);
-                let _ = history::hide(&base, &child, &root);
-                let _ = std::fs::remove_dir_all(&dir);
-                let _ = store::record_tombstone(&base, &child);
+        let mut deleted = Vec::new();
+        let mut failed = Vec::new();
+        for group in groups {
+            let Some(head) = group.first().cloned() else { continue };
+            let title = store::Store::metadata(&base.join(&head), &root).map(|meta| meta.title).unwrap_or_default();
+            // 组里任何一条原生没删干净就整组保留：只剩一半的父子会话比原样留着更难看。
+            if let Some(error) = group.iter().find_map(|id| failures.get(id.as_str()).cloned()) {
+                failed.push(json!({ "id": head, "title": title, "error": error }));
+                continue;
+            }
+            // 原生已经在前置那一趟删掉了，这里只收尾镜像；再留屏蔽标记就是纯累赘。
+            match delete_session(&app, &base, &workspace, &root, &head, if purge { Purge::Done } else { Purge::Off }) {
+                Ok(()) => deleted.push(head),
+                Err(error) => failed.push(json!({ "id": head, "title": title, "error": error })),
             }
         }
-        Ok(())
+        Ok(json!({ "deleted": deleted, "failed": failed }))
     })
     .await
 }
@@ -2761,6 +2923,40 @@ mod tests {
         assert!(id.starts_with(&"p".repeat(48)), "父会话前缀要能看出来源");
     }
     #[test]
+    fn delete_scans_follow_the_parent_link_and_the_archive_flag() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-delete-scan-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        fs::create_dir_all(&root).unwrap();
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut parent = store::Store::open(&base, "parent", &workspace, Provider::Codex, "父会话", "").unwrap();
+        parent.meta.native_id = Some("thread-1".into());
+        parent.save().unwrap();
+        let mut child = store::Store::open(&base, "child", &workspace, Provider::Codex, "子代理", "").unwrap();
+        child.meta.parent_session_id = Some("parent".into());
+        child.meta.native_id = Some("thread-2".into());
+        child.save().unwrap();
+        // 旧版本给同一原生会话建过的镜像壳：真 ID 目录没了以后它就会浮出来当幽灵行。
+        let mut shell = store::Store::open(&base, "native-codex-thread-1", &workspace, Provider::Codex, "# AGENTS.md 旧标题", "").unwrap();
+        shell.meta.native_id = Some("thread-1".into());
+        shell.save().unwrap();
+        store::Store::open(&base, "away", &workspace, Provider::Claude, "收起来的", "").unwrap();
+        assert!(store::Store::set_archived(&base, "away", &workspace, true).unwrap());
+        // 组的首项是它自己，然后子代理，最后镜像壳：停运行、清排队、删原生都按这一组走。
+        assert_eq!(session_group(&base, &workspace, "parent").unwrap(), vec!["parent".to_string(), "child".to_string(), "native-codex-thread-1".to_string()]);
+        // 「归档会话」页只列顶层会话；把子代理也列出来，一条父会话会显示成两行。
+        assert_eq!(archived_session_ids(&base, &workspace).unwrap(), vec!["away".to_string()]);
+        // 归属对不上就扫不到子代理——另一个项目的记录不该被这次删除带走。
+        assert_eq!(session_group(&base, "other-project", "parent").unwrap(), vec!["parent".to_string()]);
+        fs::remove_dir_all(temp).unwrap();
+    }
+    #[test]
     fn revise_agent_meta_preserves_externally_bound_native_id() {
         let temp = std::env::temp_dir().join(format!(
             "forge-revise-agent-meta-{}",
@@ -2825,19 +3021,28 @@ mod tests {
             target.meta.agent = Some(store::AgentInfo { tool_id: id.into(), native_agent_id: Some(format!("native-{id}")), status: status.into(), ..Default::default() });
             target.save().unwrap();
         }
-        let routes = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        let (routes, warnings) = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        assert!(warnings.is_empty());
         assert_eq!(routes.len(), 2);
         assert_eq!(routes["child"].last_status, "completed");
         assert_eq!(routes["child"].store.meta.agent.as_ref().unwrap().native_agent_id.as_deref(), Some("native-child"));
         drop(routes);
         // 新 Worker 重建路由不改旧终态；退出只结算仍未启动完成的代理。
-        let restored = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        let (restored, _) = load_claude_agent_routes(&base, "parent", &root).unwrap();
         assert_eq!(restored["child"].last_status, "completed");
+        assert_eq!(restored["starting"].last_status, "starting");
         assert!(!stop_active_agent(&base.join("child"), &root, "child").unwrap());
+        revise_agent_meta(&base.join("starting"), &root, "starting", |info| { info.status = "starting".into(); info.ended_at = None; true }).unwrap();
         assert!(stop_active_agent(&base.join("starting"), &root, "starting").unwrap());
         let meta = store::Store::metadata(&base.join("starting"), &root).unwrap();
         assert_eq!(meta.agent.as_ref().unwrap().status, "stopped");
         assert!(meta.agent.unwrap().ended_at.is_some());
+        // 一个坏日志只影响它自己的路由，其他代理与父回合仍可恢复。
+        fs::write(base.join("starting").join("events.jsonl"), "invalid-json\n").unwrap();
+        let (healthy, warnings) = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        assert!(healthy.contains_key("child"));
+        assert!(!healthy.contains_key("starting"));
+        assert_eq!(warnings.len(), 1);
         fs::remove_dir_all(temp).unwrap();
     }
     #[test]

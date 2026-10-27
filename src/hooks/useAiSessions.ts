@@ -132,8 +132,12 @@ export function useAiSessions(root: string | null, enabled = true) {
     if (!enabled) return false;
     // 删会话带走全部会话级缓存；发送历史和引擎默认项按工程/引擎共享，继续保留。
     if (action.type === "delete") {
-      deleted.add(`${key}:${action.id}`);
-      clearAiSessionStorage(root, action.id);
+      // 子代理的记录与草稿跟着父一起清：后端已经把它们的目录删了，本地留着就是没人认的死键。
+      const doomed = [action.id, ...get(key).state.sessions.filter((item) => item.parentSessionId === action.id).map((item) => item.id)];
+      for (const id of doomed) {
+        deleted.add(`${key}:${id}`);
+        clearAiSessionStorage(root, id);
+      }
     }
     const current = get(key);
     const state = reduceAiSessions(current.state, action);

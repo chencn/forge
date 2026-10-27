@@ -358,14 +358,15 @@ impl Claude {
     fn agent_result_event(&mut self, id: &str, structured: Option<&Value>, ok: bool) -> Option<Action> {
         if !self.tools.get(id).is_some_and(|tool| tool["name"].as_str() == Some("Agent")) { return None; }
         // 失败回执不保证带结构化结果，但失败本身已经是明确的终态。
-        if !ok {
-            return Some(Action::Emit { kind: "agent", data: json!({"key":id,"status":"failed"}) });
-        }
-        let structured = structured?;
+        let structured = match structured {
+            Some(value) => value,
+            None if !ok => return Some(Action::Emit { kind: "agent", data: json!({"key":id,"status":"failed"}) }),
+            None => return None,
+        };
         if let Some(agent_id) = structured["agentId"].as_str().filter(|value| !value.is_empty()) {
             self.agent_ids.insert(agent_id.to_owned(), id.to_owned());
         }
-        if structured["isAsync"] == true || structured["status"] == "async_launched" {
+        if ok && (structured["isAsync"] == true || structured["status"] == "async_launched") {
             return Some(Action::Emit { kind: "agent", data: json!({
                 "key": id, "agentId": structured["agentId"],
                 "resolvedModel": structured["resolvedModel"],
@@ -1395,6 +1396,11 @@ mod tests {
         p.receive(json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"agent-tool","name":"Agent","input":{"prompt":"检查"}}]}})).unwrap();
         let actions = p.receive(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent-tool","is_error":true,"content":"启动失败"}]}})).unwrap();
         assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"agent",data} if data["key"] == "agent-tool" && data["status"] == "failed")));
+        // 有结构化错误时仍须保存身份与用量，后续仅含 task_id 的通知才能找到原调用。
+        let rich = p.receive(json!({"type":"user","tool_use_result":{"agentId":"failed-agent","resolvedModel":"fixture-model","totalTokens":17},"message":{"content":[{"type":"tool_result","tool_use_id":"agent-tool","is_error":true,"content":"执行失败"}]}})).unwrap();
+        assert!(rich.iter().any(|a| matches!(a, Action::Emit {kind:"agent",data} if data["agentId"] == "failed-agent" && data["status"] == "failed" && data["usage"]["totalTokens"] == 17)));
+        let notified = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"failed-agent","status":"failed"})).unwrap();
+        assert!(notified.iter().any(|a| matches!(a, Action::Emit {kind:"agent",data} if data["key"] == "agent-tool" && data["status"] == "failed")));
     }
     #[test]
     fn restored_agent_can_resume_and_finish_without_another_agent_call() {

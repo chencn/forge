@@ -1,5 +1,7 @@
 //! Read-only native history adapters. Only Forge's own mirror/checkpoints are written.
 //! CLI 原生历史只读：只有 Forge 自己的镜像与会话检查点会被写入。
+//! 唯一的例外是 `purge_natives`——用户明确勾选「同时删除 CLI 原生记录」时，
+//! 才允许动原生文件；默认路径（归档、改名、镜像同步）一个字都不写回。
 use super::store::{self, Store};
 use crate::ai_cli::Provider;
 use regex::Regex;
@@ -49,18 +51,25 @@ fn home() -> Result<PathBuf, String> {
         .ok_or("无法确定用户目录".into())
 }
 fn roots() -> Result<Vec<(Provider, PathBuf)>, String> {
-    let home = home()?;
-    let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".claude"));
-    let codex = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"));
     Ok(vec![
-        (Provider::Claude, claude.join("projects")),
-        (Provider::Codex, codex.join("sessions")),
-        (Provider::Codex, codex.join("archived_sessions")),
+        (Provider::Claude, claude_home()?.join("projects")),
+        (Provider::Codex, codex_home()?.join("sessions")),
+        (Provider::Codex, codex_home()?.join("archived_sessions")),
     ])
+}
+/// Claude 的配置目录（`projects`、`tasks`、`file-history` 这些都在它下面）。
+fn claude_home() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(home()?.join(".claude"))
+}
+/// Codex 的数据目录（rollout、线程锁、能力标记都在它下面）。
+fn codex_home() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("CODEX_HOME") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(home()?.join(".codex"))
 }
 fn same_root(cwd: &str, root: &str) -> bool {
     super::same_workspace_path(cwd, root) || store::workspace(cwd).is_ok_and(|value| value == root)
@@ -350,6 +359,134 @@ pub fn hide(base: &Path, id: &str, root: &str) -> Result<(), String> {
     }
     Ok(())
 }
+/// 真删除之后撤掉屏蔽标记。原生文件已经不在了，没有东西需要再「挡回来」；
+/// 留着只会让 `hidden-native` 只增不减——它本来没有过期机制，也没有别的地方会清它。
+pub fn unhide(base: &Path, id: &str, root: &str) {
+    let Ok(meta) = Store::metadata(&base.join(id), root) else { return };
+    let Some(native) = meta.native_id.filter(|native| store::valid_id(native)) else { return };
+    let _ = fs::remove_file(base.join("hidden-native").join(hidden_key(meta.provider, &native)));
+}
+/// 真删除：连 CLI 原生记录一起清掉。结果与入参 `ids` 一一对应，调用方据此决定
+/// 哪些 Forge 镜像可以删——原生没删干净的会话必须留在列表里，不能只把镜像收走。
+///
+/// Codex 交给 app-server 的 `thread/delete` 处置（实测会连带清掉 `archived_sessions/`
+/// 里的那份），删完再收走它自己按线程 ID 留下的旁路文件；Claude 没有逐会话删除入口，
+/// 按 CLI `purge --dry-run` 报出的会话级清单逐项删：transcript、同名附属目录
+/// （tool-results 与 subagents 都在里面）、tasks、file-history、session-env。
+pub fn purge_natives(base: &Path, root: &str, ids: &[String]) -> Result<Vec<Result<(), String>>, String> {
+    let mut outcomes: Vec<Result<(), String>> = ids.iter().map(|_| Ok(())).collect();
+    let mut codex: Vec<(usize, String)> = Vec::new();
+    let claude = claude_home()?;
+    for (index, id) in ids.iter().enumerate() {
+        let meta = match Store::metadata(&base.join(id), root) {
+            Ok(meta) => meta,
+            Err(error) => {
+                outcomes[index] = Err(error);
+                continue;
+            }
+        };
+        match meta.provider {
+            Provider::Claude => outcomes[index] = purge_claude(base, id, root, meta.native_id.as_deref(), &claude),
+            // 一条消息都没发过的线程在 Codex 侧根本不落盘，没有原生记录可删。
+            Provider::Codex => {
+                if let Some(native) = meta.native_id.filter(|native| store::valid_id(native)) {
+                    codex.push((index, native));
+                }
+            }
+        }
+    }
+    if !codex.is_empty() {
+        let native_ids: Vec<String> = codex.iter().map(|(_, native)| native.clone()).collect();
+        let answers = super::options::codex_delete_threads(root, &native_ids)?;
+        let home = codex_home()?;
+        for ((index, native), answer) in codex.into_iter().zip(answers) {
+            // 只在 CLI 确认线程没了之后收尾：删失败的线程可能还在磁盘上活着。
+            if answer.is_ok() { prune_codex_side_stores(&home, &native); }
+            outcomes[index] = answer;
+        }
+    }
+    Ok(outcomes)
+}
+/// 删一条 Claude 会话在原生侧的全部产物。`home` 是 `.claude` 配置目录，测试注入用。
+fn purge_claude(base: &Path, id: &str, root: &str, native: Option<&str>, home: &Path) -> Result<(), String> {
+    // transcript 只认 discover 登记过的那条路径：项目目录名怎么编码是 CLI 自己的事，不拿 cwd 去猜。
+    // 没登记来源＝这条会话的原生历史从没被认到（新建后没发过消息），那一栏本来就没有文件。
+    if let Some(source) = source(base, id, root)? {
+        delete_claude_transcript(&source, &home.join("projects"))?;
+    }
+    // 剩下三样都按原生会话 ID 命名。子代理的 tasks/历史同样按子代理自己的 ID 存，
+    // 而它们的 transcript 就在父会话的 `<id>/subagents/` 里——父会话那一项已经连带收走。
+    if let Some(native) = native.filter(|native| store::valid_id(native)) {
+        for anchor in ["tasks", "file-history", "session-env"] {
+            delete_id_named_dir(home, anchor, native)?;
+        }
+    }
+    Ok(())
+}
+/// 删 `<配置目录>/<锚点>/<原生 ID>` 这一整个目录（tasks、file-history、session-env）。
+///
+/// 目录名按构造就是那个 ID，所以边界要看锚点：锚点自己必须是 `<配置目录>` 下面的真目录，
+/// 中间任何一层被换成链接都不删——那等于拿用户的其他数据去赌一次拼路径。不存在按成功处理。
+fn delete_id_named_dir(home: &Path, anchor: &str, native: &str) -> Result<(), String> {
+    let root = home.join(anchor);
+    let path = root.join(native);
+    let kind = match fs::symlink_metadata(&path) {
+        Ok(kind) => kind,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("无法读取原生 {anchor} 目录：{error}")),
+    };
+    if kind.file_type().is_symlink() || !kind.is_dir() {
+        return Err(format!("原生 {anchor} 路径不是目录，拒绝删除：{}", path.display()));
+    }
+    let real_home = fs::canonicalize(home).map_err(|error| format!("无法读取 CLI 配置目录：{error}"))?;
+    let real_root = fs::canonicalize(&root).map_err(|error| format!("无法读取原生 {anchor} 目录：{error}"))?;
+    if real_root != real_home.join(anchor) {
+        return Err(format!("原生 {anchor} 目录不在配置目录内，拒绝删除：{}", root.display()));
+    }
+    fs::remove_dir_all(&path).map_err(|error| format!("删除原生 {anchor} 失败：{error}"))?;
+    Ok(())
+}
+/// `thread/delete` 之后 Codex 自己按线程 ID 留下的两个旁路文件：写入锁与 TUI 引用能力标记
+/// （实测删除不动它们，本机 10 条能力标记里就躺着一条孤儿）。名字必须正好是那个线程 ID；
+/// 还被活进程占着删不掉就留着——两个都是可重建的空文件，不值得为它们把删除报成失败。
+fn prune_codex_side_stores(home: &Path, native: &str) {
+    let _ = fs::remove_file(home.join("thread-writer-locks").join(format!("{native}.lock")));
+    let _ = fs::remove_file(home.join("tui-thread-reference-capabilities").join(native));
+}
+/// 删一条 Claude 原生 transcript，连同它的同名附属目录（实测 `<id>.jsonl` 旁边就是
+/// `<id>/`，里面是 tool-results 与 subagents——父会话清干净，子代理的记录也就跟着走）。
+///
+/// discover 全程只读，这条反向动作得自己把住边界：路径必须仍在 `projects` 根下、
+/// 是普通文件、文件名就是那个原生会话 ID。任何一条不满足就拒绝删除并如实报错，
+/// 宁可留下孤儿文件，也不能拿用户的其他数据去赌一次拼路径。
+fn delete_claude_transcript(source: &Source, projects: &Path) -> Result<(), String> {
+    // 文件已经不在了＝原生侧本来就没有（父会话先收走了整个目录，或用户在 CLI 里清过）。
+    let kind = match fs::symlink_metadata(&source.path) {
+        Ok(kind) => kind,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("无法读取原生历史文件：{error}")),
+    };
+    if kind.file_type().is_symlink() || !kind.is_file() {
+        return Err("原生历史路径不是普通文件，拒绝删除".into());
+    }
+    let stem = source.path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+    if stem != source.native_id || source.path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return Err("原生历史文件名与会话 ID 不匹配，拒绝删除".into());
+    }
+    let parent = source.path.parent().ok_or("原生历史路径无效")?;
+    // 两端都取真实路径再比前缀：中间任何一层是链接都不算落在 projects 里。
+    let real_projects = fs::canonicalize(projects).map_err(|error| format!("无法读取 Claude 历史目录：{error}"))?;
+    let real_parent = fs::canonicalize(parent).map_err(|error| format!("无法校验原生历史归属：{error}"))?;
+    if !real_parent.starts_with(&real_projects) {
+        return Err(format!("原生历史不在 Claude 的 projects 目录内：{}", source.path.display()));
+    }
+    fs::remove_file(&source.path).map_err(|error| format!("删除原生历史失败：{error}"))?;
+    let sibling = parent.join(stem);
+    if fs::symlink_metadata(&sibling).is_ok_and(|kind| kind.is_dir() && !kind.file_type().is_symlink()) {
+        fs::remove_dir_all(&sibling).map_err(|error| format!("删除原生历史附属目录失败：{error}"))?;
+    }
+    Ok(())
+}
 /// 登记惰性镜像，并复用已有的 provider/native-id 绑定。不发提示词、不起进程。
 pub fn discover(base: &Path, root: &str) -> Result<(), String> {
     discover_in(base, root, roots()?)
@@ -505,9 +642,28 @@ fn project_sidechain(provider: Provider, value: &Value, offset: u64, projection:
         if let Some(object) = stripped.as_object_mut() { object.remove("isSidechain"); }
         // 实时协议使用 message.id，原生 uuid 是信封 ID；两者必须投影成同一条消息。
         if value["type"] == "assistant" {
-            if let Some(id) = value["message"]["id"].as_str() { stripped["uuid"] = json!(id); }
+            if let Some(id) = value["message"]["id"].as_str() {
+                stripped["uuid"] = json!(id);
+                let body = text(&value["message"]["content"]);
+                if !body.is_empty() {
+                    let combined = match &projection.claude_message {
+                        Some((previous_id, previous)) if previous_id == id => {
+                            if previous.ends_with(&body) { previous.clone() }
+                            else if body.starts_with(previous) { body }
+                            else { format!("{previous}{body}") }
+                        }
+                        _ => body,
+                    };
+                    projection.claude_message = Some((id.to_owned(), combined));
+                }
+            }
         }
         let mut events = project_with_state(provider, &stripped, offset, projection);
+        if let Some((id, body)) = &projection.claude_message {
+            for (kind, data) in &mut events {
+                if kind == "message" && data["id"].as_str() == Some(id) { data["text"] = json!(body); }
+            }
+        }
         if let Some(id) = value["message"]["id"].as_str() {
             // 思考块也沿用实时的 message.id-index，补采才能修正原条目。
             for (kind, data) in &mut events {
@@ -548,9 +704,7 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or(Value::Null);
-        // 只导入已终态（finished）的子代理。正在写的半截正文一旦落盘，exists() 的
-        // 跳过会让它永远冻住；meta 缺失时 toolUseId 也提不出来，派生的目录名会和
-        // live 路由按 toolUseId 建的对不上。等终态出现后的下一次发现再导。
+        // 发现流程只新建已完成的代理；缺少归属信息的运行中代理由实时协议登记。
         if info["finished"] != true { continue; }
         let key = info["toolUseId"].as_str().filter(|value| !value.is_empty()).unwrap_or(&agent_id).to_owned();
         let child = super::child_session_id(parent_id, &key);
@@ -746,6 +900,9 @@ struct ProjectionState {
     codex_parent: Option<String>,
     #[serde(default)]
     codex_snapshot_depth: u32,
+    /// 同一 Claude assistant 消息可拆成多个信封，跨增量同步仍须累计完整正文。
+    #[serde(default)]
+    claude_message: Option<(String, String)>,
 }
 
 /// 原生游标之外还要保留跨批投影状态；否则 TaskCreate 与结果分属两批时会丢关联。
@@ -960,8 +1117,21 @@ pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<supe
 fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, finished: bool) -> Result<Vec<super::events::Event>, String> {
     let base = target.dir.parent().ok_or("子会话路径无效")?.to_path_buf();
     let id = target.meta.session_id.clone();
-    save_source(&base, &id, source)?;
+    if source.provider != Provider::Claude || source.workspace != target.meta.workspace { return Err("子代理历史项目不匹配".into()); }
+    let sidecar: Value = fs::read(source.path.with_extension("meta.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+    if source.path.file_name().and_then(|name| name.to_str()) != Some(format!("agent-{}.jsonl", source.native_id).as_str())
+        || target.meta.agent.as_ref().and_then(|info| info.native_agent_id.as_deref()).is_some_and(|agent| agent != source.native_id)
+        || sidecar["toolUseId"].as_str().is_some_and(|key| target.meta.agent.as_ref().is_none_or(|info| info.tool_id != key)) {
+        return Err("子代理历史归属不一致".into());
+    }
+    if !source_path(&base, &id).exists() { save_source(&base, &id, source)?; }
     if target.meta.native_id.as_deref() != Some(&source.native_id) { target.bind(source.native_id.clone())?; }
+    if let Some(info) = target.meta.agent.as_mut() {
+        if info.native_agent_id.is_none() {
+            info.native_agent_id = Some(source.native_id.clone());
+            target.save()?;
+        }
+    }
     let (mut offset, mut projection) = checkpoint(&base, &id)?;
     let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
     if length > MAX_FILE || length < offset { return Err("子代理历史过大或已被截断；保留现有镜像".into()); }
@@ -969,13 +1139,21 @@ fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, 
     // 镜像包含实时及旧版原生事件；按公开消息/工具 ID 合并，不以日志大小猜测完整性。
     let mut seen: HashMap<(String, String), (String, Value)> = HashMap::new();
     let mut task_prompt = None;
-    let mut mirror = BufReader::new(File::open(target.dir.join("events.jsonl")).map_err(|e| e.to_string())?);
-    while let Some((event, _)) = bounded_line(&mut mirror)? {
+    let mut last_agent_status = None;
+    let mut mirror = target.dir.join("events.jsonl").exists().then(|| File::open(target.dir.join("events.jsonl"))).transpose().map_err(|e| e.to_string())?.map(BufReader::new);
+    while let Some((event, _)) = match mirror.as_mut() { Some(reader) => bounded_line(reader)?, None => None } {
         let data = &event["data"];
         let kind = match event["kind"].as_str().unwrap_or("") { "text" => "message", "reasoning_delta" => "reasoning", kind => kind };
+        if kind == "agent" { last_agent_status = data["status"].as_str().map(str::to_owned); }
         if event["kind"] == "user" && data["agentTask"] == true { task_prompt = data["text"].as_str().map(str::to_owned); }
         let Some(key) = data["id"].as_str() else { continue; };
         let entry = seen.entry((kind.to_owned(), key.to_owned())).or_insert_with(|| (event["runId"].as_str().unwrap_or("native").to_owned(), json!({})));
+        let run = event["runId"].as_str().unwrap_or("native");
+        if entry.0 != run {
+            // 同 ID 出现在多个回合时，只合并最新实时回合，不能把 native 与 live 文本拼在一起。
+            if run == "native" && entry.0 != "native" { continue; }
+            *entry = (run.to_owned(), json!({}));
+        }
         if let Some(fields) = data.as_object() {
             for (field, value) in fields {
                 if matches!(event["kind"].as_str(), Some("text" | "reasoning_delta")) && field == "text" {
@@ -985,79 +1163,117 @@ fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, 
             }
         }
     }
+    // 时间线是元数据写失败时的事实来源，原生 finished 不能覆盖已落盘的失败/停止。
+    if let Some(status) = last_agent_status.filter(|status| matches!(status.as_str(), "completed" | "failed" | "stopped")) {
+        if let Some(info) = target.meta.agent.as_mut() {
+            if info.status != status { info.status = status; info.ended_at = Some(super::now_ms()); target.save()?; }
+        }
+    }
+    if offset == length && !(finished && target.meta.agent.as_ref().is_some_and(|info| matches!(info.status.as_str(), "" | "starting" | "running"))) { return Ok(vec![]); }
+    // task_list 没有消息 ID，必须依据其来源工具的开始/结果去重，避免旧快照覆盖实时任务。
+    let mut live_task_sources = std::collections::HashSet::new();
+    for ((kind, key), (run, data)) in &seen {
+        if kind != "tool" || run == "native" { continue; }
+        if super::claude::task_event(key, data["name"].as_str().unwrap_or(""), &data["input"]).is_some() { live_task_sources.insert((key.clone(), false)); }
+        if data["name"] == "TaskCreate" && data.get("output").is_some() { live_task_sources.insert((key.clone(), true)); }
+    }
     let mut file = File::open(&source.path).map_err(|e| e.to_string())?;
     file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file.take(length - offset));
     let mut emitted = vec![];
-    let mut batch = vec![];
-    let mut batch_run = "native".to_owned();
-    while let Some((value, count)) = bounded_line(&mut reader)? {
-        let seed = offset;
-        offset += count;
-        // 子文件仍记录父 sessionId；串错文件必须报错而不是静默推进游标。
-        if value["sessionId"].as_str().is_some_and(|session| session != parent_native)
-            || value["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, &source.workspace)) {
-            return Err("子代理历史归属不一致".into());
-        }
-        for (kind, mut data) in project_sidechain(Provider::Claude, &value, seed, &mut projection) {
-            if kind == "user" && seed == 0 && task_prompt.as_deref().is_some_and(|prompt| data["text"].as_str().is_some_and(|text| text == prompt || text.chars().take(4000).collect::<String>() == prompt)) { continue; }
-            let mut run = "native".to_owned();
-            if let Some(key) = data["id"].as_str().map(str::to_owned) {
-                let identity = (kind.clone(), key);
-                if let Some((existing_run, existing)) = seen.get(&identity) {
-                    run = existing_run.clone();
-                    if kind == "message" || kind == "reasoning" {
-                        let text = data["text"].as_str().unwrap_or("");
-                        if existing["text"].as_str().is_some_and(|old| old == text || old.starts_with(text)) { continue; }
-                    } else if kind == "tool" {
-                        // 原生 recorded 不能覆盖实时 completed；只补缺失/变化的协议字段。
-                        if let Some(fields) = data.as_object_mut() {
-                            fields.retain(|field, value| !value.is_null() && existing.get(field) != Some(value) && !(field == "status" && value == "recorded"));
-                            if fields.keys().all(|field| field == "id") || fields.is_empty() { continue; }
-                        }
-                        data["id"] = identity.1.clone().into();
-                    }
+    let result = (|| -> Result<(), String> {
+        loop {
+            let start = offset;
+            let mut groups = vec![];
+            let mut batch = vec![];
+            let mut batch_run = "native".to_owned();
+            let mut projected_count = 0;
+            while let Some((value, count)) = bounded_line(&mut reader)? {
+                let seed = offset;
+                offset += count;
+                // 子文件仍记录父 sessionId；串错文件必须报错而不是静默推进游标。
+                if value["sessionId"].as_str().is_some_and(|session| session != parent_native)
+                    || value["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, &source.workspace)) {
+                    return Err("子代理历史归属不一致".into());
                 }
-                let entry = seen.entry(identity).or_insert_with(|| (run.clone(), json!({})));
-                if let Some(fields) = data.as_object() { for (field, value) in fields { entry.1[field] = value.clone(); } }
+                let mut skip_task_list = false;
+                for (kind, mut data) in project_sidechain(Provider::Claude, &value, seed, &mut projection) {
+                    if kind == "tool" {
+                        skip_task_list = data["id"].as_str().is_some_and(|key| live_task_sources.contains(&(key.to_owned(), data.get("output").is_some())));
+                    }
+                    if kind == "task_list" && skip_task_list { continue; }
+                    if kind == "user" && seed == 0 && task_prompt.as_deref().is_some_and(|prompt| data["text"].as_str().is_some_and(|text| text == prompt || text.chars().take(4000).collect::<String>() == prompt)) { continue; }
+                    let mut run = "native".to_owned();
+                    if let Some(key) = data["id"].as_str().map(str::to_owned) {
+                        let identity = (kind.clone(), key);
+                        if let Some((existing_run, existing)) = seen.get(&identity) {
+                            run = existing_run.clone();
+                            if kind == "user" { continue; }
+                            if kind == "message" || kind == "reasoning" {
+                                let text = data["text"].as_str().unwrap_or("");
+                                if existing["text"].as_str().is_some_and(|old| old == text || old.starts_with(text)) { continue; }
+                            } else if kind == "tool" {
+                                // 原生 recorded 不能覆盖实时 completed；只补缺失/变化的协议字段。
+                                if let Some(fields) = data.as_object_mut() {
+                                    fields.retain(|field, value| {
+                                        if value.is_null() || existing.get(field) == Some(value) { return false; }
+                                        if field == "status" { return value != "recorded" && !matches!(existing["status"].as_str(), Some("completed" | "failed")); }
+                                        existing.get(field).is_none_or(Value::is_null) || field == "input" && existing["input"] == json!({})
+                                    });
+                                    if fields.keys().all(|field| field == "id") || fields.is_empty() { continue; }
+                                }
+                                data["id"] = identity.1.clone().into();
+                            }
+                        }
+                        let entry = seen.entry(identity).or_insert_with(|| (run.clone(), json!({})));
+                        if let Some(fields) = data.as_object() { for (field, value) in fields { entry.1[field] = value.clone(); } }
+                    }
+                    if run != batch_run || batch.len() >= 128 {
+                        if !batch.is_empty() { groups.push((batch_run.clone(), std::mem::take(&mut batch))); }
+                        batch_run = run;
+                    }
+                    batch.push((kind, data));
+                    projected_count += 1;
+                }
+                if projected_count >= 128 || offset - start >= 4 * 1024 * 1024 { break; }
             }
-            if run != batch_run || batch.len() >= 128 {
-                if !batch.is_empty() { emitted.extend(target.append(&batch_run, std::mem::take(&mut batch))?); }
-                batch_run = run;
-            }
-            batch.push((kind, data));
+            if offset == start { break; }
+            if !batch.is_empty() { groups.push((batch_run, batch)); }
+            // 本批完整行全部验证后再提交，坏行所在的批次不写任何事件，也不推进游标。
+            for (run, batch) in groups { emitted.extend(target.append(&run, batch)?); }
+            emitted.extend(target.append("native", vec![("history_checkpoint".into(), json!({"offset":offset,"projection":projection}))])?);
+            let _ = save_checkpoint(&base, &id, offset, &projection);
         }
-    }
-    if !batch.is_empty() { emitted.extend(target.append(&batch_run, batch)?); }
-    let previous = checkpoint(&base, &id)?.0;
-    if offset != previous {
-        emitted.extend(target.append("native", vec![("history_checkpoint".into(), json!({"offset":offset,"projection":projection}))])?);
-        let _ = save_checkpoint(&base, &id, offset, &projection);
-    }
-    // finished 是完成凭据；半行尚未落齐时不结算，也不覆盖协议给出的 failed/stopped。
-    if finished && offset == length {
-        if let Some(info) = target.meta.agent.as_mut() {
-            if matches!(info.status.as_str(), "" | "starting" | "running") {
-                info.status = "completed".into();
-                info.ended_at = Some(super::now_ms());
-                let data = json!({"key":info.tool_id,"sessionId":id,"status":"completed","imported":true});
-                emitted.extend(target.append("native", vec![("agent".into(), data)])?);
-                target.save()?;
+        // finished 是完成凭据；半行尚未落齐时不结算，也不覆盖协议给出的 failed/stopped。
+        if finished && offset == length {
+            if let Some(info) = target.meta.agent.as_mut() {
+                if matches!(info.status.as_str(), "" | "starting" | "running") {
+                    info.status = "completed".into();
+                    info.ended_at = Some(super::now_ms());
+                    let data = json!({"key":info.tool_id,"sessionId":id,"status":"completed","imported":true});
+                    emitted.extend(target.append("native", vec![("agent".into(), data)])?);
+                    target.save()?;
+                }
             }
         }
+        Ok(())
+    })();
+    // 后批出错仍返回已提交的广播；游标停在最后成功批，下次从坏批重试并报告错误。
+    if let Err(cause) = result {
+        if emitted.is_empty() { return Err(cause); }
     }
     Ok(emitted)
 }
 
-fn sync_claude_subagent(
+fn read_claude_subagent(
     base: &Path,
     child_id: &str,
     meta: &store::Metadata,
     root: &str,
-) -> Result<bool, String> {
+) -> Result<Vec<super::events::Event>, String> {
     let parent_id = meta.parent_session_id.as_deref().unwrap_or_default();
-    if parent_id.is_empty() { return Ok(false); }
-    let Some(agent) = &meta.agent else { return Ok(false); };
+    if parent_id.is_empty() || parent_deleted(base, parent_id) { return Ok(vec![]); }
+    let Some(agent) = &meta.agent else { return Ok(vec![]); };
 
     // 获取父会话原生 ID：优先读取父会话 metadata.native_id，若无再从 native-source 查
     let source_opt = source(base, parent_id, root).ok().flatten();
@@ -1066,7 +1282,15 @@ fn sync_claude_subagent(
         .as_ref()
         .and_then(|m| m.native_id.clone())
         .or_else(|| source_opt.as_ref().map(|s| s.native_id.clone()));
-    let Some(parent_native_id) = parent_native_id else { return Ok(false); };
+    let Some(parent_native_id) = parent_native_id else { return Ok(vec![]); };
+
+    // 已定位的子日志不再扫描全部 Claude 项目目录。
+    if let Some(cached) = source(base, child_id, root)? {
+        let info: Value = fs::read(cached.path.with_extension("meta.json")).ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+        let mut target = Store::open_for_append(base, child_id, root, Provider::Claude, &meta.title, "")?;
+        return sync_claude_source(&mut target, &cached, &parent_native_id, info["finished"] == true);
+    }
 
     // 收集所有可能的 subagents 目录路径（包含本地创建与外部发现的项目目录）
     let mut candidate_dirs = Vec::new();
@@ -1114,10 +1338,21 @@ fn sync_claude_subagent(
             let title = info["description"].as_str().map(str::trim).filter(|text| !text.is_empty()).unwrap_or(&meta.title).to_owned();
             let mut target = Store::open_for_append(base, child_id, root, Provider::Claude, &title, "")?;
             let source = Source { provider: Provider::Claude, native_id: agent_id, path, workspace: root.to_owned() };
-            return Ok(!sync_claude_source(&mut target, &source, &parent_native_id, info["finished"] == true)?.is_empty());
+            return sync_claude_source(&mut target, &source, &parent_native_id, info["finished"] == true);
         }
     }
-    Ok(false)
+    Ok(vec![])
+}
+
+/// Worker 消费后广播，离线读取则把同一增量作为分页数据返回。
+pub fn sync_claude_agent(base: &Path, id: &str, root: &str) -> Result<Vec<super::events::Event>, String> {
+    let meta = Store::metadata(&base.join(id), root)?;
+    read_claude_subagent(base, id, &meta, root)
+}
+
+#[cfg(test)]
+fn sync_claude_subagent(base: &Path, id: &str, meta: &store::Metadata, root: &str) -> Result<bool, String> {
+    Ok(!read_claude_subagent(base, id, meta, root)?.is_empty())
 }
 
 /// 按需同步子代理（Claude/Codex）的原生历史 rollout。
@@ -1125,7 +1360,7 @@ pub fn sync_subagent(base: &Path, id: &str, root: &str) -> Result<bool, String> 
     let dir = base.join(id);
     let Ok(meta) = Store::metadata(&dir, root) else { return Ok(false); };
     if meta.provider == Provider::Claude {
-        return sync_claude_subagent(base, id, &meta, root);
+        return Ok(!read_claude_subagent(base, id, &meta, root)?.is_empty());
     }
     Ok(!sync_codex_subagent(base, id, root, true, true)?.is_empty())
 }
@@ -2164,7 +2399,7 @@ mod tests {
         let mut child_store = Store::open(&base, &child, &workspace, Provider::Claude, "子代理任务", "").unwrap();
         child_store.meta.parent_session_id = Some(parent_forge.into());
         child_store.meta.agent = Some(store::AgentInfo {
-            native_agent_id: Some("agent-live-1".into()),
+            native_agent_id: Some("live-1".into()),
             agent_type: Some("general-purpose".into()),
             title: "子代理任务".into(),
             tool_id: tool_id.into(),
@@ -2175,29 +2410,92 @@ mod tests {
         });
         child_store.save().unwrap();
 
+        // 已有提示、状态、工具和半段正文，日志大小/条数都不能证明正文已完整。
+        let todo_input = json!({"todos":[{"content":"检查正文","status":"completed"}]});
+        child_store.append("live-run", vec![
+            ("user".into(), json!({"text":"执行子任务","agentTask":true})),
+            ("agent".into(), json!({"key":tool_id,"status":"running"})),
+            ("text".into(), json!({"id":"m-1","text":"子任务"})),
+            ("reasoning_delta".into(), json!({"id":"m-1-0","text":"先"})),
+            ("tool".into(), json!({"id":"todo-1","name":"TodoWrite","input":todo_input,"status":"completed"})),
+            ("task_list".into(), json!({"replace":true,"items":[{"id":"todo-0","content":"检查正文","status":"complete","detail":null}]})),
+        ]).unwrap();
+
         // 准备 Claude CLI 落盘的子代理 native 文件到 Claude 项目目录下
         let lines = [
             json!({"type":"user","sessionId":parent_native,"isSidechain":true,"message":{"role":"user","content":"执行子任务"}}),
-            json!({"type":"assistant","sessionId":parent_native,"isSidechain":true,"message":{"id":"m-1","content":[{"type":"text","text":"子任务完成"}]}}),
+            json!({"type":"assistant","uuid":"envelope-1","sessionId":parent_native,"isSidechain":true,"message":{"id":"m-1","content":[{"type":"thinking","thinking":"先检查"},{"type":"text","text":"子任务完成"},{"type":"tool_use","id":"todo-1","name":"TodoWrite","input":todo_input}]}}),
         ];
-        fs::write(subagents.join("agent-live-1.jsonl"), lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+        let prefix = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        let tail = json!({"type":"assistant","uuid":"envelope-2","sessionId":parent_native,"isSidechain":true,"message":{"id":"m-1","content":[{"type":"text","text":"，补齐尾部"}]}}).to_string();
+        let split = tail.find("补齐").unwrap();
+        fs::write(subagents.join("agent-live-1.jsonl"), format!("{prefix}{}", &tail[..split])).unwrap();
         fs::write(subagents.join("agent-live-1.meta.json"), json!({
-            "toolUseId": tool_id, "agentType": "general-purpose", "description": "执行子任务", "finished": true
+            "toolUseId": tool_id, "agentType": "general-purpose", "description": "执行子任务", "finished": false
         }).to_string()).unwrap();
 
         // 按需同步执行回填
         let synced = sync_claude_subagent(&base, &child, &child_store.meta, &workspace).unwrap();
         assert!(synced, "应成功同步子代理历史");
 
-        // 再次同步应被幂等保护忽略
+        // 未结束的原生日志只能补正文，不能把代理标为 completed。
         let meta_after = Store::metadata(&base.join(&child), &workspace).unwrap();
-        assert_eq!(meta_after.agent.as_ref().unwrap().status, "completed");
+        assert_eq!(meta_after.agent.as_ref().unwrap().status, "running");
         let synced_again = sync_claude_subagent(&base, &child, &meta_after, &workspace).unwrap();
         assert!(!synced_again, "重复同步不应重复追加");
+
+        // 补全半行后继续读取；同一消息跨两次同步、两封信封仍沿用实时 runId。
+        fs::write(subagents.join("agent-live-1.jsonl"), format!("{prefix}{tail}\n")).unwrap();
+        fs::write(subagents.join("agent-live-1.meta.json"), json!({"toolUseId":tool_id,"finished":true}).to_string()).unwrap();
+        // 覆盖损坏的可重建索引，验证日志中的 checkpoint 足以恢复投影与游标。
+        fs::write(checkpoint_path(&base, &child), "invalid-cache").unwrap();
+        assert!(sync_claude_subagent(&base, &child, &meta_after, &workspace).unwrap());
+        let completed = Store::metadata(&base.join(&child), &workspace).unwrap();
+        assert_eq!(completed.agent.as_ref().unwrap().status, "completed");
+        assert!(!sync_claude_subagent(&base, &child, &completed, &workspace).unwrap());
 
         let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
         assert_eq!(page.events.iter().filter(|e| e.kind == "user" && e.data["text"] == "执行子任务").count(), 1);
         assert_eq!(page.events.iter().filter(|e| e.kind == "message" && e.data["text"] == "子任务完成").count(), 1);
+        assert_eq!(page.events.iter().filter(|e| e.kind == "message" && e.data["text"] == "子任务完成，补齐尾部" && e.data["id"] == "m-1" && e.run_id == "live-run").count(), 1);
+        assert!(page.events.iter().filter(|e| e.kind == "message" || e.kind == "reasoning").all(|e| e.run_id == "live-run"));
+        assert_eq!(page.events.iter().filter(|e| e.kind == "task_list").count(), 1);
+        assert_eq!(page.events.iter().filter(|e| e.kind == "tool").count(), 1);
+        assert_eq!(page.events.iter().filter(|e| e.kind == "agent" && e.data["status"] == "completed").count(), 1);
+        // 原生 finished 只说明运行结束，不能把协议给出的 failed/stopped 改成成功。
+        for status in ["failed", "stopped"] {
+            let mut failed = Store::open_for_append(&base, &child, &workspace, Provider::Claude, "", "").unwrap();
+            failed.meta.agent.as_mut().unwrap().status = status.into();
+            failed.save().unwrap();
+            failed.append("live-run", vec![("agent".into(), json!({"key":tool_id,"status":status}))]).unwrap();
+            assert!(!sync_claude_subagent(&base, &child, &failed.meta, &workspace).unwrap());
+            assert_eq!(Store::metadata(&base.join(&child), &workspace).unwrap().agent.unwrap().status, status);
+        }
+        // 元数据写失败留下 running，但时间线已 stopped；原生文件没有新增也要修正。
+        let mut stale = Store::open_for_append(&base, &child, &workspace, Provider::Claude, "", "").unwrap();
+        stale.meta.agent.as_mut().unwrap().status = "running".into();
+        stale.save().unwrap();
+        fs::write(subagents.join("agent-live-1.meta.json"), json!({"toolUseId":tool_id,"finished":false}).to_string()).unwrap();
+        assert!(sync_claude_agent(&base, &child, &workspace).unwrap().is_empty());
+        assert_eq!(Store::metadata(&base.join(&child), &workspace).unwrap().agent.unwrap().status, "stopped");
+        // 同父会话的兄弟文件也有相同 sessionId，必须额外核对原生代理身份。
+        let original_source = source(&base, &child, &workspace).unwrap().unwrap();
+        let sibling = Source { native_id:"sibling".into(), path:subagents.join("agent-sibling.jsonl"), ..original_source.clone() };
+        fs::write(&sibling.path, &prefix).unwrap();
+        save_source(&base, &child, &sibling).unwrap();
+        assert!(sync_claude_agent(&base, &child, &workspace).is_err());
+        save_source(&base, &child, &original_source).unwrap();
+        // 后批损坏不能吞掉前批已提交的广播；修复文件后只追加尚未提交的正文。
+        let additional = (0..130).map(|index| json!({"type":"assistant","sessionId":parent_native,"message":{"id":format!("tail-{index}"),"content":[{"type":"text","text":format!("后续正文 {index}")}]}}).to_string() + "\n").collect::<String>();
+        let extended = format!("{prefix}{tail}\n{additional}");
+        fs::write(subagents.join("agent-live-1.jsonl"), format!("{extended}invalid-json\n")).unwrap();
+        let committed = sync_claude_agent(&base, &child, &workspace).unwrap();
+        assert_eq!(committed.iter().filter(|event| event.kind == "message").count(), 128);
+        assert!(sync_claude_agent(&base, &child, &workspace).is_err());
+        fs::write(subagents.join("agent-live-1.jsonl"), extended).unwrap();
+        let recovered = sync_claude_agent(&base, &child, &workspace).unwrap();
+        assert_eq!(recovered.iter().filter(|event| event.kind == "message").count(), 2);
+        assert!(sync_claude_agent(&base, &child, &workspace).unwrap().is_empty());
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         fs::remove_dir_all(temp).unwrap();
     }
@@ -2443,5 +2741,78 @@ mod tests {
         assert!(
             bounded_line(&mut std::io::Cursor::new(vec![b'x'; MAX_LINE as usize + 1])).is_err()
         );
+    }
+
+    /// 造一份隔离的 Claude 历史目录，返回（临时根, projects 根, 项目子目录）。
+    fn purge_fixtures(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-history-{name}-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let projects = temp.join("home").join(".claude").join("projects");
+        let project = projects.join("d--project");
+        fs::create_dir_all(&project).unwrap();
+        (temp, projects, project)
+    }
+
+    #[test]
+    fn native_purge_deletes_the_transcript_and_its_sibling_directory() {
+        let (temp, projects, project) = purge_fixtures("native-purge");
+        let native = "3a47a4a6-0000-4000-8000-000000000001";
+        let transcript = project.join(format!("{native}.jsonl"));
+        fs::write(&transcript, b"{\"type\":\"user\"}\n").unwrap();
+        // Claude 把 tool-results 与 subagents 放在 transcript 的同名目录里，一起收走才不留孤儿。
+        let sibling = project.join(native);
+        fs::create_dir_all(sibling.join("tool-results")).unwrap();
+        fs::write(sibling.join("tool-results/r1.txt"), b"x").unwrap();
+        let source = Source { provider: Provider::Claude, native_id: native.to_owned(), path: transcript.clone(), workspace: "/project".into() };
+        delete_claude_transcript(&source, &projects).unwrap();
+        assert!(!transcript.exists());
+        assert!(!sibling.exists());
+        // 文件已经不在＝原生侧本来就没有（批量删时父会话会先把整目录收走），按成功处理。
+        delete_claude_transcript(&source, &projects).unwrap();
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn native_purge_clears_the_session_keyed_task_and_history_directories() {
+        // CLI 自己的 `purge --dry-run` 就把这三样按会话 ID 列出来：task 清单、文件编辑历史、会话环境。
+        let (temp, _, _) = purge_fixtures("native-purge-dirs");
+        let home = temp.join("home").join(".claude");
+        let native = "7a47a4a6-0000-4000-8000-000000000007";
+        for anchor in ["tasks", "file-history", "session-env"] {
+            let dir = home.join(anchor).join(native);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("1.json"), b"{\"status\":\"completed\"}").unwrap();
+        }
+        for anchor in ["tasks", "file-history", "session-env"] {
+            delete_id_named_dir(&home, anchor, native).unwrap();
+            assert!(!home.join(anchor).join(native).exists(), "{anchor} 没跟着会话走");
+            // 锚点目录本身留着：那是别的会话共用的。
+            assert!(home.join(anchor).exists());
+        }
+        // 不存在按成功处理；锚点里躺着一个同名文件也不是「会话产物」。
+        delete_id_named_dir(&home, "tasks", native).unwrap();
+        fs::write(home.join("tasks").join(native), b"not a directory").unwrap();
+        assert!(delete_id_named_dir(&home, "tasks", native).is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn native_purge_refuses_paths_that_are_not_that_session_transcript() {        let (temp, projects, project) = purge_fixtures("native-purge-guard");
+        // 文件名对不上 ID：拼错一个字节就会删掉别人的日志，必须在删之前挡住。
+        let stranger = project.join("somebody-else.jsonl");
+        fs::write(&stranger, b"{}\n").unwrap();
+        let mismatch = Source { provider: Provider::Claude, native_id: "9a47a4a6-0000-4000-8000-000000000009".into(), path: stranger.clone(), workspace: "/w".into() };
+        assert!(delete_claude_transcript(&mismatch, &projects).is_err());
+        assert!(stranger.exists());
+        // 项目目录之外的一份同名文件同样不删——`projects` 是唯一允许的锚点。
+        let escaped_id = "5a47a4a6-0000-4000-8000-000000000005";
+        let escaped = temp.join(format!("{escaped_id}.jsonl"));
+        fs::write(&escaped, b"{}\n").unwrap();
+        let outside = Source { provider: Provider::Claude, native_id: escaped_id.into(), path: escaped.clone(), workspace: "/w".into() };
+        assert!(delete_claude_transcript(&outside, &projects).is_err());
+        assert!(escaped.exists());
+        fs::remove_dir_all(temp).unwrap();
     }
 }

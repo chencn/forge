@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { aiSessionStorageKey } from "./aiSessions";
 
 /**
@@ -197,11 +198,25 @@ export function clearDraftImages(workspace: string | null, sessionId: string): v
   saveDraftImages(workspace, sessionId, []);
 }
 
+/**
+ * 输入框里还没发送的附件也要跟着会话走。
+ *
+ * 后端的会话清理只按事件日志收图片，这些从没发出去的没有 `.ref` 标记，不主动删就只能在
+ * 缓存目录里等下一轮孤儿清理。删不掉无所谓：文件已经不属于任何会话。
+ */
+function releaseDraftImageFiles(workspace: string | null, sessionId: string): void {
+  if (!isTauri()) return;
+  for (const image of loadDraftImages(workspace, sessionId)) {
+    void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {});
+  }
+}
+
 /** 删除会话时清掉所有按会话隔离的本地状态；工程级发送历史和引擎默认项继续保留。 */
 export function clearAiSessionStorage(workspace: string | null, sessionId: string): void {
   const prefix = aiSessionStorageKey(workspace);
   // 同时取消防抖写入，不能在删除会话后由定时器重新创建草稿。
   clearDraft(workspace, sessionId);
+  releaseDraftImageFiles(workspace, sessionId);
   clearDraftImages(workspace, sessionId);
   try {
     localStorage.removeItem(dirsKey(workspace, sessionId));

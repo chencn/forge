@@ -28,7 +28,7 @@ export function useAiRunLifecycle(reportError: (message: string) => void) {
    */
   const act = useCallback(async (action: AiSessionAction, workspace: string | null, dispatch: (action: AiSessionAction) => void) => {
     try {
-      if (action.type === "delete" && workspace) await deleteAiRuntimeSession(action.id, workspace);
+      if (action.type === "delete" && workspace) await deleteAiRuntimeSession(action.id, workspace, action.purgeNative === true);
       if (action.type === "rename" && workspace) await invoke("ai_runtime_rename", { sessionId: action.id, workspace, title: action.title });
       if (action.type === "archive" && workspace) await archiveAiRuntimeSession(action.id, workspace, action.archived);
       if (action.type === "pin" && workspace) await pinAiRuntimeSession(action.id, workspace, action.pinned);

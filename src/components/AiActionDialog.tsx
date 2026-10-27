@@ -13,6 +13,11 @@ interface AiActionDialogProps {
   danger?: boolean;
   /** 传了值就渲染输入框（重命名用）；不传则只做确认（删除用）。 */
   initialValue?: string;
+  /**
+   * 「同时删除 CLI 原生记录」那一行勾选。只有真删除才用它：勾选状态由调用方持有，
+   * 因为确认后还要按 CLI 记住这一次的选择。
+   */
+  nativePurge?: { checked: boolean; onChange: (value: boolean) => void; label: string };
   /** 确认时回调，参数是去掉首尾空白的输入值；无输入框时为空串。 */
   onConfirm: (value: string) => void;
   /** 取消、按 Escape 或点关闭时回调，由调用方决定能否真的关掉。 */
@@ -24,7 +29,7 @@ interface AiActionDialogProps {
  *
  * 重命名与删除共用一个组件：两者都要二次确认，差别只在有没有输入框和是否用危险样式。
  */
-export default function AiActionDialog({ title, children, confirm, danger, initialValue, onConfirm, onCancel }: AiActionDialogProps) {
+export default function AiActionDialog({ title, children, confirm, danger, initialValue, nativePurge, onConfirm, onCancel }: AiActionDialogProps) {
   const { t } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -48,6 +53,12 @@ export default function AiActionDialog({ title, children, confirm, danger, initi
             {/* 传了 initialValue 就渲染输入框；此时初始焦点落在输入框，而不是取消按钮。 */}
             <input autoFocus className="text-input" value={value} maxLength={120}
               onChange={(event) => setValue(event.target.value)} />
+          </label>
+        ) : null}
+        {nativePurge ? (
+          <label className="ai-native-purge">
+            <input type="checkbox" checked={nativePurge.checked} onChange={(event) => nativePurge.onChange(event.target.checked)} />
+            <span>{nativePurge.label}</span>
           </label>
         ) : null}
         <div className="dialog-actions">

@@ -945,3 +945,31 @@ describe("消息导航的索引与跳转", () => {
     expect(api.useAiRuntime(session.id).hasOlder).toBe(true);
   });
 });
+
+describe("删除会话", () => {
+  it("把「连带删 CLI 原生记录」原样交给后端，删成功后才把这条会话从窗口里忘掉", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(1, "status", { status: "running" }));
+    expect(runtime.useAiRuntime(session.id).status).toBe("running");
+    await runtime.deleteAiRuntimeSession(session.id, "D:/project", true);
+    expect(h.invoke).toHaveBeenLastCalledWith("ai_runtime_delete", { sessionId: session.id, workspace: "D:/project", purgeNative: true });
+    expect(runtime.useAiRuntime(session.id).status).not.toBe("running");
+    // 迟到的事件不能再把它画成「还在跑」：这条 sessionId 已经被后端确认删掉了。
+    emit(event(2, "status", { status: "running" }));
+    expect(runtime.useAiRuntime(session.id).status).not.toBe("running");
+  });
+
+  it("批量删归档：逐条结果原样转达，失败的那几条留给界面指名报出", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    const failed = [{ id: "keep", title: "删不掉的那条", error: "原生历史删除失败" }];
+    h.invoke.mockImplementation(async (command: string) => (command === "ai_runtime_delete_archived" ? { deleted: [session.id], failed } : undefined));
+    let notified = 0;
+    const off = runtime.subscribeAiChanges(() => { notified += 1; });
+    const result = await runtime.deleteArchivedAiRuntimeSessions("D:/project", true);
+    off();
+    expect(h.invoke).toHaveBeenLastCalledWith("ai_runtime_delete_archived", { workspace: "D:/project", purgeNative: true });
+    expect(result).toEqual({ deleted: [session.id], failed });
+    expect(notified).toBeGreaterThan(0);
+  });
+});

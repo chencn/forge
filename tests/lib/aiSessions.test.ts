@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { aiSessionStorageKey, EMPTY_AI_SESSIONS, parseAiSessions, reduceAiSessions } from "../../src/lib/aiSessions";
+import { describe, expect, it, vi } from "vitest";
+import { aiSessionStorageKey, EMPTY_AI_SESSIONS, loadNativePurgeDefault, parseAiSessions, reduceAiSessions, saveNativePurgeDefault } from "../../src/lib/aiSessions";
 import type { AiSession } from "../../src/lib/aiSessions";
 
 const session: AiSession = { id: "session-1", title: "Claude Code 会话 1", provider: "claude", createdAt: 1000 };
@@ -109,5 +109,38 @@ describe("会话归档", () => {
     for (const value of [undefined, null, false, "true", 1, {}, []]) {
       expect(read(value)).toEqual(archived("s"));
     }
+  });
+});
+
+describe("会话删除与「连带删原生」", () => {
+  it("删除父会话把子代理一起带走，活动标签不会再停在没了的那条", () => {
+    const child: AiSession = {
+      id: "child", provider: "claude", title: "子代理", createdAt: 2000, parentSessionId: session.id,
+      agent: { title: "子代理", status: "completed", toolId: "t1" },
+    };
+    let state = reduceAiSessions(EMPTY_AI_SESSIONS, { type: "create", session });
+    state = reduceAiSessions(state, { type: "create", session: child });
+    expect(state.activeId).toBe(child.id);
+    const after = reduceAiSessions(state, { type: "delete", id: session.id, purgeNative: true });
+    expect(after.sessions).toEqual([]);
+    expect(after.openIds).toEqual([]);
+    expect(after.activeId).toBeNull();
+  });
+
+  it("真删勾选按 CLI 各记一份：一次 Codex 的选择不该扩到 Claude", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+      removeItem: (key: string) => { store.delete(key); },
+    });
+    expect(loadNativePurgeDefault("codex")).toBe(false);
+    saveNativePurgeDefault("codex", true);
+    // Claude 是直接删文件，Codex 是让 CLI 自己清 rollout，两者的可恢复性不一样。
+    expect(loadNativePurgeDefault("claude")).toBe(false);
+    expect(loadNativePurgeDefault("codex")).toBe(true);
+    saveNativePurgeDefault("codex", false);
+    expect(loadNativePurgeDefault("codex")).toBe(false);
+    vi.unstubAllGlobals();
   });
 });

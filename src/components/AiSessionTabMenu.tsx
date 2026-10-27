@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Archive, EllipsisVertical, Pencil, Plus, Settings, Trash2 } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
+import { loadNativePurgeDefault, saveNativePurgeDefault } from "../lib/aiSessions";
 import ContextMenu, { flatMenu } from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import AiActionDialog from "./AiActionDialog";
@@ -27,7 +28,7 @@ export default function AiSessionTabMenu({
 }: AiSessionTabMenuProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
-  const [pending, setPending] = useState<{ action: "rename" | "delete"; session: AiSession } | null>(null);
+  const [pending, setPending] = useState<{ action: "rename"; session: AiSession } | { action: "delete"; session: AiSession; purgeNative: boolean } | null>(null);
 
   const openTabMenu = (x: number, y: number) => {
     const archivedNow = session.archived === true;
@@ -44,7 +45,7 @@ export default function AiSessionTabMenu({
           : []),
         ...(onSettings ? [{ icon: Settings, label: t("ai.manageCli"), onSelect: onSettings }] : []),
       ],
-      onAction ? [{ icon: Trash2, label: t("menu.delete"), danger: true, onSelect: () => setPending({ action: "delete", session }) }] : [],
+      onAction ? [{ icon: Trash2, label: t("menu.delete"), danger: true, onSelect: () => setPending({ action: "delete", session, purgeNative: loadNativePurgeDefault(session.provider) }) }] : [],
     ];
     setMenu({ x, y, items: flatMenu(items) });
   };
@@ -74,20 +75,27 @@ export default function AiSessionTabMenu({
           confirm={t(pending.action === "rename" ? "dialog.confirm" : "menu.delete")}
           initialValue={pending.action === "rename" ? pending.session.title : undefined}
           danger={pending.action === "delete"}
+          nativePurge={pending.action === "delete" ? {
+            checked: pending.purgeNative,
+            onChange: (value) => { saveNativePurgeDefault(pending.session.provider, value); setPending({ ...pending, purgeNative: value }); },
+            label: t("ai.deletePurgeNative"),
+          } : undefined}
           onCancel={() => setPending(null)}
           onConfirm={(title) => {
             if (onAction) {
               onAction(
                 pending.action === "rename"
                   ? { type: "rename", id: pending.session.id, title }
-                  : { type: "delete", id: pending.session.id }
+                  : { type: "delete", id: pending.session.id, purgeNative: pending.purgeNative }
               );
             }
             setPending(null);
           }}
         >
           {pending.action === "delete" ? (
-            <p className="ai-action-tip">{t("ai.deleteConfirm", { name: pending.session.title || t("ai.untitledSession") })}</p>
+            <p className="ai-action-tip">
+              {t(pending.purgeNative ? "ai.deleteConfirmPurge" : "ai.deleteConfirm", { name: pending.session.title || t("ai.untitledSession") })}
+            </p>
           ) : null}
         </AiActionDialog>
       ) : null}

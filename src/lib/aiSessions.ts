@@ -50,6 +50,33 @@ export function aiSessionStorageKey(root: string | null) {
   return `forge:ai-sessions:v1:${normalized || (root ? "/" : "global")}`;
 }
 
+/**
+ * 「同时删除 CLI 原生记录」的默认勾选态。真删不可逆，默认永远是不勾；这里记住的只是
+ * 上一次那一下主动选择，而且按 CLI 分开存——Codex 是让 CLI 自己清 rollout，Claude 是直接
+ * 删文件，两者的可恢复性不一样，共用一个开关会把一次勾选误扩到另一个引擎上。
+ */
+const NATIVE_PURGE_KEY = "forge:ai-native-purge:v1";
+
+export function loadNativePurgeDefault(provider: AiProvider): boolean {
+  try {
+    const raw = localStorage.getItem(NATIVE_PURGE_KEY);
+    if (!raw) return false;
+    return (JSON.parse(raw) as Partial<Record<AiProvider, boolean>>)[provider] === true;
+  } catch {
+    return false;
+  }
+}
+
+export function saveNativePurgeDefault(provider: AiProvider, value: boolean): void {
+  try {
+    const current = JSON.parse(localStorage.getItem(NATIVE_PURGE_KEY) ?? "{}") as Partial<Record<AiProvider, boolean>>;
+    current[provider] = value;
+    localStorage.setItem(NATIVE_PURGE_KEY, JSON.stringify(current));
+  } catch {
+    // 记不住就每次都回到默认不勾：少一点便利，不该拦下删除本身。
+  }
+}
+
 /** 本地记录按不可信输入处理；原生历史归属由后端校验，此处只恢复会话元数据。 */
 export function parseAiSessions(raw: string | null): AiSessionState {
   try {
@@ -89,7 +116,10 @@ export function parseAiSessions(raw: string | null): AiSessionState {
   }
 }
 
-/** 会话动作。`delete` 只删 Forge 的本地记录，不碰 CLI 自己的历史。 */
+/**
+ * 会话动作。`delete` 默认只删 Forge 的本地记录；带 `purgeNative` 时后端连 CLI 原生历史
+ * 一起真删（不可逆，Codex 由 CLI 自己清 rollout，Claude 直接删 projects 里那条 jsonl）。
+ */
 export type AiSessionAction =
   /** 新建会话并立即打开；id 已存在时视为无变化。 */
   | { type: "create"; session: AiSession }
@@ -97,8 +127,8 @@ export type AiSessionAction =
   | { type: "open"; id: string }
   /** 关闭标签但保留会话记录，之后还能再打开。 */
   | { type: "close"; id: string }
-  /** 删除记录并关闭标签；CLI 原生历史不受影响。 */
-  | { type: "delete"; id: string }
+  /** 删除记录并关闭标签；`purgeNative` 为真时把 CLI 原生那一份也删掉。 */
+  | { type: "delete"; id: string; purgeNative?: boolean }
   /** 改名；空白名与超长部分会被裁掉，裁完为空则整条动作被忽略。 */
   | { type: "rename"; id: string; title: string }
   /**
@@ -130,11 +160,10 @@ export function reduceAiSessions(state: AiSessionState, action: AiSessionAction)
     return { ...state, openIds, activeId: state.activeId === action.id ? openIds.at(-1) ?? null : state.activeId };
   }
   if (action.type === "delete") {
-    const openIds = state.openIds.filter((id) => id !== action.id);
-    return {
-      sessions: state.sessions.filter((item) => item.id !== action.id), openIds,
-      activeId: state.activeId === action.id ? openIds.at(-1) ?? null : state.activeId,
-    };
+    // 子代理跟着父一起走：后端已经把它们的记录删了，本地主动收掉才不用等下一次刷新才收起标签。
+    const sessions = state.sessions.filter((item) => item.id !== action.id && item.parentSessionId !== action.id);
+    const openIds = state.openIds.filter((id) => sessions.some((item) => item.id === id));
+    return { sessions, openIds, activeId: state.activeId && openIds.includes(state.activeId) ? state.activeId : openIds.at(-1) ?? null };
   }
   if (action.type === "archive") {
     const current = state.sessions.find((item) => item.id === action.id);
