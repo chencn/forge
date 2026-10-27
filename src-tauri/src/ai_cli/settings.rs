@@ -462,6 +462,60 @@ pub async fn ai_cli_claude_settings_save(env: BTreeMap<String, String>) -> Resul
     }).await
 }
 
+/// 读 Claude settings.json 全文为 JSON 对象：文件或内容缺失就是空对象，坏文件/非对象报错。
+/// hooks 的读写共用这条入口，两边的容错口径不许各自漂移。
+fn read_claude_root_at(path: &Path) -> Result<serde_json::Value, String> {
+    if !path.exists() { return Ok(serde_json::json!({})); }
+    let text = fs::read_to_string(path).map_err(|error| format!("读取 Claude 配置失败：{error}"))?;
+    if text.trim().is_empty() { return Ok(serde_json::json!({})); }
+    let root: serde_json::Value = serde_json::from_str(&text).map_err(|error| format!("JSON 格式错误：{error}"))?;
+    if !root.is_object() { return Err("Claude 配置必须是 JSON 对象".into()); }
+    Ok(root)
+}
+
+/// 读 Claude settings.json 的 `hooks` 段：文件或键缺失就是空对象，坏文件报错不炸面板。
+pub(crate) fn read_claude_hooks_at(path: &Path) -> Result<serde_json::Value, String> {
+    Ok(read_claude_root_at(path)?.get("hooks").cloned().unwrap_or_else(|| serde_json::json!({})))
+}
+
+/// 把 `hooks` 段整体写回 settings.json，其余键原样保留；空对象表示删掉这一段。
+/// 结构只做浅校验（事件名 → 规则数组 → 规则对象），细节合法性由 CLI 自己把关：
+/// 用户手改的 prompt 型 hook 等字段面板不认识，原样留在树里，不能在这里弄丢。
+pub(crate) fn save_claude_hooks_at(path: &Path, hooks: serde_json::Value) -> Result<(), String> {
+    let Some(entries) = hooks.as_object() else { return Err("hooks 必须是 JSON 对象".into()); };
+    for (event, rules) in entries {
+        let Some(rules) = rules.as_array() else { return Err(format!("hooks.{event} 必须是数组")); };
+        for rule in rules {
+            if !rule.is_object() { return Err(format!("hooks.{event} 里的每条规则必须是对象")); }
+        }
+    }
+    let mut root = read_claude_root_at(path)?;
+    let object = root.as_object_mut().ok_or("Claude 配置必须是 JSON 对象")?;
+    if entries.is_empty() {
+        object.remove("hooks");
+    } else {
+        object.insert("hooks".into(), hooks);
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|error| format!("无法创建配置目录：{error}"))?;
+    }
+    backup_and_write(path, &serde_json::to_string_pretty(&root).map_err(|error| error.to_string())?)
+}
+
+#[tauri::command]
+pub async fn ai_cli_claude_hooks_read() -> Result<serde_json::Value, String> {
+    block(move || read_claude_hooks_at(&config_path(Provider::Claude)?)).await
+}
+
+#[tauri::command]
+pub async fn ai_cli_claude_hooks_save(hooks: serde_json::Value) -> Result<serde_json::Value, String> {
+    block(move || {
+        let path = config_path(Provider::Claude)?;
+        save_claude_hooks_at(&path, hooks)?;
+        read_claude_hooks_at(&path)
+    }).await
+}
+
 /// 读 Codex 的 API Key。文件损坏时报错但不阻断其余字段的编辑。
 fn read_codex_auth(path: &Path) -> (String, Option<String>) {
     if !path.exists() { return (String::new(), None); }

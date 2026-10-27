@@ -133,6 +133,60 @@ pub fn events_lock_path(base: &Path, id: &str) -> PathBuf {
     base.join(format!("{id}.events.lock"))
 }
 
+/// 删除墓碑。会话删除后，迟到的创建请求（旧标签页重放 create、排队投递、计划决策、
+/// 子代理注册）若带 create 语义打开会把目录凭空重建出来，列表里出现打不开的幽灵
+/// 会话。删除时落一条墓碑，创建路径见到即拒绝；条目按天过期，避免文件无限增长。
+const TOMBSTONE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+const TOMBSTONE_MAX: usize = 10_000;
+
+pub fn tombstones_path(base: &Path) -> PathBuf {
+    base.join("tombstones.json")
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn read_tombstones(base: &Path) -> std::collections::HashMap<String, u64> {
+    let Ok(bytes) = fs::read(tombstones_path(base)) else {
+        return Default::default();
+    };
+    serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+fn write_tombstones(base: &Path, map: &mut std::collections::HashMap<String, u64>) -> Result<(), String> {
+    let cutoff = now_ms().saturating_sub(TOMBSTONE_TTL_MS);
+    map.retain(|_, at| *at > cutoff);
+    // 超限时只留最新的那批：墓碑的使命是挡住删除后几秒内的迟到写入，旧条目没有价值。
+    if map.len() > TOMBSTONE_MAX {
+        let mut entries: Vec<(String, u64)> = map.drain().collect();
+        entries.sort_by_key(|(_, at)| *at);
+        let skip = entries.len() - TOMBSTONE_MAX;
+        map.extend(entries.into_iter().skip(skip));
+    }
+    let path = tombstones_path(base);
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec(map).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// 删除会话后登记墓碑。调用方应持有 IO_LOCK，与创建路径的检查互斥。
+pub fn record_tombstone(base: &Path, id: &str) -> Result<(), String> {
+    let mut map = read_tombstones(base);
+    map.insert(id.to_owned(), now_ms());
+    write_tombstones(base, &mut map)
+}
+
+pub fn is_tombstoned(base: &Path, id: &str) -> bool {
+    let cutoff = now_ms().saturating_sub(TOMBSTONE_TTL_MS);
+    read_tombstones(base)
+        .get(id)
+        .is_some_and(|at| *at > cutoff)
+}
+
 /// 一把 OS 级独占租约。进程崩溃时内核自动释放，所以不需要靠 PID 判断陈旧锁。
 pub struct Lease {
     /// 句柄必须活着：锁随句柄关闭而释放，Drop 即解锁。
@@ -355,6 +409,10 @@ impl Store {
         }
         let dir = base.join(id);
         if create {
+            // 墓碑在案的 id 一律拒绝重建：这是删除后迟到写入的唯一重建咽喉。
+            if is_tombstoned(base, id) {
+                return Err("会话已删除，禁止重建".into());
+            }
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         } else if !dir.is_dir() {
             return Err("会话不存在".into());
@@ -1564,6 +1622,28 @@ mod tests {
         fs::create_dir_all(&p).unwrap();
         p
     }
+    #[test]
+    fn tombstone_blocks_recreation_after_delete() {
+        let base = fixture();
+        let mut s = Store::open(&base, "session", "root", TestProvider, "t", "").unwrap();
+        s.append("run", vec![("user".into(), json!({"text": "hi"}))]).unwrap();
+        assert!(!is_tombstoned(&base, "session"));
+        record_tombstone(&base, "session").unwrap();
+        assert!(is_tombstoned(&base, "session"));
+        // 真实删除流程里目录已经不在：create 路径被墓碑拦下，append-only 路径因目录缺失报错。
+        fs::remove_dir_all(base.join("session")).unwrap();
+        assert!(Store::open(&base, "session", "root", TestProvider, "t", "").is_err());
+        assert!(Store::open_for_append(&base, "session", "root", TestProvider, "t", "").is_err());
+        // 墓碑只挡在案的 id，别的会话照常创建。
+        let mut other = Store::open(&base, "other", "root", TestProvider, "t", "").unwrap();
+        other.append("run", vec![("user".into(), json!({"text": "ok"}))]).unwrap();
+        // 过期墓碑失效：时间戳拨回 TTL 之前，重建放行。
+        let mut map = read_tombstones(&base);
+        map.insert("stale".into(), now_ms().saturating_sub(TOMBSTONE_TTL_MS + 1));
+        write_tombstones(&base, &mut map).unwrap();
+        Store::open(&base, "stale", "root", TestProvider, "t", "").unwrap();
+    }
+
     #[test]
     fn append_resyncs_seq_against_interleaved_writers() {
         // 两个 Store 实例同时写一份日志（worker 实例 + 排队状态的新开实例）：

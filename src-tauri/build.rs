@@ -84,8 +84,9 @@ fn build_shell_cmd_dll() {
 /// 只在设了 `FORGE_TEST_MANIFEST` 时做，且只走 `cargo:rustc-link-arg`：正式的
 /// `tauri dev`/`tauri build` 不设这个变量，清单仍由 `tauri_build` 一份给全，不会重复。
 /// 跑测试用 `FORGE_TEST_MANIFEST=1 cargo test --manifest-path src-tauri/Cargo.toml`。
-/// 链接时会有一句 `.rsrc merge failure: multiple non-default manifests` 的告警，
-/// 是 rustc 自带的默认清单和这份合并时的正常提示，测试二进制照样能起，不用管。
+/// 链接器可能报 `.rsrc merge failure: multiple non-default manifests`；正式构建里
+/// `tauri-winres` 的资源与 rustc 默认清单合并时也会出现，不影响启动。这里多合一份
+/// 测试清单只为让 `cargo test` 的 exe 拿到 Common-Controls v6。
 fn link_manifest_into_tests() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FORGE_TEST_MANIFEST");

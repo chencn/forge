@@ -1,6 +1,7 @@
 //! 本地 CLI 对话的受限命令集：不接受任意 RPC，也不执行任意可执行文件。
 //! Restricted desktop commands for local CLI conversations. No arbitrary RPC or executable IPC.
 mod approvals;
+mod checkpoint;
 mod claude;
 mod activity;
 mod commands;
@@ -34,7 +35,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     mpsc, Arc, Mutex, OnceLock,
@@ -1083,7 +1084,7 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
     let session_id = request.session_id.clone();
     let spawned = std::thread::Builder::new().name("forge-ai-runtime".into()).spawn(move || {
         let session_lease = session_lease;
-        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: 0, compaction_index: 0, compaction_done: false, agents: HashMap::new() };
+        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: 0, compaction_index: 0, compaction_done: false, agents: HashMap::new(), agent_batches: HashMap::new(), broken_agents: HashSet::new() };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.execute(request, controls, include_user)));
         let outcome = match result { Ok(result) => result, Err(_) => Err("AI 运行线程异常退出，未自动重发".into()) };
         if let Err(error) = &outcome { worker.fail_plan_claim(error); }
@@ -1141,6 +1142,9 @@ fn schedule_next(app: &AppHandle, session_id: &str) -> Result<(), String> {
 struct AgentRoute {
     store: store::Store,
     last_status: String,
+    /// meta.json 写失败后置位：本轮不再尝试改元数据（避免每条事件重复报错），
+    /// 事件照常追加——正文日志与 meta 是两个文件，后者坏了不该拖垮前者。
+    meta_broken: bool,
 }
 
 /// 子会话 id 由父会话 id 与路由 key（Claude 的 parent_tool_use_id、Codex 的
@@ -1158,6 +1162,88 @@ fn child_session_id(parent: &str, key: &str) -> String {
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
+/// 子代理 meta 的「重读-改-落盘」。Worker 句柄里的 meta 是子会话创建时的快照，
+/// 而按需回填（sync_subagent）与发现导入随时可能从外部绑定 native_id、补终态；
+/// 拿陈旧快照整份回写会把这些改动抹掉，下次打开就误判「未导入」而重复灌正文。
+/// 所以每次都从磁盘重读最新 meta，把要改的字段叠上去再写回，返回是否真有变化。
+fn revise_agent_meta(
+    dir: &Path,
+    root: &str,
+    key: &str,
+    update: impl FnOnce(&mut store::AgentInfo) -> bool,
+) -> Result<bool, String> {
+    let mut meta = store::Store::metadata(dir, root)?;
+    let info = meta.agent.get_or_insert_with(|| store::AgentInfo {
+        native_agent_id: None,
+        agent_type: None,
+        title: String::new(),
+        tool_id: key.to_owned(),
+        model: None,
+        status: String::new(),
+        started_at: 0,
+        ended_at: None,
+    });
+    let changed = update(info);
+    if changed {
+        store::Store { dir: dir.to_path_buf(), meta, seq: 0, poisoned: false }.save()?;
+    }
+    Ok(changed)
+}
+
+/// 首见 key：建子会话并落好归属元数据，把存储句柄交还给 Worker 登记。
+/// 返回 `None` 表示父会话已删除（stop 之前迟到的通知），调用方直接忽略。
+/// 失败向上传播，由调用方降级为通知——子代理簿记不该炸掉整轮主对话。
+fn open_agent_route(
+    app: &AppHandle,
+    base: &Path,
+    parent_id: &str,
+    workspace: &str,
+    provider: Provider,
+    key: &str,
+    title: &str,
+    data: &Value,
+    run_id: &str,
+) -> Result<Option<(String, store::Store)>, String> {
+    let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+    if store::is_tombstoned(base, parent_id) {
+        return Ok(None);
+    }
+    let child = child_session_id(parent_id, key);
+    let mut target = store::Store::open(base, &child, workspace, provider, title, "")?;
+    target.meta.parent_session_id = Some(parent_id.to_owned());
+    let fresh = target.seq == 0;
+    {
+        // 子会话可能在上一个父回合里已存在（SendMessage 复活续聊）：
+        // 保留已落盘的元数据，只补这次通知里新出现的字段。
+        let info = target.meta.agent.get_or_insert_with(|| store::AgentInfo {
+            native_agent_id: None, agent_type: None, title: title.to_owned(), tool_id: key.to_owned(),
+            model: None, status: "running".into(), started_at: now_ms(), ended_at: None,
+        });
+        if info.title.trim().is_empty() { info.title = title.to_owned(); }
+        if info.native_agent_id.is_none() {
+            info.native_agent_id = data["agentId"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
+        }
+        if info.agent_type.is_none() {
+            info.agent_type = data["agentType"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
+        }
+        if info.model.is_none() {
+            info.model = data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()).map(str::to_owned);
+        }
+        info.status = "running".into();
+        info.ended_at = None;
+    }
+    target.save()?;
+    // spawn 通知若带任务正文（Claude 的 Agent 工具入参），作为子会话的
+    // 第一条用户消息：子代理视图打开时能看到它被安排了什么，而不只是工具活动。
+    if fresh {
+        if let Some(prompt) = data["prompt"].as_str().map(str::trim).filter(|prompt| !prompt.is_empty()) {
+            let events = target.append(run_id, vec![("user".into(), json!({"text": prompt, "agentTask": true}))])?;
+            let _ = app.emit(CHANNEL, &events);
+        }
+    }
+    Ok(Some((child, target)))
 }
 
 /// 一轮运行的执行上下文：负责把协议动作落成事件、写进存储并发给前端。
@@ -1193,6 +1279,11 @@ struct Worker {
     /// 子代理 key → 子会话句柄。协议层产出 `agent` 事件与带 `agentKey` 的条目，
     /// 这里负责建子会话、路由事件、维护状态。
     agents: HashMap<String, AgentRoute>,
+    /// 子代理条目的批缓冲：key → 待落盘条目。流式 delta 逐条写盘 + 逐条广播
+    /// 会拖垮磁盘也压垮前端，与父会话共用同一套 flush 节奏。
+    agent_batches: HashMap<String, Vec<(String, Value)>>,
+    /// 注册失败的子代理 key：本轮不再为它重建子会话，后续事件直接丢弃。
+    broken_agents: std::collections::HashSet<String>,
 }
 impl Worker {
     fn queue(&mut self, kind: &str, data: Value) -> Result<(), String> {
@@ -1212,9 +1303,37 @@ impl Worker {
             // 前端断开（webview 关闭）不该让已经落盘的运行停下来，emit 失败直接忽略。
             let _ = self.app.emit(CHANNEL, &events);
         }
+        // 子代理批缓冲与父批同节奏落盘。
+        self.flush_agents()?;
         self.batch_bytes = 0;
         self.flushed = Instant::now();
         Ok(())
+    }
+    /// 落盘并广播一个子代理攒的批。IO_LOCK 每把批拿一次，绝不嵌套：
+    /// flush 与 route_agent 都只在外层无锁时进来。
+    fn flush_agent(&mut self, key: &str) -> Result<(), String> {
+        let Some(batch) = self.agent_batches.get_mut(key) else { return Ok(()); };
+        if batch.is_empty() { return Ok(()); }
+        let batch = std::mem::take(batch);
+        let Some(route) = self.agents.get_mut(key) else { return Ok(()); };
+        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+        let events = route.store.append(&self.run.id, batch)?;
+        let _ = self.app.emit(CHANNEL, &events);
+        Ok(())
+    }
+    /// 落盘所有子代理攒批；一个失败不连累其他，返回第一个错误。
+    fn flush_agents(&mut self) -> Result<(), String> {
+        let keys: Vec<String> = self.agent_batches.keys().cloned().collect();
+        let mut first_error = None;
+        for key in keys {
+            if let Err(cause) = self.flush_agent(&key) {
+                first_error.get_or_insert(cause);
+            }
+        }
+        match first_error {
+            Some(cause) => Err(cause),
+            None => Ok(()),
+        }
     }
     fn actions(
         &mut self,
@@ -1348,101 +1467,128 @@ impl Worker {
     /// 维护一个子代理的生命周期：首见时建子会话，之后更新元数据状态并把
     /// `agent` 事件同时写进子会话（状态条）与父会话（委派卡、子代理列表）。
     /// CLI 会成对/重复发生命周期通知，状态与信息都没变的那次不落盘。
+    /// 簿记失败一律降级为父时间线通知，绝不炸掉整轮主对话。
     fn agent_event(&mut self, data: Value) -> Result<(), String> {
         let Some(key) = data["key"].as_str().map(str::to_owned).filter(|key| !key.is_empty()) else {
             return Ok(());
         };
+        if self.broken_agents.contains(&key) { return Ok(()); }
         if !self.agents.contains_key(&key) {
-            let base = self.store.dir.parent().ok_or("会话存储路径无效")?.to_path_buf();
+            let Some(base) = self.store.dir.parent().map(Path::to_path_buf) else {
+                return self.notice_safely("会话存储路径无效，子代理无法登记".into());
+            };
             let title = data["title"].as_str().map(str::trim).filter(|title| !title.is_empty()).unwrap_or("子代理").to_owned();
-            let child = child_session_id(&self.run.session_id, &key);
-            {
-                let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-                let mut target = store::Store::open(&base, &child, &self.run.workspace, self.store.meta.provider, &title, "")?;
-                target.meta.parent_session_id = Some(self.run.session_id.clone());
-                let fresh = target.seq == 0;
-                {
-                    // 子会话可能在上一个父回合里已存在（SendMessage 复活续聊）：
-                    // 保留已落盘的元数据，只补这次通知里新出现的字段。
-                    let info = target.meta.agent.get_or_insert_with(|| store::AgentInfo {
-                        native_agent_id: None, agent_type: None, title: title.clone(), tool_id: key.clone(),
-                        model: None, status: "running".into(), started_at: now_ms(), ended_at: None,
-                    });
-                    if info.title.trim().is_empty() { info.title = title.clone(); }
-                    if info.native_agent_id.is_none() {
-                        info.native_agent_id = data["agentId"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
-                    }
-                    if info.agent_type.is_none() {
-                        info.agent_type = data["agentType"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
-                    }
-                    if info.model.is_none() {
-                        info.model = data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()).map(str::to_owned);
-                    }
-                    info.status = "running".into();
-                    info.ended_at = None;
+            match open_agent_route(&self.app, &base, &self.run.session_id, &self.run.workspace, self.store.meta.provider, &key, &title, &data, &self.run.id) {
+                Ok(None) => return Ok(()),
+                Ok(Some((child, store))) => {
+                    self.agents.insert(key.clone(), AgentRoute { store, last_status: "running".into(), meta_broken: false });
+                    // 父侧卡片与抽屉靠它跳进子会话；派生规则不暴露给前端。
+                    let mut data = data;
+                    if let Some(object) = data.as_object_mut() { object.insert("sessionId".into(), json!(child)); }
+                    return self.queue("agent", data);
                 }
-                target.save()?;
-                // spawn 通知若带任务正文（Claude 的 Agent 工具入参），作为子会话的
-                // 第一条用户消息：子代理视图打开时能看到它被安排了什么，而不只是工具活动。
-                if fresh {
-                    if let Some(prompt) = data["prompt"].as_str().map(str::trim).filter(|prompt| !prompt.is_empty()) {
-                        let events = target.append(&self.run.id, vec![("user".into(), json!({"text": prompt, "agentTask": true}))])?;
-                        let _ = self.app.emit(CHANNEL, &events);
-                    }
+                Err(cause) => {
+                    self.broken_agents.insert(key.clone());
+                    return self.notice_safely(format!("子代理「{title}」登记失败，本轮不再跟踪它：{cause}"));
                 }
-                self.agents.insert(key.clone(), AgentRoute { store: target, last_status: "running".into() });
             }
-            // 父侧卡片与抽屉靠它跳进子会话；派生规则不暴露给前端。
-            let mut data = data;
-            if let Some(object) = data.as_object_mut() { object.insert("sessionId".into(), json!(child)); }
-            self.queue("agent", data)?;
-            return Ok(());
         }
         let status = data["status"].as_str().unwrap_or("running").to_owned();
         let has_payload = ["result", "usage", "detail"].iter().any(|field| data.get(field).is_some_and(|value| !value.is_null()));
-        let (meta_changed, append) = {
+        {
             let route = self.agents.get_mut(&key).expect("agent route exists");
-            let Some(info) = route.store.meta.agent.as_mut() else { return Ok(()); };
-            let mut changed = false;
-            for (field, slot) in [
-                (data["agentId"].as_str().filter(|value| !value.is_empty()), &mut info.native_agent_id),
-                (data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()), &mut info.model),
-                (data["agentType"].as_str().filter(|value| !value.is_empty()), &mut info.agent_type),
-            ] {
-                if let Some(value) = field {
-                    if slot.as_deref() != Some(value) { *slot = Some(value.to_owned()); changed = true; }
-                }
-            }
-            if info.status != status {
-                info.status = status.clone();
-                if matches!(status.as_str(), "completed" | "failed" | "stopped") { info.ended_at = Some(now_ms()); }
-                changed = true;
-            }
             let append = route.last_status != status || has_payload;
             route.last_status = status.clone();
-            (changed, append)
-        };
-        if append {
-            let route = self.agents.get_mut(&key).expect("agent route exists");
-            if meta_changed { route.store.save()?; }
-            let mut data = data;
+            if !append { return Ok(()); }
+        }
+        let agent_id = data["agentId"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
+        let model = data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()).map(str::to_owned);
+        let agent_type = data["agentType"].as_str().filter(|value| !value.is_empty()).map(str::to_owned);
+        let title = data["title"].as_str().map(str::trim).filter(|title| !title.is_empty()).map(str::to_owned);
+        let display = title.clone().unwrap_or_else(|| key.clone());
+        let mut data = data;
+        {
+            let route = self.agents.get(&key).expect("agent route exists");
+            // 父侧卡片与抽屉靠它跳进子会话；派生规则不暴露给前端。
             if let Some(object) = data.as_object_mut() {
-                object.insert("sessionId".into(), json!(route.store.meta.session_id));
+                object.insert("sessionId".into(), json!(route.store.meta.session_id.clone()));
             }
+        }
+        let mut meta_error = None;
+        {
+            let route = self.agents.get_mut(&key).expect("agent route exists");
+            let dir = route.store.dir.clone();
+            let workspace = route.store.meta.workspace.clone();
             let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+            if !route.meta_broken {
+                // 元数据基于磁盘上的最新 meta 做「重读-合并-落盘」：句柄里的快照可能
+                // 已被按需回填改过（绑定了 native_id），整份回写会把它抹掉，下次打开
+                // 就误判「未导入」而重复灌正文。meta 写失败不连累事件追加，本轮只报一次。
+                if let Err(cause) = revise_agent_meta(&dir, &workspace, &key, |info| {
+                    let mut changed = false;
+                    for (field, slot) in [
+                        (agent_id.as_deref(), &mut info.native_agent_id),
+                        (model.as_deref(), &mut info.model),
+                        (agent_type.as_deref(), &mut info.agent_type),
+                    ] {
+                        if let Some(value) = field {
+                            if slot.as_deref() != Some(value) { *slot = Some(value.to_owned()); changed = true; }
+                        }
+                    }
+                    // spawn 通知先流式后完整信封会来两次；标题只在空占位时补。
+                    if let Some(title) = &title {
+                        if info.title.trim().is_empty() || info.title == "子代理" {
+                            info.title = title.clone();
+                            changed = true;
+                        }
+                    }
+                    if info.status != status {
+                        info.status = status.clone();
+                        // 复活续聊清掉上一轮的结束时间；只有终态才盖新的。
+                        if status == "running" { info.ended_at = None; }
+                        else if matches!(status.as_str(), "completed" | "failed" | "stopped") { info.ended_at = Some(now_ms()); }
+                        changed = true;
+                    }
+                    changed
+                }) {
+                    route.meta_broken = true;
+                    meta_error = Some(cause);
+                }
+            }
             let events = route.store.append(&self.run.id, vec![("agent".into(), data.clone())])?;
             let _ = self.app.emit(CHANNEL, &events);
-            self.queue("agent", data)?;
         }
-        Ok(())
+        if let Some(cause) = meta_error {
+            self.queue("notice", json!({"text": format!("子代理「{display}」元数据维护失败，状态以时间线为准：{cause}")}))?;
+        }
+        // 锁已释放才排队：queue 达到阈值会触发 flush 重入 IO_LOCK，普通 Mutex 不可重入。
+        self.queue("agent", data)
     }
-    /// 把子代理的对话事件写进它的子会话。句柄未建（生命周期事件还没到）就丢弃：
+    /// 降级通知：连父时间线都送不进去时只剩旁路错误通道，绝不再向上传播。
+    fn notice_safely(&mut self, text: String) -> Result<(), String> {
+        match self.queue("notice", json!({"text": text})) {
+            Ok(()) => Ok(()),
+            Err(cause) => {
+                let _ = self.app.emit("ai-runtime://errors", json!({
+                    "sessionId":self.run.session_id,"runId":self.run.id,"error":cause
+                }));
+                Ok(())
+            }
+        }
+    }
+    /// 把子代理的对话事件攒进批缓冲，随 flush 统一落盘与广播。
+    /// 句柄未建（生命周期事件还没到）或已登记失败就丢弃：
     /// 协议保证 spawn 通知先于任何子代理输出。
     fn route_agent(&mut self, key: &str, kind: &str, data: Value) -> Result<(), String> {
-        let Some(route) = self.agents.get_mut(key) else { return Ok(()); };
-        let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-        let events = route.store.append(&self.run.id, vec![(kind.to_owned(), data)])?;
-        let _ = self.app.emit(CHANNEL, &events);
+        if !self.agents.contains_key(key) { return Ok(()); }
+        self.agent_batches
+            .entry(key.to_owned())
+            .or_default()
+            .push((kind.to_owned(), data));
+        // 攒批只受条数硬顶；字节与时间维度由 flush 的 32ms 节奏兜底。
+        if self.agent_batches.get(key).is_some_and(|batch| batch.len() >= 128) {
+            self.flush_agent(key)?;
+        }
         Ok(())
     }
     /// 计划回合产出的权威正文：登记 revision 后立刻广播审阅卡片。
@@ -1760,22 +1906,35 @@ impl Worker {
         }
         self.pending.clear();
         self.finish_plan_execution(status);
+        // 先把子代理攒批落盘再结算终态：路由马上要从 agents 里摘除，之后再 flush 会丢批。
+        if let Err(cause) = self.flush_agents() {
+            let _ = self.app.emit("ai-runtime://errors", json!({
+                "sessionId":self.run.session_id,"runId":self.run.id,"error":cause
+            }));
+        }
         // CLI 进程退出后它的子代理不可能还活着：仍标 running 的子会话落一个
         // 诚实的终态，否则子代理列表永远显示「运行中」。已完成的子代理不动。
-        for (_, mut route) in std::mem::take(&mut self.agents) {
-            let key = route.store.meta.agent.as_ref().map(|info| info.tool_id.clone()).unwrap_or_default();
-            let was_running = route.store.meta.agent.as_mut().is_some_and(|info| {
+        for (key, mut route) in std::mem::take(&mut self.agents) {
+            if route.store.meta.agent.is_none() { continue; }
+            // 终态写盘同样走重读-合并：按需回填可能已把该子代理标成终态并绑定，
+            // 陈旧回写会把它打回 running 或丢掉绑定。
+            let was_running = match revise_agent_meta(&route.store.dir, &route.store.meta.workspace, &key, |info| {
                 if matches!(info.status.as_str(), "" | "running") {
                     info.status = "stopped".into();
                     info.ended_at = Some(now_ms());
                     true
                 } else { false }
-            });
+            }) {
+                Ok(was_running) => was_running,
+                Err(cause) => {
+                    let _ = self.app.emit("ai-runtime://errors", json!({"sessionId":route.store.meta.session_id,"runId":self.run.id,"error":cause}));
+                    false
+                }
+            };
             if !was_running { continue; }
             let settled = (|| {
-                route.store.save()?;
                 let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-                let events = route.store.append(&self.run.id, vec![("agent".into(), json!({"key":key,"status":"stopped"}))])?;
+                let events = route.store.append(&self.run.id, vec![("agent".into(), json!({"key":key,"status":"stopped","sessionId":route.store.meta.session_id}))])?;
                 let _ = self.app.emit(CHANNEL, &events);
                 Ok::<(), String>(())
             })();
@@ -2102,7 +2261,12 @@ pub async fn ai_runtime_load(
         let agent_session = meta.as_ref().map(|m| m.agent.is_some()).unwrap_or(false);
         if agent_session {
             let needs_import = meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false);
-            if needs_import && !has_queued(&session_id) {
+            // 父会话正在运行时跳过回填：rollout 还没有终态，导不出正文，只会白扫
+            // 一遍历史目录，还会跟 live 路由抢子会话的元数据（见 revise_agent_meta）。
+            let parent_busy = meta.as_ref()
+                .and_then(|m| m.parent_session_id.clone())
+                .is_some_and(|parent| registry::for_session(&parent).is_some());
+            if needs_import && !parent_busy && !has_queued(&session_id) {
                 if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
                     let _ = history::sync_subagent(&base, &session_id, &root);
                 }
@@ -2214,11 +2378,77 @@ pub async fn ai_runtime_delete(
             images::release_session(&app, &dir);
             history::hide(&base, &session_id, &root)?;
             std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+            // 删除落一条墓碑：迟到的创建请求（排队投递、旧标签 create、子代理注册）
+            // 会在 load() 的 create 路径把目录凭空重建出来，变成打不开的幽灵会话。
+            store::record_tombstone(&base, &session_id)?;
+        }
+        // 子代理随父一起走：孤儿既进不了侧栏（isChild 过滤）也失去了随父会话消失的
+        // dock 入口，留在磁盘上只会被发现流程反复扫描。子代理不嵌套，扫一层就够。
+        let mut children = vec![];
+        for entry in std::fs::read_dir(&base).map_err(|e| e.to_string())?.take(20000).flatten() {
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+            let child_id = entry.file_name().to_string_lossy().into_owned();
+            if !store::valid_id(&child_id) || child_id == session_id { continue; }
+            if let Ok(meta) = store::Store::metadata(&entry.path(), &root) {
+                if meta.parent_session_id.as_deref() == Some(session_id.as_str()) {
+                    children.push(child_id);
+                }
+            }
+        }
+        for child in children {
+            let Ok(_lease) = store::Lease::acquire(&base.join(format!("{child}.lock"))) else { continue };
+            let Ok(_events) = crate::sys::ExclusiveFileLock::acquire(&store::events_lock_path(&base, &child)) else { continue };
+            let dir = base.join(&child);
+            if dir.exists() {
+                images::release_session(&app, &dir);
+                let _ = history::hide(&base, &child, &root);
+                let _ = std::fs::remove_dir_all(&dir);
+                let _ = store::record_tombstone(&base, &child);
+            }
         }
         Ok(())
     })
     .await
 }
+/// 批准写入类工具前，把目标文件的当前内容存成快照（事件同步进时间线）。
+#[tauri::command]
+pub async fn ai_session_checkpoint_save(
+    app: AppHandle,
+    session_id: String,
+    workspace: String,
+    paths: Vec<String>,
+) -> Result<Value, String> {
+    block(move || {
+        enabled(&app)?;
+        if !store::valid_id(&session_id) { return Err("无效会话 ID".into()); }
+        let root = store::workspace(&workspace)?;
+        let base = base(&app)?;
+        // 锁归 checkpoint::record 内部的 append_event：IO_LOCK 绝不嵌套（见 flush 的注释），
+        // 外层再拿一把会和 append_event 的二次加锁互相等待，把批准动作整个挂死。
+        checkpoint::record(Some(&app), &base, &session_id, &root, &paths, "approval", None)
+    })
+    .await
+}
+
+/// 把一份快照写回磁盘；恢复前先把现状存成新快照，链式可退。
+#[tauri::command]
+pub async fn ai_session_checkpoint_restore(
+    app: AppHandle,
+    session_id: String,
+    workspace: String,
+    checkpoint_id: String,
+) -> Result<Value, String> {
+    block(move || {
+        enabled(&app)?;
+        if !store::valid_id(&session_id) { return Err("无效会话 ID".into()); }
+        let root = store::workspace(&workspace)?;
+        let base = base(&app)?;
+        // 同 save：锁在 append_event 内部拿一次，外层持锁会死锁。
+        checkpoint::restore(Some(&app), &base, &session_id, &root, &checkpoint_id)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Value>, String> {
     block(move || {
@@ -2445,6 +2675,53 @@ mod tests {
         let id = child_session_id(&"p".repeat(80), "key");
         assert!(store::valid_id(&id), "{id} 必须能当目录名");
         assert!(id.starts_with(&"p".repeat(48)), "父会话前缀要能看出来源");
+    }
+    #[test]
+    fn revise_agent_meta_preserves_externally_bound_native_id() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-revise-agent-meta-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        fs::create_dir_all(&root).unwrap();
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut session = store::Store::open(&base, "agent-child", &workspace, Provider::Codex, "子代理", "").unwrap();
+        session.meta.agent = Some(store::AgentInfo {
+            title: "子代理".into(),
+            tool_id: "01a-child".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        session.save().unwrap();
+        // 模拟按需回填的 bind：Worker 句柄之外，磁盘上的 meta 已绑定了 native_id。
+        let mut backfill = store::Store::metadata(&base.join("agent-child"), &workspace).unwrap();
+        backfill.native_id = Some("01a-child".into());
+        store::Store { dir: base.join("agent-child"), meta: backfill, seq: 0, poisoned: false }.save().unwrap();
+
+        // 陈旧句柄式回写（live 路由只知道 running 时的快照）不得抹掉外部绑定。
+        let dir = base.join("agent-child");
+        let changed = revise_agent_meta(&dir, &workspace, "01a-child", |info| {
+            if info.status != "completed" {
+                info.status = "completed".into();
+                info.ended_at = Some(123456);
+                true
+            } else { false }
+        }).unwrap();
+        assert!(changed);
+        let meta = store::Store::metadata(&dir, &workspace).unwrap();
+        assert_eq!(meta.native_id.as_deref(), Some("01a-child"), "外部 bind 不得被陈旧回写抹掉");
+        let agent = meta.agent.unwrap();
+        assert_eq!(agent.status, "completed");
+        assert_eq!(agent.ended_at, Some(123456));
+        assert_eq!(agent.tool_id, "01a-child");
+
+        // 无变化的更新不落盘。
+        assert!(!revise_agent_meta(&dir, &workspace, "01a-child", |_| false).unwrap());
+        fs::remove_dir_all(temp).unwrap();
     }
     #[test]
     fn project_close_identity_does_not_require_existing_directory() {

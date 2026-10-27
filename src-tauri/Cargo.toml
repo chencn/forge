@@ -25,6 +25,8 @@ tauri-plugin-dialog = "2"
 # 安装方式自动选 MSI 或 NSIS 安装包）；process 只用它的 relaunch 装完重启。
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# 窗口大小/位置/最大化状态跨启动恢复；只在 Rust 侧注册即可自动生效，前端无需调用。
+tauri-plugin-window-state = "2"
 # 文本后缀白名单。Win11 新菜单的 DLL 也读这一份，两处不能各写一份。
 forge-shell-ext = { path = "crates/forge-shell-ext" }
 url = "2"

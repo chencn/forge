@@ -1,17 +1,12 @@
 import DOMPurify from "dompurify";
-import hljs from "highlight.js";
 import { Marked } from "marked";
-import { parseFileLink } from "./fileLinks";
 import { resolveRelative, isWindowsPath, nativeSeparators } from "./format";
+import { sanitizeChatHtml } from "./chatSanitize";
+// 聊天的解析核心（marked 实例、高亮、流式修补）都住在 chatMarkdownCore：
+// 那边不碰 DOMPurify，才能原样进渲染 Worker；这边只保留有 DOM 依赖的清洗层。
+import { renderChatHtmlRaw, renderCodeBlock, repairStreamingMarkdown } from "./chatMarkdownCore";
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+export { renderCodeBlock, repairStreamingMarkdown };
 
 /** 链接是不是要走系统浏览器：绝对 URL 带协议，或协议相对（//host）。 */
 function isExternal(href: string): boolean {
@@ -48,114 +43,6 @@ function resolveHref(
     ? nativeSeparators(decoded)
     : resolveRelative(docDir, decoded);
   return { url: assetOf(absolute) + suffix, local: absolute };
-}
-
-/**
- * 流式正文尚未写完时补齐未闭合的围栏（对照参考实现的 parseIncompleteMarkdown 的
- * 最小集）：模型正在敲一个代码块时，未闭合的 ``` 会把后半段正文整个吞进代码块，
- * 每次流式刷新都闪一下。只数围栏行、只补最后一行，不改别的语义。
- */
-export function repairStreamingMarkdown(source: string): string {
-  const count = (marker: string) => (source.match(new RegExp(`^[ \\t]*${marker}`, "gm")) ?? []).length;
-  if (count("```") % 2 === 1) return `${source}\n\`\`\``;
-  if (count("~~~") % 2 === 1) return `${source}\n~~~`;
-  return source;
-}
-
-const VOID_TAGS = new Set(["br", "hr", "img", "input", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr"]);
-
-/**
- * 把高亮后的 HTML 按行切开：行尾把仍开着的标签补上闭合，下一行重新按原样打开。
- * 高亮的 `<span>` 可能跨多行（块注释一类），直接按 `\n` 切会产出未闭合的半截标签。
- */
-function splitHtmlLines(html: string): string[] {
-  const out: string[] = [];
-  const stack: Array<{ name: string; raw: string }> = [];
-  let line = "";
-  const re = /<\/?([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^"'>])*)>/g;
-  const closeAll = () => stack.slice().reverse().map((tag) => `</${tag.name}>`).join("");
-  const reopenAll = () => stack.map((tag) => tag.raw).join("");
-  const append = (chunk: string) => {
-    const parts = chunk.split("\n");
-    for (let index = 0; index < parts.length; index++) {
-      if (index > 0) {
-        out.push(line + closeAll());
-        line = reopenAll();
-      }
-      line += parts[index];
-    }
-  };
-  let last = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html)) !== null) {
-    append(html.slice(last, match.index));
-    last = re.lastIndex;
-    const name = match[1].toLowerCase();
-    if (match[0].startsWith("</")) {
-      const at = stack.map((tag) => tag.name).lastIndexOf(name);
-      if (at >= 0) stack.splice(at, 1);
-      line += match[0];
-    } else if (!match[0].endsWith("/>") && !VOID_TAGS.has(name)) {
-      stack.push({ name, raw: match[0] });
-      line += match[0];
-    } else {
-      line += match[0];
-    }
-  }
-  append(html.slice(last));
-  out.push(line + closeAll());
-  return out;
-}
-
-/** 按语言高亮；指定不了或高亮抛错时退回转义后的原文。 */
-function highlightCode(text: string, cleanLang: string, streaming = false): string {
-  if (cleanLang && hljs.getLanguage(cleanLang)) {
-    try {
-      return hljs.highlight(text, { language: cleanLang, ignoreIllegals: true }).value;
-    } catch {
-      return escapeHtml(text);
-    }
-  }
-  if (cleanLang === "plaintext" || cleanLang === "text" || cleanLang === "txt") return escapeHtml(text);
-  // 流式输出中或大段代码时跳过开销极大的 highlightAuto 全语言回溯试探，避免拖垮渲染主线程
-  if (streaming || text.length > 2500) {
-    return escapeHtml(text);
-  }
-  // 未显式指定语言或未知语言时，自动检测高亮
-  try {
-    return hljs.highlightAuto(text).value;
-  } catch {
-    return escapeHtml(text);
-  }
-}
-
-/**
- * 高亮并包一个代码块。
- *
- * `copyLabel` 只在聊天里传：文档预览的复制按钮另有实现（React 组件），而聊天正文是
- * 一次性注入的 HTML，得把按钮直接写进标记里。按钮用 `span[role=button]` 而不是
- * `<button>`——聊天的白名单把 `button`、`svg` 都禁掉了，图标只能靠 CSS 画。
- *
- * 正文代码块正常直出，不折叠、不套特殊题头卡片、不带折叠扣。
- * 不对正文逐行包 `span.cl`，避免 `display: block` 与换行符在 `white-space: pre` 下
- * 叠加导致单行代码占双倍行高。仅在显式传入真实文件行号（startLine）时才做切行编号。
- */
-export function renderCodeBlock(text: string, lang: string | null | undefined, copyLabel?: string, openBlocks = false, startLine?: number): string {
-  const cleanLang = (lang || "").trim().split(/\s+/)[0].toLowerCase();
-  const highlighted = highlightCode(text, cleanLang, openBlocks);
-  const langClass = cleanLang ? ` language-${escapeHtml(cleanLang)}` : "";
-  const tag = cleanLang ? `<span class="code-lang-tag">${escapeHtml(cleanLang)}</span>` : "";
-  const copy = copyLabel
-    ? `<span class="code-copy" role="button" tabindex="0" data-code-copy="1" aria-label="${escapeHtml(copyLabel)}">${escapeHtml(copyLabel)}</span>`
-    : "";
-  // 仅在明确指定了起始行号时才编号；普通正文代码段直接输出，避免每行产生双倍行高
-  const numbered = startLine !== undefined;
-  const body = numbered
-    ? splitHtmlLines(highlighted).map((lineHtml) => `<span class="cl">${lineHtml}</span>`).join("")
-    : highlighted;
-  const reset = startLine !== undefined && startLine > 1 ? ` style="counter-reset: ai-code-line ${startLine - 1}"` : "";
-  const pre = `<pre><code class="hljs${langClass}"${reset}>${body}</code></pre>`;
-  return `<div class="code-block-wrapper">${tag}${copy}${pre}</div>`;
 }
 
 /**
@@ -222,39 +109,11 @@ export function renderMarkdown(
 const CHAT_MARKDOWN_CACHE_LIMIT = 500;
 const chatMarkdownCache = new Map<string, string>();
 
-let activeChatCopyLabel = "";
-let activeChatOpenBlocks = false;
-
-const chatParser = new Marked({ gfm: true, breaks: false });
-chatParser.use({
-  renderer: {
-    code({ text, lang }) {
-      return renderCodeBlock(text, lang, activeChatCopyLabel, activeChatOpenBlocks);
-    },
-    checkbox({ checked }) {
-      // GFM 任务列表复选框：用无害的只读 span 替换 input，避免被聊天的 DOMPurify 白名单删除。
-      return checked
-        ? '<span class="ai-task-checkbox is-checked" aria-hidden="true"></span> '
-        : '<span class="ai-task-checkbox" aria-hidden="true"></span> ';
-    },
-    link({ href, title, tokens }) {
-      const inner = this.parser.parseInline(tokens);
-      const file = parseFileLink(href);
-      if (file) {
-        const position = file.line !== undefined ? `:${file.line}${file.column !== undefined ? `:${file.column}` : ""}` : "";
-        const titleAttr = title ?? `${file.path}${position}`;
-        const line = file.line !== undefined ? ` data-file-line="${file.line}"` : "";
-        const column = file.column !== undefined ? ` data-file-column="${file.column}"` : "";
-        return `<a class="ai-file-link" href="#" data-file-path="${escapeHtml(file.path)}"${line}${column} title="${escapeHtml(titleAttr)}">${inner}</a>`;
-      }
-      const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
-      return `<a href="${escapeHtml(href)}"${titleAttr}>${inner}</a>`;
-    },
-  },
-});
-
 /**
- * 渲染聊天正文成可安全注入的 HTML。
+ * 渲染聊天正文成可安全注入的 HTML（同步全量路径）。
+ *
+ * 聊天时间线走的增量路径在 {@link ./chatMarkdownAsync.ts}：解析进 Worker、按 token
+ * 缓存清洗结果；这条全量路径留给没有 Worker 的环境（测试、SSR）与首帧兜底。
  *
  * 和文档预览分开是因为信任边界不同：聊天里的 markdown 出自模型输出，图片、表单、
  * 内联样式、`<svg>` 一律禁掉，只留排版标签。链接不做磁盘解析（聊天没有「本文档所在
@@ -274,15 +133,8 @@ export function renderChatMarkdown(source: string, copyLabel: string, openBlocks
     if (cached !== undefined) return cached;
   }
 
-  activeChatCopyLabel = copyLabel;
-  activeChatOpenBlocks = openBlocks;
-  const parsed = chatParser.parse(source, { async: false });
-  const sanitized = DOMPurify.sanitize(parsed, {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ["img", "picture", "source", "video", "audio", "iframe", "object", "embed", "style", "form", "input", "button", "svg", "math", "link", "meta", "base"],
-    FORBID_ATTR: ["style", "src", "srcset", "autofocus", "background", "poster", "ping"],
-    // data-file-* 是上面给本地文件链接打的标记，html 档默认保留 data-*，这里只补一条说明。
-  });
+  const parsed = renderChatHtmlRaw(source, copyLabel, openBlocks);
+  const sanitized = sanitizeChatHtml(parsed);
 
   if (cacheKey) {
     if (chatMarkdownCache.size >= CHAT_MARKDOWN_CACHE_LIMIT) {

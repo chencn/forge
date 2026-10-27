@@ -33,17 +33,23 @@ IDEA 会记住上次的词，这边没记，因为记了就要顺带处理「上
 关掉它只有三条路：右上那颗关闭、Enter 或点开一条结果、Esc。点遮罩不关，输入到一半点到旁边就把词丢了。
 IDEA 那边靠失焦关闭，这边没有「焦点离开整层」这条判定可依赖，就不拿点击当关闭。
 
-三个页签，Alt+1 / Alt+2 / Alt+3 或点页签切换。IDEA 那边还有 Classes / Symbols / Actions，
-靠 PSI 符号索引和动作注册表，这边没有等价数据，就不摆一颗点了没反应的页签。
+四个页签，Alt+1 / Alt+2 / Alt+3 / Alt+4 或点页签切换：全页 / 文件 / 文本 / 动作。IDEA 那边还有
+Classes / Symbols，靠 PSI 符号索引，这边没有等价数据，不做；动作页签用前端自己的动作表，不依赖索引。
 
-- 全页签同时发两条命令，文件名与正文各取前 20 条，混在一列里：文件行在前，正文行在后。
+- 全页签同时发两条命令，文件名与正文各取前 20 条，混在一列里：文件行在前，正文行在后，动作行接在最后（最多 50 条）。
 - 文件页签只发 `find_files`，此时大小写 / 整词 / 正则三颗开关和文件名掩码都不画，它们只对正文有效。
 - 文本页签只发 `search_text`，带三颗开关与掩码。
+- 动作页签不发查询：空词列出动作表前 50 条，有词时先匹配前缀、再匹配包含；回车执行并关闭弹层。
 - 少于 2 个字符什么都不搜，否则整棵树被第一个字母刷一遍。停止打字 260ms 才发查询。
 - 只认最后一次发出的查询：每次自增一个序号，早发的那份回来晚了直接丢，不会盖掉新结果。
 - 底行说清这次拿到多少：`N 个文件` / `N 处命中，M 个文件`，触到上限追加「还有更多」。
   后端扫到条目上限或结果被截时 `truncated` 为真，界面必须显式说这不是全部。
 - ↑↓ 走选中行，回车开选中的那条，Esc 收起。选中行走出列表边缘时滚一下，只在键盘走的时候动。
+
+动作表在 `App.tsx` 的 `paletteCommands` 里拼：打开弹层、开文件 / 文本页签、保存、保存全部、运行四件、
+新建 AI 会话、打开设置与快捷键设置，再加底部面板与活动栏的入口。只收能独立执行的动作，
+依赖当前选中的（关某个标签、重命名某个文件）不进表，点了没反应的条目比少一条更糟。
+行尾显示当前生效的组合键，仅作提示，真正匹配仍在各自的 keydown 监听。
 
 点开文件行只把它开进编辑区，光标不动，IDEA 的 Files 页就是这个行为（`offset = -1`）。
 点开正文行除了跳进那一行，还把这一整页结果交给底部查找窗口：IDEA 那边 Enter 之后弹层关掉，
@@ -121,8 +127,8 @@ IDEA 那边靠失焦关闭，这边没有「焦点离开整层」这条判定可
 
 | 文件 | 内容 |
 | --- | --- |
-| `src/App.tsx` | `everywhere` 与 `find` 两份状态、`searchSeq`；`openEverywhere` / `openSearchFile` / `openSearchHit` / `revealHit` / `revealInTree`；双击 Shift 与两颗组合键的那个 effect；顶栏那颗按钮；`paneBody` 里的 `find` 分支；树右键的「在目录中查找」；渲染弹层时把 `git.root` 与 `settings.explorer` 两个开关传进去 |
-| `src/components/SearchEverywhere.tsx` | 三个页签、两路并发查询、`seq` 丢旧结果、底行计数、`MIN_QUERY` 与 `TYPE_DELAY`、键位处理；按需取忽略前缀拼 `ScanFilter` 下发 |
+| `src/App.tsx` | `everywhere` 与 `find` 两份状态、`searchSeq`；`openEverywhere` / `openSearchFile` / `openSearchHit` / `revealHit` / `revealInTree`；双击 Shift 与两颗组合键的那个 effect；顶栏那颗按钮；`paneBody` 里的 `find` 分支；树右键的「在目录中查找」；`paletteCommands` 动作表；渲染弹层时把 `git.root` 与 `settings.explorer` 两个开关传进去 |
+| `src/components/SearchEverywhere.tsx` | 四个页签、两路并发查询、动作表过滤与执行、`seq` 丢旧结果、底行计数、`MIN_QUERY` 与 `TYPE_DELAY`、键位处理；按需取忽略前缀拼 `ScanFilter` 下发 |
 | `src/components/ExplorerTree.tsx` | `reveal` 入参与那条逐层摊开的 effect：`covers()` 连包链中间层一起认、`openDir` 只往开里改、`pathKey` 折分隔符与大小写；忽略判定复用 `ignoredRoots` |
 | `src/components/FindPane.tsx` | 状态行、按文件分组、`truncated` 与 `skipped` 告示、双击与 Enter |
 | `src/components/MatchSnippet.tsx` | 按 `snippetFrom` 把列号折算回片段内、零宽命中垫一个不换行空格 |

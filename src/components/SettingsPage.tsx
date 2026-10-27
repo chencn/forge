@@ -18,6 +18,7 @@ import AiCliSettingsPanel, { AiAssistantsToggle, AiCliSettingsControls } from ".
 import ModelProvidersPanel from "./ModelProvidersPanel";
 import SkillsPanel from "./SkillsPanel";
 import McpPanel from "./McpPanel";
+import HooksSettingsPanel from "./HooksSettingsPanel";
 import { LspInstallDialog, LspLogDialog, LspServerDialog } from "./LspDialogs";
 import { useSettings } from "../hooks/useSettings";
 import { hasUnsavedSettings } from "../hooks/useUnsavedGuard";
@@ -42,6 +43,7 @@ import {
   TERMINAL_TAB_LAYOUTS,
 } from "../lib/settings";
 import TerminalProfilesEditor from "./TerminalProfilesEditor";
+import ShortcutSettingsPanel from "./ShortcutSettingsPanel";
 import { clearLspLogs, lspLogs, watchLspLogs, watchLspStatus } from "../lib/lspClient";
 import type { WakeResult } from "../lib/lspClient";
 import type {
@@ -72,15 +74,16 @@ import {
 } from "../lib/updater";
 import type { DownloadReport, UpdateInfo } from "../lib/updater";
 
-/** 设置窗口左侧的模块，一行一个。AI 相关四页只在总开关开启后出现。 */
-export type SettingsModule = "general" | "editor" | "terminal" | "lsp" | "aiCommit" | "aiCli" | "modelProviders" | "skills" | "mcp" | "about";
+/** 设置窗口左侧的模块，一行一个。AI 相关五页只在总开关开启后出现。 */
+export type SettingsModule = "general" | "editor" | "shortcuts" | "terminal" | "lsp" | "aiCommit" | "aiCli" | "modelProviders" | "skills" | "mcp" | "hooks" | "about";
 
-const MODULES: SettingsModule[] = ["general", "editor", "terminal", "lsp", "aiCommit", "aiCli", "modelProviders", "skills", "mcp", "about"];
-const AI_MODULES = new Set<SettingsModule>(["aiCli", "modelProviders", "skills", "mcp"]);
+const MODULES: SettingsModule[] = ["general", "editor", "shortcuts", "terminal", "lsp", "aiCommit", "aiCli", "modelProviders", "skills", "mcp", "hooks", "about"];
+const AI_MODULES = new Set<SettingsModule>(["aiCli", "modelProviders", "skills", "mcp", "hooks"]);
 
 const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   general: "settings.general",
   editor: "settings.editor",
+  shortcuts: "settings.shortcuts",
   terminal: "settings.terminal",
   lsp: "settings.lsp",
   aiCommit: "settings.aiCommit",
@@ -88,6 +91,7 @@ const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   modelProviders: "settings.modelProviders",
   skills: "settings.skills",
   mcp: "settings.mcp",
+  hooks: "settings.hooks",
   about: "settings.about",
 };
 
@@ -890,6 +894,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
             </div>
           ) : null}
 
+          {module === "shortcuts" ? <ShortcutSettingsPanel /> : null}
           {module === "terminal" ? (
             <div className="settings-rows">
               <div className="settings-row">
@@ -1213,6 +1218,7 @@ export default function SettingsPage({ workspace, onLspKick, onLspWake, initialM
           {module === "modelProviders" ? <ModelProvidersPanel /> : null}
           {module === "skills" ? <SkillsPanel /> : null}
           {module === "mcp" ? <McpPanel /> : null}
+          {module === "hooks" ? <HooksSettingsPanel /> : null}
 
           {module === "about" ? (
             <div className="settings-rows">

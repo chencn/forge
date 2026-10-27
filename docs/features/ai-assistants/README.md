@@ -42,6 +42,14 @@ Forge 通过 Rust 子进程接入本机 Codex app-server 与 Claude Code JSON �
 - Codex 异步提问：AgentMessage 上的问题转成提问卡，回答通过 `turn/steer` 写入当前回合，不复用普通授权回包。
 - 以上能力均只接受受限的结构化参数；计划审批 id、版本、决策与反馈由前端提交，执行指令、原生计划和路径解析全部留在后端。
 
+## 改动快照与 @ 提及
+
+- 改动快照：批准写入类工具（Edit / Write / apply_patch 等带路径入参的请求）之前，取入参里要动的那个文件的当前内容存成快照；路径按 `file_path` / `notebook_path` / `path` / `absolute_path` / `target_file` 的顺序取，与后端 `request_target` 同一批键。命令类入参没有这些键，不生成快照。快照失败不拦批准，也不打断发送。
+- 快照事件以 kind `checkpoint` 进时间线，卡片列出文件并给「恢复」。恢复先把相关文件的现状存成新快照（`source: "restore"`，`restoreOf` 指回来源），再写回目标文件；每恢复一步都多一站，可以沿链继续退。
+- 快照落在会话目录的 `checkpoints/<id>/`：`snapshot.json` 是清单，`N.bin` 是文件内容。单文件上限 8 MiB、一次最多 32 个文件；读不到或超限的文件跳过，全部跳过就报错，不落空快照。路径只收绝对路径，重复的按大小写不敏感去重。
+- @ 提及：输入框里 `@` 前是行首或空白 / 开括号 / 引号时触发，邮箱里的 @ 不触发。按查询词用 `find_files` 搜工作区，只收文件、前 8 条、260ms 防抖；调用时传空忽略清单，因此不受「显示忽略的文件」开关影响。接受后把 `@查询` 换成 `@相对路径`，后面不是空白就补一个空格。
+- 提及就是正文里的一段 `@路径`：Claude Code 原生把它当附件提示展开，Codex 的模型直接读路径，Forge 不加额外传输协议。时间线正文把 `@相对路径` 切成提及片段高亮；触发侧认的 token 从宽（只让位给空白与 @），渲染侧从严（不吃句尾标点），两边共用「@ 前必须是行首或空白 / 开括号」这一条定义。
+
 ## 安装策略
 
 ### Claude Code
@@ -79,7 +87,8 @@ Forge 通过 Rust 子进程接入本机 Codex app-server 与 Claude Code JSON �
 - `src/lib/aiSessions.ts`、`src/hooks/useAiSessions.ts`：本地元数据校验、状态变更和持久化。
 - `src/components/AiCliSettingsPanel.tsx`：安装管理卡片与确认操作。
 - `src/components/AiSessionsPanel.tsx`、`AiSessionPane.tsx`：统一会话列表、聊天内容和交互卡片。
-- `src-tauri/src/ai_runtime/`：两家协议适配、双向管道、运行登记、受限命令和后端记录；`task_status.rs` 是任务状态词表的唯一来源，`images.rs` 是附件沙箱的唯一写入者（格式识别、托管名、上限、引用标记与清理都在它里面，前端只读回它报的数）。`plans.rs` 是计划审阅的事实源（版本、CAS、过期与执行状态），`approvals.rs` 负责本轮授权规则。
+- `src-tauri/src/ai_runtime/`：两家协议适配、双向管道、运行登记、受限命令和后端记录；`task_status.rs` 是任务状态词表的唯一来源，`images.rs` 是附件沙箱的唯一写入者（格式识别、托管名、上限、引用标记与清理都在它里面，前端只读回它报的数）。`plans.rs` 是计划审阅的事实源（版本、CAS、过期与执行状态），`approvals.rs` 负责本轮授权规则，`checkpoint.rs` 负责改动快照（取内容、清单与恢复链）。
+- `src/lib/aiMention.ts`、`src/components/AiMentionMenu.tsx`：@ 提及的触发、建议接受与时间线切分；`src/lib/aiApprovals.ts` 的 `requestPath` 决定快照的目标文件。
 - `src/lib/aiRuntime.ts`、`src/hooks/useAiRunLifecycle.tsx`：全局事件/聊天状态与标签生命周期。`src/lib/aiTaskStatus.ts`：与 Rust 对应的状态判定，`submitting` 只在这里存在。
 - 会话界面拆开各自一份判定，便于单独测试：`src/lib/aiTimeline.ts`（工具/推理折叠 + 120 项开窗）、`aiFollow.ts`（按条目 id 锚定跟随与未读计数）、`aiDrafts.ts`（按会话草稿、发送历史与附加目录）、`aiRetry.ts`（回合动作可用性）、`aiCompact.ts`（压缩阈值与自动闸门）、`aiFrame.ts`（rAF 事件合并）、`aiApprovals.ts`（审批卡片可用按钮）、`aiPlan.ts`（待审计划选择）、`dropOwner.ts`（整窗拖拽投放的局部认领与物理像素换算）、`fileLinks.ts`（回复里的 `路径:行` 认成哪份文件的第几行）。对应组件：`AiMarkdown.tsx`、`AiFileLink.tsx`（点文件的回调上下文与可点路径）、`AiProcessGroup.tsx`、`AiJumpToBottom.tsx`、`AiTurnActions.tsx`、`AiCompactPanel.tsx`、`AiApprovalCard.tsx`、`AiPlanCard.tsx`。
 - `tests/lib/aiCli.test.ts`、`aiSessions.test.ts`、`aiRuntime.test.ts`：管理、会话和运行边界测试。

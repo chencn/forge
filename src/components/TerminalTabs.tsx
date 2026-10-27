@@ -3,6 +3,7 @@ import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as Reac
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   Bell,
+  Bot,
   ChevronDown,
   Columns2,
   Copy,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
+import { useAiInputMenu } from "./AiInputContext";
 import { shellProbe } from "../lib/term";
 import type { ShellInfo } from "../lib/term";
 import {
@@ -138,6 +140,7 @@ export function TermTabList({ cwd, orientation, placement }: TermTabListProps) {
   const { t } = useI18n();
   const store = useTermTabs(cwd);
   const shells = useShells();
+  const aiInputMenu = useAiInputMenu();
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   const [editing, setEditing] = useState<{ id: string; value: string; original: string } | null>(null);
   const [dropHint, setDropHint] = useState<DropHint | null>(null);
@@ -202,6 +205,14 @@ export function TermTabList({ cwd, orientation, placement }: TermTabListProps) {
     const hasOthers = store.sessions.some((item) => item.id !== session.id && !item.pinned);
     const hasRight = store.sessions.slice(index + 1).some((item) => !item.pinned);
     const grouped = termGroupOf(session.id).members.length > 1;
+    // 终端 → AI 会话桥：最近输出的尾巴交出去，路由（直接投/选会话/没开 AI）由桥统一处理。
+    const recent = termControl(session.id)?.text() ?? "";
+    const output = recent.length > 4000 ? recent.slice(-4000) : recent;
+    const sendToAi = aiInputMenu({
+      kind: "text",
+      text: output.trim(),
+      source: t("terminal.sendToAiSource", { name: label(session) }),
+    });
     const items: MenuItem[] = [
       {
         label: session.pinned ? t("terminal.unpin") : t("terminal.pin"),
@@ -223,6 +234,7 @@ export function TermTabList({ cwd, orientation, placement }: TermTabListProps) {
       { label: t("terminal.clear"), icon: Eraser, onSelect: () => termControl(session.id)?.clear() },
       { label: t("terminal.rename"), icon: Pencil, shortcut: "F2", onSelect: () => startRename(session) },
       { label: t("terminal.export"), icon: Download, onSelect: () => void exportOutput(session) },
+      { ...sendToAi, icon: Bot },
       ...(placement
         ? [
             {

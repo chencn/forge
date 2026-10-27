@@ -24,9 +24,14 @@ mod imp {
     static RUNNING: AtomicBool = AtomicBool::new(true);
 
     /// 获取与当前登录用户隔离的唯一命名管道名称。
+    ///
+    /// 开发构建单独一条管道：它和已安装版本的数据目录、WebView 源都不同，
+    /// 共用一个名字会让 `tauri dev` 把启动参数转给已安装实例后自己退出。
     fn pipe_name() -> String {
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        format!(r"\\.\pipe\forge_single_instance_{user}")
+        // 正式版沿用原名，避免升级后新旧实例各占一条管道。
+        let suffix = if cfg!(debug_assertions) { "_dev" } else { "" };
+        format!(r"\\.\pipe\forge_single_instance_{user}{suffix}")
     }
 
     /// 尝试将启动参数转发给已在运行的主实例。

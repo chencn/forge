@@ -164,6 +164,12 @@ fn tool_path(tool: &Value) -> Option<String> {
         .find_map(|key| tool["input"][*key].as_str().filter(|path| !path.trim().is_empty()).map(str::to_owned))
 }
 
+/// 子代理标题的兜底截断：取首个非空行、按字符截到 80，防止超长文本进 meta.title。
+fn agent_title(text: &str) -> String {
+    let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
+    line.chars().take(80).collect()
+}
+
 /// Claude 的协议适配器。
 ///
 /// 状态基本都围绕「流式增量」与「完整消息」两条通道：增量负责实时上屏，
@@ -310,10 +316,12 @@ impl Claude {
     /// 生命周期事件：运行时据此建子会话，前端据此画委派卡与子代理列表。
     fn agent_spawn_event(block: &Value) -> Option<Action> {
         if !matches!(block["name"].as_str(), Some("Agent") | Some("Task")) { return None; }
-        let title = block["input"]["description"].as_str()
-            .or_else(|| block["input"]["prompt"].as_str())
-            .map(str::trim).filter(|text| !text.is_empty())
-            .unwrap_or("子代理");
+        // 标题只承担扫视：description 取首行再截断，回退到 prompt 时压成一行短标题——
+        // 最长 4000 字的正文进了 meta.title 会一直顶在侧栏提示与子会话头上。
+        let title = match block["input"]["description"].as_str().map(str::trim).filter(|text| !text.is_empty()) {
+            Some(text) => agent_title(text),
+            None => block["input"]["prompt"].as_str().and_then(super::history::auto_title).unwrap_or_else(|| "子代理".into()),
+        };
         // 任务正文截一段带出：子会话的第一条用户消息靠它，子代理视图才知道自己被安排了什么。
         let prompt = block["input"]["prompt"].as_str().map(str::trim).filter(|text| !text.is_empty())
             .map(|text| text.chars().take(4000).collect::<String>());

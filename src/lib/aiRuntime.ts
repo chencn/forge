@@ -965,6 +965,11 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       // 答复带回来的那条失效事件留着答案：卡片据此分清「已处理」和「没等到答复就失效」，
       // 重开会话时也能把当时选的那几项显示出来，而不是重新摆一副还能点的样子。
       if (request) { request.active = false; if (data.answer !== undefined && data.answer !== null) request.answer = data.answer as AiRequestAnswer; }
+    } else if (event.kind === "checkpoint" && typeof data.id === "string") {
+      // 改动快照：批准写入工具 / 恢复动作各生成一条，时间线上按原样呈现可回退的链。
+      let entry = byId.get(key);
+      if (!entry) { entry = { id: key, runId: event.runId, seq: event.seq, kind: "notice", name: "checkpoint", text: "" }; byId.set(key, entry); entries.push(entry); }
+      entry.input = data; entry.seq = event.seq;
     }
   }
   // 同一次压缩的两条记录（实时状态 + 原生日志里的摘要正文）由后端在读事件时合并：

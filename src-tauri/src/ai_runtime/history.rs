@@ -508,10 +508,16 @@ fn project_sidechain(provider: Provider, value: &Value, offset: u64, projection:
     project_with_state(provider, value, offset, projection)
 }
 
+/// 父会话已删除（墓碑在案）：子会话随父一起走，别再为孤儿回填或重建。
+fn parent_deleted(base: &Path, parent_id: &str) -> bool {
+    store::is_tombstoned(base, parent_id)
+}
+
 /// 导入 Claude 的 `subagents/agent-*.jsonl`：每个文件是一个子代理的完整对话，
 /// 同名 `.meta.json` 带归属（toolUseId/agentType/description/finished）。
 /// 子会话 id 与 live 路由用同一规则派生，目录已存在（正在运行或已导入）就跳过。
 fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, native_id: &str, root: &str) {
+    if parent_deleted(base, parent_id) { return; }
     let Some(project_dir) = native_path.parent() else { return };
     let dir = project_dir.join(native_id).join("subagents");
     let Ok(entries) = fs::read_dir(&dir) else { return };
@@ -527,6 +533,10 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or(Value::Null);
+        // 只导入已终态（finished）的子代理。正在写的半截正文一旦落盘，exists() 的
+        // 跳过会让它永远冻住；meta 缺失时 toolUseId 也提不出来，派生的目录名会和
+        // live 路由按 toolUseId 建的对不上。等终态出现后的下一次发现再导。
+        if info["finished"] != true { continue; }
         let key = info["toolUseId"].as_str().filter(|value| !value.is_empty()).unwrap_or(&agent_id).to_owned();
         let child = super::child_session_id(parent_id, &key);
         if base.join(&child).exists() { continue; }
@@ -542,7 +552,7 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
             title: title.clone(),
             tool_id: key.clone(),
             model: None,
-            status: if info["finished"] == true { "completed".into() } else { "stopped".into() },
+            status: "completed".into(),
             started_at: modified,
             ended_at: None,
         });
@@ -604,6 +614,7 @@ fn import_codex_subagent(
         let Some(parent_forge) = known.get(&binding_key(Provider::Codex, parent_native)) else { return };
         (super::child_session_id(parent_forge, child_id), parent_forge.clone())
     };
+    if parent_deleted(base, &parent_forge) { return; }
     let agent_path = spawn["agent_path"].as_str().unwrap_or_default().to_owned();
     let agent_role = spawn["agent_role"].as_str().filter(|value| !value.trim().is_empty());
     // rollout 没有 spawn_agent 的 arguments；只能从持久化 path/role 恢复，随机 nickname 永不展示。
@@ -680,6 +691,9 @@ fn import_codex_subagent(
         return;
     };
     let imported = target.meta.native_id.as_deref() == Some(child_id);
+    // 正文分批落盘中途失败也要走到收尾（绑定 + 状态照记）：提前返回的话，下一次
+    // 导入会从 content_start 重灌，已写入的批次全部翻倍。截断比重复好。
+    let mut body_failed = false;
     if !imported {
         // 终态后从头投影一次；上面的第一遍只判终态，避免为运行中的大日志攒一份正文。
         let Ok(mut file) = File::open(path) else { return };
@@ -694,12 +708,15 @@ fn import_codex_subagent(
             }
             lines += 1;
             if batch.len() >= 128 {
-                if target.append("native", std::mem::take(&mut batch)).is_err() { return; }
+                if target.append("native", std::mem::take(&mut batch)).is_err() { body_failed = true; break; }
             }
             if lines >= 20000 { break; }
         }
-        if target.append("native", batch).is_err() { return; }
-        if target.append("native", vec![("agent".into(), json!({"key":child_id,"status":status,"imported":true}))]).is_err() { return; }
+        if !body_failed && target.append("native", batch).is_err() { body_failed = true; }
+    }
+    // 导入标记：正文失败就不再追加；真正的防重闸是下面统一做的 bind。
+    if !imported && !body_failed {
+        let _ = target.append("native", vec![("agent".into(), json!({"key":child_id,"status":status,"imported":true}))]);
     }
     if let Some(info) = target.meta.agent.as_mut() {
         info.status = status.into();
@@ -944,7 +961,8 @@ pub fn sync_subagent(base: &Path, id: &str, root: &str) -> Result<bool, String> 
         return Ok(false);
     };
     let mut target_path = None;
-    let mut budget = 5000usize;
+    // 与 discover 同一预算：大历史目录下 5000 可能扫不到子代理的 rollout，回填就静默失败。
+    let mut budget = 30000usize;
     let mut paths = vec![];
     let _ = files(&sessions_dir, 4, &mut budget, &mut paths);
     for path in paths {
@@ -1795,6 +1813,101 @@ mod tests {
         assert_eq!(page.events.iter().filter(|event| event.kind == "user" && event.data["text"] == "检查导入链路").count(), 1);
         assert_eq!(page.events.iter().filter(|event| event.kind == "message" && event.data["text"] == "链路正常").count(), 1);
         assert!(!page.events.iter().any(|event| event.data["text"] == "父会话内容" || event.data["text"] == "父会话回复"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn unfinished_claude_subagent_is_never_imported() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-history-claude-subagent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("native");
+        for path in [&root, &base] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let parent_forge = "claude-parent";
+        let parent_native = "claude-native-parent";
+        let mut parent = Store::open(&base, parent_forge, &workspace, Provider::Claude, "父会话", "").unwrap();
+        parent.bind(parent_native.into()).unwrap();
+
+        let subagents = native.join(parent_native).join("subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        // native_path 的契约是「父会话自己的 jsonl 文件」：project_dir 取它的父目录。
+        let native_path = native.join("session.jsonl");
+        let lines = [
+            json!({"type":"user","sessionId":parent_native,"isSidechain":true,"message":{"role":"user","content":"从 1 输出到 100"}}),
+            json!({"type":"assistant","sessionId":parent_native,"isSidechain":true,"message":{"id":"child-a","content":[{"type":"text","text":"1 到 100 输出完毕"}]}}),
+        ];
+        fs::write(subagents.join("agent-abc123.jsonl"), lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+
+        // 未完成（finished 缺失/false）不导入：半截正文一旦落盘就永远冻住。
+        fs::write(subagents.join("agent-abc123.meta.json"), json!({
+            "toolUseId":"toolu_01","agentType":"general-purpose","description":"输出数字","finished":false
+        }).to_string()).unwrap();
+        import_claude_subagents(&base, parent_forge, &native_path, parent_native, &workspace);
+        assert!(!base.join(super::super::child_session_id(parent_forge, "toolu_01")).exists());
+
+        // meta 缺失同样不导入：toolUseId 提不出来，派生的目录名会和 live 路由对不上。
+        fs::remove_file(subagents.join("agent-abc123.meta.json")).unwrap();
+        import_claude_subagents(&base, parent_forge, &native_path, parent_native, &workspace);
+        assert!(!base.join(super::super::child_session_id(parent_forge, "toolu_01")).exists());
+
+        // 终态出现后正常导入；重复发现不再追加第二遍。
+        fs::write(subagents.join("agent-abc123.meta.json"), json!({
+            "toolUseId":"toolu_01","agentType":"general-purpose","description":"输出数字","finished":true
+        }).to_string()).unwrap();
+        import_claude_subagents(&base, parent_forge, &native_path, parent_native, &workspace);
+        import_claude_subagents(&base, parent_forge, &native_path, parent_native, &workspace);
+
+        let child = super::super::child_session_id(parent_forge, "toolu_01");
+        let meta = Store::metadata(&base.join(&child), &workspace).unwrap();
+        assert_eq!(meta.parent_session_id.as_deref(), Some(parent_forge));
+        let agent = meta.agent.expect("agent metadata");
+        assert_eq!(agent.tool_id, "toolu_01");
+        assert_eq!(agent.status, "completed");
+        assert_eq!(agent.agent_type.as_deref(), Some("general-purpose"));
+        let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
+        assert_eq!(page.events.iter().filter(|event| event.kind == "user" && event.data["text"] == "从 1 输出到 100").count(), 1);
+        assert_eq!(page.events.iter().filter(|event| event.kind == "message" && event.data["text"] == "1 到 100 输出完毕").count(), 1);
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn subagent_import_skips_tombstoned_parents() {
+        let temp = std::env::temp_dir().join(format!(
+            "forge-history-subagent-tombstone-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("subagent.jsonl");
+        for path in [&root, &base] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let parent_forge = "deleted-parent";
+        let child_native = "01a-child";
+        {
+            let _io = store::IO_LOCK.lock().unwrap();
+            store::record_tombstone(&base, parent_forge).unwrap();
+        }
+        let records = [
+            json!({"type":"session_meta","payload":{"id":child_native,"cwd":root,"source":{"subagent":{"thread_spawn":{
+                "parent_thread_id":"01a-parent","agent_path":"/root/backend_trace"
+            }}}}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","id":"a1","content":[{"type":"output_text","text":"孤儿不应复活"}]}}),
+        ];
+        fs::write(&native, records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+        let known = HashMap::from([(binding_key(Provider::Codex, "01a-parent"), parent_forge.into())]);
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
+        assert!(!base.join(super::super::child_session_id(parent_forge, child_native)).exists(), "已删除父会话的子代理不得被回填重建");
         fs::remove_dir_all(temp).unwrap();
     }
 

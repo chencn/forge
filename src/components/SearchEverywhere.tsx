@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as FieldKeyEvent } from "react";
-import { X } from "lucide-react";
+import { Command, X } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
 import { describeError } from "../lib/errors";
+import type { ForgeCommand } from "../lib/commands";
 import {
   errorText,
   findFiles,
@@ -18,17 +19,18 @@ import { loadIgnored } from "../lib/ignoredCache";
 import EntryIcon from "./EntryIcon";
 import MatchSnippet from "./MatchSnippet";
 
-/** 弹窗上那三个页签。 */
-export type SearchTab = "all" | "files" | "text";
+/** 弹窗上那几个页签。 */
+export type SearchTab = "all" | "files" | "text" | "actions";
 type Tab = SearchTab;
 
 const TABS: { key: Tab; label: TranslationKey }[] = [
   { key: "all", label: "search.tab.all" },
   { key: "files", label: "search.tab.files" },
   { key: "text", label: "search.tab.text" },
+  { key: "actions", label: "search.tab.actions" },
 ];
 
-/** 列表里的一行：要么是个文件，要么是一处正文命中。 */
+/** 列表里的一行：要么是个文件、一处正文命中，要么是一条可执行动作。 */
 type Row =
   | {
       kind: "file";
@@ -37,6 +39,7 @@ type Row =
       container: string;
       isDir: boolean;
       hit?: undefined;
+      command?: undefined;
     }
   | {
       kind: "text";
@@ -45,6 +48,16 @@ type Row =
       container: string;
       isDir: boolean;
       hit: TextHit;
+      command?: undefined;
+    }
+  | {
+      kind: "action";
+      path?: undefined;
+      name: string;
+      container?: undefined;
+      isDir?: undefined;
+      hit?: undefined;
+      command: ForgeCommand;
     };
 
 /** 弹窗里正文只回这么多行：整页结果要点开底部那块工具窗口看。 */
@@ -77,6 +90,8 @@ interface SearchEverywhereProps {
   initialTab?: SearchTab;
   /** 预填的搜索词，取的是编辑器选区，对应 IDEA 的 `PREDEFINED_TEXT`。 */
   initialQuery?: string;
+  /** 可执行动作表（命令面板的数据源）；没有就只搜文件与正文。 */
+  commands?: ForgeCommand[];
 }
 
 /**
@@ -99,6 +114,7 @@ export default function SearchEverywhere({
   onOpenHit,
   initialTab,
   initialQuery,
+  commands,
 }: SearchEverywhereProps) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>(initialTab ?? "all");
@@ -160,7 +176,7 @@ export default function SearchEverywhere({
   }, []);
 
   useEffect(() => {
-    if (!searching) {
+    if (!searching || tab === "actions") {
       setFiles(null);
       setPage(null);
       setFailed(null);
@@ -234,8 +250,27 @@ export default function SearchEverywhere({
         });
       }
     }
+    // 动作排在文件与命中后面：面板主要还是找东西，命令是顺手的一档。
+    if (commands && (tab === "all" || tab === "actions")) {
+      const lower = needle.toLowerCase();
+      const starts: Row[] = [];
+      const includes: Row[] = [];
+      for (const command of commands) {
+        const label = command.label.toLowerCase();
+        if (lower && label.startsWith(lower)) starts.push({ kind: "action", name: command.label, command });
+        else if (lower && label.includes(lower)) includes.push({ kind: "action", name: command.label, command });
+      }
+      const matched = [...starts, ...includes];
+      if (tab === "actions") {
+        // 动作页签空查询就列出全部——命令面板的用法里本来就有「先看有什么」这一档。
+        if (matched.length) out.push(...matched.slice(0, 50));
+        else if (!needle) out.push(...commands.slice(0, 50).map((command) => ({ kind: "action" as const, name: command.label, command })));
+      } else {
+        out.push(...matched.slice(0, 50));
+      }
+    }
     return out;
-  }, [files, page, tab]);
+  }, [commands, files, page, tab, needle]);
 
   // 换页签或改关键词后行数会变，选中位要夹回来，否则回车落在空位上。
   useEffect(() => {
@@ -245,6 +280,11 @@ export default function SearchEverywhere({
   const open = useCallback(
     (row: Row | undefined) => {
       if (!row) return;
+      if (row.kind === "action") {
+        row.command.run();
+        onClose();
+        return;
+      }
       if (row.kind === "file") {
         onOpenFile(row.path, row.isDir);
         onClose();
@@ -272,6 +312,12 @@ export default function SearchEverywhere({
   }, [caret]);
 
   const foot = () => {
+    if (tab === "actions") {
+      if (busy) return t("search.busy");
+      const count = rows.length;
+      if (count === 0) return t("search.empty");
+      return t("search.count.actions", { count });
+    }
     if (!searching) return t("search.hint.type");
     if (busy) return t("search.busy");
     const fileCount = files?.items.length ?? 0;
@@ -333,7 +379,13 @@ export default function SearchEverywhere({
             ref={inputRef}
             className="search-input"
             value={query}
-            placeholder={t(tab === "files" ? "search.placeholder.files" : "search.placeholder")}
+            placeholder={t(
+              tab === "actions"
+                ? "search.placeholder.actions"
+                : tab === "files"
+                  ? "search.placeholder.files"
+                  : "search.placeholder"
+            )}
             spellCheck={false}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onFieldKey}
@@ -385,20 +437,26 @@ export default function SearchEverywhere({
         <div className="search-list" ref={listRef} role="listbox" aria-label={t("search.title")}>
           {rows.map((row, index) => (
             <div
-              key={`${row.kind}|${row.name}|${row.container}|${row.hit?.line ?? 0}`}
+              key={row.kind === "action" ? `action|${row.command.id}` : `${row.kind}|${row.name}|${row.container}|${row.hit?.line ?? 0}`}
               role="option"
               aria-selected={index === caret}
               className={`search-row${index === caret ? " is-active" : ""}`}
               onMouseEnter={() => setCaret(index)}
               onClick={() => open(row)}
             >
-              <EntryIcon name={row.name} path={row.isDir ? undefined : row.path} isDirectory={row.isDir} size={16} />
+              {row.kind === "action" ? (
+                <Command size={16} aria-hidden />
+              ) : (
+                <EntryIcon name={row.name} path={row.isDir ? undefined : row.path} isDirectory={row.isDir} size={16} />
+              )}
               <span className="search-row-main">
                 {row.kind === "text" ? <MatchSnippet hit={row.hit} /> : row.name}
               </span>
               {row.container ? <span className="search-row-dir">{row.container}</span> : null}
               <span className="search-row-tag">
-                {row.kind === "text" ? (
+                {row.kind === "action" ? (
+                  row.command.shortcut ?? t("search.tab.actions")
+                ) : row.kind === "text" ? (
                   <>
                     {row.name}
                     <em>{row.hit.line}</em>
@@ -429,7 +487,7 @@ export default function SearchEverywhere({
       onClose();
       return;
     }
-    if (event.altKey && /^[1-3]$/.test(event.key)) {
+    if (event.altKey && /^[1-4]$/.test(event.key)) {
       setTab(TABS[Number(event.key) - 1]?.key ?? "all");
       return;
     }

@@ -91,6 +91,15 @@ import StatusBreadcrumb from "./components/StatusBreadcrumb";
 import { shouldCopyDomSelection } from "./lib/copySelection";
 import { DoubleShiftDetector } from "./lib/doubleShift";
 import {
+  comboMatchesEvent,
+  effectiveShortcut,
+  formatShortcut,
+  loadShortcutOverrides,
+  subscribeShortcuts,
+  type ShortcutOverrides,
+} from "./lib/shortcuts";
+import type { ForgeCommand } from "./lib/commands";
+import {
   disposeModel,
   languageForPath,
   languageLabel,
@@ -1920,6 +1929,43 @@ export default function App() {
     [dockPane, revealHit]
   );
 
+  // 键位覆盖跟着设置页走：存取都在 shortcuts.ts，这里只认订阅到的变更重挂监听。
+  const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutOverrides>(loadShortcutOverrides);
+  useEffect(() => subscribeShortcuts(() => setShortcutOverrides(loadShortcutOverrides())), []);
+
+  /** 跑选中的配置；没选就不空跑，直接把选择下拉打开（IDEA 在这儿弹「没有可运行的配置」）。 */
+  const runSelectedConfig = useCallback(() => {
+    const picked = configs.selected;
+    if (!picked) {
+      setRunChooser((signal) => signal + 1);
+      return;
+    }
+    run.start(picked);
+    focusPane("run");
+  }, [configs, run, focusPane]);
+  const chooseRunConfig = useCallback(() => setRunChooser((signal) => signal + 1), [setRunChooser]);
+  /** 重跑选中的那条：正在跑的实例就地重开，没在跑的按普通运行起一条。 */
+  const rerunSelectedConfig = useCallback(() => {
+    const picked = configs.selected;
+    if (picked) {
+      const running = run.sessions.filter(
+        (session) => session.status === "running" && session.config.id === picked.id
+      );
+      if (running.length === 0) run.start(picked);
+      else for (const session of running) run.restartSession(session.id);
+    }
+    focusPane("run");
+  }, [configs, run, focusPane]);
+  const stopAllRuns = useCallback(() => {
+    for (const session of run.sessions) {
+      if (session.status === "running") run.stop(session.id);
+    }
+  }, [run]);
+  const toggleRunPane = useCallback(() => {
+    if (places.run === "docked") hidePane("run");
+    else dockPane("run");
+  }, [places.run, hidePane, dockPane]);
+
   /**
    * 搜索那三颗键位是应用级的，不走 monaco 的键绑定，三个快捷键方案里都是同一套。
    *
@@ -1938,22 +1984,18 @@ export default function App() {
         !!target &&
         (target.isContentEditable ||
           ((target.tagName === "INPUT" || target.tagName === "TEXTAREA") && !inEditor));
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey) {
-        const key = event.key.toLowerCase();
-        // Ctrl+Shift+F 是 Find in Files：直接开在文本页签，词取编辑器选区。
-        if (key === "f") {
-          event.preventDefault();
-          detector.reset();
-          openEverywhere("text", selectedText());
-          return;
-        }
-        // Ctrl+Shift+N 是 Go to File：同一个弹层落在文件页签上，不是另一个框。
-        if (key === "n") {
-          event.preventDefault();
-          detector.reset();
-          openEverywhere("files");
-          return;
-        }
+      // 搜索的键位取自注册表（设置页可改绑），匹配要求修饰键精确相等。
+      if (comboMatchesEvent(event, effectiveShortcut("search.findInFiles", shortcutOverrides))) {
+        event.preventDefault();
+        detector.reset();
+        openEverywhere("text", selectedText());
+        return;
+      }
+      if (comboMatchesEvent(event, effectiveShortcut("search.gotoFile", shortcutOverrides))) {
+        event.preventDefault();
+        detector.reset();
+        openEverywhere("files");
+        return;
       }
       const disabled = inField || !!dialog || !!menu || resolveOpen || !!everywhere;
       if (detector.handleKeyDown(event, disabled)) {
@@ -1975,65 +2017,57 @@ export default function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [dialog, everywhere, menu, openEverywhere, resolveOpen]);
+  }, [dialog, everywhere, menu, openEverywhere, resolveOpen, shortcutOverrides]);
 
   /**
    * 运行那几条键位和应用级的搜索键一样住在窗口上：工具窗口收着、焦点在终端里都按得到。
    *
    * 键位取 IDEA 的 Run 布局——`Shift+F10` 跑、`Ctrl+F5` 重跑、`Ctrl+F2` 停、
-   * `Alt+Shift+F10` 选配置、`Alt+4` 开 Run 窗口。没选配置时 `Shift+F10` 不空跑，
-   * 直接把选择下拉打开：IDEA 在那儿弹的是「没有可运行的配置」，这边让人当场挑一条。
+   * `Alt+Shift+F10` 选配置、`Alt+4` 开 Run 窗口，全部可在设置的快捷键页改绑。
    * 模态开着时整条不认，跟搜索那几颗一个规矩。
    */
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (dialog || menu || resolveOpen || everywhere) return;
-      const ctrl = event.ctrlKey || event.metaKey;
-      if (event.key === "F10" && event.shiftKey && !ctrl) {
+      if (comboMatchesEvent(event, effectiveShortcut("run.chooseConfig", shortcutOverrides))) {
         event.preventDefault();
-        if (event.altKey) {
-          setRunChooser((signal) => signal + 1);
-          return;
-        }
-        const picked = configs.selected;
-        if (!picked) {
-          setRunChooser((signal) => signal + 1);
-          return;
-        }
-        run.start(picked);
-        focusPane("run");
+        chooseRunConfig();
         return;
       }
-      if (ctrl && !event.altKey && !event.shiftKey && event.key === "F5") {
+      if (comboMatchesEvent(event, effectiveShortcut("run.run", shortcutOverrides))) {
         event.preventDefault();
-        // 重跑选中的那条：正在跑的实例就地重开，没在跑的按普通运行起一条。
-        const picked = configs.selected;
-        if (picked) {
-          const running = run.sessions.filter(
-            (session) => session.status === "running" && session.config.id === picked.id
-          );
-          if (running.length === 0) run.start(picked);
-          else for (const session of running) run.restartSession(session.id);
-        }
-        focusPane("run");
+        runSelectedConfig();
         return;
       }
-      if (ctrl && !event.altKey && !event.shiftKey && event.key === "F2") {
+      if (comboMatchesEvent(event, effectiveShortcut("run.rerun", shortcutOverrides))) {
         event.preventDefault();
-        for (const session of run.sessions) {
-          if (session.status === "running") run.stop(session.id);
-        }
+        rerunSelectedConfig();
         return;
       }
-      if (event.altKey && !ctrl && !event.shiftKey && event.key === "4") {
+      if (comboMatchesEvent(event, effectiveShortcut("run.stop", shortcutOverrides))) {
         event.preventDefault();
-        if (places.run === "docked") hidePane("run");
-        else dockPane("run");
+        stopAllRuns();
+        return;
+      }
+      if (comboMatchesEvent(event, effectiveShortcut("run.toggleTool", shortcutOverrides))) {
+        event.preventDefault();
+        toggleRunPane();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [configs, dialog, dockPane, everywhere, focusPane, hidePane, menu, places.run, resolveOpen, run]);
+  }, [
+    chooseRunConfig,
+    dialog,
+    everywhere,
+    menu,
+    rerunSelectedConfig,
+    resolveOpen,
+    runSelectedConfig,
+    shortcutOverrides,
+    stopAllRuns,
+    toggleRunPane,
+  ]);
 
   /**
    * 彻底清理并移除一个常驻文件夹（在确认无脏文件/运行任务或用户已确认放弃后调用）。
@@ -2520,14 +2554,14 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (dialog || menu || resolveOpen || everywhere) return;
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "s") {
+      if (comboMatchesEvent(event, effectiveShortcut("file.save", shortcutOverrides))) {
         event.preventDefault();
         void saveActive();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dialog, everywhere, menu, resolveOpen, saveActive]);
+  }, [dialog, everywhere, menu, resolveOpen, saveActive, shortcutOverrides]);
 
   const closeDocTab = useCallback(
     (path: string) => {
@@ -3992,6 +4026,52 @@ export default function App() {
     setActiveTab("run-configs");
   }, []);
 
+  /**
+   * 命令面板（随处搜索的动作页签）的动作表：只收能独立执行的应用级操作。
+   * 上下文动作（关某个标签、重命名某个文件）依赖当前选中，不进表——
+   * 列表里点一条却什么都没发生，比少一条更糟。
+   */
+  const paletteCommands = useMemo<ForgeCommand[]>(() => {
+    const commands: ForgeCommand[] = [
+      { id: "search.everywhere", label: t("command.searchEverywhere"), run: () => openEverywhere("all") },
+      { id: "search.gotoFile", label: t("shortcut.search.gotoFile"), shortcut: formatShortcut("search.gotoFile", shortcutOverrides), run: () => openEverywhere("files") },
+      { id: "search.findInFiles", label: t("shortcut.search.findInFiles"), shortcut: formatShortcut("search.findInFiles", shortcutOverrides), run: () => openEverywhere("text", selectedText()) },
+      { id: "file.save", label: t("shortcut.file.save"), shortcut: formatShortcut("file.save", shortcutOverrides), run: () => void saveActive() },
+      { id: "file.saveAll", label: t("command.saveAll"), run: () => void flushDirtyDocs() },
+      { id: "run.run", label: t("shortcut.run.run"), shortcut: formatShortcut("run.run", shortcutOverrides), run: runSelectedConfig },
+      { id: "run.rerun", label: t("shortcut.run.rerun"), shortcut: formatShortcut("run.rerun", shortcutOverrides), run: rerunSelectedConfig },
+      { id: "run.stop", label: t("shortcut.run.stop"), shortcut: formatShortcut("run.stop", shortcutOverrides), run: stopAllRuns },
+      { id: "run.chooseConfig", label: t("shortcut.run.chooseConfig"), shortcut: formatShortcut("run.chooseConfig", shortcutOverrides), run: chooseRunConfig },
+      { id: "run.toggleTool", label: t("shortcut.run.toggleTool"), shortcut: formatShortcut("run.toggleTool", shortcutOverrides), run: toggleRunPane },
+      { id: "ai.newSession", label: t("command.newAiSession"), run: openAiDraft },
+      { id: "settings.open", label: t("command.openSettings"), run: () => openSettingsTab("general") },
+      { id: "settings.shortcuts", label: t("command.openShortcutSettings"), run: () => openSettingsTab("shortcuts") },
+    ];
+    // 面板与侧栏入口照活动栏的文案与顺序来，不另起一套名字。
+    for (const pane of ["terminal", "log", "find"] as BottomPane[]) {
+      commands.push({ id: `pane.open.${pane}`, label: t(BOTTOM_LABEL[pane]), run: () => dockPane(pane) });
+    }
+    for (const tool of ["explorer", "git", "ai", "agents", "maven", "notifications"] as Panel[]) {
+      commands.push({ id: `tool.open.${tool}`, label: t(RAIL_LABEL[tool]), run: () => openSideTool(tool) });
+    }
+    return commands;
+  }, [
+    chooseRunConfig,
+    dockPane,
+    flushDirtyDocs,
+    openAiDraft,
+    openEverywhere,
+    openSettingsTab,
+    openSideTool,
+    rerunSelectedConfig,
+    runSelectedConfig,
+    saveActive,
+    shortcutOverrides,
+    stopAllRuns,
+    t,
+    toggleRunPane,
+  ]);
+
   const terminalPlacement = (docked: boolean) => ({
     docked,
     toggle: () => (docked ? tabPane("terminal") : dockPane("terminal")),
@@ -4139,6 +4219,89 @@ export default function App() {
         </ErrorBoundary>
       </div>
     </section>
+  );
+
+  /**
+   * 编辑区主栏的视图条件链：拆分模式的主栏与未拆分的整栏共用同一份。
+   * 两条分支曾经各自维护一份近乎相同的 80 行链，改一处漏一处的隐患就在这里收口；
+   * 副栏是另一条更短的链（只有 diff / 文档 / 空页），行为不同，不并进来。
+   */
+  const primaryEditorSurface = () => (
+    <>
+      {activeDiffTab ? (
+        <DiffPane
+          leftLabel={activeDiffTab.leftLabel}
+          rightLabel={activeDiffTab.rightLabel}
+          path={activeDiffTab.path}
+          original={activeDiffTab.original}
+          modified={activeDiffTab.modified}
+          language={activeDiffTab.language}
+          notice={activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined}
+          group={activeDiffGroup}
+          landOn={activeDiffTab.landOn}
+          onOpenFile={diffOpenFile}
+          onClose={closeActiveDiff}
+        />
+      ) : activePane && places[activePane] === "tabbed" ? (
+        paneFrame(activePane, false)
+      ) : activeTab === "run-configs" ? (
+        <RunConfigsPage configs={configs} />
+      ) : activeTab === "ai|draft" ? (
+        // 新建会话草稿页：会话还不存在，首条消息发出时才创建并切到会话页。
+        <Suspense fallback={null}>
+          <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
+        </Suspense>
+      ) : activeAiSession ? (
+        // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
+        // 展开状态和本地事件订阅会串到新会话上。
+        <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
+      ) : activeTab === "settings" ? (
+        <SettingsPage
+          workspace={workspaceRoot}
+          initialModule={settingsModule}
+          onLspKick={() => setLspKick((value) => value + 1)}
+          onLspWake={wakeLspServer}
+        />
+      ) : activeDoc ? (
+        <DocPane
+          document={activeDoc}
+          onChange={docs.update}
+          onSave={() => void saveActive()}
+          onBlur={() => {
+            if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+          }}
+          onView={docs.setView}
+          onOpenLocal={openLocalFile}
+          reveal={docs.reveal}
+          onRevealDone={docs.revealDone}
+          runConfigs={configs.configs}
+          projectRoot={workspaceRoot ?? ""}
+          openPaths={docs.documents.map((item) => item.path)}
+          onRunConfig={(picked) => {
+            if (picked.length > 1) {
+              configs.select(picked[0].id);
+              setRunChooser((signal) => signal + 1);
+              return;
+            }
+            configs.select(picked[0].id);
+            run.start(picked[0]);
+            focusPane("run");
+          }}
+          onRunScript={runScript}
+          onRunHttp={runHttp}
+          httpResponse={
+            settings.httpResponse === "split" &&
+            httpSide !== null &&
+            samePath(httpSide.path, activeDoc.path)
+              ? httpSide.text
+              : null
+          }
+          changeBaseline={changeBaseline}
+        />
+      ) : (
+        <WelcomeScreen keymap={settings.editor.keymap} workspace={workspaceRoot !== null} />
+      )}
+    </>
   );
 
   /** 切分支成功才记进「最近」，失败的签出不该留在列表里。 */
@@ -5038,84 +5201,7 @@ export default function App() {
                   <div className="editor-pane-body">
                     <ErrorBoundary label={t("editor.region")} onError={reportError}>
                       <Suspense fallback={null}>
-                        {activeDiffTab ? (
-                          <DiffPane
-                            leftLabel={activeDiffTab.leftLabel}
-                            rightLabel={activeDiffTab.rightLabel}
-                            path={activeDiffTab.path}
-                            original={activeDiffTab.original}
-                            modified={activeDiffTab.modified}
-                            language={activeDiffTab.language}
-                            notice={
-                              activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined
-                            }
-                            group={activeDiffGroup}
-                            landOn={activeDiffTab.landOn}
-                            onOpenFile={diffOpenFile}
-                            onClose={closeActiveDiff}
-                          />
-                        ) : activePane && places[activePane] === "tabbed" ? (
-                          paneFrame(activePane, false)
-                        ) : activeTab === "run-configs" ? (
-                          <RunConfigsPage configs={configs} />
-                        ) : activeTab === "ai|draft" ? (
-                          // 新建会话草稿页：会话还不存在，首条消息发出时才创建并切到会话页。
-                          <Suspense fallback={null}>
-                            <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
-                          </Suspense>
-                        ) : activeAiSession ? (
-                          // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
-                          // 展开状态和本地事件订阅会串到新会话上。
-                          <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
-                        ) : activeTab === "settings" ? (
-                          <SettingsPage
-                            workspace={workspaceRoot}
-                            initialModule={settingsModule}
-                            onLspKick={() => setLspKick((value) => value + 1)}
-                            onLspWake={wakeLspServer}
-                          />
-                        ) : activeDoc ? (
-                          <DocPane
-                            document={activeDoc}
-                            onChange={docs.update}
-                            onSave={() => void saveActive()}
-                            onBlur={() => {
-                              if (settings.editor.savePolicy === "blur") void saveAllRef.current();
-                            }}
-                            onView={docs.setView}
-                            onOpenLocal={openLocalFile}
-                            reveal={docs.reveal}
-                            onRevealDone={docs.revealDone}
-                            runConfigs={configs.configs}
-                            projectRoot={workspaceRoot ?? ""}
-                            openPaths={docs.documents.map((item) => item.path)}
-                            onRunConfig={(picked) => {
-                              if (picked.length > 1) {
-                                configs.select(picked[0].id);
-                                setRunChooser((signal) => signal + 1);
-                                return;
-                              }
-                              configs.select(picked[0].id);
-                              run.start(picked[0]);
-                              focusPane("run");
-                            }}
-                            onRunScript={runScript}
-                            onRunHttp={runHttp}
-                            httpResponse={
-                              settings.httpResponse === "split" &&
-                              httpSide !== null &&
-                              samePath(httpSide.path, activeDoc.path)
-                                ? httpSide.text
-                                : null
-                            }
-                            changeBaseline={changeBaseline}
-                          />
-                        ) : (
-                          <WelcomeScreen
-                            keymap={settings.editor.keymap}
-                            workspace={workspaceRoot !== null}
-                          />
-                        )}
+                        {primaryEditorSurface()}
                       </Suspense>
                     </ErrorBoundary>
                   </div>
@@ -5276,85 +5362,7 @@ export default function App() {
                   />
                 ) : null}
                 <ErrorBoundary label={t("editor.region")} onError={reportError}>
-                  <Suspense fallback={null}>
-                    {activeDiffTab ? (
-                      <DiffPane
-                        leftLabel={activeDiffTab.leftLabel}
-                        rightLabel={activeDiffTab.rightLabel}
-                        path={activeDiffTab.path}
-                        original={activeDiffTab.original}
-                        modified={activeDiffTab.modified}
-                        language={activeDiffTab.language}
-                        notice={
-                          activeDiffTab.notice ? describeError(activeDiffTab.notice, t) : undefined
-                        }
-                        group={activeDiffGroup}
-                        landOn={activeDiffTab.landOn}
-                        onOpenFile={diffOpenFile}
-                        onClose={closeActiveDiff}
-                      />
-                    ) : activePane && places[activePane] === "tabbed" ? (
-                      paneFrame(activePane, false)
-                    ) : activeTab === "run-configs" ? (
-                      <RunConfigsPage configs={configs} />
-                    ) : activeTab === "ai|draft" ? (
-                      // 同上：多工作区分支里的草稿页。
-                      <Suspense fallback={null}>
-                        <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
-                      </Suspense>
-                    ) : activeAiSession ? (
-                      // 同上：多工作区分支里的这颗也要按会话 id 重建。
-                      <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onAgentDockAvailable={setAgentDockAvailable} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
-                    ) : activeTab === "settings" ? (
-                      <SettingsPage
-                        workspace={workspaceRoot}
-                        initialModule={settingsModule}
-                        onLspKick={() => setLspKick((value) => value + 1)}
-                        onLspWake={wakeLspServer}
-                      />
-                    ) : activeDoc ? (
-                      <DocPane
-                        document={activeDoc}
-                        onChange={docs.update}
-                        onSave={() => void saveActive()}
-                        onBlur={() => {
-                          if (settings.editor.savePolicy === "blur") void saveAllRef.current();
-                        }}
-                        onView={docs.setView}
-                        onOpenLocal={openLocalFile}
-                        reveal={docs.reveal}
-                        onRevealDone={docs.revealDone}
-                        runConfigs={configs.configs}
-                        projectRoot={workspaceRoot ?? ""}
-                        openPaths={docs.documents.map((item) => item.path)}
-                        onRunConfig={(picked) => {
-                          if (picked.length > 1) {
-                            configs.select(picked[0].id);
-                            setRunChooser((signal) => signal + 1);
-                            return;
-                          }
-                          configs.select(picked[0].id);
-                          run.start(picked[0]);
-                          focusPane("run");
-                        }}
-                        onRunScript={runScript}
-                        onRunHttp={runHttp}
-                        httpResponse={
-                          settings.httpResponse === "split" &&
-                          httpSide !== null &&
-                          samePath(httpSide.path, activeDoc.path)
-                            ? httpSide.text
-                            : null
-                        }
-                        changeBaseline={changeBaseline}
-                      />
-                    ) : (
-                      <WelcomeScreen
-                        keymap={settings.editor.keymap}
-                        workspace={workspaceRoot !== null}
-                      />
-                    )}
-                  </Suspense>
+                  <Suspense fallback={null}>{primaryEditorSurface()}</Suspense>
                 </ErrorBoundary>
               </>
             )}
@@ -5655,6 +5663,7 @@ export default function App() {
             showIgnored={settings.explorer.showIgnored}
             initialTab={everywhere.tab}
             initialQuery={everywhere.query}
+            commands={paletteCommands}
             onClose={() => setEverywhere(null)}
             onOpenFile={openSearchFile}
             onOpenHit={openSearchHit}

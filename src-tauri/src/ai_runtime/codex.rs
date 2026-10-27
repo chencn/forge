@@ -102,6 +102,9 @@ pub struct Codex {
     /// `spawn_agent` 的 call id → 用户定义的 task_name。SubAgentActivity 只给线程与路径，
     /// 必须靠 call id 把真正的任务名接回来，不能拿随机 agentNickname 冒充标题。
     pending_agent_titles: HashMap<String, String>,
+    /// `spawn_agent` 的 call id → 任务正文。协议没有承诺正文的字段名，尽力从常见命名
+    /// 里取一段带出，让子代理视图打开时能看到它被安排了什么（Claude 侧一直有）。
+    pending_agent_prompts: HashMap<String, String>,
     /// 子代理线程 → 已解析标题。completed/interacted 的 item id 会变化，后续事件靠线程续用首个标题。
     agent_titles: HashMap<String, String>,
 }
@@ -265,6 +268,7 @@ impl Codex {
             goal_sets: HashSet::new(),
             next_goal_set: 4_000_000,
             pending_agent_titles: HashMap::new(),
+            pending_agent_prompts: HashMap::new(),
             agent_titles: HashMap::new(),
         }
     }
@@ -599,6 +603,12 @@ impl Protocol for Codex {
                                 if let Some(title) = subagent_title(item["arguments"]["task_name"].as_str(), None, None) {
                                     self.pending_agent_titles.insert(id.to_owned(), title);
                                 }
+                                let prompt = ["task", "prompt", "message", "description", "instructions"].iter().find_map(|key| {
+                                    item["arguments"][key].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned)
+                                });
+                                if let Some(prompt) = prompt {
+                                    self.pending_agent_prompts.insert(id.to_owned(), prompt);
+                                }
                             }
                             let status = if !done {
                                 "running"
@@ -731,6 +741,13 @@ impl Protocol for Codex {
                                     "status": status,
                                     "activity": item["kind"],
                                 });
+                                // 首次 started 带出任务正文：agent 事件首见时运行时会把它
+                                // 写成子会话的第一条用户消息（remove 保证只带一次）。
+                                if item["kind"].as_str() == Some("started") {
+                                    if let Some(prompt) = self.pending_agent_prompts.remove(id) {
+                                        data["prompt"] = json!(prompt);
+                                    }
+                                }
                                 if let Some(role) = role { data["agentType"] = json!(role); }
                                 if let Some(path) = path {
                                     data["agentId"] = json!(path);

@@ -58,6 +58,9 @@ pub fn run() {
         // 更新检查/下载在设置页手动触发；relaunch 供装完新包后重启应用。
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 窗口几何（位置/大小/最大化）自动落盘并在下次启动还原；首次启动无存档时
+        // 才走 tauri.conf.json 里的 center 默认值。
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(watch::WatchSlot::default())
         .manage(shell_open::Pending::default())
         .setup(move |app| {
@@ -206,6 +209,8 @@ pub fn run() {
             ai_cli::settings::ai_cli_config_write,
             ai_cli::settings::ai_cli_claude_settings_read,
             ai_cli::settings::ai_cli_claude_settings_save,
+            ai_cli::settings::ai_cli_claude_hooks_read,
+            ai_cli::settings::ai_cli_claude_hooks_save,
             ai_cli::settings::ai_cli_codex_settings_read,
             ai_cli::settings::ai_cli_codex_settings_save,
             ai_cli::settings::ai_cli_diagnostics,
@@ -263,6 +268,8 @@ pub fn run() {
             ai_runtime::ai_runtime_set_pinned,
             ai_runtime::ai_runtime_search,
             ai_runtime::ai_runtime_stop_project,
+            ai_runtime::ai_session_checkpoint_save,
+            ai_runtime::ai_session_checkpoint_restore,
             ai_runtime::ai_runtime_agent_forward,
             ai_runtime::ai_runtime_agent_stop,
             ai_commit::ai_commit_config_load,

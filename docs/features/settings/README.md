@@ -1,7 +1,8 @@
 # 全局设置
 
-一份 `settings.json` 管所有偏好。没有项目级设置。`src/` 里没有 `localStorage` 调用，主题、语言、工作区都
-只从这份文件来，旧值不迁移。另有两份文件各管一段：语言服务的配置存 `lsp.json`（默认值写在后端种子里，
+一份 `settings.json` 管所有偏好。没有项目级设置。主题、语言、工作区与各栏开关只从这份文件来，旧值不迁移。
+应用级快捷键覆盖、AI 会话草稿与发送历史、AI 侧栏视图偏好存在 WebView 本地存储，不进设置文件，
+换了 WebView 源就看不到。另有两份文件各管一段：语言服务的配置存 `lsp.json`（默认值写在后端种子里，
 这一栏的界面与落盘口径见 [../../plans/lsp-language-servers/](../../plans/lsp-language-servers/README.md)），
 用户做过的流水存 `history.json`（见下）。三份文件同目录，命令都列在 [../../backend/commands.md](../../backend/commands.md)。
 
@@ -33,8 +34,9 @@ Rust 侧的默认值在各结构体的 `Default`，前端那份镜像是 `DEFAUL
 | `branches.actionsInSearch` / `showRecent` / `showTags` / `groupByDirectory` / `onSingleClick` / `favorites` | `true` / `true` / `true` / `true` / `"none"` / `[]` | 由分支弹层和日志分支面板的齿轮改 |
 | `updates.autoDownload` / `updates.autoPromptInstall` / `updates.proxyEnabled` / `updates.proxyUrl` | `false` / `true` / `false` / `"https://gh-proxy.com/"` | 应用内更新与镜像加速，由「关于」栏改；行为见 `../release-update/` |
 
-设置页有 通用 / 编辑器 / 终端 / 语言服务 / 关于 五栏。`commit` 与 `branches` 两组存在同一份文件里，但修改它们的是
-提交窗口的齿轮和分支弹层、日志分支面板的齿轮，不在这五栏内。「关于」栏同时显示当前版本与手动检查更新，
+设置页左栏依次是 通用 / 编辑器 / 快捷键 / 终端 / 语言服务 / AI 提交 / AI 编程助手 / 模型供应商 / Skills / MCP / Hooks / 关于。
+后五栏只在通用里的 AI 总开关打开后出现。`commit` 与 `branches` 两组存在同一份文件里，但修改它们的是
+提交窗口的齿轮和分支弹层、日志分支面板的齿轮，不在这十二栏内。「关于」栏同时显示当前版本与手动检查更新，
 修改的就是 `updates` 这一组。语言服务那一栏修改的不是 `settings.json`，
 整份写回 `lsp.json`：一项一卡，左侧第一行是这门语言的显示名加档位下拉，第二行以「语言服务」标注那个进程的名字与参数
 （两个名字不是一回事：C# 对应 `csharp-ls`，PHP 对应 `intelephense`，`typescript` 这一项跑的是
@@ -125,6 +127,32 @@ JSON 非法或未写成对象时不允许保存。栏顶一条汇总，标题行
 读坏的 `history.json` 退回空表而不是半份：记的是流水，丢了顶多重新打开一次项目。文件不在时从同目录旧
 `settings.json` 里那四项迁移一次并立刻落盘，之后那份设置里残留的四个键由 `Settings` 读到时忽略。
 
+## 快捷键
+
+应用级快捷键只收挂在窗口上的那几条，注册表在 `src/lib/shortcuts.ts`，共 8 条：
+`Mod+Shift+F` 在工作区里查找、`Mod+Shift+N` 转到文件、`Mod+S` 保存、`Shift+F10` 运行、
+`Mod+F5` 重跑、`Mod+F2` 停止、`Alt+Shift+F10` 选择运行配置、`Alt+4` 开关运行工具窗口。
+`Mod` 指平台主修饰键（macOS 是 Cmd，其余是 Ctrl）。Monaco 内的键位归 `lib/keymap.ts`，
+目录树上的焦点相关键不进这张表。
+
+覆盖写在 WebView 本地存储的 `forge:shortcuts:v1`，值必须是 `parseCombo` 认得的规范串，读的时候认不出就丢。
+设置页一列一条：点「修改」后下一次按键就是新组合。捕获挂在 window 捕获阶段并吞掉默认行为，
+只按到修饰键时继续等主键，Esc 取消。新组合和别的动作撞了就不落盘，报出对方的展示名。
+判等走解析后的签名，`Ctrl+S` / `Cmd+S` 这类别名写法与默认的 `Mod+S` 算同一条。
+每条可单独还原默认，也可以一次清空全部覆盖。保存后在进程内广播，挂键位的 effect 立刻按新值重挂，不用重启。
+
+## Hooks
+
+仅 Claude，读写 `~/.claude/settings.json` 的 `hooks` 键。结构是
+`{ 事件名: [{ matcher, hooks: [{ type, command, timeout }] }] }`。面板列出 8 类事件：
+PreToolUse、PostToolUse、UserPromptSubmit、Notification、Stop、SubagentStop、SessionStart、PreCompact。
+每行可改 matcher、command 与 timeout（正整数，清空即删掉这个字段），行尾删除；规则里没有 hook 了
+连规则一起删，事件空了整段删。只编辑 `type: "command"` 的条目，prompt 型与面板不认识的字段
+原样留在树里，保存只替换 `hooks` 键，文件其余部分不动。列出的 8 类之外的事件不显示，但保存时原样保留。
+新规则先追加一条空 matcher、空 command 的 command 型 hook，再就地填。离开未保存时有未保存拦截。
+读走 `ai_cli_claude_hooks_read`，写走 `ai_cli_claude_hooks_save`；后端只做浅校验
+（事件名 → 数组 → 规则对象），空对象表示删掉整个 `hooks` 键，细节合法性交给 CLI。写回前照常用 `backup_and_write`。
+
 ## 入口与版面
 
 设置页走编辑区的共用页签栏（照 VSCode），不是盖住窗口的弹框；整页面板都挂在这条栏上，设置页是其中一页。
@@ -157,12 +185,16 @@ shell 一行最宽 420px。字号一行是 `number` 输入，`min=10 max=28`，�
 | `src/hooks/useLspSessions.ts` | 会话状态的唯一轮询：3 秒、落定之后再排下一次、读不到留住上一轮 |
 | `src/components/LspDialogs.tsx` | 编辑弹窗 `:42`（标题行 `语言 · 服务名` `:129`、`lsp.dialog.program.hint` `:166`、`initOptions` 校验）、安装确认弹窗 `:287`（命令原文只在这里）、输出日志弹窗 `:343`（选中全部与清空） |
 | `src/components/CopyButton.tsx` | 一小颗复制开关，报错行与日志行共用 |
-| `src/components/SettingsPage.tsx` | 四栏常量 `:43`、各栏候选值 `:52-93`、语言服务的档位标签表 `:95-99`、`probeRank` `:105` 与 `runtimeOf` `:121`、`Props` 里的项目根与启动回调 `:127-134`、日志订阅 `:159-170`、进栏自动探测 `:182-186`、`explain` 解码上游错误 `:194`、安装 `:207`、重启 `:229`、`wakeNote` 把结构化结果写成卡片回执 `:254`、启动 `:267`、`lspRows` `:284`、`shellProbe` `:300`、标题行的重新探测 `:346-363`、「语言服务」栏 `:566-733`、卡片标题取语言显示名 `:575`、「语言服务」前缀 `:613`、安装按钮 `:644`、启动／重启按钮 `:664`、「日志」按钮 `:693`、带复制的回执两行 `:712-724`、三个弹窗的接线 `:735-766` |
+| `src/components/SettingsPage.tsx` | 模块常量与 AI 模块集合 `:78-81`、终端光标与页签布局标签表 `:98-108`、各栏候选值与语言服务档位标签 `:109-168`、`probeRank` `:174` 与 `runtimeOf` `:190`、`Props` 里的项目根与启动回调 `:206-214`、日志订阅 `:315-322`、进栏自动探测 `:332-339`、`explain` 解码上游错误 `:347`、`runInstall` `:360-379`、重启 `:382-394`、`wakeNote` 把结构化结果写成卡片回执 `:407-418`、启动 `:420-434`、`lspRows` `:437-439`、`shellProbe` `:451-463`、标题行的重新探测 `:578-595`、「语言服务」栏 `:1048-1214`、卡片标题取语言显示名 `:1082`、「语言服务」前缀 `:1096`、安装按钮 `:1127-1145`、启动／重启按钮 `:1147-1174`、「日志」按钮 `:1176-1185`、带复制的回执两行 `:1197-1208`、快捷键栏接线 `:897`、Hooks 栏接线 `:1221`、三个弹窗的接线 `:1363-1399` |
+| `src/lib/shortcuts.ts` | 8 条注册表 `:21-30`、本地存储键与覆盖读写 `:32-59`、进程内广播 `:61-70`、`parseCombo` `:91`、`comboFromEvent` `:129` 与 `comboMatchesEvent` `:146`、`comboOwner` 与 `comboSignature` `:170` / `:181` |
+| `src/components/ShortcutSettingsPanel.tsx` | 捕获 effect `:39-66`（window 捕获、Esc 取消、撞键不落盘）、单条还原与全部还原 `:68-79`、列表 `:84-120` |
+| `src/components/HooksSettingsPanel.tsx` | 8 类事件 `:19-28`、`collectRows` `:69`、`patchRow` `:93`、`removeRow` `:121`、`appendRow` `:141`、读 / 存 / 未保存拦截 `:149-207` |
+| `src-tauri/src/ai_cli/settings.rs` | `read_claude_root_at` `:467`、`read_claude_hooks_at` `:477`、`save_claude_hooks_at` `:484`（浅校验后只替换 `hooks` 键）、两条命令 `:506` / `:511` |
 | `src/lib/monacoEnv.ts` | 语言显示名的来源：`LANGUAGE_LABELS` `:87-122`、`languageLabel` `:125`、`languageNames` `:135`（一项服务管多种语言时并列）；这个模块不许 import monaco-editor |
-| `src/App.tsx` | `useHistory` `:192`、`workspaceRoot` 初值 `:197-200`、`lastFolder` 写回 `:445-446`、`recentFolders` 两处 `:796`、`:2187`、`recentBranches` `:1597`、`:1961`、`commitMessages` `:2488-2489` |
+| `src/App.tsx` | `useHistory` `:373`、`workspaceRoot` 初值 `:386-390`、`lastFolder` 写回 `:1173`、`recentFolders` 写入 `:2237` 与下拉读取 `:4840`、`recentBranches` `:3682` / `:4311`、`commitMessages` `:4569`、快捷键覆盖订阅 `:1934`、各键位匹配 `:1988-2052` / `:2557` |
 | `src/lib/lspClient.ts` | 会话表与协议客户端；`starting` 键锁 `:220`、`startServer` `:223` 与 `launchSession` `:235` 把失败原因原样回传、`WakeResult` `:994` 与 `wakeLsp` `:1011` 是「启动」按钮的执行路径（确认项目根 → 启动进程 → 握手 → 同步文档，每一步失败都带 detail）、输出日志的保留与并入见 `appendLog` `:338` / `adoptLogs` / `lspLogs` `:362` / `watchLspLogs` / `clearLspLogs` `:375` |
 | `src/main.tsx` | 先并读三份配置（设置 / 历史 / 语言服务）、再装语言表、后 import 界面 `:14-38` |
 | `src/i18n/index.tsx` | `resolveLang` 跟随浏览器 `:12-15` |
-| `src/styles.css` | 设置页版面 `:791-882`、语言服务一栏（一项一卡、「语言服务」前缀 `:938`、动作按钮、三个弹窗、日志块与复制按钮）`:883-1127`、状态条那一格与探测徽章（弹层的进程名 `:1209`）`:1128-1235` |
+| `src/styles.css` | 设置页版面、语言服务一栏（一项一卡、「语言服务」前缀、动作按钮、三个弹窗、日志块与复制按钮）、状态条那一格与探测徽章、快捷键行与捕获提示、Hooks 事件块 |
 | `src-tauri/src/tray.rs` | 关闭那条路重读磁盘 `:80` |
 | `src-tauri/tauri.conf.json` | identifier `:5` |

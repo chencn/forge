@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Archive, Bot, Brain, Check, CheckCircle2, ChevronLeft, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, EyeOff, FilePenLine, FilePlus2, FolderClosed, GripVertical, ListOrdered, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
+import { Archive, Bot, Brain, Check, CheckCircle2, ChevronLeft, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, EyeOff, FilePenLine, FilePlus2, FolderClosed, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
@@ -26,6 +26,7 @@ import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
 import { AiAgentDockPanel, AiTaskListDockPanel } from "./AiDockPanels";
 import { useAiDockSlots } from "./AiDockSlots";
 import { openAiPlan } from "../lib/aiPlan";
+import { requestPath } from "../lib/aiApprovals";
 import type { AiPermissionAnswer } from "../lib/aiApprovals";
 import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash, resolveNativeCommand } from "../lib/aiCommands";
 import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft } from "../lib/aiDrafts";
@@ -45,6 +46,9 @@ import type { AiComposerHandle } from "./AiComposerOptions";
 import AiComposerOptions from "./AiComposerOptions";
 import AiComposerShell from "./AiComposerShell";
 import AiCommandMenu from "./AiCommandMenu";
+import AiMentionMenu from "./AiMentionMenu";
+import { applyMention, mentionAt, mentionPathOf, splitMentionTokens } from "../lib/aiMention";
+import { findFiles } from "../lib/fs";
 import AiContextChip from "./AiContextChip";
 import { aiNormalMode, loadAiOptions, saveAiOptions } from "../lib/aiOptions";
 import AiToolDetails, { AiToolCall, AiToolSummary, CodeText } from "./AiToolDetails";
@@ -127,9 +131,33 @@ const AiCompactionDivider = memo(function AiCompactionDivider({ entry }: { entry
   </div>;
 });
 
-const TimelineNotice = memo(function TimelineNotice({ entry }: { entry: AiEntry }) {
+/** 一条改动快照：批准写入工具或恢复动作时生成，列出文件并提供一键恢复。 */
+const AiCheckpointNotice = memo(function AiCheckpointNotice({ entry, onRestore }: { entry: AiEntry; onRestore?: (id: string) => void }) {
   const { t } = useI18n();
   const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
+  const id = typeof data.id === "string" ? data.id : "";
+  const files = Array.isArray(data.files) ? data.files.filter((file): file is string => typeof file === "string") : [];
+  if (!id || files.length === 0) return null;
+  const isRestore = data.source === "restore";
+  const restoreOf = typeof data.restoreOf === "string" ? data.restoreOf : null;
+  return <section className="ai-checkpoint" data-checkpoint-id={id}>
+    <span className="ai-checkpoint-icon" aria-hidden><History size={14} /></span>
+    <div className="ai-checkpoint-body">
+      <strong>{isRestore ? t("ai.checkpoint.restored") : t("ai.checkpoint.title")}</strong>
+      {restoreOf ? <small>{t("ai.checkpoint.restoreOf")}</small> : null}
+      <div className="ai-checkpoint-files">
+        {files.slice(0, 6).map((file) => <code key={file} title={file}>{file.split(/[\\/]/).pop()}</code>)}
+        {files.length > 6 ? <small>+{files.length - 6}</small> : null}
+      </div>
+    </div>
+    {onRestore ? <button type="button" className="button" onClick={() => onRestore(id)}>{t("ai.checkpoint.restore")}</button> : null}
+  </section>;
+});
+
+const TimelineNotice = memo(function TimelineNotice({ entry, onRestoreCheckpoint }: { entry: AiEntry; onRestoreCheckpoint?: (id: string) => void }) {
+  const { t } = useI18n();
+  const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
+  if (entry.name === "checkpoint") return <AiCheckpointNotice entry={entry} onRestore={onRestoreCheckpoint} />;
   if (entry.name === "plan_review" || entry.name === "plan_draft") return <AiPlanEntry entry={entry} />;
   if (entry.name === "plan_decision") {
     const decision = String(data.decision ?? "");
@@ -154,7 +182,7 @@ const TimelineNotice = memo(function TimelineNotice({ entry }: { entry: AiEntry 
   return <details className="ai-timeline-notice"><summary><ChevronRight className="ai-detail-chevron" size={13} />{entry.name === "retry" ? t("ai.chat.retry") : t("ai.chat.notice")}</summary>{entry.text ? <AiMarkdown text={entry.text} /> : <pre>{detail(entry.input)}</pre>}</details>;
 });
 
-const RequestCard = memo(function RequestCard({ request, stopping }: { request: AiRequest; stopping: boolean }) {
+const RequestCard = memo(function RequestCard({ request, stopping, onBeforeAllow }: { request: AiRequest; stopping: boolean; onBeforeAllow?: (request: AiRequest) => Promise<void> }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [answered, setAnswered] = useState(false);
@@ -166,6 +194,11 @@ const RequestCard = memo(function RequestCard({ request, stopping }: { request: 
   const respond = async (answer: AiPermissionAnswer | { answers: Record<string, string[]> }) => {
     setBusy(true); setError(null);
     try {
+      // 允许写入类工具之前先落改动前快照：这是恢复链的源头。快照失败不拦批准，
+      // CLI 自己的历史还在，但「恢复到此步之前」就没有这一站了。
+      if (onBeforeAllow && !("answers" in answer) && answer.allow === true) {
+        try { await onBeforeAllow(request); } catch { /* 尽力而为 */ }
+      }
       await respondAiRequest(request.runId, request.requestId, answer);
       if ("answers" in answer) setSubmitted(answer.answers);
       setAnswered(true);
@@ -207,6 +240,17 @@ const USER_MESSAGE_CLIP_CHARS = 1500;
 /** 行首带 `>` 的行算引用（对照参考实现的 quote line）：排进带左线的引用段。 */
 const USER_QUOTE_LINE = /^\s*>/;
 
+/** 一行正文里的 @提及：命中就包成小徽章，其余原样。 */
+function renderMentions(line: string, lineIndex: number): ReactNode {
+  const parts = splitMentionTokens(line);
+  if (parts.every((part) => !part.mention)) return line;
+  return <Fragment key={`mention-${lineIndex}`}>
+    {parts.map((part, index) => part.mention
+      ? <span key={index} className="ai-mention">{part.text}</span>
+      : <span key={index}>{part.text}</span>)}
+  </Fragment>;
+}
+
 /** 纯文本按行渲染，引用行聚成一段；换行仍由 pre-wrap 呈现，段内换行归段自己。 */
 function renderUserText(text: string): ReactNode[] {
   const lines = text.split("\n");
@@ -222,7 +266,7 @@ function renderUserText(text: string): ReactNode[] {
     if (USER_QUOTE_LINE.test(line)) quote.push(line);
     else {
       flushQuote();
-      parts.push(line);
+      parts.push(renderMentions(line, index));
     }
     const next = lines[index + 1];
     if (next !== undefined && !(USER_QUOTE_LINE.test(line) && USER_QUOTE_LINE.test(next))) parts.push("\n");
@@ -648,6 +692,10 @@ interface AiChatEntryRowProps {
   onOpenSession?: (id: string) => void;
   onLightbox: (path: string) => void;
   onImageLoad: () => void;
+  /** 允许写入类工具前先快照；由会话层提供会话 id 与工作区。 */
+  onBeforeAllow?: (request: AiRequest) => Promise<void>;
+  /** 恢复一条改动快照。 */
+  onRestoreCheckpoint?: (checkpointId: string) => void;
 }
 
 /** 单条会话记录渲染单元：深度 memo 记忆化保护，防止任何外层状态变动拖慢整条历史时间线 */
@@ -664,10 +712,12 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
   onOpenSession,
   onLightbox,
   onImageLoad,
+  onBeforeAllow,
+  onRestoreCheckpoint,
 }: AiChatEntryRowProps) {
   const { t } = useI18n();
   if (entry.kind === "request") {
-    return request ? <RequestCard key={entry.id} request={request} stopping={stopping} /> : null;
+    return request ? <RequestCard key={entry.id} request={request} stopping={stopping} onBeforeAllow={onBeforeAllow} /> : null;
   }
   const body = (
     <article data-entry-id={entry.id} className={`ai-chat-entry is-${entry.kind}`}>
@@ -713,7 +763,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
       ) : entry.kind === "reasoning" ? (
         <AiReasoningEntry entry={entry} live={liveThinking} />
       ) : entry.kind === "notice" ? (
-        <TimelineNotice entry={entry} />
+        <TimelineNotice entry={entry} onRestoreCheckpoint={onRestoreCheckpoint} />
       ) : null}
     </article>
   );
@@ -863,6 +913,13 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const [commandsDismissed, setCommandsDismissed] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
+  // @ 文件提及：光标前命中 @token 就弹建议，选中后以 @相对路径 拼进正文。
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
+  const [mentionItems, setMentionItems] = useState<string[]>([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionSeq = useRef(0);
+  const mentionTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(mentionTimer.current), []);
   /** 队列编辑借用主输入框；restoreDraft 保证用户原来写到一半的草稿不会被队列正文覆盖。 */
   const [editingTask, setEditingTask] = useState<{ runId: string; restoreDraft: string } | null>(null);
   /** 横幅 ⋯ 菜单与重命名/删除确认。 */
@@ -911,6 +968,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const draftSlash = parseSlash(draft);
   const activeCommand = editingTask ? undefined : draftSlash && commandList.find((command) => command.name === (localCommand(draftSlash.name) ?? resolveNativeCommand(runtime.commands ?? { commands: [], terminal: [] }, draftSlash.name)?.name ?? draftSlash.name));
   const menuVisible = suggestions.length > 0 && !sending;
+  /** @ 建议：有查询词且搜到了文件才亮出来，避免敲个邮箱地址也弹一层。 */
+  const mentionVisible = !editingTask && !sending && mention !== null && mention.query.length > 0 && mentionItems.length > 0;
   const commandMenu = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!menuVisible) return;
@@ -932,6 +991,58 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     if (browse) setBrowse(browseTyped(text, { text, browse }).browse);
     setCommandsDismissed(false); setShowHelp(false); setCommandIndex(0); setCommandNotice(null);
   };
+  /** 输入变化后同步 @ 提及建议：命中 @token 就按查询词搜一次文件（260ms 防抖，只认文件）。 */
+  const syncMention = (text: string, caret: number) => {
+    const found = editingTask || sending || !workspace ? null : mentionAt(text, caret);
+    setMention(found);
+    setMentionIndex(0);
+    if (!found || !found.query || !workspace) { setMentionItems([]); return; }
+    const token = ++mentionSeq.current;
+    window.clearTimeout(mentionTimer.current);
+    mentionTimer.current = window.setTimeout(() => {
+      void findFiles(workspace, found.query, 8, { showHidden: false, ignored: [] })
+        .then((result) => {
+          if (mentionSeq.current !== token) return;
+          setMentionItems(result.items
+            .filter((item) => !item.isDir)
+            .map((item) => mentionPathOf(item.path, workspace))
+            .filter(Boolean));
+        })
+        .catch(() => {
+          if (mentionSeq.current === token) setMentionItems([]);
+        });
+    }, 260);
+  };
+  /** 草稿清空（发送、切队列编辑等）时把建议一并收掉，浮层不悬在空输入上。 */
+  useEffect(() => {
+    if (!draft) { setMention(null); setMentionItems([]); }
+  }, [draft]);
+  const acceptMention = (path: string) => {
+    if (!mention) return;
+    const caret = input.current?.selectionStart ?? draft.length;
+    const applied = applyMention(draft, caret, mention.start, path);
+    commitDraft(applied.text);
+    setMention(null);
+    setMentionItems([]);
+    requestAnimationFrame(() => {
+      input.current?.focus();
+      input.current?.setSelectionRange(applied.caret, applied.caret);
+    });
+  };
+  /** 允许写入类工具之前，把目标文件的当前内容快照下来（改动前状态，恢复链的源头）。 */
+  const snapshotBeforeAllow = useCallback(async (request: AiRequest) => {
+    const path = requestPath(request.input);
+    if (!workspace || !path) return;
+    await invoke("ai_session_checkpoint_save", { sessionId: session.id, workspace, paths: [path] }).catch(() => {
+      // 快照尽力而为：失败不拦批准，也不打断发送。
+    });
+  }, [session.id, workspace]);
+  /** 把一份快照写回磁盘；恢复动作自己会在时间线上生成一条「恢复前」快照。 */
+  const restoreCheckpoint = useCallback((checkpointId: string) => {
+    if (!workspace) return;
+    void invoke("ai_session_checkpoint_restore", { sessionId: session.id, workspace, checkpointId })
+      .catch((cause) => setError(String(cause)));
+  }, [session.id, workspace]);
   useEffect(() => watchAiInputDelivery(session.id, (delivery) => {
     // 编辑队列期间输入框属于队列项；外部投递只更新背后的正常草稿，退出编辑后再显现。
     if (editingTask) {
@@ -1612,9 +1723,13 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       onOpenSession={onOpenSession}
       onLightbox={setLightbox}
       onImageLoad={handleImageLoad}
+      onBeforeAllow={snapshotBeforeAllow}
+      onRestoreCheckpoint={restoreCheckpoint}
     />;
   }, [
     requestsById,
+    restoreCheckpoint,
+    snapshotBeforeAllow,
     runtime.stopping,
     artifactsByLastEntry,
     streamingEntryId,
@@ -1753,7 +1868,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
       })() : null}
       {/* 子代理状态条：实时状态来自父连接；Codex 的完整正文由终态 rollout 回填。 */}
       {isAgentSession ? (() => {
-        const self = runtime.agents[0];
+        // 按会话 id 认领自己；万一父日志里混进别的 key，也不至于拿别人的状态。
+        const self = runtime.agents.find((agent) => agent.sessionId === session.id) ?? runtime.agents[0];
         const status = self?.status ?? session.agent?.status ?? "";
         const label = status === "running" || status === "starting" ? t("ai.runtime.running")
           : status === "failed" ? t("ai.runtime.failed")
@@ -1813,7 +1929,8 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         .finally(() => setGoalUpdating(false));
     }} /> : null}
     {/* 待答复的卡片钉在输入框上方：正文一路往下滚的时候，不能让它跟着滚出屏幕——那等于本轮卡住却看不见卡在哪。 */}
-    {pendingCards.length ? <div className="ai-session-requests">{pendingCards.map((request) => <RequestCard key={request.requestId} request={request} stopping={runtime.stopping} />)}</div> : null}
+    {pendingCards.length > 1 ? <p className="ai-session-requests-depth" role="status">{t("ai.runtime.requestsPending", { count: pendingCards.length })}</p> : null}
+    {pendingCards.length ? <div className="ai-session-requests">{pendingCards.map((request) => <RequestCard key={request.requestId} request={request} stopping={runtime.stopping} onBeforeAllow={snapshotBeforeAllow} />)}</div> : null}
     {openPlan && workspace ? <AiPlanApproval plan={openPlan} disabled={decidingPlan || runtime.stopping || sending} key={`${openPlan.planId}:${openPlan.revision}`}
       onApprove={async () => { setDecidingPlan(true); try { await decideAiPlan(session, workspace!, openPlan, "approve", undefined, await selectedRunOptions(), extraDirs); } catch (cause) { setDecidingPlan(false); throw cause; } }}
       onRequestChanges={async (feedback) => { setDecidingPlan(true); try { await decideAiPlan(session, workspace!, openPlan, "requestChanges", feedback, await selectedRunOptions(), extraDirs); } catch (cause) { setDecidingPlan(false); throw cause; } }}
@@ -1885,6 +2002,7 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         {dropArmed ? <div className="ai-composer-drop" role="status">{t("ai.chat.dropImages")}</div> : null}
         {menuVisible ? <AiCommandMenu id={menuId} suggestions={suggestions} selected={selectedCommand} onChoose={chooseCommand}
           menuRef={commandMenu} showDiscovery={session.provider === "claude" && !runtime.commands} /> : null}
+        {mentionVisible ? <AiMentionMenu id={`${menuId}-mention`} items={mentionItems} selected={Math.min(mentionIndex, mentionItems.length - 1)} onChoose={acceptMention} /> : null}
       </>}
       attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
         {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { setImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
@@ -1893,7 +2011,11 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         aria-autocomplete="list" aria-controls={menuVisible ? menuId : undefined} aria-expanded={menuVisible} aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
               disabled={!workspace || !cliDesktopAvailable() || sending}
               onContextMenu={requestEditorMenu}
-              onChange={(event) => updateDraft(event.target.value)}
+              onChange={(event) => {
+                const caret = event.target.selectionStart ?? event.target.value.length;
+                updateDraft(event.target.value);
+                syncMention(event.target.value, caret);
+              }}
               onPaste={(event) => {
                 const files = collectPastedImages(event.clipboardData);
                 if (!files.length) return;
@@ -1903,6 +2025,27 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                 if (editingTask && event.key === "Escape") { event.preventDefault(); cancelQueuedEdit(); return; }
+                // @ 文件建议优先于命令菜单与发送：Enter/Tab 收下建议，↑↓ 挑选，Esc 关闭。
+                if (mentionVisible) {
+                  const caret = event.currentTarget.selectionStart ?? 0;
+                  const live = mentionAt(draft, caret);
+                  if (!live) { setMention(null); setMentionItems([]); }
+                  else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setMentionIndex((index) => (index + (event.key === "ArrowDown" ? 1 : -1) + mentionItems.length) % mentionItems.length);
+                    return;
+                  } else if (event.key === "Enter" && !event.shiftKey || event.key === "Tab") {
+                    event.preventDefault();
+                    acceptMention(mentionItems[Math.min(mentionIndex, mentionItems.length - 1)]);
+                    return;
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setMention(null);
+                    setMentionItems([]);
+                    return;
+                  }
+                }
                 if (menuVisible && !event.ctrlKey && !event.metaKey && !event.altKey) {
                   if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setCommandIndex((selectedCommand + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length); return; }
                   if (event.key === "Tab" && !event.shiftKey || event.key === "Enter" && !event.shiftKey) { event.preventDefault(); chooseCommand(suggestions[selectedCommand].name); return; }

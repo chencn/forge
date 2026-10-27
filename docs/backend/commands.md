@@ -1,12 +1,15 @@
 # 命令契约
 
-逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，共 96 条。出处列给命令自己的行号。
+逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，本文件收录 100 条。出处列给命令自己的行号。
 参数一律写前端传的 camelCase 名（映射规则见 [README.md](./README.md)）。
-发事件的命令只有四条：`fs_watch_start` 起的那条转发线程发 `fs://change`，`term_open` 的 reader 线程发
+非 AI 命令里发事件的只有四条：`fs_watch_start` 起的那条转发线程发 `fs://change`，`term_open` 的 reader 线程发
 `term://output` / `term://exit`，`proc_start` 的转发与轮询线程发 `proc://output` / `proc://exit`，
 `lsp_start` 的两条读线程发 `lsp://message` / `lsp://log` / `lsp://exit`。
 `app://flush` 由窗口关闭事件和托盘菜单的「退出」触发，不经命令。其余写命令不发事件：磁盘上的动静统一经
 `fs://change` 回来，git 状态由前端在写完之后再调一次 `git_status`。
+AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录本批新增的四条；其余命令的行为见
+[../features/ai-assistants/](../features/ai-assistants/)。它们统一广播到 `ai-runtime://events`，
+载荷由会话日志投影。
 
 ## 文件与目录（17）
 
@@ -153,6 +156,19 @@
 | `app_exit` | — | `()` | 清看门狗标志后 `app.exit(0)`；由前端存完盘调用 | `tray.rs:123` |
 | `sys_memory` | — | `Memory{appMb,totalMb,parts[]}`，`parts` 一档 `{kind,program,mb,count}` | kernel32 一次进程快照，按 `ppid` 从自身往外收全部后代，逐个读**私有工作集**（不是工作集：工作集含共享页，WebView2 那几台进程相加会虚高几百 MB）后归并成 host / webview / child 三档，单位 MB。读不到的进程按 0 计，父进程先退导致 `ppid` 链断掉的子树不计；非 Windows 三个值全为 0 | `sys.rs:369` |
 
+## AI 运行时与 Claude 配置（4）
+
+四条都是 `async`，命令体经 `block` 跑在阻塞线程池上；参数沿 IPC 用 camelCase。
+checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event` 整批拿一次，
+普通 `Mutex` 不可重入，外层再拿会挂死批准动作。
+
+| 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
+| --- | --- | --- | --- | --- |
+| `ai_cli_claude_hooks_read` | — | `Value`（`hooks` 段） | 读 `~/.claude/settings.json`；文件或 `hooks` 键缺失回空对象，JSON 坏或非对象报错 | `ai_cli/settings.rs:506` |
+| `ai_cli_claude_hooks_save` | `hooks` | `Value`（写后的 `hooks` 段） | 浅校验（事件名 → 数组 → 规则对象）后只替换 `hooks` 键，其余键原样保留；空对象删掉该键；写前 `backup_and_write` | `ai_cli/settings.rs:511` |
+| `ai_session_checkpoint_save` | `sessionId, workspace, paths[]` | `{id, files[]}` | 把目标文件的当前内容存成快照：单文件 8 MiB、一次最多 32 个文件、只收绝对路径、按大小写不敏感去重；落 `checkpoints/<id>/`，向会话日志追加 `checkpoint` 事件并广播 | `ai_runtime/mod.rs:2415` |
+| `ai_session_checkpoint_restore` | `sessionId, workspace, checkpointId` | `{restored, undo}` | 先把相关文件现状存成新快照（`source: "restore"`、`restoreOf` 指回来源）并追加事件，再写回目标文件；`checkpointId` 必须以 `ckpt-` 开头 | `ai_runtime/mod.rs:2435` |
+
 ## 代码
 
 | 文件 | 内容 |
@@ -173,6 +189,8 @@
 | `src-tauri/src/settings.rs` | `read` `:312-317`、`settings_load` `:322`、`read_document` `:332`、`apply_patch` `:352`、`settings_save` `:377`（按字段合并落盘；`lsp` 段已搬去 `lsp.json`，历史四项已搬去 `history.json`，旧文件里那些键读到就原样留着） |
 | `src-tauri/src/history.rs` | `History` `:25-33`、`migrate_from_settings` `:38-63`、`load_in` `:71-81`、`save_in` `:84-89`、`read` `:92-97`、`history_load` / `history_save` `:101-117`、单测 4 条 `:119` 起 |
 | `src-tauri/src/tray.rs` | `tray_labels` `:68-76`、`app_exit` `:122-126` |
+| `src-tauri/src/ai_runtime/checkpoint.rs` | 上限 `MAX_FILE_BYTES` 8 MiB 与 `MAX_FILES` 32 `:16-18`、`normalize_paths` `:35`、`take_snapshot` `:54`、`record` `:88`、`restore` `:98`、`append_event` `:127`、链式恢复测试 `:181` |
+| `src-tauri/src/ai_cli/settings.rs` | `read_claude_root_at` `:467`、`read_claude_hooks_at` `:477`、`save_claude_hooks_at` `:484`、两条命令 `:506` / `:511` |
 | `src-tauri/src/sys.rs` | `hide_console` 的 `CREATE_NO_WINDOW` `:5-11`、`write_atomic` 的 tmp+rename `:25-33`、`which_program` 的 Windows 扩展名候选 `:65-76`、`capture_text`（stdout 空了取 stderr）`:80-101`、`group` 的 ppid 走树与按程序归并 `:154-212`、`win::private_set_of` `:305-316`、`win::snapshot` `:319-341`、`sys_memory` `:369-376`、单测 4 条 `:378` 起 |
 | `src-tauri/src/watch.rs` | `fs_watch_start` `:83-144`、`fs_watch_stop` `:146-169`、`SETTLE` / `BATCH_CAP` `:19-22` |
 | `src/lib/fs.ts` | `findFiles` / `searchText` `:226-233`、搜索结果的 TS 镜像 `:147-223` |

@@ -2201,6 +2201,35 @@ span.entry-icon > svg {
   line-height: 1.6;
 }
 
+/* 快捷键设置页：右端 kbd + 改绑 / 重置；捕获中提示按新组合。 */
+.settings-row.is-shortcut { align-items: center; }
+.settings-shortcut { display: flex; align-items: center; gap: 8px; }
+.settings-shortcut kbd {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  min-width: 88px;
+  text-align: center;
+}
+.settings-shortcut kbd.shortcut-capture { color: var(--accent-blue); border-color: var(--accent-blue); font-family: inherit; }
+.settings-note.is-error { color: var(--accent-red, #d13438); }
+
+/* Hooks 设置页：事件小节 + matcher/命令/超时一行一条。 */
+.hooks-event { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--border-light); }
+.hooks-event:first-of-type { border-top: none; }
+.hooks-event-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hooks-event-head .button { margin-left: auto; }
+.hooks-event-empty { margin: 0; }
+.hooks-row { display: flex; gap: 6px; align-items: center; }
+.hooks-matcher { width: 200px; flex: none; }
+.hooks-command { flex: 1; min-width: 120px; }
+.hooks-timeout { width: 76px; flex: none; }
+
+
 /* 关于页：版本号这类纯文本值，字号与左侧标签一致。 */
 .about-value {
   font-size: 12.5px;

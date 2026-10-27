@@ -1,7 +1,8 @@
 # 后端总览
 
-Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表，96 条命令。事件 9 条。
-命令数只按这张表算，写了 `#[tauri::command]` 但没进表的不算契约。
+Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表；本文件收录其中 100 条，
+AI 助手的其余命令见 [../features/ai-assistants/](../features/ai-assistants/)。系统事件 9 条，
+AI 运行时另走 `ai-runtime://events`。命令数只按注册表算，写了 `#[tauri::command]` 但没进表的不算契约。
 命令契约逐条对着代码核过，见 [commands.md](./commands.md)；错误模型见 [error-model.md](./error-model.md)；
 构建与工具链约束见 [toolchain.md](./toolchain.md)；辅助脚本见 [scripts.md](./scripts.md)。
 界面怎么用这些命令属于 `docs/features/`，这里不重复。

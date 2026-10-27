@@ -16,6 +16,7 @@ vi.mock("dompurify", () => ({ default: { sanitize: h.sanitize } }));
 vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string) => `_${key}` }) }));
 vi.mock("../../src/lib/fs", () => ({ openExternal: h.openExternal }));
 vi.mock("../../src/components/AiFileLink", () => ({ useAiOpenFile: () => h.openFile }));
+vi.mock("../../src/lib/chatMarkdownAsync", () => ({ renderChatMarkdownBlocks: () => Promise.resolve([]) }));
 
 import AiMarkdown from "../../src/components/AiMarkdown";
 
@@ -24,8 +25,10 @@ const CODE = "```ts\nconst a = 1;\n```";
 /** 直接调用组件函数拿到元素树，才能取到 props 上的委托处理器。 */
 function render(text = CODE) {
   let el!: ReactElement<Record<string, unknown>>;
+  // memo 包装对象本身不可调用，取它包着的那层原始函数。
+  const inner = (AiMarkdown as unknown as { type: (props: { text: string }) => ReactElement<Record<string, unknown>> }).type;
   function Harness() {
-    el = AiMarkdown({ text }) as ReactElement<Record<string, unknown>>;
+    el = inner({ text });
     return el;
   }
   return { html: renderToStaticMarkup(createElement(Harness)), props: el.props };
