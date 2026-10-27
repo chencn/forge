@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
 import type { AiSession } from "./aiSessions";
+import type { AiProvider } from "./aiCli";
 import { isAiTaskBackendActive, isAiTaskBackendStatus, isAiTaskLive, isAiTaskQueued, isAiTaskTerminal, type AiTaskStatus } from "./aiTaskStatus";
 import { normalizeAiUsage } from "./aiUsage";
 import type { AiUsage } from "./aiUsage";
@@ -1601,10 +1602,11 @@ function forgetAiRuntimeSession(sessionId: string) { deleted.add(sessionId); rel
 export async function deleteAiRuntimeSession(sessionId: string, workspace: string, purgeNative = false) { await invoke("ai_runtime_delete", { sessionId, workspace, purgeNative }); forgetAiRuntimeSession(sessionId); changed(); }
 /**
  * 一次性删掉本项目所有已归档会话（后端连各自的子代理一起删）。
+ * `provider` 有值时只删那一个 CLI 的归档会话——设置页按 CLI 分页签，删除范围必须跟着页签走。
  * 逐条结果原样交回：原生没删干净的会话会留在 `failed` 里，界面必须报出是哪几条、为什么。
  */
-export async function deleteArchivedAiRuntimeSessions(workspace: string, purgeNative: boolean): Promise<{ deleted: string[]; failed: { id: string; title: string; error: string }[] }> {
-  const result = await invoke<{ deleted: string[]; failed: { id: string; title: string; error: string }[] }>("ai_runtime_delete_archived", { workspace, purgeNative });
+export async function deleteArchivedAiRuntimeSessions(workspace: string, purgeNative: boolean, provider: AiProvider | null = null): Promise<{ deleted: string[]; failed: { id: string; title: string; error: string }[] }> {
+  const result = await invoke<{ deleted: string[]; failed: { id: string; title: string; error: string }[] }>("ai_runtime_delete_archived", { workspace, purgeNative, provider });
   for (const id of result.deleted ?? []) forgetAiRuntimeSession(id);
   changed();
   return result;

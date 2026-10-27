@@ -2507,14 +2507,17 @@ fn session_group(base: &Path, root: &str, session_id: &str) -> Result<Vec<String
     }
 }
 /// 本项目里已归档的顶层会话；子代理随父一起走，不单独列出来。
-fn archived_session_ids(base: &Path, root: &str) -> Result<Vec<String>, String> {
+/// `provider` 有值时只列那个 CLI 的——设置页按 CLI 分开筛选，「删除全部」必须只删看得见的那些。
+fn archived_session_ids(base: &Path, root: &str, provider: Option<Provider>) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
     for entry in std::fs::read_dir(base).map_err(|e| e.to_string())?.take(20000).flatten() {
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
         let id = entry.file_name().to_string_lossy().into_owned();
         if !store::valid_id(&id) { continue; }
         if let Ok(meta) = store::Store::metadata(&entry.path(), root) {
-            if meta.archived && meta.parent_session_id.is_none() { ids.push(id); }
+            if meta.archived && meta.parent_session_id.is_none() && provider.is_none_or(|want| meta.provider == want) {
+                ids.push(id);
+            }
         }
     }
     Ok(ids)
@@ -2614,6 +2617,8 @@ pub async fn ai_runtime_delete(
     .await
 }
 /// 设置页「归档会话」用：一次性删掉本项目里所有已归档会话（含各自的子代理）。
+/// `provider` 有值时只删那一个 CLI 的归档会话——界面上按 CLI 分了页签，
+/// 按钮删掉的东西必须和页签里看见的一致。
 ///
 /// 逐条复用 `delete_session` 的完整序列，不另写快路径。原生删除合并成一次：
 /// N 个 Codex 线程走同一根 app-server 连接，而不是每条会话各起一个进程。
@@ -2623,13 +2628,14 @@ pub async fn ai_runtime_delete_archived(
     app: AppHandle,
     workspace: String,
     purge_native: Option<bool>,
+    provider: Option<Provider>,
 ) -> Result<Value, String> {
     block(move || {
         enabled(&app)?;
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
         let mut groups = Vec::new();
-        for id in archived_session_ids(&base, &root)? {
+        for id in archived_session_ids(&base, &root, provider)? {
             groups.push(session_group(&base, &root, &id)?);
         }
         // 先把所有运行停掉再动原生记录：还挂着的线程删不掉，也可能删完又被写回来。
@@ -2964,6 +2970,8 @@ mod tests {
         grandchild.save().unwrap();
         store::Store::open(&base, "away", &workspace, Provider::Claude, "收起来的", "").unwrap();
         assert!(store::Store::set_archived(&base, "away", &workspace, true).unwrap());
+        store::Store::open(&base, "away-codex", &workspace, Provider::Codex, "收起来的 Codex", "").unwrap();
+        assert!(store::Store::set_archived(&base, "away-codex", &workspace, true).unwrap());
         // 组的首项是它自己，然后子代理，最后镜像壳：停运行、清排队、删原生都按这一组走。
         assert_eq!(
             session_group(&base, &workspace, "parent").unwrap(),
@@ -2972,7 +2980,12 @@ mod tests {
         // 从子代理这一层单独删也要带走孙代理，不能只靠父会话那一次扫描。
         assert_eq!(session_group(&base, &workspace, "child").unwrap(), vec!["child".to_string(), "grandchild".to_string()]);
         // 「归档会话」页只列顶层会话；把子代理也列出来，一条父会话会显示成两行。
-        assert_eq!(archived_session_ids(&base, &workspace).unwrap(), vec!["away".to_string()]);
+        let mut all = archived_session_ids(&base, &workspace, None).unwrap();
+        all.sort();
+        assert_eq!(all, vec!["away".to_string(), "away-codex".to_string()]);
+        // 按 CLI 筛过之后「删除全部」只收看得见的那些：界面上是 Codex 页签、实际清掉 Claude 是不可接受的。
+        assert_eq!(archived_session_ids(&base, &workspace, Some(Provider::Codex)).unwrap(), vec!["away-codex".to_string()]);
+        assert_eq!(archived_session_ids(&base, &workspace, Some(Provider::Claude)).unwrap(), vec!["away".to_string()]);
         // 归属对不上就扫不到子代理——另一个项目的记录不该被这次删除带走。
         assert_eq!(session_group(&base, "other-project", "parent").unwrap(), vec!["parent".to_string()]);
         fs::remove_dir_all(temp).unwrap();

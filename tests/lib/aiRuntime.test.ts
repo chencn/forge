@@ -966,10 +966,14 @@ describe("删除会话", () => {
     h.invoke.mockImplementation(async (command: string) => (command === "ai_runtime_delete_archived" ? { deleted: [session.id], failed } : undefined));
     let notified = 0;
     const off = runtime.subscribeAiChanges(() => { notified += 1; });
-    const result = await runtime.deleteArchivedAiRuntimeSessions("D:/project", true);
+    const result = await runtime.deleteArchivedAiRuntimeSessions("D:/project", true, "codex");
     off();
-    expect(h.invoke).toHaveBeenLastCalledWith("ai_runtime_delete_archived", { workspace: "D:/project", purgeNative: true });
+    // 页签选的是哪个 CLI 就删哪个：范围由后端按同一个条件扫出来。
+    expect(h.invoke).toHaveBeenLastCalledWith("ai_runtime_delete_archived", { workspace: "D:/project", purgeNative: true, provider: "codex" });
     expect(result).toEqual({ deleted: [session.id], failed });
     expect(notified).toBeGreaterThan(0);
+    // 不传页签＝不限 CLI，后端收到 null。
+    await runtime.deleteArchivedAiRuntimeSessions("D:/project", false);
+    expect(h.invoke).toHaveBeenLastCalledWith("ai_runtime_delete_archived", { workspace: "D:/project", purgeNative: false, provider: null });
   });
 });

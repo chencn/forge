@@ -90,6 +90,8 @@ const rowDelete = (tree: Node, title: string) => {
   return nodes(row).find((node) => node.type === "button" && node.props["aria-label"] === "menu.delete")!;
 };
 const confirm = (node: Node) => (node.props.onConfirm as (value: string) => void)("");
+/** CLI 页签按标签文本认，页签上的计数会变，所以只比前缀。 */
+const tab = (tree: Node, label: string) => nodes(tree).find((node) => node.type === "button" && text(node).startsWith(label))!;
 
 beforeEach(() => {
   h.desktop = true;
@@ -157,13 +159,37 @@ describe("设置页「归档会话」", () => {
     const asked = render([putAway, older]);
     expect(asked.html).toContain("ai.archived.allConfirm");
     confirm(dialog(asked.tree)!);
-    await vi.waitFor(() => expect(h.deleteAll).toHaveBeenCalledWith("D:/p", false));
+    await vi.waitFor(() => expect(h.deleteAll).toHaveBeenCalledWith("D:/p", false, null));
     expect(h.actions).toEqual([{ type: "delete", id: "c", purgeNative: false }]);
     const done = render([putAway, older]);
     expect(done.html).toContain("ai.archived.partial:1,1");
     expect(done.html).toContain("ai.archived.failedOne:收起来的会话,原生历史删除失败");
     // 没删掉的那条仍留在列表里，界面不能假装它已经没了。
     expect(done.html).toContain("收起来的会话");
+  });
+
+  it("切到 Codex 页签只剩 Codex 的会话；批量删除的作用域跟着页签走", async () => {
+    const first = render([inUse, putAway, older, subagent]);
+    expect(first.html).toContain("Claude Code");   // 全部页签下行上带 CLI 徽章
+    (tab(first.tree, "Codex").props.onClick as () => void)();
+    const filtered = render([inUse, putAway, older, subagent]);
+    expect(filtered.html).toContain("更早收起来的");
+    expect(filtered.html).not.toContain("收起来的会话");
+    expect(filtered.html).toContain("ai.archived.count:1");
+    // 页签写着 Codex，确认文案与后端参数都只能报 Codex：看不见的那一半不能跟着一起删。
+    (button(filtered.tree, "ai.archived.deleteAll").props.onClick as () => void)();
+    const asked = render([inUse, putAway, older, subagent]);
+    expect(asked.html).toContain("ai.archived.allConfirm:1,Codex");
+    confirm(dialog(asked.tree)!);
+    await vi.waitFor(() => expect(h.deleteAll).toHaveBeenCalledWith("D:/p", false, "codex"));
+  });
+
+  it("页签上的计数是整列的数，不跟着筛选结果变", () => {
+    const { tree } = render([putAway, older]);
+    // 「全部」页签自己就写着 2，两个 CLI 各 1；筛过之后这些数仍该是筛之前的样子。
+    expect(text(tab(tree, "ai.archived.filterAll"))).toBe("ai.archived.filterAll2");
+    expect(text(tab(tree, "Claude Code"))).toBe("Claude Code1");
+    expect(text(tab(tree, "Codex"))).toBe("Codex1");
   });
 
   it("非桌面端不给删除入口：这一页要动磁盘", () => {

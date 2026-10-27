@@ -139,10 +139,18 @@
 /* 「归档会话」列表的行只是条目，点不开详情：手型和 hover 选中态都不该给，右侧只留一个删除键。 */
 .ai-cli-row.is-static { cursor: default; }
 .ai-cli-row.is-static:hover { background: var(--bg-secondary); }
-.ai-cli-row-meta { color: var(--text-tertiary); font-size: 10.5px; }
+.ai-cli-row-meta { flex: none; color: var(--text-tertiary); font-size: 10.5px; }
 .lsp-action.is-danger { color: var(--accent-red-text); }
 .lsp-action.is-danger:hover:not(:disabled) { background: var(--accent-red-bg); }
-.ai-archived-failures { margin: 6px 0 0; padding-left: 18px; color: var(--accent-red-text); font-size: 12px; }
+/* 这一页只有一条清单，没有可编辑的详情：左右两栏会把一半宽度留给空白，所以单列铺满。 */
+.ai-archived-list { flex: 1; margin: 0 18px 18px; }
+/* 窄窗口下三个页签加计数再加删除键会挤不下一行；宁可折行，也不能让按钮被裁掉一半。 */
+.ai-archived-toolbar { flex-wrap: wrap; }
+.ai-archived-foot { align-items: flex-start; flex-wrap: wrap; }
+.ai-archived-foot > .ai-muted { flex: 1; min-width: 0; }
+.ai-archived-status { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.ai-archived-status > p { margin: 0; font-size: 11px; }
+.ai-archived-failures { margin: 0 14px 12px; padding: 8px 10px 8px 26px; border-radius: 6px; background: var(--accent-red-bg); color: var(--accent-red-text); font-size: 11.5px; }
 .ai-archived-failures li { overflow-wrap: anywhere; }
 .ai-skill-editor { flex: 1; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
 .ai-skill-text { min-height: 320px; height: 100%; }
