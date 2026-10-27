@@ -609,7 +609,7 @@ fn import_codex_subagent(
         scanned += count;
         if scanned > 256 * 1024 { return; }
     }
-    let Some((meta, body_start)) = child_meta else { return };
+    let Some((meta, _)) = child_meta else { return };
     let spawn = &meta["source"]["subagent"]["thread_spawn"];
     let Some(parent_native) = spawn["parent_thread_id"].as_str().filter(|id| !id.is_empty()) else { return };
     if meta["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, root)) { return; }
@@ -649,91 +649,94 @@ fn import_codex_subagent(
     if !agent_path.is_empty() { info.native_agent_id = Some(agent_path); }
     // 清掉旧版本落盘的随机 nickname；只有协议明确给出的 role 才能作为类型展示。
     info.agent_type = agent_role.map(str::to_owned);
-    let length = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-    let Ok(mut file) = File::open(path) else { return };
-    if file.seek(SeekFrom::Start(body_start)).is_err() { return; }
-    let mut reader = BufReader::new(file.take(length.saturating_sub(body_start).min(MAX_FILE)));
-    let mut lines = 0u64;
-    let mut offset = body_start;
-    let mut content_start = body_start;
-    let mut parent_snapshot = false;
-    let mut terminal: Option<&str> = None;
-    while let Ok(Some((value, count))) = bounded_line(&mut reader) {
-        offset += count;
-        lines += 1;
-        if lines > 20000 { break; }
-        if value["type"] == "session_meta" && value["payload"]["id"].as_str() == Some(parent_native) {
-            // fork_turns=all 把父 rollout 快照接在子 meta 后；它不是子代理对话。
-            parent_snapshot = true;
-            continue;
-        }
-        let lifecycle = value["payload"]["type"].as_str().or_else(|| value["type"].as_str());
-        if parent_snapshot {
-            // 当前协议用 turn_aborted 封住继承快照，下一条才是子代理自己的上下文。
-            if lifecycle == Some("turn_aborted") {
-                content_start = offset;
-                parent_snapshot = false;
-                terminal = None;
-            }
-            continue;
-        }
-        // FINAL_ANSWER 只是消息包装，不是生命周期协议；以最后一个显式终态为准。
-        match lifecycle {
-            Some("task_complete") => terminal = Some("completed"),
-            Some("task_failed") => terminal = Some("failed"),
-            Some("turn_aborted") => terminal = Some("stopped"),
-            _ => {}
-        }
-    }
-    // 若原生日志未显式写入 task_complete 等终态，但该子代理在 Forge 中已被父回合或外部标记为已终结（或已非 running），
-    // 采用已有终态进行导入，避免子代理正文永远处于空白。
-    let existing_status = target.meta.agent.as_ref().map(|info| info.status.clone());
-    let terminal = terminal.or_else(|| {
-        existing_status.as_deref().filter(|s| !s.is_empty() && *s != "running")
-    });
-    let Some(status) = terminal else {
-        // 运行中的 rollout 还会增长；先补标题，不导入半截正文，终态出现后再一次性落盘。
+    // 旧版已完成的一次性导入没有游标，不能从头再灌一次正文。
+    if target.meta.native_id.as_deref() == Some(child_id) && !source_path(base, &child).exists() {
         let _ = target.save();
         return;
-    };
-    let imported = target.meta.native_id.as_deref() == Some(child_id);
-    // 正文分批落盘中途失败也要走到收尾（绑定 + 状态照记）：提前返回的话，下一次
-    // 导入会从 content_start 重灌，已写入的批次全部翻倍。截断比重复好。
-    let mut body_failed = false;
-    if !imported {
-        // 终态后从头投影一次；上面的第一遍只判终态，避免为运行中的大日志攒一份正文。
-        let Ok(mut file) = File::open(path) else { return };
-        if file.seek(SeekFrom::Start(content_start)).is_err() { return; }
-        let mut reader = BufReader::new(file.take(length.saturating_sub(content_start).min(MAX_FILE)));
-        let mut projection = ProjectionState::default();
-        let mut batch = vec![];
-        let mut lines = 0u64;
-        while let Ok(Some((value, _))) = bounded_line(&mut reader) {
-            if value["type"] != "session_meta" {
-                batch.extend(project_with_state(Provider::Codex, &value, lines, &mut projection));
+    }
+    let source = Source { provider: Provider::Codex, native_id: child_id.to_owned(), path: path.to_path_buf(), workspace: root.to_owned() };
+    if save_source(base, &child, &source).is_err() || target.bind(child_id.to_owned()).is_err() { return; }
+    // 列表发现只能登记路径；运行中的游标由 Worker 独占并广播，避免抢先消费而漏通知。
+    if super::registry::for_session(&parent_forge).is_some() { return; }
+    // 离线发现没有实时刷新循环，读完当前完整尾部再返回。
+    while let Ok(events) = poll_codex_subagent(&mut target, &source, true) {
+        if events.is_empty() { break; }
+    }
+}
+
+/// 调用方持有 IO_LOCK。只读取完整行，正文和恢复状态同批提交，返回本批供实时广播。
+fn poll_codex_subagent(target: &mut Store, source: &Source, follow_lifecycle: bool) -> Result<Vec<super::events::Event>, String> {
+    let base = target.dir.parent().ok_or("子会话路径无效")?.to_path_buf();
+    let id = target.meta.session_id.clone();
+    if target.meta.provider != Provider::Codex || target.meta.native_id.as_deref() != Some(&source.native_id) {
+        return Err("子代理原生标识不匹配".into());
+    }
+    let (mut offset, mut projection) = checkpoint(&base, &id)?;
+    let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
+    if length > MAX_FILE || length < offset { return Err("子代理历史过大或已被截断；保留现有镜像".into()); }
+    if length == offset { return Ok(vec![]); }
+    let mut file = File::open(&source.path).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file.take(length - offset));
+    let start = offset;
+    let mut batch = vec![];
+    let mut status = None;
+    while let Some((value, count)) = bounded_line(&mut reader)? {
+        let seed = offset;
+        offset += count;
+        let payload = &value["payload"];
+        let lifecycle = payload["type"].as_str().or_else(|| value["type"].as_str());
+        if seed == 0 {
+            if value["type"] == "session_meta" {
+                if payload["id"].as_str() != Some(&source.native_id)
+                    || payload["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, &source.workspace)) {
+                    return Err("子代理历史归属不一致".into());
+                }
+                projection.codex_parent = payload["source"]["subagent"]["thread_spawn"]["parent_thread_id"].as_str().map(str::to_owned);
+                if projection.codex_parent.is_none() { return Err("子代理历史缺少父线程".into()); }
+            } else { return Err("子代理历史缺少线程元数据".into()); }
+        } else if projection.codex_snapshot_depth > 0 {
+            // 父代理也可能继承祖先快照，每层都以 turn_aborted 封口，深度须跨批保留。
+            if value["type"] == "session_meta" && payload["id"].as_str() != Some(&source.native_id) {
+                projection.codex_snapshot_depth += 1;
+            } else if lifecycle == Some("turn_aborted") { projection.codex_snapshot_depth -= 1; }
+        } else if value["type"] == "session_meta" {
+            if payload["id"].as_str() == projection.codex_parent.as_deref() {
+                projection.codex_snapshot_depth = 1;
+            } else if payload["id"].as_str() != Some(&source.native_id) {
+                return Err("子代理历史线程发生变化".into());
             }
-            lines += 1;
-            if batch.len() >= 128 {
-                if target.append("native", std::mem::take(&mut batch)).is_err() { body_failed = true; break; }
+        } else {
+            if value["type"] == "turn_context" && payload["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, &source.workspace)) {
+                return Err("子代理历史工作区发生变化".into());
             }
-            if lines >= 20000 { break; }
+            let next_status = match lifecycle {
+                Some("task_started") => Some("running"),
+                Some("task_complete") => Some("completed"),
+                Some("task_failed") => Some("failed"),
+                Some("turn_aborted") => Some("stopped"),
+                _ => None,
+            };
+            // 运行时状态由父连接维护；补采的旧 task_started 不能覆盖已到达的 completed。
+            if let Some(next) = next_status.filter(|_| follow_lifecycle) {
+                status = Some(next);
+                batch.push(("agent".into(), json!({"key":source.native_id,"sessionId":id,"status":next})));
+            }
+            batch.extend(project_with_state(Provider::Codex, &value, seed, &mut projection));
         }
-        if !body_failed && target.append("native", batch).is_err() { body_failed = true; }
+        if batch.len() >= 128 || offset - start >= 4 * 1024 * 1024 { break; }
     }
-    // 导入标记：正文失败就不再追加；真正的防重闸是下面统一做的 bind。
-    if !imported && !body_failed {
-        let _ = target.append("native", vec![("agent".into(), json!({"key":child_id,"status":status,"imported":true}))]);
-    }
-    if let Some(info) = target.meta.agent.as_mut() {
+    if offset == start { return Ok(vec![]); }
+    batch.push(("history_checkpoint".into(), json!({"offset":offset,"projection":projection})));
+    let events = target.append("native", batch)?;
+    if let (Some(status), Some(info)) = (status, target.meta.agent.as_mut()) {
         info.status = status.into();
-        info.ended_at.get_or_insert_with(|| {
-            fs::metadata(path).and_then(|meta| meta.modified()).ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |duration| duration.as_millis() as u64)
-        });
+        info.ended_at = (status != "running").then(super::now_ms);
+        // 日志已经提交，元数据失败不能吞掉本批广播；下次仍按日志游标继续。
+        let _ = target.save();
     }
-    let _ = target.bind(child_id.to_owned());
-    let _ = target.save();
+    let _ = save_checkpoint(&base, &id, offset, &projection);
+    Ok(events)
 }
 fn save_source(base: &Path, id: &str, source: &Source) -> Result<(), String> {
     crate::sys::write_atomic(
@@ -741,9 +744,13 @@ fn save_source(base: &Path, id: &str, source: &Source) -> Result<(), String> {
         &serde_json::to_string(source).map_err(|e| e.to_string())?,
     )
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ProjectionState {
     pending_task_creates: HashMap<String, Value>,
+    #[serde(default)]
+    codex_parent: Option<String>,
+    #[serde(default)]
+    codex_snapshot_depth: u32,
 }
 
 /// 原生游标之外还要保留跨批投影状态；否则 TaskCreate 与结果分属两批时会丢关联。
@@ -790,6 +797,9 @@ fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     while let Some((event, _)) = bounded_line(&mut reader)? {
         if event["kind"] == "history_checkpoint" {
             offset = event["data"]["offset"].as_u64().ok_or("原生历史游标损坏")?;
+            if let Some(projection) = event["data"].get("projection") {
+                state = serde_json::from_value(projection.clone()).map_err(|e| e.to_string())?;
+            }
         }
         if event["kind"] == "tool" {
             let data = &event["data"];
@@ -822,9 +832,7 @@ fn save_checkpoint(
         session_id: id.to_owned(),
         mirror_length,
         source_offset,
-        projection: ProjectionState {
-            pending_task_creates: projection.pending_task_creates.clone(),
-        },
+        projection: projection.clone(),
     };
     let text = serde_json::to_string(&value).map_err(|e| e.to_string())?;
     if text.len() as u64 > MAX_CHECKPOINT_BYTES {
@@ -1056,15 +1064,34 @@ pub fn sync_subagent(base: &Path, id: &str, root: &str) -> Result<bool, String> 
     if meta.provider == Provider::Claude {
         return sync_claude_subagent(base, id, &meta, root);
     }
-    if meta.provider != Provider::Codex { return Ok(false); }
-    let Some(agent) = &meta.agent else { return Ok(false); };
-    if agent.tool_id.is_empty() { return Ok(false); }
-    // 已经绑定并且已有历史事件时，无需重复从头全量导入
-    if meta.native_id.as_deref() == Some(&agent.tool_id) {
-        return Ok(false);
+    Ok(!sync_codex_subagent(base, id, root, true, true)?.is_empty())
+}
+
+/// 已定位的 rollout 只 seek 新增尾部；找不到路径时由 Worker 限频允许发现扫描。
+pub fn sync_codex_subagent(base: &Path, id: &str, root: &str, discover: bool, drain: bool) -> Result<Vec<super::events::Event>, String> {
+    let meta = Store::metadata(&base.join(id), root)?;
+    if meta.provider != Provider::Codex { return Ok(vec![]); }
+    let Some(agent) = &meta.agent else { return Ok(vec![]); };
+    if agent.tool_id.is_empty() { return Ok(vec![]); }
+    if let Some(source) = source(base, id, root)? {
+        let mut target = Store::open(base, id, root, Provider::Codex, &meta.title, "")?;
+        let follow_lifecycle = !meta.parent_session_id.as_deref().is_some_and(|parent| super::registry::for_session(parent).is_some());
+        let mut events = vec![];
+        loop {
+            let batch = match poll_codex_subagent(&mut target, &source, follow_lifecycle) {
+                Ok(batch) => batch,
+                // 前批已经持久化，必须先交给调用方广播；错误留到下一次空批重试报告。
+                Err(_) if !events.is_empty() => return Ok(events),
+                Err(error) => return Err(error),
+            };
+            let done = batch.is_empty();
+            events.extend(batch);
+            if !drain || done { return Ok(events); }
+        }
     }
+    if !discover || meta.native_id.as_deref() == Some(&agent.tool_id) { return Ok(vec![]); }
     let Some(sessions_dir) = roots()?.into_iter().find_map(|(p, d)| if p == Provider::Codex { Some(d) } else { None }) else {
-        return Ok(false);
+        return Ok(vec![]);
     };
     let mut target_path = None;
     // 与 discover 同一预算：大历史目录下 5000 可能扫不到子代理的 rollout，回填就静默失败。
@@ -1077,13 +1104,15 @@ pub fn sync_subagent(base: &Path, id: &str, root: &str) -> Result<bool, String> 
             break;
         }
     }
-    let Some(path) = target_path else { return Ok(false); };
+    let Some(path) = target_path else { return Ok(vec![]); };
     let parent_id = meta.parent_session_id.clone().unwrap_or_default();
     let known = std::collections::HashMap::new();
     let mut known_subagents = std::collections::HashMap::new();
     known_subagents.insert(agent.tool_id.clone(), (id.to_string(), parent_id));
     import_codex_subagent(base, &path, root, &known, &known_subagents);
-    Ok(true)
+    // 运行中 importer 只登记路径，由本调用消费并返回可广播事件。
+    if source(base, id, root)?.is_none() { return Ok(vec![]); }
+    sync_codex_subagent(base, id, root, false, drain)
 }
 /// 跳过刚刚被 Forge 记录过的那段原生内容，避免同一轮消息显示两遍。
 pub fn mark_current(target: &mut Store, base: &Path) -> Result<Vec<super::events::Event>, String> {
@@ -1884,6 +1913,10 @@ mod tests {
             }}}}}),
             // fork_turns=all 会把父线程快照接在子 meta 后，以 turn_aborted 封口。
             json!({"type":"session_meta","payload":{"id":parent_native,"cwd":root,"source":"vscode"}}),
+            // 父代理也可能 fork 过祖先；内层封口不能提前结束外层父快照。
+            json!({"type":"session_meta","payload":{"id":"grandparent","cwd":root,"source":"vscode"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"祖先消息"}]}}),
+            json!({"type":"turn_aborted"}),
             json!({"type":"response_item","payload":{"type":"message","role":"user","id":"parent-u","content":[{"type":"input_text","text":"父会话内容"}]}}),
             json!({"type":"response_item","payload":{"type":"message","role":"assistant","id":"parent-a","content":[{"type":"output_text","text":"父会话回复"}]}}),
             json!({"type":"event_msg","payload":{"type":"task_complete"}}),
@@ -1895,13 +1928,27 @@ mod tests {
         ];
         let known = HashMap::from([(binding_key(Provider::Codex, parent_native), parent_forge.into())]);
 
-        // 父快照里虽有 task_complete，子回合尚未结束时仍只能补标题，不能误导入或误报完成。
+        // 父快照跨轮询，且旁路缓存损坏时，恢复后仍不能泄漏父消息或父终态。
+        fs::write(&native, records[..4].iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
+        fs::write(checkpoint_path(&base, &child), "invalid cache").unwrap();
+        let answer_index = records.len() - 2;
+        let partial = records[answer_index].to_string();
+        fs::write(&native, records[..answer_index].iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n" + &partial[..30]).unwrap();
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
+        let page = Store::page(&base, &child, &workspace, Window::After(0), 100, true).unwrap();
+        assert_eq!(page.events.iter().filter(|event| event.kind == "user").count(), 1);
+        assert!(!page.events.iter().any(|event| event.kind == "message" || event.data["status"] == "completed"));
+
+        // 父快照里的终态不能污染子代理；正文应在子回合结束前就可读取。
         fs::write(&native, records[..records.len() - 1].iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
         import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
         let running = Store::metadata(&base.join(&child), &workspace).unwrap();
         assert_eq!(running.agent.unwrap().status, "running");
-        assert!(running.native_id.is_none());
-        assert!(Store::page(&base, &child, &workspace, Window::After(0), 100, true).unwrap().events.is_empty());
+        assert_eq!(running.native_id.as_deref(), Some(child_native));
+        let page = Store::page(&base, &child, &workspace, Window::After(0), 100, true).unwrap();
+        assert!(page.events.iter().any(|event| event.kind == "message" && event.data["text"] == "链路正常"));
+        assert!(!page.events.iter().any(|event| event.data["text"] == "父会话内容"));
 
         fs::write(&native, records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
         import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
@@ -1918,7 +1965,46 @@ mod tests {
         let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
         assert_eq!(page.events.iter().filter(|event| event.kind == "user" && event.data["text"] == "检查导入链路").count(), 1);
         assert_eq!(page.events.iter().filter(|event| event.kind == "message" && event.data["text"] == "链路正常").count(), 1);
-        assert!(!page.events.iter().any(|event| event.data["text"] == "父会话内容" || event.data["text"] == "父会话回复"));
+        assert!(!page.events.iter().any(|event| matches!(event.data["text"].as_str(), Some("父会话内容" | "父会话回复" | "祖先消息"))));
+
+        // 终态后迟到的输出仍能增量广播；同一子线程续聊会重新进入 running。
+        let late = json!({"type":"response_item","payload":{"type":"message","role":"assistant","id":"late","content":[{"type":"output_text","text":"迟到的正文"}]}});
+        let complete = records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        let started = json!({"type":"event_msg","payload":{"type":"task_started"}}).to_string() + "\n";
+        let complete = complete + &started + &late.to_string() + "\n";
+        fs::write(&native, &complete).unwrap();
+        let (run, _) = super::super::registry::Run::reserve("codex-history-live".into(), parent_forge.into(), workspace.clone(), workspace.clone()).unwrap();
+        // 列表发现不能抢 Worker 游标；延迟的 task_started 也不能覆盖协议已知终态。
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
+        let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
+        assert!(!page.events.iter().any(|event| event.data["text"] == "迟到的正文"));
+        let events = sync_codex_subagent(&base, &child, &workspace, false, false).unwrap();
+        assert_eq!(events.iter().filter(|event| event.kind == "message" && event.data["text"] == "迟到的正文").count(), 1);
+        assert!(!events.iter().any(|event| event.kind == "agent"));
+        assert_eq!(Store::metadata(&base.join(&child), &workspace).unwrap().agent.unwrap().status, "completed");
+        assert!(sync_codex_subagent(&base, &child, &workspace, false, false).unwrap().is_empty());
+        run.finish();
+        let mut resumed = complete + &started;
+        fs::write(&native, &resumed).unwrap();
+        let events = sync_codex_subagent(&base, &child, &workspace, false, false).unwrap();
+        assert!(events.iter().any(|event| event.kind == "agent" && event.data["status"] == "running"));
+        assert_eq!(Store::metadata(&base.join(&child), &workspace).unwrap().agent.unwrap().status, "running");
+
+        // 多批收尾后遇到坏行，仍要返回已提交批供广播；修复坏行后接着读，不重复。
+        for index in 0..130 {
+            resumed.push_str(&json!({"type":"response_item","payload":{"type":"message","role":"assistant","id":format!("batch-{index}"),"content":[{"type":"output_text","text":"分批正文"}]}}).to_string());
+            resumed.push('\n');
+        }
+        fs::write(&native, resumed.clone() + "{broken}\n").unwrap();
+        let committed = sync_codex_subagent(&base, &child, &workspace, false, true).unwrap();
+        assert_eq!(committed.iter().filter(|event| event.kind == "message").count(), 128);
+        assert!(sync_codex_subagent(&base, &child, &workspace, false, true).is_err());
+        fs::write(&native, resumed).unwrap();
+        let remaining = sync_codex_subagent(&base, &child, &workspace, false, true).unwrap();
+        assert_eq!(remaining.iter().filter(|event| event.kind == "message").count(), 2);
+        // 原生日志被截断必须报错，已有正文不能被清空或从头重复导入。
+        fs::write(&native, "{}\n").unwrap();
+        assert!(sync_codex_subagent(&base, &child, &workspace, false, false).is_err());
         fs::remove_dir_all(temp).unwrap();
     }
 

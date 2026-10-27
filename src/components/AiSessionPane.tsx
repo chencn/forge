@@ -1852,8 +1852,8 @@ export default function AiSessionPane({
           </button>
         </div>;
       })() : null}
-      {/* 子代理状态条：实时状态来自父连接；仅在已有正文条目时在顶部展示，无条目时由下方专属空状态呈现 */}
-      {isAgentSession && runtime.entries.length > 0 ? (() => {
+      {/* 子代理刚启动时正文可能尚未落盘，状态条仍应立即显示生命周期。 */}
+      {isAgentSession ? (() => {
         // 按会话 id 认领自己；万一父日志里混进别的 key，也不至于拿别人的状态。
         const self = runtime.agents.find((agent) => agent.sessionId === session.id) ?? runtime.agents[0];
         const status = self?.status ?? session.agent?.status ?? "";

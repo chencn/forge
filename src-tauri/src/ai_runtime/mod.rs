@@ -1145,6 +1145,8 @@ struct AgentRoute {
     /// meta.json 写失败后置位：本轮不再尝试改元数据（避免每条事件重复报错），
     /// 事件照常追加——正文日志与 meta 是两个文件，后者坏了不该拖垮前者。
     meta_broken: bool,
+    /// 历史读取错误只提示一次，后续轮询仍可恢复，不影响协议事件路由。
+    history_warned: bool,
 }
 
 /// 子会话 id 由父会话 id 与路由 key（Claude 的 parent_tool_use_id、Codex 的
@@ -1231,8 +1233,8 @@ fn open_agent_route(
         if info.model.is_none() {
             info.model = data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()).map(str::to_owned);
         }
-        info.status = "running".into();
-        info.ended_at = None;
+        info.status = data["status"].as_str().unwrap_or("running").into();
+        info.ended_at = (info.status != "running").then(now_ms);
     }
     target.save()?;
     // spawn 通知若带任务正文（Claude 的 Agent 工具入参），作为子会话的
@@ -1243,6 +1245,11 @@ fn open_agent_route(
             let _ = app.emit(CHANNEL, &events);
         }
     }
+    // 首次生命周期也属于子会话；没有正文时仍要立即显示运行状态。
+    let mut initial = data.clone();
+    initial["sessionId"] = json!(child);
+    let events = target.append(run_id, vec![("agent".into(), initial)])?;
+    let _ = app.emit(CHANNEL, &events);
     Ok(Some((child, target)))
 }
 
@@ -1489,7 +1496,8 @@ impl Worker {
             match open_agent_route(&self.app, &base, &self.run.session_id, &self.run.workspace, self.store.meta.provider, &key, &title, &data, &self.run.id) {
                 Ok(None) => return Ok(()),
                 Ok(Some((child, store))) => {
-                    self.agents.insert(key.clone(), AgentRoute { store, last_status: "running".into(), meta_broken: false });
+                    let last_status = data["status"].as_str().unwrap_or("running").to_owned();
+                    self.agents.insert(key.clone(), AgentRoute { store, last_status, meta_broken: false, history_warned: false });
                     // 父侧卡片与抽屉靠它跳进子会话；派生规则不暴露给前端。
                     let mut data = data;
                     if let Some(object) = data.as_object_mut() { object.insert("sessionId".into(), json!(child)); }
@@ -1583,6 +1591,28 @@ impl Worker {
                 Ok(())
             }
         }
+    }
+    /// Codex 父连接不转发子线程正文，从已定位的 rollout 增量补采并广播。
+    fn poll_codex_agents(&mut self, discover: bool, drain: bool) {
+        if self.store.meta.provider != Provider::Codex || self.agents.is_empty() { return; }
+        let Some(base) = self.store.dir.parent().map(Path::to_path_buf) else { return; };
+        let mut warnings = vec![];
+        for route in self.agents.values_mut() {
+            let result = (|| {
+                let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                history::sync_codex_subagent(&base, &route.store.meta.session_id, &self.run.workspace, discover, drain)
+            })();
+            match result {
+                Ok(events) => { if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); } }
+                Err(cause) if !route.history_warned => {
+                    route.history_warned = true;
+                    warnings.push(format!("子代理「{}」历史同步失败，将继续重试：{cause}", route.store.meta.title));
+                }
+                Err(_) => {}
+            }
+        }
+        // queue 可能重入 IO_LOCK，必须等各子会话的读取锁释放后再提示。
+        for warning in warnings { let _ = self.notice_safely(warning); }
     }
     /// 把子代理的对话事件攒进批缓冲，随 flush 统一落盘与广播。
     /// 句柄未建（生命周期事件还没到）或已登记失败就丢弃：
@@ -1719,10 +1749,18 @@ impl Worker {
         let mut stopping = None;
         let mut last_output = Instant::now();
         let mut summary_poll = Instant::now();
+        let mut agent_poll = Instant::now();
+        let mut agent_discovery = Instant::now() - Duration::from_secs(2);
         let mut summary_offset = self.summary_start;
         let mut connected = false;
         let mut reconnects = 0u8;
         loop {
+            if agent_poll.elapsed() >= Duration::from_millis(250) {
+                let discover = agent_discovery.elapsed() >= Duration::from_secs(2);
+                self.poll_codex_agents(discover, false);
+                agent_poll = Instant::now();
+                if discover { agent_discovery = Instant::now(); }
+            }
             // CLI 常常只把摘要写进原生历史；运行期间补采并广播，不等回合结束。
             if self.compaction_index > 0 && summary_poll.elapsed() >= Duration::from_secs(2) {
                 self.flush()?;
@@ -1908,6 +1946,8 @@ impl Worker {
         Ok(())
     }
     fn finish(&mut self, status: &str, error: Option<String>) {
+        // 生命周期通知可能早于最后的正文落盘；摘除路由前读完当前完整尾部。
+        self.poll_codex_agents(true, true);
         // 进程结束后所有待答复请求都已失效；卡片不能继续停在「可批准」。
         for id in self.pending.keys().cloned().collect::<Vec<_>>() {
             let _ = self.queue("invalidated", json!({"requestId":id}));
@@ -2270,9 +2310,9 @@ pub async fn ai_runtime_load(
         if agent_session {
             let events_len = dir.join("events.jsonl").metadata().map(|m| m.len()).unwrap_or(0);
             // 只要事件日志尚无实质性事件内容（<= 256 字节），或者尚未记录 native_id，打开时均触发按需回填
-            let needs_import = events_len <= 256 || meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false);
-            // 父会话正在运行时跳过回填：rollout 还没有终态，导不出正文，只会白扫
-            // 一遍历史目录，还会跟 live 路由抢子会话的元数据（见 revise_agent_meta）。
+            let needs_import = events_len <= 256 || meta.as_ref().map(|m| m.native_id.is_none()).unwrap_or(false)
+                || meta.as_ref().is_some_and(|m| m.provider == Provider::Codex) && dir.join("native-source.json").exists();
+            // 运行中由 Worker 消费并广播；打开视图不抢增量游标。空闲时继续补齐尾部。
             let parent_busy = meta.as_ref()
                 .and_then(|m| m.parent_session_id.clone())
                 .is_some_and(|parent| registry::for_session(&parent).is_some());
