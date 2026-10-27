@@ -6,7 +6,6 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Bell,
-  Bot,
   Check,
   CheckCheck,
   Eraser,
@@ -43,6 +42,7 @@ import ExplorerTree from "./components/ExplorerTree";
 import EntryIcon from "./components/EntryIcon";
 import EditorTabs from "./components/EditorTabs";
 import type { TabItem, TabKind } from "./components/EditorTabs";
+import AiSessionTabMenu from "./components/AiSessionTabMenu";
 import { createEditorSplit, partitionEditorTabs, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
 import type { AiFilePreview } from "./lib/aiFilePreview";
 import LspStatusBar from "./components/LspStatusBar";
@@ -87,7 +87,6 @@ import { installReadyUpdate, relaunchApp, runAutoUpdateFlow } from "./lib/update
 import UpdateStatusBar from "./components/UpdateStatusBar";
 import { MavenDock } from "./components/MavenTool";
 import { mavenIconVisible, reloadMaven, useMavenDetection, useMavenProject } from "./hooks/useMavenProject";
-import { AiDockSlotContext } from "./components/AiDockSlots";
 import { AiInputProvider, type AiInputMenuFactory } from "./components/AiInputContext";
 import StatusBreadcrumb from "./components/StatusBreadcrumb";
 import { shouldCopyDomSelection } from "./lib/copySelection";
@@ -294,7 +293,7 @@ type DiffChain =
   | { kind: "against"; chainId: string; revision: string; leftLabel: string; items: DiffFileRef[] };
 
 /** 有正文侧栏的工具可待在任一侧；终端、运行和日志只移动入口，正文仍在底部。 */
-type Panel = "explorer" | "git" | "ai" | "agents" | "maven" | "notifications";
+type Panel = "explorer" | "git" | "ai" | "maven" | "notifications";
 type RightDockPanel = Panel;
 
 /** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。通知不占底部，停靠时进右侧工具窗口。 */
@@ -307,7 +306,6 @@ const RAIL_LABEL: Record<Panel, TranslationKey> = {
   explorer: "panel.explorer",
   git: "panel.commit",
   ai: "ai.title",
-  agents: "ai.agent.nav",
   maven: "maven.title",
   notifications: "notifications.title",
 };
@@ -904,14 +902,6 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   /** 右侧工具窗口独立占一列，拖动它左缘的竖分隔条调整宽度。 */
   const [rightSidebarWidth, setRightSidebarWidth] = useState(320);
-  /** 右栏里的子代理列表是否有内容（由 AiSessionPane 上报）。 */
-  const [agentDockAvailable, setAgentDockAvailable] = useState(false);
-  /** 子代理列表的 portal 挂载点；挂上后经 Context 交给 AiSessionPane。 */
-  const [agentsSlot, setAgentsSlot] = useState<HTMLDivElement | null>(null);
-  const dockSlotValue = useMemo(
-    () => ({ agents: agentsSlot }),
-    [agentsSlot],
-  );
   /** 右侧工具窗口当前打开哪一块；null = 收起。结构照左侧：活动栏入口 + 单工具窗口。 */
   const [rightPanel, setRightPanel] = useState<RightDockPanel | null>(null);
   useEffect(() => {
@@ -1036,7 +1026,6 @@ export default function App() {
     explorer: true,
     git: true,
     ai: settings.aiAssistantsEnabled,
-    agents: agentDockAvailable,
     maven: mavenHere,
     notifications: notifications.length > 0,
   };
@@ -3902,8 +3891,6 @@ export default function App() {
     ? (editorGroups.primary.some((tab) => tab.id === activeTab) ? activeTab
       : editorGroups.primary.find((tab) => tab.id === editorSplit.primaryActiveId)?.id ?? editorGroups.primary.at(-1)?.id ?? null)
     : activeTab;
-  const dockAiTab = activeTab?.startsWith("ai|") ? activeTab
-    : primaryTab?.startsWith("ai|") ? primaryTab : secondaryTab?.startsWith("ai|") ? secondaryTab : null;
   const splitEditor = useStable((id: string, direction: "horizontal" | "vertical") => {
     setEditorSplit(createEditorSplit(tabCatalog.map((tab) => tab.id), activeTab, id, direction,
       editorSplit ? { ...editorSplit, primaryActiveId: primaryTab } : null).split);
@@ -4030,6 +4017,26 @@ export default function App() {
     setActiveTab("run-configs");
   }, []);
 
+  /** 页签栏右侧自定义操作区：当激活的标签是 AI 会话时，提供三点管理菜单。 */
+  const renderTabActions = useCallback(
+    (tabId: string | null) => {
+      if (!tabId || !settings.aiAssistantsEnabled || !tabId.startsWith("ai|") || tabId === "ai|draft") {
+        return null;
+      }
+      const session = aiSessions.sessions.find((s) => s.id === tabId.slice(3));
+      if (!session) return null;
+      return (
+        <AiSessionTabMenu
+          session={session}
+          onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
+          onNew={openAiDraft}
+          onSettings={() => openSettingsTab("aiCli")}
+        />
+      );
+    },
+    [settings.aiAssistantsEnabled, aiSessions.sessions, aiLifecycle, workspaceRoot, dispatchAiSession, openAiDraft, openSettingsTab]
+  );
+
   /**
    * 命令面板（随处搜索的动作页签）的动作表：只收能独立执行的应用级操作。
    * 上下文动作（关某个标签、重命名某个文件）依赖当前选中，不进表——
@@ -4055,7 +4062,7 @@ export default function App() {
     for (const pane of ["terminal", "log", "find"] as BottomPane[]) {
       commands.push({ id: `pane.open.${pane}`, label: t(BOTTOM_LABEL[pane]), run: () => dockPane(pane) });
     }
-    for (const tool of ["explorer", "git", "ai", "agents", "maven", "notifications"] as Panel[]) {
+    for (const tool of ["explorer", "git", "ai", "maven", "notifications"] as Panel[]) {
       commands.push({ id: `tool.open.${tool}`, label: t(RAIL_LABEL[tool]), run: () => openSideTool(tool) });
     }
     return commands;
@@ -4269,7 +4276,7 @@ export default function App() {
       ) : activeAiSession ? (
         // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、
         // 展开状态和本地事件订阅会串到新会话上。
-        <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} dockActive={dockAiTab === id} onAgentDockAvailable={dockAiTab === id ? setAgentDockAvailable : undefined} onOpenAgentDock={() => openSideTool("agents")} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
+        <AiSessionPane key={activeAiSession.id} session={activeAiSession} workspace={workspaceRoot} beforeSend={beforeAiSend} onSettings={() => openSettingsTab("aiCli")} onNew={openAiDraft} onOpenFile={aiOpenFile} onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)} onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)} onOpenSession={openAiSession} parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null} />
       ) : id === "settings" ? (
         <SettingsPage
           workspace={workspaceRoot}
@@ -4695,7 +4702,6 @@ export default function App() {
     const icon = id === "explorer" ? <ProjectIcon size={18} />
       : id === "git" ? <CommitIcon size={18} />
       : id === "ai" ? <Sparkles size={18} />
-      : id === "agents" ? <Bot size={18} />
       : id === "maven" ? <MavenIcon size={18} />
       : id === "terminal" ? <SquareTerminal size={18} />
       : id === "run" ? <Play size={17} />
@@ -4788,8 +4794,7 @@ export default function App() {
     </> : null}
   </>;
   const sidePanelBody = (tool: Panel) => <ErrorBoundary label={t(RAIL_LABEL[tool])} onError={reportError}>
-    {tool === "agents" ? <div ref={setAgentsSlot} />
-      : tool === "maven" ? <MavenDock
+    {tool === "maven" ? <MavenDock
         workspace={workspaceRoot}
         running={run.sessions.some((session) => session.status === "running" && session.config.id.startsWith("maven-goal:"))}
         onRun={(config) => { run.start(config); focusPane("run"); }}
@@ -4922,8 +4927,6 @@ export default function App() {
         }
       />
 
-      {/* 右侧侧边栏的 AI 区块挂载点经这层 Context 交给会话面板；面板用 portal 停靠进来。 */}
-      <AiDockSlotContext.Provider value={dockSlotValue}>
       <AiInputProvider value={aiInputMenu}>
       <div className="app-body">
           <nav className="activity-rail" aria-label={t("panel.explorer")}>
@@ -5085,7 +5088,7 @@ export default function App() {
               {/* AI 会话列表要占满正文剩余高度，“最近”才能相对面板底部定位。 */}
               <div className={`panel-body${panel === "ai" ? " is-ai-sessions" : ""}`}>
                 <ErrorBoundary label={t(RAIL_LABEL[panel])} onError={reportError}>
-                {panel === "agents" || panel === "maven" || panel === "notifications" ? sidePanelBody(panel) : panel === "explorer" ? (
+                {panel === "maven" || panel === "notifications" ? sidePanelBody(panel) : panel === "explorer" ? (
                   workspaceRoot ? (
                     <ExplorerTree
                       root={workspaceRoot}
@@ -5218,6 +5221,7 @@ export default function App() {
                       onCloseSplit={closeSplit}
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
+                      actions={renderTabActions(primaryTab)}
                     />
                   ) : null}
                   <div className="editor-pane-body">
@@ -5294,6 +5298,7 @@ export default function App() {
                       onCloseSplit={closeSplit}
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
+                      actions={renderTabActions(secondaryTab)}
                     />
                   ) : null}
                   <div className="editor-pane-body">
@@ -5323,6 +5328,7 @@ export default function App() {
                     onSplitRight={(id) => splitEditor(id, "horizontal")}
                     onSplitDown={(id) => splitEditor(id, "vertical")}
                     onShowLocalHistory={showLocalHistory}
+                    actions={renderTabActions(activeTab)}
                   />
                 ) : null}
                 <ErrorBoundary label={t("editor.region")} onError={reportError}>
@@ -5459,8 +5465,6 @@ export default function App() {
               <div className={`panel-body${activeRightPanel === "ai" ? " is-ai-sessions" : ""}`}>
                 {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai"
                   ? sidePanelBody(activeRightPanel) : null}
-                {/* AI 会话两个面板的 portal 挂载点：内容由 AiSessionPane 塞进来。 */}
-                {activeRightPanel === "agents" ? <div ref={setAgentsSlot} /> : null}
                 {activeRightPanel === "maven" ? (
                   <MavenDock
                     workspace={workspaceRoot}
@@ -5504,7 +5508,6 @@ export default function App() {
         </div>
       </div>
       </AiInputProvider>
-      </AiDockSlotContext.Provider>
 
       <footer className="global-status">
         {deleteStatus ? (

@@ -5,7 +5,6 @@ export type ToolRailId =
   | "ai"
   | "explorer"
   | "git"
-  | "agents"
   | "maven"
   | "terminal"
   | "run"
@@ -24,7 +23,6 @@ export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   ai: "top",
   explorer: "top",
   git: "top",
-  agents: "top",
   maven: "top",
   terminal: "bottom",
   run: "bottom",
@@ -34,7 +32,7 @@ export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
 
 export const DEFAULT_TOOL_RAIL_LAYOUT: ToolRailLayout = {
   left: { top: ["explorer", "git"], bottom: ["terminal", "run", "log"] },
-  right: { top: ["ai", "agents", "maven"], bottom: ["notifications"] },
+  right: { top: ["ai", "maven"], bottom: ["notifications"] },
 };
 
 const TOOL_IDS = Object.keys(TOOL_RAIL_GROUP) as ToolRailId[];

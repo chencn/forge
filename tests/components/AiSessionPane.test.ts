@@ -221,15 +221,17 @@ describe("AI conversation pane", () => {
     expect(html).toContain('class="ai-send-button is-stop"');
     expect(html).toContain('aria-label="ai.runtime.stop"');
   });
-  it("在父会话内提示正在运行的子代理", () => {
-    // 右侧栏关闭时，父会话仍必须明确告诉用户已启动了哪个子代理，并提供打开侧栏的入口。
+  it("在父会话内提示正在运行的子代理并触发浮岛展开", () => {
+    // 父会话内明确提示子代理、悬浮胶囊出现，并提供打开浮岛工作区卡片的入口。
     h.state.agents = [{ key: "agent-1", title: "检查子代理提示", status: "running", sessionId: "child-1", seq: 1, updatedAt: 1 }];
     const { html, pane } = render();
     expect(html).toContain("检查子代理提示");
     expect(html).toContain('aria-label="ai.agents.openDock"');
+    expect(html).toContain('class="ai-head-tasklist"');
     const trigger = findAll(pane, "button").find((button) => button.props.className === "ai-parent-agent-trigger");
+    expect(trigger).toBeDefined();
+    // 触发点击展开浮岛工作区卡片
     trigger?.props.onClick();
-    expect(h.openAgents).toHaveBeenCalledOnce();
   });
   it("连接阶段可中断，但不会伪装成可编辑队列", () => {
     h.state.status = "submitting"; h.state.runId = "connecting";
@@ -584,6 +586,8 @@ describe("AI conversation pane", () => {
     h.activity = "running"; h.ownedRun = "run";
     const { html } = render();
     expect(html).toContain("ai-live-stats");
+    expect(html).toContain('class="ai-live-provider-icon is-running is-');
+    expect(html).toContain("ai-provider-icon");
     expect(html).toContain("ai.runtime.running");
     // 参考的运行行不回显提示词；它属于时间线本身。
     expect(html).not.toContain("把分页改成从最新一页开始");
@@ -703,21 +707,20 @@ describe("AI conversation pane", () => {
     h.ownedRun = null;
     expect(render().html).toContain('class="ai-head-tasklist" title="ai.chat.taskList · 运行测试套件" aria-label="ai.chat.taskList" aria-haspopup="dialog" aria-expanded="false"');
 
-    // 停靠化之后任务清单是右侧工具窗口里的正文（标题栏由框架统一提供）。
+    // 停靠化之后任务清单是右侧独立卡片（对照 6.png 浮岛卡片模式）。
     const html = renderToStaticMarkup(createElement(AiTaskListDockPanel, {
       taskList: h.state.taskList!, running: false, onJump: vi.fn(),
     }));
     expect(html).toContain('class="ai-taskdock"');
-    expect(html).toContain('class="ai-taskdock-meta"');
-    expect(html).toContain('class="ai-taskchip-body"');
-    // 包含折叠按钮、清单项与统计进度
+    expect(html).toContain('class="ai-taskdock-header"');
+    expect(html).toContain('class="ai-taskdock-body"');
+    // 包含折叠视窗、清单项与进程步数
     expect(html).toContain("检查代码结构");
     expect(html).toContain("运行测试套件");
     expect(html).toContain("汇总检查报告");
-    expect(html).toContain("1/3");
-    expect(html).toContain("33%");
-    // 会话页正文不再包含任务清单：它停靠在右侧侧边栏（portal 渲染）。
-    expect(render().html).not.toContain("ai-taskchip-body");
+    expect(html).toContain("2/3");
+    // 会话页正文不再包含任务清单：它停靠在右侧浮岛卡片（portal 渲染）。
+    expect(render().html).not.toContain("ai-taskdock-body");
 
     // 任务全部已完成时：即使仍在执行中也绝不默认展开，避免遮挡聊天界面。
     h.state.status = "running";
@@ -764,5 +767,54 @@ describe("AI conversation pane", () => {
     expect(html.match(/class="ai-turn-anchor-wrapper"/g)).toHaveLength(2);
     // 每一条信息一条线（单刻度线，hover 时拉长而非背景框）
     expect(html.match(/class="ai-turn-line"/g)).toHaveLength(2);
+  });
+  it("左侧消息指示线永远以正中间的中位项居中，绝不以最后一项居中", () => {
+    // 构造 3 轮会话，中位项必须是第 2 项（索引 1），第 1 项和第 3 项（最后一项）绝不能是 median
+    h.state.entries = [
+      { id: "u1", runId: "r1", seq: 1, kind: "user", text: "第 1 轮提问" },
+      { id: "a1", runId: "r1", seq: 2, kind: "assistant", text: "第 1 轮回答" },
+      { id: "u2", runId: "r2", seq: 3, kind: "user", text: "第 2 轮提问（正中间）" },
+      { id: "a2", runId: "r2", seq: 4, kind: "assistant", text: "第 2 轮回答" },
+      { id: "u3", runId: "r3", seq: 5, kind: "user", text: "第 3 轮提问（末尾项）" },
+      { id: "a3", runId: "r3", seq: 6, kind: "assistant", text: "第 3 轮回答" },
+    ];
+    const { html } = render();
+    // 共有 3 个锚点
+    expect(html.match(/class="ai-turn-anchor-wrapper/g)).toHaveLength(3);
+    // 中位锚点必须且仅有 1 个
+    expect(html.match(/data-median="true"/g)).toHaveLength(1);
+    // 验证中位项恰好是正中间的那项（包含第 2 轮提问的标题），而非第 3 轮（末尾项）
+    const medianMatch = html.match(/<div class="ai-turn-anchor-wrapper"[^>]*data-median="true"[^>]*>[\s\S]*?title="([^"]+)"/);
+    expect(medianMatch?.[1]).toContain("第 2 轮提问（正中间）");
+    expect(medianMatch?.[1]).not.toContain("第 3 轮提问（末尾项）");
+  });
+  it("只有子代理时渲染胶囊且点击可展开收起侧栏浮岛", () => {
+    h.state.taskList = undefined;
+    h.state.agents = [
+      { key: "a1", sessionId: "s1", status: "completed", title: "代码审查", seq: 1, updatedAt: 1 },
+      { key: "a2", sessionId: "s2", status: "completed", title: "安全审计", seq: 2, updatedAt: 2 },
+    ];
+    // 空闲状态下，所有子代理已完成，默认收起胶囊态
+    const idleRender = render();
+    expect(idleRender.html).toContain('class="ai-head-tasklist"');
+    expect(idleRender.html).toContain('aria-expanded="false"');
+
+    // 运行时存在活跃子代理时，默认展开浮岛卡片
+    h.state.status = "running";
+    h.state.runId = "run-agents";
+    h.activity = "running";
+    h.ownedRun = "run-agents";
+    h.state.agents[0].status = "running";
+    const liveRender = render();
+    expect(liveRender.html).toContain('class="ai-head-tasklist"');
+    expect(liveRender.html).toContain('aria-expanded="true"');
+
+    // 只有子代理时的卡片专属主体渲染
+    const panelHtml = renderToStaticMarkup(createElement(AiTaskListDockPanel, {
+      taskList: null, running: true, agents: h.state.agents, onOpenSession: vi.fn(), onJump: vi.fn(),
+    }));
+    expect(panelHtml).toContain("ai-taskdock");
+    expect(panelHtml).toContain("ai-taskdock-agents-section is-primary");
+    expect(panelHtml).not.toContain("ai-taskdock-body");
   });
 });

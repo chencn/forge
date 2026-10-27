@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
 import {
+  ArrowRight,
   ArrowUpRight,
   CheckCircle2,
-  CircleDashed,
+  ChevronLeft,
+  Circle,
   CircleX,
   Loader2,
+  Minimize2,
   Square,
 } from "lucide-react";
 import { useI18n } from "../i18n";
@@ -12,60 +15,170 @@ import type { AiAgentSummary, AiModelTaskList } from "../lib/aiRuntime";
 import { stopAiAgent } from "../lib/aiRuntime";
 
 /**
- * 任务清单弹层正文：进度统计 + 进度条 + 清单，点击条目跳到正文
- * 对应清单位置。弹层标题和开关由 AiSessionPane 的会话标题栏提供。
+ * 任务清单侧栏工作区（像素级对照 6.png 的浮岛卡片 Task Dock 模式）：
+ * 顶栏显示纯文本进程与操作区（... 与折叠收起）；
+ * 中间使用滑动折叠视窗（< 前面 N 项 折叠、→ 当前步骤、○ 待办步骤、< 待处理 M 项 折叠）；
+ * 底部整合极简的「智能体」协同分区。
  */
-export function AiTaskListDockPanel({ taskList, running, onJump }: {
-  taskList: AiModelTaskList;
+export function AiTaskListDockPanel({
+  taskList,
+  running: _running,
+  agents,
+  onOpenSession,
+  onJump,
+  onClose,
+}: {
+  taskList?: AiModelTaskList | null;
   running: boolean;
+  agents?: AiAgentSummary[];
+  onOpenSession?: (id: string) => void;
   onJump: (id: string) => void;
+  onClose?: () => void;
 }) {
   const { t } = useI18n();
+  const [expandEarlier, setExpandEarlier] = useState(false);
+  const [expandLater, setExpandLater] = useState(false);
 
-  const visible = taskList.items.filter((item) => item.status !== "dropped" && item.content.trim());
+  const visible = taskList?.items.filter((item) => item.status !== "dropped" && item.content.trim()) ?? [];
   const completed = visible.filter((item) => item.status === "complete" || item.status === "completed").length;
-  const allCompleted = completed === visible.length;
-  const percent = Math.round((completed / visible.length) * 100);
-  const activePlanItem = visible.find((item) => item.status === "in_progress" || item.status === "active");
-  const activePosition = activePlanItem ? visible.indexOf(activePlanItem) + 1 : 0;
+  const allCompleted = visible.length > 0 && completed === visible.length;
+  const activePlanIndex = visible.findIndex((item) => item.status === "in_progress" || item.status === "active");
+  const currentStep = activePlanIndex >= 0 ? activePlanIndex + 1 : completed;
 
-  return <div className={`ai-taskdock${allCompleted ? " is-all-completed" : ""}`} aria-label={t("ai.chat.taskList")}>
-    <div className="ai-taskdock-meta">
-      <span className="ai-taskchip-count">{completed}/{visible.length}</span>
-      <span className="ai-taskchip-percent">{percent}%</span>
-      {running && activePlanItem ? (
-        <span className="ai-taskdock-active" title={`${activePosition}/${visible.length} · ${activePlanItem.content}`}>
-          <Loader2 size={12} className="is-spinning" aria-hidden />
-          {activePosition}/{visible.length}
-        </span>
-      ) : allCompleted && !running ? (
-        <CheckCircle2 size={12} className="is-complete" aria-hidden />
+  const hasTasks = visible.length > 0;
+  const hasAgents = Boolean(agents && agents.length > 0);
+
+  // 滑动折叠窗口：当任务总数较多时，默认折叠前面已完成项和后面超额待办项
+  const shouldFoldEarlier = visible.length > 4 && activePlanIndex > 1 && !expandEarlier;
+  const earlierCount = shouldFoldEarlier ? activePlanIndex : 0;
+  const remainingStartIndex = activePlanIndex >= 0 ? activePlanIndex : 0;
+  const shouldFoldLater = visible.length - remainingStartIndex > 3 && !expandLater;
+  const laterCutoff = shouldFoldLater ? remainingStartIndex + 3 : visible.length;
+  const laterCount = shouldFoldLater ? visible.length - laterCutoff : 0;
+
+  // 顶栏显示文本与步数
+  const titleLabel = hasTasks ? t("ai.task.process") : t("ai.task.agents");
+  const activeAgentIndex = agents?.findIndex((a) => a.status === "running" || a.status === "starting") ?? -1;
+  const activeAgentStep = activeAgentIndex >= 0 ? activeAgentIndex + 1 : (agents?.length ?? 0);
+  const stepCount = hasTasks ? `${currentStep}/${visible.length}` : `${activeAgentStep}/${agents?.length ?? 0}`;
+
+  return (
+    <div className={`ai-taskdock${allCompleted ? " is-all-completed" : ""}`} aria-label={titleLabel}>
+      {/* 顶栏：纯文本「进程/智能体  M/N」 + 收起操作按钮 */}
+      <header className="ai-taskdock-header">
+        <div className="ai-taskdock-header-title">
+          <span className="ai-taskdock-title-label">{titleLabel}</span>
+          <span className="ai-taskdock-step-count">{stepCount}</span>
+        </div>
+        <div className="ai-taskdock-header-actions">
+          {onClose ? (
+            <button
+              type="button"
+              className="ai-taskdock-action-btn"
+              title={t("ai.runtime.collapseQueue")}
+              aria-label={t("ai.runtime.collapseQueue")}
+              onClick={onClose}
+            >
+              <Minimize2 size={13} aria-hidden />
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      {hasTasks ? (
+        <div className="ai-taskdock-body">
+          {/* 前置完成项折叠条（对照 6.png：向左尖角 < + 浅灰色文字） */}
+          {earlierCount > 0 ? (
+            <button
+              type="button"
+              className="ai-taskdock-fold-btn"
+              onClick={() => setExpandEarlier(true)}
+            >
+              <ChevronLeft size={13} aria-hidden />
+              <span>{t("ai.task.earlier", { count: earlierCount })}</span>
+            </button>
+          ) : null}
+
+          <ol className="ai-taskdock-list" role="list">
+            {visible.map((item, index) => {
+              if (shouldFoldEarlier && index < activePlanIndex) return null;
+              if (shouldFoldLater && index >= laterCutoff) return null;
+
+              const isDone = item.status === "complete" || item.status === "completed";
+              const isActive = item.status === "in_progress" || item.status === "active";
+              return (
+                <li key={item.id || index} className={`ai-taskdock-item${isActive ? " is-active" : ""}${isDone ? " is-done" : ""}`}>
+                  <button type="button" className="ai-taskdock-row" onClick={() => onJump("session:task-list")}>
+                    <span className="ai-taskdock-icon" aria-hidden>
+                      {isActive ? (
+                        <ArrowRight size={13} className="ai-taskdock-arrow" />
+                      ) : isDone ? (
+                        <CheckCircle2 size={13} className="ai-taskdock-done" />
+                      ) : (
+                        <Circle size={11} strokeWidth={1.5} className="ai-taskdock-circle" />
+                      )}
+                    </span>
+                    <span className="ai-taskdock-text">
+                      <span className="ai-taskdock-content">{item.content}</span>
+                      {item.detail ? <span className="ai-taskdock-detail">{item.detail}</span> : null}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+
+          {/* 后置待处理项折叠条（对照 6.png：向左尖角 < + 浅灰色文字） */}
+          {laterCount > 0 ? (
+            <button
+              type="button"
+              className="ai-taskdock-fold-btn"
+              onClick={() => setExpandLater(true)}
+            >
+              <ChevronLeft size={13} aria-hidden />
+              <span>{t("ai.task.pending", { count: laterCount })}</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* 底部：极简智能体协同分区（对照 6.png，名称统一使用「子代理1」「子代理2」） */}
+      {hasAgents ? (
+        <div className={`ai-taskdock-agents-section${!hasTasks ? " is-primary" : ""}`}>
+          {hasTasks ? (
+            <div className="ai-taskdock-agents-header">
+              <span>{t("ai.task.agents")}</span>
+            </div>
+          ) : null}
+          <div className="ai-taskdock-agents-list">
+            {agents!.map((agent, index) => {
+              const numberedName = t("ai.agent.numbered", { index: index + 1 });
+              const titleText = agent.title ? `${numberedName} · ${agent.title}` : numberedName;
+              return (
+                <div key={agent.key || agent.sessionId || index} className="ai-taskdock-agent-row">
+                  <span className="ai-agent-subrow-dot" data-status={agent.status} aria-hidden />
+                  {onOpenSession && agent.sessionId ? (
+                    <button
+                      type="button"
+                      className="ai-taskdock-agent-btn"
+                      onClick={() => onOpenSession(agent.sessionId!)}
+                      title={titleText}
+                    >
+                      <span className="ai-taskdock-agent-title">{numberedName}</span>
+                    </button>
+                  ) : (
+                    <span className="ai-taskdock-agent-title" title={titleText}>
+                      {numberedName}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       ) : null}
     </div>
-    <div className="ai-taskchip-progress-bar" role="progressbar" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={visible.length}>
-      <div className={`ai-taskchip-progress-fill${allCompleted ? " is-complete" : ""}`} style={{ width: `${percent}%` }} />
-    </div>
-    <div className="ai-taskchip-body">
-      <ol className="ai-taskchip-list" role="list">
-        {visible.map((item, index) => {
-          const isDone = item.status === "complete" || item.status === "completed";
-          const isActive = item.status === "in_progress" || item.status === "active";
-          return <li key={item.id || index} className={`is-${item.status}`}>
-            <button type="button" className="ai-taskchip-row" onClick={() => onJump("session:task-list")}>
-              <span className="ai-plan-entry-icon" aria-hidden>
-                {isDone ? <CheckCircle2 size={14} className="is-complete" /> : isActive ? <Loader2 size={14} className="is-spinning" /> : <CircleDashed size={14} />}
-              </span>
-              <span className="ai-plan-entry-text">
-                <span className="ai-taskchip-item">{item.content}</span>
-                {item.detail ? <small className="ai-taskchip-detail">{item.detail}</small> : null}
-              </span>
-              <ArrowUpRight size={13} className="ai-taskchip-jump" aria-hidden />
-            </button>
-          </li>;
-        })}
-      </ol>
-    </div>
-  </div>;
+  );
 }
 
 /** 子代理状态的统一文案：与运行状态词表同源，认不出的状态如实空着。 */

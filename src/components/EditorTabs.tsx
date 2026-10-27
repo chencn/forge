@@ -59,6 +59,8 @@ interface EditorTabsProps {
   isSplit?: boolean;
   /** 打开文件的本地历史时间线。 */
   onShowLocalHistory?: (path: string) => void;
+  /** 页签栏右侧自定义操作区（如当前激活 AI 会话的三个点菜单）。 */
+  actions?: ReactNode;
 }
 
 /**
@@ -90,6 +92,7 @@ export default function EditorTabs({
   onCloseSplit,
   isSplit,
   onShowLocalHistory,
+  actions,
 }: EditorTabsProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
@@ -267,7 +270,7 @@ export default function EditorTabs({
           );
         })}
         </div>
-        {docTabs.length > 0 || (isSplit && onCloseSplit) ? (
+        {docTabs.length > 0 || (isSplit && onCloseSplit) || actions ? (
           <div className="editor-tabs-actions">
             {docTabs.length > 0 ? (
               <button
@@ -292,6 +295,7 @@ export default function EditorTabs({
                 <Columns2 size={15} aria-hidden="true" />
               </button>
             ) : null}
+            {actions}
           </div>
         ) : null}
       </div>

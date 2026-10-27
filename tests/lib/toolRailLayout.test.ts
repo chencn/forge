@@ -41,7 +41,7 @@ describe("活动栏布局", () => {
     });
     expect(layout.left.top).toEqual(["git", "explorer"]);
     expect(layout.left.bottom).toEqual(["run", "terminal", "log"]);
-    expect(layout.right.top).toEqual(["maven", "ai", "agents"]);
+    expect(layout.right.top).toEqual(["maven", "ai"]);
   });
 
   it("使用独立存储键往返布局", () => {
@@ -53,10 +53,10 @@ describe("活动栏布局", () => {
   it("首次读取 v1 布局时把 AI 迁到右侧顶部第一位", () => {
     memory.set("forge:tool-rail-layout:v1", JSON.stringify({
       left: { top: ["explorer", "ai", "git"], bottom: ["terminal", "run", "log"] },
-      right: { top: ["maven", "agents"], bottom: ["notifications"] },
+      right: { top: ["maven"], bottom: ["notifications"] },
     }));
     const layout = loadToolRailLayout();
     expect(layout.left.top).toEqual(["explorer", "git"]);
-    expect(layout.right.top).toEqual(["ai", "maven", "agents"]);
+    expect(layout.right.top).toEqual(["ai", "maven"]);
   });
 });

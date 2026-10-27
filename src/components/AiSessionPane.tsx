@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Archive, Bot, Brain, Check, CheckCircle2, ChevronLeft, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EllipsisVertical, EyeOff, FilePenLine, FilePlus2, FolderClosed, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Pin, PinOff, Plane, Play, Plus, Send, Settings, Square, Target, Timer, Trash2, X } from "lucide-react";
+import { Archive, ArrowRight, Bot, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EyeOff, FilePenLine, FilePlus2, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Plane, Play, Plus, Send, Square, Target, Timer, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
@@ -11,7 +11,6 @@ import AiMarkdown from "./AiMarkdown";
 import AiProcessGroup from "./AiProcessGroup";
 import { AiQuestionCard, AiQuestionResult } from "./AiQuestionCard";
 import AiProviderIcon from "./AiProviderIcon";
-import AiActionDialog from "./AiActionDialog";
 import { useI18n } from "../i18n";
 import { AI_NAMES, cliDesktopAvailable } from "../lib/aiCli";
 import { assetUrl } from "../lib/fs";
@@ -23,8 +22,7 @@ import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandInte
 import { buildNavRows, NAV_PAGE, visibleNavRows, parseNavPrompt } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
-import { AiAgentDockPanel, AiTaskListDockPanel } from "./AiDockPanels";
-import { useAiDockSlots } from "./AiDockSlots";
+import { AiTaskListDockPanel } from "./AiDockPanels";
 import { openAiPlan } from "../lib/aiPlan";
 import { requestPath } from "../lib/aiApprovals";
 import type { AiPermissionAnswer } from "../lib/aiApprovals";
@@ -380,11 +378,13 @@ function AiTurnAnchor({
   row,
   isActive,
   isPending,
+  isMedian,
   onJump,
 }: {
   row: AiNavRow;
   isActive: boolean;
   isPending: boolean;
+  isMedian?: boolean;
   onJump: (row: AiNavRow) => void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -409,6 +409,7 @@ function AiTurnAnchor({
   return (
     <div
       className={`ai-turn-anchor-wrapper${hovered ? " is-hovered" : ""}`}
+      data-median={isMedian ? "true" : undefined}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
@@ -431,8 +432,10 @@ function AiTurnAnchor({
 }
 
 /**
- * 会话内消息导航：停靠在正文左侧装订线上，展示低调优雅的双横杠轮次锚点，
+ * 会话内消息导航：停靠在正文左侧装订线上，展示低调优雅的单线轮次锚点，
  * hover 浮出提示词详情预览卡片，点击快速定位。
+ * 布局契约：始终以正中间的那一个项（几何中位项）精确对齐在垂直可视视口 50% 中心线上，
+ * 严禁末尾最后一项居中导致下方大面积悬空。
  */
 function AiMessageNav({ entries, outline, hasOlder: _hasOlder, onRequestOutline, onJump }: {
   entries: AiEntry[];
@@ -449,6 +452,36 @@ function AiMessageNav({ entries, outline, hasOlder: _hasOlder, onRequestOutline,
   const grewAt = useRef(0);
   const rows = useMemo(() => buildNavRows(entries, outline), [entries, outline]);
   const visible = useMemo(() => visibleNavRows(rows, rendered), [rows, rendered]);
+  const [medianOffset, setMedianOffset] = useState<number | null>(null);
+
+  // 几何正中间的那一项的索引：无论总项数如何变化，该项永远位于垂直视口 50% 中心
+  const midIndex = Math.floor(visible.length / 2);
+
+  useLayoutEffect(() => {
+    const element = list.current;
+    if (!element || visible.length === 0) return;
+    const updateOffset = () => {
+      const items = element.children;
+      if (items.length === 0) return;
+      const midEl = items[midIndex] as HTMLElement | undefined;
+      if (!midEl) return;
+      if (visible.length % 2 === 1) {
+        // 奇数项：中间那一个项自身的中心对齐在视口 50%
+        setMedianOffset(midEl.offsetTop + midEl.offsetHeight / 2);
+      } else {
+        // 偶数项：中间两项之间的几何分割线对齐在视口 50%
+        const prevEl = items[midIndex - 1] as HTMLElement | undefined;
+        const prevBottom = prevEl ? prevEl.offsetTop + prevEl.offsetHeight : midEl.offsetTop;
+        setMedianOffset((prevBottom + midEl.offsetTop + midEl.offsetHeight) / 2);
+      }
+    };
+    updateOffset();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(updateOffset);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+  }, [visible.length, midIndex]);
 
   useLayoutEffect(() => {
     if (!grewAt.current) return;
@@ -482,15 +515,17 @@ function AiMessageNav({ entries, outline, hasOlder: _hasOlder, onRequestOutline,
     <nav
       className="ai-turn-nav"
       aria-label={t("ai.nav.title")}
+      style={medianOffset !== null ? { transform: `translateY(-${medianOffset}px)` } : undefined}
       onMouseEnter={handleRailEnter}
     >
       <div className="ai-turn-nav-track" ref={list} onScroll={grow}>
-        {visible.map((row) => (
+        {visible.map((row, index) => (
           <AiTurnAnchor
             key={row.id}
             row={row}
             isActive={row.id === activeId}
             isPending={row.id === pendingId}
+            isMedian={index === midIndex}
             onJump={(target) => void jump(target)}
           />
         ))}
@@ -529,7 +564,9 @@ function AiLiveStats({ provider, runId, entries, usage, statusText, planMode }: 
     ? (usage.total - baseline) / (elapsed / 1000)
     : undefined;
   return <div className="ai-live-stats" role="status">
-    <AiProviderIcon provider={provider} size={13} />
+    <span className={`ai-live-provider-icon is-running is-${provider}`}>
+      <AiProviderIcon provider={provider} size={14} />
+    </span>
     <span>{statusText}</span>
     {planMode ? <span className="ai-live-item ai-live-mode">{t("ai.chat.planModeActive")}</span> : null}
     {elapsed !== undefined && elapsed >= 10000 ? <span className="ai-live-item"><Timer size={12} aria-hidden />{formatAiClock(elapsed)}</span> : null}
@@ -793,12 +830,10 @@ interface AiSessionPaneProps {
  * 组件本身不持有跨会话状态，所有会话数据都在 `lib/aiRuntime` 的全局 store 里，
  * 所以切走再切回来能直接看到后台仍在推进的进度。
  */
-export default function AiSessionPane({ session, workspace, onSettings, beforeSend, onAction, onNew, onOpenFile, onPreviewFile, dockActive = true, onAgentDockAvailable, onOpenAgentDock, onOpenSession, parentTitle }: AiSessionPaneProps) {
+export default function AiSessionPane({ session, workspace, onSettings: _onSettings, beforeSend, onAction: _onAction, onNew: _onNew, onOpenFile, onPreviewFile, dockActive: _dockActive = true, onAgentDockAvailable: _onAgentDockAvailable, onOpenAgentDock: _onOpenAgentDock, onOpenSession, parentTitle: _parentTitle }: AiSessionPaneProps) {
   const { t } = useI18n();
   /** 子代理会话：事件由父会话运行时路由进来，发送走经父转发，不直接驱动 CLI。 */
   const isAgentSession = !!session.parentSessionId;
-  /** 右侧侧边栏给本面板留的挂载点；任务清单与子代理列表 portal 过去停靠。 */
-  const dockSlots = useAiDockSlots();
   const snapshot = useAiRuntime(session.id);
   const activity = useAiSessionActivity(session.id);
   const ownedRunId = useAiOwnedRunId(session.id);
@@ -907,9 +942,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   useEffect(() => () => window.clearTimeout(mentionTimer.current), []);
   /** 队列编辑借用主输入框；restoreDraft 保证用户原来写到一半的草稿不会被队列正文覆盖。 */
   const [editingTask, setEditingTask] = useState<{ runId: string; restoreDraft: string } | null>(null);
-  /** 横幅 ⋯ 菜单与重命名/删除确认。 */
-  const [headMenuAnchor, setHeadMenuAnchor] = useState<HTMLElement | null>(null);
-  const [headPending, setHeadPending] = useState<{ action: "rename" | "delete"; session: AiSession } | null>(null);
   const queuePointerDrag = useRef<{
     runId: string;
     pointerId: number;
@@ -1500,31 +1532,29 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   const timelineEntries = useMemo(() => isAgentSession ? runtime.entries : runtime.entries.filter((entry) => !entry.parent), [isAgentSession, runtime.entries]);
   /** 任务清单是会话级事实，不再依赖当前时间线页是否包含它的最后一次更新。 */
   const taskList = runtime.taskList?.items.some((item) => item.status !== "dropped" && item.content.trim()) ? runtime.taskList : null;
-  const taskListPhase = taskList?.runId ?? "none";
   const taskItems = taskList?.items.filter((item) => item.status !== "dropped" && item.content.trim()) ?? [];
   const completedTasks = taskItems.filter((item) => item.status === "complete" || item.status === "completed").length;
   const allTasksCompleted = taskItems.length > 0 && completedTasks === taskItems.length;
-  const [taskListAnchor, setTaskListAnchor] = useState<HTMLButtonElement | null>(null);
+
+  // 子代理或任务清单出现任意一个，均触发胶囊与自适应浮岛工作区卡片
+  const hasTasks = Boolean(taskList && taskItems.length > 0);
+  const hasAgents = Boolean(!isAgentSession && runtime.agents.length > 0);
+  const hasDockContent = hasTasks || hasAgents;
+
+  const dockPhase = taskList?.runId ?? (running ? (runtime.runId ?? "running") : "dock-idle");
+  const anyAgentRunning = runtime.agents.some((a) => a.status === "running" || a.status === "starting");
+  // 仅在执行中且未全部完成时默认打开；若只有子代理，有正在运行的子代理时默认打开；用户手动切换后在当前阶段保持其状态。
+  const dockDefaultOpen = running ? (hasTasks ? !allTasksCompleted : anyAgentRunning) : false;
+
   const [taskListDisclosure, setTaskListDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
-  // 仅在执行中且未全部完成时默认打开；已完成、空闲或点击进入历史会话时不默认弹开，用户在当前阶段手动操作后保持其状态。
-  const taskListDefaultOpen = running && !allTasksCompleted;
-  const taskListOpen = !!taskList && (taskListDisclosure?.phase === taskListPhase ? taskListDisclosure.open : taskListDefaultOpen);
-  const attachTaskListTrigger = useCallback((node: HTMLButtonElement | null) => setTaskListAnchor(node), []);
-  const setTaskListOpen = (open: boolean) => setTaskListDisclosure({ phase: taskListPhase, open });
+  const taskListOpen = hasDockContent && (taskListDisclosure?.phase === dockPhase ? taskListDisclosure.open : dockDefaultOpen);
+  const attachTaskListTrigger = useCallback((_node: HTMLButtonElement | null) => {}, []);
+  const setTaskListOpen = (open: boolean) => setTaskListDisclosure({ phase: dockPhase, open });
+  const [sideDockEl, setSideDockEl] = useState<HTMLDivElement | null>(null);
   const goal = runtime.goal?.objective.trim() ? runtime.goal : null;
   const showMessageNav = runtime.loaded && !!(runtime.entries.length || outline.turns.length);
-  const dockAgents = !isAgentSession && runtime.agents.length > 0;
-  useEffect(() => {
-    onAgentDockAvailable?.(dockAgents);
-    return () => onAgentDockAvailable?.(false);
-  }, [onAgentDockAvailable, dockAgents]);
   const currentTask = taskItems.find((item) => item.status === "in_progress" || item.status === "active")
     ?? taskItems.find((item) => item.status !== "complete" && item.status !== "completed");
-  // 标题栏只承担扫视摘要：正文保留完整标题，这里最多露六个字符再收尾。
-  const currentTaskLabel = currentTask ? (() => {
-    const chars = Array.from(currentTask.content.trim());
-    return chars.length > 6 ? `${chars.slice(0, 6).join("")}…` : chars.join("");
-  })() : "";
   const goalKey = goal ? `${goal.threadId}:${goal.createdAt}:${goal.objective}` : null;
   const visibleGoal = goal && goalKey !== hiddenGoalKey ? goal : null;
   // 先折叠再开窗：反过来会把一整段过程劈成两半，两段各自都够不上折叠门槛，就都摊在屏幕上。
@@ -1741,96 +1771,40 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
   ]);
   // 原生历史里提不出标题时 meta 就是空的；标题行不能是一条空白。
   const displayTitle = session.title || t("ai.untitledSession");
+  const isDocked = hasDockContent && taskListOpen;
+
+  let pillText = t("ai.chat.taskList");
+  if (hasTasks) {
+    pillText = currentTask ? currentTask.content : (allTasksCompleted ? t("ai.chat.goalStatusComplete") : t("ai.chat.taskList"));
+  } else if (hasAgents) {
+    const liveAgentIndex = runtime.agents.findIndex((a) => a.status === "running" || a.status === "starting");
+    pillText = liveAgentIndex >= 0
+      ? t("ai.agent.numbered", { index: liveAgentIndex + 1 })
+      : t("ai.agent.numberedCount", { count: runtime.agents.length });
+  }
+
   return <AiOpenFileProvider onOpen={onOpenFile} onPreview={onPreviewFile}>
-  <section ref={pane} className="ai-session-pane" aria-label={displayTitle}
+  <section ref={pane} className={`ai-session-pane${isDocked ? " is-docked" : ""}`} aria-label={displayTitle}
     style={{ "--ai-content-width": `${chatWidth.width}px` } as CSSProperties}>
-    <header className="ai-session-pane-head">
-      {/* 子代理会话的面包屑：返回按钮 + 父会话标题，再进入自己的标题。 */}
-      {isAgentSession ? <>
-        {onOpenSession && session.parentSessionId ? <button type="button" className="ai-head-back" title={t("ai.agent.backToParent")} aria-label={t("ai.agent.backToParent")}
-          onClick={() => onOpenSession(session.parentSessionId!)}>
-          <ChevronLeft size={14} aria-hidden />
-          <span className="ai-head-parent">{parentTitle || t("ai.agent.parent")}</span>
-        </button> : <span className="ai-head-parent"><Bot size={13} aria-hidden />{t("ai.agent.parent")}</span>}
-        <ChevronRight size={14} className="ai-head-sep" aria-hidden />
-      </> : null}
-      <span className="ai-head-folder" title={workspace ?? undefined}>
-        <FolderClosed size={13} aria-hidden />
-        {workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}
-      </span>
-      <ChevronRight size={14} className="ai-head-sep" aria-hidden />
-      <span className={`ai-head-provider-icon${visualRunning ? " is-running" : ""}`} aria-hidden>
-        <AiProviderIcon provider={session.provider} size={14} />
-      </span>
-      <span className="ai-head-title" title={displayTitle}>{displayTitle}</span>
-      <span className="ai-head-actions">
-        {taskList ? <button ref={attachTaskListTrigger} type="button" className="ai-head-tasklist"
-          title={currentTask && !allTasksCompleted ? `${t("ai.chat.taskList")} · ${currentTask.content}` : t("ai.chat.taskList")}
-          aria-label={t("ai.chat.taskList")}
-          aria-haspopup="dialog" aria-expanded={taskListOpen}
-          onClick={() => {
-            setHeadMenuAnchor(null);
-            setTaskListOpen(!taskListOpen);
-          }}>
-          {allTasksCompleted
-            ? <CheckCircle2 size={15} className="ai-head-tasklist-status is-complete" aria-hidden />
-            : <Loader2 size={15} className="ai-head-tasklist-status is-spinning" aria-hidden />}
-          <span className="ai-head-tasklist-count">{completedTasks}/{taskItems.length}</span>
-          {!allTasksCompleted && currentTaskLabel
-            ? <span className="ai-head-tasklist-current">{currentTaskLabel}</span>
-            : null}
-        </button> : null}
-        {onAction || onNew ? <button type="button" className="ai-head-menu" title={t("ai.sidebar.moreOptions")} aria-label={t("ai.sidebar.moreOptions")}
-          aria-haspopup="menu" aria-expanded={headMenuAnchor !== null}
-          onClick={(event) => {
-            setTaskListOpen(false);
-            setHeadMenuAnchor(event.currentTarget);
-          }}>
-          <EllipsisVertical size={16} aria-hidden />
-        </button> : null}
-      </span>
-      {taskList && taskListOpen && taskListAnchor ? (
-        // 清单会在运行时自动展开；保持非模态，避免全屏遮罩吞掉用户对正文和其他面板的点击。
-        <Popover anchor={taskListAnchor} boundary={pane.current} onClose={() => setTaskListOpen(false)}
-          minWidth={320} maxWidth={360} modal={false} role="dialog">
-          <section className="ai-head-tasklist-popover" aria-label={t("ai.chat.taskList")}>
-            <header>
-              <ListOrdered size={14} aria-hidden />
-              <strong>{t("ai.chat.taskList")}</strong>
-              <span className="status-spacer" />
-              {/* 弹层自身必须有明确出口，用户不需要再回头寻找顶栏入口。 */}
-              <button type="button" className="icon-button is-inline" onClick={() => setTaskListOpen(false)}
-                aria-label={t("ai.runtime.collapseQueue")} title={t("ai.runtime.collapseQueue")}>
-                <ChevronUp size={14} aria-hidden />
-              </button>
-            </header>
-            <AiTaskListDockPanel taskList={taskList} running={running} onJump={(id) => {
-              setTaskListOpen(false);
-              jumpToEntryById(id);
-            }} />
-          </section>
-        </Popover>
-      ) : null}
-      {headMenuAnchor ? (
-        <Popover anchor={headMenuAnchor} onClose={() => setHeadMenuAnchor(null)} minWidth={200}>
-          <div className="ai-add-menu" role="menu">
-            {onNew ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onNew(); }}><Plus size={14} aria-hidden />{t("ai.newSession")}</button> : null}
-            {onAction ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); setHeadPending({ action: "rename", session }); }}><Pencil size={14} aria-hidden />{t("menu.rename")}</button> : null}
-            {/* 跨会话提问要引用另一条会话的 ID：在这里复制当前这条。 */}
-            <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); void navigator.clipboard.writeText(session.id); }}><Copy size={14} aria-hidden />{t("ai.copySessionId")}</button>
-            {onAction ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onAction({ type: "pin", id: session.id, pinned: session.pinned !== true }); }}>
-              {session.pinned === true ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}{session.pinned === true ? t("ai.sidebar.unpin") : t("ai.sidebar.pin")}
-            </button> : null}
-            {onAction ? <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onAction({ type: "archive", id: session.id, archived: session.archived !== true }); }}>
-              <Archive size={14} aria-hidden />{session.archived === true ? t("ai.archived.restore") : t("ai.archived.button")}
-            </button> : null}
-            <button type="button" role="menuitem" onClick={() => { setHeadMenuAnchor(null); onSettings(); }}><Settings size={14} aria-hidden />{t("ai.manageCli")}</button>
-            {onAction ? <button type="button" role="menuitem" className="is-danger" onClick={() => { setHeadMenuAnchor(null); setHeadPending({ action: "delete", session }); }}><Trash2 size={14} aria-hidden />{t("menu.delete")}</button> : null}
-          </div>
-        </Popover>
-      ) : null}
-    </header>
-    <div className="ai-chat-viewport">
+    <div className={`ai-chat-viewport${isDocked ? " is-docked" : ""}`}>
+    {/* 任务/子代理折叠态药丸胶囊（对照 5.png）：右上角悬浮药丸，左箭头 + 右当前任务/子代理文本 */}
+    {hasDockContent ? (
+      <button
+        ref={attachTaskListTrigger}
+        type="button"
+        className="ai-head-tasklist"
+        title={hasTasks && currentTask && !allTasksCompleted ? `${t("ai.chat.taskList")} · ${currentTask.content}` : pillText}
+        aria-label={hasTasks ? t("ai.chat.taskList") : t("ai.agent.nav")}
+        aria-haspopup="dialog"
+        aria-expanded={taskListOpen}
+        onClick={() => {
+          setTaskListOpen(!taskListOpen);
+        }}
+      >
+        <ArrowRight size={13} className="ai-head-tasklist-arrow" aria-hidden />
+        <span className="ai-head-tasklist-text">{pillText}</span>
+      </button>
+    ) : null}
     {/* 列宽手柄挂在内容轴左右缘：命中区 12px、可见线 1px，拖拽对称放大。 */}
     <AiChatWidthHandles host={pane} />
     <div ref={content} className="ai-session-content ai-chat-content" style={{ overflowAnchor: "none" }} onScroll={trackScroll}
@@ -1841,22 +1815,24 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
         prefetchEarlier();
       }}>
       <div className="ai-conversation">
-      {/* 父会话必须自己声明已启动子代理；否则右栏收起时，用户完全不知道委派发生过。 */}
+      {/* 父会话声明已启动子代理：点击展开右上角工作区浮岛卡片 */}
       {!isAgentSession && runtime.agents.length ? (() => {
         const liveAgents = runtime.agents.filter((agent) => agent.status === "running" || agent.status === "starting");
         const highlighted = liveAgents[0] ?? runtime.agents[runtime.agents.length - 1];
+        const highlightedIndex = runtime.agents.indexOf(highlighted);
         const status = liveAgents.length ? "running" : highlighted.status;
         const label = status === "running" || status === "starting" ? t("ai.runtime.running")
           : status === "failed" ? t("ai.runtime.failed")
           : status === "stopped" ? t("ai.runtime.cancelled")
           : status ? t("ai.runtime.completed") : "";
+        const agentNumbered = t("ai.agent.numbered", { index: (highlightedIndex >= 0 ? highlightedIndex : 0) + 1 });
         return <div className={`ai-parent-agent-strip${liveAgents.length ? " is-running" : ""}`} role="status" aria-live="polite">
           <button type="button" className="ai-parent-agent-trigger" aria-label={t("ai.agents.openDock")}
-            title={t("ai.agents.openDock")} disabled={!onOpenAgentDock} onClick={onOpenAgentDock}>
+            title={t("ai.agents.openDock")} onClick={() => setTaskListOpen(true)}>
             <Bot size={13} aria-hidden />
             <strong>{t("ai.agent.nav")}</strong>
             <span className="ai-parent-agent-count">{runtime.agents.length}</span>
-            <span className="ai-parent-agent-title" title={highlighted.title}>{highlighted.title || t("ai.agent.untitled")}</span>
+            <span className="ai-parent-agent-title" title={highlighted.title}>{agentNumbered}</span>
             <span className="ai-parent-agent-status" data-status={status}>{label}</span>
             <ChevronRight size={13} aria-hidden />
           </button>
@@ -1907,11 +1883,20 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     {/* 消息导航恢复为会话正文右缘的浮动芯片；长会话可从这里按需读取完整轮次索引。 */}
     {showMessageNav ? <AiMessageNav key={session.id} entries={runtime.entries} outline={outline} hasOlder={runtime.hasOlder}
       onRequestOutline={() => { if (workspace) void loadAiOutline(session.id, workspace).catch(() => {}); }} onJump={jumpToTurn} /> : null}
-    {/* 子代理列表同样停靠右栏：只在父会话显示（子会话自己就是那个代理）。 */}
-    {dockActive && !isAgentSession && runtime.agents.length && dockSlots.agents ? createPortal(
-      <AiAgentDockPanel key={session.id} agents={runtime.agents} provider={session.provider} workspace={workspace}
-        onOpen={(id) => onOpenSession?.(id)} />,
-      dockSlots.agents,
+    {/* 右侧独立任务/子代理工作区侧栏（6.png 浮岛模式）：展开时将正文推挤到左侧，手柄自动禁用 */}
+    <div ref={setSideDockEl} className="ai-side-dock-slot" />
+    {hasDockContent && taskListOpen && sideDockEl ? createPortal(
+      <aside className="ai-side-dock" aria-label={hasTasks ? t("ai.chat.taskList") : t("ai.agent.nav")}>
+        <AiTaskListDockPanel
+          taskList={taskList}
+          running={running}
+          agents={runtime.agents}
+          onOpenSession={(id) => onOpenSession?.(id)}
+          onJump={(id) => jumpToEntryById(id)}
+          onClose={() => setTaskListOpen(false)}
+        />
+      </aside>,
+      sideDockEl,
     ) : null}
     </div>
     <footer className="ai-composer-dock">
@@ -2132,15 +2117,6 @@ export default function AiSessionPane({ session, workspace, onSettings, beforeSe
     </div>
     </div>
     </footer>
-    {headPending ? <AiActionDialog title={t(headPending.action === "rename" ? "menu.rename" : "ai.deleteSession")}
-      confirm={t(headPending.action === "rename" ? "dialog.confirm" : "menu.delete")}
-      initialValue={headPending.action === "rename" ? headPending.session.title : undefined} danger={headPending.action === "delete"}
-      onCancel={() => setHeadPending(null)} onConfirm={(title) => {
-        if (onAction) onAction(headPending.action === "rename" ? { type: "rename", id: headPending.session.id, title } : { type: "delete", id: headPending.session.id });
-        setHeadPending(null);
-      }}>
-      {headPending.action === "delete" ? <p className="dialog-body">{t("ai.deleteConfirm", { name: headPending.session.title || t("ai.untitledSession") })}</p> : null}
-    </AiActionDialog> : null}
     <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} />
     {contextMenu ? <ContextMenu anchor={contextMenu} onClose={() => setContextMenu(null)} /> : null}
   </section>

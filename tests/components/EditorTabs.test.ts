@@ -98,4 +98,33 @@ describe("编辑区标签拆分菜单", () => {
       expect(menu.onSplitDown).toHaveBeenCalledExactlyOnceWith(menu.id);
     },
   );
+
+  it("当提供 actions 时，将其渲染在右侧常驻操作区", () => {
+    h.index = 0;
+    const tab: TabItem = {
+      id: "ai|session-1",
+      kind: "ai",
+      name: "AI 会话",
+      title: "AI 会话",
+      dirty: false,
+    };
+    const actionNode = { type: "button", props: { id: "custom-action" } } as unknown as ReactElement;
+    const props = {
+      tabs: [tab],
+      activeId: tab.id,
+      onSelect: vi.fn(),
+      onClose: vi.fn(),
+      onCloseOthers: vi.fn(),
+      onCloseAll: vi.fn(),
+      onReorder: vi.fn(),
+      onSave: vi.fn(),
+      isDirty: () => false,
+      actions: actionNode,
+    };
+    const tree = EditorTabs(props) as Node;
+    const all = nodes(tree);
+    const actionsBar = all.find((node) => node.props?.className === "editor-tabs-actions");
+    expect(actionsBar).toBeTruthy();
+    expect(all.some((node) => node.props?.id === "custom-action")).toBe(true);
+  });
 });

@@ -441,7 +441,6 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 @container ai-chat (max-width: 360px) {
       .ai-model-controls .ai-effort-select { max-width: 58px; }
   .ai-model-controls .ai-effort-select .select-trigger > svg:first-child { display: none; }
-    .ai-session-pane-head { padding-inline: 10px; }
 }
 /* flex 0 1 auto + 上限：短标签保持完整，万一又变回长句也只吃 8em，不会挤掉标题。 */
 .ai-activity { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; max-width: 8em; min-width: 0; font-size: 10px; line-height: 1; color: var(--accent-green-text); }
@@ -640,40 +639,58 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   transform: translateX(-50%); background: var(--sidebar-border); pointer-events: none; }
 .ai-scard-icon { position: absolute; top: 50%; left: 14px; z-index: 1; display: flex; align-items: center;
   justify-content: center; width: 14px; height: 14px; transform: translate(-50%, -50%); pointer-events: none; }
-/* 运行中前面的供应商图标呼吸闪动 */
+/* 运行中前面的供应商图标呼吸脉动动画（纯净呼吸，严禁画蛇添足添加 drop-shadow 阴影滤镜） */
 .ai-scard-icon.is-running svg,
 .ai-tab-provider-icon.is-running svg,
 .ai-head-provider-icon.is-running svg,
+.ai-live-provider-icon.is-running svg,
 .ai-live-stats .ai-provider-icon {
-  animation: ai-icon-pulse 1.4s ease-in-out infinite;
+  display: inline-block;
   transform-origin: center center;
+  will-change: transform, opacity;
 }
+
 .ai-scard-icon.is-running .ai-provider-icon.is-claude,
 .ai-tab-provider-icon.is-running .ai-provider-icon.is-claude,
 .ai-head-provider-icon.is-running .ai-provider-icon.is-claude,
+.ai-live-provider-icon.is-running .ai-provider-icon.is-claude,
 .ai-live-stats .ai-provider-icon.is-claude {
-  filter: drop-shadow(0 0 4px rgba(217, 119, 87, 0.65));
+  animation: ai-icon-pulse-claude 1.6s ease-in-out infinite !important;
 }
+
 .ai-scard-icon.is-running .ai-provider-icon.is-codex,
 .ai-tab-provider-icon.is-running .ai-provider-icon.is-codex,
 .ai-head-provider-icon.is-running .ai-provider-icon.is-codex,
+.ai-live-provider-icon.is-running .ai-provider-icon.is-codex,
 .ai-live-stats .ai-provider-icon.is-codex {
-  filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.65));
+  animation: ai-icon-pulse-codex 1.6s ease-in-out infinite !important;
 }
-@keyframes ai-icon-pulse {
-  0%, 100% { opacity: 0.38; transform: scale(0.92); }
-  50% { opacity: 1; transform: scale(1.08); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-scard-icon.is-running svg,
-  .ai-tab-provider-icon.is-running svg,
-  .ai-head-provider-icon.is-running svg,
-  .ai-live-stats .ai-provider-icon {
-    animation: none;
+
+@keyframes ai-icon-pulse-claude {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
   }
 }
+
+@keyframes ai-icon-pulse-codex {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
 .ai-tab-provider-icon,
-.ai-head-provider-icon {
+.ai-head-provider-icon,
+.ai-live-provider-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1332,52 +1349,339 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-context-note { margin: 0; color: var(--text-tertiary); font-size: 11px; }
 .ai-context-details-scroll { max-height: 280px; overflow-y: auto; border-top: 1px solid var(--border-color); padding-top: 10px; }
 
-/* ===== 会话页横幅（对照 codeg ConversationDetailHeader）与右侧消息导航 ===== */
-/* 横幅：透明读作正文画布的一部分，40px 高、下沿半透边、左面包屑右 ⋯ 菜单。 */
-.ai-session-pane-head { flex: none; display: flex; align-items: center; gap: 8px; height: 40px;
-  padding: 0 12px; background: transparent; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent); }
-.ai-head-folder { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 40%;
-  padding: 0 8px; height: 24px; border-radius: 6px; background: var(--bg-tertiary);
-  color: var(--text-secondary); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ai-head-sep { flex: none; color: color-mix(in srgb, var(--text-tertiary) 50%, transparent); }
-.ai-head-title { min-width: 0; max-width: max-content; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 13px; color: color-mix(in srgb, var(--text-primary) 90%, transparent); }
-.ai-head-actions { flex: none; display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
-.ai-head-menu { flex: none; display: grid; place-items: center; width: 28px; height: 28px;
-  padding: 0; border: 0; border-radius: 6px; background: transparent; color: color-mix(in srgb, var(--text-tertiary) 70%, transparent);
-  cursor: pointer; transition: color 150ms, background-color 150ms; }
-.ai-head-menu:hover, .ai-head-menu[aria-expanded="true"] { color: var(--text-primary); background: var(--bg-tertiary); }
-.ai-head-tasklist { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 7px;
-  border: 0; border-radius: 6px; background: transparent; color: var(--text-tertiary); cursor: pointer;
-  font: inherit; font-size: 10.5px; font-variant-numeric: tabular-nums; }
-.ai-head-tasklist:hover, .ai-head-tasklist[aria-expanded="true"] { color: var(--text-primary); background: var(--bg-tertiary); }
-.ai-head-tasklist-status { flex: none; }
-.ai-head-tasklist-status.is-complete { color: var(--accent-green, #22c55e); }
-.ai-head-tasklist-count { flex: none; }
-.ai-head-tasklist-current { max-width: 7em; overflow: hidden; color: var(--text-secondary); white-space: nowrap; }
-.ai-head-tasklist-popover { display: flex; flex-direction: column; overflow: hidden; }
-.ai-head-tasklist-popover > header { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 10px;
-  border-bottom: 1px solid var(--border-color); color: var(--text-secondary); }
-.ai-head-tasklist-popover > header strong { font-size: 12.5px; font-weight: 600; }
-.ai-add-menu button.is-danger { color: var(--accent-red-text); }
-.ai-add-menu button.is-danger:hover { background: var(--accent-red-bg); }
+/* ===== 折叠态药丸胶囊（对照 5.png）：右上角悬浮药丸，折叠态与非折叠态宽度严格一致（300px） ===== */
+.ai-head-tasklist {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 12;
+  width: 300px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 12px;
+  background: var(--surface-island-strong, var(--bg-primary, #ffffff));
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 9999px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+.ai-head-tasklist:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+  border-color: var(--border-hover, #d1d5db);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.ai-head-tasklist-arrow {
+  color: var(--text-secondary);
+  flex: none;
+}
+.ai-head-tasklist-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+  text-align: left;
+}
+/* 展开态时隐藏折叠胶囊，右侧卡片工作区直接接管 */
+.ai-head-tasklist[aria-expanded="true"],
+.ai-chat-viewport.is-docked .ai-head-tasklist {
+  display: none !important;
+}
+
+/* ===== 展开侧栏工作区（像素级对照 7.png 模式）：
+   1. 滚动条在最右侧：滚动容器保持 100% 全宽，卡片通过 absolute 钉在右上角，滚动条贴在最右侧边缘；
+   2. 卡片高度自适应：只占内容自身高度，下方透空留白，绝不霸占整列；
+   3. 左侧正文与下方输入框同步向左挤压：右侧留出 324px 避让区，左右对齐；
+   4. 任务清单折叠态与非折叠态卡片宽度严格一致为 300px；
+   5. 彻底锁死并禁用自定义列宽拖拽手柄 ===== */
+.ai-side-dock-slot {
+  display: contents;
+}
+/* 右侧独立浮岛卡片（对照 7.png：绝对定位右上角、四角圆角、高度内容自适应、宽度 300px） */
+.ai-side-dock {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  width: 300px;
+  min-width: 300px;
+  max-width: 300px;
+  height: auto;
+  max-height: calc(100% - 20px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-island-strong, var(--bg-primary, #ffffff));
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+  padding: 12px 14px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  animation: ai-sidedock-fade 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes ai-sidedock-fade {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-side-dock { animation: none; }
+}
+
+/* 展开态：正文区域向左挤压避让，右侧预留 324px 避免遮挡卡片，滚动条位于最右边缘 */
+.ai-session-pane.is-docked .ai-session-content,
+.ai-chat-viewport.is-docked .ai-session-content {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+.ai-session-pane.is-docked .ai-conversation,
+.ai-chat-viewport.is-docked .ai-conversation {
+  margin-left: 0 !important;
+  margin-right: 324px !important;
+  width: calc(100% - 324px) !important;
+  max-width: none !important;
+}
+
+/* 展开态：下方输入框同步向左挤压避让（对照 7.png：输入框与正文右边缘对齐，右下方留白） */
+.ai-session-pane.is-docked .ai-composer-dock {
+  margin-left: 0 !important;
+  margin-right: 324px !important;
+  width: calc(100% - 324px) !important;
+  max-width: none !important;
+  box-sizing: border-box;
+}
+
+/* 展开态：跳底按钮偏向左侧正文区域居中 */
+.ai-session-pane.is-docked .ai-jump-bottom {
+  left: calc((100% - 324px) / 2);
+}
+
+/* 展开态：彻底锁死并禁用自定义列宽调整手柄 */
+.ai-session-pane.is-docked .ai-width-handle,
+.ai-chat-viewport.is-docked .ai-width-handle {
+  display: none !important;
+}
+
+/* 侧栏顶栏：纯文本「进程  M/N」 + 「...」与收起按钮（对照 6.png） */
+.ai-taskdock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 8px;
+  margin-bottom: 4px;
+}
+.ai-taskdock-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-taskdock-title-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+.ai-taskdock-step-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.ai-taskdock-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ai-taskdock-action-btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.ai-taskdock-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+/* 中间任务列表区与折叠条（对照 6.png） */
+.ai-taskdock-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ai-taskdock-fold-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 120ms ease;
+}
+.ai-taskdock-fold-btn:hover {
+  color: var(--text-primary);
+}
+
+.ai-taskdock-list {
+  list-style: none;
+  margin: 2px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-taskdock-item {
+  display: flex;
+  align-items: flex-start;
+}
+.ai-taskdock-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 3px 2px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 120ms ease;
+}
+.ai-taskdock-row:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+.ai-taskdock-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+}
+.ai-taskdock-arrow {
+  color: var(--text-primary);
+  stroke-width: 2;
+}
+.ai-taskdock-done {
+  color: var(--accent-green, #22c55e);
+}
+.ai-taskdock-circle {
+  color: var(--text-tertiary);
+}
+.ai-taskdock-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ai-taskdock-content {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  word-break: break-word;
+  font-weight: 500;
+}
+.ai-taskdock-item:not(.is-active) .ai-taskdock-content {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.ai-taskdock-item.is-done .ai-taskdock-content {
+  color: var(--text-tertiary);
+}
+.ai-taskdock-detail {
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--text-tertiary);
+  word-break: break-word;
+}
+
+/* 底部极简智能体协同分区（对照 7.png） */
+.ai-taskdock-agents-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+.ai-taskdock-agents-section.is-primary {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.ai-taskdock-agents-list {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 240px);
+  overflow-y: auto;
+}
+.ai-taskdock-agents-header {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  padding: 0 2px 6px;
+}
+.ai-taskdock-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ai-taskdock-agent-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.ai-taskdock-agent-btn:hover .ai-taskdock-agent-title {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.ai-taskdock-agent-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ===== 右侧工具窗口里的 AI 面板正文（标题栏由框架统一提供）：任务清单与子代理列表。 ===== */
 .ai-taskdock,
 .ai-agentdock-body {
   padding-bottom: 4px;
 }
-.ai-taskdock { display: flex; flex-direction: column; }
-.ai-taskdock-meta { display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px; }
-.ai-taskdock-meta .is-complete { color: var(--accent-green, #22c55e); }
-.ai-taskdock-active { display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
-  color: var(--text-tertiary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
-.ai-taskdock-active + .is-complete, .ai-taskdock-meta > .is-complete { margin-left: auto; }
+.ai-taskdock { display: flex; flex-direction: column; height: auto; }
 /* ===== 会话内消息导航：左侧装订线伴随式单线锚点 + 悬浮详情卡片 (Codex/Zed 模式) ===== */
 .ai-turn-nav {
   position: absolute;
   left: 10px;
   top: 50%;
+  /* 初始通过 translateY(-50%) 居中；挂载后通过中位项真实测量 translateY(-${medianOffset}px) 严格居中 */
   transform: translateY(-50%);
   z-index: 15;
   display: flex;
@@ -1385,12 +1689,13 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   pointer-events: auto;
   background: transparent !important;
   box-shadow: none !important;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .ai-turn-nav-track {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: min(440px, 60vh);
+  max-height: calc(100vh - 160px);
   overflow-y: auto;
   overflow-x: visible;
   padding: 4px 2px;
@@ -1555,12 +1860,9 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-turn-error svg { flex: none; margin-top: 2px; color: color-mix(in srgb, var(--accent-red) 70%, transparent); }
 .ai-turn-error p { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* 运行状态：时间线末尾一行（参考 LiveTurnStats 的精简版：图标脉动 + 状态字）。 */
+/* 运行状态：时间线末尾一行（图标呼吸脉冲与光晕由 ai-live-provider-icon / ai-icon-pulse 提供）。 */
 .ai-live-stats { display: flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 32px; padding: 4px 16px; color: var(--text-tertiary); font-size: 12px; }
-.ai-live-stats svg { animation: ai-live-pulse 1.4s ease-in-out infinite; }
-@keyframes ai-live-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .ai-live-stats svg { animation: none; } }
 
 /* 加载更早：居中胶囊（参考 load-older 行）。 */
 .ai-earlier { display: flex; justify-content: center; align-items: center; gap: 8px; padding: 8px 0 4px; }
