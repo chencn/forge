@@ -255,6 +255,7 @@ fn runtime_protocol(
     codex_policy: &Option<Value>,
     claude_mode: &str,
     recovery_turn: Option<String>,
+    claude_agents: Vec<(String, Option<String>)>,
 ) -> Result<Box<dyn Protocol>, String> {
     Ok(match request.provider {
         Provider::Codex => {
@@ -276,6 +277,7 @@ fn runtime_protocol(
         Provider::Claude => {
             if recovery_turn.is_some() { return Err("Claude CLI 不支持附着正在生成的旧回合，已停止以避免重复执行".into()); }
             Box::new(claude::Claude::new(request.workspace.clone(), request.prompt.clone(), native)
+                .with_agents(claude_agents)
                 .with_images(images::claude_blocks(&request.images.iter().map(PathBuf::from).collect::<Vec<_>>())?)
                 .with_model(request.model.clone()).with_command(request.command)
                 .with_plan(claude_mode == "plan"))
@@ -1194,6 +1196,30 @@ fn revise_agent_meta(
     Ok(changed)
 }
 
+/// 只恢复当前父会话的 Claude 路由；读取旧状态不代表重新启动代理。
+fn load_claude_agent_routes(base: &Path, parent: &str, root: &str) -> Result<HashMap<String, AgentRoute>, String> {
+    let mut routes = HashMap::new();
+    for entry in fs::read_dir(base).map_err(|e| e.to_string())?.take(20000).flatten() {
+        let Ok(meta) = store::Store::metadata(&entry.path(), root) else { continue; };
+        if meta.provider != Provider::Claude || meta.parent_session_id.as_deref() != Some(parent) { continue; }
+        let Some(info) = &meta.agent else { continue; };
+        if info.tool_id.is_empty() || store::is_tombstoned(base, &meta.session_id) { continue; }
+        let target = store::Store::open_for_append(base, &meta.session_id, root, Provider::Claude, &meta.title, "")?;
+        routes.insert(info.tool_id.clone(), AgentRoute { store: target, last_status: info.status.clone(), meta_broken: false, history_warned: false });
+    }
+    Ok(routes)
+}
+
+/// 进程退出时 starting 与 running 都是未结束；不能把未启动成功的代理永远挂住。
+fn stop_active_agent(dir: &Path, root: &str, key: &str) -> Result<bool, String> {
+    revise_agent_meta(dir, root, key, |info| {
+        if !matches!(info.status.as_str(), "" | "starting" | "running") { return false; }
+        info.status = "stopped".into();
+        info.ended_at = Some(now_ms());
+        true
+    })
+}
+
 /// 首见 key：建子会话并落好归属元数据，把存储句柄交还给 Worker 登记。
 /// 返回 `None` 表示父会话已删除（stop 之前迟到的通知），调用方直接忽略。
 /// 失败向上传播，由调用方降级为通知——子代理簿记不该炸掉整轮主对话。
@@ -1234,7 +1260,7 @@ fn open_agent_route(
             info.model = data["resolvedModel"].as_str().or(data["model"].as_str()).filter(|value| !value.is_empty()).map(str::to_owned);
         }
         info.status = data["status"].as_str().unwrap_or("running").into();
-        info.ended_at = (info.status != "running").then(now_ms);
+        info.ended_at = matches!(info.status.as_str(), "completed" | "failed" | "stopped").then(now_ms);
     }
     target.save()?;
     // spawn 通知若带任务正文（Claude 的 Agent 工具入参），作为子会话的
@@ -1561,7 +1587,7 @@ impl Worker {
                     if info.status != status {
                         info.status = status.clone();
                         // 复活续聊清掉上一轮的结束时间；只有终态才盖新的。
-                        if status == "running" { info.ended_at = None; }
+                        if matches!(status.as_str(), "starting" | "running") { info.ended_at = None; }
                         else if matches!(status.as_str(), "completed" | "failed" | "stopped") { info.ended_at = Some(now_ms()); }
                         changed = true;
                     }
@@ -1737,7 +1763,21 @@ impl Worker {
         if self.run.cancelled.load(Ordering::Acquire) {
             return Ok(task_status::CANCELLED);
         }
-        let mut protocol = runtime_protocol(&request, native, &service_tier, &codex_policy, &claude_mode, None)?;
+        let mut claude_agents = vec![];
+        if request.provider == Provider::Claude {
+            let base = self.store.dir.parent().ok_or("会话路径无效")?;
+            self.agents = {
+                let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                load_claude_agent_routes(base, &self.run.session_id, &self.run.workspace)?
+            };
+            let snapshots: Vec<_> = self.agents.iter().filter_map(|(key, route)| {
+                let info = route.store.meta.agent.as_ref()?;
+                claude_agents.push((key.clone(), info.native_agent_id.clone()));
+                Some(json!({"key":key,"sessionId":route.store.meta.session_id,"title":info.title,"agentType":info.agent_type,"agentId":info.native_agent_id,"status":info.status}))
+            }).collect();
+            for snapshot in snapshots { self.queue("agent", snapshot)?; }
+        }
+        let mut protocol = runtime_protocol(&request, native, &service_tier, &codex_policy, &claude_mode, None, claude_agents)?;
         self.summary_start = history::summary_offset(&self.store)?;
         self.run.child_pid.store(process.id(), Ordering::Release);
         let handshake = protocol.start()?;
@@ -1920,7 +1960,7 @@ impl Worker {
                         self.store.save()?;
                     }
                     let turn = self.native_turn_id.clone().ok_or("CLI 断线后缺少原生回合 ID")?;
-                    protocol = runtime_protocol(&request, Some(native), &service_tier, &codex_policy, &claude_mode, Some(turn))?;
+                    protocol = runtime_protocol(&request, Some(native), &service_tier, &codex_policy, &claude_mode, Some(turn), vec![])?;
                     let handshake = protocol.start()?;
                     self.actions(&mut *protocol, handshake, &mut process)?;
                     last_output = Instant::now();
@@ -1966,13 +2006,7 @@ impl Worker {
             if route.store.meta.agent.is_none() { continue; }
             // 终态写盘同样走重读-合并：按需回填可能已把该子代理标成终态并绑定，
             // 陈旧回写会把它打回 running 或丢掉绑定。
-            let was_running = match revise_agent_meta(&route.store.dir, &route.store.meta.workspace, &key, |info| {
-                if matches!(info.status.as_str(), "" | "running") {
-                    info.status = "stopped".into();
-                    info.ended_at = Some(now_ms());
-                    true
-                } else { false }
-            }) {
+            let was_running = match stop_active_agent(&route.store.dir, &route.store.meta.workspace, &key) {
                 Ok(was_running) => was_running,
                 Err(cause) => {
                     let _ = self.app.emit("ai-runtime://errors", json!({"sessionId":route.store.meta.session_id,"runId":self.run.id,"error":cause}));
@@ -2771,6 +2805,39 @@ mod tests {
 
         // 无变化的更新不落盘。
         assert!(!revise_agent_meta(&dir, &workspace, "01a-child", |_| false).unwrap());
+        fs::remove_dir_all(temp).unwrap();
+    }
+    #[test]
+    fn claude_routes_survive_parent_turns_and_starting_settles_on_exit() {
+        let temp = std::env::temp_dir().join(format!("forge-claude-routes-{}", now_ms()));
+        let project = temp.join("project");
+        let base = temp.join("mirror");
+        fs::create_dir_all(&project).unwrap();
+        let root = store::workspace(project.to_str().unwrap()).unwrap();
+        for (id, parent, provider, status) in [
+            ("child", "parent", Provider::Claude, "completed"),
+            ("starting", "parent", Provider::Claude, "starting"),
+            ("other-parent", "elsewhere", Provider::Claude, "running"),
+            ("other-provider", "parent", Provider::Codex, "running"),
+        ] {
+            let mut target = store::Store::open(&base, id, &root, provider, "代理", "").unwrap();
+            target.meta.parent_session_id = Some(parent.into());
+            target.meta.agent = Some(store::AgentInfo { tool_id: id.into(), native_agent_id: Some(format!("native-{id}")), status: status.into(), ..Default::default() });
+            target.save().unwrap();
+        }
+        let routes = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes["child"].last_status, "completed");
+        assert_eq!(routes["child"].store.meta.agent.as_ref().unwrap().native_agent_id.as_deref(), Some("native-child"));
+        drop(routes);
+        // 新 Worker 重建路由不改旧终态；退出只结算仍未启动完成的代理。
+        let restored = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        assert_eq!(restored["child"].last_status, "completed");
+        assert!(!stop_active_agent(&base.join("child"), &root, "child").unwrap());
+        assert!(stop_active_agent(&base.join("starting"), &root, "starting").unwrap());
+        let meta = store::Store::metadata(&base.join("starting"), &root).unwrap();
+        assert_eq!(meta.agent.as_ref().unwrap().status, "stopped");
+        assert!(meta.agent.unwrap().ended_at.is_some());
         fs::remove_dir_all(temp).unwrap();
     }
     #[test]

@@ -285,14 +285,29 @@ export interface AutoUpdateHooks {
   notify: (level: "info" | "warn", title: string, content: string) => void;
 }
 
+/** 启动时检查一次，此后每小时读取最新偏好；返回卸载时清理定时器的函数。 */
+export function startAutoUpdateChecks(
+  readPrefs: () => UpdateSettings,
+  hooks: AutoUpdateHooks
+): () => void {
+  void runAutoUpdateFlow(readPrefs(), hooks);
+  const timer = setInterval(() => {
+    void runAutoUpdateFlow(readPrefs(), hooks, "periodic");
+  }, 60 * 60 * 1000);
+  return () => clearInterval(timer);
+}
+
 /**
- * 启动时的自动更新流程，App 挂载后跑一次：
+ * 自动更新流程：仅启动时补装挂起更新，定时检查绝不能把「稍后安装」变成自动安装。
  * 任何失败只在必要时发通知，绝不打断启动，更不会无限闪退卡死。
  */
 export async function runAutoUpdateFlow(
   prefs: UpdateSettings,
-  hooks: AutoUpdateHooks
+  hooks: AutoUpdateHooks,
+  trigger: "startup" | "periodic" = "startup"
 ): Promise<void> {
+  // 已下载的更新交给用户决定何时安装，后续轮询不重复下载、询问或覆盖缓存。
+  if (trigger === "periodic" && (!prefs.autoDownload || getUpdateStatus().phase === "ready")) return;
   let current: string;
   try {
     current = await currentVersion();
@@ -301,7 +316,7 @@ export async function runAutoUpdateFlow(
   }
   if (!beginUpdateFlow()) return;
   try {
-    const pending = await loadPendingUpdate();
+    const pending = trigger === "startup" ? await loadPendingUpdate() : null;
     if (pending) {
       if (pending.version === current) {
         // 上次其实装完了（Windows 由安装器重启）：标记和那一版的安装包都不再需要。
@@ -320,7 +335,7 @@ export async function runAutoUpdateFlow(
 
     if (!prefs.autoDownload) return;
 
-    // 启动期的自动检查：网络错误保持静默，不弹 Toast 骚扰用户
+    // 后台自动检查：网络错误保持静默，等待下一轮检查。
     const proxyUrl = prefs.proxyEnabled ? prefs.proxyUrl : undefined;
     let info: UpdateInfo | null = null;
     try {

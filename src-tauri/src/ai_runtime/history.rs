@@ -500,10 +500,25 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
 /// 子代理文件里的行都是它自己的对话（`isSidechain:true` 只是标记）；投影时剥掉
 /// 标记复用主解析器，其余规则（meta 过滤、工具配对）与父会话完全一致。
 fn project_sidechain(provider: Provider, value: &Value, offset: u64, projection: &mut ProjectionState) -> Vec<(String, Value)> {
-    if provider == Provider::Claude && value["isSidechain"] == true {
+    if provider == Provider::Claude {
         let mut stripped = value.clone();
         if let Some(object) = stripped.as_object_mut() { object.remove("isSidechain"); }
-        return project_with_state(provider, &stripped, offset, projection);
+        // 实时协议使用 message.id，原生 uuid 是信封 ID；两者必须投影成同一条消息。
+        if value["type"] == "assistant" {
+            if let Some(id) = value["message"]["id"].as_str() { stripped["uuid"] = json!(id); }
+        }
+        let mut events = project_with_state(provider, &stripped, offset, projection);
+        if let Some(id) = value["message"]["id"].as_str() {
+            // 思考块也沿用实时的 message.id-index，补采才能修正原条目。
+            for (kind, data) in &mut events {
+                if kind == "reasoning" {
+                    if let Some(index) = data["id"].as_str().and_then(|id| id.rsplit('-').next()) {
+                        data["id"] = json!(format!("{id}-{index}"));
+                    }
+                }
+            }
+        }
+        return events;
     }
     project_with_state(provider, value, offset, projection)
 }
@@ -515,7 +530,7 @@ fn parent_deleted(base: &Path, parent_id: &str) -> bool {
 
 /// 导入 Claude 的 `subagents/agent-*.jsonl`：每个文件是一个子代理的完整对话，
 /// 同名 `.meta.json` 带归属（toolUseId/agentType/description/finished）。
-/// 子会话 id 与 live 路由用同一规则派生，目录已存在（正在运行或已导入）就跳过。
+/// 子会话 id 与 live 路由用同一规则派生；已有部分实时事件也继续补齐。
 fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, native_id: &str, root: &str) {
     if parent_deleted(base, parent_id) { return; }
     let Some(project_dir) = native_path.parent() else { return };
@@ -539,47 +554,27 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
         if info["finished"] != true { continue; }
         let key = info["toolUseId"].as_str().filter(|value| !value.is_empty()).unwrap_or(&agent_id).to_owned();
         let child = super::child_session_id(parent_id, &key);
-        let child_dir = base.join(&child);
-        let events_path = child_dir.join("events.jsonl");
-        // 若子会话目录已存在且已有实质性的事件数据（大于 256 字节），才跳过；
-        // 否则说明之前 live 仅占位创建但未落盘完整历史，允许继续回填
-        if child_dir.exists() && events_path.metadata().map(|meta| meta.len() > 256).unwrap_or(false) {
-            continue;
-        }
+        // 运行中的镜像游标由 Worker 独占；列表发现不能抢先消费却不广播。
+        if super::registry::for_session(parent_id).is_some() { continue; }
         let title = info["description"].as_str().map(str::trim).filter(|text| !text.is_empty()).unwrap_or("子代理").to_owned();
         let Ok(mut target) = Store::open(base, &child, root, Provider::Claude, &title, "") else { continue };
         let modified = fs::metadata(&path).and_then(|meta| meta.modified()).ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |duration| duration.as_millis() as u64);
         target.meta.parent_session_id = Some(parent_id.to_owned());
-        target.meta.agent = Some(store::AgentInfo {
+        target.meta.agent.get_or_insert_with(|| store::AgentInfo {
             native_agent_id: Some(agent_id.clone()),
             agent_type: info["agentType"].as_str().map(str::to_owned),
             title: title.clone(),
             tool_id: key.clone(),
             model: None,
-            status: "completed".into(),
+            status: "starting".into(),
             started_at: modified,
             ended_at: None,
         });
-        let _ = target.save();
-        let Ok(file) = File::open(&path) else { continue };
-        let mut reader = BufReader::new(file);
-        let mut projection = ProjectionState::default();
-        let mut batch = vec![];
-        let mut lines = 0u64;
-        while let Ok(Some((value, _))) = bounded_line(&mut reader) {
-            // 子代理文件里每行的 sessionId 仍是父会话；对不上说明这不是它的记录。
-            if value["sessionId"].as_str().is_some_and(|session| session != native_id) { continue; }
-            batch.extend(project_sidechain(Provider::Claude, &value, lines, &mut projection));
-            lines += 1;
-            if batch.len() >= 128 {
-                if target.append("native", std::mem::take(&mut batch)).is_err() { break; }
-            }
-            if lines >= 20000 { break; }
-        }
-        let _ = target.append("native", batch);
-        let _ = target.append("native", vec![("agent".into(), json!({"key":key,"status":"completed","imported":true}))]);
+        if target.save().is_err() { continue; }
+        let source = Source { provider: Provider::Claude, native_id: agent_id, path, workspace: root.to_owned() };
+        let _ = sync_claude_source(&mut target, &source, native_id, info["finished"] == true);
     }
 }
 
@@ -961,6 +956,99 @@ pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<supe
 }
 
 /// 按需同步 Claude 子代理的原生历史记录（从父会话关联目录下的 subagents 提取）。
+/// 同一 ID 的补全文写回实时 runId，避免前端以 runId:id 生成第二个气泡。
+fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, finished: bool) -> Result<Vec<super::events::Event>, String> {
+    let base = target.dir.parent().ok_or("子会话路径无效")?.to_path_buf();
+    let id = target.meta.session_id.clone();
+    save_source(&base, &id, source)?;
+    if target.meta.native_id.as_deref() != Some(&source.native_id) { target.bind(source.native_id.clone())?; }
+    let (mut offset, mut projection) = checkpoint(&base, &id)?;
+    let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
+    if length > MAX_FILE || length < offset { return Err("子代理历史过大或已被截断；保留现有镜像".into()); }
+
+    // 镜像包含实时及旧版原生事件；按公开消息/工具 ID 合并，不以日志大小猜测完整性。
+    let mut seen: HashMap<(String, String), (String, Value)> = HashMap::new();
+    let mut task_prompt = None;
+    let mut mirror = BufReader::new(File::open(target.dir.join("events.jsonl")).map_err(|e| e.to_string())?);
+    while let Some((event, _)) = bounded_line(&mut mirror)? {
+        let data = &event["data"];
+        let kind = match event["kind"].as_str().unwrap_or("") { "text" => "message", "reasoning_delta" => "reasoning", kind => kind };
+        if event["kind"] == "user" && data["agentTask"] == true { task_prompt = data["text"].as_str().map(str::to_owned); }
+        let Some(key) = data["id"].as_str() else { continue; };
+        let entry = seen.entry((kind.to_owned(), key.to_owned())).or_insert_with(|| (event["runId"].as_str().unwrap_or("native").to_owned(), json!({})));
+        if let Some(fields) = data.as_object() {
+            for (field, value) in fields {
+                if matches!(event["kind"].as_str(), Some("text" | "reasoning_delta")) && field == "text" {
+                    let text = format!("{}{}", entry.1["text"].as_str().unwrap_or(""), value.as_str().unwrap_or(""));
+                    entry.1["text"] = json!(text);
+                } else { entry.1[field] = value.clone(); }
+            }
+        }
+    }
+    let mut file = File::open(&source.path).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file.take(length - offset));
+    let mut emitted = vec![];
+    let mut batch = vec![];
+    let mut batch_run = "native".to_owned();
+    while let Some((value, count)) = bounded_line(&mut reader)? {
+        let seed = offset;
+        offset += count;
+        // 子文件仍记录父 sessionId；串错文件必须报错而不是静默推进游标。
+        if value["sessionId"].as_str().is_some_and(|session| session != parent_native)
+            || value["cwd"].as_str().is_some_and(|cwd| !same_root(cwd, &source.workspace)) {
+            return Err("子代理历史归属不一致".into());
+        }
+        for (kind, mut data) in project_sidechain(Provider::Claude, &value, seed, &mut projection) {
+            if kind == "user" && seed == 0 && task_prompt.as_deref().is_some_and(|prompt| data["text"].as_str().is_some_and(|text| text == prompt || text.chars().take(4000).collect::<String>() == prompt)) { continue; }
+            let mut run = "native".to_owned();
+            if let Some(key) = data["id"].as_str().map(str::to_owned) {
+                let identity = (kind.clone(), key);
+                if let Some((existing_run, existing)) = seen.get(&identity) {
+                    run = existing_run.clone();
+                    if kind == "message" || kind == "reasoning" {
+                        let text = data["text"].as_str().unwrap_or("");
+                        if existing["text"].as_str().is_some_and(|old| old == text || old.starts_with(text)) { continue; }
+                    } else if kind == "tool" {
+                        // 原生 recorded 不能覆盖实时 completed；只补缺失/变化的协议字段。
+                        if let Some(fields) = data.as_object_mut() {
+                            fields.retain(|field, value| !value.is_null() && existing.get(field) != Some(value) && !(field == "status" && value == "recorded"));
+                            if fields.keys().all(|field| field == "id") || fields.is_empty() { continue; }
+                        }
+                        data["id"] = identity.1.clone().into();
+                    }
+                }
+                let entry = seen.entry(identity).or_insert_with(|| (run.clone(), json!({})));
+                if let Some(fields) = data.as_object() { for (field, value) in fields { entry.1[field] = value.clone(); } }
+            }
+            if run != batch_run || batch.len() >= 128 {
+                if !batch.is_empty() { emitted.extend(target.append(&batch_run, std::mem::take(&mut batch))?); }
+                batch_run = run;
+            }
+            batch.push((kind, data));
+        }
+    }
+    if !batch.is_empty() { emitted.extend(target.append(&batch_run, batch)?); }
+    let previous = checkpoint(&base, &id)?.0;
+    if offset != previous {
+        emitted.extend(target.append("native", vec![("history_checkpoint".into(), json!({"offset":offset,"projection":projection}))])?);
+        let _ = save_checkpoint(&base, &id, offset, &projection);
+    }
+    // finished 是完成凭据；半行尚未落齐时不结算，也不覆盖协议给出的 failed/stopped。
+    if finished && offset == length {
+        if let Some(info) = target.meta.agent.as_mut() {
+            if matches!(info.status.as_str(), "" | "starting" | "running") {
+                info.status = "completed".into();
+                info.ended_at = Some(super::now_ms());
+                let data = json!({"key":info.tool_id,"sessionId":id,"status":"completed","imported":true});
+                emitted.extend(target.append("native", vec![("agent".into(), data)])?);
+                target.save()?;
+            }
+        }
+    }
+    Ok(emitted)
+}
+
 fn sync_claude_subagent(
     base: &Path,
     child_id: &str,
@@ -1024,34 +1112,9 @@ fn sync_claude_subagent(
             }
 
             let title = info["description"].as_str().map(str::trim).filter(|text| !text.is_empty()).unwrap_or(&meta.title).to_owned();
-            let Ok(mut target) = Store::open(base, child_id, root, Provider::Claude, &title, "") else { return Ok(false); };
-            // 若子会话已有事件数据且序列号递增，无需重复全量灌入
-            if target.dir.join("events.jsonl").metadata().map(|m| m.len() > 256).unwrap_or(false) && target.seq > 2 {
-                return Ok(false);
-            }
-
-            let Ok(file) = File::open(&path) else { return Ok(false); };
-            let mut reader = BufReader::new(file);
-            let mut projection = ProjectionState::default();
-            let mut batch = vec![];
-            let mut lines = 0u64;
-            while let Ok(Some((value, _))) = bounded_line(&mut reader) {
-                if value["sessionId"].as_str().is_some_and(|session| session != parent_native_id) { continue; }
-                batch.extend(project_sidechain(Provider::Claude, &value, lines, &mut projection));
-                lines += 1;
-                if batch.len() >= 128 {
-                    if target.append("native", std::mem::take(&mut batch)).is_err() { break; }
-                }
-                if lines >= 20000 { break; }
-            }
-            let _ = target.append("native", batch);
-            let _ = target.append("native", vec![("agent".into(), json!({"key": agent.tool_id, "status": "completed", "imported": true}))]);
-            if let Some(mut ag) = target.meta.agent.clone() {
-                ag.status = "completed".into();
-                target.meta.agent = Some(ag);
-                let _ = target.save();
-            }
-            return Ok(true);
+            let mut target = Store::open_for_append(base, child_id, root, Provider::Claude, &title, "")?;
+            let source = Source { provider: Provider::Claude, native_id: agent_id, path, workspace: root.to_owned() };
+            return Ok(!sync_claude_source(&mut target, &source, &parent_native_id, info["finished"] == true)?.is_empty());
         }
     }
     Ok(false)

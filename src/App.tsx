@@ -85,7 +85,7 @@ import { useHistory } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
 import { useStable } from "./hooks/useStable";
 import type { BranchSettings } from "./lib/settings";
-import { installReadyUpdate, relaunchApp, runAutoUpdateFlow } from "./lib/updater";
+import { installReadyUpdate, relaunchApp, startAutoUpdateChecks } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
 import { MavenDock } from "./components/MavenTool";
 import { mavenIconVisible, reloadMaven, useMavenDetection, useMavenProject } from "./hooks/useMavenProject";
@@ -505,19 +505,19 @@ export default function App() {
   const [updatePrompt, setUpdatePrompt] = useState<string | null>(null);
   const updatePromptResolve = useRef<((now: boolean) => void) | null>(null);
 
-  // 自动更新只按启动那一刻的设置跑一次：中途改设置下次启动才生效。
-  // settings 对象一变就重跑，会把「刚关掉自动下载」误解成「再下载一遍」。
+  // 定时器只注册一次，每轮读最新设置和通知回调，避免切换工作区或改设置时重复启动流程。
+  const readUpdatePrefs = useStable(() => settings.updates);
+  const notifyUpdate = useStable(pushUpdateNotice);
   useEffect(() => {
-    void runAutoUpdateFlow(settings.updates, {
+    return startAutoUpdateChecks(readUpdatePrefs, {
       onPromptInstall: (version) =>
         new Promise<boolean>((resolve) => {
           updatePromptResolve.current = resolve;
           setUpdatePrompt(version);
         }),
-      notify: pushUpdateNotice,
+      notify: notifyUpdate,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [readUpdatePrefs, notifyUpdate]);
 
   const docs = useDocuments(reportError, workspaceRoot);
   /**

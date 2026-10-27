@@ -253,6 +253,14 @@ impl Claude {
         self.plan_mode = plan;
         self
     }
+    /// 新父回合可用 SendMessage 续聊旧代理，通知里的 agentId 仍指向旧工具调用。
+    pub fn with_agents(mut self, agents: Vec<(String, Option<String>)>) -> Self {
+        for (key, agent_id) in agents {
+            self.tools.insert(key.clone(), json!({"id":key,"name":"Agent"}));
+            if let Some(id) = agent_id { self.agent_ids.insert(id, key); }
+        }
+        self
+    }
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.requested_model = model;
         self
@@ -312,11 +320,20 @@ impl Claude {
         }
         data
     }
+    // 任务清单与正文走同一归属规则，尤其 TodoWrite 的 replace 不能落到父会话。
+    fn scoped_action(action: Action, scope: &str) -> Action {
+        match action {
+            Action::Emit { kind, data } => Action::Emit { kind, data: Self::scoped(data, scope) },
+            other => other,
+        }
+    }
     /// 真正的子代理委派工具仅为 `Agent`。除普通工具事件外，再发一条 `agent`
     /// 生命周期事件：运行时据此建子会话，前端据此画委派卡与子代理列表。
     /// 注意：Task 是后台任务概念（或任务清单），绝不能当作子代理派生。
     fn agent_spawn_event(block: &Value) -> Option<Action> {
         if block["name"].as_str() != Some("Agent") { return None; }
+        // 流式 start 常只有空 input；参数齐全后再登记，避免发出无法路由的占位。
+        if !["prompt", "subagent_type"].iter().any(|key| block["input"][*key].as_str().is_some_and(|text| !text.trim().is_empty())) { return None; }
         // 标题只承担扫视：description 取首行再截断，回退到 prompt 时压成一行短标题——
         // 最长 4000 字的正文进了 meta.title 会一直顶在侧栏提示与子会话头上。
         let title = match block["input"]["description"].as_str().map(str::trim).filter(|text| !text.is_empty()) {
@@ -340,6 +357,10 @@ impl Claude {
     /// 身份并开始接收路由事件；同步代理的回执（AgentOutput）就是最终报告与运行总量。
     fn agent_result_event(&mut self, id: &str, structured: Option<&Value>, ok: bool) -> Option<Action> {
         if !self.tools.get(id).is_some_and(|tool| tool["name"].as_str() == Some("Agent")) { return None; }
+        // 失败回执不保证带结构化结果，但失败本身已经是明确的终态。
+        if !ok {
+            return Some(Action::Emit { kind: "agent", data: json!({"key":id,"status":"failed"}) });
+        }
         let structured = structured?;
         if let Some(agent_id) = structured["agentId"].as_str().filter(|value| !value.is_empty()) {
             self.agent_ids.insert(agent_id.to_owned(), id.to_owned());
@@ -379,8 +400,13 @@ impl Claude {
         }];
         if scope.is_empty() {
             if let Some(event) = Self::agent_spawn_event(block) { out.push(event); }
+            if block["name"] == "SendMessage" {
+                if let Some(key) = block["input"]["to"].as_str().and_then(|id| self.agent_ids.get(id)) {
+                    out.push(Action::Emit { kind: "agent", data: json!({"key":key,"status":"running"}) });
+                }
+            }
         }
-        if let Some(event) = task_event(&id, block["name"].as_str().unwrap_or(""), &block["input"]) { out.push(event); }
+        if let Some(event) = task_event(&id, block["name"].as_str().unwrap_or(""), &block["input"]) { out.push(Self::scoped_action(event, scope)); }
         Ok(out)
     }
     /// 仅供协议集成测试确认辅助上下文查询已释放，不能进入生产协议接口。
@@ -558,7 +584,7 @@ impl Protocol for Claude {
                             if let Some(text) = block["text"].as_str().filter(|s| !s.is_empty()) {
                                 let id =
                                     self.messages.get(&scope).ok_or("Claude 文本缺少消息边界")?;
-                                self.had_text = true;
+                                if scope.is_empty() { self.had_text = true; }
                                 self.streamed_text.entry(id.clone()).or_default().push_str(text);
                                 out.push(Action::Emit {
                                     kind: "text",
@@ -573,7 +599,7 @@ impl Protocol for Claude {
                             let id = self.messages.get(&scope).ok_or("Claude 增量缺少消息边界")?;
                             let text = delta["text"].as_str().ok_or("Claude 文本增量无效")?;
                             self.streamed_text.entry(id.clone()).or_default().push_str(text);
-                            self.had_text = true;
+                            if scope.is_empty() { self.had_text = true; }
                             out.push(Action::Emit {kind:"text",data:Self::scoped(json!({"id":id,"text":text}), &scope)});
                         } else if delta["type"] == "thinking_delta" {
                             if let Some(id) = self.messages.get(&scope) {
@@ -599,16 +625,10 @@ impl Protocol for Claude {
                                 if !text.is_empty() {
                                     let input: Value = serde_json::from_str(&text)
                                         .map_err(|e| format!("Claude 工具参数损坏：{e}"))?;
-                                    if let Some(tool) = self.tools.get_mut(&id) {
-                                        tool["input"] = input.clone();
-                                    }
-                                    out.push(Action::Emit {
-                                        kind: "tool",
-                                        // 后面还要用同一个工具 ID 关联 Todo/Task 状态。
-                                        data: Self::scoped(json!({"id":id.clone(),"input":input}), &scope),
-                                    });
-                                    if let Some(tool) = self.tools.get(&id) {
-                                        if let Some(event) = task_event(&id, tool["name"].as_str().unwrap_or(""), &input) { out.push(event); }
+                                    if let Some(mut tool) = self.tools.get(&id).cloned() {
+                                        // 参数补全复用完整工具通道，同时登记 Agent 与任务；随后完整信封照常去重。
+                                        tool["input"] = input;
+                                        out.extend(self.tool(&tool, &scope)?);
                                     }
                                 }
                             }
@@ -644,7 +664,7 @@ impl Protocol for Claude {
                     if let Some(streamed) = self.streamed_text.get(id) {
                         if streamed.ends_with(&text) { text = streamed.clone(); }
                     }
-                    self.had_text = true;
+                    if scope.is_empty() { self.had_text = true; }
                     out.push(Action::Emit {
                         kind: "message",
                         data: Self::scoped(json!({"id":id,"text":text}), &scope),
@@ -701,7 +721,7 @@ impl Protocol for Claude {
                     out.push(Action::Emit {kind:"tool",data:result});
                     if block["is_error"] != true {
                         if let Some(tool) = self.tools.get(id) {
-                            if let Some(event) = created_task_event(tool, structured, &block["content"]) { out.push(event); }
+                            if let Some(event) = created_task_event(tool, structured, &block["content"]) { out.push(Self::scoped_action(event, &scope)); }
                         }
                     }
                     if block["is_error"] != true && !structured.is_some_and(|result| result["staged"] == true) {
@@ -1327,6 +1347,65 @@ mod tests {
                 ..
             }
         )));
+    }
+    #[test]
+    fn streamed_agent_arguments_register_once_when_complete() {
+        let mut p = Claude::new("root".into(), "hi".into(), None);
+        let input = json!({"prompt":"检查状态路由","subagent_type":"Explore"});
+        let mut actions = p.receive(json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"agent-tool","name":"Agent","input":{}}}})).unwrap();
+        actions.extend(p.receive(json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":input.to_string()}}})).unwrap());
+        actions.extend(p.receive(json!({"type":"stream_event","event":{"type":"content_block_stop","index":0}})).unwrap());
+        actions.extend(p.receive(json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"agent-tool","name":"Agent","input":input}]}})).unwrap());
+        let agents: Vec<_> = actions.iter().filter_map(|a| match a { Action::Emit {kind:"agent",data} => Some(data), _ => None }).collect();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["prompt"], "检查状态路由");
+        assert_eq!(agents[0]["agentType"], "Explore");
+    }
+    #[test]
+    fn child_task_lists_keep_scope_including_streamed_input_and_real_ids() {
+        let mut p = Claude::new("root".into(), "hi".into(), None);
+        let mut actions = p.receive(json!({"type":"assistant","parent_tool_use_id":"agent-tool","message":{"id":"m","content":[{"type":"tool_use","id":"todo","name":"TodoWrite","input":{"todos":[{"content":"子任务"}]}}]}})).unwrap();
+        actions.extend(p.receive(json!({"type":"stream_event","parent_tool_use_id":"agent-tool","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"create","name":"TaskCreate","input":{}}}})).unwrap());
+        actions.extend(p.receive(json!({"type":"stream_event","parent_tool_use_id":"agent-tool","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"subject\":\"检查正文\"}"}}})).unwrap());
+        actions.extend(p.receive(json!({"type":"stream_event","parent_tool_use_id":"agent-tool","event":{"type":"content_block_stop","index":0}})).unwrap());
+        actions.extend(p.receive(json!({"type":"user","parent_tool_use_id":"agent-tool","message":{"content":[{"type":"tool_result","tool_use_id":"create","content":"Task #7 created"}]}})).unwrap());
+        let tasks: Vec<_> = actions.iter().filter_map(|a| match a { Action::Emit {kind:"task_list",data} => Some(data), _ => None }).collect();
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().all(|data| data["agentKey"] == "agent-tool"));
+        assert_eq!(tasks[2]["items"][0]["id"], "7");
+    }
+    #[test]
+    fn child_text_does_not_suppress_parent_result_fallback() {
+        for streaming in [false, true] {
+            let mut p = Claude::new("root".into(), "hi".into(), Some("native".into()));
+            if streaming {
+                p.receive(json!({"type":"stream_event","parent_tool_use_id":"agent-tool","event":{"type":"message_start","message":{"id":"child"}}})).unwrap();
+                p.receive(json!({"type":"stream_event","parent_tool_use_id":"agent-tool","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"子报告"}}})).unwrap();
+                p.receive(json!({"type":"stream_event","parent_tool_use_id":"agent-tool","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"补充"}}})).unwrap();
+            } else {
+                p.receive(json!({"type":"assistant","parent_tool_use_id":"agent-tool","message":{"id":"child","content":[{"type":"text","text":"子报告"}]}})).unwrap();
+            }
+            let actions = p.receive(json!({"type":"result","subtype":"success","session_id":"native","result":"父最终报告"})).unwrap();
+            assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"message",data} if data["text"] == "父最终报告" && data["agentKey"].is_null())));
+        }
+    }
+    #[test]
+    fn agent_error_without_structured_result_is_failed() {
+        let mut p = Claude::new("root".into(), "hi".into(), None);
+        p.receive(json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"agent-tool","name":"Agent","input":{"prompt":"检查"}}]}})).unwrap();
+        let actions = p.receive(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent-tool","is_error":true,"content":"启动失败"}]}})).unwrap();
+        assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"agent",data} if data["key"] == "agent-tool" && data["status"] == "failed")));
+    }
+    #[test]
+    fn restored_agent_can_resume_and_finish_without_another_agent_call() {
+        let mut p = Claude::new("root".into(), "继续".into(), None)
+            .with_agents(vec![("old-tool".into(), Some("old-agent".into()))]);
+        let resumed = p.receive(json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"send","name":"SendMessage","input":{"to":"old-agent","message":"继续检查"}}]}})).unwrap();
+        assert!(resumed.iter().any(|a| matches!(a, Action::Emit {kind:"agent",data} if data["key"] == "old-tool" && data["status"] == "running")));
+        let done = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"old-agent","status":"completed","summary":"已检查"})).unwrap();
+        assert!(done.iter().any(|a| matches!(a, Action::Emit {kind:"agent",data} if data["key"] == "old-tool" && data["status"] == "completed")));
+        let shell = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"bash-task","tool_use_id":"bash","status":"completed"})).unwrap();
+        assert!(!shell.iter().any(|a| matches!(a, Action::Emit {kind:"agent",..})));
     }
     fn edit_request() -> Value {
         json!({"type":"control_request","request_id":"tool-1","request":{

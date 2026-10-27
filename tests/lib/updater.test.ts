@@ -1,7 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { check } from "@tauri-apps/plugin-updater";
 import {
+  getUpdateStatus,
   installReadyUpdate,
   runAutoUpdateFlow,
+  setUpdateStatus,
+  startAutoUpdateChecks,
   reduceDownloadEvent,
   humanBytes,
 } from "../../src/lib/updater";
@@ -23,6 +28,8 @@ import type { AutoUpdateHooks, DownloadReport } from "../../src/lib/updater";
 const h = vi.hoisted(() => ({
   /** check() 的回报；null 表示没有新版。 */
   checkResult: { current: null as null | { version: string; body?: string } },
+  /** 清单请求失败，用来验证后续轮询仍能恢复。 */
+  checkError: { value: false },
   /** 后端侧的挂起标记（update_pending_* 三条命令的假实现）。 */
   pending: { version: null as string | null, attempts: 0 },
   /** 后端缓存目录：里面只有这一版的安装包时才算「下过」。 */
@@ -114,6 +121,7 @@ vi.mock("@tauri-apps/api/core", () => {
           return null;
         case "update_check":
           h.calls.check += 1;
+          if (h.checkError.value) throw new Error("network unavailable");
           if (!h.checkResult.current) return null;
           return {
             rid: h.nextRid.value++,
@@ -175,6 +183,7 @@ const PREFS = (
 
 beforeEach(() => {
   h.checkResult.current = null;
+  h.checkError.value = false;
   h.pending.version = null;
   h.pending.attempts = 0;
   h.cache.version = null;
@@ -184,6 +193,7 @@ beforeEach(() => {
   h.promptAnswer.value = true;
   h.calls = { check: 0, download: 0, install: 0, close: 0, cacheRemove: 0 };
   h.notifies = [];
+  setUpdateStatus({ phase: "idle", version: null, downloadProgress: null, error: null });
 });
 
 describe("runAutoUpdateFlow 决策表", () => {
@@ -285,6 +295,119 @@ describe("runAutoUpdateFlow 决策表", () => {
     expect(h.calls.install).toBe(0);
     expect(h.pending.version).toBeNull();
     expect(h.cache.version).toBeNull();
+  });
+});
+
+describe("每小时自动检查", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("启动检查一次，此后每满一小时检查，停止后不再检查", async () => {
+    const stop = startAutoUpdateChecks(() => PREFS(true, true), makeHooks());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.check).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(HOUR - 1);
+    expect(h.calls.check).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.calls.check).toBe(2);
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.check).toBe(3);
+
+    stop();
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.check).toBe(3);
+  });
+
+  it("每轮读取最新偏好：关闭时不检查，开启后使用当前代理", async () => {
+    let prefs = PREFS(false, true);
+    startAutoUpdateChecks(() => prefs, makeHooks());
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.check).toBe(0);
+
+    prefs = PREFS(true, true, true, "https://mirror.example/");
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.check).toBe(1);
+    const request = vi.mocked(invoke).mock.calls.filter(([command]) => command === "update_check").at(-1);
+    expect(request?.[1]).toEqual({ proxyUrl: "https://mirror.example/" });
+
+    prefs = PREFS(false, true);
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.check).toBe(1);
+  });
+
+  it.each([true, false])("定时发现新版，询问安装=%s：就绪后不重复下载或擅自安装", async (prompt) => {
+    h.promptAnswer.value = false;
+    const hooks = makeHooks();
+    startAutoUpdateChecks(() => PREFS(true, prompt), hooks);
+    await vi.advanceTimersByTimeAsync(0);
+
+    h.checkResult.current = { version: "0.2.0" };
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.download).toBe(1);
+    expect(getUpdateStatus().phase).toBe("ready");
+    expect(h.pending.version).toBe("0.2.0");
+
+    await vi.advanceTimersByTimeAsync(2 * HOUR);
+    expect(h.calls.check).toBe(2);
+    expect(h.calls.download).toBe(1);
+    expect(h.calls.install).toBe(0);
+    expect(hooks.onPromptInstall).toHaveBeenCalledTimes(prompt ? 1 : 0);
+
+    // 就绪后仍可由用户主动安装缓存，不依赖定时任务重新拿句柄。
+    await installReadyUpdate("0.2.0");
+    expect(h.calls.install).toBe(1);
+    expect(h.calls.download).toBe(1);
+    expect(h.calls.check).toBe(2);
+  });
+
+  it("已有挂起标记时，定时检查仍按正常询问流程处理，不执行启动补装", async () => {
+    h.pending.version = "0.2.0";
+    h.cache.version = "0.2.0";
+    h.checkResult.current = { version: "0.2.0" };
+    h.promptAnswer.value = false;
+    const hooks = makeHooks();
+    await runAutoUpdateFlow(PREFS(true, true), hooks, "periodic");
+    expect(hooks.onPromptInstall).toHaveBeenCalledWith("0.2.0");
+    expect(h.calls.install).toBe(0);
+    expect(h.calls.download).toBe(0);
+    expect(h.pending.version).toBe("0.2.0");
+  });
+
+  it("安装询问未结束时跳过后续检查，不并发弹窗", async () => {
+    h.checkResult.current = { version: "0.2.0" };
+    let answer!: (now: boolean) => void;
+    const hooks = makeHooks();
+    hooks.onPromptInstall = vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve; }));
+    startAutoUpdateChecks(() => PREFS(true, true), hooks);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2 * HOUR);
+    expect(h.calls.check).toBe(1);
+    expect(h.calls.download).toBe(1);
+    expect(hooks.onPromptInstall).toHaveBeenCalledTimes(1);
+    answer(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getUpdateStatus().phase).toBe("ready");
+  });
+
+  it("检查失败保持静默，下一小时恢复检查", async () => {
+    h.checkError.value = true;
+    vi.mocked(check).mockRejectedValueOnce(new Error("network unavailable"));
+    startAutoUpdateChecks(() => PREFS(true, true), makeHooks());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.check).toBe(1);
+    expect(h.notifies).toEqual([]);
+
+    h.checkError.value = false;
+    h.checkResult.current = { version: "0.2.0" };
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(h.calls.check).toBe(2);
+    expect(h.calls.download).toBe(1);
   });
 });
 
