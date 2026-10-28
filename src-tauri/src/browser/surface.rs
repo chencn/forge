@@ -338,10 +338,11 @@ mod native {
     /// 光标相对页面视口的 CSS 坐标。指针不在这个页面上时返回 None，避免隔着评论框误标。
     pub async fn viewport_cursor(app: &AppHandle, id: &str, zoom: f64, preview_scale: f64) -> Result<Option<(f64, f64)>, String> {
         let app = app.clone();
+        let scale_app = app.clone();
         let id = id.to_string();
         ui(&app, move || {
-            let hwnd = VIEWS.with(|views| views.borrow().get(&id).ok_or("page closed".to_string())?.view.hwnd().map_err(|e| e.to_string()))?;
-            let scale = app.get_webview_window("main").and_then(|window| window.scale_factor().ok()).filter(|scale| scale.is_finite() && *scale > 0.0).unwrap_or(1.0);
+            let hwnd = VIEWS.with(|views| views.borrow().get(&id).ok_or("page closed".to_string()).map(|surface| surface.view.hwnd()))?;
+            let scale = scale_app.get_webview_window("main").and_then(|window| window.scale_factor().ok()).filter(|scale| scale.is_finite() && *scale > 0.0).unwrap_or(1.0);
             let mut cursor = POINT::default();
             unsafe { GetCursorPos(&mut cursor) }.map_err(|e| e.to_string())?;
             let hit = unsafe { WindowFromPoint(cursor) };
