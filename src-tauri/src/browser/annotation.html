@@ -37,7 +37,40 @@ const zh = ['文字颜色','背景颜色','透明度 (0–1)','字体','字号',
 const en = ['Text color','Background','Opacity','Font family','Font size','Font weight','Border color','Radius','Border width','Border style','Width','Height','Margin','Padding','Gap'];
 const tw = ['文字顏色','背景顏色','透明度','字體','字號','字重','邊框顏色','圓角','邊框寬度','邊框樣式','寬度','高度','外邊距','內邊距','間距'];
 const names = ['color','background-color','opacity','font-family','font-size','font-weight','border-color','border-radius','border-width','border-style','width','height','margin','padding','gap'];
-function error(message='') { $('error').textContent = message; }
+// 宿主只回「稳定代码 + 原文」，这里按当前语言说一遍；对不上的代码原样显示（面板塞进来的投递失败理由就走这条）。
+const codes = {
+  TAB_CLOSED:['这张页面已经关闭。','That page is closed.','這份頁面已關閉。'],
+  BROWSER_DISABLED:['AI 助手或内置浏览器已关闭，去设置里启用后再试。','AI assistants or the embedded browser is turned off; enable it in Settings first.','AI 助手或內建瀏覽器已關閉，請到設定啟用後再試。'],
+  BROWSER_SESSION:['会话标识无效，这条页面没有归属到任何会话。','Invalid session id; this page is not owned by any session.','會話識別碼無效，這份頁面沒有歸屬任何會話。'],
+  BROWSER_ZOOM:['页面缩放只能在 50% 到 200% 之间。','Page zoom must stay between 50% and 200%.','頁面縮放只能介於 50% 到 200% 之間。'],
+  BROWSER_VIEWPORT:['页面可视区域取不到，等页面稳定后重试。','The page visible area is unavailable; retry once it settles.','頁面可視區域取不到，等頁面穩定後重試。'],
+  BROWSER_TAB_LIMIT:['内置浏览器最多同时打开 {max} 个页面。','The embedded browser allows at most {max} pages.','內建瀏覽器最多同時開啟 {max} 個頁面。'],
+  BROWSER_PICK_STALE_RESELECT:['元素标记已经变了，请重新选取。','That element marker no longer matches the page; select it again.','元素標記已改變，請重新選取。'],
+  BROWSER_PICK_STALE_RESEND:['页面或元素已经变了，请重新发送。','The page or element changed after you selected it; send it again.','頁面或元素已改變，請重新傳送。'],
+  BROWSER_PICK_LOADING:['页面正在加载，等它停下来再选取元素。','The page is still loading; select an element once it settles.','頁面正在載入，等它停止後再選取元素。'],
+  BROWSER_PICK_OVERLAY:['选取框没能画在页面上，请重试。','Forge could not draw the selection outline on the page; try again.','選取框未能畫在頁面上，請重試。'],
+  BROWSER_PICK_CANCELLED:['这次选取已经取消。','That selection was cancelled.','這次選取已取消。'],
+  BROWSER_PICK_IFRAME:['还选不了 iframe 里的元素，请在主页面里选取。','Elements inside an iframe cannot be selected yet; pick from the main page.','尚無法選取 iframe 內的元素，請在主頁面選取。'],
+  BROWSER_PICK_HIDDEN:['选中的元素已经滚出可见区域，先滚动到它再重试。','The selected element scrolled out of view; scroll back to it and retry.','選取的元素已捲出可見區域，請先捲動到它再重試。'],
+  BROWSER_PICK_LIMIT:['这张截图超出了大小限制。','That screenshot exceeds the size limit.','這張截圖超出大小限制。'],
+  BROWSER_PICK_MODE:['开启或取消元素选取失败，请重试。','Forge could not start or stop element picking; try again.','開啟或結束元素選取失敗，請重試。'],
+  BROWSER_PICK_CAPTURE:['截取选中元素失败，请重试。','Forge could not capture the selected element; try again.','擷取選取元素失敗，請重試。'],
+  BROWSER_STYLE_INPUT:['这个样式属性或取值不支持。','That style property or value is not supported.','不支援這個樣式屬性或值。'],
+  BROWSER_STYLE_APPLY:['元素已被移除，或样式取值没被接受，请检查后重试。','The element was removed or the style value was rejected; check and retry.','元素已移除，或樣式值未被接受，請檢查後重試。'],
+  BROWSER_STYLE_RESTORE:['样式预览没能还原，请再点一次取消。','The style preview was not reverted; cancel once more.','樣式預覽未能還原，請再點一次取消。'],
+  BROWSER_ANNOTATION_INPUT:['批注面板收到无法处理的操作。','The annotation panel received an action it cannot handle.','批註面板收到無法處理的操作。'],
+  BROWSER_ANNOTATION_LIMIT:['评论最多 {max} 字。','Comments are limited to {max} characters.','評論最多 {max} 字。'],
+  BROWSER_BOUNDS:['浏览器面板的尺寸不合法。','The browser panel size is not valid.','瀏覽器面板的大小不合法。'],
+  BROWSER_FIND_LIMIT:['查找内容最长 {max} 字。','Find text is limited to {max} characters.','尋找內容最長 {max} 字。'],
+  BROWSER_DIALOG_LIMIT:['对话框的输入内容太长。','The dialog answer is too long.','對話框的輸入內容過長。'],
+  BROWSER_NO_HISTORY:['这张页面没有可后退或前进的记录。','This page has no history to go back or forward to.','這份頁面沒有可後退或前進的記錄。'],
+};
+function error(message='') {
+  const [code, ...parts] = String(message).split('\u0001');
+  const row = codes[code === 'BROWSER_PICK_STALE' ? `BROWSER_PICK_STALE_${parts[0] === 'resend' ? 'RESEND' : 'RESELECT'}` : code];
+  const index = state?.language === 'en' ? 1 : state?.language === 'zh-TW' ? 2 : 0;
+  $('error').textContent = row ? row[index].replace('{max}', parts[0] ?? '') : message;
+}
 // 选中的元素已经构成上下文；评论可选，仅未就绪或投递中禁用发送。
 function buttons() { $('send').disabled = sending || !state?.selection; for(const id of ['close','cancel','reset','toggle','comment']) $(id).disabled=sending; for(const input of $('styles').querySelectorAll('input'))input.disabled=sending; }
 const lost = () => state?.language === 'en' ? 'Forge did not answer; try again' : state?.language === 'zh-TW' ? '宿主沒有回應，請重試' : '宿主没有响应，请重试';

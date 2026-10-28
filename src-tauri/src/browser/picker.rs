@@ -44,11 +44,11 @@ fn inspect_mode(enabled: bool) -> Value {
 pub async fn set_enabled(app: &AppHandle, id: &str, enabled: bool) -> Result<Value, String> {
     let tab = panel_tab(app, id)?;
     if enabled && (tab.loading || tab.frame.is_empty()) {
-        return Err("页面正在加载，请稍后选取元素".into());
+        return Err(crate::error::err("BROWSER_PICK_LOADING", "page is loading"));
     }
     let generation = {
         let mut state = host(app).lock();
-        let tab = state.tabs.get_mut(id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         // 进入重选或取消只结束捕获，旧标记直到新元素选定或明确交付后才清理。
         tab.picker.generation += 1;
         tab.picker.pending = false;
@@ -61,7 +61,7 @@ pub async fn set_enabled(app: &AppHandle, id: &str, enabled: bool) -> Result<Val
     let result = async {
         surface::cdp(app, id, "DOM.enable", json!({}), None, false).await?;
         surface::cdp(app, id, "Overlay.enable", json!({}), None, false).await?;
-        surface::cdp(app, id, "Overlay.setInspectMode", inspect_mode(enabled), None, false).await.map_err(|e|format!("{}: {e}", if enabled {"开启元素选取"} else {"取消元素选取"}))?;
+        surface::cdp(app, id, "Overlay.setInspectMode", inspect_mode(enabled), None, false).await.map_err(|e|crate::error::err("BROWSER_PICK_MODE", format!("inspect mode change failed: {e}")))?;
         if !enabled { paint(app, id).await?; } else { annotation::refresh(app).await?; }
         Ok::<_, String>(Value::Null)
     }.await;
@@ -109,7 +109,7 @@ async fn marker(app: &AppHandle, id: &str, backend: Option<i64>, action: &str) -
         let expression=if action=="hide" {"globalThis.__forgeSelectionMark?.hide()"}else{"globalThis.__forgeSelectionMark?.dispose()"};
         surface::cdp(app,id,"Runtime.evaluate",json!({"contextId":world["executionContextId"],"expression":expression,"returnByValue":true}),None,false).await?
     };
-    if result.get("exceptionDetails").is_some(){return Err("无法呈现所选元素标记，请重新选取".into());}
+    if result.get("exceptionDetails").is_some(){return Err(crate::error::err("BROWSER_PICK_OVERLAY", "selection marker could not be drawn"));}
     Ok(())
 }
 
@@ -145,7 +145,7 @@ async fn hover_script(app: &AppHandle, id: &str, expression: &str) -> Result<(),
     if tab.frame.is_empty() { return Ok(()); }
     let world = surface::cdp(app, id, "Page.createIsolatedWorld", json!({"frameId":tab.frame,"worldName":"forge-user-picker","grantUniveralAccess":false}), None, false).await?;
     let result = surface::cdp(app, id, "Runtime.evaluate", json!({"contextId":world["executionContextId"],"expression":expression,"returnByValue":true}), None, false).await?;
-    if result.get("exceptionDetails").is_some() { return Err("无法更新选取悬停框".into()); }
+    if result.get("exceptionDetails").is_some() { return Err(crate::error::err("BROWSER_PICK_OVERLAY", "hover box could not be updated")); }
     Ok(())
 }
 
@@ -153,12 +153,12 @@ async fn show_hover(app: &AppHandle, id: &str, backend: i64) -> Result<(), Strin
     let tab = panel_tab(app, id)?;
     if tab.frame.is_empty() || !tab.picker.active { return Ok(()); }
     let world = surface::cdp(app, id, "Page.createIsolatedWorld", json!({"frameId":tab.frame,"worldName":"forge-user-picker","grantUniveralAccess":false}), None, false).await?;
-    let context = world["executionContextId"].as_i64().ok_or("选取上下文不可用")?;
+    let context = world["executionContextId"].as_i64().ok_or(crate::error::err("BROWSER_PICK_OVERLAY", "picker context unavailable"))?;
     let node = surface::cdp(app, id, "DOM.resolveNode", json!({"backendNodeId":backend,"executionContextId":context,"objectGroup":"forge-user-hover"}), None, false).await?;
     let Some(object) = node["object"]["objectId"].as_str() else { return Ok(()) };
     let result = surface::cdp(app, id, "Runtime.callFunctionOn", json!({"objectId":object,"functionDeclaration":SELECTION_MARK,"arguments":[{"value":"hover"}],"returnByValue":true}), None, false).await;
     let _ = surface::cdp(app, id, "Runtime.releaseObjectGroup", json!({"objectGroup":"forge-user-hover"}), None, false).await;
-    if result?.get("exceptionDetails").is_some() { return Err("无法呈现悬停框".into()); }
+    if result?.get("exceptionDetails").is_some() { return Err(crate::error::err("BROWSER_PICK_OVERLAY", "hover box could not be drawn")); }
     Ok(())
 }
 
@@ -215,16 +215,16 @@ async fn end(app: &AppHandle, id: &str, selection_id: u64, sent: bool) -> Result
                 if !sent {
                     // 恢复失败时保留标记和选取身份：清掉状态等于把 !important 预览永久留在页面上，
                     // 而且用户再也点不到撤销它的那一下。
-                    if let Some(tab) = host(app).lock().tabs.get_mut(id) { tab.picker.error = Some(format!("恢复元素样式失败，请重试取消：{error}")); }
+                    if let Some(tab) = host(app).lock().tabs.get_mut(id) { tab.picker.error = Some(crate::error::err("BROWSER_STYLE_RESTORE", &error.replace(crate::error::SEP, ": "))); }
                     changed(app);
-                    return Err(format!("恢复元素样式失败，请重试取消：{error}"));
+                    return Err(crate::error::err("BROWSER_STYLE_RESTORE", &error.replace(crate::error::SEP, ": ")));
                 }
             }
         }
     }
     let generation = {
         let mut state = host(app).lock();
-        let tab = state.tabs.get_mut(id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         if tab.picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) != Some(selection_id) { return Ok(Value::Null); }
         tab.picker.invalidate();
         tab.picker.generation
@@ -337,7 +337,7 @@ pub fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
         let result = async {
             // 先验证新节点；误选 iframe 等不支持的元素不能撤销旧标记的预览。
             let mut selection=collect(&app,&id,backend,epoch).await?;
-            if !current(&app,&id,generation) {return Err("选取已取消".into());}
+            if !current(&app,&id,generation) {return Err(crate::error::err("BROWSER_PICK_CANCELLED", "selection cancelled"));}
             if let Ok(tab) = panel_tab(&app, &id) {
                 if tab.picker.selection.as_ref().is_some_and(|s|s["styleChanges"].is_object()) {
                     if let Some(previous) = tab.picker.backend {
@@ -385,43 +385,43 @@ pub async fn screenshot(app: &AppHandle, id: &str, selection_id: u64) -> Result<
     let _queue = tab.picker.queue.lock().await;
     let selected = panel_tab(app, id)?;
     let valid = |picker: &Picker| !picker.active && !picker.pending && picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) == Some(selection_id);
-    if !valid(&selected.picker) { return Err("元素标记已变化，请重新发送".into()); }
-    let backend = selected.picker.backend.ok_or("元素标记已失效，请重新选取")?;
-    let model = surface::cdp(app, id, "DOM.getBoxModel", json!({"backendNodeId":backend}), None, false).await.map_err(|e|format!("读取元素边界失败: {e}"))?;
-    let quad = model["model"]["border"].as_array().filter(|q|q.len()==8).ok_or("元素已移除或不可见，请重新选取")?;
-    let values: Vec<f64> = quad.iter().map(|v|v.as_f64().filter(|v|v.is_finite()).ok_or("元素尺寸无效")).collect::<Result<_,_>>()?;
-    let metrics = surface::cdp(app, id, "Page.getLayoutMetrics", json!({}), None, false).await.map_err(|e|format!("读取页面边界失败: {e}"))?;
+    if !valid(&selected.picker) { return Err(crate::error::err_parts("BROWSER_PICK_STALE", &["resend".into()])); }
+    let backend = selected.picker.backend.ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
+    let model = surface::cdp(app, id, "DOM.getBoxModel", json!({"backendNodeId":backend}), None, false).await.map_err(|e|crate::error::err("BROWSER_VIEWPORT", format!("element box model unavailable: {e}")))?;
+    let quad = model["model"]["border"].as_array().filter(|q|q.len()==8).ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
+    let values: Vec<f64> = quad.iter().map(|v|v.as_f64().filter(|v|v.is_finite()).ok_or(crate::error::err("BROWSER_PICK_HIDDEN", "element geometry is invalid"))).collect::<Result<_,_>>()?;
+    let metrics = surface::cdp(app, id, "Page.getLayoutMetrics", json!({}), None, false).await.map_err(|e|crate::error::err("BROWSER_VIEWPORT", format!("layout metrics unavailable: {e}")))?;
     let viewport = &metrics["cssVisualViewport"];
-    let vx = viewport["pageX"].as_f64().ok_or("页面尺寸不可用")?;
-    let vy = viewport["pageY"].as_f64().ok_or("页面尺寸不可用")?;
+    let vx = viewport["pageX"].as_f64().ok_or(crate::error::err("BROWSER_VIEWPORT", "page metrics unavailable"))?;
+    let vy = viewport["pageY"].as_f64().ok_or(crate::error::err("BROWSER_VIEWPORT", "page metrics unavailable"))?;
     // DOM box 是视口坐标，截图 clip 是文档坐标；先加滚动量，再与可见区域求交。
-    let sx = metrics["cssLayoutViewport"]["pageX"].as_f64().ok_or("页面滚动位置不可用")?;
-    let sy = metrics["cssLayoutViewport"]["pageY"].as_f64().ok_or("页面滚动位置不可用")?;
+    let sx = metrics["cssLayoutViewport"]["pageX"].as_f64().ok_or(crate::error::err("BROWSER_VIEWPORT", "page scroll position unavailable"))?;
+    let sy = metrics["cssLayoutViewport"]["pageY"].as_f64().ok_or(crate::error::err("BROWSER_VIEWPORT", "page scroll position unavailable"))?;
     let x = (values.iter().step_by(2).copied().fold(f64::INFINITY, f64::min) + sx).max(vx);
     let y = (values.iter().skip(1).step_by(2).copied().fold(f64::INFINITY, f64::min) + sy).max(vy);
-    let right = (values.iter().step_by(2).copied().fold(f64::NEG_INFINITY, f64::max) + sx).min(vx + viewport["clientWidth"].as_f64().ok_or("页面尺寸不可用")?);
-    let bottom = (values.iter().skip(1).step_by(2).copied().fold(f64::NEG_INFINITY, f64::max) + sy).min(vy + viewport["clientHeight"].as_f64().ok_or("页面尺寸不可用")?);
-    if right - x < 1.0 || bottom - y < 1.0 { return Err("选中元素已离开可见区域，请滚动到元素后重试".into()); }
-    let image = capture_locked(app,id,json!({"format":"png","captureBeyondViewport":false,"clip":{"x":x,"y":y,"width":right-x,"height":bottom-y,"scale":1}}),None,false).await.map_err(|e|format!("截取元素区域失败: {e}"))?;
+    let right = (values.iter().step_by(2).copied().fold(f64::NEG_INFINITY, f64::max) + sx).min(vx + viewport["clientWidth"].as_f64().ok_or(crate::error::err("BROWSER_VIEWPORT", "page metrics unavailable"))?);
+    let bottom = (values.iter().skip(1).step_by(2).copied().fold(f64::NEG_INFINITY, f64::max) + sy).min(vy + viewport["clientHeight"].as_f64().ok_or(crate::error::err("BROWSER_VIEWPORT", "page metrics unavailable"))?);
+    if right - x < 1.0 || bottom - y < 1.0 { return Err(crate::error::err("BROWSER_PICK_HIDDEN", "selected element left the visible area")); }
+    let image = capture_locked(app,id,json!({"format":"png","captureBeyondViewport":false,"clip":{"x":x,"y":y,"width":right-x,"height":bottom-y,"scale":1}}),None,false).await.map_err(|e|crate::error::err("BROWSER_PICK_CAPTURE", format!("element screenshot failed: {e}")))?;
     let current = panel_tab(app, id)?;
-    if current.epoch != selected.epoch || !valid(&current.picker) { return Err("页面或元素已变化，请重新发送".into()); }
-    let data = image["data"].as_str().filter(|data|data.len()<=8*1024*1024).ok_or("元素截图超过大小限制")?;
+    if current.epoch != selected.epoch || !valid(&current.picker) { return Err(crate::error::err_parts("BROWSER_PICK_STALE", &["resend".into()])); }
+    let data = image["data"].as_str().filter(|data|data.len()<=8*1024*1024).ok_or(crate::error::err("BROWSER_PICK_LIMIT", "element screenshot exceeds the size limit"))?;
     Ok(json!({"dataUrl":format!("data:image/png;base64,{data}")}))
 }
 
 async fn collect(app: &AppHandle, id: &str, backend: i64, epoch: u64) -> Result<Value, String> {
     let tab = panel_tab(app, id)?;
-    if tab.epoch != epoch { return Err("页面已变化，请重新选取".into()); }
+    if tab.epoch != epoch { return Err(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()])); }
     let world = surface::cdp(app, id, "Page.createIsolatedWorld", json!({"frameId":tab.frame,"worldName":"forge-user-picker","grantUniveralAccess":false}), None, false).await?;
-    let context = world["executionContextId"].as_i64().ok_or("选取上下文不可用")?;
+    let context = world["executionContextId"].as_i64().ok_or(crate::error::err("BROWSER_PICK_OVERLAY", "picker context unavailable"))?;
     let node = surface::cdp(app, id, "DOM.resolveNode", json!({"backendNodeId":backend,"executionContextId":context,"objectGroup":"forge-user-picker"}), None, false).await?;
-    let object = node["object"]["objectId"].as_str().ok_or("元素已移除，请重新选取")?;
+    let object = node["object"]["objectId"].as_str().ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
     let result = surface::cdp(app, id, "Runtime.callFunctionOn", json!({"objectId":object,"functionDeclaration":ELEMENT_DETAILS,"returnByValue":true}), None, false).await;
     let _ = surface::cdp(app, id, "Runtime.releaseObjectGroup", json!({"objectGroup":"forge-user-picker"}), None, false).await;
     let mut selection = result?["result"]["value"].clone();
-    if !selection.is_object() { return Err("暂不支持选取 iframe 内的元素，请选取主页面元素".into()); }
+    if !selection.is_object() { return Err(crate::error::err("BROWSER_PICK_IFRAME", "elements inside an iframe cannot be annotated")); }
     let current = panel_tab(app, id)?;
-    if current.epoch != epoch { return Err("页面已变化，请重新选取".into()); }
+    if current.epoch != epoch { return Err(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()])); }
     selection["epoch"] = json!(epoch);
     selection["tabId"] = json!(id);
     selection["url"] = json!(current.url);
@@ -502,23 +502,23 @@ pub async fn edit(app: &AppHandle, id: &str, selection_id: u64, action: &str, pa
 async fn edit_locked(app: &AppHandle, id: &str, selection_id: u64, action: &str, patch: Value) -> Result<Value, String> {
     let tab = panel_tab(app, id)?;
     if tab.picker.active || tab.picker.pending || tab.picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) != Some(selection_id) {
-        return Err("元素标记已变化，请重新选取".into());
+        return Err(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]));
     }
-    if !matches!(action, "preview" | "reset" | "commit") { return Err("未知样式操作".into()); }
-    let properties = patch.as_object().ok_or("样式必须是对象")?;
+    if !matches!(action, "preview" | "reset" | "commit") { return Err(crate::error::err("BROWSER_STYLE_INPUT", "unknown style action")); }
+    let properties = patch.as_object().ok_or(crate::error::err("BROWSER_STYLE_INPUT", "style patch must be an object"))?;
     for (key, value) in properties {
-        let text = value.as_str().ok_or("样式值必须是字符串")?;
+        let text = value.as_str().ok_or(crate::error::err("BROWSER_STYLE_INPUT", "style value must be a string"))?;
         if !valid_style_value(key, text) {
-            return Err("不支持的样式属性或值".into());
+            return Err(crate::error::err("BROWSER_STYLE_INPUT", "style property or value is not supported"));
         }
     }
-    let backend = tab.picker.backend.ok_or("元素已失效")?;
+    let backend = tab.picker.backend.ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
     let changes = call_style(app, id, &tab, backend, action, patch).await?;
     let mut selection = collect(app, id, backend, tab.epoch).await?;
     selection["selectionId"] = json!(selection_id);
     if changes.as_object().is_some_and(|c|!c.is_empty()) { selection["styleChanges"] = changes; }
     let mut state = host(app).lock();
-    let current = state.tabs.get_mut(id).filter(|t|t.epoch == tab.epoch && t.picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) == Some(selection_id)).ok_or("页面或元素已变化")?;
+    let current = state.tabs.get_mut(id).filter(|t|t.epoch == tab.epoch && t.picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) == Some(selection_id)).ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
     current.picker.selection = Some(selection.clone());
     current.revision += 1;
     current.refs.clear();
@@ -531,7 +531,7 @@ async fn call_style(app: &AppHandle, id: &str, tab: &super::Tab, backend: i64, a
     let result = surface::cdp(app, id, "Runtime.callFunctionOn", json!({"objectId":node["object"]["objectId"],"functionDeclaration":EDIT_STYLES,"arguments":[{"value":action},{"value":patch}],"returnByValue":true}), None, false).await;
     let _ = surface::cdp(app, id, "Runtime.releaseObjectGroup", json!({"objectGroup":"forge-user-style"}), None, false).await;
     let result = result?;
-    if result.get("exceptionDetails").is_some() { return Err("元素已移除或样式值无效，请检查后重试".into()); }
+    if result.get("exceptionDetails").is_some() { return Err(crate::error::err("BROWSER_STYLE_APPLY", "element removed or style value rejected")); }
     Ok(result["result"]["value"].clone())
 }
 

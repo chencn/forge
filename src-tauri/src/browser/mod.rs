@@ -108,12 +108,18 @@ struct State {
     snapshot: u64,
     next_tab_order: u64,
     stopped: bool,
+    /// AI 总开关与浏览器子开关的内存镜像。派发时的复查读它，不读磁盘；
+    /// 每次工具调用的入口和设置保存路径都按磁盘值校验，所以这里不会放宽授权。
+    enabled: bool,
     /// surface 关闭失败时留下的页面 id；下一次关闭会再试一次，不让原生视图永久无主。
     pending_close: Vec<String>,
     /// broker 待连接管道地址。起 broker 失败时为空，AI 启动据此不注入。
     endpoint: String,
     /// 浏览器宿主没能起来的原因。面板据此显示不可用，不能假装健康。
     unavailable: Option<String>,
+    /// 界面语言与主题的内存镜像。批注浮层每次呈现都要用，那条路跑在 UI 线程上，
+    /// 不能为了这两个字段去读磁盘；写入只发生在 `sync_capability` 与设置保存。
+    appearance: (String, String),
 }
 pub struct Host {
     state: Mutex<State>,
@@ -152,9 +158,12 @@ fn start(app: &AppHandle) -> Result<(), String> {
         forge_browser::transport::server(&endpoint, true)?
     };
     {
+        let settings = crate::settings::read(app);
         let mut state = host(app).lock();
         state.endpoint = endpoint.clone();
         state.stopped = false;
+        state.enabled = settings.ai_assistants_enabled && settings.browser.enabled;
+        state.appearance = (settings.language, settings.theme);
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -219,9 +228,8 @@ impl Drop for Lease {
     }
 }
 pub fn attach(app: &AppHandle, scope: Scope) -> Result<Option<Lease>, String> {
-    let settings = crate::settings::read(app);
     // broker 没能起来时不注入：会话照常跑，只是没有浏览器工具，不能让每条消息都失败。
-    if !cfg!(windows) || host(app).lock().stopped || !settings.ai_assistants_enabled || !settings.browser.enabled {
+    if !cfg!(windows) || host(app).lock().stopped || !sync_capability(app) {
         return Ok(None);
     }
     let token = forge_browser::secret()?;
@@ -238,6 +246,7 @@ pub fn revoke_all(app: &AppHandle) {
 pub fn permissions_changed(app: &AppHandle, disabled: bool) {
     let mut state = host(app).lock();
     let mut reset_pickers = Vec::new();
+    state.enabled = !disabled;
     if disabled {
         state.scopes.clear();
     }
@@ -264,7 +273,36 @@ fn changed(app: &AppHandle) {
     let _ = app.emit("forge-browser-changed", ());
 }
 
+/// 读一次磁盘上的有效能力，同时把结果写回内存镜像。
+/// 只有走过这条的路径才有资格让派发复查读镜像，否则镜像会比磁盘旧一轮。
+/// 顺带把语言与主题也存进镜像：批注浮层在 UI 线程上呈现，不能为这两个字段读磁盘。
+fn sync_capability(app: &AppHandle) -> bool {
+    let settings = crate::settings::read(app);
+    let enabled = settings.ai_assistants_enabled && settings.browser.enabled;
+    let mut state = host(app).lock();
+    state.enabled = enabled;
+    state.appearance = (settings.language, settings.theme);
+    enabled
+}
+
+/// 设置保存那条路调它：把刚写进磁盘那份的开关与呈现字段灌进镜像。
+/// 保存发生在阻塞线程上，之后 UI 线程只管读镜像，不再为一次浮层呈现读文件。
+pub fn settings_saved(app: &AppHandle, settings: &crate::settings::Settings) {
+    let mut state = host(app).lock();
+    state.enabled = settings.ai_assistants_enabled && settings.browser.enabled;
+    state.appearance = (settings.language.clone(), settings.theme.clone());
+}
+
 fn scope(app: &AppHandle, token: &str) -> Result<Scope, String> {
+    scope_with(app, token, true)
+}
+/// 派发时的复查走这条：身份、代际、期限和撤权一律照查，只是有效能力读内存镜像，
+/// 免得每次 CDP 调用都在 UI 线程读一遍 settings.json。
+fn scope_at_dispatch(app: &AppHandle, token: &str) -> Result<Scope, String> {
+    scope_with(app, token, false)
+}
+
+fn scope_with(app: &AppHandle, token: &str, fresh: bool) -> Result<Scope, String> {
     let state = host(app).lock();
     if state.stopped {
         return Err("REVOKED: browser host is stopping".into());
@@ -274,12 +312,16 @@ fn scope(app: &AppHandle, token: &str) -> Result<Scope, String> {
         .get(token)
         .cloned()
         .ok_or("REVOKED: run capability expired")?;
+    let enabled = state.enabled;
     drop(state);
     if !crate::ai_runtime::browser_run_active(&scope.run) {
         return Err("REVOKED: run stopped".into());
     }
-    let settings = crate::settings::read(app);
-    if !settings.ai_assistants_enabled || !settings.browser.enabled {
+    if fresh {
+        if !sync_capability(app) {
+            return Err("REVOKED: AI browser disabled".into());
+        }
+    } else if !enabled {
         return Err("REVOKED: AI browser disabled".into());
     }
     Ok(scope)
@@ -295,10 +337,21 @@ pub struct Ticket {
 }
 impl Ticket {
     pub fn check(&self, app: &AppHandle, document: bool) -> Result<Tab, String> {
+        self.check_with(app, document, true)
+    }
+    /// UI 线程派发前的那一次复查。期限、身份、代际、授权全部照查，只有有效能力读镜像。
+    pub fn check_dispatch(&self, app: &AppHandle, document: bool) -> Result<Tab, String> {
+        self.check_with(app, document, false)
+    }
+    fn check_with(&self, app: &AppHandle, document: bool, fresh: bool) -> Result<Tab, String> {
         if std::time::Instant::now() >= self.expires {
             return Err("REQUEST_EXPIRED: operation deadline exceeded".into());
         }
-        let scope = scope(app, &self.token)?;
+        let scope = if fresh {
+            scope(app, &self.token)?
+        } else {
+            scope_at_dispatch(app, &self.token)?
+        };
         let state = host(app).lock();
         let tab = state
             .tabs
@@ -360,12 +413,14 @@ async fn dispatch(app: &AppHandle, request: Request) -> Value {
     match result {
         Ok(v) => v,
         Err(e) => {
-            let code = e
-                .split(':')
-                .next()
-                .filter(|s| s.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+            // 面板侧错误带 error::SEP 分段，工具侧沿用 `CODE: detail`；两种写法都取稳定码。
+            let head = e.split([':', crate::error::SEP]).next().unwrap_or("");
+            let code = (!head.is_empty()
+                && head.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+                .then_some(head)
                 .unwrap_or("BROWSER_ERROR");
-            failure(code, &e)
+            // 模型读不到控制字符，给它的原文把分段换成冒号。
+            failure(code, e.replace(crate::error::SEP, ": "))
         }
     }
 }
@@ -403,7 +458,7 @@ async fn create(app: &AppHandle, scope: &Scope, managed: bool) -> Result<Tab, St
     {
         let mut state = host(app).lock();
         if state.tabs.len() >= 16 {
-            return Err("LIMIT: at most 16 browser pages".into());
+            return Err(crate::error::err_parts("BROWSER_TAB_LIMIT", &["16".into()]));
         }
         // HashMap 的迭代顺序不是标签顺序；创建序号保证关闭、插入和重开侧栏时不跳位。
         tab.order = state.next_tab_order;
@@ -616,7 +671,7 @@ pub struct Bounds {
 #[tauri::command]
 pub async fn browser_panel_state(app: AppHandle, workspace: String) -> Result<Value, String> {
     if !crate::settings::read(&app).ai_assistants_enabled {
-        return Err("AI disabled".into());
+        return Err(crate::error::err("BROWSER_DISABLED", "AI assistants are off"));
     }
     let workspace = crate::ai_runtime::browser_workspace(&workspace)?;
     let state = host(&app).lock();
@@ -634,12 +689,11 @@ pub async fn browser_panel_open(
     session_id: String,
     url: String,
 ) -> Result<String, String> {
-    let settings = crate::settings::read(&app);
-    if !settings.ai_assistants_enabled || !settings.browser.enabled {
-        return Err("AI browser disabled".into());
+    if !sync_capability(&app) {
+        return Err(crate::error::err("BROWSER_DISABLED", "AI browser disabled"));
     }
     if session_id.len() > 128 || session_id.is_empty() {
-        return Err("invalid session id".into());
+        return Err(crate::error::err("BROWSER_SESSION", "invalid session id"));
     }
     let workspace = crate::ai_runtime::browser_workspace(&workspace)?;
     forge_browser::navigation_url(&url)?;
@@ -676,14 +730,13 @@ pub async fn browser_panel_navigate(
     tab_id: String,
     url: String,
 ) -> Result<(), String> {
-    let settings = crate::settings::read(&app);
-    if !settings.ai_assistants_enabled || !settings.browser.enabled {
-        return Err("AI browser disabled".into());
+    if !sync_capability(&app) {
+        return Err(crate::error::err("BROWSER_DISABLED", "AI browser disabled"));
     }
     let url = forge_browser::navigation_url(&url)?;
     {
         let mut state = host(&app).lock();
-        let tab = state.tabs.get_mut(&tab_id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(&tab_id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         // 用户导航打断在途 AI 请求，但保留用户选择的权限；私有页不会自动重新共享。
         tab.revision += 1;
         tab.refs.clear();
@@ -713,7 +766,7 @@ pub async fn browser_panel_grant(
     grant: Grant,
 ) -> Result<(), String> {
     let mut state = host(&app).lock();
-    let tab = state.tabs.get_mut(&tab_id).ok_or("page closed")?;
+    let tab = state.tabs.get_mut(&tab_id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
     tab.grant = grant;
     tab.revision += 1;
     tab.refs.clear();
@@ -740,7 +793,7 @@ pub async fn browser_panel_show(
         || bounds.width < 1.0
         || bounds.height < 1.0
     {
-        return Err("invalid browser bounds".into());
+        return Err(crate::error::err("BROWSER_BOUNDS", "invalid browser bounds"));
     }
     match tab_id {
         Some(id) => emulation::present(&app, id, bounds).await,
@@ -792,11 +845,20 @@ pub async fn browser_panel_close(app: AppHandle, tab_id: String) -> Result<(), S
 }
 
 fn panel_tab(app: &AppHandle, id: &str) -> Result<Tab, String> {
-    let settings = crate::settings::read(app);
-    if !settings.ai_assistants_enabled || !settings.browser.enabled {
-        return Err("AI browser disabled".into());
+    if !sync_capability(app) {
+        return Err(crate::error::err("BROWSER_DISABLED", "AI browser disabled"));
     }
-    host(app).lock().tabs.get(id).cloned().ok_or("page closed".into())
+    host(app).lock().tabs.get(id).cloned().ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))
+}
+
+/// 主线程那一侧的页查询：有效能力读内存镜像。批注浮层每次呈现都要查一次页状态，
+/// 那条路不能去读 settings.json；镜像由 `sync_capability` 与 `settings_saved` 写。
+pub(super) fn panel_tab_mirror(app: &AppHandle, id: &str) -> Result<Tab, String> {
+    let state = host(app).lock();
+    if !state.enabled {
+        return Err(crate::error::err("BROWSER_DISABLED", "AI browser disabled"));
+    }
+    state.tabs.get(id).cloned().ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))
 }
 
 /// 用户界面的诊断与历史状态；页面本身没有调用此 IPC 的权限。
@@ -848,7 +910,7 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
         // 先校验再打断请求，非法输入不能改变授权代际或页面状态。
         tab.emulation.patched(options)?;
         let mut state = host(&app).lock();
-        let tab = state.tabs.get_mut(&tab_id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(&tab_id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         tab.revision += 1;
         tab.refs.clear();
     }
@@ -864,7 +926,7 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
         PanelCommand::Back | PanelCommand::Forward => {
             let history = surface::cdp(&app, &tab_id, "Page.getNavigationHistory", json!({}), None, false).await?;
             let index = history["currentIndex"].as_i64().unwrap_or(0) + if matches!(command, PanelCommand::Back) { -1 } else { 1 };
-            let entry = history["entries"].as_array().and_then(|entries| usize::try_from(index).ok().and_then(|i| entries.get(i))).ok_or("NO_HISTORY: no history entry")?;
+            let entry = history["entries"].as_array().and_then(|entries| usize::try_from(index).ok().and_then(|i| entries.get(i))).ok_or(crate::error::err("BROWSER_NO_HISTORY", "no history entry"))?;
             surface::cdp(&app, &tab_id, "Page.navigateToHistoryEntry", json!({"entryId":entry["id"]}), None, false).await?;
         }
         PanelCommand::Reload | PanelCommand::Stop => {
@@ -878,19 +940,19 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
             }
         }
         PanelCommand::Zoom { factor } => {
-            if !factor.is_finite() || !(0.5..=2.0).contains(&factor) { return Err("zoom must be between 50% and 200%".into()); }
+            if !factor.is_finite() || !(0.5..=2.0).contains(&factor) { return Err(crate::error::err("BROWSER_ZOOM", "zoom must be between 50% and 200%")); }
             surface::control(&app, tab_id.clone(), Some(factor)).await?;
             if let Some(tab) = host(&app).lock().tabs.get_mut(&tab_id) { tab.zoom = factor; tab.revision += 1; tab.refs.clear(); }
         }
         PanelCommand::Devtools => surface::control(&app, tab_id.clone(), None).await?,
         PanelCommand::Find { text, backward } => {
-            if text.chars().count() > 256 { return Err("find query exceeds 256 characters".into()); }
+            if text.chars().count() > 256 { return Err(crate::error::err_parts("BROWSER_FIND_LIMIT", &["256".into()])); }
             let world = surface::cdp(&app, &tab_id, "Page.createIsolatedWorld", json!({"frameId":tab.frame,"worldName":"forge-user-find","grantUniveralAccess":false}), None, false).await?;
             let found = surface::cdp(&app, &tab_id, "Runtime.evaluate", json!({"contextId":world["executionContextId"],"expression":format!("window.find({},false,{},true,false,false,false)",serde_json::to_string(&text).map_err(|e|e.to_string())?,backward),"returnByValue":true}), None, false).await?;
             result = json!({"found":found["result"]["value"] == true});
         }
         PanelCommand::Dialog { accept, text } => {
-            if text.len() > 4000 { return Err("dialog input exceeds limit".into()); }
+            if text.len() > 4000 { return Err(crate::error::err("BROWSER_DIALOG_LIMIT", "dialog input exceeds 4000 characters")); }
             surface::cdp(&app, &tab_id, "Page.handleJavaScriptDialog", json!({"accept":accept,"promptText":text}), None, false).await?;
         }
         PanelCommand::Screenshot => {
@@ -898,13 +960,13 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
             // 所以按设备矩形裁一次就是整屏；截图期间不能改设备参数，改了页面会当场跳成 100%。
             let device = {
                 let state = host(&app).lock();
-                let tab = state.tabs.get(&tab_id).ok_or("页面已关闭")?;
+                let tab = state.tabs.get(&tab_id).ok_or(crate::error::err("TAB_CLOSED", "page closed"))?;
                 tab.emulation.width.map(|width| (width as f64, tab.emulation.height as f64))
             };
             let read = |metrics: &Value| -> Result<(emulation::CssBox, emulation::CssBox, f64, f64), String> {
                 let visual = &metrics["cssVisualViewport"];
                 let layout = &metrics["cssLayoutViewport"];
-                let number = |value: &Value, key: &str| value[key].as_f64().filter(|n| n.is_finite()).ok_or("页面可视区域不可用");
+                let number = |value: &Value, key: &str| value[key].as_f64().filter(|n| n.is_finite()).ok_or(crate::error::err("BROWSER_VIEWPORT", "page visible area is unavailable"));
                 let visual_box = emulation::CssBox {
                     x: number(visual, "pageX")?, y: number(visual, "pageY")?,
                     width: number(visual, "clientWidth")?, height: number(visual, "clientHeight")?,
@@ -919,14 +981,14 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
             };
             let metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
             let (visual, layout, scale, zoom) = read(&metrics)?;
-            if visual.width <= 0.0 || visual.height <= 0.0 || scale <= 0.0 || zoom <= 0.0 { return Err("页面可视区域为空".into()); }
+            if visual.width <= 0.0 || visual.height <= 0.0 || scale <= 0.0 || zoom <= 0.0 { return Err(crate::error::err("BROWSER_VIEWPORT", "page visible area is empty")); }
             let region = emulation::screenshot_region(visual, layout, device);
-            if region.width <= 0.0 || region.height <= 0.0 { return Err("页面可视区域为空".into()); }
+            if region.width <= 0.0 || region.height <= 0.0 { return Err(crate::error::err("BROWSER_VIEWPORT", "page visible area is empty")); }
             // 默认 surface 截图包含滚动条旁的留白；clip 使用文档坐标，仅取当前设备视口。
             // 保留触摸缩放及设备 DPR，由引擎输出清晰 PNG。CDP clip 使用 DIP，位置和尺寸乘页面 zoom。
             let image = picker::capture(&app, &tab_id, json!({"format":"png","captureBeyondViewport":false,
                 "clip":{"x":region.x*zoom,"y":region.y*zoom,"width":region.width*zoom,"height":region.height*zoom,"scale":scale}}), None, false).await?;
-            let data = image["data"].as_str().filter(|data| data.len() <= 8 * 1024 * 1024).ok_or("screenshot exceeds limit")?;
+            let data = image["data"].as_str().filter(|data| data.len() <= 8 * 1024 * 1024).ok_or(crate::error::err("BROWSER_PICK_LIMIT", "page screenshot exceeds the size limit"))?;
             result = json!({"dataUrl":format!("data:image/png;base64,{data}")});
         }
         PanelCommand::ElementScreenshot { selection_id } => {

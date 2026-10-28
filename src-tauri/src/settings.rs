@@ -400,6 +400,7 @@ pub async fn settings_save(app: AppHandle, patch: serde_json::Value) -> Result<S
             };
             save_document(&app, &document)?;
             // Revoke synchronously after persistence and before returning to any UI caller.
+            crate::browser::settings_saved(&app, &merged);
             if before.browser != merged.browser || !merged.ai_assistants_enabled {
                 crate::browser::permissions_changed(&app,!merged.ai_assistants_enabled || !merged.browser.enabled);
             }

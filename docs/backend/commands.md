@@ -1,14 +1,15 @@
 # 命令契约
 
-逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，本文件收录 100 条。出处列给命令自己的行号。
+逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，本文件收录 109 条。出处列给命令自己的行号。
 参数一律写前端传的 camelCase 名（映射规则见 [README.md](./README.md)）。
-非 AI 命令里发事件的只有五条：`fs_watch_start` 起的每条转发线程发 `fs://change{root,paths}`，
+非 AI 命令里发事件的只有六条：`fs_watch_start` 起的每条转发线程发 `fs://change{root,paths}`，
 `delete_entry` 降级物理删除时发 `fs://delete-progress{count,current}`（送回收站那条不发），`term_open` 的 reader 线程发
 `term://output` / `term://exit`，`proc_start` 的转发与轮询线程发 `proc://output` / `proc://exit`，
-`lsp_start` 的两条读线程发 `lsp://message` / `lsp://log` / `lsp://exit`。
+`lsp_start` 的两条读线程发 `lsp://message` / `lsp://log` / `lsp://exit`，内置浏览器那八条 `browser_panel_*`
+在每次改动页面状态后统一发 `forge-browser-changed{}`（载荷是空的，面板只把它当「重新拉一次 `browser_panel_state`」）。
 `app://flush` 由窗口关闭事件和托盘菜单的「退出」触发，不经命令。其余写命令不发事件：磁盘上的动静统一经
 `fs://change` 回来，git 状态由前端在写完之后再调一次 `git_status`。
-AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录本批新增的四条；其余命令的行为见
+AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录其中的五条；其余命令的行为见
 [../features/ai-assistants/](../features/ai-assistants/)。它们统一广播到 `ai-runtime://events`，
 载荷由会话日志投影。
 
@@ -66,12 +67,12 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录本批�
 | `git_create_tag` | `root, name, message, revision` | `String`（标签名） | 说明非空走 `-a -m`，否则轻量标签；`revision` 空即 HEAD | `:535` |
 | `git_branches` | `root` | `GitBranch[]` | `for-each-ref refs/heads` + `refs/remotes`；`<远端>/HEAD` 不列成一支，只把目标标 `defaultRef` | `:609` |
 | `git_tags` | `root` | `GitTag[]` | `for-each-ref refs/tags`，附注标签取 `%(*objectname)` | `:640` |
-| `git_remotes` | `root` | `String[]` | `remote` | `:672` |
+| `git_remotes` | `root` | `String[]` | `remote` | `:686` |
 | `git_ignored` | `root` | `String[]` | `status --porcelain --ignored=matching`，只留 `!! ` 行，取的是仓库相对路径 | `:688` |
-| `git_checkout` | `root, branch` | `String`（stderr） | `checkout`，分支 / 标签 / 修订号共用这一条 | `:714` |
+| `git_checkout` | `root, branch` | `String`（stderr） | `checkout`，分支 / 标签 / 修订号共用这一条 | `:728` |
 | `git_create_branch` | `root, name, from, checkout` | `String` | `checkout -b` 或 `branch <name> <起点>` | `:728` |
 | `git_merge` | `root, name` | `String`（stdout） | `merge --no-edit` | `:757` |
-| `git_rebase` | `root, onto` | `String` | `rebase <onto>`，非交互 | `:771` |
+| `git_rebase` | `root, onto` | `String` | `rebase <onto>`，非交互 | `:785` |
 | `git_rename_branch` | `root, name, to` | `String`（新名） | `branch -m` | `:785` |
 | `git_delete_branch` | `root, name` | `String` | `branch -d`（没合并的由 git 拦下） | `:799` |
 | `git_delete_tag` | `root, name` | `String` | `tag -d` | `:813` |
@@ -157,9 +158,9 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录本批�
 | `app_exit` | — | `()` | 清看门狗标志后 `app.exit(0)`；由前端存完盘调用 | `tray.rs:123` |
 | `sys_memory` | — | `Memory{appMb,totalMb,parts[]}`，`parts` 一档 `{kind,program,mb,count}` | kernel32 一次进程快照，按 `ppid` 从自身往外收全部后代，逐个读**私有工作集**（不是工作集：工作集含共享页，WebView2 那几台进程相加会虚高几百 MB）后归并成 host / webview / child 三档，单位 MB。读不到的进程按 0 计，父进程先退导致 `ppid` 链断掉的子树不计；非 Windows 三个值全为 0 | `sys.rs:369` |
 
-## AI 运行时与 Claude 配置（4）
+## AI 运行时与 Claude 配置（5）
 
-四条都是 `async`，命令体经 `block` 跑在阻塞线程池上；参数沿 IPC 用 camelCase。
+五条都是 `async`，命令体经 `block` 跑在阻塞线程池上；参数沿 IPC 用 camelCase。
 checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event` 整批拿一次，
 普通 `Mutex` 不可重入，外层再拿会挂死批准动作。
 
@@ -168,14 +169,48 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 | `ai_cli_hooks_read` | `provider` | `{path, hooks}` | Claude 读 settings.json，Codex 读 CODEX_HOME/hooks.json；缺文件或键回空对象，坏文件/树结构报错 | `ai_cli/settings.rs` |
 | `ai_cli_hooks_save` | `provider, hooks, expected` | `{path, hooks}` | 校验命令字段和 Codex 事件约束；比较基线 expected，外部改动拒绝覆盖；只替换 hooks，其余字段保留，写前备份并原子落盘 | `ai_cli/settings.rs` |
 | `ai_cli_codex_hooks_status` | — | 原生 `HooksListResponse`（data 含 hooks/errors/warnings） | 只读 hooks/list，返回来源、启停、信任与诊断；不创建线程、不调用模型、不写信任配置 | `ai_cli/settings.rs`、`ai_runtime/options.rs::codex_hooks` |
-| `ai_session_checkpoint_save` | `sessionId, workspace, paths[]` | `{id, files[]}` | 把目标文件的当前内容存成快照：单文件 8 MiB、一次最多 32 个文件、只收绝对路径、按大小写不敏感去重；落 `checkpoints/<id>/`，向会话日志追加 `checkpoint` 事件并广播 | `ai_runtime/mod.rs:2415` |
-| `ai_session_checkpoint_restore` | `sessionId, workspace, checkpointId` | `{restored, undo}` | 先把相关文件现状存成新快照（`source: "restore"`、`restoreOf` 指回来源）并追加事件，再写回目标文件；`checkpointId` 必须以 `ckpt-` 开头 | `ai_runtime/mod.rs:2435` |
+| `ai_session_checkpoint_save` | `sessionId, workspace, paths[]` | `{id, files[]}` | 把目标文件的当前内容存成快照：单文件 8 MiB、一次最多 32 个文件、只收绝对路径、按大小写不敏感去重；落 `checkpoints/<id>/`，向会话日志追加 `checkpoint` 事件并广播 | `ai_runtime/mod.rs:2781` |
+| `ai_session_checkpoint_restore` | `sessionId, workspace, checkpointId` | `{restored, undo}` | 先把相关文件现状存成新快照（`source: "restore"`、`restoreOf` 指回来源）并追加事件，再写回目标文件；`checkpointId` 必须以 `ckpt-` 开头 | `ai_runtime/mod.rs:2801` |
+
+## 内置浏览器（8）
+
+八条都是 `async`，是界面这一侧唯一的入口。AI 那一侧不走命令：`forge-browser-mcp` 子进程经命名管道向宿主发请求
+（管道名 `\\\\.\\pipe\\forge-browser-<pid>-<nonce>`，SDDL 只放当前登录用户），两端共用同一套 `Grant` 与票据语义，
+方案与取舍见 [../plans/browser-use/](../plans/browser-use/)。每次改动页面状态后统一发 `forge-browser-changed{}`，
+载荷是空的，面板只把它当「重新拉一次 `browser_panel_state`」的信号；AI 自己开页时另发一条
+`forge-browser-open{workspace,tabId}`，那条不经命令，由管道那头的 `browser_tabs{action:"open"}` 发，
+面板据此把侧栏切到这张页（`src/App.tsx:4029`）。
+
+命令只在 AI 助手开着时才干活：`browser_panel_state` 直接读设置里的总开关，其余七条经 `sync_capability`
+（`browser/mod.rs:279`）——它读一次磁盘上的有效能力，同时把结果写回内存镜像 `enabled`；派发复查只读那份镜像，
+所以「应用起来之后才打开浏览器」必须走过这条才生效。宿主起不来（管道被拒、companion 版本与清单对不上、随机数失败）
+不把整个应用一起拖停：原因记进 `State::unavailable`（`browser/mod.rs:104`），由 `available:false` 显示、
+由 `attach` 退回不注入（`browser/mod.rs:230`）。
+
+每张页有两把串行锁：`queue` 是 AI 动作与地址栏、查找、缩放、调试按钮共用的那一队；`picker.queue` 是选取与批注那一队，
+不等 AI，取消要能立刻响应。`revision` 是授权代际：改权限、导航、缩放、样式都 +1 并清空 `refs`，在途 AI 请求据此判死；
+`epoch` 是文档代际，导航即 +1。元素引用（`s{序号}n{backendNodeId}`）只在当前代际里有效。
+
+| 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
+| --- | --- | --- | --- | --- |
+| `browser_panel_state` | `workspace` | `{available,unavailable,version,tabs[],runs[]}` | 只读，不动任何状态。`available` 是「跑在 Windows 上 + broker 没停 + 没有不可用原因」三条与，不是「开没开页」；`tabs` 是 `Tab` 的投影（`id/order/sessionId/workspace/url/title/loading/loadError/zoom/emulation/previewScale/grant/epoch/revision/managed/allowedOrigin`），只列该 workspace 的页、按 `order` 排；`runs` 列该 workspace 现存的授权租约 `{sessionId,runId,readOnly}`。`workspace` 先过 `ai_runtime::browser_workspace`（必须是存在的绝对目录，Windows 上 canonicalize 后取小写）。总开关关着回 `BROWSER_DISABLED` | `browser/mod.rs:672` |
+| `browser_panel_open` | `workspace, sessionId, url` | `String`（页面 id） | 建一张**用户页**（`managed:false`），建出来那一刻就是私有（`grant:"none"`）；`sessionId` 长 1..128 字节，否则 `BROWSER_SESSION`，非 `manual` 时随后 `browser_panel_grant(Control)` 再导航；`url` 先过 `forge_browser::navigation_url`（只认 http(s)、不许内嵌凭据、拦元数据与链路本地等地址）；建页、授权、导航任一步失败都调 `browser_panel_close` 回收，不留没有回收入口的孤儿视图；发 `forge-browser-changed` | `:686` |
+| `browser_panel_navigate` | `tabId, url` | `()` | 用户主动导航，排在动作队列里；先 `revision += 1` 并清 `refs`（这是在途 AI 请求的取消令牌），授权按用户此前选的留着，私有页不会自动重新共享；非托管页把 `allowedOrigin` 挪到新 URL 的 origin，所以同站历史不会因这条被撤权；页不在回 `TAB_CLOSED`；发 `forge-browser-changed` | `:728` |
+| `browser_panel_grant` | `tabId, grant` | `()` | `grant` 三档：`"none"` / `"read"` / `"control"`；改档一律 `revision += 1` + 清 `refs`，AI 手里的元素引用当场作废；非托管页同步 `allowedOrigin`（`none` 清空，其余取当前 URL 的 origin）；只改内存里的授权，不碰原生视图也不导航；发 `forge-browser-changed` | `:763` |
+| `browser_panel_show` | `tabId?, bounds{x,y,width,height}` | `()` | 有 id 走 `emulation::present`（把这张页摆到面板让出的那块区域；尺寸真的变了才重设设备指标并发 `forge-browser-changed`），无 id 落到默认 surface 只挪位置；四个数都要有限、绝对值 ≤ 20000，宽高 ≥ 1，否则 `BROWSER_BOUNDS` | `:785` |
+| `browser_panel_close` | `tabId` | `()` | 顺序是「先撤权、再关视图」：`grant:"none"` + 清 `refs`，AI 立刻看不见这张页；视图关成功才从 `tabs` 摘掉，关失败就把 id 记进 `pending_close` 等下一次重试而条目留着——一次失败不能让这张页永久没有回收入口；`working` 里那条**故意不清**：关掉工作页之后 AI 必须收到 `TAB_CLOSED`，而不是悄悄落到当前活动页；发 `forge-browser-changed` | `:829` |
+| `browser_panel_details` | `tabId` | `{canGoBack,canGoForward,console[],network[],dialog,picker}` | 只读诊断，不进动作队列：AI 正占着页面时工具栏的接管与停止照样点得动；两格历史是现问 `Page.getNavigationHistory` 算出来的。`console` 与 `network` 各是 200 条封顶的队列（满了丢最旧）；`dialog` 只给同源弹窗的正文，跨 origin 的那律只报 `scope:"denied-frame"` 不给内容；`picker` 是选取状态，其中 `error` 是带码原文，界面过一遍 `describeError`。原生页面没有调这条 IPC 的权限 | `:866` |
+| `browser_panel_command` | `tabId, command` | `Value`（各档不同，无返回的给 `null`） | 地址栏、查找、缩放、调试按钮共用这一条和那张动作队列，不接受任意 CDP 命令。`command` 是 `{"action":…}` 标签联合（`deny_unknown_fields`，键一律 camelCase）：`back` / `forward`（没有对应条目回 `BROWSER_NO_HISTORY`）、`reload`、`stop`——这四条都先走一遍 `browser_panel_grant` 抬代际打断在途请求，只有 `stop` 把授权降到 `none` 并落 `loading:false`，同站历史与刷新保留权限；`clearConsole` / `clearNetwork` 只清本页那两条队列；`devtools`；`zoom{factor}` 钳在 0.5..2.0，越界 `BROWSER_ZOOM`，改的是设备像素比所以也 +1 代际；`find{text,backward}` 在隔离世界 `forge-user-find` 里调 `window.find`，回 `{found}`，文本 256 字封顶（`BROWSER_FIND_LIMIT`）；`dialog{accept,text}` 输入 4000 字节封顶（`BROWSER_DIALOG_LIMIT`）；`screenshot` 按设备视口裁一次回 `{dataUrl}`，正文 8 MiB 封顶（`BROWSER_PICK_LIMIT`）；`elementScreenshot{selectionId}`；`clearSelection{selectionId}`；`annotationResult{selectionId,error}`——`error` 为空即交付成功、清掉标记，否则把理由回投批注浮层并原地留草稿可重试；`inspect{enabled}`；`emulate{options}`。后三类不进 AI 那一队：取消选取与回投批注结果必须即时响应。`emulate` 先校验再动代际，非法输入改变不了页面状态。末尾发 `forge-browser-changed` | `:893` |
 
 ## 代码
 
 | 文件 | 内容 |
 | --- | --- |
-| `src-tauri/src/lib.rs` | 注册表全表 `:32-125`；`fs` 段 `:33-47`（两条搜索命令 `:44-45`）、`watch` 段 `:48-49`、`git` 段 `:50-95`、`term` / `proc` / `run` 段 `:96-107`、`lsp` / `lsp_config` / `lsp_detect` / `lsp_probe` 段 `:108-119`、`settings` / `tray` / `sys` 段 `:120-124`。Tauri 的命令宏不穿 `pub use`，那四条 run 命令按 `run::detect::…` / `run::store::…` 全路径注册 |
+| `src-tauri/src/lib.rs` | 注册表全表 `:88-299`；`browser::browser_panel_*` 八条打头 `:89-96`、`fs` 段 `:97-110` 加 `:115-116`、`local_history` 段 `:111-114`、`watch` 段 `:117-118`、`git` 段 `:119-166`、`term` / `term_layout` / `proc` 段 `:167-179`、run 那几条 `:180-185`、`lsp` 族 `:186-197`、`history` / `settings` / `shell_open` / `tray` / `sys` 段 `:198-208`、`update` 段 `:209-216`、AI 那几族 `:217-298`。Tauri 的命令宏不穿 `pub use`，那几条 run 命令按 `run::detect::…` / `run::store::…` / `run::dep_sync::…` 全路径注册；`browser::init` 挂在 setup `:73`，`browser::shutdown` 挂在退出清理 `:309` |
+| `src-tauri/src/browser/mod.rs` | `Grant` `:49-55`、`Tab` 与 `#[serde(skip)]` 那几格 `:56-93`、`State`（endpoint / unavailable / pending_close / enabled 四样都在这张表里）`:104-`、`init` 只登记状态 `:138`、`start` 的版本闸与管道名 `:147`、`attach` 的三重早退 `:230`、`permissions_changed` 的撤权与遮罩复位 `:246`、`shutdown` `:268`、`changed` 发的事件 `:272`、`sync_capability` `:279`、`settings_saved` `:290`、`create` 的 16 页上限与两处回滚 `:428-482`、`managed_private_target` `:495`、八条命令 `:672-994`、`panel_tab` `:847` 与主线程只读镜像的 `panel_tab_mirror` `:856`、`PanelCommand` `:878-889`、`Bounds` `:665` |
+| `src-tauri/src/browser/surface.rs` | `ui()` 的放弃标志（超时之后 closure 不再派发）`:6-`、`create` `:86`、`cdp` 的派发复查 `:298`、`show` `:385`、`close` `:449`；非 Windows 那一组空实现 `:529-556` |
+| `src-tauri/src/browser/launch.rs` | `companion()` 两档文件名（先 `<stem>-<target triple>.exe`，再 cargo 的裸名）`:8`、`environment()` 注入 endpoint 与 token `:69` |
+| `src-tauri/crates/forge-browser/src/lib.rs` | `VERSION` 用 `CARGO_PKG_VERSION` `:8`、`private_literal_target`（RFC1918 与 CGNAT 四类）`:135`、`navigation_url` 的协议 / 凭据 / `restricted_host` 三道 `:152-164` |
 | `src-tauri/src/fs/mod.rs` | `EDITOR_CEILING` 8 MiB `:50`、`read_file` 与编码判定 `:271-275`、`create_file_impl` 的 `create_new` `:487`、`copy_tree` `:543`、`move_entry_impl` 的跨盘那段 `:587`、`delete_entry` 的回收站与降级 `:609-672`、`fs_allow_asset` 的递归授权 `:809` |
 | `src-tauri/src/fs/search.rs` | 阈值常量 `:15-32`（`SCAN_CAP` 200_000、`MAX_DEPTH` 24、`TEXT_SIZE_CEILING` 20 MiB、`SNIFF_BYTES` 4096、`DEFAULT_PAGE` 100、`MAX_LIMIT` 5000、`MATCH_CAP` 2000、`SNIPPET_CHARS` 240）、剪掉的目录名 `:34-47`（含 `dist`）、`score_name` 四档 `:79-99`、`page_limit` `:130-136`、`find_files_at` 的排序与截断 `:179-193`、`TextOptions` `:211-224`、`build_matcher` 的 `BAD_REGEX` `:352-365`、`wildcard` `:368-394`、`snippet` `:419-433`、`skipped` 的四类 `:481-500`、单测 `scan_prunes_build_directories` `:705-727` |
 | `src-tauri/src/git/mod.rs` | `run_git` 的三条前缀参数 `:152-166`、`fail` 先 stderr 后 stdout `:172-178`、`relative_path` 与 `NOT_IN_REPO` `:203-221`、`remote_op` 回 stderr `:485-496`、`valid_branch_name` `:702-711`、`parse_refs` 的 `<远端>/HEAD` `:572-606`、`git_ignored` 的 `!! ` 行 `:694-699`、`GitLogQuery` `:1177-1194`、`bound` 的 `@<秒>` `:1197-1203`、`git_log` 的参数拼装与空仓库判断 `:1205-1261`、`valid_rev` `:1340-1347`、`valid_relative` `:1506-1512` |

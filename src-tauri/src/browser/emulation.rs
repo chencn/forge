@@ -114,7 +114,7 @@ pub async fn apply(app: &AppHandle, id: &str, patch: Value, ticket: Option<&Tick
     }
     {
         let mut state = host(app).lock();
-        let tab = state.tabs.get_mut(id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         tab.preview_scale = next.scale(&tab.preview_bounds);
         tab.emulation = next.clone();
         tab.refs.clear();
@@ -160,7 +160,7 @@ pub async fn present(app: &AppHandle, id: String, bounds: Bounds) -> Result<(), 
     }
     if resized {
         let mut state = host(app).lock();
-        let tab = state.tabs.get_mut(&id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(&id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         tab.revision += 1;
         tab.refs.clear();
     }
@@ -173,7 +173,7 @@ pub async fn present(app: &AppHandle, id: String, bounds: Bounds) -> Result<(), 
     let actual = tab.emulation.bounds(&bounds);
     {
         let mut state = host(app).lock();
-        let tab = state.tabs.get_mut(&id).ok_or("page closed")?;
+        let tab = state.tabs.get_mut(&id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?;
         tab.preview_bounds = bounds;
         tab.preview_scale = tab.emulation.scale(&bounds);
     }

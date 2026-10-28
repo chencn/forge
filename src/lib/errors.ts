@@ -112,6 +112,32 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   HTTP_BODY: (p, t) => t("error.httpBody", { detail: p[0] ?? "" }),
   HTTP_CYCLE: (p, t) => t("error.httpCycle", { name: p[0] ?? "" }),
   HTTP_ENCODING: (p, t) => t("error.httpEncoding", { encoding: p[0] ?? "" }),
+  // 内置浏览器：宿主能力、页面生命周期与截图边界。文案只在界面这一侧有一份。
+  BROWSER_DISABLED: (_p, t) => t("error.browserDisabled"),
+  BROWSER_SESSION: (_p, t) => t("error.browserSession"),
+  BROWSER_ZOOM: (_p, t) => t("error.browserZoom"),
+  BROWSER_VIEWPORT: (_p, t) => t("error.browserViewport"),
+  BROWSER_TAB_LIMIT: (p, t) => t("error.browserTabLimit", { max: p[0] ?? "" }),
+  // 选取与批注：标记失效要分「还没发」和「已经发了」两种补救，所以带一段动作。
+  BROWSER_PICK_STALE: (p, t) => t(p[0] === "resend" ? "error.browserPickResend" : "error.browserPickReselect"),
+  BROWSER_PICK_LOADING: (_p, t) => t("error.browserPickLoading"),
+  BROWSER_PICK_OVERLAY: (_p, t) => t("error.browserPickOverlay"),
+  BROWSER_PICK_CANCELLED: (_p, t) => t("error.browserPickCancelled"),
+  BROWSER_PICK_IFRAME: (_p, t) => t("error.browserPickIframe"),
+  BROWSER_PICK_HIDDEN: (_p, t) => t("error.browserPickHidden"),
+  BROWSER_PICK_LIMIT: (_p, t) => t("error.browserPickLimit"),
+  BROWSER_PICK_MODE: (_p, t) => t("error.browserPickMode"),
+  BROWSER_PICK_CAPTURE: (_p, t) => t("error.browserPickCapture"),
+  BROWSER_STYLE_INPUT: (_p, t) => t("error.browserStyleInput"),
+  BROWSER_STYLE_APPLY: (_p, t) => t("error.browserStyleApply"),
+  BROWSER_STYLE_RESTORE: (_p, t) => t("error.browserStyleRestore"),
+  BROWSER_ANNOTATION_INPUT: (_p, t) => t("error.browserAnnotationInput"),
+  BROWSER_ANNOTATION_LIMIT: (p, t) => t("error.browserAnnotationLimit", { max: p[0] ?? "" }),
+  BROWSER_BOUNDS: (_p, t) => t("error.browserBounds"),
+  BROWSER_FIND_LIMIT: (p, t) => t("error.browserFindLimit", { max: p[0] ?? "" }),
+  BROWSER_DIALOG_LIMIT: (_p, t) => t("error.browserDialogLimit"),
+  BROWSER_NO_HISTORY: (_p, t) => t("error.browserNoHistory"),
+  TAB_CLOSED: (_p, t) => t("error.tabClosed"),
 };
 
 /** 把后端回的错误文本翻成当前界面语言；不含代码的原样返回。 */

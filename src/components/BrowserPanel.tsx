@@ -10,7 +10,8 @@ import type { BrowserElementSelection, BrowserEmulation, BrowserEmulationPatch, 
 import BrowserEmulationSettings from "./BrowserEmulationSettings";
 import type { AiInputPayload } from "../lib/aiInputBridge";
 import { sameAiWorkspace } from "../lib/aiSessions";
-import { openExternal } from "../lib/fs";
+import { openExternal, errorText } from "../lib/fs";
+import { describeError } from "../lib/errors";
 import "../styles/browser.css";
 
 interface BrowserTab { id: string; sessionId: string; url: string; title: string; grant: "none" | "read" | "control"; loading: boolean; loadError: string | null; zoom: number; epoch: number; managed: boolean; emulation: BrowserEmulation; previewScale: number }
@@ -120,9 +121,9 @@ export default function BrowserPanel({ workspace, sessions, defaultSessionId, ta
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => { if (!timer && active) timer = setTimeout(() => { timer = undefined; if (active) void reload().catch((cause) => setError(String(cause))); }, 120); };
+    const refresh = () => { if (!timer && active) timer = setTimeout(() => { timer = undefined; if (active) void reload().catch((cause) => setError(describeError(errorText(cause), t))); }, 120); };
     const stop = listen("forge-browser-changed", refresh);
-    void reload().catch((cause) => { if (active) setError(String(cause)); });
+    void reload().catch((cause) => { if (active) setError(describeError(errorText(cause), t)); });
     return () => { active = false; ++request.current; clearTimeout(timer); void stop.then((unlisten) => unlisten()); };
   }, [reload]);
   useEffect(() => {
@@ -152,7 +153,7 @@ export default function BrowserPanel({ workspace, sessions, defaultSessionId, ta
       const key = JSON.stringify([tabId, bounds]);
       if (last === key) return;
       last = key;
-      presentation = presentation.then(async () => { if (!disposed) await invoke("browser_panel_show", { tabId, bounds }); }).catch((cause) => { if (!disposed) setError(String(cause)); });
+      presentation = presentation.then(async () => { if (!disposed) await invoke("browser_panel_show", { tabId, bounds }); }).catch((cause) => { if (!disposed) setError(describeError(errorText(cause), t)); });
     };
     const sync = () => {
       cancelAnimationFrame(frame);
@@ -176,7 +177,7 @@ export default function BrowserPanel({ workspace, sessions, defaultSessionId, ta
   const perform = async <T,>(operation: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true); setError(null);
     try { const result = await operation(); await reload(); return result; }
-    catch (cause) { setError(String(cause)); return undefined; }
+    catch (cause) { setError(describeError(errorText(cause), t)); return undefined; }
     finally { setBusy(false); }
   };
   const command = (value: Record<string, unknown>) => current ? perform(() => invoke<{ found?: boolean }>("browser_panel_command", { tabId: current.id, command: value })) : Promise.resolve(undefined);
@@ -237,7 +238,7 @@ export default function BrowserPanel({ workspace, sessions, defaultSessionId, ta
       await invoke("browser_panel_command", { tabId: selection.tabId, command: { action: "annotationResult", selectionId: selection.selectionId, error: null } });
       await reload();
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(errorText(cause), t));
       // 附件已经交付时不允许重发；交付失败才恢复面板的发送按钮。
       if (!delivered) await invoke("browser_panel_command", { tabId: selection.tabId, command: { action: "annotationResult", selectionId: selection.selectionId, error: String(cause) } }).catch(() => {});
     } finally { setBusy(false); }
@@ -334,7 +335,7 @@ export default function BrowserPanel({ workspace, sessions, defaultSessionId, ta
         </div> : null}
     </div>
 
-    {details.picker.error ? <div className="browser-error" role="alert"><MousePointer2 size={14} /><span>{details.picker.error}</span><IconButton label={t("browser.dismiss")} onClick={() => void command({ action: "inspect", enabled: false })}><X size={14} /></IconButton></div> : null}
+    {details.picker.error ? <div className="browser-error" role="alert"><MousePointer2 size={14} /><span>{describeError(details.picker.error, t)}</span><IconButton label={t("browser.dismiss")} onClick={() => void command({ action: "inspect", enabled: false })}><X size={14} /></IconButton></div> : null}
     {diagnostics ? <div className="browser-diagnostics"><div className="browser-diagnostics-head"><div role="tablist" aria-label={t("browser.diagnostics")}>{(["console", "network"] as const).map((item) => <button type="button" key={item} role="tab" aria-selected={diagnostics === item} className={diagnostics === item ? "is-selected" : ""} onClick={() => { setDiagnostics(item); setFilter(""); }}>{t(item === "console" ? "browser.console" : "browser.network")}<span>{details[item].length}</span></button>)}</div><span className="browser-flex" /><IconButton label={t("browser.clear")} disabled={!current || busy} onClick={() => void command({ action: diagnostics === "console" ? "clearConsole" : "clearNetwork" })}><Trash2 size={13} /></IconButton><IconButton label={t("browser.dismiss")} onClick={() => setDiagnostics(null)}><X size={14} /></IconButton></div><input className="browser-log-filter" aria-label={t("browser.filter")} placeholder={t("browser.filter")} value={filter} onChange={(event) => setFilter(event.target.value)} /><div className="browser-log-list" role="log" aria-live="off">{diagnostics === "console" ? details.console.filter((item) => item.text.toLowerCase().includes(filter.toLowerCase())).map((item, index) => <div className={`browser-console-line is-${item.type ?? "error"}`} key={`${item.epoch}:${index}`}><span>{item.type ?? "error"}</span><code>{item.text}</code></div>) : details.network.filter((item) => `${item.method} ${item.url} ${item.status ?? ""}`.toLowerCase().includes(filter.toLowerCase())).map((item, index) => <div className={`browser-network-line${item.failed || (item.status ?? 0) >= 400 ? " is-error" : ""}`} key={`${item.id}:${index}`} title={item.error || item.url || ""}><span>{item.method}</span><code>{item.url}</code><span>{item.failed ? t("browser.failed") : item.status ?? "…"}</span></div>)}{details[diagnostics].length === 0 ? <p className="browser-log-empty">{t(diagnostics === "console" ? "browser.consoleEmpty" : "browser.networkEmpty")}</p> : null}</div></div> : null}
 
     <footer className="browser-footer">

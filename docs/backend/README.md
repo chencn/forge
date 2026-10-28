@@ -1,7 +1,8 @@
 # 后端总览
 
-Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表；本文件收录其中 100 条，
-AI 助手的其余命令见 [../features/ai-assistants/](../features/ai-assistants/)。系统事件 9 条，
+Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表，一共 210 条；本文件收录其中 109 条，
+AI 助手的其余命令见 [../features/ai-assistants/](../features/ai-assistants/)。系统事件 13 条（`fs://` 两条、
+`term://` 两条、`proc://` 两条、`lsp://` 三条、`app://flush`、`shell-open`，加浏览器那两条 `forge-browser-*`），
 AI 运行时另走 `ai-runtime://events`。命令数只按注册表算，写了 `#[tauri::command]` 但没进表的不算契约。
 命令契约逐条对着代码核过，见 [commands.md](./commands.md)；错误模型见 [error-model.md](./error-model.md)；
 构建与工具链约束见 [toolchain.md](./toolchain.md)；辅助脚本见 [scripts.md](./scripts.md)。
@@ -40,8 +41,16 @@ AI 运行时另走 `ai-runtime://events`。命令数只按注册表算，写了 
 | `src-tauri/src/history.rs` | 191 | `history.json` 读写：上次开的项目、最近项目/分支/提交说明；首次从旧 `settings.json` 迁移，坏文件退回空表 | 2 |
 | `src-tauri/src/tray.rs` | 135 | 托盘图标与两项菜单、点关闭是收起还是先存盘再退 | 2 |
 | `src-tauri/src/sys.rs` | 199 | kernel32 取本进程工作集与物理内存总量；`which_program`（Windows 要带扩展名候选）、`capture_text`（`java -version` 打在 stderr）、`hide_console`、`write_atomic` 几个共用小工具 | 1 |
+| `src-tauri/src/browser/mod.rs` | 980 | 内置浏览器的宿主侧：`State` 那张表（页面、授权租约、待回收视图）、命名管道 broker、八条 `browser_panel_*` 与 `PanelCommand` | 8 |
+| `src-tauri/src/browser/surface.rs` | 562 | wry 子 webview 的建 / 显 / 关与 CDP 通道；COM 只在 UI 线程碰，`ui()` 超时之后 closure 不再派发 | — |
+| `src-tauri/src/browser/tools.rs` | 778 | AI 那一侧的 `forge_browser` 工具派发：票据复查、快照与动作、页面归属与地址策略 | — |
+| `src-tauri/src/browser/picker.rs` | 601 | 元素选取：隔离世界里画框、样式预览与还原、选取自己那条队列 | — |
+| `src-tauri/src/browser/annotation.rs` | 290 | 批注浮层的原生视图与请求回路（浮层文案在 `annotation.html` 自带那份三语言表里） | — |
+| `src-tauri/src/browser/emulation.rs` | 218 | 设备仿真参数、视口矩形与 `present` 的尺寸判定 | — |
+| `src-tauri/src/browser/launch.rs` | 74 | companion 的路径解析（装机那套带 target triple 的名字与 cargo 的裸名两档）与 endpoint/token 注入 | — |
+| `src-tauri/crates/forge-browser/` | 580 | companion 那一侧：协议与参数校验、URL 地址策略、命名管道 transport、MCP 工具表 | — |
 | `src-tauri/src/error.rs` | 24 | 错误出口：只拼「稳定代码 + 原文」 | — |
-| `src-tauri/src/lib.rs` | 128 | 模块声明、插件注册、托管状态、`invoke_handler`、窗口关闭事件 | — |
+| `src-tauri/src/lib.rs` | 378 | 模块声明、插件注册、托管状态、`invoke_handler`、窗口关闭事件、setup 里的 `browser::init` 与退出清理里的 `browser::shutdown` | — |
 
 ## 全局约定
 

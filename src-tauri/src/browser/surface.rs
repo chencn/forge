@@ -310,7 +310,7 @@ mod native {
         // Only schedule the COM call here; never block/pump the UI event loop waiting for it.
         ui(app, move || {
             if let Some(ticket) = ticket {
-                ticket.check(&app2, document)?;
+                ticket.check_dispatch(&app2, document)?;
             }
             let webview = core(&id)?;
             // 标明失败的方法，WebView2 的“参数错误”本身无法定位具体操作；不记录参数或页面内容。
@@ -356,7 +356,7 @@ mod native {
         let scale_app = app.clone();
         let id = id.to_string();
         ui(&app, move || {
-            let hwnd = VIEWS.with(|views| views.borrow().get(&id).ok_or("page closed".to_string()).map(|surface| surface.view.hwnd()))?;
+            let hwnd = VIEWS.with(|views| views.borrow().get(&id).ok_or(crate::error::err("TAB_CLOSED", "page closed")).map(|surface| surface.view.hwnd()))?;
             let scale = scale_app.get_webview_window("main").and_then(|window| window.scale_factor().ok()).filter(|scale| scale.is_finite() && *scale > 0.0).unwrap_or(1.0);
             let mut cursor = POINT::default();
             unsafe { GetCursorPos(&mut cursor) }.map_err(|e| e.to_string())?;
@@ -376,7 +376,7 @@ mod native {
     pub async fn control(app: &AppHandle, id: String, zoom: Option<f64>) -> Result<(), String> {
         ui(app, move || {
             if let Some(factor) = zoom {
-                VIEWS.with(|views| views.borrow().get(&id).ok_or("page closed")?.view.zoom(factor).map_err(|e| e.to_string()))
+                VIEWS.with(|views| views.borrow().get(&id).ok_or_else(|| crate::error::err("TAB_CLOSED", "page closed"))?.view.zoom(factor).map_err(|e| e.to_string()))
             } else {
                 unsafe { core(&id)?.OpenDevToolsWindow().map_err(|e| e.to_string()) }
             }
@@ -385,13 +385,13 @@ mod native {
     pub async fn show(app: &AppHandle, id: Option<String>, bounds: Bounds) -> Result<(), String> {
         let app2 = app.clone();
         ui(app, move || {
-            let settings = crate::settings::read(&app2);
             // A queued presentation must not reveal a page after the master switch was disabled.
-            let id = if settings.ai_assistants_enabled && settings.browser.enabled {
-                id.filter(|id| super::super::host(&app2).lock().tabs.contains_key(id))
-            } else {
-                None
+            // 有效能力读内存镜像：这里在 UI 线程，不能为一次呈现去读 settings.json。
+            let allowed = {
+                let state = super::super::host(&app2).lock();
+                state.enabled && id.as_ref().is_some_and(|id| state.tabs.contains_key(id))
             };
+            let id = if allowed { id } else { None };
             let previous = PRESENTED.with(|p| p.replace(id.clone()));
             if previous.is_some() && previous != id {
                 // A moved-away native child must not retain the user's keyboard focus.

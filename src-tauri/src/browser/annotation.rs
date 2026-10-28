@@ -1,5 +1,5 @@
 //! 可信本地注释视图与网页完全分离；网页没有此视图的 IPC，也不能读取用户评论。
-use super::{panel_tab, picker, surface};
+use super::{panel_tab, panel_tab_mirror, picker, surface};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
@@ -36,7 +36,7 @@ fn receive(app: AppHandle, raw: &str) {
 async fn handle(app: &AppHandle, request: &Request) -> Result<Value, String> {
     // 所有事件都重新校验页面和选取身份；旧面板回包不能修改新页面。
     let tab = panel_tab(app, &request.tab_id)?;
-    if tab.picker.active || tab.picker.pending || tab.picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) != Some(request.selection_id) { return Err("元素标记已变化，请重新选取".into()); }
+    if tab.picker.active || tab.picker.pending || tab.picker.selection.as_ref().and_then(|s|s["selectionId"].as_u64()) != Some(request.selection_id) { return Err(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()])); }
     match request.action.as_str() {
         "preview" => picker::edit(app, &request.tab_id, request.selection_id, "preview", request.patch.clone()).await,
         "reset" => picker::edit(app, &request.tab_id, request.selection_id, "reset", json!({})).await,
@@ -49,16 +49,16 @@ async fn handle(app: &AppHandle, request: &Request) -> Result<Value, String> {
         }
         "expand" => { expand(app, format!("{}:{}",request.tab_id,request.selection_id), request.expanded).await?; Ok(Value::Null) }
         "move" => {
-            if [request.delta_x,request.delta_y].iter().any(|n|!n.is_finite() || n.abs()>20000.0) {return Err("无效的面板位置".into());}
+            if [request.delta_x,request.delta_y].iter().any(|n|!n.is_finite() || n.abs()>20000.0) {return Err(crate::error::err("BROWSER_ANNOTATION_INPUT", "invalid panel position"));}
             move_panel(app,format!("{}:{}",request.tab_id,request.selection_id),request.delta_x,request.delta_y).await?;Ok(Value::Null)
         }
         "submit" => {
             // 评论可选；元素身份已在入口验证，仍限制评论长度。
-            if request.problem.chars().count() > 2000 { return Err("评论最多 2000 字".into()); }
+            if request.problem.chars().count() > 2000 { return Err(crate::error::err_parts("BROWSER_ANNOTATION_LIMIT", &["2000".into()])); }
             app.emit_to("main", "forge-browser-annotation-submit", json!({"workspace":tab.workspace,"selection":tab.picker.selection,"problem":request.problem})).map_err(|e|e.to_string())?;
             Ok(Value::Null)
         }
-        _ => Err("不支持的注释操作".into()),
+        _ => Err(crate::error::err("BROWSER_ANNOTATION_INPUT", "unknown annotation action")),
     }
 }
 
@@ -87,7 +87,7 @@ mod native {
     /// 在主线程调用，直接跟随原生网页的呈现状态，宿主弹层打开时同步隐藏。
     pub(crate) fn present(app: &AppHandle) -> Result<(), String> {
         let shown = surface::presented();
-        let tab = shown.as_deref().and_then(|id|panel_tab(app,id).ok()).filter(|t|!t.picker.active && !t.picker.pending && t.picker.selection.is_some());
+        let tab = shown.as_deref().and_then(|id|panel_tab_mirror(app,id).ok()).filter(|t|!t.picker.active && !t.picker.pending && t.picker.selection.is_some());
         PANEL.with(|slot| {
             let mut slot = slot.borrow_mut();
             let Some(tab) = tab else {
@@ -154,8 +154,8 @@ mod native {
             let y=y.clamp(available.y+8.0,(available.y+available.height-height-8.0).max(available.y+8.0));
             panel.last_position=(x,y);
             panel.view.set_bounds(rect(Bounds{x,y,width,height})).map_err(|e|e.to_string())?;
-            let settings = crate::settings::read(app);
-            let payload = json!({"selection":selection,"expanded":panel.expanded,"minimized":panel.minimized,"language":settings.language,"theme":settings.theme});
+            let (language, theme) = crate::browser::host(app).lock().appearance.clone();
+            let payload = json!({"selection":selection,"expanded":panel.expanded,"minimized":panel.minimized,"language":language,"theme":theme});
             panel.view.evaluate_script(&format!("window.renderAnnotation({payload})")).map_err(|e|e.to_string())?;
             panel.view.set_visible(true).map_err(|e|e.to_string())?;
             if fresh { panel.view.focus().map_err(|e|e.to_string())?; }
@@ -176,7 +176,7 @@ mod native {
         let handle = app.clone();
         surface::ui(app,move || {
             PANEL.with(|slot| {
-                let mut slot=slot.borrow_mut();let panel=slot.as_mut().filter(|p|p.key==key).ok_or("元素标记已变化")?;
+                let mut slot=slot.borrow_mut();let panel=slot.as_mut().filter(|p|p.key==key).ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
                 panel.expanded=expanded;Ok::<_,String>(())
             })?;
             present(&handle)
@@ -186,7 +186,7 @@ mod native {
         let handle=app.clone();
         surface::ui(app,move || {
             PANEL.with(|slot| {
-                let mut slot=slot.borrow_mut();let panel=slot.as_mut().filter(|p|p.key==key).ok_or("元素标记已变化")?;
+                let mut slot=slot.borrow_mut();let panel=slot.as_mut().filter(|p|p.key==key).ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
                 panel.minimized=minimized;Ok::<_,String>(())
             })?;
             present(&handle)
@@ -196,7 +196,7 @@ mod native {
         let handle=app.clone();
         surface::ui(app,move || {
             PANEL.with(|slot| {
-                let mut slot=slot.borrow_mut();let panel=slot.as_mut().filter(|p|p.key==key).ok_or("元素标记已变化")?;
+                let mut slot=slot.borrow_mut();let panel=slot.as_mut().filter(|p|p.key==key).ok_or(crate::error::err_parts("BROWSER_PICK_STALE", &["reselect".into()]))?;
                 panel.position=Some((panel.last_position.0+dx,panel.last_position.1+dy));Ok::<_,String>(())
             })?;
             present(&handle)

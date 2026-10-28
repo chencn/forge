@@ -1,6 +1,6 @@
 # Forge Browser Use 方案
 
-**状态**：Windows 核心链路已实施；详细能力边界、三轮审查及验证结果见 [实施记录](./implementation.md)。本文保留完整目标方案，后续阶段不代表已实现功能。
+**状态**：Windows 核心链路已实施，已交付那部分的运作方式并进了 [../../features/browser/](../../features/browser/)；实测边界见 [实施记录](./implementation.md)。本文保留完整目标方案，后续阶段不代表已实现功能。
 **涉及模块**：ai-assistants、shell-layout、settings、run；新增 `src-tauri/src/browser/` 和 MCP 伴生程序，扩展 `ai_runtime/`。
 **实证**：原生内嵌、WebView2 CDP、Codex MCP 管理调用和 Claude MCP 状态查询已验证；真实模型选择工具和历史会话续聊仍需补端到端验收。
 

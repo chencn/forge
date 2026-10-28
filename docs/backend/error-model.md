@@ -108,6 +108,42 @@ stdout（例如 `nothing to commit, working tree clean`），所以后端 `fail(
 | `LSP_NO_SERVER` | `lsp_probe.rs:266`、`:270` | 配置里没有的那个键（空名时不带段） | `error.lspNoServer` |
 | `LSP_NO_INSTALL` | `lsp_probe.rs:274` | 键 | `error.lspNoInstall` |
 | `LSP_INSTALL_SPAWN` | `lsp_probe.rs:234` | 壳程序名、系统原因 | `error.lspInstallSpawn` |
+| `BROWSER_DISABLED` | `browser/mod.rs:674`、`:693`、`:734`、`:849` | 无（detail 只给日志与模型看） | `error.browserDisabled` |
+| `BROWSER_SESSION` | `browser/mod.rs:696` | 无 | `error.browserSession` |
+| `BROWSER_ZOOM` | `browser/mod.rs:943` | 无 | `error.browserZoom` |
+| `BROWSER_VIEWPORT` | `browser/mod.rs:969`、`:984`、`:986`；`browser/picker.rs:390`、`:393`、`:395`、`:396`、`:398`、`:399`、`:402`、`:417` | 取不到的是哪一项（英文原文，界面不读这段） | `error.browserViewport` |
+| `BROWSER_TAB_LIMIT` | `browser/mod.rs:461` | 上限（`16`） | `error.browserTabLimit` |
+| `BROWSER_BOUNDS` | `browser/mod.rs:796` | 无 | `error.browserBounds` |
+| `BROWSER_FIND_LIMIT` | `browser/mod.rs:949` | 上限（`256`） | `error.browserFindLimit` |
+| `BROWSER_DIALOG_LIMIT` | `browser/mod.rs:955` | 无 | `error.browserDialogLimit` |
+| `BROWSER_NO_HISTORY` | `browser/mod.rs:929` | 无 | `error.browserNoHistory` |
+| `TAB_CLOSED` | `browser/mod.rs:739`、`:769`、`:851`、`:913`、`:963`；`browser/emulation.rs:117`、`:163`、`:176`；`browser/picker.rs:51`、`:227`；`browser/surface.rs:359`、`:379` | 无 | `error.tabClosed` |
+| `BROWSER_PICK_LOADING` | `browser/picker.rs:47` | 无 | `error.browserPickLoading` |
+| `BROWSER_PICK_MODE` | `browser/picker.rs:64` | CDP 的原因 | `error.browserPickMode` |
+| `BROWSER_PICK_OVERLAY` | `browser/picker.rs:112`、`:148`、`:156`、`:161` | 画的是哪一层（标记 / 悬停框 / 上下文） | `error.browserPickOverlay` |
+| `BROWSER_PICK_STALE` | `browser/picker.rs:388`、`:389`、`:391`、`:407`、`:414`、`:418`、`:424`、`:505`、`:515`、`:521`；`browser/annotation.rs:39`、`:179`、`:189`、`:199` | `reselect` / `resend`：还没发出去的与已经发出去的要分开说 | `error.browserPickReselect`、`error.browserPickResend` |
+| `BROWSER_PICK_CANCELLED` | `browser/picker.rs:340` | 无 | `error.browserPickCancelled` |
+| `BROWSER_PICK_HIDDEN` | `browser/picker.rs:392`、`:404` | 无 | `error.browserPickHidden` |
+| `BROWSER_PICK_CAPTURE` | `browser/picker.rs:405` | CDP 的原因 | `error.browserPickCapture` |
+| `BROWSER_PICK_LIMIT` | `browser/picker.rs:408`（元素）、`browser/mod.rs:991`（整页） | 无 | `error.browserPickLimit` |
+| `BROWSER_PICK_IFRAME` | `browser/picker.rs:422` | 无 | `error.browserPickIframe` |
+| `BROWSER_STYLE_INPUT` | `browser/picker.rs:507`、`:508`、`:510`、`:512` | 拒在哪一步（动作 / 形状 / 白名单） | `error.browserStyleInput` |
+| `BROWSER_STYLE_APPLY` | `browser/picker.rs:534` | 无 | `error.browserStyleApply` |
+| `BROWSER_STYLE_RESTORE` | `browser/picker.rs:218`（写进 `picker.error` 那格）、`:220` | 内层原因，`SEP` 先换成 `": "` 再塞进这一段 | `error.browserStyleRestore` |
+| `BROWSER_ANNOTATION_INPUT` | `browser/annotation.rs:52`、`:61` | 无 | `error.browserAnnotationInput` |
+| `BROWSER_ANNOTATION_LIMIT` | `browser/annotation.rs:57` | 上限（`2000`） | `error.browserAnnotationLimit` |
+
+## 浏览器那批码有两个读者
+
+面板那侧照上面的规矩走：`browser_panel_*` reject 出来的串由 `src/components/BrowserPanel.tsx`
+过一遍 `describeError(errorText(cause), t)`，`browser_panel_details` 里那格 `picker.error` 也一样
+（它是后端写进状态位的，不是横幅）。批注浮层是宿主自己画的第二块 webview，拿不到前端的 i18n，
+所以 `browser/annotation.html` 自带一份「码 → 三种语言」的表，认不出的码原样显示——面板把投递失败的理由
+当成 `annotationResult{error}` 回投时走的就是这条 passthrough，浮层那句 `附件数量已满` 不该被翻译。
+
+AI 那侧不查词典：`forge_browser` 的请求经管道回来，`browser/mod.rs` 的 `dispatch()` 把码取出来当
+`failure(code, detail)` 的 code，并把 `SEP` 换成 `": "`。模型看到的是 `BROWSER_PICK_STALE: reselect`
+这样的稳定 token，界面看到的是本语言的那句——同一条错误，两份说法，但写中文的地方只有前端和浮层。
 
 ## 两个没有词典的代码
 
@@ -124,7 +160,10 @@ stdout（例如 `nothing to commit, working tree clean`），所以后端 `fail(
 | 文件 | 内容 |
 | --- | --- |
 | `src-tauri/src/error.rs` | 模块注释里那条理由 `:1-4`、`SEP` `:7`、`err` 空 detail 只发代码 `:10-16`、`err_parts` `:19-24` |
-| `src/lib/errors.ts` | `SEP` `:4`、`codedError` `:12-14`、`humanBytes` `:19-25`、`CODES` 表 `:33-96`、`GIT` 那一行 `:54-57`、run 那四条 `:73-77`、LSP 九条 `:84-95`、`describeError` 的三步与退回原文 `:99-105` |
+| `src/lib/errors.ts` | `SEP` `:4`、`codedError` `:12`、`humanBytes` `:19`、`CODES` 表 `:33-141`、`GIT` 那一行 `:58-61`、run 那四条从 `:82` 起、LSP 九条 `:95-106`、浏览器那批 `:116-140`、`describeError` 的三步与退回原文 `:144` |
+| `src-tauri/src/browser/mod.rs` | `dispatch()` 取码那一步（`CODE:` 与 `CODE\u0001` 两种形状都认）`:417`、把 `SEP` 换成 `": "` 再交给模型 `:423`、八条命令与 `panel_tab` 的早退 `:672-994` |
+| `src-tauri/src/browser/annotation.html` | 浮层自带那份「码 → 三种语言」表 `:41`、`error()` 的翻译与不认码时的 passthrough 紧随其后 |
+| `src/components/BrowserPanel.tsx` | 五处 `describeError(errorText(cause), t)`（`:124`、`:126`、`:156`、`:180`、`:241`）、`details.picker.error` 那格也翻过 `:338` |
 | `src/lib/fs.ts` | `errorText` `:236-239` |
 | `src-tauri/src/fs/mod.rs` | `io_err` `:9-11`、`EDITOR_CEILING` 与 `TOO_LARGE` 的字节数 `:30`、`:200-205`、BINARY / NOT_UTF8 那层分流 `:211-219` |
 | `src-tauri/src/fs/search.rs` | `NOT_DIR` 两处 `:203-205`、`:545-547`、`BAD_REGEX` `:351-364` |

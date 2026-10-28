@@ -9,7 +9,7 @@ fn companion() -> Result<PathBuf, String> {
     let directory = std::env::current_exe()
         .map_err(|e| e.to_string())?
         .parent()
-        .ok_or("Forge 可执行文件目录不可用".to_string())?
+        .ok_or("Forge executable directory unavailable".to_string())?
         .to_path_buf();
     let arch = std::env::consts::ARCH;
     let os = match std::env::consts::OS {

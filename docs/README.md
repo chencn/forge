@@ -37,6 +37,7 @@
 | `release-update` | GitHub Actions 打 tag 发版、应用内检查更新与自动下载/挂起补装、更新签名与 macOS 未签名说明 | `.github/workflows/release.yml`、`src-tauri/tauri.conf.json`（`plugins.updater`）、`src-tauri/src/update.rs`、`lib/updater.ts` |
 | `tray-lifecycle` | 托盘、点关闭是收进托盘还是退应用、退出前强制保存与看门狗 | `src-tauri/src/tray.rs`、`lib/window.ts` |
 | `localization` | 中英词典与 Provider、语言怎么带到 Monaco / xterm / 托盘菜单 | `src/i18n/`、`lib/errors.ts` |
+| `browser` | 内置浏览器：宿主持有的原生页面、按会话授权、命名管道 MCP companion、地址策略、元素选取与批注 | `src-tauri/src/browser/`、`src-tauri/crates/forge-browser/`、`components/BrowserPanel.tsx`、`lib/browser.ts` |
 
 ## 写作约定
 

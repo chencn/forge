@@ -197,7 +197,9 @@ Claude：每个进程追加内联 `--mcp-config`，通过父进程环境继承 t
 
 ## 尚未实现或未验收
 
-完整方案的后续能力没有伪装成可用：下载管理、popup 接续、跨 frame DOM / OOPIF 操作、网络 body / HAR / mock、trace / heap / 录制、持久审计、导航白名单审批、Safari / iOS 真机引擎及无线物理信号模拟、专门的 exclusive 路由设置，以及 macOS / Linux 原生宿主。status 明确报告当前缺失的主要能力。
+完整方案的后续能力没有伪装成可用：下载管理、popup 接续、跨 frame DOM / OOPIF 操作、网络 body / HAR / mock、trace / heap / 录制、持久审计、导航审批（硬闸门已有：元数据、链路本地、组播与 unique-local 一律拒，AI 托管页再多拦 RFC1918 与 CGNAT 四段；缺的是「用户临时放行」这条路）、Safari / iOS 真机引擎及无线物理信号模拟、专门的 exclusive 路由设置，以及 macOS / Linux 原生宿主。status 明确报告当前缺失的主要能力。
+
+同日审查后仍未落地、已知但没有伪装的几件：选取命中要拿 dispatch 时刻的节点再证一次（严格比 `backendNodeId` 会把合法的子元素点击一起打断）；管道 DACL 只按用户 SID，没带完整性标签，错误码 2（管道不存在）的退避与派发超时也还没定；macOS 的 universal sidecar 只写了合并路径、没实测；`forge-browser-changed` / `forge-browser-open` 两个事件名还是 `forge-` 前缀，没并进 `xxx://yyy` 那套；快照的上限代码按 250 KB 字节算、不数节点，方案文档写的是 1000 节点 / 40000 字符，两个口径要定一个。
 
 尚未跑真实模型的自然语言浏览器任务，未验证历史 Codex / Claude 会话续聊或独立子代理身份继承。Codex 对没有任何 turn 的新线程没有 rollout，不能拿它的 resume 失败证明真实历史续聊不支持；本次没有为验证而改动用户真实历史。Claude 的 mcp_status 证明加载成功，不能替代真实回合行为验收。
 
