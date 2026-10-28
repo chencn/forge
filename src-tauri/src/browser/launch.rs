@@ -1,20 +1,53 @@
 //! Per-process configuration only. Never rewrite ~/.codex or ~/.claude.
 use super::{host, Lease};
 use crate::ai_cli::Provider;
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
+
+/// Tauri 打包会把 sidecar 改名成 `forge-browser-mcp-<target-triple>[.exe]`，只有 cargo 直接产出时
+/// 才和 forge.exe 同名同目录。只认裸名字的话，装出来的 Forge 每次 AI 会话都起不来。
+fn companion() -> Result<PathBuf, String> {
+    let directory = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .ok_or("Forge 可执行文件目录不可用".to_string())?
+        .to_path_buf();
+    let arch = std::env::consts::ARCH;
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    let vendor = match std::env::consts::OS {
+        "windows" => "pc",
+        "macos" => "apple",
+        _ => "unknown",
+    };
+    // std::env::consts 里没有 target env，只能用 cfg! 取；macOS 的标准目标是空串。
+    let environment = if cfg!(target_env = "msvc") {
+        "msvc"
+    } else if cfg!(target_env = "gnu") {
+        "gnu"
+    } else if cfg!(target_env = "musl") {
+        "musl"
+    } else {
+        ""
+    };
+    let triple = if environment.is_empty() {
+        format!("{arch}-{vendor}-{os}")
+    } else {
+        format!("{arch}-{vendor}-{os}-{environment}")
+    };
+    let suffix = std::env::consts::EXE_SUFFIX;
+    for name in [format!("forge-browser-mcp-{triple}{suffix}"), format!("forge-browser-mcp{suffix}")] {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!("Forge browser companion missing next to {}. Run npm run browser:prepare before starting the desktop app.",directory.display()))
+}
 
 pub fn arguments(provider: Provider) -> Result<Vec<String>, String> {
-    let executable = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name(if cfg!(windows) {
-            "forge-browser-mcp.exe"
-        } else {
-            "forge-browser-mcp"
-        });
-    if !executable.is_file() {
-        return Err(format!("Forge browser companion missing: {}. Run npm run browser:prepare before starting the desktop app.",executable.display()));
-    }
-    let command = executable.to_string_lossy();
+    let command = companion()?.to_string_lossy().into_owned();
     let quote = |s: &str| serde_json::to_string(s).unwrap();
     match provider {
         Provider::Codex => Ok(vec![
@@ -34,7 +67,8 @@ pub fn arguments(provider: Provider) -> Result<Vec<String>, String> {
     }
 }
 pub fn environment(command: &mut Command, lease: &Lease) {
+    let endpoint = host(&lease.app).lock().endpoint.clone();
     command
-        .env("FORGE_BROWSER_ENDPOINT", &host(&lease.app).endpoint)
+        .env("FORGE_BROWSER_ENDPOINT", endpoint)
         .env("FORGE_BROWSER_TOKEN", &lease.token);
 }

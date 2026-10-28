@@ -103,6 +103,52 @@ pub fn validate(tool: &str, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// 所有导航路径都要摘掉的目的地：云元数据、链路本地、未指定、组播和唯一本地段。
+/// 这是按 URL 文本判断的浏览器操作约束，不是完整网络 allowlist：域名仍能解析到内网 IP，
+/// worker 与 WebSocket 也不经过这里。127.0.0.1 与 ::1 保留，本项目的开发预览就在那儿。
+fn restricted_host(url: &url::Url) -> bool {
+    fn restricted_v4(ip: std::net::Ipv4Addr) -> bool {
+        ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || ip.is_broadcast()
+            || ip.octets()[0] == 0
+    }
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => restricted_v4(ip),
+        Some(url::Host::Ipv6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_unspecified()
+                || ip.is_multicast()
+                // fe80::/10 链路本地，fc00::/7 唯一本地。
+                || (first & 0xffc0) == 0xfe80
+                || (first & 0xfe00) == 0xfc00
+                || ip.to_ipv4_mapped().is_some_and(restricted_v4)
+        }
+        _ => false,
+    }
+}
+
+/// AI 托管页额外不许去的内网 IP 字面量。人工地址栏不受这条限制，用户自己要看内网设备是合法需求。
+/// 只按 URL 字面判断：用内网主机名（`http://nas.local/`）或解析到内网的公网域名不在这条覆盖范围内，
+/// 那需要真实出站拦截，不能把它说成网络 allowlist。
+pub fn private_literal_target(input: &str) -> bool {
+    let Ok(url) = url::Url::parse(input) else { return false };
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127)
+        }
+        Some(url::Host::Ipv6(ip)) => ip.to_ipv4_mapped().is_some_and(private_v4),
+        _ => false,
+    }
+}
+
+fn private_v4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127)
+}
+
 pub fn navigation_url(input: &str) -> Result<String, String> {
     let url = url::Url::parse(input).map_err(|_| "absolute http(s) URL required")?;
     if !matches!(url.scheme(), "http" | "https")
@@ -110,6 +156,9 @@ pub fn navigation_url(input: &str) -> Result<String, String> {
         || url.password().is_some()
     {
         return Err("only http(s) URLs without embedded credentials are allowed".into());
+    }
+    if restricted_host(&url) {
+        return Err("restricted destination: metadata, link-local, unspecified, multicast and unique-local addresses are blocked".into());
     }
     Ok(url.into())
 }
@@ -144,5 +193,53 @@ mod tests {
             navigation_url("http://localhost:1420").unwrap(),
             "http://localhost:1420/"
         );
+    }
+    #[test]
+    fn navigation_blocks_metadata_and_link_local_but_keeps_loopback() {
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://169.254.1.1/",
+            "http://0.0.0.0/",
+            "http://255.255.255.255/",
+            "http://224.0.0.1/",
+            "http://[fe80::1]/",
+            "http://[fd00::1234]/",
+            "http://[::]/",
+            "http://[ff02::1]/",
+            "http://[::ffff:169.254.169.254]/",
+        ] {
+            assert!(navigation_url(url).is_err(), "{url}");
+        }
+        for url in [
+            "http://127.0.0.1:5173/",
+            "https://[::1]:3000/",
+            "http://example.com/",
+            "http://xn--fiqs8s.example/",
+        ] {
+            assert!(navigation_url(url).is_ok(), "{url}");
+        }
+    }
+    #[test]
+    fn private_literal_targets_cover_rfc1918_and_cgnat_only() {
+        for url in [
+            "http://10.1.2.3/",
+            "http://172.16.0.1/",
+            "http://172.31.255.255/",
+            "http://192.168.1.10:8080/",
+            "http://100.64.0.2/",
+            "http://[::ffff:192.168.0.7]/",
+        ] {
+            assert!(private_literal_target(url), "{url}");
+        }
+        for url in [
+            "http://127.0.0.1:5173/",
+            "http://172.15.0.1/",
+            "http://172.32.0.1/",
+            "http://100.128.0.1/",
+            "http://example.com/",
+            "http://nas.local/",
+        ] {
+            assert!(!private_literal_target(url), "{url}");
+        }
     }
 }

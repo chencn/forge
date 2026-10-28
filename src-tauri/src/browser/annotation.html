@@ -40,11 +40,23 @@ const names = ['color','background-color','opacity','font-family','font-size','f
 function error(message='') { $('error').textContent = message; }
 // 选中的元素已经构成上下文；评论可选，仅未就绪或投递中禁用发送。
 function buttons() { $('send').disabled = sending || !state?.selection; for(const id of ['close','cancel','reset','toggle','comment']) $(id).disabled=sending; for(const input of $('styles').querySelectorAll('input'))input.disabled=sending; }
+const lost = () => state?.language === 'en' ? 'Forge did not answer; try again' : state?.language === 'zh-TW' ? '宿主沒有回應，請重試' : '宿主没有响应，请重试';
 function request(action, extra={}) {
   const identity = {tabId:state.selection.tabId,selectionId:state.selection.selectionId};
   const operation = queue.catch(()=>{}).then(()=>new Promise((resolve,reject)=>{
     const requestId = ++serial;
-    pending.set(requestId,{resolve,reject});
+    let settled = false, timer = 0;
+    const settle = (done) => (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      pending.delete(requestId);
+      done(value);
+    };
+    // 宿主回包丢失或面板已经卸载时，串行队列不能永远等下去：超时后报失败，
+    // 按钮、评论和样式预览都保持可重试，而不是整块浮层死锁。
+    timer = setTimeout(() => settle(reject)(new Error(lost())), 8000);
+    pending.set(requestId, {resolve: settle(resolve), reject: settle(reject)});
     window.ipc.postMessage(JSON.stringify({requestId,...identity,action,...extra}));
   }));
   queue = operation;

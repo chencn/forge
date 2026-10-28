@@ -516,6 +516,41 @@ impl Codex {
             ]),
         }
     }
+
+    /// 打开或恢复会话线程。`existing` 是 `config/read` 读到的生效指令，默认浏览器路由只追加在它后面。
+    fn open_thread(&mut self, existing: &str) -> Vec<Action> {
+        self.phase = 2;
+        let mut params = json!({"cwd":self.cwd});
+        if self.browser {
+            // Preserve effective user/project instructions; never replace baseInstructions.
+            params["developerInstructions"] = json!(format!("{existing}\n\n{}",forge_browser::INSTRUCTIONS));
+        }
+        // 未显式选择时保留 CLI 的项目配置；信任项目不等于授予完全访问。
+        if self.permission != super::options::PermissionMode::Inherit {
+            params["sandbox"] = json!(self.permission.codex_sandbox());
+            params["approvalPolicy"] = json!(self.permission.codex_policy());
+            params["approvalsReviewer"] = json!("user");
+        }
+        if let Some(model) = &self.model {
+            params["model"] = json!(model);
+        }
+        // Dynamic tools belong to the thread and can only be supplied at thread/start.
+        // Existing native threads keep their original tool set when resumed.
+        if self.thread.is_none() {
+            params["dynamicTools"] = Self::task_tools();
+        }
+        let method = if let Some(id) = &self.thread {
+            params["threadId"] = json!(id);
+            params["excludeTurns"] = json!(true);
+            "thread/resume"
+        } else {
+            "thread/start"
+        };
+        let mut actions = Vec::new();
+        if !self.browser { actions.push(Action::Write(json!({"method":"initialized","params":{}}))); }
+        actions.push(Action::Write(json!({"id":2,"method":method,"params":params})));
+        actions
+    }
 }
 impl Protocol for Codex {
     fn start(&mut self) -> Result<Vec<Action>, String> {
@@ -998,6 +1033,11 @@ impl Protocol for Codex {
             if text.contains("active writer") {
                 return Err("这条 Codex 会话正被另一个窗口或 CLI 占着：关掉那边的会话，或等它这一轮跑完再发。".into());
             }
+            // `config/read` 只是为了把默认浏览器指令接在项目生效指令后面。CLI 不认或拒绝这个请求时
+            // 退回裸指令继续开线程；一次可选读取失败不能把整轮会话判死。
+            if id == 9_000_000 && self.phase == 1 && self.browser && !self.stopped {
+                return Ok(self.open_thread(""));
+            }
             return Err(format!("Codex 协议或账号错误：{text}"));
         }
         let result = message.get("result").ok_or("Codex 响应缺少结果")?;
@@ -1009,40 +1049,9 @@ impl Protocol for Codex {
                     Action::Write(json!({"id":9_000_000,"method":"config/read","params":{"cwd":self.cwd,"includeLayers":false}})),
                 ])
             }
-            (1, 1) | (1, 9_000_000) => {
-                self.phase = 2;
-                let mut params = json!({"cwd":self.cwd});
-                if self.browser {
-                    // Preserve effective user/project instructions; never replace baseInstructions.
-                    let existing = result["config"]["developer_instructions"].as_str().unwrap_or("");
-                    params["developerInstructions"] = json!(format!("{existing}\n\n{}",forge_browser::INSTRUCTIONS));
-                }
-                // 未显式选择时保留 CLI 的项目配置；信任项目不等于授予完全访问。
-                if self.permission != super::options::PermissionMode::Inherit {
-                    params["sandbox"] = json!(self.permission.codex_sandbox());
-                    params["approvalPolicy"] = json!(self.permission.codex_policy());
-                    params["approvalsReviewer"] = json!("user");
-                }
-                if let Some(model) = &self.model {
-                    params["model"] = json!(model);
-                }
-                // Dynamic tools belong to the thread and can only be supplied at thread/start.
-                // Existing native threads keep their original tool set when resumed.
-                if self.thread.is_none() {
-                    params["dynamicTools"] = Self::task_tools();
-                }
-                let method = if let Some(id) = &self.thread {
-                    params["threadId"] = json!(id);
-                    params["excludeTurns"] = json!(true);
-                    "thread/resume"
-                } else {
-                    "thread/start"
-                };
-                let mut actions = Vec::new();
-                if !self.browser { actions.push(Action::Write(json!({"method":"initialized","params":{}}))); }
-                actions.push(Action::Write(json!({"id":2,"method":method,"params":params})));
-                Ok(actions)
-            }
+            (1, 1) | (1, 9_000_000) => Ok(self.open_thread(
+                result["config"]["developer_instructions"].as_str().unwrap_or(""),
+            )),
             (2, 2) => {
                 if self.permission != super::options::PermissionMode::Inherit && (result["approvalPolicy"] != self.permission.codex_policy()
                     || result["approvalsReviewer"] != "user"

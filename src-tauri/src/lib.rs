@@ -69,7 +69,8 @@ pub fn run() {
         .manage(shell_open::Pending::default())
         .setup(move |app| {
             ai_cli::settings::init(app.handle());
-            browser::init(app.handle())?;
+            // 浏览器起不来只让浏览器自己不可用；它的原因记在宿主状态里，不能拖着整个应用一起退出。
+            browser::init(app.handle());
             tray::build(&app.handle().clone())?;
             disable_default_context_menu(app.handle());
             ai_runtime::start_queue_monitor(app.handle().clone())?;

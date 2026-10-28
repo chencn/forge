@@ -12,7 +12,6 @@ use forge_browser::{failure, Request, VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -91,9 +90,6 @@ pub struct Tab {
     pub picker: picker::Picker,
     #[serde(skip)]
     pub queue: Arc<tokio::sync::Mutex<()>>,
-    /// 截图临时改设备缩放时为真。这段时间侧栏同步必须等截图结束，不能把视口改回整屏。
-    #[serde(skip)]
-    pub capturing: Arc<AtomicBool>,
 }
 #[derive(Clone)]
 pub struct NodeRef {
@@ -112,10 +108,15 @@ struct State {
     snapshot: u64,
     next_tab_order: u64,
     stopped: bool,
+    /// surface 关闭失败时留下的页面 id；下一次关闭会再试一次，不让原生视图永久无主。
+    pending_close: Vec<String>,
+    /// broker 待连接管道地址。起 broker 失败时为空，AI 启动据此不注入。
+    endpoint: String,
+    /// 浏览器宿主没能起来的原因。面板据此显示不可用，不能假装健康。
+    unavailable: Option<String>,
 }
 pub struct Host {
     state: Mutex<State>,
-    endpoint: String,
 }
 impl Host {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -126,75 +127,83 @@ pub fn host(app: &AppHandle) -> &Host {
     app.state::<Host>().inner()
 }
 
-pub fn init(app: &AppHandle) -> Result<(), String> {
+/// 浏览器只是 AI 的附属能力：握手版本不一致、随机数失败或管道被拒都不能中止整个应用。
+/// 状态先登记，起不来就记进 `unavailable`，由面板显示、由 `attach` 退回不注入。
+pub fn init(app: &AppHandle) {
+    app.manage(Host { state: Mutex::new(State { stopped: true, ..Default::default() }) });
+    #[cfg(windows)]
+    if let Err(error) = start(app) {
+        host(app).lock().unavailable = Some(error);
+    }
+}
+
+#[cfg(windows)]
+fn start(app: &AppHandle) -> Result<(), String> {
     if VERSION != env!("CARGO_PKG_VERSION") {
         return Err("Forge browser companion and desktop manifest versions differ".into());
     }
     let nonce = forge_browser::secret()?;
-    #[cfg(windows)]
-    let endpoint = format!(
-        r"\\.\pipe\forge-browser-{}-{}",
-        std::process::id(),
-        &nonce[..24]
-    );
-    #[cfg(not(windows))]
-    let endpoint = String::new();
-    app.manage(Host {
-        state: Mutex::new(State::default()),
-        endpoint: endpoint.clone(),
-    });
-    #[cfg(windows)]
+    let endpoint = format!(r"\\.\pipe\forge-browser-{}-{}", std::process::id(), &nonce[..24]);
+    // Create before publishing the endpoint: startup errors cannot look like a healthy service.
+    let mut listener = {
+        // setup runs on the UI thread, outside Tokio's reactor context.
+        let runtime = tauri::async_runtime::handle();
+        let _entered = runtime.inner().enter();
+        forge_browser::transport::server(&endpoint, true)?
+    };
     {
-        // Create before publishing the endpoint: startup errors cannot look like a healthy service.
-        let first = {
-            // setup runs on the UI thread, outside Tokio's reactor context.
-            let runtime = tauri::async_runtime::handle();
-            let _entered = runtime.inner().enter();
-            forge_browser::transport::server(&endpoint, true)?
-        };
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut listener = first;
-            let slots = Arc::new(tokio::sync::Semaphore::new(16));
-            loop {
-                if listener.connect().await.is_err() {
-                    break;
-                }
-                let next = match forge_browser::transport::server(&endpoint, false) {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-                let mut stream = std::mem::replace(&mut listener, next);
-                let Ok(permit) = slots.clone().try_acquire_owned() else {
-                    continue;
-                };
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _permit = permit;
-                    let request = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        forge_browser::transport::read(&mut stream),
-                    )
-                    .await;
-                    let value = match request {
-                        Ok(Ok(v)) => match serde_json::from_value::<Request>(v) {
-                            Ok(req) => dispatch(&app, req).await,
-                            Err(e) => failure("INVALID_REQUEST", e.to_string()),
-                        },
-                        _ => return,
-                    };
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        forge_browser::transport::write(&mut stream, &value),
-                    )
-                    .await;
-                });
-            }
-            // Listener failure revokes capability use; a dead broker must not look healthy.
-            host(&app).lock().stopped = true;
-            revoke_all(&app);
-        });
+        let mut state = host(app).lock();
+        state.endpoint = endpoint.clone();
+        state.stopped = false;
     }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let slots = Arc::new(tokio::sync::Semaphore::new(16));
+        loop {
+            if host(&app).lock().stopped {
+                break;
+            }
+            // 客户端连上又立刻断开（CLI 中途被杀）或实例交接竞态都会让 connect() 报错。
+            // 那是这一条连接的事，不能把整个宿主停摆到应用重启为止。
+            let accepted = listener.connect().await.is_ok();
+            let next = match forge_browser::transport::server(&endpoint, false) {
+                Ok(next) => next,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
+            let mut stream = std::mem::replace(&mut listener, next);
+            if !accepted {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+            let Ok(permit) = slots.clone().try_acquire_owned() else {
+                continue;
+            };
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _permit = permit;
+                let request = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    forge_browser::transport::read(&mut stream),
+                )
+                .await;
+                let value = match request {
+                    Ok(Ok(v)) => match serde_json::from_value::<Request>(v) {
+                        Ok(req) => dispatch(&app, req).await,
+                        Err(e) => failure("INVALID_REQUEST", e.to_string()),
+                    },
+                    _ => return,
+                };
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    forge_browser::transport::write(&mut stream, &value),
+                )
+                .await;
+            });
+        }
+    });
     Ok(())
 }
 
@@ -211,7 +220,8 @@ impl Drop for Lease {
 }
 pub fn attach(app: &AppHandle, scope: Scope) -> Result<Option<Lease>, String> {
     let settings = crate::settings::read(app);
-    if !cfg!(windows) || !settings.ai_assistants_enabled || !settings.browser.enabled {
+    // broker 没能起来时不注入：会话照常跑，只是没有浏览器工具，不能让每条消息都失败。
+    if !cfg!(windows) || host(app).lock().stopped || !settings.ai_assistants_enabled || !settings.browser.enabled {
         return Ok(None);
     }
     let token = forge_browser::secret()?;
@@ -389,7 +399,6 @@ async fn create(app: &AppHandle, scope: &Scope, managed: bool) -> Result<Tab, St
         dialog: None,
         picker: picker::Picker::default(),
         queue: Arc::default(),
-        capturing: Arc::default(),
     };
     {
         let mut state = host(app).lock();
@@ -407,7 +416,7 @@ async fn create(app: &AppHandle, scope: &Scope, managed: bool) -> Result<Tab, St
     }
     if let Err(e) = tools::initialize(app, &id).await {
         host(app).lock().tabs.remove(&id);
-        let _ = surface::close(app, id).await;
+        let _ = forget_surface(app, id.clone()).await;
         return Err(e);
     }
     if managed {
@@ -426,6 +435,11 @@ fn origin(url: &str) -> Option<String> {
         .ok()
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .map(|u| u.origin().ascii_serialization())
+}
+/// 重定向和页面自跳也吃同一条内网限制：AI 托管页不许进私网 IP 字面量，人工页由用户自己决定。
+pub(super) fn managed_private_target(app: &AppHandle, id: &str, url: &str) -> bool {
+    host(app).lock().tabs.get(id).is_some_and(|tab| tab.managed)
+        && forge_browser::private_literal_target(url)
 }
 pub(super) fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
     // WebView2 只在引擎内部绘制悬停高亮，不会把 nodeHighlightRequested 交给宿主。
@@ -609,7 +623,7 @@ pub async fn browser_panel_state(app: AppHandle, workspace: String) -> Result<Va
     let mut tabs = state.tabs.values().filter(|tab| tab.workspace == workspace).collect::<Vec<_>>();
     tabs.sort_by_key(|tab| tab.order);
     Ok(
-        json!({"available":cfg!(windows),"version":VERSION,"tabs":tabs,"runs":state.scopes.values().filter(|s| s.workspace == workspace).map(|s| json!({"sessionId":s.session,"runId":s.run,"readOnly":s.read_only})).collect::<Vec<_>>()}),
+        json!({"available":cfg!(windows) && !state.stopped && state.unavailable.is_none(),"unavailable":state.unavailable,"version":VERSION,"tabs":tabs,"runs":state.scopes.values().filter(|s| s.workspace == workspace).map(|s| json!({"sessionId":s.session,"runId":s.run,"readOnly":s.read_only})).collect::<Vec<_>>()}),
     )
 }
 
@@ -641,10 +655,19 @@ pub async fn browser_panel_open(
     )
     .await?;
     // 有所属会话的手动页默认可操作；无会话页面保持私有，profile 仍与 AI 新建页隔离。
-    if tab.session_id != "manual" {
-        browser_panel_grant(app.clone(), tab.id.clone(), Grant::Control).await?;
+    let opened = async {
+        if tab.session_id != "manual" {
+            browser_panel_grant(app.clone(), tab.id.clone(), Grant::Control).await?;
+        }
+        browser_panel_navigate(app.clone(), tab.id.clone(), url).await
     }
-    browser_panel_navigate(app, tab.id.clone(), url).await?;
+    .await;
+    if let Err(error) = opened {
+        // 页面已经建出来了，后面任何一步失败都要把它收回去：否则会留下一张没有回收入口、
+        // 还占着页面配额的孤儿视图。关闭失败时 id 会留在 pending_close 里重试。
+        let _ = browser_panel_close(app, tab.id.clone()).await;
+        return Err(error);
+    }
     Ok(tab.id)
 }
 #[tauri::command]
@@ -724,12 +747,48 @@ pub async fn browser_panel_show(
         None => surface::show(&app, None, bounds).await,
     }
 }
+/// 关闭原生视图；失败时记住页面 id，而不是把 id 和视图一起丢掉。
+async fn forget_surface(app: &AppHandle, id: String) -> Result<(), String> {
+    match surface::close(app, id.clone()).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            host(app).lock().pending_close.push(id);
+            Err(error)
+        }
+    }
+}
+
+/// 重试上一轮没关掉的 surface。再次失败就放回列表，等下一次关闭，不自旋。
+async fn flush_surfaces(app: &AppHandle) {
+    let ids = std::mem::take(&mut host(app).lock().pending_close);
+    let mut retry = Vec::new();
+    for id in ids {
+        if surface::close(app, id.clone()).await.is_err() {
+            retry.push(id);
+        }
+    }
+    if !retry.is_empty() {
+        host(app).lock().pending_close = retry;
+    }
+}
+
 #[tauri::command]
 pub async fn browser_panel_close(app: AppHandle, tab_id: String) -> Result<(), String> {
-    host(&app).lock().tabs.remove(&tab_id); // Revoke before touching a native view.
-    surface::close(&app, tab_id).await?;
+    // 先撤权再动原生视图：AI 立刻看不见这张页；页面条目要等 surface 真的关掉才移除，
+    // 否则一次关闭失败就让这张页永久没有回收入口。
+    if let Some(tab) = host(&app).lock().tabs.get_mut(&tab_id) {
+        tab.grant = Grant::None;
+        tab.refs.clear();
+    }
+    let closed = forget_surface(&app, tab_id.clone()).await;
+    if closed.is_ok() {
+        // 只从 tabs 摘掉，`working` 里的那条要留着：关闭工作页后 AI 必须收到 TAB_CLOSED，
+        // 而不是悄悄落到当前活动页。
+        host(&app).lock().tabs.remove(&tab_id);
+    }
+    flush_surfaces(&app).await;
     changed(&app);
-    Ok(())
+    closed
 }
 
 fn panel_tab(app: &AppHandle, id: &str) -> Result<Tab, String> {
@@ -835,64 +894,40 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
             surface::cdp(&app, &tab_id, "Page.handleJavaScriptDialog", json!({"accept":accept,"promptText":text}), None, false).await?;
         }
         PanelCommand::Screenshot => {
-            // 手机/平板的可视区域经常是整块侧栏。按它截图会得到整屏，两侧是留白。
-            // 只裁设备视口；测量结果比设备更大时，先把预览缩放收回 1，再按设备尺寸取中间那一块。
-            // 不改原生窗口大小，避免截图瞬间把页面铺满窗口。clip 的触摸缩放不除设备像素比。
-            let (device, capture, restore) = {
+            // 适配缩放只是把设备画面缩小呈现，布局视口始终是设备尺寸。
+            // 所以按设备矩形裁一次就是整屏；截图期间不能改设备参数，改了页面会当场跳成 100%。
+            let device = {
                 let state = host(&app).lock();
                 let tab = state.tabs.get(&tab_id).ok_or("页面已关闭")?;
-                tab.capturing.store(true, Ordering::Release);
-                (
-                    tab.emulation.width.map(|width| (width as f64, tab.emulation.height as f64)),
-                    tab.emulation.capture_metrics(),
-                    tab.emulation.metrics(&tab.preview_bounds),
-                )
+                tab.emulation.width.map(|width| (width as f64, tab.emulation.height as f64))
             };
-            let captured = async {
-                let read = |metrics: &Value| -> Result<(emulation::CssBox, emulation::CssBox, f64, f64), String> {
-                    let visual = &metrics["cssVisualViewport"];
-                    let layout = &metrics["cssLayoutViewport"];
-                    let number = |value: &Value, key: &str| value[key].as_f64().filter(|n| n.is_finite()).ok_or("页面可视区域不可用");
-                    let visual_box = emulation::CssBox {
-                        x: number(visual, "pageX")?, y: number(visual, "pageY")?,
-                        width: number(visual, "clientWidth")?, height: number(visual, "clientHeight")?,
-                    };
-                    let layout_box = emulation::CssBox {
-                        x: number(layout, "pageX").unwrap_or(visual_box.x),
-                        y: number(layout, "pageY").unwrap_or(visual_box.y),
-                        width: number(layout, "clientWidth").unwrap_or(visual_box.width),
-                        height: number(layout, "clientHeight").unwrap_or(visual_box.height),
-                    };
-                    Ok((visual_box, layout_box, number(visual, "scale")?, number(visual, "zoom")?))
+            let read = |metrics: &Value| -> Result<(emulation::CssBox, emulation::CssBox, f64, f64), String> {
+                let visual = &metrics["cssVisualViewport"];
+                let layout = &metrics["cssLayoutViewport"];
+                let number = |value: &Value, key: &str| value[key].as_f64().filter(|n| n.is_finite()).ok_or("页面可视区域不可用");
+                let visual_box = emulation::CssBox {
+                    x: number(visual, "pageX")?, y: number(visual, "pageY")?,
+                    width: number(visual, "clientWidth")?, height: number(visual, "clientHeight")?,
                 };
-                let mut metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
-                let (visual, _, _, _) = read(&metrics)?;
-                let oversized = device.is_some_and(|(width, height)| visual.width > width + 1.0 || visual.height > height + 1.0);
-                if oversized {
-                    if let Some((method, params)) = &capture {
-                        surface::cdp(&app, &tab_id, method, params.clone(), None, false).await?;
-                        for _ in 0..2 {
-                            surface::cdp(&app, &tab_id, "Runtime.evaluate", json!({"expression":"new Promise(requestAnimationFrame)","awaitPromise":true}), None, false).await?;
-                        }
-                        metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
-                    }
-                }
-                let (visual, layout, scale, zoom) = read(&metrics)?;
-                if visual.width <= 0.0 || visual.height <= 0.0 || scale <= 0.0 || zoom <= 0.0 { return Err("页面可视区域为空".into()); }
-                let region = emulation::screenshot_region(visual, layout, device);
-                if region.width <= 0.0 || region.height <= 0.0 { return Err("页面可视区域为空".into()); }
-                // 默认 surface 截图包含滚动条旁的留白；clip 使用文档坐标，仅取当前设备视口。
-                // 保留触摸缩放及设备 DPR，由引擎输出清晰 PNG。CDP clip 使用 DIP，位置和尺寸乘页面 zoom。
-                let image = picker::capture(&app, &tab_id, json!({"format":"png","captureBeyondViewport":false,
-                    "clip":{"x":region.x*zoom,"y":region.y*zoom,"width":region.width*zoom,"height":region.height*zoom,"scale":scale}}), None, false).await?;
-                let data = image["data"].as_str().filter(|data| data.len() <= 8 * 1024 * 1024).ok_or("screenshot exceeds limit")?;
-                Ok::<_, String>((json!({"dataUrl":format!("data:image/png;base64,{data}")}), oversized))
-            }.await;
-            if device.is_some() && captured.as_ref().map(|(_, oversized)| *oversized).unwrap_or(true) {
-                let _ = surface::cdp(&app, &tab_id, restore.0, restore.1, None, false).await;
-            }
-            if let Some(tab) = host(&app).lock().tabs.get(&tab_id) { tab.capturing.store(false, Ordering::Release); }
-            result = captured.map(|(image, _)| image)?;
+                let layout_box = emulation::CssBox {
+                    x: number(layout, "pageX").unwrap_or(visual_box.x),
+                    y: number(layout, "pageY").unwrap_or(visual_box.y),
+                    width: number(layout, "clientWidth").unwrap_or(visual_box.width),
+                    height: number(layout, "clientHeight").unwrap_or(visual_box.height),
+                };
+                Ok((visual_box, layout_box, number(visual, "scale")?, number(visual, "zoom")?))
+            };
+            let metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
+            let (visual, layout, scale, zoom) = read(&metrics)?;
+            if visual.width <= 0.0 || visual.height <= 0.0 || scale <= 0.0 || zoom <= 0.0 { return Err("页面可视区域为空".into()); }
+            let region = emulation::screenshot_region(visual, layout, device);
+            if region.width <= 0.0 || region.height <= 0.0 { return Err("页面可视区域为空".into()); }
+            // 默认 surface 截图包含滚动条旁的留白；clip 使用文档坐标，仅取当前设备视口。
+            // 保留触摸缩放及设备 DPR，由引擎输出清晰 PNG。CDP clip 使用 DIP，位置和尺寸乘页面 zoom。
+            let image = picker::capture(&app, &tab_id, json!({"format":"png","captureBeyondViewport":false,
+                "clip":{"x":region.x*zoom,"y":region.y*zoom,"width":region.width*zoom,"height":region.height*zoom,"scale":scale}}), None, false).await?;
+            let data = image["data"].as_str().filter(|data| data.len() <= 8 * 1024 * 1024).ok_or("screenshot exceeds limit")?;
+            result = json!({"dataUrl":format!("data:image/png;base64,{data}")});
         }
         PanelCommand::ElementScreenshot { selection_id } => {
             result = picker::screenshot(&app, &tab_id, selection_id).await?;

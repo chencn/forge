@@ -158,6 +158,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "browser.close": "關閉頁面",
   "browser.new": "新頁面",
   "browser.unsupported": "此版本的內建瀏覽器需要 Windows WebView2。",
+  "browser.hostUnavailable": "瀏覽器宿主未能啟動，AI 瀏覽器工具暫不可用；瀏覽頁面不受影響。",
   "browser.epoch": "文件世代",
   "browser.running": "AI 執行中",
   "browser.idle": "AI 閒置",

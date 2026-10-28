@@ -211,7 +211,15 @@ async fn end(app: &AppHandle, id: &str, selection_id: u64, sent: bool) -> Result
     // 发送后保留预览结果；取消只恢复已编辑属性。节点已删除时仍允许清掉失效标记。
     if tab.picker.selection.as_ref().is_some_and(|s|s["styleChanges"].is_object()) {
         if let Some(backend) = tab.picker.backend {
-            let _ = call_style(app, id, &tab, backend, if sent {"commit"} else {"reset"}, json!({})).await;
+            if let Err(error) = call_style(app, id, &tab, backend, if sent {"commit"} else {"reset"}, json!({})).await {
+                if !sent {
+                    // 恢复失败时保留标记和选取身份：清掉状态等于把 !important 预览永久留在页面上，
+                    // 而且用户再也点不到撤销它的那一下。
+                    if let Some(tab) = host(app).lock().tabs.get_mut(id) { tab.picker.error = Some(format!("恢复元素样式失败，请重试取消：{error}")); }
+                    changed(app);
+                    return Err(format!("恢复元素样式失败，请重试取消：{error}"));
+                }
+            }
         }
     }
     let generation = {
@@ -307,7 +315,11 @@ pub fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
         tauri::async_runtime::spawn(async move {
             let _queue = queue.lock().await;
             if current(&app, &id, canceled) {
-                let _ = surface::cdp(&app, &id, "Overlay.setInspectMode", inspect_mode(false), None, false).await;
+                if surface::cdp(&app, &id, "Overlay.setInspectMode", inspect_mode(false), None, false).await.is_err() {
+                    // 退出捕获失败就重新标记为「选取中」：原生 Esc 的门禁看的是 active，
+                    // 写成已结束会让用户困在跟随鼠标的高亮里，既退不出也点不动页面。
+                    if let Some(tab) = host(&app).lock().tabs.get_mut(&id).filter(|t|t.picker.generation == canceled) { tab.picker.active = true; }
+                }
                 let _ = paint(&app, &id).await;
                 changed(&app);
             }
@@ -356,6 +368,9 @@ pub fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
             }.await;
             if let Err(error) = result {
                 if let Some(tab) = host(&app).lock().tabs.get_mut(&id).filter(|t|t.picker.generation == generation) {
+                    // 引擎还停在捕获态，就不能把它写成一轮已结束的选取：保留「选取中」，
+                    // Esc 和再点一次才是真实存在的退出路径。
+                    tab.picker.active = true;
                     tab.picker.error = Some(error);
                 }
             }
@@ -454,6 +469,27 @@ const ELEMENT_DETAILS: &str = r#"function() {
 /// 只允许用户面板编辑这些 CSS 属性，不接受脚本、选择器或任意 CDP。
 const EDITABLE: &[&str] = &["color", "background-color", "opacity", "font-family", "font-size", "font-weight", "border-color", "border-radius", "border-width", "border-style", "width", "height", "margin", "padding", "gap"];
 
+/// 校验串必须和引擎最终解析的串是同一串：CSS 转义会在引擎里解码成 `url(` 等形态，
+/// 所以反斜杠、声明分隔符、`@` 和注释一律先拒掉，再按名字拒绝函数值。
+fn valid_style_value(key: &str, value: &str) -> bool {
+    if !EDITABLE.contains(&key) || value.len() > 160 {
+        return false;
+    }
+    if value
+        .chars()
+        .any(|c| matches!(c, '\\' | ';' | '{' | '}' | '@') || c.is_control())
+    {
+        return false;
+    }
+    if value.contains("/*") || value.contains("*/") {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    !["url(", "var(", "env(", "expression(", "javascript:"]
+        .iter()
+        .any(|blocked| lower.contains(blocked))
+}
+
 pub async fn edit(app: &AppHandle, id: &str, selection_id: u64, action: &str, patch: Value) -> Result<Value, String> {
     let tab = panel_tab(app, id)?;
     let _queue = tab.picker.queue.lock().await;
@@ -472,7 +508,7 @@ async fn edit_locked(app: &AppHandle, id: &str, selection_id: u64, action: &str,
     let properties = patch.as_object().ok_or("样式必须是对象")?;
     for (key, value) in properties {
         let text = value.as_str().ok_or("样式值必须是字符串")?;
-        if !EDITABLE.contains(&key.as_str()) || text.len() > 160 || text.to_ascii_lowercase().contains("url(") {
+        if !valid_style_value(key, text) {
             return Err("不支持的样式属性或值".into());
         }
     }
@@ -523,3 +559,43 @@ const EDIT_STYLES: &str = r#"function(action, patch) {
   if (action === 'reset' || action === 'commit') store.delete(this);
   return action === 'reset' ? {} : changes;
 }"#;
+
+#[cfg(test)]
+mod tests {
+    use super::valid_style_value;
+
+    #[test]
+    fn plain_values_for_allowed_properties_pass() {
+        for (key, value) in [
+            ("color", "#ff0000"),
+            ("color", "rgb(1 2 3 / 40%)"),
+            ("width", "calc(100% - 8px)"),
+            ("opacity", "0.5"),
+            ("font-family", "Arial, sans-serif"),
+            ("margin", "-4px 8px"),
+        ] {
+            assert!(valid_style_value(key, value), "{key}: {value}");
+        }
+    }
+
+    #[test]
+    fn escaped_and_multi_declaration_values_are_rejected() {
+        let oversized = "r".repeat(161);
+        for (key, value) in [
+            ("color", r"red\75 rl(http://x)"),
+            ("color", r"red\52 L(http://x)"),
+            ("color", "red; color: blue"),
+            ("color", "red } width: 1px"),
+            ("color", "red/*x*/"),
+            ("color", "@import url(x)"),
+            ("color", "url(\"http://x\")"),
+            ("color", "var(--page-token)"),
+            ("color", "env(safe-area-inset-top)"),
+            ("color", "red\u{1}"),
+            ("background", "red"),
+            ("color", oversized.as_str()),
+        ] {
+            assert!(!valid_style_value(key, value), "{key}: {value}");
+        }
+    }
+}

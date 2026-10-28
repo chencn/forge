@@ -1,6 +1,6 @@
 // 新增的地址输入与工作区持久化没有现有测试归属；验证公开行为，不断言组件结构。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BROWSER_DEVICES, BROWSER_NETWORKS, browserAddress, browserDeviceId, browserDeviceOptions, browserNetworkId, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, isRectOverlapping, loadBrowserLibrary, normalizeBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../../src/lib/browser";
+import { BROWSER_DEVICES, BROWSER_NETWORKS, browserAddress, browserDeviceId, browserDeviceOptions, browserNetworkId, browserPageOwner, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, isRectOverlapping, loadBrowserLibrary, normalizeBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../../src/lib/browser";
 
 const storage = new Map<string, string>();
 beforeEach(() => {
@@ -149,5 +149,23 @@ describe("浏览器视口浮层空间相交检测", () => {
 
     const tangentBottom = { left: 800, top: 800, right: 1400, bottom: 900 };
     expect(isRectOverlapping(tangentBottom, browserViewport)).toBe(false);
+  });
+});
+
+describe("手动新页面的会话归属", () => {
+  const sessions = [{ id: "claude-a" }, { id: "codex-b" }];
+
+  it("归属正在投递的会话", () => {
+    expect(browserPageOwner(sessions, "codex-b")).toBe("codex-b");
+  });
+
+  it("草稿、未知会话和空归属都保持私有，不因排序靠前而获得归属", () => {
+    for (const target of ["draft", "imported-unknown", null]) {
+      expect(browserPageOwner(sessions, target)).toBe("manual");
+    }
+  });
+
+  it("私有归属不给任何会话默认操作权限", () => {
+    expect(browserPageOwner([], "claude-a")).toBe("manual");
   });
 });

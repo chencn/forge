@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Camera, Check, ChevronDown, Code2, Copy, Globe, History, House, LoaderCircle, LockKeyhole, Minus, MonitorSmartphone, MousePointer2, Plus, RefreshCw, RotateCw, Search, Settings2, ShieldCheck, ShieldOff, Signal, Square, TerminalSquare, Trash2, WifiOff, X } from "lucide-react";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
-import { browserAddress, browserElementMessage, browserNetworkId, browserStorageKey, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, isRectOverlapping, loadBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../lib/browser";
+import { browserAddress, browserElementMessage, browserNetworkId, browserPageOwner, browserStorageKey, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, isRectOverlapping, loadBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../lib/browser";
 import type { BrowserElementSelection, BrowserEmulation, BrowserEmulationPatch, BrowserLocation, BrowserPicker } from "../lib/browser";
 import BrowserEmulationSettings from "./BrowserEmulationSettings";
 import type { AiInputPayload } from "../lib/aiInputBridge";
@@ -14,12 +14,12 @@ import { openExternal } from "../lib/fs";
 import "../styles/browser.css";
 
 interface BrowserTab { id: string; sessionId: string; url: string; title: string; grant: "none" | "read" | "control"; loading: boolean; loadError: string | null; zoom: number; epoch: number; managed: boolean; emulation: BrowserEmulation; previewScale: number }
-interface BrowserState { available: boolean; tabs: BrowserTab[]; runs: { sessionId: string; runId: string; readOnly: boolean }[] }
+interface BrowserState { available: boolean; unavailable: string | null; tabs: BrowserTab[]; runs: { sessionId: string; runId: string; readOnly: boolean }[] }
 interface ConsoleEntry { type: string | null; text: string; epoch: number }
 interface NetworkEntry { id: string; method: string; url: string | null; type: string; status?: number; failed?: boolean; error?: string }
 interface Details { canGoBack: boolean; canGoForward: boolean; console: ConsoleEntry[]; network: NetworkEntry[]; dialog: { type: string; message: string | null } | null; picker: BrowserPicker }
 interface AnnotationSubmission { workspace: string; selection: BrowserElementSelection; problem: string }
-interface Props { workspace: string; sessions: { id: string; title: string }[]; targetTabId: string | null; onTargetHandled: () => void; onAddToChat: (payload: AiInputPayload) => Promise<void>; chatTargetLabel: string }
+interface Props { workspace: string; sessions: { id: string; title: string }[]; defaultSessionId: string | null; targetTabId: string | null; onTargetHandled: () => void; onAddToChat: (payload: AiInputPayload) => Promise<void>; chatTargetLabel: string }
 const hiddenBounds = { x: 0, y: 0, width: 1, height: 1 };
 const emptyDetails: Details = { canGoBack: false, canGoForward: false, console: [], network: [], dialog: null, picker: { active: false, selection: null, error: null } };
 // 原生呈现队列跨卸载和工作区切换共享，过期回调不能重新显示旧页面。
@@ -51,7 +51,7 @@ function IconButton({ label, children, onClick, disabled, active }: { label: str
   return <button type="button" className={`browser-icon${active ? " is-active" : ""}`} title={label} aria-label={label} aria-pressed={active} disabled={disabled} onClick={onClick}>{children}</button>;
 }
 
-export default function BrowserPanel({ workspace, sessions, targetTabId, onTargetHandled, onAddToChat }: Props) {
+export default function BrowserPanel({ workspace, sessions, defaultSessionId, targetTabId, onTargetHandled, onAddToChat }: Props) {
   const { t } = useI18n();
   const { settings, patch } = useSettings();
   const selectionKey = `${browserStorageKey(workspace)}:selected`;
@@ -82,8 +82,8 @@ export default function BrowserPanel({ workspace, sessions, targetTabId, onTarge
   const current = state?.tabs.find((tab) => tab.id === selected);
   const enabled = settings.browser.enabled;
   const canBrowse = enabled && state?.available === true;
-  // 手动新页面沿用默认会话归属，已有页面继续使用各自的 sessionId。
-  const sessionId = sessions[0]?.id || "manual";
+  // 手动新页面归属浏览器要投递进去的那个会话；草稿或无关会话都不授予。
+  const sessionId = browserPageOwner(sessions, defaultSessionId);
   const owner = sessions.find((item) => item.id === (current?.sessionId ?? sessionId));
   const running = state?.runs.some((run) => run.sessionId === current?.sessionId);
   const blocked = !enabled || !!overlay || !!current?.loadError || !!details.dialog;
@@ -263,7 +263,7 @@ export default function BrowserPanel({ workspace, sessions, targetTabId, onTarge
     if (key === "r" && !busy) void command({ action: "reload" });
   };
   const permissionKey = current?.grant === "control" ? "browser.controlShort" : current?.grant === "read" ? "browser.read" : "browser.private";
-  const statusLabel = screenshotStatus ?? (current?.loading ? t("browser.loading") : running ? t("browser.running") : t("browser.ready"));
+  const statusLabel = screenshotStatus ?? (state === null ? t("browser.connecting") : !state.available ? t("browser.unavailable") : current?.loading ? t("browser.loading") : running ? t("browser.running") : t("browser.ready"));
   const sessionLabel = (id: string) => `${t("browser.session")}: ${sessions.find((item) => item.id === id)?.title || t("browser.personal")}`;
   const locations = library.recent;
   const suggestions = library.recent.filter((item) => !address || address === current?.url || `${item.title} ${item.url}`.toLowerCase().includes(address.toLowerCase())).slice(0, 5);
@@ -311,7 +311,7 @@ export default function BrowserPanel({ workspace, sessions, targetTabId, onTarge
     <div className="browser-content">
       <div className="browser-viewport" ref={viewport} aria-label={t("browser.pageContent")} />
       {!state ? <div className="browser-center"><LoaderCircle size={23} className="is-spinning" /><p>{t("browser.connecting")}</p></div>
-        : !state.available ? <div className="browser-center"><Globe size={32} /><h2>{t("browser.unavailable")}</h2><p>{t("browser.unsupported")}</p></div>
+        : !state.available ? <div className="browser-center"><Globe size={32} /><h2>{t("browser.unavailable")}</h2><p>{state.unavailable ? t("browser.hostUnavailable") : t("browser.unsupported")}</p></div>
         : overlay ? <div className="browser-sheet"><header><span>{t(overlay === "permissions" ? "browser.permissions" : overlay === "emulation" ? "browser.emulation.title" : "browser.history")}</span><IconButton label={t("browser.dismiss")} onClick={() => setOverlay(null)}><X size={15} /></IconButton></header>
           {overlay === "permissions" ? <>
             <p className="browser-sheet-intro">{t("browser.permissionsHint")}</p>

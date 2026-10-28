@@ -22,7 +22,11 @@ pub fn run() {
     context.config_mut().app.windows[0].title = "Forge browser verification".into();
     let app = tauri::Builder::default()
         .setup(move |app| {
-            init(app.handle())?;
+            init(app.handle());
+            // 验证程序跑的是真实 broker，宿主没起来就是环境问题，直接停住报原因。
+            if let Some(reason) = host(app.handle()).lock().unavailable.clone() {
+                return Err(format!("browser host unavailable: {reason}").into());
+            }
             let app = app.handle().clone();
             let output = output.clone();
             tauri::async_runtime::spawn(async move {
@@ -43,8 +47,9 @@ pub fn run() {
     app.run(|_, _| {});
 }
 async fn invoke(app: &AppHandle, lease: &Lease, tool: &str, args: Value) -> Result<Value, String> {
+    let endpoint = host(app).lock().endpoint.clone();
     let mut result = forge_browser::transport::call(
-        &host(app).endpoint,
+        &endpoint,
         Request {
             version: VERSION.into(),
             token: lease.token.clone(),
@@ -97,9 +102,10 @@ async fn verify(app: &AppHandle) -> Result<Vec<String>, String> {
     if status["grants"] != json!({"enabled":true,"renderedPixels":true,"unsafeEvaluate":false,"fileUpload":false}) {
         return Err(format!("unexpected default browser permissions: {status}"));
     }
+    let endpoint = host(app).lock().endpoint.clone();
     expect_error(
         forge_browser::transport::call(
-            &host(app).endpoint,
+            &endpoint,
             Request {
                 version: VERSION.into(),
                 token: "spoofed".into(),

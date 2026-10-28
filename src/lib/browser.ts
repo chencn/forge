@@ -136,6 +136,14 @@ export function saveBrowserLibrary(workspace: string, library: BrowserLibrary): 
   try { localStorage.setItem(browserStorageKey(workspace), JSON.stringify(normalizeBrowserLibrary(library))); } catch { /* 本次内存记录继续有效。 */ }
 }
 
+/**
+ * 手动新页面的会话归属。只认「浏览器要投递进去的那个会话」；草稿、列表第一个无关会话
+ * 都不给归属，因为非 manual 的页面会被宿主默认授予 AI 操作权限。
+ */
+export function browserPageOwner(sessions: { id: string }[], defaultSessionId: string | null): string {
+  return sessions.find((session) => session.id === defaultSessionId)?.id ?? "manual";
+}
+
 export interface SimpleRect {
   left: number;
   top: number;

@@ -7,14 +7,25 @@ pub(super) async fn ui<T: Send + 'static>(
     app: &AppHandle,
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let (tx, rx) = tokio::sync::oneshot::channel();
+    // 等待方放弃后，队列里的闭包之后仍会执行并真的派发点击或导航。放弃时必须打标记，
+    // 让还没起跑的那一次直接不执行；已经起跑的就只能如实报「可能已派发」。
+    let abandoned = std::sync::Arc::new(AtomicBool::new(false));
+    let checked = abandoned.clone();
     app.run_on_main_thread(move || {
+        if checked.load(Ordering::Acquire) {
+            return;
+        }
         let _ = tx.send(f());
     })
     .map_err(|e| e.to_string())?;
     tokio::time::timeout(std::time::Duration::from_secs(15), rx)
         .await
-        .map_err(|_| "TIMEOUT: UI thread unavailable")?
+        .map_err(|_| {
+            abandoned.store(true, Ordering::Release);
+            "TIMEOUT: UI thread unavailable; action may still dispatch"
+        })?
         .map_err(|_| "browser UI callback lost")?
 }
 
@@ -153,7 +164,11 @@ mod native {
                         }
                     })
                     .with_navigation_handler(move |url| {
-                        if url == "about:blank" || forge_browser::navigation_url(&url).is_ok() {
+                        // 导航前的地址校验覆盖重定向与页面自跳，不只是工具直接传入的那一次。
+                        let allowed = url == "about:blank"
+                            || (forge_browser::navigation_url(&url).is_ok()
+                                && !super::super::managed_private_target(&app_nav, &id, &url));
+                        if allowed {
                             super::super::event(
                                 &app_nav,
                                 &id,

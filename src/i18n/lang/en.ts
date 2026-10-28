@@ -158,6 +158,7 @@ export const en: Record<TranslationKey, string> = {
   "browser.close": "Close page",
   "browser.new": "New page",
   "browser.unsupported": "The embedded browser currently requires Windows WebView2.",
+  "browser.hostUnavailable": "The browser host did not start, so AI browser tools are unavailable; browsing still works.",
   "browser.epoch": "Document epoch",
   "browser.running": "AI running",
   "browser.idle": "AI idle",

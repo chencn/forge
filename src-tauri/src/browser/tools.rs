@@ -34,6 +34,16 @@ pub async fn call(app: &AppHandle, token: &str, tool: &str, args: Value) -> Resu
     let mut ticket = ticket(app, token, write)?;
     let tab = ticket.check(app, false)?;
     let _queue = tab.queue.lock().await;
+    // 排队期间本会话的目标页可能被另一个回合的 tabs select/open 换走。旧调用不能悄悄打到已经
+    // 放弃的页上：目标变了就要求重新观察，而不是照旧派发。
+    let focused = host(app)
+        .lock()
+        .working
+        .get(&(tab.workspace.clone(), tab.session_id.clone()))
+        .cloned();
+    if focused.as_deref() != Some(tab.id.as_str()) {
+        return Err("TARGET_CHANGED: this session's working page moved while the call was queued; select and observe again".into());
+    }
     // Queued calls are re-authorized and bind the document current at dispatch time.
     ticket.epoch = ticket.check(app, false)?.epoch;
     let value = match tool {
@@ -46,6 +56,9 @@ pub async fn call(app: &AppHandle, token: &str, tool: &str, args: Value) -> Resu
                     let tab = ticket.check(app, true)?;
                     if !tab.managed && tab.allowed_origin != origin(&url) {
                         return Err("ORIGIN_REQUIRED: use the address bar and explicitly share this user's page at the new origin".into());
+                    }
+                    if tab.managed && forge_browser::private_literal_target(&url) {
+                        return Err("ADDRESS_BLOCKED: AI pages may not open private address ranges; browse there yourself and share the page".into());
                     }
                     cdp(app, &ticket, "Page.navigate", json!({"url":url}), false).await?;
                 }
@@ -64,6 +77,17 @@ pub async fn call(app: &AppHandle, token: &str, tool: &str, args: Value) -> Resu
                         .as_array()
                         .and_then(|a| usize::try_from(i).ok().and_then(|i| a.get(i)))
                         .ok_or("NO_HISTORY: no history entry")?;
+                    // 历史条目可以指向从未共享的站点：目的地要和 goto 走同一套地址与 origin 校验。
+                    let destination = forge_browser::navigation_url(
+                        entry["url"].as_str().ok_or("NO_HISTORY: entry has no url")?,
+                    )?;
+                    let tab = ticket.check(app, false)?;
+                    if !tab.managed && tab.allowed_origin != origin(&destination) {
+                        return Err("ORIGIN_REQUIRED: use the address bar and explicitly share this user's page at the new origin".into());
+                    }
+                    if tab.managed && forge_browser::private_literal_target(&destination) {
+                        return Err("ADDRESS_BLOCKED: AI pages may not open private address ranges; browse there yourself and share the page".into());
+                    }
                     cdp(
                         app,
                         &ticket,
@@ -427,13 +451,18 @@ async fn snapshot(app: &AppHandle, ticket: &Ticket) -> Result<Value, String> {
     tab.refs.clear();
     let mut nodes = Vec::new();
     let mut bytes = 0;
+    let mut dropped = false;
     for node in raw_nodes
         .iter()
         .filter(|n| n["nodeId"].as_str().is_some_and(|id| allowed.contains(id)))
-        .take(3000)
     {
         if node["ignored"] == true {
             continue;
+        }
+        // 上限只按真正返回的节点计，被跳过的 ignored/跨 frame 节点不能占用额度。
+        if nodes.len() >= 3000 {
+            dropped = true;
+            break;
         }
         if node["frameId"].as_str().is_some_and(|id| id != tab.frame) {
             continue;
@@ -488,12 +517,13 @@ async fn snapshot(app: &AppHandle, ticket: &Ticket) -> Result<Value, String> {
         let value = json!({"ref":reference,"role":role,"name":name,"value":field_value,"properties":node["properties"]});
         bytes += value.to_string().len();
         if bytes > 250000 {
+            dropped = true;
             break;
         }
         nodes.push(value);
     }
     Ok(
-        json!({"tabId":tab.id,"url":tab.url,"title":tab.title,"epoch":tab.epoch,"snapshotId":serial,"readyState":document["result"]["value"],"nodes":nodes,"truncated":raw_nodes.len()>3000 || bytes>250000,"scope":"main-frame-only","untrusted":true}),
+        json!({"tabId":tab.id,"url":tab.url,"title":tab.title,"epoch":tab.epoch,"snapshotId":serial,"readyState":document["result"]["value"],"nodes":nodes,"truncated":dropped,"scope":"main-frame-only","untrusted":true}),
     )
 }
 async fn node(app: &AppHandle, ticket: &Ticket, reference: &str) -> Result<NodeRef, String> {

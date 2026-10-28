@@ -4969,7 +4969,7 @@ export default function App() {
     </> : null}
   </>;
   const sidePanelBody = (tool: Panel) => <ErrorBoundary label={t(RAIL_LABEL[tool])} onError={reportError}>
-    {tool === "browser" ? workspaceRoot ? <BrowserPanel key={workspaceRoot} workspace={workspaceRoot} sessions={aiSessions.sessions} targetTabId={browserTarget} onTargetHandled={() => setBrowserTarget(null)} onAddToChat={addBrowserToChat} chatTargetLabel={browserChatLabel} /> : null
+    {tool === "browser" ? workspaceRoot ? <BrowserPanel key={workspaceRoot} workspace={workspaceRoot} sessions={aiSessions.sessions} defaultSessionId={browserChatId} targetTabId={browserTarget} onTargetHandled={() => setBrowserTarget(null)} onAddToChat={addBrowserToChat} chatTargetLabel={browserChatLabel} /> : null
       : tool === "maven" ? <MavenDock
         workspace={workspaceRoot}
         running={run.sessions.some((session) => session.status === "running" && session.config.id.startsWith("maven-goal:"))}

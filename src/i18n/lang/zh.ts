@@ -156,6 +156,7 @@ export const zh = {
   "browser.close": "关闭页面",
   "browser.new": "新页面",
   "browser.unsupported": "此版本的内置浏览器需要 Windows WebView2。",
+  "browser.hostUnavailable": "浏览器宿主没能启动，AI 浏览器工具暂不可用；页面浏览不受影响。",
   "browser.epoch": "文档代际",
   "browser.running": "AI 运行中",
   "browser.idle": "AI 空闲",
