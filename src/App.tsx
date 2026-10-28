@@ -7,6 +7,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Archive,
   Bell,
+  Globe,
   Check,
   CheckCheck,
   Copy,
@@ -18,6 +19,7 @@ import {
   ListTree,
   LocateFixed,
   Maximize2,
+  Minimize2,
   Sparkles,
   Minus,
   PanelBottom,
@@ -43,6 +45,7 @@ import type { DialogRequest } from "./components/PromptDialog";
 import ExplorerTree from "./components/ExplorerTree";
 import EntryIcon from "./components/EntryIcon";
 import EditorTabs from "./components/EditorTabs";
+import BrowserPanel from "./components/BrowserPanel";
 import type { TabItem, TabKind } from "./components/EditorTabs";
 import AiSessionTabMenu from "./components/AiSessionTabMenu";
 import { createEditorSplit, partitionEditorTabs, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
@@ -192,7 +195,7 @@ import { AI_NAMES } from "./lib/aiCli";
 import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
 import type { AiProvider } from "./lib/aiCli";
 import type { AiSession } from "./lib/aiSessions";
-import { buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputTarget } from "./lib/aiInputBridge";
+import { buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputPayload, type AiInputTarget } from "./lib/aiInputBridge";
 import {
   TOOL_RAIL_GROUP,
   loadToolRailLayout,
@@ -295,7 +298,7 @@ type DiffChain =
   | { kind: "against"; chainId: string; revision: string; leftLabel: string; items: DiffFileRef[] };
 
 /** 有正文侧栏的工具可待在任一侧；终端、运行和日志只移动入口，正文仍在底部。 */
-type Panel = "explorer" | "git" | "ai" | "maven" | "notifications";
+type Panel = "explorer" | "git" | "ai" | "browser" | "maven" | "notifications";
 type RightDockPanel = Panel;
 
 /** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。通知不占底部，停靠时进右侧工具窗口。 */
@@ -308,6 +311,7 @@ const RAIL_LABEL: Record<Panel, TranslationKey> = {
   explorer: "panel.explorer",
   git: "panel.commit",
   ai: "ai.title",
+  browser: "browser.title",
   maven: "maven.title",
   notifications: "notifications.title",
 };
@@ -734,6 +738,8 @@ export default function App() {
   );
   /** 设置页开在不在页签栏里（全局一份，跨根保留）。 */
   const [settingsTab, setSettingsTab] = useState(false);
+  // 浏览器属于工具侧栏；AI 开页不切换或覆盖用户正在编辑的代码标签。
+  const [browserTarget, setBrowserTarget] = useState<string | null>(null);
   const [settingsModule, setSettingsModule] = useState<SettingsModule>("general");
   /** 「编辑程序配置」那一页开在不在页签栏里（按根隔离）。 */
   const [runConfigsTabByRoot, setRunConfigsTabByRoot] = useState<Record<string, boolean>>({});
@@ -835,6 +841,20 @@ export default function App() {
     setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: true }));
     setActiveTab("ai|draft");
   }, [setActiveTab, settings.aiAssistantsEnabled]);
+  // 浏览器留在侧栏时，优先投递正在编辑的会话，其次是最近活动会话。
+  const browserChatId = activeTab === "ai|draft" ? "draft"
+    : aiInputTargets.find((target) => activeTab === `ai|${target.id}`)?.id
+      ?? (aiInputTargets.some((target) => target.id === aiSessions.activeId) ? aiSessions.activeId : null)
+      ?? "draft";
+  const browserChatLabel = aiInputTargets.find((target) => target.id === browserChatId)?.title ?? t("browser.newConversation");
+  const addBrowserToChat = async (payload: AiInputPayload) => {
+    if (!settings.aiAssistantsEnabled || !workspaceRoot) throw new Error(t("browser.chatUnavailable"));
+    // 先成功追加草稿再切标签；保存失败时仍保留浏览器内的备注。
+    await deliverAiInput(workspaceRoot, { id: browserChatId, title: browserChatLabel }, payload);
+    if (rootKeyRef.current !== rootKey) return;
+    if (browserChatId === "draft") openAiDraft();
+    else openAiSession(browserChatId);
+  };
   /**
    * 草稿页首条消息：创建会话、把欢迎页配置的选项种给新会话、留下待发出的
    * 文本与附件，然后切到会话标签——会话页挂载后自动把这条消息发出去。
@@ -904,6 +924,9 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   /** 右侧工具窗口独立占一列，拖动它左缘的竖分隔条调整宽度。 */
   const [rightSidebarWidth, setRightSidebarWidth] = useState(320);
+  const [browserSidebarWidth, setBrowserSidebarWidth] = useState(() => Math.max(320, Math.min(520, window.innerWidth - 420)));
+  const [browserExpanded, setBrowserExpanded] = useState(false);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(sidebarWidth);
   /** 右侧工具窗口当前打开哪一块；null = 收起。结构照左侧：活动栏入口 + 单工具窗口。 */
   const [rightPanel, setRightPanel] = useState<RightDockPanel | null>(null);
   useEffect(() => {
@@ -918,8 +941,8 @@ export default function App() {
   }, [panel, rightPanel, sidebarOpen, toolRailLayout]);
   useEffect(() => {
     if (settings.aiAssistantsEnabled) return;
-    if (rightPanel === "ai") setRightPanel(null);
-    if (panel !== "ai") return;
+    if (rightPanel === "ai" || rightPanel === "browser") setRightPanel(null);
+    if (panel !== "ai" && panel !== "browser") return;
     setSidebarOpen(false);
     setPanel("explorer");
     if (sideOfTool(toolRailLayout, "explorer") === "left") {
@@ -1028,6 +1051,7 @@ export default function App() {
     explorer: true,
     git: true,
     ai: settings.aiAssistantsEnabled,
+    browser: settings.aiAssistantsEnabled && Boolean(workspaceRoot),
     maven: mavenHere,
     notifications: notifications.length > 0,
   };
@@ -1037,6 +1061,19 @@ export default function App() {
   const activeLeftPanel = sidebarOpen
     && sideOfTool(toolRailLayout, panel) === "left"
     && rightPanelAvailable[panel] ? panel : null;
+  const browserVisible = activeLeftPanel === "browser" || activeRightPanel === "browser";
+  useEffect(() => {
+    // 收起或换到其他工具后结束展开，重新打开浏览器时恢复普通侧栏。
+    if (!browserVisible) setBrowserExpanded(false);
+  }, [browserVisible]);
+  useEffect(() => {
+    const element = sidePanelRef.current;
+    if (!element) return;
+    // 展开和窄窗会改变实际宽度，顶栏收起按钮必须跟随面板边缘，而非拖拽偏好值。
+    const observer = new ResizeObserver(() => setLeftPanelWidth(element.getBoundingClientRect().width));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [activeLeftPanel]);
   const sideHasVisibleTools = (side: ToolRailSide) =>
     (["top", "bottom"] as const).some((group) => toolRailLayout[side][group].some((id) => {
       if (id === "terminal" || id === "run" || id === "log") return true;
@@ -3951,6 +3988,15 @@ export default function App() {
     [docs, dispatchAiSession, setEditorSplit]
   );
 
+  useEffect(() => {
+    if (!settings.aiAssistantsEnabled) return;
+    const stop = listen<{ workspace: string; tabId: string }>("forge-browser-open", ({ payload }) => {
+      if (!samePath(payload.workspace, workspaceRoot ?? "")) return;
+      setBrowserTarget(payload.tabId); openSideTool("browser");
+    });
+    return () => { void stop.then((unlisten) => unlisten()); };
+  }, [settings.aiAssistantsEnabled, workspaceRoot, openSideTool]);
+
   /**
    * 关一颗标签：文档先问没保存的改动，面板那颗只是最小化，比对和整页那两类直接收。
    *
@@ -4753,6 +4799,7 @@ export default function App() {
     const icon = id === "explorer" ? <ProjectIcon size={18} />
       : id === "git" ? <CommitIcon size={18} />
       : id === "ai" ? <Sparkles size={18} />
+      : id === "browser" ? <Globe size={18} />
       : id === "maven" ? <MavenIcon size={18} />
       : id === "terminal" ? <SquareTerminal size={18} />
       : id === "run" ? <Play size={17} />
@@ -4813,6 +4860,7 @@ export default function App() {
     : tool === "maven" && maven.project ? `${t("maven.title")} · ${maven.project.artifactId}`
     : t(RAIL_LABEL[tool]);
   const sidePanelActions = (tool: Panel) => <>
+    {tool === "browser" ? <button type="button" className="icon-button is-inline" title={t("browser.widen")} aria-label={t("browser.widen")} aria-pressed={browserExpanded} onClick={() => setBrowserExpanded((expanded) => !expanded)}>{browserExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button> : null}
     {tool === "ai" && settings.aiAssistantsEnabled ? <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} /> : null}
     {tool === "explorer" && workspaceRoot ? <>
       <button type="button" className="icon-button is-inline is-hover" onClick={() => setDialog({ kind: "newFile", name: "untitled.txt", dir: workspaceRoot, entry: null })} title={t("action.newFile")}><FilePlus size={16} /></button>
@@ -4845,7 +4893,8 @@ export default function App() {
     </> : null}
   </>;
   const sidePanelBody = (tool: Panel) => <ErrorBoundary label={t(RAIL_LABEL[tool])} onError={reportError}>
-    {tool === "maven" ? <MavenDock
+    {tool === "browser" ? workspaceRoot ? <BrowserPanel key={workspaceRoot} workspace={workspaceRoot} sessions={aiSessions.sessions} targetTabId={browserTarget} onTargetHandled={() => setBrowserTarget(null)} onAddToChat={addBrowserToChat} chatTargetLabel={browserChatLabel} /> : null
+      : tool === "maven" ? <MavenDock
         workspace={workspaceRoot}
         running={run.sessions.some((session) => session.status === "running" && session.config.id.startsWith("maven-goal:"))}
         onRun={(config) => { run.start(config); focusPane("run"); }}
@@ -4889,7 +4938,7 @@ export default function App() {
     <div className="app-shell">
       <TitleBar
         sidebarOpen={activeLeftPanel !== null}
-        sidebarWidth={sidebarWidth}
+        sidebarWidth={leftPanelWidth}
         onToggleSidebar={() => {
           if (activeLeftPanel) { setSidebarOpen(false); return; }
           const next = [...toolRailLayout.left.top, ...toolRailLayout.left.bottom]
@@ -4988,12 +5037,12 @@ export default function App() {
           </nav>
 
         <div className="workbench-column">
-          <div className="workbench-row">
+          <div className={`workbench-row${browserVisible && browserExpanded ? " has-expanded-browser" : ""}`}>
           {activeLeftPanel ? (
             <section
-              className="tool-window is-left"
+              className={`tool-window is-left${activeLeftPanel === "browser" ? " is-browser" : ""}`}
               ref={sidePanelRef}
-              style={{ width: sidebarWidth }}
+              style={{ width: activeLeftPanel === "browser" ? browserSidebarWidth : sidebarWidth }}
             >
               <header className={`tool-window-head${panel === "ai" ? " ai-sessions-head" : ""}`}>
                 <span className="tool-window-title" title={panel === "ai" ? t("ai.title") : undefined}>
@@ -5124,7 +5173,7 @@ export default function App() {
                     </button>
                   </>
                 ) : null}
-                {panel === "maven" || panel === "notifications" ? sidePanelActions(panel) : null}
+                {panel === "maven" || panel === "notifications" || panel === "browser" ? sidePanelActions(panel) : null}
                 {/* 收起那颗不跟着隐藏：指针没进头部时也得找得到出口。 */}
                 <button
                   type="button"
@@ -5137,9 +5186,9 @@ export default function App() {
               </header>
 
               {/* AI 会话列表要占满正文剩余高度，“最近”才能相对面板底部定位。 */}
-              <div className={`panel-body${panel === "ai" ? " is-ai-sessions" : ""}`}>
+              <div className={`panel-body${panel === "ai" ? " is-ai-sessions" : panel === "browser" ? " is-browser" : ""}`}>
                 <ErrorBoundary label={t(RAIL_LABEL[panel])} onError={reportError}>
-                {panel === "maven" || panel === "notifications" ? sidePanelBody(panel) : panel === "explorer" ? (
+                {panel === "maven" || panel === "notifications" || panel === "browser" ? sidePanelBody(panel) : panel === "explorer" ? (
                   workspaceRoot ? (
                     <ExplorerTree
                       root={workspaceRoot}
@@ -5211,7 +5260,7 @@ export default function App() {
 
             </section>
           ) : null}
-          {activeLeftPanel ? (
+          {activeLeftPanel && !(activeLeftPanel === "browser" && browserExpanded) ? (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -5219,8 +5268,8 @@ export default function App() {
               onPointerDown={(event) => {
                 sideDrag.current = {
                   startX: event.clientX,
-                  startWidth: sidebarWidth,
-                  live: sidebarWidth,
+                  startWidth: sidePanelRef.current?.getBoundingClientRect().width ?? sidebarWidth,
+                  live: sidePanelRef.current?.getBoundingClientRect().width ?? sidebarWidth,
                 };
                 event.currentTarget.setPointerCapture(event.pointerId);
               }}
@@ -5228,13 +5277,13 @@ export default function App() {
                 const drag = sideDrag.current;
                 if (!drag) return;
                 const grown = drag.startWidth + event.clientX - drag.startX;
-                drag.live = Math.max(180, Math.min(window.innerWidth - 560, grown));
+                drag.live = activeLeftPanel === "browser" ? Math.max(320, Math.min(window.innerWidth - 280, grown)) : Math.max(180, Math.min(window.innerWidth - 560, grown));
                 if (sidePanelRef.current) sidePanelRef.current.style.width = `${drag.live}px`;
               }}
               onPointerUp={() => {
                 const drag = sideDrag.current;
                 sideDrag.current = null;
-                if (drag) setSidebarWidth(drag.live);
+                if (drag) { if (activeLeftPanel === "browser") setBrowserSidebarWidth(drag.live); else setSidebarWidth(drag.live); }
               }}
             />
           ) : null}
@@ -5424,7 +5473,7 @@ export default function App() {
           ) : null}
           </div>
           {/* 右侧工具窗口参与横向布局；左边这条分隔缝只调整右栏自己的宽度。 */}
-          {activeRightPanel ? (
+          {activeRightPanel && !(activeRightPanel === "browser" && browserExpanded) ? (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -5432,8 +5481,8 @@ export default function App() {
               onPointerDown={(event) => {
                 rightSideDrag.current = {
                   startX: event.clientX,
-                  startWidth: rightSidebarWidth,
-                  live: rightSidebarWidth,
+                  startWidth: rightSidePanelRef.current?.getBoundingClientRect().width ?? rightSidebarWidth,
+                  live: rightSidePanelRef.current?.getBoundingClientRect().width ?? rightSidebarWidth,
                 };
                 event.currentTarget.setPointerCapture(event.pointerId);
               }}
@@ -5441,7 +5490,7 @@ export default function App() {
                 const drag = rightSideDrag.current;
                 if (!drag) return;
                 const grown = drag.startWidth + drag.startX - event.clientX;
-                drag.live = Math.max(180, Math.min(window.innerWidth - 560, grown));
+                drag.live = activeRightPanel === "browser" ? Math.max(320, Math.min(window.innerWidth - 280, grown)) : Math.max(180, Math.min(window.innerWidth - 560, grown));
                 if (rightSidePanelRef.current) {
                   rightSidePanelRef.current.style.width = `${drag.live}px`;
                 }
@@ -5449,22 +5498,22 @@ export default function App() {
               onPointerUp={() => {
                 const drag = rightSideDrag.current;
                 rightSideDrag.current = null;
-                if (drag) setRightSidebarWidth(drag.live);
+                if (drag) { if (activeRightPanel === "browser") setBrowserSidebarWidth(drag.live); else setRightSidebarWidth(drag.live); }
               }}
             />
           ) : null}
           {activeRightPanel ? (
             <section
-              className="tool-window is-right"
+              className={`tool-window is-right${activeRightPanel === "browser" ? " is-browser" : ""}`}
               ref={rightSidePanelRef}
-              style={{ width: rightSidebarWidth }}
+              style={{ width: activeRightPanel === "browser" ? browserSidebarWidth : rightSidebarWidth }}
             >
               <header className="tool-window-head">
                 <span className="tool-window-title">
                   {sidePanelTitle(activeRightPanel)}
                 </span>
                 <span className="status-spacer" />
-                {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai"
+                {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai" || activeRightPanel === "browser"
                   ? sidePanelActions(activeRightPanel) : null}
                 {activeRightPanel === "maven" ? (
                   <button
@@ -5516,8 +5565,8 @@ export default function App() {
                 </button>
               </header>
               {/* 左右侧栏共用同一条 AI 高度链，避免换边后列表重新按内容高度收缩。 */}
-              <div className={`panel-body${activeRightPanel === "ai" ? " is-ai-sessions" : ""}`}>
-                {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai"
+              <div className={`panel-body${activeRightPanel === "ai" ? " is-ai-sessions" : activeRightPanel === "browser" ? " is-browser" : ""}`}>
+                {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai" || activeRightPanel === "browser"
                   ? sidePanelBody(activeRightPanel) : null}
                 {activeRightPanel === "maven" ? (
                   <MavenDock

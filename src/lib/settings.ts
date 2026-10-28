@@ -218,6 +218,8 @@ export type NotificationPosition = "bottom-right" | "top-right" | "bottom-left" 
 export interface Settings {
   /** AI 编程助手总开关，默认关闭。关闭后不再探测 CLI、加载会话或接受运行请求。 */
   aiAssistantsEnabled: boolean;
+  /** 浏览器和截图默认启用；文件上传和任意脚本必须手动授权。 */
+  browser: { enabled: boolean; renderedPixels: boolean; unsafeEvaluate: boolean; fileUpload: boolean; elementContent: "code" | "screenshot" | "both" };
   /** 外观模式。 */
   theme: ThemeMode;
   /** 界面语言；空串表示跟随系统。 */
@@ -243,8 +245,12 @@ export interface Settings {
   run: RunSettings;
 }
 
+/** 浏览器权限逐项保存，避免旧窗口顺带恢复已撤销的上传或脚本授权。 */
+export type SettingsPatch = Omit<Partial<Settings>, "browser"> & { browser?: Partial<Settings["browser"]> };
+
 export const DEFAULT_SETTINGS: Settings = {
   aiAssistantsEnabled: false,
+  browser: { enabled: true, renderedPixels: true, unsafeEvaluate: false, fileUpload: false, elementContent: "both" },
   theme: "system",
   language: "",
   workspaceMode: "multi",
@@ -306,6 +312,15 @@ function merge(raw: Partial<Settings> | null): Settings {
     ...raw,
     // 只认严格的 true：老文件里没有这个字段、或被写成字符串，都按「关闭」处理。
     aiAssistantsEnabled: raw?.aiAssistantsEnabled === true,
+    browser: {
+      enabled: raw?.browser?.enabled !== false,
+      // 缺字段默认允许截图；明确关闭或无效值不能被默认值覆盖。
+      renderedPixels: raw?.browser?.renderedPixels === undefined || raw.browser.renderedPixels === true,
+      unsafeEvaluate: raw?.browser?.unsafeEvaluate === true,
+      fileUpload: raw?.browser?.fileUpload === true,
+      // 缺失或未知的发送模式恢复截图和代码，权限字段继续独立归一化。
+      elementContent: raw?.browser?.elementContent === "code" || raw?.browser?.elementContent === "screenshot" ? raw.browser.elementContent : "both",
+    },
     workspaceMode: raw?.workspaceMode === "single" ? "single" : "multi",
     httpResponse: raw?.httpResponse === "tab" ? "tab" : "split",
     closeBehavior: raw?.closeBehavior === "quit" ? "quit" : "tray",
@@ -351,6 +366,6 @@ export async function loadSettings(): Promise<Settings> {
  * 返回合并后的全量设置。不再传全量，是因为另一个窗口的旧内存副本整份写回时
  * 会把新设置连别的字段一起抹掉；调用方拿返回值覆盖本地，两个窗口最终都跟文件一致。
  */
-export function saveSettings(patch: Partial<Settings>): Promise<Settings> {
+export function saveSettings(patch: SettingsPatch): Promise<Settings> {
   return invoke<Settings>("settings_save", { patch }).then(merge);
 }

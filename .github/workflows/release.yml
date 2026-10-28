@@ -92,6 +92,10 @@ jobs:
           let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
           cargo = cargo.replace(/^version\s*=\s*"[^"]*"/m, `version = "${process.env.VERSION}"`);
           fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+          // The browser wire handshake rejects a companion from a different release.
+          const browserPath = "src-tauri/crates/forge-browser/Cargo.toml";
+          const browser = fs.readFileSync(browserPath, "utf8").replace(/^version\s*=\s*"[^"]*"/m, `version = "${process.env.VERSION}"`);
+          fs.writeFileSync(browserPath, browser);
           EOF
 
       - name: 安装前端依赖

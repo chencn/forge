@@ -1,14 +1,25 @@
 [workspace]
-members = [".", "crates/forge-shell-cmd", "crates/forge-shell-ext"]
+members = [".", "crates/forge-shell-cmd", "crates/forge-shell-ext", "crates/forge-browser"]
 resolver = "2"
 
 [package]
 name = "forge"
+# Tauri dev 使用 cargo run；原生回归入口必须通过 --bin 显式选择。
+default-run = "forge"
 # 本地版本与前端、Tauri 配置保持同步；发布构建由 CI 使用 tag 覆盖。
 version = "1.1.1"
 description = "Forge - Tauri desktop app"
 edition = "2021"
 rust-version = "1.80"
+
+[features]
+# Explicitly opt in to the model-free native verification executable; never bundled.
+browser-smoke = []
+
+[[bin]]
+name = "forge-browser-smoke"
+path = "src/bin/browser_smoke.rs"
+required-features = ["browser-smoke"]
 
 [lib]
 name = "forge_lib"
@@ -39,6 +50,8 @@ json-patch = "4"
 toml = "0.8"
 # 精确修改 .codex/config.toml 并保留用户注释与排版；普通 toml 序列化会重写整文件。
 toml_edit = "0.22"
+# MCP companion shares wire contracts with the host, without linking the desktop GUI.
+forge-browser = { path = "crates/forge-browser" }
 portable-pty = "0.9.0"
 base64 = "0.23.1"
 notify = "8"
@@ -59,6 +72,8 @@ memchr = "2"
 # 关掉 WebView2 自带的右键菜单（刷新 / 另存为 / 打印）：桌面应用里不该出现，
 # 应用自己的菜单在前端摆。两者都是 tauri 已经锁在依赖树里的版本，不额外下载。
 [target."cfg(windows)".dependencies]
+# Direct child views preserve Tauri's main WebviewWindow identity.
+tauri-runtime-wry = "=2.12.1"
 webview2-com = "0.39"
 windows = { version = "0.62", features = [
     "Win32_Foundation",

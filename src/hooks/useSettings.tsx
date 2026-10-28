@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { ReactNode } from "react";
 import { I18nProvider, resolveLang } from "../i18n";
 import { loadSettings, saveSettings } from "../lib/settings";
-import type { Settings } from "../lib/settings";
+import type { Settings, SettingsPatch } from "../lib/settings";
 import { resolveTheme } from "../lib/window";
 import type { ThemeMode } from "../lib/window";
 
@@ -10,7 +10,7 @@ interface SettingsValue {
   /** 当前生效的全局设置。 */
   settings: Settings;
   /** 改哪几个字段就只存那几个字段，存完跟着文件里的全量结果走。 */
-  patch: (next: Partial<Settings>) => void;
+  patch: (next: SettingsPatch) => void;
   /** 已经写到 document 上的深浅色。子组件取色要等这一步落地，否则读到的还是上一套令牌。 */
   applied: "light" | "dark";
 }
@@ -42,8 +42,9 @@ export function SettingsProvider({ initial, children }: SettingsProviderProps) {
    * 是让每个窗口都跟文件一致。挂载时不再写盘——一开窗就重写一遍文件没有任何意义。
    * 保存失败就按文件重读：宁可看到旧值，也不让界面停在一个根本没落盘的状态。
    */
-  const patch = useCallback((next: Partial<Settings>) => {
-    setSettings((current) => ({ ...current, ...next }));
+  const patch = useCallback((next: SettingsPatch) => {
+    // 局部权限补丁在本地同样逐项合并，未切换的开关不能丢失。
+    setSettings((current) => ({ ...current, ...next, browser: { ...current.browser, ...next.browser } }));
     // 只有最后一次保存的回包才配覆盖本地：连着改两处会各回一次包，晚到的旧包会把新值倒回去。
     const ticket = ++pending.current;
     void saveSettings(next).then((latest) => {

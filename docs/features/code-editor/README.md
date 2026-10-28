@@ -30,10 +30,9 @@ xterm 跟着终端与运行那两片 chunk，marked 与 DOMPurify 跟着 `Markdo
 后缀直接 import，不走 CDN，因为桌面应用离线也要有补全和高亮。路径写成 `monaco-editor/editor/editor.worker.js`，
 是因为 0.57 的 `exports` 映射把 `./esm/vs/*` 挂在包根下。`vite.config.ts` 因此不用加 monaco 插件。
 
-语义有两个来源，同一个语言只能留一个。默认走上面那批 worker；某一档切到外部语言服务之后，`lspClient.ts`
-把这门语言的内置语义配置关掉（`configureBuiltin`），补全、hover、跳定义改由那个独立进程答，诊断以
-`setModelMarkers` 写成另一份 marker。为什么要让位、以及配置与进程那一套见
-[../../plans/lsp-language-servers/](../../plans/lsp-language-servers/README.md)。
+语义有两个来源，同一个语言只能留一个。内置语义只在 `builtin` 档开着；`off` 与 `lsp` 两档都被 `configureBuiltin`
+关掉（`off` 是只剩高亮，`lsp` 是改由那个独立进程答补全、hover、跳定义，诊断以 `setModelMarkers` 写成另一份
+marker）。让位规则、三态档位与进程那一套见 [../lsp-language-servers/](../lsp-language-servers/)。
 
 语言靠两张表认：51 条扩展名加 4 条文件名特例（`Dockerfile`、`Makefile`、`.gitignore`→ini、`.env`→ini）。
 `languageForPath` 先按文件名查、再取最后一个点之后的扩展名，没点或查不到一律 `plaintext`，不嗅探内容。几张不显然的映射：
@@ -42,7 +41,8 @@ xterm 跟着终端与运行那两片 chunk，marked 与 DOMPurify 跟着 `Markdo
 编辑器还没加载过（只看图片或还没开过文件）时读的是 `monacoEnv.ts` 那张手写表，取值与 monaco 的第一条别名对齐。
 
 model 的生命周期跟着标签。一份文件一个 model（`monaco.Uri.file(path)`），同一个 model 才保得住撤销栈。关标签
-`disposeModel`，否则切回来还是旧内容。换工程 / 关项目 `disposeAllModels`。内容还没从磁盘读回来时不建 model，
+`disposeModel`，否则切回来还是旧内容。切工程不释放任何 model，只有关掉某个文件夹时按文档归属逐条 `disposeModel`
+（见 [../workspace-tabs/](../workspace-tabs/)）。内容还没从磁盘读回来时不建 model，
 因为建了就是一个再也更新不到的空模型。重载进来的文本要显式落到 model，不落这一步下一次 `onDidChangeModelContent`
 会把 model 里的旧文本当成用户的修改写回去，等于把刚读回来那份覆盖掉。`tabSize` 跟设置、`insertSpaces` 恒真、
 行尾按磁盘那份设 `EOL`、只读或打开失败的连 `domReadOnly` 一起关。切预览视图时 Monaco 被 `hidden` 而不是卸载，
@@ -179,4 +179,4 @@ shadow tree，把菜单底色 / 字色 / 分隔线 / hover 那几档重新指回
 | `src/components/SettingsPage.tsx` | 字号 10…28 `:157-165` |
 | `src/main.tsx` | 先读设置再 import `:14-31`；中文 nls 在渲染前落定 `:24-26` |
 | `src/styles.css` | `.shadow-root-host` 补 shadow tree 变量 `:1561-1572` |
-| `src/App.tsx` | 九条 `lazy` `:117-125`；`setKeymapScheme` `:505`；`disposeAllModels` `:838`、`:852`、`:2381`；`disposeModel` `:891`、`:1743`、`:1766`、`:1851`；四处 `Suspense` `:2148`、`:2679`、`:2776`、`:2929` |
+| `src/App.tsx` | 九条 `lazy` `:218` 起；`setKeymapScheme`；`disposeModel` `:2107`（关根按归属逐条）、`:2585`、`:3536`、`:3562`、`:3751` |

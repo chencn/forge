@@ -1077,7 +1077,7 @@ export default function AiSessionPane({
     void invoke("ai_session_checkpoint_restore", { sessionId: session.id, workspace, checkpointId })
       .catch((cause) => setError(String(cause)));
   }, [session.id, workspace]);
-  useEffect(() => watchAiInputDelivery(session.id, (delivery) => {
+  useEffect(() => watchAiInputDelivery(workspace, session.id, (delivery) => {
     // 编辑队列期间输入框属于队列项；外部投递只更新背后的正常草稿，退出编辑后再显现。
     if (editingTask) {
       setEditingTask({ ...editingTask, restoreDraft: delivery.text });
@@ -1092,7 +1092,7 @@ export default function AiSessionPane({
       setExtraDirs((current) => current.includes(delivery.additionalDir!)
         ? current : [delivery.additionalDir!, ...current].slice(0, 16));
     }
-  }), [editingTask, session.id]);
+  }), [editingTask, session.id, workspace]);
 
   const requestConversationMenu = (event: ReactMouseEvent) => {
     const selection = window.getSelection();

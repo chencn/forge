@@ -3,6 +3,11 @@
   box-sizing: border-box;
 }
 
+/* 全局确保 HTML5 hidden 属性优先级高于特定类的 display 规则，避免被 display: flex/grid 等覆盖 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #root {
@@ -2495,6 +2500,34 @@ span.entry-icon > svg {
   border-radius: var(--island-radius);
   background: var(--bg-primary);
   box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
+}
+
+/* 浏览器宽度可以收缩，给活动栏和另一侧工具窗口留位；窄窗也不覆盖侧栏。 */
+.workbench-row > .tool-window.is-browser {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  animation: none;
+}
+
+/* 展开只接管编辑区，不卸载编辑器，也不隐藏两侧工具入口和已打开的侧栏。 */
+.workbench-row.has-expanded-browser > .editor-stack {
+  display: none;
+}
+
+.workbench-row.has-expanded-browser > .tool-window {
+  position: static;
+  inset: auto;
+  max-width: 40%;
+  animation: none;
+}
+
+.workbench-row.has-expanded-browser > .tool-window.is-browser {
+  flex: 1;
+  max-width: none;
 }
 
 .tool-window-head {

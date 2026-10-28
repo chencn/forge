@@ -7,6 +7,8 @@ dist/
 src-tauri/target/
 src-tauri/target-*/
 src-tauri/target-check/
+# Tauri sidecar artifacts are rebuilt from the workspace crate.
+src-tauri/binaries/forge-browser-mcp-*
 src-tauri/gen/schemas/
 src-tauri/windows/shell/forge_shell_cmd.dll
 

@@ -14,7 +14,7 @@ import {
 import type { SaveConflictInfo } from "../hooks/useDocuments";
 
 /**
- * 保存冲突时的三向合并对话框（对应 `docs/plans/disk-editor-merge/` 的 A 方案落地）。
+ * 保存冲突时的三向合并对话框（`docs/features/code-editor/merge-and-local-history.md` 的 A 方案）。
  *
  * 上面两格只读，给「本地手里那份」与「磁盘现在那份」，都对着共同祖先（上次保存的那份）算：
  * 底下那一整格可编辑，默认填带冲突标记的合并文本（`<<<<<<< / ======= / >>>>>>>`），

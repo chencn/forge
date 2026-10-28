@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<style>
+/* 独立本地 WebView 的尺寸由原生层控制；滚动只发生在样式表单内部。 */
+:root { color-scheme:light dark; --bg:#fff; --bar:#f7f7f8; --text:#24262b; --muted:#74777e; --line:#e5e6e9; --focus:#4279ff; font:12px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+@media(prefers-color-scheme:dark) { :root:not([data-theme=light]) {--bg:#22242a;--bar:#292c32;--text:#e8e9ed;--muted:#9b9fa9;--line:#3d4048;} }
+:root[data-theme=dark] {--bg:#22242a;--bar:#292c32;--text:#e8e9ed;--muted:#9b9fa9;--line:#3d4048;color-scheme:dark;}
+:root[data-theme=light] {color-scheme:light;}
+* {box-sizing:border-box} body {margin:0;background:var(--bg);color:var(--text);overflow:hidden} button,input,textarea,select {font:inherit;color:inherit} button {cursor:pointer} button:disabled {opacity:.45;cursor:default}
+.panel {height:100vh;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg)}
+/* 收起仅隐藏编辑器，保留一个可重新打开的入口，选中框独立存在。 */
+#resume {display:none;width:100%;height:100vh;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--focus)} body.minimized .panel {display:none} body.minimized #resume {display:block}
+header {display:flex;align-items:center;gap:7px;padding:5px 9px;background:var(--bar);min-height:29px;cursor:grab;user-select:none;touch-action:none} header:active {cursor:grabbing}.handle {color:var(--muted);font-size:15px} #selector {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px ui-monospace,Consolas,monospace;color:var(--muted)}
+.icon {width:27px;height:26px;display:inline-grid;place-items:center;border:0;background:transparent;border-radius:6px;color:var(--muted)} .icon:hover {background:var(--line);color:var(--text)} .icon:focus-visible,button:focus-visible {outline:2px solid var(--focus);outline-offset:-2px} svg {width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+textarea {flex:none;width:100%;height:43px;resize:none;outline:none;border:0;background:var(--bg);padding:10px 12px;line-height:1.5} textarea::placeholder {color:var(--muted)} textarea:focus-visible {outline:1px solid var(--line);outline-offset:-3px}
+.styles {display:none;flex:1;min-height:0;overflow:auto;padding:0 12px 8px;scrollbar-width:thin;scrollbar-color:var(--line) transparent} .expanded .styles {display:block} .expanded textarea {height:74px}
+.group {padding:9px 0;border-top:1px dashed var(--line)} .field {display:grid;grid-template-columns:82px minmax(0,1fr);align-items:center;gap:9px;margin:6px 0} .field>span {color:var(--muted);font-size:11px} .control {display:flex;align-items:center;position:relative;gap:5px;min-width:0}
+.control>input:not([type=color]),.control>select {width:100%;min-width:0;border:1px solid var(--line);border-radius:4px;padding:4px 7px;outline:none;background:var(--bg);height:27px} .control>input:focus,.control>select:focus {border-color:var(--focus)} .control>input[type=color] {position:absolute;left:6px;width:15px;height:17px;border:0;padding:0;background:none;cursor:pointer} .control.color>input[type=text] {padding-left:28px} .control>small {position:absolute;right:7px;color:var(--muted);pointer-events:none}
+footer {display:flex;align-items:center;gap:4px;padding:4px 8px;margin-top:auto;border-top:1px solid var(--line);min-height:36px} .cancel {border:0;background:none;color:var(--muted);padding:4px;font-size:11px} .spacer {flex:1} #send {color:white;background:#21a878;border-radius:50%;width:27px;height:27px} #send:hover {background:#18875e} #toggle[aria-expanded=true] {color:var(--focus);background:color-mix(in srgb,var(--focus) 10%,transparent)} #reset {display:none}.expanded #reset {display:inline-grid} #error {display:none;padding:4px 10px;color:#e45454;font-size:11px;max-height:40px;overflow:auto;border-top:1px solid var(--line)} #error:not(:empty) {display:block} .changed {border-color:var(--focus)!important}
+</style></head><body>
+<button id="resume" aria-label="继续编辑元素评论">继续评论</button>
+<main class="panel" aria-label="元素注释">
+<header><span class="handle" aria-hidden="true">⠿</span><span id="selector"></span><button class="icon" id="close" aria-label="取消当前标记并重新选取" title="取消当前标记并重新选取"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+<textarea id="comment" maxlength="2000" placeholder="添加评论…" aria-label="元素评论"></textarea>
+<div class="styles" id="styles" aria-label="样式预览"></div>
+<div id="error" role="alert"></div>
+<footer><button class="cancel" id="cancel">取消</button><span class="spacer"></span><button class="icon" id="reset" aria-label="恢复全部样式" title="恢复全部样式"><svg viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></svg></button><button class="icon" id="toggle" aria-label="编辑样式" title="编辑样式" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h7m6 0h3M4 17h3m6 0h7"/><circle cx="14" cy="7" r="3"/><circle cx="10" cy="17" r="3"/></svg></button><button class="icon" id="send" aria-label="发送到当前对话框" title="发送到当前对话框 · Ctrl+Enter" disabled><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg></button></footer>
+</main>
+<script>
+'use strict';
+window.addEventListener('error',event=>{document.getElementById('error').textContent=event.message;});
+// 只在可信本地面板中运行。页面数据一律用 textContent/value，不拼入 HTML 或脚本。
+const $ = id => document.getElementById(id), drafts = new Map(), pending = new Map();
+let state, key = '', serial = 0, queue = Promise.resolve(), sending = false, expanded = false;
+const zh = ['文字颜色','背景颜色','透明度 (0–1)','字体','字号','字重','边框颜色','圆角','边框宽度','边框样式','宽度','高度','外边距','内边距','间距'];
+const en = ['Text color','Background','Opacity','Font family','Font size','Font weight','Border color','Radius','Border width','Border style','Width','Height','Margin','Padding','Gap'];
+const tw = ['文字顏色','背景顏色','透明度','字體','字號','字重','邊框顏色','圓角','邊框寬度','邊框樣式','寬度','高度','外邊距','內邊距','間距'];
+const names = ['color','background-color','opacity','font-family','font-size','font-weight','border-color','border-radius','border-width','border-style','width','height','margin','padding','gap'];
+function error(message='') { $('error').textContent = message; }
+// 选中的元素已经构成上下文；评论可选，仅未就绪或投递中禁用发送。
+function buttons() { $('send').disabled = sending || !state?.selection; for(const id of ['close','cancel','reset','toggle','comment']) $(id).disabled=sending; for(const input of $('styles').querySelectorAll('input'))input.disabled=sending; }
+function request(action, extra={}) {
+  const identity = {tabId:state.selection.tabId,selectionId:state.selection.selectionId};
+  const operation = queue.catch(()=>{}).then(()=>new Promise((resolve,reject)=>{
+    const requestId = ++serial;
+    pending.set(requestId,{resolve,reject});
+    window.ipc.postMessage(JSON.stringify({requestId,...identity,action,...extra}));
+  }));
+  queue = operation;
+  return operation;
+}
+window.annotationReply = reply => {
+  if(reply.feedback) {
+    if(state?.selection.tabId===reply.tabId && state.selection.selectionId===reply.selectionId) { sending=false;error(reply.error||'');buttons(); }
+    return;
+  }
+  const job=pending.get(reply.requestId);if(!job)return;pending.delete(reply.requestId);
+  if(reply.error) job.reject(new Error(reply.error));else job.resolve(reply.value);
+};
+function apply(keyName,value) {
+  const ownKey=key;error();
+  request('preview',{patch:{[keyName]:value}}).then(selection=>{if(key===ownKey){state.selection=selection;fields();}}).catch(cause=>{if(key===ownKey)error(cause.message);});
+}
+function fields() {
+  const focused=document.activeElement,active=focused?.dataset.property,start=focused?.selectionStart,draftValue=focused?.value;
+  $('styles').replaceChildren();
+  const labels=state.language==='en'?en:state.language==='zh-TW'?tw:zh;
+  let group;
+  names.forEach((property,index)=>{
+    if([0,3,6,10,12].includes(index)){group=document.createElement('div');group.className='group';$('styles').append(group);}
+    const row=document.createElement('label');row.className='field';
+    const label=document.createElement('span');label.textContent=labels[index];row.append(label);
+    const control=document.createElement('div');control.className='control';
+    const input=document.createElement('input');input.type='text';input.maxLength=160;input.dataset.property=property;input.setAttribute('aria-label',labels[index]);input.value=state.selection.styles[property]||'';
+    if(state.selection.styleChanges?.[property]) input.classList.add('changed');
+    input.addEventListener('change',()=>apply(property,input.value.trim()));
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}});
+    if(['color','background-color','border-color'].includes(property)) {
+      control.classList.add('color');const swatch=document.createElement('input');swatch.type='color';swatch.setAttribute('aria-label',labels[index]+' picker');
+      const rgb=input.value.match(/^rgba?\(\s*(\d+)[, ]+\s*(\d+)[, ]+\s*(\d+)/);if(rgb)swatch.value='#'+rgb.slice(1,4).map(n=>(+n).toString(16).padStart(2,'0')).join('');
+      swatch.addEventListener('input',()=>{input.value=swatch.value;});swatch.addEventListener('change',()=>apply(property,swatch.value));control.append(swatch);
+    }
+    control.append(input);row.append(control);group.append(row);
+  });
+  if(active){const input=$('styles').querySelector(`[data-property="${active}"]`);if(input){input.value=draftValue;input.focus();if(start!=null)input.setSelectionRange(start,start);}}
+}
+window.renderAnnotation = next => {
+  const nextKey=next.selection.tabId+':'+next.selection.selectionId;
+  if(key && nextKey!==key) drafts.set(key,$('comment').value);
+  const fresh=key!==nextKey;state=next;key=nextKey;expanded=next.expanded;
+  document.body.classList.toggle('minimized',next.minimized);
+  document.documentElement.dataset.theme=next.theme;
+  $('selector').textContent=next.selection.selector.startsWith('#')?next.selection.tag+next.selection.selector:next.selection.selector;
+  $('selector').title=next.selection.selector;
+  document.querySelector('.panel').classList.toggle('expanded',expanded);$('toggle').setAttribute('aria-expanded',String(expanded));
+  if(fresh){sending=false;error();$('comment').value=drafts.get(key)||'';fields();requestAnimationFrame(()=>$('comment').focus());}
+  const english=next.language==='en';$('comment').placeholder=english?'Add a comment…':'添加评论…';$('cancel').textContent=english?'Minimize':'收起';$('resume').textContent=english?'Continue comment':'继续评论';$('styles').title=english?'Temporary preview. Send the changes to AI to edit project files.':'临时预览；发送给 AI 后再修改项目文件。尺寸支持 px、% 等 CSS 单位。';
+  buttons();while(drafts.size>32)drafts.delete(drafts.keys().next().value);
+};
+$('comment').addEventListener('input',()=>{drafts.set(key,$('comment').value);buttons();});
+async function close(){const ownKey=key;try{await request('close');}catch(cause){if(key===ownKey)error(cause.message);}}
+async function repick(){const ownKey=key;try{await request('repick');}catch(cause){if(key===ownKey)error(cause.message);}}
+$('close').onclick=repick;$('cancel').onclick=close;
+$('resume').onclick=()=>request('open').then(()=>$('comment').focus()).catch(cause=>error(cause.message));
+$('toggle').onclick=()=>{request('expand',{expanded:!expanded}).catch(cause=>error(cause.message));};
+$('reset').onclick=()=>{const ownKey=key;request('reset').then(selection=>{if(key===ownKey){state.selection=selection;fields();error();}}).catch(cause=>error(cause.message));};
+async function submit(){if(sending||!state?.selection)return;sending=true;buttons();error();const ownKey=key;try{await request('submit',{problem:$('comment').value});}catch(cause){if(key===ownKey){sending=false;buttons();error(cause.message);}}}
+$('send').onclick=submit;
+document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();submit();}if(event.key==='Escape'&&!sending){event.preventDefault();close();}});
+// 使用屏幕坐标计算增量，原生窗口移动后不会产生 clientX 坐标反馈抖动。
+let drag=null,dragFrame=0,deltaX=0,deltaY=0;
+const header=document.querySelector('header');
+function flushMove(){dragFrame=0;const x=deltaX,y=deltaY;deltaX=deltaY=0;if(x||y)request('move',{deltaX:x,deltaY:y}).catch(cause=>error(cause.message));}
+header.addEventListener('pointerdown',event=>{if(sending||event.button!==0||event.target.closest('button'))return;drag={x:event.screenX,y:event.screenY};header.setPointerCapture(event.pointerId);event.preventDefault();});
+header.addEventListener('pointermove',event=>{if(!drag)return;deltaX+=event.screenX-drag.x;deltaY+=event.screenY-drag.y;drag={x:event.screenX,y:event.screenY};if(!dragFrame)dragFrame=requestAnimationFrame(flushMove);});
+header.addEventListener('pointerup',()=>{drag=null;cancelAnimationFrame(dragFrame);flushMove();});header.addEventListener('pointercancel',()=>{drag=null;cancelAnimationFrame(dragFrame);flushMove();});
+</script></body></html>

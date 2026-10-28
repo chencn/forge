@@ -247,6 +247,8 @@ impl Default for ShellSettings {
 pub struct Settings {
     /// AI 编程助手总开关，默认关闭。
     pub ai_assistants_enabled: bool,
+    /// Browser access is subordinate to the AI master switch; unsafe features need explicit opt-in.
+    pub browser: crate::browser::BrowserSettings,
     /// 外观：light / dark / system。
     pub theme: String,
     /// 界面语言：zh / en。
@@ -277,6 +279,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             ai_assistants_enabled: false,
+            browser: crate::browser::BrowserSettings::default(),
             theme: "system".to_string(),
             language: String::new(),
             workspace_mode: "multi".to_string(),
@@ -300,6 +303,11 @@ fn default_http_response() -> String {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    // The opt-in native harness must never read or write a real user's settings.
+    #[cfg(feature = "browser-smoke")]
+    if app.config().identifier == "app.forge.browser-smoke" {
+        return Ok(PathBuf::from(std::env::var("FORGE_BROWSER_SMOKE_ROOT").map_err(|e| e.to_string())?).join("settings.json"));
+    }
     let dir = app
         .path()
         .app_config_dir()
@@ -391,6 +399,10 @@ pub async fn settings_save(app: AppHandle, patch: serde_json::Value) -> Result<S
                 None
             };
             save_document(&app, &document)?;
+            // Revoke synchronously after persistence and before returning to any UI caller.
+            if before.browser != merged.browser || !merged.ai_assistants_enabled {
+                crate::browser::permissions_changed(&app,!merged.ai_assistants_enabled || !merged.browser.enabled);
+            }
             (merged, stopping)
         };
         if let Some(stopping) = stopping {
@@ -425,6 +437,53 @@ mod tests {
         assert!(serialized.contains(r#""aiAssistantsEnabled":true"#));
         let restored: Settings = serde_json::from_str(&serialized).unwrap();
         assert!(restored.ai_assistants_enabled);
+    }
+
+    /// 浏览器与截图默认可用，上传和任意脚本仅在显式保存 true 后启用。
+    #[test]
+    fn browser_defaults_and_permission_patches() {
+        for document in [serde_json::json!({}), serde_json::json!({"browser":{"enabled":true}})] {
+            let settings: Settings = serde_json::from_value(document.clone()).unwrap();
+            assert!(settings.browser.enabled);
+            assert!(settings.browser.rendered_pixels);
+            assert!(!settings.browser.file_upload);
+            assert!(!settings.browser.unsafe_evaluate);
+            let (saved, settings) = apply_patch(document, &serde_json::json!({"browser":{"renderedPixels":false,"fileUpload":true}})).unwrap();
+            assert!(!settings.browser.rendered_pixels);
+            assert!(settings.browser.file_upload);
+            assert!(!settings.browser.unsafe_evaluate);
+            let restored: Settings = serde_json::from_value(saved).unwrap();
+            assert!(!restored.browser.rendered_pixels);
+            assert!(restored.browser.file_upload);
+            assert!(!restored.browser.unsafe_evaluate);
+        }
+        let (_, settings) = apply_patch(
+            serde_json::json!({"browser":{"renderedPixels":true,"fileUpload":false,"unsafeEvaluate":false}}),
+            &serde_json::json!({"browser":{"renderedPixels":false}}),
+        ).unwrap();
+        assert!(!settings.browser.rendered_pixels);
+        assert!(!settings.browser.file_upload);
+        assert!(!settings.browser.unsafe_evaluate);
+        for field in ["fileUpload", "unsafeEvaluate"] {
+            assert!(apply_patch(serde_json::json!({}), &serde_json::json!({"browser":{(field):"true"}})).is_err());
+        }
+    }
+
+    /// 元素交付偏好单独落盘，不得顺带改变上传、脚本或截图授权。
+    #[test]
+    fn browser_element_content_persistence() {
+        let initial = serde_json::json!({"browser":{"renderedPixels":false,"fileUpload":false,"unsafeEvaluate":false}});
+        let settings: Settings = serde_json::from_value(initial.clone()).unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap()["browser"]["elementContent"], "both");
+        for mode in ["code", "screenshot", "both"] {
+            let (saved, settings) = apply_patch(initial.clone(), &serde_json::json!({"browser":{"elementContent":mode}})).unwrap();
+            let restored: Settings = serde_json::from_value(saved).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap()["browser"]["elementContent"], mode);
+            assert!(!settings.browser.rendered_pixels);
+            assert!(!settings.browser.file_upload);
+            assert!(!settings.browser.unsafe_evaluate);
+        }
+        assert!(apply_patch(initial, &serde_json::json!({"browser":{"elementContent":"unknown"}})).is_err());
     }
 
     /// 语言服务配置搬去 `lsp.json` 了，旧文件里残留的 `lsp` 段要能读、并且被忽略。

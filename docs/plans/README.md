@@ -23,14 +23,12 @@
 
 | 目录 | 主题 | 状态 | 阻塞点 |
 | --- | --- | --- | --- |
+| [browser-use/](./browser-use/README.md) | AI 场景下的原生浏览器、标准 MCP、Codex/Claude 默认接入与完整调试能力 | 进行中 | Windows 核心、右侧浏览器界面、三轮审查及 25 组原生回归已完成；真实模型与历史续聊待验收，P2/P3 扩展未完成，见实施记录 |
 | [git-rebase-todo/](./git-rebase-todo/README.md) | 变基待办通道：修补 / 压缩到 / 删除提交 / 压缩提交 / 交互式变基 | 设计中 | 没有把 todo 清单交给界面再写回的通道；`sequence.editor` 那个钩子怎么回到应用 |
 | [change-selection-actions/](./change-selection-actions/README.md) | 选中更改的动作：优选 / 提取到单独提交 / 删除所选 / 不带内容暂存 / 搁置 / 从版本控制移除 | 设计中 | 后端只有整文件粒度，没有按段 apply 与 intent-to-add |
 | [ref-actions-gap/](./ref-actions-gap/README.md) | 引用侧四样：打开工作树、远端分支 Pull into Selected、「在修订版中显示仓库」、推送标签的逐远端子项 | 待做 | `git worktree list` 与 `git remote get-url` 都没有；远端网页地址认不出托管方 |
-| [fs-and-watch-boundaries/](./fs-and-watch-boundaries/README.md) | 文件侧与监听侧四条边界：回收站、隐藏项开关、新建重名截空、监听排除 | 待做 | 隐藏项那一条已落地，回收站与排除规则两条还没定取舍 |
-| [run-and-debug/](./run-and-debug/README.md) | 运行配置与 IDEA 的对账，以及 Debug(DAP) | 方案一已落地 | Debug 那半边的 DAP 适配层完全没有；adapter 可执行文件从哪来没定。cargo 那条识别还没加 |
+| [run-and-debug/](./run-and-debug/README.md) | 运行配置与 IDEA 的对账，以及 Debug(DAP) | 方案一已落地 | Debug 那半边的 DAP 适配层完全没有；adapter 可执行文件从哪来没定 |
 | [global-search/](./global-search/README.md) | 搜索剩下的几件：替换、扫描中断、历史与作用域记忆、多趟结果并存、文件名高亮 | 进行中 | 替换要一条能写盘的后端命令，而写盘和「编辑器那份赢」这条规矩正面冲突，取舍未拍 |
-| [lsp-language-servers/](./lsp-language-servers/README.md) | 外挂 LSP：多语言语言服务的通道与开关 | 待验收 | 两轮八块代码都已落地，23 条 Rust 单测在独立工程跑绿；剩人工在 forge 界面里过一遍 |
-| [multi-workspace-tabs/](./multi-workspace-tabs/README.md) | 一个窗口常驻多个工程文件夹：切根不重载、页签整套跟着切、后台终端与任务不杀 | 待验收 | 前后端代码与单测均已落地；5 项待拍板点已按确认口径实现，剩在界面里人工走查 |
 
 ## 不进这里的那些
 

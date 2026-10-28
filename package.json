@@ -5,15 +5,19 @@
   "type": "module",
   "description": "Forge - Tauri desktop app",
   "scripts": {
+    "tauri": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js",
+    "tauri:dev": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js dev",
+    "tauri:build": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js build",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "check:ts": "tsc --noEmit",
     "test:rs": "node scripts/run-rust.mjs test --lib",
     "check:rs": "node scripts/run-rust.mjs check",
-    "tauri": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js",
-    "tauri:dev": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js dev",
-    "tauri:build": "node --env-file-if-exists=.env ./node_modules/@tauri-apps/cli/tauri.js build",
+    "browser:prepare": "node scripts/prepare-browser.mjs",
+    "test:browser": "node scripts/test-browser.mjs",
+    "browser:dev": "node scripts/prepare-browser.mjs --vite",
+    "desktop:prepare": "node scripts/prepare-browser.mjs --release --frontend",
     "test:front": "vitest run"
   },
   "dependencies": {

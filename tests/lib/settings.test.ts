@@ -7,6 +7,35 @@ import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../../src/lib/sett
 beforeEach(() => { invoke.mockReset(); });
 
 describe("AI 编程助手设置", () => {
+  it("浏览器和截图默认启用，上传和任意脚本必须显式授权", async () => {
+    invoke.mockResolvedValue({ aiAssistantsEnabled: true });
+    expect((await loadSettings()).browser).toEqual({ enabled: true, renderedPixels: true, unsafeEvaluate: false, fileUpload: false, elementContent: "both" });
+    invoke.mockResolvedValue({ browser: { enabled: false, renderedPixels: "true", unsafeEvaluate: 1, fileUpload: true } });
+    expect((await loadSettings()).browser).toEqual({ enabled: false, renderedPixels: false, unsafeEvaluate: false, fileUpload: true, elementContent: "both" });
+  });
+  it("明确关闭截图后保持关闭，单独授权上传不会开启任意脚本", async () => {
+    const browser = { enabled: true, renderedPixels: false, unsafeEvaluate: false, fileUpload: true, elementContent: "both" as const };
+    invoke.mockResolvedValue({ browser });
+    expect((await saveSettings({ browser })).browser).toEqual(browser);
+    expect(invoke).toHaveBeenCalledWith("settings_save", { patch: { browser } });
+    invoke.mockResolvedValue({ browser: { enabled: true } });
+    expect((await loadSettings()).browser).toEqual(DEFAULT_SETTINGS.browser);
+  });
+  it("切换截图只发送对应字段，不携带旧的上传或脚本授权", async () => {
+    invoke.mockResolvedValue({ browser: { renderedPixels: false, fileUpload: false, unsafeEvaluate: false } });
+    const saved = await saveSettings({ browser: { renderedPixels: false } });
+    expect(invoke).toHaveBeenCalledWith("settings_save", { patch: { browser: { renderedPixels: false } } });
+    expect(saved.browser).toEqual({ enabled: true, renderedPixels: false, fileUpload: false, unsafeEvaluate: false, elementContent: "both" });
+  });
+  it("元素发送内容可保存三种模式，无效设置恢复截图和代码", async () => {
+    for (const elementContent of ["code", "screenshot", "both"] as const) {
+      invoke.mockResolvedValue({ browser: { elementContent } });
+      expect((await saveSettings({ browser: { elementContent } })).browser.elementContent).toBe(elementContent);
+      expect(invoke).toHaveBeenLastCalledWith("settings_save", { patch: { browser: { elementContent } } });
+    }
+    invoke.mockResolvedValue({ browser: { elementContent: "invalid" } });
+    expect((await loadSettings()).browser.elementContent).toBe("both");
+  });
   it("默认关闭，旧设置缺字段时保持关闭", async () => {
     expect(DEFAULT_SETTINGS.aiAssistantsEnabled).toBe(false);
     invoke.mockResolvedValue({ theme: "dark" });

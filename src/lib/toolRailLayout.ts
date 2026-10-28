@@ -3,6 +3,7 @@ export type ToolRailSide = "left" | "right";
 export type ToolRailGroup = "top" | "bottom";
 export type ToolRailId =
   | "ai"
+  | "browser"
   | "explorer"
   | "git"
   | "maven"
@@ -21,6 +22,7 @@ const LEGACY_STORAGE_KEY = "forge:tool-rail-layout:v1";
 
 export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   ai: "top",
+  browser: "top",
   explorer: "top",
   git: "top",
   maven: "top",
@@ -32,7 +34,7 @@ export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
 
 export const DEFAULT_TOOL_RAIL_LAYOUT: ToolRailLayout = {
   left: { top: ["explorer", "git"], bottom: ["terminal", "run", "log"] },
-  right: { top: ["ai", "maven"], bottom: ["notifications"] },
+  right: { top: ["ai", "browser", "maven"], bottom: ["notifications"] },
 };
 
 const TOOL_IDS = Object.keys(TOOL_RAIL_GROUP) as ToolRailId[];

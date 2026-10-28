@@ -3,7 +3,7 @@
 //! 配置里的档位只表示用户想用哪一档，不代表本机装着。探测把这两件事对上：
 //! 没装却又开着外部语言服务档的，档位落回 `off`；`installed` 是在 PATH 与几个常用安装目录里扫出来的，全程不启进程
 //! （只有 `rust-analyzer` 多跑一次 `--version`，因为 rustup 的 shim 会占住文件名而组件没装）。
-//! 参照 `docs/plans/lsp-language-servers/README.md` 第二轮「探测与安装」。
+//! 参照 `docs/features/lsp-language-servers/README.md` 的「探测与安装」。
 
 use crate::error::{err, err_parts};
 use crate::offload::block;

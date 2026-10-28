@@ -8,27 +8,39 @@
 ## 后端只报「有事发生」
 
 - `notify::recommended_watcher` 配 `RecursiveMode::Recursive` 盯整棵子树。root 不是目录报 `NOT_DIR`。
-- 事件只带路径：不区分新增还是删除，也不给改动前后的内容。粒度再细，前端每一处都要判类型，而它要做的只是重新
+- 槽位是 `HashMap<root, ActiveWatch>`，一个根一条 watcher，后台根与激活根同时在盯。起新的只顶掉**同一个根**上一轮
+  的句柄，别的根不受影响（多根切换见 `../workspace-tabs/`）。
+- `(root, generation)` 合起来是令牌：代号由前端每次新监听递增，start 与 stop 都带着它，后端只认与槽内记录完全一致
+  的那一轮。换目录时前端那次「停」可能比新的一次「起」晚到，代号对不上就整条忽略，不会把刚装好的监听停掉。
+- 事件只带路径与所属 root：不区分新增还是删除，也不给改动前后的内容。粒度再细，前端每一处都要判类型，而它要做的只是重新
   读一遍。
 - 过滤只排掉 `EventKind::Other`。不能只挑 `Modify(Data)` / `Modify(Metadata)` 这类子类型：Windows 后端把「文件
   内容变了」报成 `Modify(Any)`，挑子类型会把改内容整类漏掉，只剩新建和删除能报上来。
+- `.git` 不做整棵排除，只剔内部噪声：放行代表版本库状态变化的指针（`HEAD`、`index`、`packed-refs`、
+  `MERGE_HEAD`、`CHERRY_PICK_HEAD`、`REBASE_HEAD`、`BISECT_HEAD`、`refs/**`、各工作树下的同名文件），
+  滤掉高频写入的 `objects/`、`logs/`、`hooks/`、`info/` 与任何 `*.lock`。整棵丢掉的话，外部 `git commit`
+  就永远传不进应用。
 
-去抖在转发线程里做：第一条到达后继续等 150ms 静默期，这段时间里的路径并进 `BTreeSet`，顺带去重和排序，静默了才
-`emit("fs://change", { paths })`。150ms 比人手一次保存的间隔短，又足够把「写临时文件 + 改名」这类连着好几条并成
-一次刷新。
+去抖在每条 watcher 自己的转发线程里做：第一条到达后继续等 150ms 静默期，这段时间里的路径并进 `BTreeSet`，顺带去重和
+排序，静默了才 `emit("fs://change", { root, paths })`；持续写入时最长攒 1 秒就先放行一轮，不让人一直等下去。
+150ms 比人手一次保存的间隔短，又足够把「写临时文件 + 改名」这类连着好几条并成一次刷新。攒批的 `pending` 是线程局部，
+不是全局表，多根之间不串味。
 
 单批 256 条是**发送**的粒度，不是丢弃的阈值：`soak()` 全收不丢（满了就丢等于把用户刚保存的那条路径丢掉，
 前端从此认不出那个文件变了），`flush()` 把攒下的路径按 256 拆成多条事件发出去。前端那边的精确作废
 （见下）就靠这条不丢路径才敢用。
 
-停止不需要额外标志位：把 `RecommendedWatcher` 从槽里丢掉，回调闭包连同发送端一起释放，转发线程读到通道断开自己
+停止不需要额外标志位：把 `RecommendedWatcher` 从该根的槽里丢掉，回调闭包连同发送端一起释放，转发线程读到通道断开自己
 退出，退出前把剩余路径发完。
 
 ## 前端这一侧
 
-- `useFileWatch` 在浏览器里再并一次 120ms。一次保存会连着来好几条事件，再并一次就少几轮重读。
-- root 一变就重新起监听。换目录时 cleanup 故意不发 `fs_watch_stop`：后端起新的会顺手停掉旧的，而自己发的一次
-  「停」可能比新的一次「起」晚到，把刚装好的监听停掉。root 变成 null（关闭工作区）才真的停。
+- `useFileWatch` 收的是 `watchedRoots` 这一串：新进来的根起监听、被关掉的根停监听，已经在了的不重启，
+  卸载时把残余全部停掉。监听范围因此等于常驻的文件夹数，后台根的改动一样进得来（`../workspace-tabs/`）。
+- 浏览器这一侧按 `payload.root` 分桶，每桶各一份去抖：普通批次并 120ms，一次保存会连着来好几条事件，
+  再并一次就少几轮重读。判定为批量增删风暴的那一桶改等 1200ms 静默，最长挂 6000ms 后强制放行一轮，
+  免得 `npm install` 期间一直刷。风暴的判据是去重后的路径数到 10 条、或这批里出现产物与依赖目录的特征路径，
+  **不看批次条数**——单文件保存被拆成两条通知不该被误判成风暴。
 - 起监听失败前端不报错，`watchWorkspace` 里带 `.catch(() => {})`。表现是自动刷新没了，要点头部的刷新按钮。
 - 一批事件该刷哪几处，全在 `src/lib/watchBatch.ts` 的 `planWorkspaceFlush` 里定，`App.tsx` 的
   `flushWorkspace` 只负责照着执行；监听来的批次和包管理会话收尾攒下的那批都走这一条路，不再各写一套。
@@ -50,8 +62,9 @@
 - git 那侧给每轮刷新编号，只有最新一次允许写状态。监听触发的多轮刷新并发时，五次调用回来的顺序不保证，旧结果会
   把新结果盖掉。转圈状态不跟着编号走，另记在飞条数：全量刷新还在飞时一次暂存把编号抢走，那一轮就永远收不到
   收尾信号，刷新图标会一直转。
-- 没有 ignore 名单。整个工作区递归盯着，`node_modules` 里的改动照样触发一次刷新，只是重读目录与 git 状态，不逐条
-  处理事件。代价就是上面那条 256 上限。
+- 后端没有排除入参，也没有 ignore 名单：`node_modules` 里的改动照样报上来，只是事件不带类型、前端不逐条处理，
+  代价由上面两处挡着——`.git` 内部噪声在后端剔，批次分档决定重读多少目录，风暴静默决定多久读一次。
+  丢弃路径不丢正确性：报来的整批只喂给文档判定，目录树与 git 状态本来就是整份重取。
 
 ## 文档侧：监听不覆盖编辑内容，保存时校验磁盘版本
 
@@ -74,8 +87,9 @@
 CSP 是 `default-src 'self'`，`file://` 进不了 webview；位图也没法整份经 `invoke` 返回值交给 `<img>`。本地图片
 只能走 asset 协议。
 
-这条协议的授权不落盘，重启即失效，所以每次 `workspaceRoot` 一变就重授一次。`fs_allow_asset` 授的是整棵子树：
-`allow_directory(root, true)`。只授根目录的话，文档里引用的子目录图片读不到。配置里 `scope.allow` 是空表，
+这条协议的授权不落盘，重启即失效，所以每个根在成为激活根时重授一次。`fs_allow_asset` 授的是整棵子树：
+`allow_directory(root, true)`。只授根目录的话，文档里引用的子目录图片读不到。授权是累积式的、没有撤销入口，
+所以新根授权不会让旧根的图片失效，关掉一个根也收不回那份授权。配置里 `scope.allow` 是空表，
 没有授权时一个字节都读不到。
 
 markdown 正文里的图片怎么用这条协议见 `../documents-preview/`。
@@ -84,15 +98,15 @@ markdown 正文里的图片怎么用这条协议见 `../documents-preview/`。
 
 | 文件 | 内容 |
 | --- | --- |
-| `src-tauri/src/watch.rs` | `SETTLE` 150ms `:20`；`MAX_WAIT` 1s 封顶 `:24`；`BATCH_CAP` 256 只是发送粒度 `:28`；`interesting` 只排 `Other` `:64`；`changes_listing` 认新增/删除/改名 `:73`；作废名单缓存 `:226`；`soak` 全收不丢 `:330`；`flush` 拆批发 `:339` |
-| `src/lib/watchBatch.ts` | 判据的前提写在文件头 `:1-13`；`needsFullTreeRefresh` `:55`；`planWorkspaceFlush` `:103` |
+| `src-tauri/src/watch.rs` | `SETTLE` 150ms `:20`；`MAX_WAIT` 1s 封顶 `:24`；`BATCH_CAP` 256 只是发送粒度 `:28`；`FsChange.root` `:34`；`WatchSlot` 按根集合 `:45`；`interesting` 只排 `Other` `:64`；`changes_listing` 认新增/删除/改名 `:73`；`ignorable_git_internal` `:89`；`is_git_indicator_name` `:152`；`fs_watch_start` `:174`；`allow_start_for_root` `:184`；`allow_stop_for_root` `:190`；`fs_watch_stop` `:261`；作废名单缓存 `:226`；`soak` 全收不丢 `:330`；`flush` 拆批发 `:339` |
+| `src/lib/watchBatch.ts` | 判据的前提写在文件头 `:1-13`；`isPackageInstallPath` `:38`；`isBuildOutputPath` `:43`；`isBulkArtifactPath` `:48`；`needsFullTreeRefresh` `:61`；`planWorkspaceFlush` `:109` |
 | `src-tauri/src/run/scan.rs` | 共享的构建标志文件名单缓存：`LISTING_TTL` `:19`；`marks` 带在飞竞态守卫 `:173`；`invalidate_many` `:246` |
-| `src/hooks/useFileWatch.ts` | `COALESCE_MS` 120ms `:6`；`STORM_SETTLE_MS` 1200ms `:14`；bulk 判定（路径数或产物特征）`:76` 与 `:86`；风暴期的等待 `:95-98` |
+| `src/hooks/useFileWatch.ts` | `COALESCE_MS` 120ms `:7`；`STORM_SETTLE_MS` 1200ms `:14`；`STORM_MAX_WAIT_MS` 6000ms `:16`；`STORM_PATH_THRESHOLD` 10 条 `:18`；入参是 `roots[]` `:38`；`generation` `:45` 与已注册根的 `activeMap` `:47`；按根分桶 `:52`；bulk 判定（路径数或产物特征）`:85-88`；风暴期的等待 `:97-99`；增量启停 `:125` 与卸载清场 `:146` |
 | `src/hooks/useDocuments.ts` | `canPreview` 与 `defaultView` `:51-66`；`save` 取 `doc.contents` `:228-247`；`saveAll` 串行 `:249-264`；`noteExternalChange` 的干净判定、touch 跳过、位图指纹、读不回 `:266-324` |
-| `src/App.tsx` | 回声窗口 `:463`；按根暂存 `:1006`；`flushWorkspace` `:1036`；`onDiskChange` `:1108`；会话收尾补刷 `:1172` |
+| `src/App.tsx` | 回声窗口 `:534`；按根暂存 `:1413`；`flushWorkspace` `:1443`；`onDiskChange` `:1515`；会话收尾补刷 `:1601-1608` |
 | `src/hooks/useGitState.ts` | 刷新编号与 `stale` 判定 `:77-98` |
-| `src/lib/fs.ts` | `watchWorkspace` / `stopWorkspaceWatch` 吞错 `:70-78`；`assetUrl` 的 `?v=` `:126-135`；`allowAssetDir` `:137-140` |
-| `src-tauri/src/fs/mod.rs` | `read_file` 的上限与编码判定 `:194-229`；`file_stamp` 指纹 `:356-366`；`fs_allow_asset` 递归授权 `:368-377` |
+| `src/lib/fs.ts` | `watchWorkspace` / `stopWorkspaceWatch` 吞错 `:94-104`；`assetUrl` 的 `?v=` `:169`；`allowAssetDir` `:175` |
+| `src-tauri/src/fs/mod.rs` | `read_file` 的上限与编码判定 `:271-275`；`file_stamp` 指纹 `:762`；`fs_allow_asset` 递归授权 `:809` |
 | `src/lib/docKind.ts` | `hasTextContent` 与 `previewsFromDisk` `:66-82` |
 | `src/components/CodeEditor.tsx` | 文本没变不 `setValue` `:96-104` |
 | `src-tauri/tauri.conf.json` | CSP `:27`；`assetProtocol` 空 scope `:28-34` |

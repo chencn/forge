@@ -3,7 +3,7 @@
 一份 `settings.json` 管所有偏好。没有项目级设置。主题、语言、工作区与各栏开关只从这份文件来，旧值不迁移。
 应用级快捷键覆盖、AI 会话草稿与发送历史、AI 侧栏视图偏好存在 WebView 本地存储，不进设置文件，
 换了 WebView 源就看不到。另有两份文件各管一段：语言服务的配置存 `lsp.json`（默认值写在后端种子里，
-这一栏的界面与落盘口径见 [../../plans/lsp-language-servers/](../../plans/lsp-language-servers/README.md)），
+这一栏的界面与落盘口径见 [../lsp-language-servers/](../lsp-language-servers/)），
 用户做过的流水存 `history.json`（见下）。三份文件同目录，命令都列在 [../../backend/commands.md](../../backend/commands.md)。
 
 ## 位置与读写

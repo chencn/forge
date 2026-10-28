@@ -1,4 +1,5 @@
 mod ai_cli;
+mod browser;
 mod ai_runtime;
 mod ai_commit;
 mod error;
@@ -29,6 +30,9 @@ mod update;
 mod watch;
 
 use tauri::Manager;
+
+#[cfg(feature = "browser-smoke")]
+pub fn run_browser_smoke() { browser::smoke::run(); }
 
 pub fn run() {
     #[cfg(windows)]
@@ -65,6 +69,7 @@ pub fn run() {
         .manage(shell_open::Pending::default())
         .setup(move |app| {
             ai_cli::settings::init(app.handle());
+            browser::init(app.handle())?;
             tray::build(&app.handle().clone())?;
             disable_default_context_menu(app.handle());
             ai_runtime::start_queue_monitor(app.handle().clone())?;
@@ -80,6 +85,14 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            browser::browser_panel_state,
+            browser::browser_panel_details,
+            browser::browser_panel_command,
+            browser::browser_panel_open,
+            browser::browser_panel_navigate,
+            browser::browser_panel_grant,
+            browser::browser_panel_show,
+            browser::browser_panel_close,
             fs::list_directory,
             fs::read_file,
             fs::write_file,
@@ -289,8 +302,9 @@ pub fn run() {
     // api.prevent_exit() 拦下，在那儿清理会错杀本该活着的会话。
     // 这几张表里的子进程（AI CLI、构建命令、语言服务、终端 shell）裸持着 Child，
     // 不在这儿杀掉，应用一退它们就全成孤儿。
-    app.run(|_app, event| {
+    app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
+            browser::shutdown(app);
             single_instance::stop_server();
             ai_runtime::reap_all_for_exit();
             lsp::reap_all_for_exit();

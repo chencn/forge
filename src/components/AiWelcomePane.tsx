@@ -18,6 +18,7 @@ import AiCommandMenu from "./AiCommandMenu";
 import AiComposerShell from "./AiComposerShell";
 import AiComposerOptions, { type AiComposerHandle } from "./AiComposerOptions";
 import AiImageDialog from "./AiImageDialog";
+import { watchAiInputDelivery } from "../lib/aiInputBridge";
 
 /** 选择器里的筛选提示；真正认格式的是后端的文件头嗅探，扩展名写错也骗不过去。 */
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
@@ -101,6 +102,14 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   useEffect(() => {
     setDraft(loadDraft(workspace, "draft"));
   }, [workspace]);
+  // 浏览器标记复用普通草稿投递，不触发创建会话或自动发送。
+  useEffect(() => watchAiInputDelivery(workspace, "draft", (delivery) => {
+    setDraft(delivery.text);
+    requestAnimationFrame(() => {
+      input.current?.focus();
+      input.current?.setSelectionRange(delivery.text.length, delivery.text.length);
+    });
+  }), [workspace]);
   useEffect(() => {
     if (!menuVisible) return;
     const dismiss = (event: PointerEvent) => {

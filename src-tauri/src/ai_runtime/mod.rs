@@ -239,10 +239,13 @@ fn runtime_args(request: &SendRequest, claude_mode: &str, native: Option<&str>) 
     args
 }
 
-fn spawn_runtime_process(request: &SendRequest, claude_mode: &str, native: Option<&str>) -> Result<(Process, String), String> {
-    let args = runtime_args(request, claude_mode, native);
+fn spawn_runtime_process(request: &SendRequest, claude_mode: &str, native: Option<&str>, browser: Option<&crate::browser::Lease>) -> Result<(Process, String), String> {
+    let mut args = runtime_args(request, claude_mode, native);
+    if browser.is_some() { args.extend(crate::browser::launch::arguments(request.provider)?); }
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    let (command, version) = ai_cli::runtime_command(request.provider, &refs)?;
+    let (mut command, version) = ai_cli::runtime_command(request.provider, &refs)?;
+    if let Some(lease) = browser { crate::browser::launch::environment(&mut command,lease); }
+    else { command.env_remove("FORGE_BROWSER_ENDPOINT").env_remove("FORGE_BROWSER_TOKEN"); }
     Ok((Process::spawn(command, &request.workspace)?, version))
 }
 
@@ -256,11 +259,13 @@ fn runtime_protocol(
     claude_mode: &str,
     recovery_turn: Option<String>,
     claude_agents: Vec<(String, Option<String>)>,
+    browser:bool,
 ) -> Result<Box<dyn Protocol>, String> {
     Ok(match request.provider {
         Provider::Codex => {
             let recovering = recovery_turn.is_some();
             let protocol = codex::Codex::new(request.workspace.clone(), if recovering { String::new() } else { request.prompt.clone() }, native)
+                .with_browser(browser)
                 .with_images(if recovering { vec![] } else { request.images.clone() })
                 .with_options(request.model.clone(), request.effort.clone())
                 .with_policy(request.permission, service_tier.to_owned())
@@ -506,6 +511,88 @@ fn enabled(app: &AppHandle) -> Result<(), String> {
     } else {
         Err("AI 助手已关闭".into())
     }
+}
+
+/// Browser capabilities follow the actual runtime cancellation bit, including queued/failed runs.
+pub(crate) fn browser_run_active(run_id: &str) -> bool {
+    registry::get(run_id).is_some_and(|run| !run.cancelled.load(Ordering::Acquire))
+}
+
+pub(crate) fn browser_workspace(path:&str) -> Result<String,String> { store::workspace(path) }
+pub(crate) fn browser_requested_workspace(run_id:&str) -> Option<String> { registry::get(run_id).map(|run|run.requested_workspace.clone()) }
+
+#[cfg(feature = "browser-smoke")]
+pub(crate) fn browser_smoke_reserve(workspace:&str,session:&str) -> Result<Arc<Run>,String> {
+    let (run,_controls) = Run::reserve(format!("smoke-{session}"),session.into(),store::workspace(workspace)?,workspace.into())?;
+    Ok(run)
+}
+
+/// Exercise the exact production argument/environment builders without any model request.
+#[cfg(feature = "browser-smoke")]
+pub(crate) fn browser_smoke_cli(workspace:&str,lease:&crate::browser::Lease,run_id:&str) -> Result<Vec<String>,String> {
+    fn receive(process:&Process,accept:impl Fn(&Value)->bool) -> Result<Value,String> {
+        let deadline=Instant::now()+Duration::from_secs(20);
+        while Instant::now()<deadline {
+            match process.incoming.recv_timeout(Duration::from_millis(200)) {
+                Ok(Input::Json(v)) if accept(&v)=>return Ok(v),
+                Ok(Input::Json(_))=>(),Ok(Input::Error(e))=>return Err(e),Ok(Input::Eof)=>return Err("CLI closed during browser probe".into()),
+                Err(mpsc::RecvTimeoutError::Timeout)=>(),Err(e)=>return Err(e.to_string()),
+            }
+        }
+        Err("CLI browser probe timed out".into())
+    }
+    fn rpc(process:&Process,id:u64,method:&str,params:Value) -> Result<Value,String> {
+        process.write(&json!({"id":id,"method":method,"params":params}))?;
+        let reply=receive(process,|v|v["id"]==id)?;
+        if reply.get("error").is_some() { return Err(reply["error"].to_string()); }
+        Ok(reply["result"].clone())
+    }
+    let request:SendRequest=serde_json::from_value(json!({"provider":"codex","sessionId":"e9fd420e-d6b1-4077-8c0e-20f46b5ba1f8","runId":run_id,"workspace":workspace,"prompt":"","trusted":true})).map_err(|e|e.to_string())?;
+    let mut checks=Vec::new();
+    for provider in [Provider::Codex,Provider::Claude] {
+        let request=SendRequest { provider,..request.clone() };
+        let mut args=runtime_args(&request,"default",None);
+        args.extend(crate::browser::launch::arguments(provider)?);
+        if provider==Provider::Claude { args.extend(["--no-session-persistence".into(),"--strict-mcp-config".into(),"--settings".into(),"{\"disableAllHooks\":true}".into()]); }
+        let refs=args.iter().map(String::as_str).collect::<Vec<_>>();
+        let (mut command,version)=ai_cli::runtime_command(provider,&refs)?;
+        crate::browser::launch::environment(&mut command,lease);
+        let config=Path::new(workspace).join(if provider==Provider::Codex {"codex-probe"}else{"claude-probe"});
+        fs::create_dir_all(&config).map_err(|e|e.to_string())?;
+        command.env(if provider==Provider::Codex {"CODEX_HOME"}else{"CLAUDE_CONFIG_DIR"},&config);
+        let process=Process::spawn(command,workspace)?;
+        if provider==Provider::Codex {
+            rpc(&process,1,"initialize",json!({"clientInfo":{"name":"forge-browser-native-probe","version":"1.1.1"},"capabilities":{"experimentalApi":true}}))?;
+            process.write(&json!({"method":"initialized","params":{}}))?;
+            let config=rpc(&process,2,"config/read",json!({"cwd":workspace,"includeLayers":false}))?;
+            let instructions=format!("{}\n\n{}",config["config"]["developer_instructions"].as_str().unwrap_or(""),forge_browser::INSTRUCTIONS);
+            let thread=rpc(&process,3,"thread/start",json!({"cwd":workspace,"ephemeral":true,"developerInstructions":instructions}))?;
+            let thread=&thread["thread"]["id"];
+            let status=rpc(&process,4,"mcpServerStatus/list",json!({"threadId":thread,"serverName":"forge_browser","detail":"toolsAndAuthOnly"}))?;
+            let browser=status["data"].as_array().and_then(|a|a.iter().find(|s|s["name"]=="forge_browser")).ok_or("Codex did not load forge_browser")?;
+            if browser["runtimeStatus"]!="connected" { return Err(format!("Codex browser not connected: {}",browser["runtimeStatus"])); }
+            let result=rpc(&process,5,"mcpServer/tool/call",json!({"threadId":thread,"server":"forge_browser","tool":"browser_status","arguments":{}}))?;
+            if result["isError"]==true || result["structuredContent"]["runId"]!=run_id { return Err(format!("Codex live broker call failed: {result}")); }
+            checks.push(format!("Codex {version}: production MCP injection and live browser_status round trip"));
+        } else {
+            process.write(&json!({"type":"control_request","request_id":"init","request":{"subtype":"initialize","hooks":null}}))?;
+            let init=receive(&process,|v|v["response"]["request_id"]=="init")?;
+            if init["response"]["subtype"]!="success" { return Err("Claude initialize probe failed".into()); }
+            let mut connected=false;
+            for i in 0..50 {
+                let id=format!("status-{i}");
+                process.write(&json!({"type":"control_request","request_id":id,"request":{"subtype":"mcp_status"}}))?;
+                let status=receive(&process,|v|v["response"]["request_id"]==id)?;
+                let servers=&status["response"]["response"]["mcpServers"];
+                if servers.as_array().is_some_and(|a|a.iter().any(|s|s["name"]=="forge_browser" && s["status"]=="connected" && s["tools"].as_array().is_some_and(|t|t.len()==14))) { connected=true;break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if !connected { return Err("Claude did not report 14 connected Forge tools".into()); }
+            checks.push(format!("Claude {version}: production MCP injection and mcp_status confirms 14 tools"));
+        }
+        // Process::drop kills its isolated process tree, including companion children.
+    }
+    Ok(checks)
 }
 fn validate(request: &SendRequest) -> Result<(), String> {
     commands::validate(request.provider, &request.prompt, request.command)?;
@@ -1762,7 +1849,12 @@ impl Worker {
         if request.command == Some(commands::CommandIntent::CodexCompact) && native.is_none() {
             return Err("请先建立会话，再压缩上下文".into());
         }
-        let (mut process, version) = spawn_runtime_process(&request, &claude_mode, native.as_deref())?;
+        // The host enforces read/plan permissions independently of CLI tool approval settings.
+        let browser = crate::browser::attach(&self.app,crate::browser::Scope {
+            workspace:self.run.workspace.clone(),session:request.session_id.clone(),run:request.run_id.clone(),
+            read_only:request.permission == options::PermissionMode::Read || request.plan_mode || request.mode.as_deref() == Some("plan"),
+        })?;
+        let (mut process, version) = spawn_runtime_process(&request, &claude_mode, native.as_deref(),browser.as_ref())?;
         {
             let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
             self.store.meta.cli_version = version;
@@ -1795,7 +1887,7 @@ impl Worker {
             }).collect();
             for snapshot in snapshots { self.queue("agent", snapshot)?; }
         }
-        let mut protocol = runtime_protocol(&request, native, &service_tier, &codex_policy, &claude_mode, None, claude_agents)?;
+        let mut protocol = runtime_protocol(&request, native, &service_tier, &codex_policy, &claude_mode, None, claude_agents,browser.is_some())?;
         self.summary_start = history::summary_offset(&self.store)?;
         self.run.child_pid.store(process.id(), Ordering::Release);
         let handshake = protocol.start()?;
@@ -1969,7 +2061,7 @@ impl Worker {
                     self.queue("notice", json!({"text":"CLI 连接中断，正在重新附着当前回合。","reconnecting":true,"attempt":reconnects}))?;
                     self.flush()?;
                     let native = self.store.meta.native_id.clone().ok_or("CLI 断线后缺少可恢复的原生会话 ID")?;
-                    let (next, version) = spawn_runtime_process(&request, &claude_mode, Some(&native))?;
+                    let (next, version) = spawn_runtime_process(&request, &claude_mode, Some(&native),browser.as_ref())?;
                     process = next;
                     self.run.child_pid.store(process.id(), Ordering::Release);
                     {
@@ -1978,7 +2070,7 @@ impl Worker {
                         self.store.save()?;
                     }
                     let turn = self.native_turn_id.clone().ok_or("CLI 断线后缺少原生回合 ID")?;
-                    protocol = runtime_protocol(&request, Some(native), &service_tier, &codex_policy, &claude_mode, Some(turn), vec![])?;
+                    protocol = runtime_protocol(&request, Some(native), &service_tier, &codex_policy, &claude_mode, Some(turn), vec![],browser.is_some())?;
                     let handshake = protocol.start()?;
                     self.actions(&mut *protocol, handshake, &mut process)?;
                     last_output = Instant::now();

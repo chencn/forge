@@ -971,6 +971,7 @@ version = "1.1.1"
 dependencies = [
  "base64 0.23.1",
  "encoding_rs",
+ "forge-browser",
  "forge-shell-ext",
  "json-patch",
  "libc",
@@ -988,12 +989,25 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tauri-runtime-wry",
  "tokio",
  "toml 0.8.2",
  "toml_edit 0.22.27",
  "url",
  "walkdir",
  "webview2-com",
+ "windows",
+]
+
+[[package]]
+name = "forge-browser"
+version = "1.1.1"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
  "windows",
 ]
 

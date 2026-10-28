@@ -2,7 +2,8 @@
 
 逐条对着 `src-tauri/src/lib.rs` 的注册表与各模块签名核过，本文件收录 100 条。出处列给命令自己的行号。
 参数一律写前端传的 camelCase 名（映射规则见 [README.md](./README.md)）。
-非 AI 命令里发事件的只有四条：`fs_watch_start` 起的那条转发线程发 `fs://change`，`term_open` 的 reader 线程发
+非 AI 命令里发事件的只有五条：`fs_watch_start` 起的每条转发线程发 `fs://change{root,paths}`，
+`delete_entry` 降级物理删除时发 `fs://delete-progress{count,current}`（送回收站那条不发），`term_open` 的 reader 线程发
 `term://output` / `term://exit`，`proc_start` 的转发与轮询线程发 `proc://output` / `proc://exit`，
 `lsp_start` 的两条读线程发 `lsp://message` / `lsp://log` / `lsp://exit`。
 `app://flush` 由窗口关闭事件和托盘菜单的「退出」触发，不经命令。其余写命令不发事件：磁盘上的动静统一经
@@ -24,19 +25,19 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录本批�
 | `read_file` | `path` | `FileContent` | 读；超过 8 MiB 给 `TOO_LARGE`，是目录给 `IS_DIR`；非 UTF-8 里含 NUL 的给 `BINARY`，其余给 `NOT_UTF8` | `fs/mod.rs:195` |
 | `write_file` | `path, contents, lineEnding?, hasBom?` | `FileContent` | 写盘，`modifiedMs` 是写完之后的值；监听随即报 `fs://change` | `fs/mod.rs:233` |
 | `create_folder` | `path` | `FsEntry` | 单层创建，父目录不在则 `IO` | `fs/mod.rs:267` |
-| `create_file` | `path` | `FsEntry` | `File::create` 语义：路径上已有文件会被截成空文件，前后端都不查重名 | `fs/mod.rs:273` |
+| `create_file` | `path` | `FsEntry` | `create_new`（`O_CREAT \| O_EXCL`）：路径上已有文件报 `TARGET_EXISTS`，不会像 `File::create` 那样把内容截成空的 | `fs/mod.rs:479` |
 | `rename_entry` | `from, to` | `FsEntry` | `to` 存在则 `TARGET_EXISTS`，源不动 | `fs/mod.rs:279` |
 | `copy_entry` | `from, to` | `FsEntry` | 目录走 `copy_tree` 递归整棵子树，其余（文件、符号链接）交给 `fs::copy` | `fs/mod.rs:305` |
 | `move_entry` | `from, to` | `FsEntry` | 同盘即 rename；跨盘复制后删源，删不掉给 `MOVED_WITH_SOURCE` | `fs/mod.rs:316` |
-| `delete_entry` | `path` | `()` | 优先移入系统回收站 / 废纸篓，不支持时递归物理删除兜底 | `fs/mod.rs:541` |
+| `delete_entry` | `path` | `()` | 优先移入系统回收站 / 废纸篓（Windows `SHFileOperationW`，macOS `trash` CLI 或 `osascript` 走 Finder，Linux `gio trash` / `trash-put`）；权限不足或被占用（os error 5 / 13 / 32、`not found`、`operation aborted`）直接报错，**不降级**成物理删除；只在介质或桌面环境不支持回收站时才递归硬删，那一趟每 50ms 发一次 `fs://delete-progress{count,current}`。符号链接只送链接本身，不穿透删目标 | `fs/mod.rs:609` |
 | `reveal_entry` | `path` | `()` | Windows 起 `explorer /select,<path>` | `fs/mod.rs:343` |
 | `file_stamp` | `path` | `FileStamp{size,modifiedMs}` | 不读正文；图片预览靠它换缓存串 | `fs/mod.rs:357` |
 | `fs_allow_asset` | `root` | `()` | 把该目录连子树加进 asset 允许名单，不落盘 | `fs/mod.rs:373` |
 | `open_external` | `url` | `()` | `ShellExecuteW`，不经 cmd。入参先过白名单：协议只认 `http` / `https` / `mailto` / `tel`，其余写法（`file:` / `ms-msdt:` / `javascript:` …）与盘上不存在的路径、可执行后缀（`.exe` / `.lnk` / `.ps1` …）一律 `EXTERNAL_BLOCKED`。markdown 里的链接是外部输入，不能让它决定执行什么 | `fs/mod.rs:381` |
 | `find_files` | `root, query, limit?, filter?{showHidden,ignored[]}` | `FileHits{query,items[],truncated}` | 按名字找文件与目录。名字打分四档：全等 4 > 前缀 3 > 包含 2 > 逐字顺次出现 1；排序按档位降序、路径短的在前、再字典序。剪掉 `.git` / `node_modules` / `target` / `dist` / `build` / `out`，不跟软链，深 24 层、访问 200_000 条目封顶，匹配攒到 2000 条即停，触闸置 `truncated`。`filter` 是可见性闸门（`ScanFilter`）：`showHidden` 为假时剪掉隐藏项，`ignored` 里那些绝对前缀之下的路径整棵剪掉，两者都在扫描层生效、不占条目与命中预算。`limit` 传 0 或缺省走 100 条那档，钳到 1..5000；词全空白回空表不报错；`root` 不是目录给 `NOT_DIR` | `fs/search.rs:253` |
 | `search_text` | `root, query, options{caseSensitive,wholeWords,regex,fileMask,limit}, filter?{showHidden,ignored[]}` | `TextPage{query,hits[],files,truncated,skipped}` | 逐文件扫正文。每条命中带 `line`（1 起）、`snippet`、`snippetFrom`（片段首字符在原行里的列号）和这一行的 `ranges{column,length}`（1 起、按字符数）；片段最长 240 字符，整行超过它就以首处命中为中心截。单文件 20 MiB 封顶，开头 4096 字节里见 NUL 当二进制跳过；太大、二进制、非 UTF-8、读不到四类合并计入 `skipped`。`filter` 同 `find_files`，剪掉的项不计入 `skipped`。`fileMask` 逗号或分号分隔、只认 `*`、空表示不限；`wholeWords` 只在非正则下生效；`regex` 为真时词编不成正则给 `BAD_REGEX`；`limit` 同 `find_files` 那两档；`root` 不是目录给 `NOT_DIR` | `fs/search.rs:596` |
-| `fs_watch_start` | `root, generation` | `()` | 递归监听；已有监听先停；`generation` 是前端每次换根递增的代号令牌，锁内比对，慢到的旧请求直接放弃；去抖 150ms 后发 `fs://change{paths}` | `watch.rs:83` |
-| `fs_watch_stop` | `root, generation` | `()` | 令牌与 root 都对上槽里那轮才清槽，过期请求什么都不动；丢句柄后转发线程随之退出。没有可失败的分支，签名不带 `Result` | `watch.rs:153` |
+| `fs_watch_start` | `root, generation` | `()` | 按根开槽的递归监听：槽是 `HashMap<root, ActiveWatch>`，这条只插入或替换**该根**那一轮，别的根不受影响。`generation` 是前端每次新监听递增的代号，`(root, generation)` 合起来是令牌，锁内比对，慢到的旧请求直接放弃；`.git` 内部噪声在这一层剔（`objects/`、`logs/`、`hooks/`、`info/`、`*.lock` 滤掉，指针文件与 `refs/**` 放行）；去抖 150ms、持续写入满 1s 先放行一轮，之后发 `fs://change{root,paths}`，单批 256 条是发送粒度不是丢弃阈值 | `watch.rs:174` |
+| `fs_watch_stop` | `root, generation` | `()` | 令牌与 root 都对上该根槽里那轮才清槽，过期请求什么都不动；丢句柄后那条转发线程随之退出，退出前把剩余路径发完。没有可失败的分支，签名不带 `Result` | `watch.rs:261` |
 
 ## Git（48）
 
@@ -131,26 +132,26 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录本批�
 
 | 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
 | --- | --- | --- | --- | --- |
-| `lsp_start` | `window, server, root, program, args` | `String`（会话 id） | 启动进程（三路管道、非 PTY）与两条读线程；启动前先按配置扫描空闲会话与总数上限；身份已在表内时直接返回原 id，不重复启动；同一身份正在启动时后到的请求等待其结果（条件变量，不重复 spawn）。找不到可执行文件返回 `LSP_NOT_FOUND`，spawn 失败返回 `LSP_SPAWN`，管道未建立返回 `LSP_IO`；退避期内返回 `LSP_START_BACKOFF`（剩余等待毫秒数、上次失败原因），连续失败超过 2 次返回 `LSP_START_LIMIT`。发送 `lsp://message{id,body}`、`lsp://log{id,text}`、`lsp://exit{id,code}` | `lsp.rs:307` |
-| `lsp_write` | `id, body` | `()` | 补齐 `Content-Length` 头（按字节数）后写入 stdin，同时将该会话的「最后使用时间」更新到当前时刻；会话已回收时返回 `LSP_GONE` | `lsp.rs:491` |
-| `lsp_stop` | `id` | `()` | 先执行 `taskkill /F /T /PID` 终止整棵进程树，再结束壳进程；`lsp://exit` 由读线程补发 | `lsp.rs:505` |
-| `lsp_reap` | — | `()` | 回收上一次页面遗留的全部会话，不报错 | `lsp.rs:532` |
-| `lsp_session_statuses` | `window?` | `SessionStatus[]` | 只读，实时采集：`try_lock` + `try_wait`。`running` 仅表示进程存在，不表示服务器已完成索引；锁被占用时上报 `running` 并附「本轮未采集到」；从未启动成功的条目按失败记录合成一条 `dead`，id 前缀与当前窗口不符时不列出；按 server、根排序 | `lsp.rs:544` |
-| `lsp_failed` | `id, message` | `()` | 供前端上报握手超时等情况，计入同一套退避记录，不报错 | `lsp.rs:633` |
-| `lsp_retry` | `id` | `()` | 手动重试：回收残留会话并清除失败记录，下一次 `lsp_start` 可立即重试 | `lsp.rs:639` |
-| `lsp_config_load` | — | `LspConfig` | 读取 `<app_config_dir>/lsp.json`；文件不存在时按种子生成一份，并顺带迁移同目录 `settings.json` 中的 `lsp` 段；JSON 解析失败同样回退为种子并重写文件，不报错 | `lsp_config.rs:528` |
-| `lsp_config_save` | `config` | `()` | 归一化（非法档位与空字段按种子补齐）后 `to_string_pretty` 原子写入 `lsp.json`，目录不存在时先创建 | `lsp_config.rs:534` |
-| `lsp_resolve_root` | `server, workspaceRoot, file?` | `RootHit{root,marker}` 或 null | 按配置中的 `rootMarkers` 确定真正的项目根：先从文件所在目录向上查找（不越过 `workspaceRoot`），未命中时再从 `workspaceRoot` 向下扫描 2 层，跳过 `node_modules` / `.git` / `target` / `dist` / `build` / `out` / `vendor` / `__pycache__` / `.venv`；标志表为空时直接返回 `workspaceRoot`；结果缓存 60 秒；目录不存在或未命中一律返回 null，不报错 | `lsp_detect.rs:188` |
-| `lsp_probe` | — | `LspProbeReport{config,servers[]}` | 逐项探测是否已安装：进程 PATH 加几个常用安装位置（`%APPDATA%\npm`、`WindowsApps`、`~/.cargo/bin`、`~/go/bin`、`/usr/local/bin`、`/opt/homebrew/bin` 等），按 `PATHEXT` 构造候选并补充 `.ps1`，rust-analyzer 额外执行一次 `--version` 以排除占位垫片；单次结果缓存 10 秒。只把「启用外部档但本机未安装」的档位回退为 `off`（`builtin` 使用 Monaco 自带语义，与是否安装无关，不做调整），安装完成后不自动启用；确有改动才写回 `lsp.json`（无改动不落盘），校正后的配置随报告带回；不报错 | `lsp_probe.rs:253` |
-| `lsp_install` | `server` | `InstallResult{command,output,exitCode}` | 使用系统 shell 执行配置中的 `installCommand`（Windows `%COMSPEC% /D /C`，其余 `/bin/sh -c`），不设超时（全局安装通常需要数分钟）；输出只保留尾部 32 KiB。该项不存在回 `LSP_NO_SERVER`，未配置安装命令回 `LSP_NO_INSTALL`，shell 无法启动回 `LSP_INSTALL_SPAWN` | `lsp_probe.rs:259` |
+| `lsp_start` | `window, server, root, program, args` | `String`（会话 id） | 启动进程（三路管道、非 PTY）与两条读线程；启动前先按配置扫描空闲会话与总数上限；身份已在表内时直接返回原 id，不重复启动；同一身份正在启动时后到的请求等待其结果（条件变量，不重复 spawn）。找不到可执行文件返回 `LSP_NOT_FOUND`，spawn 失败返回 `LSP_SPAWN`，管道未建立返回 `LSP_IO`；退避期内返回 `LSP_START_BACKOFF`（剩余等待毫秒数、上次失败原因），连续失败超过 2 次返回 `LSP_START_LIMIT`。发送 `lsp://message{id,body}`、`lsp://log{id,text}`、`lsp://exit{id,code}` | `lsp.rs:341` |
+| `lsp_write` | `id, body` | `()` | 补齐 `Content-Length` 头（按字节数）后写入 stdin，同时将该会话的「最后使用时间」更新到当前时刻；会话已回收时返回 `LSP_GONE` | `lsp.rs:616` |
+| `lsp_stop` | `id` | `()` | 先执行 `taskkill /F /T /PID` 终止整棵进程树，再结束壳进程；`lsp://exit` 由读线程补发 | `lsp.rs:637` |
+| `lsp_reap` | — | `()` | 回收上一次页面遗留的全部会话，不报错 | `lsp.rs:671` |
+| `lsp_session_statuses` | `window?` | `SessionStatus[]` | 只读，实时采集：`try_lock` + `try_wait`。`running` 仅表示进程存在，不表示服务器已完成索引；锁被占用时上报 `running` 并附「本轮未采集到」；从未启动成功的条目按失败记录合成一条 `dead`，id 前缀与当前窗口不符时不列出；按 server、根排序 | `lsp.rs:698` |
+| `lsp_failed` | `id, message` | `()` | 供前端上报握手超时等情况，计入同一套退避记录，不报错 | `lsp.rs:801` |
+| `lsp_retry` | `id` | `()` | 手动重试：回收残留会话并清除失败记录，下一次 `lsp_start` 可立即重试 | `lsp.rs:811` |
+| `lsp_config_load` | — | `LspConfig` | 读取 `<app_config_dir>/lsp.json`；文件不存在时按种子生成一份，并顺带迁移同目录 `settings.json` 中的 `lsp` 段；JSON 解析失败同样回退为种子并重写文件，不报错 | `lsp_config.rs:576` |
+| `lsp_config_save` | `config` | `()` | 归一化（非法档位与空字段按种子补齐）后 `to_string_pretty` 原子写入 `lsp.json`，目录不存在时先创建 | `lsp_config.rs:582` |
+| `lsp_resolve_root` | `server, workspaceRoot, file?` | `RootHit{root,marker}` 或 null | 按配置中的 `rootMarkers` 确定真正的项目根：先从文件所在目录向上查找（不越过 `workspaceRoot`），未命中时再从 `workspaceRoot` 向下扫描 2 层，跳过 `node_modules` / `.git` / `target` / `dist` / `build` / `out` / `vendor` / `__pycache__` / `.venv`；标志表为空时直接返回 `workspaceRoot`；结果缓存 60 秒；目录不存在或未命中一律返回 null，不报错 | `lsp_detect.rs:215` |
+| `lsp_probe` | — | `LspProbeReport{config,servers[]}` | 逐项探测是否已安装：进程 PATH 加几个常用安装位置（`%APPDATA%\npm`、`WindowsApps`、`~/.cargo/bin`、`~/go/bin`、`/usr/local/bin`、`/opt/homebrew/bin` 等），按 `PATHEXT` 构造候选并补充 `.ps1`，rust-analyzer 额外执行一次 `--version` 以排除占位垫片；单次结果缓存 10 秒。只把「启用外部档但本机未安装」的档位回退为 `off`（`builtin` 使用 Monaco 自带语义，与是否安装无关，不做调整），安装完成后不自动启用；确有改动才写回 `lsp.json`（无改动不落盘），校正后的配置随报告带回；不报错 | `lsp_probe.rs:310` |
+| `lsp_install` | `server` | `InstallResult{command,output,exitCode}` | 使用系统 shell 执行配置中的 `installCommand`（Windows `%COMSPEC% /D /C`，其余 `/bin/sh -c`），不设超时（全局安装通常需要数分钟）；输出只保留尾部 32 KiB。该项不存在回 `LSP_NO_SERVER`，未配置安装命令回 `LSP_NO_INSTALL`，shell 无法启动回 `LSP_INSTALL_SPAWN` | `lsp_probe.rs:316` |
 
 ## 设置与系统（7）
 
 | 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
 | --- | --- | --- | --- | --- |
-| `settings_load` | — | `Settings` | 文件缺失或 JSON 坏都静默退回默认值，不报错（读宽容，只为应用起得来；写的那条路严格，见 `settings_save`） | `settings.rs:322` |
-| `settings_save` | `patch` | `Settings` | 把这份 JSON Merge Patch（RFC 7396）合并进 `<app_config_dir>/settings.json` 现有内容：只覆盖出现的键，读不懂的旧段落原样留着；底稿读不出来就报错，不拿空对象覆盖。合并结果先按结构校验，再 `to_string_pretty` 经 `write_atomic` 原子写（先 `.tmp` 再改名），进程内用 `SETTINGS_LOCK` 串起读-合并-写。只在本次合并把 AI 助手从开变成关时先 `stop_for_disable`。返回合并后的全量设置，调用方跟着它走 | `settings.rs:377` |
-| `history_load` | — | `History` | 读 `<app_config_dir>/history.json`；文件不存在时从同目录 `settings.json` 迁移那四项并立刻落盘；JSON 坏同样退回空表并重写，不报错 | `history.rs:101` |
+| `settings_load` | — | `Settings` | 文件缺失或 JSON 坏都静默退回默认值，不报错（读宽容，只为应用起得来；写的那条路严格，见 `settings_save`） | `settings.rs:330` |
+| `settings_save` | `patch` | `Settings` | 把这份 JSON Merge Patch（RFC 7396）合并进 `<app_config_dir>/settings.json` 现有内容：只覆盖出现的键，读不懂的旧段落原样留着；底稿读不出来就报错，不拿空对象覆盖。合并结果先按结构校验，再 `to_string_pretty` 经 `write_atomic` 原子写（先 `.tmp` 再改名），进程内用 `SETTINGS_LOCK` 串起读-合并-写。只在本次合并把 AI 助手从开变成关时先 `stop_for_disable`。返回合并后的全量设置，调用方跟着它走 | `settings.rs:384` |
+| `history_load` | — | `History` | 读 `<app_config_dir>/history.json`；文件不存在时从同目录 `settings.json` 迁移那四项并立刻落盘；JSON 坏同样退回空表并重写，不报错 | `history.rs:111` |
 | `history_save` | `history` | `()` | 整份 `to_string_pretty` 经 `write_atomic` 写 `history.json`，目录不存在先建 | `history.rs:107` |
 | `tray_labels` | `show, quit` | `()` | 改托盘两项文字；菜单是系统画的 | `tray.rs:69` |
 | `app_exit` | — | `()` | 清看门狗标志后 `app.exit(0)`；由前端存完盘调用 | `tray.rs:123` |
@@ -175,7 +176,7 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 | 文件 | 内容 |
 | --- | --- |
 | `src-tauri/src/lib.rs` | 注册表全表 `:32-125`；`fs` 段 `:33-47`（两条搜索命令 `:44-45`）、`watch` 段 `:48-49`、`git` 段 `:50-95`、`term` / `proc` / `run` 段 `:96-107`、`lsp` / `lsp_config` / `lsp_detect` / `lsp_probe` 段 `:108-119`、`settings` / `tray` / `sys` 段 `:120-124`。Tauri 的命令宏不穿 `pub use`，那四条 run 命令按 `run::detect::…` / `run::store::…` 全路径注册 |
-| `src-tauri/src/fs/mod.rs` | `EDITOR_CEILING` 8 MiB `:30`、`read_file` 的 BINARY / NOT_UTF8 分支 `:211-219`、`copy_tree` `:288-302`、`move_entry` 的跨盘那段 `:315-326`、`fs_allow_asset` 的递归授权 `:372-377` |
+| `src-tauri/src/fs/mod.rs` | `EDITOR_CEILING` 8 MiB `:50`、`read_file` 与编码判定 `:271-275`、`create_file_impl` 的 `create_new` `:487`、`copy_tree` `:543`、`move_entry_impl` 的跨盘那段 `:587`、`delete_entry` 的回收站与降级 `:609-672`、`fs_allow_asset` 的递归授权 `:809` |
 | `src-tauri/src/fs/search.rs` | 阈值常量 `:15-32`（`SCAN_CAP` 200_000、`MAX_DEPTH` 24、`TEXT_SIZE_CEILING` 20 MiB、`SNIFF_BYTES` 4096、`DEFAULT_PAGE` 100、`MAX_LIMIT` 5000、`MATCH_CAP` 2000、`SNIPPET_CHARS` 240）、剪掉的目录名 `:34-47`（含 `dist`）、`score_name` 四档 `:79-99`、`page_limit` `:130-136`、`find_files_at` 的排序与截断 `:179-193`、`TextOptions` `:211-224`、`build_matcher` 的 `BAD_REGEX` `:352-365`、`wildcard` `:368-394`、`snippet` `:419-433`、`skipped` 的四类 `:481-500`、单测 `scan_prunes_build_directories` `:705-727` |
 | `src-tauri/src/git/mod.rs` | `run_git` 的三条前缀参数 `:152-166`、`fail` 先 stderr 后 stdout `:172-178`、`relative_path` 与 `NOT_IN_REPO` `:203-221`、`remote_op` 回 stderr `:485-496`、`valid_branch_name` `:702-711`、`parse_refs` 的 `<远端>/HEAD` `:572-606`、`git_ignored` 的 `!! ` 行 `:694-699`、`GitLogQuery` `:1177-1194`、`bound` 的 `@<秒>` `:1197-1203`、`git_log` 的参数拼装与空仓库判断 `:1205-1261`、`valid_rev` `:1340-1347`、`valid_relative` `:1506-1512` |
 | `src-tauri/src/term.rs` | `shell_probe` 的探测顺序 `:91-130`、`resolve_shell` `:145-158`、`term_open` `:161-217`、`read_loop` `:220-248`、`term_reap` `:293-299` |
@@ -183,17 +184,17 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 | `src-tauri/src/run/mod.rs` | `RunKind` `:14-63`（二十四族：npm / maven / gradle / spring / java / go / wails / rust / python / dotnet / php / ruby / dart / scala / elixir / cpp / zig / deno / clojure / haskell / julia / lua / swift / shell）、`EnvVar` `:68`、`HelperFile` `:77`、`Unavailable` `:85`、`RunConfiguration` `:95` |
 | `src-tauri/src/run/detect.rs` | 边界常量 `:47-68`、`RunDetectOutcome` `:74-77`、`Tools` `:83-90`、`MainClass`（带装订线落点）`:106-117`、`npm_client` 的锁文件认客户端 `:152`、行号三件套 `line_at :176` / `line_of :186` / `object_key_lines :201`（数 JSON 里每个键主张在哪一行）、`has_main_method :375`、`jvm_markers :390`、`is_go_main_package :407`、`is_python_entry :418`、`program_missing`（非 JVM 那几族的缺工具判定）`:427`、`python_program :438`、`toml_tables :449`、`run_tools`（`async`，命令体经 `offload::block_value`）`:533`、`tools_cached :541`、`tool` 的 wrapper 优先与缺工具 `:616-648`、`location` 的相对参数 `:649`、npm `:661`、maven `:728`、gradle `:815`、`bare_java :913`、主类扫描 `:957`、`java_exec_script :1033`、golang（含 `wails.json` 那条早退）`:1062`、`go_main_packages :1124`、`marker_at`（一个源文件里那条模式所在的行）`:1191`、rust `:1203`、python `:1286`、`python_marker :1380`、`python_package_entry :1387`、`bare_python :1408`、dotnet `:1431`、`push_simple`（长尾那十几族共用的一口）`:1485`、php `:1505`、ruby `:1559`、dart `:1600`、scala `:1616`、elixir `:1623`、native（CMake 与 Makefile）`:1652`、zig `:1686`、deno `:1705`、clojure `:1750`、haskell `:1768`、julia `:1785`、lua `:1805`、swift `:1819`、`source_where :1869`、`bare_shell :1906`、`kind_rank :1932`、`run_detect`（`async`，命令体经 `offload::block`）`:1963`、`run_detect_impl`（真正干活的那层，单测直接调它）`:1967-2015` |
 | `src-tauri/src/run/store.rs` | `ProjectRunState` `:24-33`、`run_state_load` `:72`、`keepable` `:81`、`run_state_save` `:87-117` |
-| `src-tauri/src/lsp.rs` | 会话表与 `Session`（含 `last_used_ms`）`:23-41`、失败记录 `Failure` 与退避 `RESTART_LIMIT` 2、`backoff` 的 `5s*2^n` 封顶 300 秒 `:51-72`、`SessionStatus` `:110-126`、`parse_args` 的双引号规则 `:142-170`、`build_command` 的 `.cmd` / `.bat` 走 `cmd /C` `:172-186`、`session_id` 三段拼接 `:188`、起锁（`begin_starting` / `wait_for_starting`）`:196-224`、`backoff_error` `:226-244`、`sweep` 的空闲回收与 LRU 淘汰 `:263-299`、`lsp_start` `:307-331`、`spawn_session` 的 PATH 覆盖与 `current_dir` `:334-397`、`read_loop` 的 `Content-Length` 解帧 `:400-433`、`stderr_loop` 按行 `:436-454`、`take_message` `:460`、`stop_one` 的 `taskkill /F /T` `:510-529`、`lsp_session_statuses` 的现采与合成 `:544-629`、单测 `:665` 起 |
-| `src-tauri/src/lsp_config.rs` | `LspServerConfig` / `LspConfig` `:18-58`、`allowed_modes` `:60`、种子表 `seed` `:105-324`、`DEFAULT_MAX_SESSIONS` 5 与 `DEFAULT_IDLE_TIMEOUT_MIN` 30 `:326-328`、`effective_program` 的 path 优先 `:332`、`normalize` `:354`、`clamp` 的档位与空字段兜底 `:384-415`、`migrate_from_settings` `:427`、`load_in` `:463`、`save_in` `:485`、`load` / `save` 两个 `AppHandle` 壳 `:494-505`、探测结构 `LspServerProbe` / `LspProbeReport` `:507-524`、两条命令 `:527-536`、单测 10 条 `:539` 起 |
-| `src-tauri/src/lsp_probe.rs` | `PROBE_TTL` 10 秒 `:19`、`OUTPUT_TAIL` 32 KiB `:22`、`candidates` 的 `PATHEXT` 与补 `.ps1` `:52-78`、`search_dirs` 的补目录 `:84-128`、`augmented_path` `:131`、`is_functional` 的 rust-analyzer `--version` `:143-168`、`resolve_command` 与缓存 `:170-188`、`run_install` 的 shell 选择与按字符取尾 `:212-246`、`probe_and_reconcile` 的单向校正 `:276`、单测 6 条 `:302` 起 |
-| `src-tauri/src/lsp_detect.rs` | `CACHE_TTL` 60 秒 `:15`、`MAX_DEPTH` 2 `:17`、`SKIP_DIRS` 九项 `:19`、`marker_matches`（`*` 前缀名）`:39`、`hit_in` `:50`、`search_up` `:87`、`search_down` `:103`、`resolve` 的标志表为空原样回根 `:140`、`cached` `:162`、命令壳 `:188`、单测 7 条 `:208` 起 |
-| `src-tauri/src/settings.rs` | `read` `:312-317`、`settings_load` `:322`、`read_document` `:332`、`apply_patch` `:352`、`settings_save` `:377`（按字段合并落盘；`lsp` 段已搬去 `lsp.json`，历史四项已搬去 `history.json`，旧文件里那些键读到就原样留着） |
-| `src-tauri/src/history.rs` | `History` `:25-33`、`migrate_from_settings` `:38-63`、`load_in` `:71-81`、`save_in` `:84-89`、`read` `:92-97`、`history_load` / `history_save` `:101-117`、单测 4 条 `:119` 起 |
+| `src-tauri/src/lsp.rs` | 缓冲上限常量、会话表与 `Session`（含 `last_used_ms`）、失败记录 `Failure` 与 `RESTART_LIMIT` 2、`backoff` 的 `5s*2^n` 封顶 300 秒 `:84`、`SessionStatus` `:139`、`parse_args` 的双引号规则 `:168`、`build_command` 的 `.cmd` / `.bat` 走 `cmd /C` `:198`、`session_id` 三段拼接 `:222`、起锁 `:241`、`backoff_error` `:260`、`sweep` 的空闲回收与 LRU 淘汰 `:297`、`spawn_session`（含 `env_remove` 那两条调试器变量）`:382`、`read_loop` 的 `Content-Length` 解帧 `:459`、`stderr_loop`、`take_message` `:575`、`stop_one` 的 `taskkill /F /T`、`lsp_session_statuses` 的现采与合成 `:698`、单测。模块级设计与取舍见 [../features/lsp-language-servers/](../features/lsp-language-servers/) |
+| `src-tauri/src/lsp_config.rs` | `LspServerConfig` / `LspConfig`、`allowed_modes`、种子表、`DEFAULT_MAX_SESSIONS` `:354` 与 `DEFAULT_IDLE_TIMEOUT_MIN` `:356`、`default_config` `:371`、`effective_program` 的 path 优先、`normalize`、`clamp`、`migrate_from_settings`、`load_in` `:491`、`save_in` `:529`、探测结构 `LspServerProbe` / `LspProbeReport`、两条命令 `:576` 与 `:582`、单测 |
+| `src-tauri/src/lsp_probe.rs` | `PROBE_TTL` 10 秒 `:21`、`OUTPUT_TAIL` 32 KiB `:24`、`candidates` 的 `PATHEXT` 与补 `.ps1`、`search_dirs` 的补目录、`augmented_path` `:150`、`is_functional` 的 rust-analyzer `--version`、`resolve_command` 与缓存 `:190`、`run_install` 的 shell 选择与按字符取尾、`probe_and_reconcile` 的单向校正、两条命令 `:310` 与 `:316`、单测 |
+| `src-tauri/src/lsp_detect.rs` | `CACHE_TTL` 60 秒 `:16`、`MISS_TTL` 5 秒 `:19`、`CACHE_LIMIT` 512 `:21`、`MAX_DEPTH` 2 `:23`、`SKIP_DIRS` 九项 `:25`、`marker_matches`（`*` 前缀名）、`hit_in`、`search_up`、`search_down`、`resolve` 的标志表为空原样回根 `:146`、`cached`、命令壳 `:215`、单测 |
+| `src-tauri/src/settings.rs` | `read` `:320`、`settings_load` `:330`、`read_document` `:339`、`apply_patch` `:359`、`settings_save` `:384`（按字段合并落盘；`lsp` 段已搬去 `lsp.json`，历史四项已搬去 `history.json`，旧文件里那些键读到就原样留着） |
+| `src-tauri/src/history.rs` | `History` 字段（含 `openFolders` / `activeFolder`）、`migrate_from_settings`、`load_in` / `save_in`、`read`、`history_load` `:111` / `history_save` `:117`、单测（缺字段回落默认、多根字段往返） |
 | `src-tauri/src/tray.rs` | `tray_labels` `:68-76`、`app_exit` `:122-126` |
 | `src-tauri/src/ai_runtime/checkpoint.rs` | 上限 `MAX_FILE_BYTES` 8 MiB 与 `MAX_FILES` 32 `:16-18`、`normalize_paths` `:35`、`take_snapshot` `:54`、`record` `:88`、`restore` `:98`、`append_event` `:127`、链式恢复测试 `:181` |
 | `src-tauri/src/ai_cli/settings.rs` | `hooks_path`、`read_hooks_at`、`save_hooks_at`、`ai_cli_hooks_read` / `ai_cli_hooks_save` / `ai_cli_codex_hooks_status` |
 | `src-tauri/src/sys.rs` | `hide_console` 的 `CREATE_NO_WINDOW` `:5-11`、`write_atomic` 的 tmp+rename `:25-33`、`which_program` 的 Windows 扩展名候选 `:65-76`、`capture_text`（stdout 空了取 stderr）`:80-101`、`group` 的 ppid 走树与按程序归并 `:154-212`、`win::private_set_of` `:305-316`、`win::snapshot` `:319-341`、`sys_memory` `:369-376`、单测 4 条 `:378` 起 |
-| `src-tauri/src/watch.rs` | `fs_watch_start` `:83-144`、`fs_watch_stop` `:146-169`、`SETTLE` / `BATCH_CAP` `:19-22` |
+| `src-tauri/src/watch.rs` | `SETTLE` 150ms `:20`、`MAX_WAIT` 1s `:24`、`BATCH_CAP` 256 `:28`、`FsChange{root,paths}` `:33-36`、`WatchSlot` `:45`、`ignorable_git_internal` `:89`、`fs_watch_start` `:174-264`、`fs_watch_stop` `:261-283` |
 | `src/lib/fs.ts` | `findFiles` / `searchText` `:226-233`、搜索结果的 TS 镜像 `:147-223` |
 | `src/lib/lsp.ts` | 会话状态、探测报告、安装结果、根命中的 TS 镜像 `:26-68`、十二条命令的封装 `:71-132`（`lspStart` 收 `window` / `server` / `root` / `program` / `args` `:71`） |
 | `src/lib/lspConfig.ts` | `LspMode` 与两份结构的镜像 `:12-46`、`modesFor` `:49`、`programOf` 的 path 优先 `:54`、`serverEntries` / `serverForLanguage` `:59-70`、读写两条封装 `:72-83` |

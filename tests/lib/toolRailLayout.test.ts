@@ -41,7 +41,7 @@ describe("活动栏布局", () => {
     });
     expect(layout.left.top).toEqual(["git", "explorer"]);
     expect(layout.left.bottom).toEqual(["run", "terminal", "log"]);
-    expect(layout.right.top).toEqual(["maven", "ai"]);
+    expect(layout.right.top).toEqual(["maven", "ai", "browser"]);
   });
 
   it("使用独立存储键往返布局", () => {
@@ -57,6 +57,19 @@ describe("活动栏布局", () => {
     }));
     const layout = loadToolRailLayout();
     expect(layout.left.top).toEqual(["explorer", "git"]);
-    expect(layout.right.top).toEqual(["ai", "maven"]);
+    expect(layout.right.top).toEqual(["ai", "maven", "browser"]);
+  });
+
+  it("已有布局补入右侧浏览器，并保留用户之后的移栏选择", () => {
+    memory.set("forge:tool-rail-layout:v2", JSON.stringify({
+      left: { top: ["explorer", "git"], bottom: ["terminal", "run", "log"] },
+      right: { top: ["ai", "maven"], bottom: ["notifications"] },
+    }));
+    const layout = loadToolRailLayout();
+    expect(layout.right.top).toContain("browser");
+    expect(layout.left.top).not.toContain("browser");
+    saveToolRailLayout(moveToolRail(layout, "browser", "left"));
+    expect(loadToolRailLayout().left.top).toContain("browser");
+    expect(loadToolRailLayout().right.top).not.toContain("browser");
   });
 });

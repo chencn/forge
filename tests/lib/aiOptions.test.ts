@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { seedAiSessionOptions } from "../../src/lib/aiDraftSession";
 import { loadAiOptions, readAiOptions, saveAiOptions, resolveAiModel } from "../../src/lib/aiOptions";
 import { aiSessionStorageKey } from "../../src/lib/aiSessions";
+import { loadAdditionalDirs, saveAdditionalDirs } from "../../src/lib/aiDrafts";
 
 beforeEach(() => {
   const values = new Map<string, string>();
@@ -53,10 +54,13 @@ describe("AI option persistence", () => {
     const draftKey = "forge:ai-draft-options:v1:codex";
     const sessionKey = `${aiSessionStorageKey(root)}:options:new-session`;
     saveAiOptions(draftKey, "codex", { model: "draft-model", mode: "plan", permission: "read" });
+    saveAdditionalDirs(root, "draft", ["C:/Temp/forge-context"]);
+    saveAdditionalDirs("D:/other", "draft", ["C:/Temp/other-context"]);
     // 草稿仍开着时，另一个会话修改配置；全局默认会变化，但不能污染这次草稿。
     saveAiOptions("other-session", "codex", { model: "other-model", mode: "default", permission: "full" });
     seedAiSessionOptions(root, "new-session", "codex");
     expect(loadAiOptions(sessionKey, "codex")).toMatchObject({ model: "draft-model", mode: "plan", permission: "read" });
+    expect(loadAdditionalDirs(root, "new-session")).toEqual(["C:/Temp/forge-context"]);
   });
   it("remembers the selected mode as a choice and preselects it on the next open", () => {
     saveAiOptions("plan", "claude", { mode: "plan" });

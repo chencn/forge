@@ -10,7 +10,9 @@ import {
   validateAiSessionIdDelivery,
   watchAiInputDelivery,
 } from "../../src/lib/aiInputBridge";
-import { flushDraft, loadAdditionalDirs, loadDraft, saveDraft } from "../../src/lib/aiDrafts";
+import { flushDraft, loadAdditionalDirs, loadDraft, loadDraftImages, saveDraft, saveDraftImages, subscribeDraftImages } from "../../src/lib/aiDrafts";
+import { aiSessionStorageKey } from "../../src/lib/aiSessions";
+import { browserElementMessage } from "../../src/lib/browser";
 
 const h = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
@@ -53,10 +55,58 @@ describe("AI 输入投递路由", () => {
     expect(h.invoke).toHaveBeenCalledWith("ai_runtime_file_line_count", { path: "D:/project/a.ts" });
     expect(loadDraft(ROOT, target.id)).toBe("D:/project/a.ts\n第 5 行到第 20 行");
     const receive = vi.fn();
-    const stop = watchAiInputDelivery(target.id, receive);
+    const stop = watchAiInputDelivery(ROOT, target.id, receive);
     await Promise.resolve();
     stop();
-    expect(receive).toHaveBeenCalledWith({ sessionId: target.id, text: loadDraft(ROOT, target.id), additionalDir: undefined });
+    expect(receive).toHaveBeenCalledWith({ workspaceKey: aiSessionStorageKey(ROOT), sessionId: target.id, text: loadDraft(ROOT, target.id), additionalDir: undefined });
+  });
+
+  it("浏览器标记完整追加到已有问题，跨项目同名草稿不接收投递", async () => {
+    const element = { selectionId: 1, tabId: "page-one", epoch: 2, url: "http://localhost:5173/", tag: "button", selector: "#submit", role: "button", name: "提交", text: "提交", bounds: { x: 10, y: 20, width: 80, height: 30 }, styles: { display: "flex" } };
+    const target = { id: "draft", title: "新对话" };
+    const other = vi.fn();
+    const receive = vi.fn();
+    const stopOther = watchAiInputDelivery("D:/other", target.id, other);
+    saveDraft(ROOT, target.id, "已有问题");
+    await deliverAiInput(ROOT, target, { kind: "text", text: browserElementMessage(element, "  修复按钮对齐  ") });
+    const stop = watchAiInputDelivery(ROOT, target.id, receive);
+    await Promise.resolve();
+    stop(); stopOther();
+    expect(other).not.toHaveBeenCalled();
+    expect(receive).toHaveBeenCalledOnce();
+    const text = receive.mock.calls[0][0].text as string;
+    expect(text.startsWith("已有问题\n\n")).toBe(true);
+    expect(JSON.parse(text.slice("已有问题\n\n".length))).toEqual({ source: "Forge 浏览器元素标记", problem: "修复按钮对齐", element });
+    expect(loadDraft("D:/other", target.id)).toBe("");
+    expect(JSON.parse(browserElementMessage(element, "修复按钮", false))).toEqual({ source: "Forge 浏览器元素标记", problem: "修复按钮", url: element.url });
+    // 用户主动编辑的样式属于要求，截图模式也必须保留修改前后的值。
+    const styled = { ...element, styleChanges: { color: { before: "rgb(0, 0, 0)", after: "rgb(255, 0, 0)" } } };
+    expect(JSON.parse(browserElementMessage(styled, "按预览修改", false))).toEqual({ source: "Forge 浏览器元素标记", problem: "按预览修改", url: element.url, styleChanges: styled.styleChanges });
+    expect(JSON.parse(browserElementMessage(styled, "按预览修改")).element).toEqual(styled);
+  });
+
+  it.each([true, false])("未填写评论也能向当前草稿投递元素，附带代码：%s", async (includeCode) => {
+    const element = { selectionId: 1, tabId: "page-one", epoch: 2, url: "http://localhost:5173/", tag: "button", selector: "#submit", role: "button", name: "提交", text: "提交", bounds: { x: 10, y: 20, width: 80, height: 30 }, styles: {} };
+    const target = { id: "draft", title: "新对话" };
+    // 元素本身就是有效上下文，空白评论不能阻断公开投递链路。
+    await deliverAiInput(ROOT, target, { kind: "text", text: browserElementMessage(element, " \n ", includeCode) });
+    expect(JSON.parse(loadDraft(ROOT, target.id))).toEqual({ source: "Forge 浏览器元素标记", problem: "", ...(includeCode ? { element } : { url: element.url }) });
+  });
+
+  it("草稿组件快速卸载后旧回放不执行，下次挂载仍能接收", async () => {
+    const target = { id: "rapid-draft", title: "新对话" };
+    await deliverAiInput(ROOT, target, { kind: "text", text: "元素标记" });
+    const old = vi.fn();
+    const stopOld = watchAiInputDelivery(ROOT, target.id, old);
+    stopOld();
+    await Promise.resolve();
+    expect(old).not.toHaveBeenCalled();
+    const latest = vi.fn();
+    const stop = watchAiInputDelivery(ROOT, target.id, latest);
+    await Promise.resolve();
+    stop();
+    expect(latest).toHaveBeenCalledOnce();
+    expect(latest.mock.calls[0][0].text).toBe("元素标记");
   });
 
   it("生成长文本附件期间继续输入，完成后追加到最新草稿", async () => {
@@ -82,6 +132,76 @@ describe("AI 输入投递路由", () => {
     await expect(deliverAiInput(ROOT, target, { kind: "text", text: "x".repeat(13_000) })).rejects.toThrow("磁盘写入失败");
     expect(loadDraft(ROOT, target.id)).toBe("保留原问题");
     expect(loadAdditionalDirs(ROOT, target.id)).toEqual([]);
+  });
+
+  it("截图追加当前会话图片，保留草稿和原附件，并通知已挂载的输入框", async () => {
+    const target = { id: "screenshot-target", title: "当前会话" };
+    const existing = { path: "C:/Cache/old.png", name: "原图片.png" };
+    saveDraft(ROOT, target.id, "继续修复这个页面", true);
+    saveDraftImages(ROOT, target.id, [existing]);
+    const receive = vi.fn();
+    const changed = vi.fn();
+    const other = vi.fn();
+    const stop = watchAiInputDelivery(ROOT, target.id, receive);
+    const stopImages = subscribeDraftImages(ROOT, target.id, changed);
+    const stopOther = watchAiInputDelivery("D:/other", target.id, other);
+    h.invoke.mockResolvedValueOnce({ maxImages: 8 }).mockResolvedValueOnce({ path: "C:/Cache/capture.png" });
+    await deliverAiInput(ROOT, target, { kind: "image", dataUrl: "data:image/png;base64,PNG", name: "截图.png" });
+    stop(); stopImages(); stopOther();
+    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_save_pasted_image", { dataUrl: "data:image/png;base64,PNG" });
+    expect(loadDraftImages(ROOT, target.id)).toEqual([existing, { path: "C:/Cache/capture.png", name: "截图.png" }]);
+    expect(loadDraft(ROOT, target.id)).toBe("继续修复这个页面");
+    expect(changed).toHaveBeenCalledOnce();
+    expect(receive).toHaveBeenCalledWith(expect.objectContaining({ sessionId: target.id, text: "继续修复这个页面" }));
+    expect(other).not.toHaveBeenCalled();
+    expect(loadDraftImages("D:/other", target.id)).toEqual([]);
+  });
+
+  it("会话图片已满时拒绝保存截图，写盘失败时保留附件和草稿", async () => {
+    const target = { id: "full-images", title: "当前会话" };
+    const existing = [{ path: "C:/Cache/old.png", name: "原图片.png" }];
+    saveDraft(ROOT, target.id, "原问题", true);
+    saveDraftImages(ROOT, target.id, existing);
+    h.invoke.mockResolvedValueOnce({ maxImages: 1 });
+    const payload = { kind: "image" as const, dataUrl: "data:image/png;base64,PNG", name: "截图.png" };
+    await expect(deliverAiInput(ROOT, target, payload)).rejects.toThrow("最多添加 1 张图片");
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    h.invoke.mockResolvedValueOnce({ maxImages: 8 }).mockRejectedValueOnce(new Error("磁盘写入失败"));
+    await expect(deliverAiInput(ROOT, target, payload)).rejects.toThrow("磁盘写入失败");
+    expect(loadDraft(ROOT, target.id)).toBe("原问题");
+    expect(loadDraftImages(ROOT, target.id)).toEqual(existing);
+  });
+
+  it("元素截图与问题一次投递，图片失败时不追加文字", async () => {
+    const target = { id: "element-shot", title: "当前会话" };
+    saveDraft(ROOT, target.id, "原问题", true);
+    const receive = vi.fn();
+    const stop = watchAiInputDelivery(ROOT, target.id, receive);
+    const payload = { kind: "image" as const, dataUrl: "data:image/png;base64,PNG", name: "元素.png", text: "修复这个元素" };
+    h.invoke.mockResolvedValueOnce({ maxImages: 8 }).mockRejectedValueOnce(new Error("图片写入失败"));
+    await expect(deliverAiInput(ROOT, target, payload)).rejects.toThrow("图片写入失败");
+    expect(loadDraft(ROOT, target.id)).toBe("原问题");
+    expect(receive).not.toHaveBeenCalled();
+    h.invoke.mockResolvedValueOnce({ maxImages: 8 }).mockResolvedValueOnce({ path: "C:/Cache/element.png" });
+    await deliverAiInput(ROOT, target, payload);
+    expect(loadDraft(ROOT, target.id)).toBe("原问题\n\n修复这个元素");
+    expect(loadDraftImages(ROOT, target.id)).toEqual([{ path: "C:/Cache/element.png", name: "元素.png" }]);
+    expect(receive).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it("截图保存期间新增附件不会被覆盖，超过上限时清理未投递的图片", async () => {
+    const target = { id: "concurrent-images", title: "当前会话" };
+    let finish!: (saved: { path: string }) => void;
+    h.invoke.mockResolvedValueOnce({ maxImages: 1 }).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; })).mockResolvedValue(undefined);
+    const pending = deliverAiInput(ROOT, target, { kind: "image", dataUrl: "data:image/png;base64,PNG", name: "截图.png" });
+    await Promise.resolve();
+    const pasted = [{ path: "C:/Cache/pasted.png", name: "粘贴图片.png" }];
+    saveDraftImages(ROOT, target.id, pasted);
+    finish({ path: "C:/Cache/capture.png" });
+    await expect(pending).rejects.toThrow("最多添加 1 张图片");
+    expect(loadDraftImages(ROOT, target.id)).toEqual(pasted);
+    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_delete_image", { path: "C:/Cache/capture.png" });
   });
 });
 

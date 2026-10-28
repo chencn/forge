@@ -3,7 +3,8 @@ import { SendHorizontal } from "lucide-react";
 import type { AiProvider } from "./aiCli";
 import type { TranslationKey } from "../i18n/lang/zh";
 import type { MenuItem } from "../components/ContextMenu";
-import { loadAdditionalDirs, loadDraft, saveAdditionalDirs, saveDraft } from "./aiDrafts";
+import { loadAdditionalDirs, loadDraft, loadDraftImages, saveAdditionalDirs, saveDraft, updateDraftImages } from "./aiDrafts";
+import { aiSessionStorageKey } from "./aiSessions";
 
 export interface AiInputTarget {
   id: string;
@@ -140,9 +141,11 @@ export function buildSendSessionIdMenuItem<T extends AiOngoingTargetCandidate>({
 
 export type AiInputPayload =
   | { kind: "text"; text: string; source?: string }
+  | { kind: "image"; dataUrl: string; name: string; text?: string }
   | { kind: "file"; path: string; startLine: number; endLine?: number };
 
 export interface AiInputDelivery {
+  workspaceKey: string;
   sessionId: string;
   text: string;
   additionalDir?: string;
@@ -180,7 +183,7 @@ export function appendAiInputText(current: string, incoming: string): string {
   return current ? `${current}${current.endsWith("\n") ? "\n" : "\n\n"}${incoming}` : incoming;
 }
 
-async function prepareAiInput(payload: AiInputPayload, inlineLimit = INLINE_AI_TEXT_LIMIT): Promise<{ text: string; additionalDir?: string }> {
+async function prepareAiInput(payload: Exclude<AiInputPayload, { kind: "image" }>, inlineLimit = INLINE_AI_TEXT_LIMIT): Promise<{ text: string; additionalDir?: string }> {
   if (payload.kind === "file") {
     const endLine = payload.endLine ?? await invoke<number>("ai_runtime_file_line_count", { path: payload.path });
     return { text: formatAiFileReference(payload.path, payload.startLine, endLine) };
@@ -207,8 +210,29 @@ export async function deliverAiInput(
   payload: AiInputPayload,
 ): Promise<void> {
   const current = loadDraft(workspace, target.id);
-  // 输入框上限是 16000；已有草稿占掉的空间也要算进去，不能追加后再被浏览器截断。
-  const prepared = await prepareAiInput(payload, Math.max(0, Math.min(INLINE_AI_TEXT_LIMIT, 16_000 - current.length - 2)));
+  // 元素截图和问题先准备完再交付；附件失败不能先追加半份问题。
+  const textPayload = payload.kind === "image" ? payload.text ? { kind: "text" as const, text: payload.text } : null : payload;
+  const prepared = textPayload
+    ? await prepareAiInput(textPayload, Math.max(0, Math.min(INLINE_AI_TEXT_LIMIT, 16_000 - current.length - 2)))
+    : { text: "", additionalDir: undefined };
+  if (payload.kind === "image") {
+    const { maxImages } = await invoke<{ maxImages: number }>("ai_runtime_image_limits");
+    const checkLimit = (count: number) => {
+      if (count >= maxImages) throw new Error(`每条消息最多添加 ${maxImages} 张图片`);
+    };
+    checkLimit(loadDraftImages(workspace, target.id).length);
+    const saved = await invoke<{ path: string }>("ai_runtime_save_pasted_image", { dataUrl: payload.dataUrl });
+    try {
+      // 保存期间仍可能收到粘贴或其他截图，必须合并最新附件并再次检查上限。
+      updateDraftImages(workspace, target.id, (images) => {
+        checkLimit(images.length);
+        return [...images, { path: saved.path, name: payload.name }];
+      });
+    } catch (cause) {
+      void invoke("ai_runtime_delete_image", { path: saved.path }).catch(() => {});
+      throw cause;
+    }
+  }
   // 落盘或统计行数期间输入框仍能编辑，异步结果必须追加到最新草稿。
   const text = appendAiInputText(loadDraft(workspace, target.id), prepared.text);
   saveDraft(workspace, target.id, text);
@@ -219,25 +243,34 @@ export async function deliverAiInput(
       saveAdditionalDirs(workspace, target.id, [prepared.additionalDir, ...dirs].slice(0, 16));
     }
   }
-  const delivery = { sessionId: target.id, text, additionalDir: prepared.additionalDir };
+  const workspaceKey = aiSessionStorageKey(workspace);
+  const delivery = { workspaceKey, sessionId: target.id, text, additionalDir: prepared.additionalDir };
   // 目标标签刚被激活时组件可能还没挂载；保留一次待消费投递，避免焦点事件丢在 React 提交之前。
-  pendingDeliveries.set(target.id, delivery);
+  pendingDeliveries.set(`${workspaceKey}:${target.id}`, delivery);
   window.dispatchEvent(new CustomEvent<AiInputDelivery>(DELIVERY_EVENT, { detail: delivery }));
 }
 
-export function watchAiInputDelivery(sessionId: string, listener: (delivery: AiInputDelivery) => void): () => void {
+export function watchAiInputDelivery(workspace: string | null, sessionId: string, listener: (delivery: AiInputDelivery) => void): () => void {
+  // 新对话统一叫 draft；事件与待消费缓存必须同时按工作区隔离。
+  const workspaceKey = aiSessionStorageKey(workspace);
+  const key = `${workspaceKey}:${sessionId}`;
+  let active = true;
   const receive = (event: Event) => {
     const delivery = (event as CustomEvent<AiInputDelivery>).detail;
-    if (delivery?.sessionId === sessionId) {
-      pendingDeliveries.delete(sessionId);
+    if (delivery?.sessionId === sessionId && delivery.workspaceKey === workspaceKey) {
+      pendingDeliveries.delete(key);
       listener(delivery);
     }
   };
   window.addEventListener(DELIVERY_EVENT, receive);
-  const pending = pendingDeliveries.get(sessionId);
+  const pending = pendingDeliveries.get(key);
   if (pending) {
-    pendingDeliveries.delete(sessionId);
-    queueMicrotask(() => listener(pending));
+    // React 快速卸载或同帧又有新投递时，旧回放不能覆盖新草稿。
+    queueMicrotask(() => {
+      if (!active || pendingDeliveries.get(key) !== pending) return;
+      pendingDeliveries.delete(key);
+      listener(pending);
+    });
   }
-  return () => window.removeEventListener(DELIVERY_EVENT, receive);
+  return () => { active = false; window.removeEventListener(DELIVERY_EVENT, receive); };
 }

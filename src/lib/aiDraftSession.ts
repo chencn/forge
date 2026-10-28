@@ -1,6 +1,7 @@
 import type { AiProvider } from "./aiCli";
 import { aiSessionStorageKey } from "./aiSessions";
 import { loadAiOptions, saveAiOptions } from "./aiOptions";
+import { loadAdditionalDirs, saveAdditionalDirs } from "./aiDrafts";
 
 /**
  * 「新建会话」草稿页的前后端桥。
@@ -52,4 +53,6 @@ export function saveAiDraftProvider(root: string | null, provider: AiProvider) {
 export function seedAiSessionOptions(root: string | null, sessionId: string, provider: AiProvider) {
   const draft = loadAiOptions(aiDraftOptionsKey(provider), provider);
   saveAiOptions(`${aiSessionStorageKey(root)}:options:${sessionId}`, provider, draft);
+  // 长元素上下文会转为临时附件；首条消息必须继承草稿的附件目录授权。
+  saveAdditionalDirs(root, sessionId, loadAdditionalDirs(root, "draft"));
 }

@@ -3,7 +3,7 @@
 //! 典型反例是 `Cargo.toml` 在子目录、根目录只有 `package.json` 的工程：拿根目录当 `rootUri`，
 //! rust-analyzer 认不到 Cargo workspace，退成 detached 单文件模式，跨文件跳转失效、
 //! 类型诊断缺失、`dead_code` 误报。这一层把真正的根找出来，monorepo 里每个子根各起一条会话。
-//! 参照 `docs/plans/lsp-language-servers/README.md` 第二轮「技术栈根解析」。
+//! 参照 `docs/features/lsp-language-servers/README.md` 的「技术栈根解析」。
 
 use crate::offload::block_value;
 use serde::Serialize;

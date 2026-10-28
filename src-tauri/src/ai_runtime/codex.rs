@@ -46,6 +46,8 @@ pub struct Codex {
     /// 握手进度：0 未初始化、1 已发 initialize、2 已开线程、3 已开回合。
     /// 用它挡住乱序与重复的初始化请求。
     phase: u8,
+    /// Browser routing is appended to the effective project developer instructions.
+    browser: bool,
     /// 待答复请求：请求 id → (原始 id、方法名、参数)。答复时要按方法名决定回什么结构。
     pending: HashMap<String, (Value, String, Value)>,
     /// 是否已被中断。置位后拒绝新请求，也不再放行授权。
@@ -91,7 +93,7 @@ pub struct Codex {
     /// 完整列表之前到达的通知先缓存；探测失败或为空时整批丢弃。
     pending_mcp_status: HashMap<String, String>,
     /// 已发出的 mcpServerStatus/list 探测 id；回包同样不是握手响应。
-    mcp_probes: HashSet<u64>,
+    mcp_probes: HashMap<u64, (Vec<Value>, HashSet<String>)>,
     next_mcp_probe: u64,
     /// 已发出的 thread/goal/get 探测 id；Goal 是线程状态，恢复时不能等下一次通知。
     goal_probes: HashSet<u64>,
@@ -238,6 +240,7 @@ impl Codex {
             turn: None,
             recovery_turn: None,
             phase: 0,
+            browser: false,
             pending: HashMap::new(),
             stopped: false,
             model: None,
@@ -261,7 +264,7 @@ impl Codex {
             mcp_servers: vec![],
             mcp_ready: false,
             pending_mcp_status: HashMap::new(),
-            mcp_probes: HashSet::new(),
+            mcp_probes: HashMap::new(),
             next_mcp_probe: 2_000_000,
             goal_probes: HashSet::new(),
             next_goal_probe: 3_000_000,
@@ -281,6 +284,7 @@ impl Codex {
         self.images = images;
         self
     }
+    pub fn with_browser(mut self, enabled:bool) -> Self { self.browser=enabled; self }
     pub fn with_recovery_turn(mut self, turn: String) -> Self {
         self.recovery_turn = Some(turn);
         self
@@ -338,7 +342,7 @@ impl Codex {
     fn mcp_probe(&mut self, thread: &str) -> Value {
         let id = self.next_mcp_probe;
         self.next_mcp_probe += 1;
-        self.mcp_probes.insert(id);
+        self.mcp_probes.insert(id,(Vec::new(),HashSet::new()));
         json!({"id":id,"method":"mcpServerStatus/list","params":{"threadId":thread,"detail":"toolsAndAuthOnly"}})
     }
     fn mcp_snapshot(&self) -> Action {
@@ -933,7 +937,7 @@ impl Protocol for Codex {
             return Ok(vec![]);
         }
         // MCP 快照的回包只投事件，不参与握手状态机。CLI 说没有就是没有，不猜。
-        if self.mcp_probes.remove(&id) {
+        if let Some((mut servers,mut cursors)) = self.mcp_probes.remove(&id) {
             if message.get("error").is_some() {
                 self.mcp_ready = false;
                 self.mcp_servers.clear();
@@ -941,11 +945,20 @@ impl Protocol for Codex {
                 return Ok(vec![self.mcp_snapshot()]);
             }
             // 全量结果按权威处理：它是在同一刻问出来的，比之前收到的零散启动通知更完整。
-            let mut servers = Vec::new();
             for server in message["result"]["data"].as_array().into_iter().flatten() {
                 let Some(name) = server["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) else { continue };
                 // runtimeStatus 为 null 只说明 CLI 当下没连上或配置变了；名字仍要留，状态交给界面留空。
                 servers.push(json!({"name":name,"status":server["runtimeStatus"]}));
+            }
+            // Publish only the complete table; partial pages must not erase other servers.
+            if let Some(cursor)=message["result"]["nextCursor"].as_str() {
+                if cursors.len()>=128 || !cursors.insert(cursor.into()) {
+                    self.mcp_ready=false; self.mcp_servers.clear(); self.pending_mcp_status.clear();
+                    return Ok(vec![self.mcp_snapshot()]);
+                }
+                let next=self.next_mcp_probe; self.next_mcp_probe+=1;
+                self.mcp_probes.insert(next,(servers,cursors));
+                return Ok(vec![Action::Write(json!({"id":next,"method":"mcpServerStatus/list","params":{"threadId":self.thread,"detail":"toolsAndAuthOnly","cursor":cursor}}))]);
             }
             self.mcp_servers = servers;
             if self.mcp_servers.is_empty() {
@@ -990,9 +1003,20 @@ impl Protocol for Codex {
         let result = message.get("result").ok_or("Codex 响应缺少结果")?;
         if self.stopped && self.phase < 3 { return Ok(vec![]); }
         match (self.phase, id) {
-            (1, 1) => {
+            (1, 1) if self.browser => {
+                Ok(vec![
+                    Action::Write(json!({"method":"initialized","params":{}})),
+                    Action::Write(json!({"id":9_000_000,"method":"config/read","params":{"cwd":self.cwd,"includeLayers":false}})),
+                ])
+            }
+            (1, 1) | (1, 9_000_000) => {
                 self.phase = 2;
                 let mut params = json!({"cwd":self.cwd});
+                if self.browser {
+                    // Preserve effective user/project instructions; never replace baseInstructions.
+                    let existing = result["config"]["developer_instructions"].as_str().unwrap_or("");
+                    params["developerInstructions"] = json!(format!("{existing}\n\n{}",forge_browser::INSTRUCTIONS));
+                }
                 // 未显式选择时保留 CLI 的项目配置；信任项目不等于授予完全访问。
                 if self.permission != super::options::PermissionMode::Inherit {
                     params["sandbox"] = json!(self.permission.codex_sandbox());
@@ -1014,10 +1038,10 @@ impl Protocol for Codex {
                 } else {
                     "thread/start"
                 };
-                Ok(vec![
-                    Action::Write(json!({"method":"initialized","params":{}})),
-                    Action::Write(json!({"id":2,"method":method,"params":params})),
-                ])
+                let mut actions = Vec::new();
+                if !self.browser { actions.push(Action::Write(json!({"method":"initialized","params":{}}))); }
+                actions.push(Action::Write(json!({"id":2,"method":method,"params":params})));
+                Ok(actions)
             }
             (2, 2) => {
                 if self.permission != super::options::PermissionMode::Inherit && (result["approvalPolicy"] != self.permission.codex_policy()
@@ -1501,6 +1525,34 @@ mod tests {
         let actions = p.receive(json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"native","name":"b","status":"failed"}})).unwrap();
         assert!(matches!(&actions[0], Action::Emit{kind:"mcp_servers",data}
             if data["servers"].as_array().is_some_and(|list| list.len() == 2) && data["servers"][1]["status"] == "failed"));
+    }
+    #[test]
+    fn browser_route_preserves_effective_instructions_on_start_and_resume() {
+        for native in [None,Some("native".to_string())] {
+            let mut p=Codex::new("root".into(),"task".into(),native.clone()).with_browser(true);
+            p.start().unwrap();
+            let actions=p.receive(json!({"id":1,"result":{}})).unwrap();
+            let probe=actions.iter().find_map(|a|match a { Action::Write(v) if v["method"]=="config/read"=>Some(v["id"].clone()),_=>None }).unwrap();
+            let actions=p.receive(json!({"id":probe,"result":{"config":{"developer_instructions":"Keep the project's original rules."}}})).unwrap();
+            let request=actions.iter().find_map(|a|match a { Action::Write(v) if v["method"]=="thread/start" || v["method"]=="thread/resume"=>Some(v),_=>None }).unwrap();
+            assert_eq!(request["method"],if native.is_some(){"thread/resume"}else{"thread/start"});
+            let instructions=request["params"]["developerInstructions"].as_str().unwrap();
+            assert!(instructions.starts_with("Keep the project's original rules."));
+            assert!(instructions.contains(forge_browser::INSTRUCTIONS));
+            assert!(request["params"].get("baseInstructions").is_none());
+        }
+    }
+    #[test]
+    fn mcp_pages_are_collected_before_publishing_a_snapshot() {
+        let mut p=Codex::new("root".into(),"task".into(),Some("native".into()));
+        p.start().unwrap();p.receive(json!({"id":1,"result":{}})).unwrap();
+        let actions=p.receive(json!({"id":2,"result":{"thread":{"id":"native"},"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}}})).unwrap();
+        let probe=actions.iter().find_map(|a|match a {Action::Write(v) if v["method"]=="mcpServerStatus/list"=>Some(v["id"].clone()),_=>None}).unwrap();
+        let actions=p.receive(json!({"id":probe,"result":{"data":[{"name":"other","runtimeStatus":"connected"}],"nextCursor":"second"}})).unwrap();
+        assert!(actions.iter().all(|a| !matches!(a,Action::Emit{kind:"mcp_servers",..})));
+        let next=actions.iter().find_map(|a|match a {Action::Write(v) if v["params"]["cursor"]=="second"=>Some(v["id"].clone()),_=>None}).unwrap();
+        let actions=p.receive(json!({"id":next,"result":{"data":[{"name":"forge_browser","runtimeStatus":"connected"}],"nextCursor":null}})).unwrap();
+        assert!(actions.iter().any(|a|matches!(a,Action::Emit{kind:"mcp_servers",data} if data["servers"]==json!([{"name":"other","status":"connected"},{"name":"forge_browser","status":"connected"}]))));
     }
     #[test]
     fn a_failed_or_empty_mcp_probe_clears_old_state_without_leaking_partial_updates() {

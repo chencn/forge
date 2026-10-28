@@ -21,7 +21,9 @@
 | 模块 | 管什么 | 主要代码 |
 | --- | --- | --- |
 | `shell-layout` | 主工具栏、活动栏、工具窗口槽位与分隔条、编辑器页签栏、底部状态条、图标资产 | `src/App.tsx`、`components/TitleBar.tsx`、`EditorTabs.tsx`、`WelcomeScreen.tsx`、`ToolWindowIcons.tsx` |
+| `workspace-tabs` | 一个窗口常驻多个工程文件夹：切根不重载、页签整套跟着切、后台终端与任务不杀 | `src/App.tsx`、`components/ProjectPicker.tsx`、`hooks/useFileWatch.ts`、`hooks/useDocuments.ts`、`hooks/useRunSessions.ts`、`src-tauri/src/watch.rs`、`src-tauri/src/history.rs` |
 | `code-editor` | Monaco 接入、启动路径上的模块拆分、主题着色、三套快捷键方案、空态快捷键告示 | `components/CodeEditor.tsx`、`lib/monacoEnv.ts`、`lib/monacoEditor.ts`、`lib/keymap.ts`、`lib/keymapHints.ts`、`lib/color.ts` |
+| `lsp-language-servers` | 外挂语言服务：三态档位、`lsp.json`、进程通道与分帧、会话生命周期、根解析、探测与安装 | `src-tauri/src/lsp.rs`、`lsp_config.rs`、`lsp_probe.rs`、`lsp_detect.rs`、`lib/lspClient.ts`、`lib/lsp.ts`、`lib/lspConfig.ts`、`hooks/useLspConfig.tsx`、`hooks/useLspSessions.ts`、`components/LspStatusBar.tsx`、`components/LspDialogs.tsx` |
 | `search` | 随处搜索、在文件里查找、查找结果窗口 | `components/SearchEverywhere.tsx`、`FindPane.tsx`、`MatchSnippet.tsx`、`lib/monacoEditor.ts`、`src-tauri/src/fs/search.rs` |
 | `file-explorer` | 目录树、多选、右键菜单、新建/改名/复制/移动/删除 | `components/ExplorerTree.tsx`、`components/ContextMenu.tsx`、`lib/fs.ts` |
 | `documents-preview` | 文件按扩展名分四类，markdown / svg / 图片 / diff 各给什么视图 | `lib/docKind.ts`、`lib/markdown.ts`、`components/DocPane.tsx`、`MarkdownPreview.tsx`、`ImagePreview.tsx`、`DiffPane.tsx` |
