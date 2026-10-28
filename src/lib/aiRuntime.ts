@@ -580,6 +580,33 @@ function store(id: string): State { let state = stores.get(id); if (!state) { st
 function patch(id: string, change: Partial<AiRuntimeSnapshot>) { const state = store(id); state.snapshot = { ...state.snapshot, ...change }; changed(); }
 /** 订阅任何会话的变化（含新建/删除），供 `useSyncExternalStore` 使用。 */
 export function subscribeAiChanges(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
+/** 父会话子代理的出现顺序；只在序号变化时通知，避免正文流式把标签栏整页重绘。 */
+const agentOrderListeners = new Set<() => void>();
+const agentOrderSignature = new Map<string, string>();
+let agentOrderVersion = 0;
+function rememberAgentOrder(id: string, agents: readonly AiAgentSummary[]) {
+  const signature = agents.map((agent) => `${agent.seq}:${agent.sessionId ?? ""}`).join("|");
+  if (!signature) {
+    if (!agentOrderSignature.delete(id)) return;
+  } else if (agentOrderSignature.get(id) === signature) return;
+  else agentOrderSignature.set(id, signature);
+  agentOrderVersion += 1;
+  for (const listener of agentOrderListeners) listener();
+}
+function dropAgentOrder(id: string) {
+  if (!agentOrderSignature.delete(id)) return;
+  agentOrderVersion += 1;
+  for (const listener of agentOrderListeners) listener();
+}
+/** 读取父会话当前的子代理列表；还没加载过就给空数组。 */
+export function getAiSessionAgents(id: string): readonly AiAgentSummary[] {
+  return stores.get(id)?.snapshot.agents ?? EMPTY.agents;
+}
+export function subscribeAiAgentOrder(listener: () => void) {
+  agentOrderListeners.add(listener);
+  return () => { agentOrderListeners.delete(listener); };
+}
+export function getAiAgentOrderVersion(): number { return agentOrderVersion; }
 /** 读取某个会话的快照；不存在的会话返回空快照，保证组件首帧不崩。 */
 export function useAiRuntime(id: string): AiRuntimeSnapshot { return useSyncExternalStore(subscribeAiChanges, () => stores.get(id)?.snapshot ?? EMPTY); }
 /** 当前（或最近）一轮的 run id；停止按钮要用它。 */
@@ -1127,6 +1154,7 @@ function projectBatch(id: string, batch: AiRuntimeEvent[]) {
     if (summary && (!state.goalSummary || summary.seq >= state.goalSummary.seq)) state.goalSummary = summary;
   }
   state.snapshot = projectAiEvents(appendOnly ? batch : [...state.events.values()], state.snapshot, appendOnly);
+  rememberAgentOrder(id, state.snapshot.agents);
   state.maxSeq = batch.reduce((max, event) => Math.max(max, event.seq), state.maxSeq);
   if (!appendOnly && state.activeSummary) mergeActiveTasks(state, state.activeSummary.tasks, state.activeSummary.seq);
   if (state.taskListSummary) mergeTaskListSummary(state, state.taskListSummary);
@@ -1593,7 +1621,7 @@ export async function stopAiAgent(sessionId: string, workspace: string): Promise
   await invoke("ai_runtime_agent_stop", { sessionId, workspace });
 }
 /** 删除后把这条会话在本窗口里忘掉：迟到事件、活动位、大纲都不该再认得它。 */
-function forgetAiRuntimeSession(sessionId: string) { deleted.add(sessionId); releaseRequested.delete(sessionId); pendingStreaming.delete(sessionId); for (const task of stores.get(sessionId)?.snapshot.tasks ?? []) stoppingRunIds.delete(task.runId); stores.delete(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); }
+function forgetAiRuntimeSession(sessionId: string) { deleted.add(sessionId); releaseRequested.delete(sessionId); pendingStreaming.delete(sessionId); for (const task of stores.get(sessionId)?.snapshot.tasks ?? []) stoppingRunIds.delete(task.runId); stores.delete(sessionId); dropAgentOrder(sessionId); outlines.delete(sessionId); activities.delete(sessionId); activityRoots.delete(sessionId); activityQueued.delete(sessionId); activityRunIds.delete(sessionId); activityQueuedRunIds.delete(sessionId); }
 /**
  * 删除会话：后端删记录成功后才清本地缓存，并记入 `deleted` 防止历史再被导回来。
  * `purgeNative` 为真时后端先连 CLI 原生记录一起删掉（Codex 发 `thread/delete`，Claude 删

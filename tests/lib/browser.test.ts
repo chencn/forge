@@ -1,6 +1,6 @@
 // 新增的地址输入与工作区持久化没有现有测试归属；验证公开行为，不断言组件结构。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BROWSER_DEVICES, BROWSER_NETWORKS, browserAddress, browserDeviceId, browserDeviceOptions, browserNetworkId, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, loadBrowserLibrary, normalizeBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../../src/lib/browser";
+import { BROWSER_DEVICES, BROWSER_NETWORKS, browserAddress, browserDeviceId, browserDeviceOptions, browserNetworkId, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, isRectOverlapping, loadBrowserLibrary, normalizeBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../../src/lib/browser";
 
 const storage = new Map<string, string>();
 beforeEach(() => {
@@ -121,5 +121,33 @@ describe("浏览器访问记录", () => {
     vi.stubGlobal("localStorage", { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("full"); } });
     expect(loadBrowserLibrary("workspace")).toEqual({ bookmarks: [], recent: [] });
     expect(() => saveBrowserLibrary("workspace", { bookmarks: [], recent: [] })).not.toThrow();
+  });
+});
+
+describe("浏览器视口浮层空间相交检测", () => {
+  const browserViewport = { left: 800, top: 32, right: 1400, bottom: 800 };
+
+  it("左侧会话区域的右键菜单与右侧浏览器完全分离，不判定为相交", () => {
+    // 模拟左侧会话气泡中右键弹出的菜单（x: 350, y: 200, 宽 244, 高 80）
+    const leftSessionMenu = { left: 350, top: 200, right: 594, bottom: 280 };
+    expect(isRectOverlapping(leftSessionMenu, browserViewport)).toBe(false);
+  });
+
+  it("覆盖在浏览器视口上的浮层判定为相交", () => {
+    // 模态弹窗或落在浏览器区域内的弹出菜单
+    const overlappingMenu = { left: 850, top: 100, right: 1050, bottom: 300 };
+    expect(isRectOverlapping(overlappingMenu, browserViewport)).toBe(true);
+
+    // 全屏遮罩层（0, 0 到 1920, 1080）
+    const fullBackdrop = { left: 0, top: 0, right: 1920, bottom: 1080 };
+    expect(isRectOverlapping(fullBackdrop, browserViewport)).toBe(true);
+  });
+
+  it("紧挨或相切边界不计为相交", () => {
+    const tangentLeft = { left: 600, top: 32, right: 800, bottom: 800 };
+    expect(isRectOverlapping(tangentLeft, browserViewport)).toBe(false);
+
+    const tangentBottom = { left: 800, top: 800, right: 1400, bottom: 900 };
+    expect(isRectOverlapping(tangentBottom, browserViewport)).toBe(false);
   });
 });

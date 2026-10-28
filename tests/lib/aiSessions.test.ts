@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { aiSessionStorageKey, EMPTY_AI_SESSIONS, loadNativePurgeDefault, parseAiSessions, reduceAiSessions, saveNativePurgeDefault, sessionSubtree } from "../../src/lib/aiSessions";
+import { aiSessionStorageKey, EMPTY_AI_SESSIONS, loadNativePurgeDefault, parseAiSessions, reduceAiSessions, sameAiWorkspace, saveNativePurgeDefault, sessionSubtree, subagentOrdinal } from "../../src/lib/aiSessions";
 import type { AiSession } from "../../src/lib/aiSessions";
 
 const session: AiSession = { id: "session-1", title: "Claude Code 会话 1", provider: "claude", createdAt: 1000 };
@@ -51,6 +51,10 @@ describe("AI 会话本地状态", () => {
 
   it("按工作区隔离，Windows 路径兼容大小写和分隔符", () => {
     expect(aiSessionStorageKey("D:\\Work\\Project\\")).toBe(aiSessionStorageKey("d:/work/project"));
+    expect(aiSessionStorageKey("\\\\?\\D:\\Work\\Project")).toBe(aiSessionStorageKey("D:/Work/Project"));
+    expect(aiSessionStorageKey("\\\\?\\UNC\\Server\\Share\\Project")).toBe(aiSessionStorageKey("//server/share/project"));
+    expect(sameAiWorkspace("\\\\?\\d:\\work\\project", "D:/Work/Project")).toBe(true);
+    expect(sameAiWorkspace("D:/Work/Project", "D:/Other")).toBe(false);
     expect(aiSessionStorageKey("\\\\Server\\Share\\Project")).toBe(aiSessionStorageKey("//server/share/project/"));
     expect(aiSessionStorageKey("/Work/Project")).not.toBe(aiSessionStorageKey("/work/project"));
     expect(aiSessionStorageKey("/one")).not.toBe(aiSessionStorageKey("/two"));
@@ -109,6 +113,23 @@ describe("会话归档", () => {
     for (const value of [undefined, null, false, "true", 1, {}, []]) {
       expect(read(value)).toEqual(archived("s"));
     }
+  });
+});
+
+describe("子代理序号", () => {
+  const first: AiSession = { ...session, id: "a", title: "先查", createdAt: 2, parentSessionId: session.id };
+  const second: AiSession = { ...session, id: "b", title: "后查", createdAt: 3, parentSessionId: session.id };
+
+  it("按父会话里的出现顺序编号，不按打开先后", () => {
+    const sessions = [session, second, first];
+    const agents = [{ sessionId: "a" }, { sessionId: "b" }];
+    expect(subagentOrdinal(first, sessions, agents)).toBe(1);
+    expect(subagentOrdinal(second, sessions, agents)).toBe(2);
+  });
+
+  it("父列表还没到时按创建时间给稳定序号", () => {
+    expect(subagentOrdinal(second, [second, first], [])).toBe(2);
+    expect(subagentOrdinal(first, [second, first], [])).toBe(1);
   });
 });
 

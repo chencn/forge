@@ -135,3 +135,23 @@ export function saveBrowserLibrary(workspace: string, library: BrowserLibrary): 
   // 隐私窗口或存储配额不足时，浏览仍然可用。
   try { localStorage.setItem(browserStorageKey(workspace), JSON.stringify(normalizeBrowserLibrary(library))); } catch { /* 本次内存记录继续有效。 */ }
 }
+
+export interface SimpleRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * 判断两个矩形在几何空间上是否存在重叠相交。
+ * 当且仅当两者在水平与垂直轴线上均有交集时才算相交，相切或分离均不算相交。
+ */
+export function isRectOverlapping(a: SimpleRect, b: SimpleRect): boolean {
+  return !(
+    a.right <= b.left ||
+    a.left >= b.right ||
+    a.bottom <= b.top ||
+    a.top >= b.bottom
+  );
+}

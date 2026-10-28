@@ -706,7 +706,7 @@ interface AiChatEntryRowProps {
   agentSession?: string;
   subagents?: AiEntry[];
   hasRequest: boolean;
-  onOpenSession?: (id: string) => void;
+  onOpenAgent?: (id: string) => void;
   onLightbox: (path: string) => void;
   onImageLoad: () => void;
   /** 允许写入类工具前先快照；由会话层提供会话 id 与工作区。 */
@@ -726,7 +726,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
   agentSession,
   subagents,
   hasRequest,
-  onOpenSession,
+  onOpenAgent,
   onLightbox,
   onImageLoad,
   onBeforeAllow,
@@ -775,7 +775,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
           subagents={subagents}
           hasRequest={hasRequest}
           agent={agentSession ? { sessionId: agentSession } : undefined}
-          onOpenAgent={onOpenSession}
+          onOpenAgent={onOpenAgent}
         />
       ) : entry.kind === "reasoning" ? (
         <AiReasoningEntry entry={entry} live={liveThinking} />
@@ -818,7 +818,9 @@ interface AiSessionPaneProps {
   onAgentDockAvailable?: (available: boolean) => void;
   /** 打开子代理侧栏；父会话里的状态提示调用它，不直接操纵应用布局。 */
   onOpenAgentDock?: () => void;
-  /** 打开（或聚焦）另一条会话的标签：子代理视图跳转、返回父会话都用它。 */
+  /** 打开子代理：向右拆出一栏，当前会话留在左边。 */
+  onOpenAgent?: (id: string) => void;
+  /** 打开（或聚焦）另一条会话的标签：返回父会话用它，不拆栏。 */
   onOpenSession?: (id: string) => void;
   /** 父会话标题；子代理会话的面包屑用它，普通会话不传。 */
   parentTitle?: string | null;
@@ -842,6 +844,7 @@ export default function AiSessionPane({
   dockActive: _dockActive = true,
   onAgentDockAvailable: _onAgentDockAvailable,
   onOpenAgentDock: _onOpenAgentDock,
+  onOpenAgent,
   onOpenSession,
   parentTitle,
 }: AiSessionPaneProps) {
@@ -1760,7 +1763,7 @@ export default function AiSessionPane({
       agentSession={!isAgentSession && entry.toolId ? agentSessionsByKey.get(entry.toolId) : undefined}
       subagents={subagentChildren.get(entry.toolId ?? "")}
       hasRequest={requestToolIds.has(entry.toolId ?? "") || questionRequestRuns.has(entry.runId)}
-      onOpenSession={onOpenSession}
+      onOpenAgent={onOpenAgent}
       onLightbox={setLightbox}
       onImageLoad={handleImageLoad}
       onBeforeAllow={snapshotBeforeAllow}
@@ -1779,7 +1782,7 @@ export default function AiSessionPane({
     subagentChildren,
     requestToolIds,
     questionRequestRuns,
-    onOpenSession,
+    onOpenAgent,
     handleImageLoad,
     t,
   ]);
@@ -1932,7 +1935,7 @@ export default function AiSessionPane({
           taskList={taskList}
           running={running}
           agents={runtime.agents}
-          onOpenSession={(id) => onOpenSession?.(id)}
+          onOpenSession={(id) => onOpenAgent?.(id)}
           onJump={(id) => jumpToEntryById(id)}
           onClose={() => setTaskListOpen(false)}
         />

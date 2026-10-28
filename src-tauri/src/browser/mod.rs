@@ -423,6 +423,11 @@ fn origin(url: &str) -> Option<String> {
         .map(|u| u.origin().ascii_serialization())
 }
 pub(super) fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
+    // WebView2 只在引擎内部绘制悬停高亮，不会把 nodeHighlightRequested 交给宿主。
+    // 若落到下面的 Overlay 分支，这次悬停会被当成结束选取。
+    if name == "Overlay.nodeHighlightRequested" {
+        return;
+    }
     if name.starts_with("Overlay.") {
         picker::event(app, id, name, value);
         return;

@@ -2392,20 +2392,14 @@ span.entry-icon > svg {
   cursor: grabbing;
 }
 
-.rail-button.is-drop-before::before,
-.rail-button.is-drop-after::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  right: 3px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-blue);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 25%, transparent);
+.rail-button.is-drag-ghost {
+  position: fixed;
+  z-index: 80;
+  pointer-events: none;
+  opacity: 0.96;
+  background: var(--bg-primary);
+  box-shadow: 0 8px 20px color-mix(in srgb, #000 28%, transparent);
 }
-
-.rail-button.is-drop-before::before { top: -3px; }
-.rail-button.is-drop-after::before { bottom: -3px; }
 
 .rail-button:hover {
   background: var(--bg-hover);
@@ -2513,21 +2507,25 @@ span.entry-icon > svg {
   animation: none;
 }
 
-/* 展开只接管编辑区，不卸载编辑器，也不隐藏两侧工具入口和已打开的侧栏。 */
-.workbench-row.has-expanded-browser > .editor-stack {
+/* 右侧侧边栏展开只接管编辑区，不卸载编辑器，也不隐藏两侧工具入口和已打开的左侧侧栏。 */
+.workbench-row.has-expanded-browser > .editor-stack,
+.workbench-row.has-expanded-right-panel > .editor-stack {
   display: none;
 }
 
-.workbench-row.has-expanded-browser > .tool-window {
+.workbench-row.has-expanded-browser > .tool-window,
+.workbench-row.has-expanded-right-panel > .tool-window.is-left {
   position: static;
   inset: auto;
   max-width: 40%;
   animation: none;
 }
 
-.workbench-row.has-expanded-browser > .tool-window.is-browser {
+.workbench-row.has-expanded-browser > .tool-window.is-browser,
+.workbench-row.has-expanded-right-panel > .tool-window.is-right {
   flex: 1;
   max-width: none;
+  width: auto !important;
 }
 
 .tool-window-head {
@@ -4344,6 +4342,30 @@ span.entry-icon > svg {
 
 .editor-tab.is-diff .tab-label {
   font-style: italic;
+}
+
+.editor-tab.is-drag-source {
+  opacity: 0.35;
+}
+
+.editor-tab.is-drag-ghost {
+  position: fixed;
+  z-index: 80;
+  pointer-events: none;
+  opacity: 0.96;
+  background: var(--bg-primary);
+  border-color: color-mix(in srgb, var(--border-color) 80%, transparent);
+  box-shadow: 0 8px 20px color-mix(in srgb, #000 28%, transparent);
+}
+
+body.is-editor-tab-dragging,
+body.is-editor-tab-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.editor-tabs.is-importing {
+  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-primary));
 }
 
 .tab-label {

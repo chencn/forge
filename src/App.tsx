@@ -1,4 +1,4 @@
-import { useCallback, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -6,6 +6,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Archive,
+  ArrowUpRight,
   Bell,
   Globe,
   Check,
@@ -48,7 +49,7 @@ import EditorTabs from "./components/EditorTabs";
 import BrowserPanel from "./components/BrowserPanel";
 import type { TabItem, TabKind } from "./components/EditorTabs";
 import AiSessionTabMenu from "./components/AiSessionTabMenu";
-import { createEditorSplit, partitionEditorTabs, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
+import { createEditorSplit, partitionEditorTabs, relocateEditorTab, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
 import type { AiFilePreview } from "./lib/aiFilePreview";
 import LspStatusBar from "./components/LspStatusBar";
 import type { CommitFileAction } from "./components/GitPanel";
@@ -189,12 +190,12 @@ import AiSessionsPanel, { AiSessionsToolbar } from "./components/AiSessionsPanel
 import { AiTabProviderIcon } from "./components/AiProviderIcon";
 import { forgetAiSessionWorkspace, refreshAiSessionHistory, useAiSessions } from "./hooks/useAiSessions";
 import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
-import { ensureAiRuntimeListener, filterAiProjectEvents, getAiProjectActivitySummary, getAiSessionActivity, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, useAiActiveProjects } from "./lib/aiRuntime";
+import { ensureAiRuntimeListener, filterAiProjectEvents, getAiAgentOrderVersion, getAiProjectActivitySummary, getAiSessionActivity, getAiSessionAgents, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, subscribeAiAgentOrder, useAiActiveProjects } from "./lib/aiRuntime";
 import type { AiRuntimeEvent } from "./lib/aiRuntime";
 import { AI_NAMES } from "./lib/aiCli";
 import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
 import type { AiProvider } from "./lib/aiCli";
-import type { AiSession } from "./lib/aiSessions";
+import { subagentOrdinal, type AiSession } from "./lib/aiSessions";
 import { buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputPayload, type AiInputTarget } from "./lib/aiInputBridge";
 import {
   TOOL_RAIL_GROUP,
@@ -640,14 +641,13 @@ export default function App() {
     startX: number;
     startY: number;
     active: boolean;
+    offsetX: number;
+    offsetY: number;
+    ghost: HTMLElement | null;
     drop: { target: ToolRailId; before: boolean } | null;
   } | null>(null);
   const suppressRailClick = useRef<ToolRailId | null>(null);
-  const [railDragVisual, setRailDragVisual] = useState<{
-    source: ToolRailId;
-    target: ToolRailId | null;
-    before: boolean;
-  } | null>(null);
+  const [railDragSource, setRailDragSource] = useState<ToolRailId | null>(null);
   const updateToolRailLayout = useCallback((next: ReturnType<typeof loadToolRailLayout>) => {
     setToolRailLayout(next);
     saveToolRailLayout(next);
@@ -925,7 +925,8 @@ export default function App() {
   /** 右侧工具窗口独立占一列，拖动它左缘的竖分隔条调整宽度。 */
   const [rightSidebarWidth, setRightSidebarWidth] = useState(320);
   const [browserSidebarWidth, setBrowserSidebarWidth] = useState(() => Math.max(320, Math.min(520, window.innerWidth - 420)));
-  const [browserExpanded, setBrowserExpanded] = useState(false);
+  /** 右侧侧边栏是否最大化（撑开铺满整个主工作区并接管编辑区）。所有在右侧侧边栏的工具均支持最大化。 */
+  const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
   const [leftPanelWidth, setLeftPanelWidth] = useState(sidebarWidth);
   /** 右侧工具窗口当前打开哪一块；null = 收起。结构照左侧：活动栏入口 + 单工具窗口。 */
   const [rightPanel, setRightPanel] = useState<RightDockPanel | null>(null);
@@ -972,7 +973,11 @@ export default function App() {
     const key = rootKeyRef.current;
     setEditorSplits((current) => ({ ...current, [key]: typeof update === "function" ? update(current[key] ?? null) : update }));
   }, []);
-  const secondaryTab = activeTab && editorSplit?.tabIds.includes(activeTab) ? activeTab : editorSplit?.tabId ?? null;
+  const secondaryTab = editorSplit && editorSplit.tabIds.length
+    ? (activeTab && editorSplit.tabIds.includes(activeTab) ? activeTab
+      : editorSplit.tabIds.includes(editorSplit.tabId) ? editorSplit.tabId
+      : editorSplit.tabIds.at(-1) ?? null)
+    : null;
   const [aiFilePreviewsByRoot, setAiFilePreviewsByRoot] = useState<Record<string, AiFilePreview[]>>({});
   const aiFilePreviews = useMemo(() => aiFilePreviewsByRoot[rootKey] ?? [], [aiFilePreviewsByRoot, rootKey]);
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -1061,11 +1066,10 @@ export default function App() {
   const activeLeftPanel = sidebarOpen
     && sideOfTool(toolRailLayout, panel) === "left"
     && rightPanelAvailable[panel] ? panel : null;
-  const browserVisible = activeLeftPanel === "browser" || activeRightPanel === "browser";
   useEffect(() => {
-    // 收起或换到其他工具后结束展开，重新打开浏览器时恢复普通侧栏。
-    if (!browserVisible) setBrowserExpanded(false);
-  }, [browserVisible]);
+    // 右侧侧边栏关闭或换走时退出最大化，重新打开时恢复普通侧栏。
+    if (!activeRightPanel) setRightPanelExpanded(false);
+  }, [activeRightPanel]);
   useEffect(() => {
     const element = sidePanelRef.current;
     if (!element) return;
@@ -3814,6 +3818,7 @@ export default function App() {
    * 就是标签数平方量级的比较，而 App 每渲染一次（打字、轮询、拖动松手）都走一趟。
    * 顺带把 `docs.dirty(path)` 换成直接比这两份文本——那个函数内部就是做一次线性找。
    */
+  const agentOrderVersion = useSyncExternalStore(subscribeAiAgentOrder, getAiAgentOrderVersion, () => 0);
   const tabCatalog: TabItem[] = useMemo(
     () => [
     ...visibleDocs.map((doc) => ({
@@ -3847,14 +3852,21 @@ export default function App() {
       dirty: false,
       icon: PANE_ICON[key],
     })),
-    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => ({
-      id: `ai|${session.id}`,
-      kind: "ai" as const,
-      name: session.title || t("ai.untitledSession"),
-      title: `${AI_NAMES[session.provider]} · ${session.title || t("ai.untitledSession")}`,
-      dirty: false,
-      icon: <AiTabProviderIcon sessionId={session.id} provider={session.provider} />,
-    })),
+    ...aiSessions.sessions.filter((session) => aiSessions.openIds.includes(session.id)).map((session) => {
+      const name = session.title || session.agent?.title || t("ai.untitledSession");
+      const caption = session.parentSessionId
+        ? t("ai.agent.numbered", { index: subagentOrdinal(session, aiSessions.sessions, getAiSessionAgents(session.parentSessionId)) })
+        : undefined;
+      const label = caption ? `${caption} · ${name}` : name;
+      return {
+        id: `ai|${session.id}`,
+        kind: "ai" as const,
+        name: label,
+        title: caption ? label : `${AI_NAMES[session.provider]} · ${name}`,
+        dirty: false,
+        icon: <AiTabProviderIcon sessionId={session.id} provider={session.provider} />,
+      };
+    }),
     ...(aiDraftOpen[rootKey] && settings.aiAssistantsEnabled
       ? [
           {
@@ -3892,7 +3904,7 @@ export default function App() {
         ]
       : []),
     ],
-    [aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], settings.aiAssistantsEnabled, diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
+    [agentOrderVersion, aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], settings.aiAssistantsEnabled, diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
   );
 
   // 栏上有哪些标签由上面那份目录说，排在哪儿由 tabOrder 说：新开一颗落在当前这颗右边，拖动改这个数组。
@@ -3944,11 +3956,12 @@ export default function App() {
     setEditorSplit(kept.length ? { ...editorSplit, tabIds: kept, tabId: kept.includes(editorSplit.tabId) ? editorSplit.tabId : kept[kept.length - 1] } : null);
   }, [catalogKey, editorSplit, setEditorSplit]);
 
-  /** 拖完一颗：落到目标那颗原来的位子上。 */
-  const reorderTab = useCallback((from: string, to: string) => {
+  /** 拖完一颗：落到目标那颗原来的位子上。同一栏内只改顺序，不换栏。 */
+  const reorderTab = useCallback((from: string, to: string | null) => {
     if (from === to) return;
     setTabOrder((current) => {
       const next = current.filter((id) => id !== from);
+      if (!to) { next.push(from); return next; }
       const at = next.indexOf(to);
       next.splice(at < 0 ? next.length : at, 0, from);
       return next;
@@ -3987,6 +4000,29 @@ export default function App() {
     },
     [docs, dispatchAiSession, setEditorSplit]
   );
+
+  /** 已有左右或上下分栏时，把标签拖进另一栏。不会靠拖动新建分栏。 */
+  const importTab = useStable((id: string, beforeId: string | null, pane: "primary" | "secondary") => {
+    const split = editorSplit;
+    if (!split) return;
+    const fromSecondary = split.tabIds.includes(id);
+    if ((pane === "secondary") === fromSecondary) return;
+    setTabOrder((current) => relocateEditorTab(current, split.tabIds, id, beforeId, pane));
+    setEditorSplit((current) => {
+      if (!current || (current.tabIds.includes(id) === (pane === "secondary"))) return current;
+      const tabIds = pane === "secondary"
+        ? [...current.tabIds.filter((tab) => tab !== id), id]
+        : current.tabIds.filter((tab) => tab !== id);
+      const remaining = tabIds.includes(current.tabId) ? current.tabId : tabIds.at(-1) ?? current.tabId;
+      return {
+        ...current,
+        tabIds,
+        tabId: pane === "secondary" ? id : remaining,
+        primaryActiveId: pane === "primary" ? id : current.primaryActiveId === id ? null : current.primaryActiveId,
+      };
+    });
+    selectTab(id);
+  });
 
   useEffect(() => {
     if (!settings.aiAssistantsEnabled) return;
@@ -4371,6 +4407,7 @@ export default function App() {
           onOpenFile={aiOpenFile}
           onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)}
           onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
+          onOpenAgent={(agentId) => openAiSubagent(agentId, id!)}
           onOpenSession={openAiSession}
           parentTitle={activeAiSession.parentSessionId ? aiSessions.sessions.find((parent) => parent.id === activeAiSession.parentSessionId)?.title ?? null : null}
         />
@@ -4680,6 +4717,28 @@ export default function App() {
     const opened = line ? docs.openHit(resolved, line, column) : docs.open(resolved);
     void opened.catch((cause: unknown) => reportError(errorText(cause)));
   });
+  /** 子代理和文件预览都向右拆分，点开它的会话留在主栏。子代理默认左 7 右 3，文件预览各占一半。 */
+  const openAiSubagent = useStable((id: string, sourceTab: string) => {
+    if (!settings.aiAssistantsEnabled) return;
+    const openRoot = rootKeyRef.current;
+    const place = () => {
+      if (!dispatchAiSession({ type: "open", id })) return false;
+      const tabId = `ai|${id}`;
+      setEditorSplits((current) => {
+        const split = current[openRoot] ?? null;
+        const base = split
+          ? { ...split, tabIds: split.tabIds.filter((tab) => tab !== sourceTab), primaryActiveId: sourceTab }
+          : null;
+        return {
+          ...current,
+          [openRoot]: createEditorSplit([...tabCatalog.map((tab) => tab.id), tabId], sourceTab, tabId, "horizontal", base, 70).split,
+        };
+      });
+      setActiveTabByRoot((current) => ({ ...current, [openRoot]: tabId }));
+      return true;
+    };
+    if (!place()) void refreshAiSessionHistory().then(() => { place(); });
+  });
   /** 工具文件预览与手工拆分共用分组转换，原会话留在主栏。 */
   const aiPreviewFile = useStable((preview: AiFilePreview, sourceTab: string) => {
     const path = resolveFileLink({ path: preview.path }, workspaceRoot);
@@ -4690,7 +4749,7 @@ export default function App() {
       ...(current[key] ?? []).filter((item) => item.id !== preview.id), { ...preview, path },
     ] }));
     const current = editorSplit ? { ...editorSplit, tabIds: editorSplit.tabIds.filter((id) => id !== sourceTab), primaryActiveId: sourceTab } : null;
-    setEditorSplit(createEditorSplit([...tabCatalog.map((tab) => tab.id), tabId], sourceTab, tabId, "horizontal", current).split);
+    setEditorSplit(createEditorSplit([...tabCatalog.map((tab) => tab.id), tabId], sourceTab, tabId, "horizontal", current, 50).split);
     setActiveTab(tabId);
   });
   const panelOpenSource = useStable((change: GitChange) => {
@@ -4735,6 +4794,9 @@ export default function App() {
       startX: event.clientX,
       startY: event.clientY,
       active: false,
+      offsetX: 0,
+      offsetY: 0,
+      ghost: null,
       drop: null,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -4747,8 +4809,26 @@ export default function App() {
       if (distance < 4) return;
       drag.active = true;
       suppressRailClick.current = drag.id;
+      const source = event.currentTarget;
+      const rect = source.getBoundingClientRect();
+      const ghost = source.cloneNode(true) as HTMLElement;
+      ghost.classList.add("is-drag-ghost");
+      ghost.removeAttribute("data-rail-tool");
+      ghost.removeAttribute("data-tip");
+      ghost.style.width = `${rect.width}px`;
+      ghost.style.height = `${rect.height}px`;
+      document.body.appendChild(ghost);
+      document.body.classList.add("is-editor-tab-dragging");
+      drag.ghost = ghost;
+      drag.offsetX = event.clientX - rect.left;
+      drag.offsetY = event.clientY - rect.top;
+      setRailDragSource(drag.id);
     }
     event.preventDefault();
+    if (drag.ghost) {
+      drag.ghost.style.left = `${event.clientX - drag.offsetX}px`;
+      drag.ghost.style.top = `${event.clientY - drag.offsetY}px`;
+    }
     const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-rail-tool]");
     const rawTarget = hit?.dataset.railTool;
     const target = rawTarget && rawTarget in TOOL_RAIL_GROUP ? rawTarget as ToolRailId : null;
@@ -4760,13 +4840,10 @@ export default function App() {
       || TOOL_RAIL_GROUP[target] !== TOOL_RAIL_GROUP[drag.id]
     ) {
       drag.drop = null;
-      setRailDragVisual({ source: drag.id, target: null, before: true });
       return;
     }
     const box = hit.getBoundingClientRect();
-    const before = event.clientY < box.top + box.height / 2;
-    drag.drop = { target, before };
-    setRailDragVisual({ source: drag.id, target, before });
+    drag.drop = { target, before: event.clientY < box.top + box.height / 2 };
   };
   const finishRailPointerDrag = (event: ReactPointerEvent<HTMLSpanElement>, commit: boolean) => {
     const drag = railPointerDrag.current;
@@ -4774,6 +4851,8 @@ export default function App() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    drag.ghost?.remove();
+    document.body.classList.remove("is-editor-tab-dragging");
     if (commit && drag.active && drag.drop) {
       commitRailReorder(drag.id, drag.drop.target, drag.drop.before);
     }
@@ -4785,7 +4864,7 @@ export default function App() {
       }, 0);
     }
     railPointerDrag.current = null;
-    setRailDragVisual(null);
+    setRailDragSource(null);
   };
   const renderRailButton = (side: ToolRailSide, id: ToolRailId) => {
     const bottomTool: "terminal" | "run" | "log" | null = id === "terminal" || id === "run" || id === "log" ? id : null;
@@ -4815,9 +4894,7 @@ export default function App() {
       key={id}
       role="button"
       tabIndex={0}
-      className={`rail-button${active ? " is-active" : ""}${railDragVisual?.source === id ? " is-dragging" : ""}${
-        railDragVisual?.target === id ? ` is-drop-${railDragVisual.before ? "before" : "after"}` : ""
-      }`}
+      className={`rail-button${active ? " is-active" : ""}${railDragSource === id ? " is-dragging" : ""}`}
       aria-pressed={active}
       aria-label={label}
       data-tip={label}
@@ -4860,7 +4937,6 @@ export default function App() {
     : tool === "maven" && maven.project ? `${t("maven.title")} · ${maven.project.artifactId}`
     : t(RAIL_LABEL[tool]);
   const sidePanelActions = (tool: Panel) => <>
-    {tool === "browser" ? <button type="button" className="icon-button is-inline" title={t("browser.widen")} aria-label={t("browser.widen")} aria-pressed={browserExpanded} onClick={() => setBrowserExpanded((expanded) => !expanded)}>{browserExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button> : null}
     {tool === "ai" && settings.aiAssistantsEnabled ? <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} /> : null}
     {tool === "explorer" && workspaceRoot ? <>
       <button type="button" className="icon-button is-inline is-hover" onClick={() => setDialog({ kind: "newFile", name: "untitled.txt", dir: workspaceRoot, entry: null })} title={t("action.newFile")}><FilePlus size={16} /></button>
@@ -4889,7 +4965,7 @@ export default function App() {
     {tool === "notifications" ? <>
       <button type="button" className="icon-button is-inline" onClick={markAllNotificationsRead} disabled={notifications.length === 0} title={t("notifications.markAllRead")}><CheckCheck size={14} /></button>
       <button type="button" className="icon-button is-inline" onClick={clearAllNotifications} disabled={notifications.length === 0} title={t("notifications.clearAll")}><Eraser size={14} /></button>
-      <button type="button" className="icon-button is-inline" onClick={() => tabPane("notifications")} title={t("tool.showAsTab")}><Maximize2 size={15} /></button>
+      <button type="button" className="icon-button is-inline" onClick={() => tabPane("notifications")} title={t("tool.showAsTab")}><ArrowUpRight size={15} /></button>
     </> : null}
   </>;
   const sidePanelBody = (tool: Panel) => <ErrorBoundary label={t(RAIL_LABEL[tool])} onError={reportError}>
@@ -5037,7 +5113,7 @@ export default function App() {
           </nav>
 
         <div className="workbench-column">
-          <div className={`workbench-row${browserVisible && browserExpanded ? " has-expanded-browser" : ""}`}>
+          <div className={`workbench-row${activeRightPanel && rightPanelExpanded ? " has-expanded-right-panel" : ""}`}>
           {activeLeftPanel ? (
             <section
               className={`tool-window is-left${activeLeftPanel === "browser" ? " is-browser" : ""}`}
@@ -5260,7 +5336,7 @@ export default function App() {
 
             </section>
           ) : null}
-          {activeLeftPanel && !(activeLeftPanel === "browser" && browserExpanded) ? (
+          {activeLeftPanel ? (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -5303,12 +5379,12 @@ export default function App() {
                       : { height: `${editorSplit.ratio}%`, flex: "none" }
                   }
                 >
-                  {editorGroups.primary.length > 0 ? (
-                    <EditorTabs
+                  <EditorTabs
                       tabs={editorGroups.primary}
                       activeId={primaryTab}
                       onSelect={selectTab}
                       onReorder={reorderTab}
+                      onImport={(id, beforeId) => importTab(id, beforeId, "primary")}
                       onClose={closeTab}
                       onCloseOthers={(id) => dropTabs(editorGroups.primary.filter((tab) => tab.id !== id))}
                       onCloseAll={() => dropTabs(editorGroups.primary)}
@@ -5324,7 +5400,6 @@ export default function App() {
                       actions={renderTabActions(primaryTab)}
                       onContextMenuItems={renderTabContextMenuItems}
                     />
-                  ) : null}
                   <div className="editor-pane-body">
                     <ErrorBoundary label={t("editor.region")} onError={reportError}>
                       <Suspense fallback={null}>
@@ -5381,12 +5456,12 @@ export default function App() {
                       : { height: `${100 - editorSplit.ratio}%`, flex: "none" }
                   }
                 >
-                  {editorGroups.secondary.length > 0 ? (
-                    <EditorTabs
+                  <EditorTabs
                       tabs={editorGroups.secondary}
                       activeId={secondaryTab}
                       onSelect={selectTab}
                       onReorder={reorderTab}
+                      onImport={(id, beforeId) => importTab(id, beforeId, "secondary")}
                       onClose={closeTab}
                       onCloseOthers={(id) => dropTabs(editorGroups.secondary.filter((tab) => tab.id !== id))}
                       onCloseAll={() => dropTabs(editorGroups.secondary)}
@@ -5402,7 +5477,6 @@ export default function App() {
                       actions={renderTabActions(secondaryTab)}
                       onContextMenuItems={renderTabContextMenuItems}
                     />
-                  ) : null}
                   <div className="editor-pane-body">
                     <ErrorBoundary label={t("editor.region")} onError={reportError}>
                       <Suspense fallback={null}>
@@ -5473,7 +5547,7 @@ export default function App() {
           ) : null}
           </div>
           {/* 右侧工具窗口参与横向布局；左边这条分隔缝只调整右栏自己的宽度。 */}
-          {activeRightPanel && !(activeRightPanel === "browser" && browserExpanded) ? (
+          {activeRightPanel && !rightPanelExpanded ? (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -5506,55 +5580,24 @@ export default function App() {
             <section
               className={`tool-window is-right${activeRightPanel === "browser" ? " is-browser" : ""}`}
               ref={rightSidePanelRef}
-              style={{ width: activeRightPanel === "browser" ? browserSidebarWidth : rightSidebarWidth }}
+              style={{ width: rightPanelExpanded ? undefined : (activeRightPanel === "browser" ? browserSidebarWidth : rightSidebarWidth) }}
             >
               <header className="tool-window-head">
                 <span className="tool-window-title">
                   {sidePanelTitle(activeRightPanel)}
                 </span>
                 <span className="status-spacer" />
-                {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai" || activeRightPanel === "browser"
-                  ? sidePanelActions(activeRightPanel) : null}
-                {activeRightPanel === "maven" ? (
-                  <button
-                    type="button"
-                    className="icon-button is-inline"
-                    title={t("maven.reload")}
-                    onClick={reloadMaven}
-                  >
-                    <RefreshCw size={14} className={maven.status === "loading" ? "is-spinning" : undefined} />
-                  </button>
-                ) : null}
-                {activeRightPanel === "notifications" ? (
-                  <>
-                    <button
-                      type="button"
-                      className="icon-button is-inline"
-                      onClick={markAllNotificationsRead}
-                      disabled={notifications.length === 0}
-                      title={t("notifications.markAllRead")}
-                    >
-                      <CheckCheck size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button is-inline"
-                      onClick={clearAllNotifications}
-                      disabled={notifications.length === 0}
-                      title={t("notifications.clearAll")}
-                    >
-                      <Eraser size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button is-inline"
-                      onClick={() => tabPane("notifications")}
-                      title={t("tool.showAsTab")}
-                    >
-                      <Maximize2 size={15} />
-                    </button>
-                  </>
-                ) : null}
+                {sidePanelActions(activeRightPanel)}
+                <button
+                  type="button"
+                  className="icon-button is-inline"
+                  title={rightPanelExpanded ? t("window.restore") : t("window.maximize")}
+                  aria-label={rightPanelExpanded ? t("window.restore") : t("window.maximize")}
+                  aria-pressed={rightPanelExpanded}
+                  onClick={() => setRightPanelExpanded((expanded) => !expanded)}
+                >
+                  {rightPanelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                </button>
                 <button
                   type="button"
                   className="icon-button is-inline"

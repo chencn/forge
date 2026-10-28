@@ -74,6 +74,9 @@ pub async fn set_enabled(app: &AppHandle, id: &str, enabled: bool) -> Result<Val
             }
         }
     }
+    if result.is_ok() && enabled && current(app, id, generation) {
+        follow_hover(app, id, generation);
+    }
     changed(app);
     result
 }
@@ -87,6 +90,8 @@ async fn paint(app: &AppHandle, id: &str) -> Result<(), String> {
     let picker = panel_tab(app, id)?.picker;
     if picker.active || picker.pending { return annotation::refresh(app).await; }
     surface::cdp(app, id, "Overlay.hideHighlight", json!({}), None, false).await?;
+    // 选定后的蓝框由持久标记负责；悬停框只在选取过程中存在。
+    let _ = hover_script(app, id, "globalThis.__forgeHoverMark?.dispose()").await;
     marker(app,id,picker.backend,if picker.backend.is_some(){"show"}else{"clear"}).await?;
     annotation::refresh(app).await
 }
@@ -110,28 +115,52 @@ async fn marker(app: &AppHandle, id: &str, backend: Option<i64>, action: &str) -
 
 // 固定函数只画一个不可交互的框，不改元素样式。闭合 Shadow DOM 隔离页面 CSS，
 // top layer 避免页面的 transform / z-index 遮住标记；无 IPC、事件输入或任意脚本参数。
-const SELECTION_MARK: &str = r#"function() {
-  const previous=globalThis.__forgeSelectionMark;
+const SELECTION_MARK: &str = r#"function(slot) {
+  const hover=slot==="hover";
+  const key=hover?"__forgeHoverMark":"__forgeSelectionMark";
+  const previous=globalThis[key];
   if(previous?.node===this && previous.host.isConnected){previous.show();return;}
-  if(!(this instanceof Element)||!this.isConnected)throw new Error('detached');
+  if(!(this instanceof Element)||!this.isConnected||this.hasAttribute("data-forge-mark"))throw new Error('detached');
   previous?.dispose();
   const host=document.createElement('div'), box=document.createElement('div');
-  host.setAttribute('aria-hidden','true');host.inert=true;host.setAttribute('popover','manual');
-  for(const [key,value] of Object.entries({all:'initial',position:'fixed',inset:'0',width:'100%',height:'100%',margin:'0',padding:'0',border:'0',background:'transparent',overflow:'visible','pointer-events':'none','z-index':'2147483647'}))host.style.setProperty(key,value,'important');
-  for(const [key,value] of Object.entries({all:'initial',position:'fixed','box-sizing':'border-box',outline:'2px solid #4f78ff','outline-offset':'0',background:'rgba(79,120,255,.12)','pointer-events':'none'}))box.style.setProperty(key,value,'important');
+  host.setAttribute('aria-hidden','true');host.inert=true;host.setAttribute('popover','manual');host.setAttribute('data-forge-mark',key);
+  for(const [name,value] of Object.entries({all:'initial',position:'fixed',inset:'0',width:'100%',height:'100%',margin:'0',padding:'0',border:'0',background:'transparent',overflow:'visible','pointer-events':'none','z-index':'2147483647'}))host.style.setProperty(name,value,'important');
+  for(const [name,value] of Object.entries({all:'initial',position:'fixed','box-sizing':'border-box',outline:'2px solid #4f78ff','outline-offset':hover?'2px':'0',background:'rgba(79,120,255,.12)','pointer-events':'none'}))box.style.setProperty(name,value,'important');
   host.attachShadow({mode:'closed'}).append(box);document.documentElement.append(host);
   try{host.showPopover();}catch{}
   const node=this;let frame=0,visible=true,disposed=false;
   // 截图隐藏只修改闭合 shadow 内部，不能使页面的 DOM 引用因标记自身变化而失效。
-  const state={node,host,show(){visible=true;box.style.setProperty('visibility','visible','important');},hide(){visible=false;box.style.setProperty('visibility','hidden','important');},dispose(){disposed=true;cancelAnimationFrame(frame);host.remove();if(globalThis.__forgeSelectionMark===state)delete globalThis.__forgeSelectionMark;}};
+  const state={node,host,show(){visible=true;box.style.setProperty('visibility','visible','important');},hide(){visible=false;box.style.setProperty('visibility','hidden','important');},dispose(){disposed=true;cancelAnimationFrame(frame);host.remove();if(globalThis[key]===state)delete globalThis[key];}};
   const update=()=>{
     if(disposed)return;
     if(!node.isConnected){state.dispose();return;}
-    if(visible){const r=node.getBoundingClientRect();for(const [key,value] of Object.entries({left:r.x+'px',top:r.y+'px',width:r.width+'px',height:r.height+'px',display:r.width&&r.height?'block':'none'}))box.style.setProperty(key,value,'important');}
+    if(visible){const r=node.getBoundingClientRect();for(const [name,value] of Object.entries({left:r.x+'px',top:r.y+'px',width:r.width+'px',height:r.height+'px',display:r.width&&r.height?'block':'none'}))box.style.setProperty(name,value,'important');}
     frame=requestAnimationFrame(update);
   };
-  globalThis.__forgeSelectionMark=state;update();
+  globalThis[key]=state;update();
 }"#;
+
+async fn hover_script(app: &AppHandle, id: &str, expression: &str) -> Result<(), String> {
+    let tab = panel_tab(app, id)?;
+    if tab.frame.is_empty() { return Ok(()); }
+    let world = surface::cdp(app, id, "Page.createIsolatedWorld", json!({"frameId":tab.frame,"worldName":"forge-user-picker","grantUniveralAccess":false}), None, false).await?;
+    let result = surface::cdp(app, id, "Runtime.evaluate", json!({"contextId":world["executionContextId"],"expression":expression,"returnByValue":true}), None, false).await?;
+    if result.get("exceptionDetails").is_some() { return Err("无法更新选取悬停框".into()); }
+    Ok(())
+}
+
+async fn show_hover(app: &AppHandle, id: &str, backend: i64) -> Result<(), String> {
+    let tab = panel_tab(app, id)?;
+    if tab.frame.is_empty() || !tab.picker.active { return Ok(()); }
+    let world = surface::cdp(app, id, "Page.createIsolatedWorld", json!({"frameId":tab.frame,"worldName":"forge-user-picker","grantUniveralAccess":false}), None, false).await?;
+    let context = world["executionContextId"].as_i64().ok_or("选取上下文不可用")?;
+    let node = surface::cdp(app, id, "DOM.resolveNode", json!({"backendNodeId":backend,"executionContextId":context,"objectGroup":"forge-user-hover"}), None, false).await?;
+    let Some(object) = node["object"]["objectId"].as_str() else { return Ok(()) };
+    let result = surface::cdp(app, id, "Runtime.callFunctionOn", json!({"objectId":object,"functionDeclaration":SELECTION_MARK,"arguments":[{"value":"hover"}],"returnByValue":true}), None, false).await;
+    let _ = surface::cdp(app, id, "Runtime.releaseObjectGroup", json!({"objectGroup":"forge-user-hover"}), None, false).await;
+    if result?.get("exceptionDetails").is_some() { return Err("无法呈现悬停框".into()); }
+    Ok(())
+}
 
 /// 截图只隐藏标记，不结束选取；成功或失败都在返回前恢复。
 pub async fn capture(app: &AppHandle,id: &str,params: Value,ticket: Option<super::Ticket>,document: bool) -> Result<Value,String> {
@@ -144,11 +173,13 @@ async fn capture_locked(app: &AppHandle,id: &str,params: Value,ticket: Option<su
     if !panel_tab(app,id)?.picker.in_use(){return surface::cdp(app,id,"Page.captureScreenshot",params,ticket,document).await;}
     surface::cdp(app,id,"Overlay.hideHighlight",json!({}),None,false).await?;
     marker(app,id,None,"hide").await?;
+    let _ = hover_script(app,id,"globalThis.__forgeHoverMark?.hide()").await;
     let image=surface::cdp(app,id,"Page.captureScreenshot",params,ticket,document).await;
     // 重选尚未完成时仍保留旧标记；paint 此时只更新评论面板，不能负责恢复截图隐藏。
     let restored=async {
         let picker=panel_tab(app,id)?.picker;
         if let Some(backend)=picker.backend {marker(app,id,Some(backend),"show").await?;}
+        if picker.active { let _ = hover_script(app,id,"globalThis.__forgeHoverMark?.show()").await; }
         paint(app,id).await
     }.await;
     let image=image?;
@@ -210,7 +241,49 @@ pub fn reset_overlay(app: &AppHandle, id: &str) {
             let _ = surface::cdp(&app, &id, "Overlay.setInspectMode", inspect_mode(false), None, false).await;
             let _ = surface::cdp(&app, &id, "Overlay.hideHighlight", json!({}), None, false).await;
             let _ = marker(&app,&id,None,"clear").await;
+            let _ = hover_script(&app,&id,"globalThis.__forgeHoverMark?.dispose()").await;
             let _ = annotation::refresh(&app).await;
+        }
+    });
+}
+
+/// 选取过程中跟随鼠标画出和选定后相同的蓝框。WebView2 不把悬停节点事件交给宿主，
+/// 引擎高亮又只填充内容区，所以按光标采样节点；不结束捕获，也不改已提交的标记。
+fn follow_hover(app: &AppHandle, id: &str, generation: u64) {
+    let app = app.clone();
+    let id = id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let mut seen = None;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(32)).await;
+            let (queue, zoom, preview_scale) = {
+                let state = host(&app).lock();
+                let Some(tab) = state.tabs.get(&id).filter(|tab| tab.picker.active && !tab.picker.pending && tab.picker.generation == generation) else { break };
+                (tab.picker.queue.clone(), tab.zoom, tab.preview_scale)
+            };
+            let _queue = queue.lock().await;
+            let still = host(&app).lock().tabs.get(&id).is_some_and(|tab| tab.picker.active && !tab.picker.pending && tab.picker.generation == generation);
+            if !still { break; }
+            let backend = match surface::viewport_cursor(&app, &id, zoom, preview_scale).await {
+                Ok(Some((x, y))) => {
+                    let (x, y) = (x.round(), y.round());
+                    if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 {
+                        surface::cdp(&app, &id, "DOM.getNodeForLocation", json!({"x": x as i64, "y": y as i64}), None, false).await.ok().and_then(|node| node["backendNodeId"].as_i64().filter(|node| *node > 0))
+                    } else { None }
+                }
+                Ok(None) => None,
+                Err(_) => continue,
+            };
+            if backend == seen { continue; }
+            if let Some(node) = backend {
+                if show_hover(&app, &id, node).await.is_err() { continue; }
+            } else {
+                let _ = hover_script(&app, &id, "globalThis.__forgeHoverMark?.dispose()").await;
+            }
+            seen = backend;
+        }
+        if host(&app).lock().tabs.get(&id).is_some_and(|tab| tab.picker.generation == generation) {
+            let _ = hover_script(&app, &id, "globalThis.__forgeHoverMark?.dispose()").await;
         }
     });
 }

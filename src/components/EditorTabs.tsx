@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { ReactNode } from "react";
 import { Columns2, Save, X } from "lucide-react";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useI18n } from "../i18n";
+import { createEditorTabListId, editorTabDropTarget, editorTabList, registerEditorTabList, unregisterEditorTabList } from "../lib/editorSplit";
 import AiSessionActivity from "./AiSessionActivity";
 import type { TranslationKey } from "../i18n/lang/zh";
 
@@ -42,8 +43,10 @@ interface EditorTabsProps {
   onClose: (id: string, kind: TabKind) => void;
   onCloseOthers: (id: string) => void;
   onCloseAll: () => void;
-  /** 拖到另一颗标签上：把 from 落到 to 现在的位子。 */
-  onReorder: (from: string, to: string) => void;
+  /** 拖到另一颗标签上：把 from 落到 to 前面。to 为空表示接到这一栏末尾。 */
+  onReorder: (from: string, to: string | null) => void;
+  /** 从另一栏放下。`beforeId` 为空表示接到这一栏末尾。没有分栏时不传。 */
+  onImport?: (id: string, beforeId: string | null) => void;
   onSave: (path: string) => void;
   onSaveAll?: () => void;
   isDirty: (path: string) => boolean;
@@ -85,6 +88,7 @@ export default function EditorTabs({
   onCloseOthers,
   onCloseAll,
   onReorder,
+  onImport,
   onSave,
   onSaveAll,
   isDirty,
@@ -99,8 +103,21 @@ export default function EditorTabs({
 }: EditorTabsProps) {
   const { t } = useI18n();
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
-  /** 正在拖的那颗标签；dragover 落到别的标签上就换序。 */
-  const dragId = useRef<string | null>(null);
+  /** WebView2 接管 HTML5 拖放后会画出禁止符号，所以排序和跨栏都走指针。 */
+  const pointerDrag = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    active: boolean;
+    offsetX: number;
+    offsetY: number;
+    ghost: HTMLElement | null;
+    drop: { listId: string; beforeId: string | null } | null;
+  } | null>(null);
+  const suppressClick = useRef(false);
+  const listKey = useRef("");
+  if (!listKey.current) listKey.current = createEditorTabListId();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Lithe `useTabWheelScroll`：条藏掉之后，竖着滚轮也改成左右挪标签。
@@ -124,6 +141,11 @@ export default function EditorTabs({
   }, [tabs.length]);
 
   useEffect(() => {
+    const id = listKey.current;
+    return () => unregisterEditorTabList(id);
+  }, []);
+
+  useEffect(() => {
     const container = scrollRef.current;
     const activeTab = container?.querySelector<HTMLElement>('[aria-selected="true"]');
     if (!container || !activeTab) return;
@@ -134,7 +156,80 @@ export default function EditorTabs({
     }
   }, [activeId, tabs.length]);
 
-  if (tabs.length === 0) return null;
+  if (tabs.length === 0 && !onImport) {
+    unregisterEditorTabList(listKey.current);
+    return null;
+  }
+  registerEditorTabList(listKey.current, { ids: tabs.map((tab) => tab.id), onImport });
+
+  const clearDropPaint = () => {
+    if (typeof document === "undefined") return;
+    document.querySelectorAll("[data-editor-tablist].is-importing").forEach((element) => {
+      element.classList.remove("is-importing");
+    });
+  };
+  const paintDrop = (drop: { listId: string; beforeId: string | null } | null) => {
+    clearDropPaint();
+    if (!drop?.beforeId && drop) document.querySelector(`[data-editor-tablist="${drop.listId}"]`)?.classList.add("is-importing");
+  };
+  /** 拖起来的标签跟着指针走。幽灵层不接指针，底下的落点仍能被点到。 */
+  const moveGhost = (source: HTMLDivElement, x: number, y: number) => {
+    const drag = pointerDrag.current;
+    if (!drag || typeof document === "undefined") return;
+    if (!drag.ghost) {
+      const rect = source.getBoundingClientRect();
+      const ghost = source.cloneNode(true) as HTMLElement;
+      ghost.classList.add("is-drag-ghost");
+      ghost.removeAttribute("data-editor-tab");
+      ghost.style.width = `${rect.width}px`;
+      ghost.style.height = `${rect.height}px`;
+      document.body.appendChild(ghost);
+      source.classList.add("is-drag-source");
+      document.body.classList.add("is-editor-tab-dragging");
+      drag.ghost = ghost;
+      drag.offsetX = x - rect.left;
+      drag.offsetY = y - rect.top;
+    }
+    drag.ghost.style.left = `${x - drag.offsetX}px`;
+    drag.ghost.style.top = `${y - drag.offsetY}px`;
+  };
+  const removeGhost = (source: HTMLElement | null) => {
+    pointerDrag.current?.ghost?.remove();
+    if (pointerDrag.current) pointerDrag.current.ghost = null;
+    source?.classList.remove("is-drag-source");
+    document.body?.classList.remove("is-editor-tab-dragging");
+  };
+  const dropAt = (x: number, y: number, fromId: string) => {
+    if (typeof document === "undefined") return null;
+    const hit = document.elementFromPoint(x, y);
+    const listElement = hit?.closest<HTMLElement>("[data-editor-tablist]");
+    const listId = listElement?.dataset.editorTablist;
+    const list = listId ? editorTabList(listId) : null;
+    if (!listId || !list) return null;
+    const tabElement = hit?.closest<HTMLElement>("[data-editor-tab]");
+    const tabId = tabElement?.dataset.editorTab ?? null;
+    const after = !!tabElement && x > tabElement.getBoundingClientRect().left + tabElement.getBoundingClientRect().width / 2;
+    const target = editorTabDropTarget(fromId, list.ids, !!list.onImport, tabId, after);
+    return target ? { listId, beforeId: target.beforeId } : null;
+  };
+  const finishPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, commit: boolean) => {
+    const drag = pointerDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const drop = drag.drop;
+    removeGhost(event.currentTarget);
+    pointerDrag.current = null;
+    clearDropPaint();
+    if (drag.active) {
+      suppressClick.current = true;
+      window.setTimeout(() => { suppressClick.current = false; }, 0);
+    }
+    if (!commit || !drag.active || !drop) return;
+    const list = editorTabList(drop.listId);
+    if (!list) return;
+    if (list.ids.includes(drag.id)) onReorder(drag.id, drop.beforeId);
+    else list.onImport?.(drag.id, drop.beforeId);
+  };
 
   const docTabs = tabs.filter((tab) => tab.kind === "doc");
   const activeDocTab = docTabs.find((tab) => tab.id === activeId) ?? null;
@@ -224,7 +319,11 @@ export default function EditorTabs({
 
   return (
     <>
-      <div className="editor-tabs" role="tablist">
+      <div
+        className="editor-tabs"
+        role="tablist"
+        data-editor-tablist={listKey.current}
+      >
         <div className="editor-tabs-scroll" ref={scrollRef}>
         {tabs.map((tab) => {
           const active = tab.id === activeId;
@@ -237,23 +336,31 @@ export default function EditorTabs({
                 tab.dirty ? " is-dirty" : ""
               }`}
               title={tab.title}
-              draggable
-              onClick={() => onSelect(tab.id)}
-              onDragStart={(event) => {
-                dragId.current = tab.id;
-                event.dataTransfer.effectAllowed = "move";
+              data-editor-tab={tab.id}
+              onClick={() => {
+                if (suppressClick.current) return;
+                onSelect(tab.id);
               }}
-              onDragOver={(event) => {
-                const from = dragId.current;
-                if (!from || from === tab.id) return;
+              onPointerDown={(event) => {
+                if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+                pointerDrag.current = {
+                  id: tab.id, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+                  active: false, offsetX: 0, offsetY: 0, ghost: null, drop: null,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                const drag = pointerDrag.current;
+                if (!drag || drag.pointerId !== event.pointerId) return;
+                if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
+                drag.active = true;
                 event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                onReorder(from, tab.id);
+                moveGhost(event.currentTarget, event.clientX, event.clientY);
+                drag.drop = dropAt(event.clientX, event.clientY, drag.id);
+                paintDrop(drag.drop);
               }}
-              onDrop={(event) => event.preventDefault()}
-              onDragEnd={() => {
-                dragId.current = null;
-              }}
+              onPointerUp={(event) => finishPointerDrag(event, true)}
+              onPointerCancel={(event) => finishPointerDrag(event, false)}
               onContextMenu={(event) => openMenu(event, menuFor(tab))}
               onAuxClick={(event) => {
                 if (event.button === 1) onClose(tab.id, tab.kind);

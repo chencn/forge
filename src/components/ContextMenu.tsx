@@ -188,8 +188,13 @@ export default function ContextMenu({ anchor, onClose }: { anchor: MenuAnchor; o
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
+    // 监听键盘 Esc 和窗口失焦（如点击原生 WebView2 或切换窗口），保证右键菜单自然关闭
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("blur", onClose);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", onClose);
+    };
   }, [onClose]);
 
   return (

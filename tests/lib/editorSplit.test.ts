@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createEditorSplit,
   partitionEditorTabs,
+  editorTabDropTarget,
+  relocateEditorTab,
   replaceEditorSplitTab,
 } from "../../src/lib/editorSplit";
 
@@ -41,6 +43,16 @@ describe("编辑区标签分组", () => {
     expect(transition.primaryActiveId).toBe("doc|a");
   });
 
+  it("子代理分栏默认 7:3，文件预览默认 5:5，未指定时沿用当前比例", () => {
+    const ids = tabs.map((tab) => tab.id);
+    expect(createEditorSplit(ids, "doc|a", "pane|terminal", "horizontal").split.ratio).toBe(50);
+    const subagent = createEditorSplit(ids, "doc|a", "ai|session-1", "horizontal", null, 70);
+    expect(subagent.split.ratio).toBe(70);
+    const kept = createEditorSplit(ids, "doc|a", "pane|terminal", "horizontal", subagent.split);
+    expect(kept.split.ratio).toBe(70);
+    expect(createEditorSplit(ids, "doc|a", "pane|terminal", "horizontal", subagent.split, 50).split.ratio).toBe(50);
+  });
+
   it("再次拆分只追加目标标签，原副栏标签保留且不重复", () => {
     const ids = tabs.map((tab) => tab.id);
     const first = createEditorSplit(ids, "pane|terminal", "pane|terminal", "horizontal");
@@ -50,6 +62,24 @@ describe("编辑区标签分组", () => {
     expect(groups.primary.map((tab) => tab.id)).toEqual(["doc|a"]);
     expect(groups.secondary.map((tab) => tab.id)).toEqual(["pane|terminal", "ai|session-1"]);
     expect(repeated.split.tabId).toBe("ai|session-1");
+  });
+
+  it("指针落在标签左半边插到前面，右半边插到后面，空白处接到末尾", () => {
+    const ids = ["doc|a", "doc|b"];
+    expect(editorTabDropTarget("doc|a", ids, false, "doc|b", false)).toEqual({ beforeId: "doc|b" });
+    expect(editorTabDropTarget("doc|a", ids, false, "doc|b", true)).toEqual({ beforeId: null });
+    expect(editorTabDropTarget("doc|a", ids, false, "doc|a", false)).toBeNull();
+    expect(editorTabDropTarget("doc|left", ["doc|right"], true, null, false)).toEqual({ beforeId: null });
+    expect(editorTabDropTarget("doc|left", ["doc|right"], false, "doc|right", false)).toBeNull();
+  });
+
+  it("跨栏拖动按目标栏的落点插入，拖到空白处则接到该栏末尾", () => {
+    const order = ["doc|a", "ai|left", "ai|right", "doc|b"];
+    const secondary = ["ai|right"];
+    expect(relocateEditorTab(order, secondary, "doc|a", "ai|right", "secondary")).toEqual(["ai|left", "doc|a", "ai|right", "doc|b"]);
+    expect(relocateEditorTab(order, secondary, "doc|a", null, "secondary")).toEqual(["ai|left", "ai|right", "doc|a", "doc|b"]);
+    expect(relocateEditorTab(order, secondary, "ai|right", "doc|b", "primary")).toEqual(["doc|a", "ai|left", "ai|right", "doc|b"]);
+    expect(relocateEditorTab(order, secondary, "ai|right", null, "primary")).toEqual(["doc|a", "ai|left", "doc|b", "ai|right"]);
   });
 
   it("取消拆分后所有标签归回主栏，标签内容和顺序保持不变", () => {

@@ -35,13 +35,14 @@ mod native {
         DevToolsProtocolEventReceivedEventHandler, PermissionRequestedEventHandler,
     };
     use windows::core::{HSTRING, PWSTR};
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::UI::Shell::{
         DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, SetWindowPos, SIZE_MINIMIZED, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
-        SWP_NOZORDER, WM_MOVE, WM_MOVING, WM_NCDESTROY, WM_SIZE,
+        GetClientRect, GetCursorPos, GetWindowRect, IsChild, SetWindowPos, SIZE_MINIMIZED,
+        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOZORDER, WM_MOVE, WM_MOVING, WM_NCDESTROY,
+        WM_SIZE, WindowFromPoint,
     };
     struct Surface {
         view: wry::WebView,
@@ -230,6 +231,7 @@ mod native {
                 "Page.javascriptDialogOpening",
                 "Page.javascriptDialogClosed",
                 "Overlay.inspectNodeRequested",
+                "Overlay.nodeHighlightRequested",
                 "Overlay.inspectModeCanceled",
             ] {
                 let receiver =
@@ -332,6 +334,27 @@ mod native {
             .await
             .map_err(|_| "TIMEOUT: CDP callback exceeded deadline; action may have dispatched")?
             .map_err(|_| "CDP callback lost")?
+    }
+    /// 光标相对页面视口的 CSS 坐标。指针不在这个页面上时返回 None，避免隔着评论框误标。
+    pub async fn viewport_cursor(app: &AppHandle, id: &str, zoom: f64, preview_scale: f64) -> Result<Option<(f64, f64)>, String> {
+        let app = app.clone();
+        let id = id.to_string();
+        ui(&app, move || {
+            let hwnd = VIEWS.with(|views| views.borrow().get(&id).ok_or("page closed".to_string())?.view.hwnd().map_err(|e| e.to_string()))?;
+            let scale = app.get_webview_window("main").and_then(|window| window.scale_factor().ok()).filter(|scale| scale.is_finite() && *scale > 0.0).unwrap_or(1.0);
+            let mut cursor = POINT::default();
+            unsafe { GetCursorPos(&mut cursor) }.map_err(|e| e.to_string())?;
+            let hit = unsafe { WindowFromPoint(cursor) };
+            if hit != hwnd && !unsafe { IsChild(hwnd, hit) }.as_bool() { return Ok(None); }
+            let mut rect = RECT::default();
+            unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| e.to_string())?;
+            let x = cursor.x - rect.left;
+            let y = cursor.y - rect.top;
+            if x < 0 || y < 0 || x >= rect.right - rect.left || y >= rect.bottom - rect.top { return Ok(None); }
+            let unit = scale * preview_scale * zoom;
+            if !unit.is_finite() || unit <= 0.0 { return Ok(None); }
+            Ok(Some((x as f64 / unit, y as f64 / unit)))
+        }).await
     }
     /// 仅主界面可以调用的有限浏览器控件，不向 MCP 暴露任意原生方法。
     pub async fn control(app: &AppHandle, id: String, zoom: Option<f64>) -> Result<(), String> {
@@ -516,4 +539,8 @@ pub async fn close(_app: &AppHandle, _id: String) -> Result<(), String> {
 #[cfg(not(windows))]
 pub async fn control(_app: &AppHandle, _id: String, _zoom: Option<f64>) -> Result<(), String> {
     Err("UNSUPPORTED: WebView2 required".into())
+}
+#[cfg(not(windows))]
+pub async fn viewport_cursor(_app: &AppHandle, _id: &str, _zoom: f64, _preview_scale: f64) -> Result<Option<(f64, f64)>, String> {
+    Ok(None)
 }

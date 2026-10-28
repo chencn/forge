@@ -5,10 +5,11 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Camera, Check, ChevronDown, Code2, Copy, Globe, History, House, LoaderCircle, LockKeyhole, Minus, MonitorSmartphone, MousePointer2, Plus, RefreshCw, RotateCw, Search, Settings2, ShieldCheck, ShieldOff, Signal, Square, TerminalSquare, Trash2, WifiOff, X } from "lucide-react";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
-import { browserAddress, browserElementMessage, browserNetworkId, browserStorageKey, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, loadBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../lib/browser";
+import { browserAddress, browserElementMessage, browserNetworkId, browserStorageKey, copyBrowserScreenshot, DEFAULT_BROWSER_EMULATION, isRectOverlapping, loadBrowserLibrary, rememberBrowserLocation, saveBrowserLibrary } from "../lib/browser";
 import type { BrowserElementSelection, BrowserEmulation, BrowserEmulationPatch, BrowserLocation, BrowserPicker } from "../lib/browser";
 import BrowserEmulationSettings from "./BrowserEmulationSettings";
 import type { AiInputPayload } from "../lib/aiInputBridge";
+import { sameAiWorkspace } from "../lib/aiSessions";
 import { openExternal } from "../lib/fs";
 import "../styles/browser.css";
 
@@ -23,10 +24,26 @@ const hiddenBounds = { x: 0, y: 0, width: 1, height: 1 };
 const emptyDetails: Details = { canGoBack: false, canGoForward: false, console: [], network: [], dialog: null, picker: { active: false, selection: null, error: null } };
 // 原生呈现队列跨卸载和工作区切换共享，过期回调不能重新显示旧页面。
 let presentation = Promise.resolve();
-function hasOverlay() {
-  return Array.from(document.querySelectorAll('[role="dialog"], [role="menu"], [aria-modal="true"], .context-menu, .popover, .prompt-overlay, .browser-suggestions')).some((element) => {
+/**
+ * 检测视口上是否有遮挡浮层（对话框、菜单、模态层等）。
+ * 只有当浮层与当前原生视口区域在几何空间上发生重叠相交时才判定为遮挡，
+ * 避免会话气泡等其它区域弹出右键菜单时导致右侧浏览器无故白屏。
+ */
+function hasOverlay(viewportNode: HTMLElement | null) {
+  if (!viewportNode) return false;
+  const viewportRect = viewportNode.getBoundingClientRect();
+  if (viewportRect.width <= 0 || viewportRect.height <= 0) return false;
+  return Array.from(
+    document.querySelectorAll(
+      '[role="dialog"], [role="menu"], [aria-modal="true"], .context-menu, .popover, .prompt-overlay, .browser-suggestions'
+    )
+  ).some((element) => {
     const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && getComputedStyle(element).visibility !== "hidden";
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const style = getComputedStyle(element);
+    if (style.visibility === "hidden" || style.display === "none") return false;
+    // 判断矩形是否相交重叠
+    return isRectOverlapping(rect, viewportRect);
   });
 }
 function hostLabel(url: string) { try { return new URL(url).host; } catch { return url; } }
@@ -78,7 +95,7 @@ export default function BrowserPanel({ workspace, sessions, targetTabId, onTarge
   useEffect(() => {
     // 本地原生浮层负责输入，宿主继续复用当前会话附件入口和交付偏好。
     const stop = listen<AnnotationSubmission>("forge-browser-annotation-submit", ({ payload }) => {
-      if (payload.workspace === workspace) void deliverAnnotation.current(payload);
+      void deliverAnnotation.current(payload);
     });
     return () => { void stop.then((unlisten) => unlisten()); };
   }, [workspace]);
@@ -141,7 +158,7 @@ export default function BrowserPanel({ workspace, sessions, targetTabId, onTarge
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const rect = node.getBoundingClientRect();
-        const visible = current && canBrowse && !blocked && !document.hidden && !hasOverlay() && rect.width >= 1 && rect.height >= 1;
+        const visible = current && canBrowse && !blocked && !document.hidden && !hasOverlay(node) && rect.width >= 1 && rect.height >= 1;
         send(visible ? current.id : null, visible ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : hiddenBounds);
       });
     };
@@ -200,7 +217,7 @@ export default function BrowserPanel({ workspace, sessions, targetTabId, onTarge
   });
   deliverAnnotation.current = async ({ workspace: sourceWorkspace, selection, problem }) => {
     // 工作区切换与异步事件清理之间也不能把旧评论投递到新工作区。
-    if (sourceWorkspace !== workspace) {
+    if (!sameAiWorkspace(sourceWorkspace, workspace)) {
       await invoke("browser_panel_command", { tabId: selection.tabId, command: { action: "annotationResult", selectionId: selection.selectionId, error: t("browser.selectionChanged") } }).catch(() => {});
       return;
     }

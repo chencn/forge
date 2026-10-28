@@ -50,6 +50,11 @@ export function aiSessionStorageKey(root: string | null) {
   return `forge:ai-sessions:v1:${normalized || (root ? "/" : "global")}`;
 }
 
+/** 后端 canonicalize 会加上 `\\?\` 并改大小写；比较工作区时按同一目录处理。 */
+export function sameAiWorkspace(a: string, b: string): boolean {
+  return aiSessionStorageKey(a) === aiSessionStorageKey(b);
+}
+
 /**
  * 「同时删除 CLI 原生记录」的默认勾选态。真删不可逆，默认永远是不勾；这里记住的只是
  * 上一次那一下主动选择，而且按 CLI 分开存——Codex 是让 CLI 自己清 rollout，Claude 是直接
@@ -146,6 +151,24 @@ export type AiSessionAction =
  * 只收直接子级会把孙代理留成没人认领的死记录：后端删不掉、侧栏又看不见（列表按 parentSessionId
  * 把子代理藏在父行下），本地缓存也会一直占着。删除和会话级缓存清理都按这一组走。
  */
+/**
+ * 子代理标签序号，和父会话里的出现顺序一致。
+ * 父会话的子代理列表还没到时，按同级会话的创建时间给一个稳定序号。
+ */
+export function subagentOrdinal(
+  session: AiSession,
+  sessions: readonly AiSession[],
+  parentAgents: readonly { sessionId?: string }[] = [],
+): number {
+  const listed = parentAgents.findIndex((agent) => agent.sessionId === session.id);
+  if (listed >= 0) return listed + 1;
+  const siblings = sessions
+    .filter((item) => item.parentSessionId === session.parentSessionId)
+    .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const at = siblings.findIndex((item) => item.id === session.id);
+  return (at >= 0 ? at : siblings.length) + 1;
+}
+
 export function sessionSubtree(sessions: AiSession[], id: string): string[] {
   const ids = [id];
   for (let cursor = 0; cursor < ids.length; cursor++) {
