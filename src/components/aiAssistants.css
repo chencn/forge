@@ -963,6 +963,14 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-user-msg { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 100%; }
 .ai-user-msg-images { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .ai-user-msg-images span { display: inline-flex; }
+.ai-chat-image { position: relative; display: inline-flex; }
+.ai-chat-image-copy { position: absolute; right: 3px; bottom: 3px; display: grid; place-items: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; cursor: pointer;
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent); color: var(--text-secondary);
+  opacity: 0; transition: opacity 150ms, color 150ms; }
+.ai-chat-image:hover .ai-chat-image-copy, .ai-chat-image-copy:focus-visible { opacity: 1; }
+.ai-chat-image-copy:hover { color: var(--text-primary); }
+.ai-image-attachments .ai-chat-image { width: 100%; height: 100%; }
 .ai-user-msg-images img { display: block; width: 56px; height: 56px; object-fit: cover; border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); background: var(--bg-tertiary); }
 .ai-user-msg-images img.is-missing { width: auto; height: auto; padding: 8px 10px; box-sizing: border-box;
@@ -1943,14 +1951,17 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-plan-entry.is-approved > summary strong { color: var(--accent-green-text); }
 .ai-plan-entry.is-expired, .ai-plan-entry.is-superseded { opacity: .72; }
 .ai-background-strip { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; }
-.ai-permission-denied { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--accent-amber-text); border-radius: 7px; background: var(--accent-amber-bg); color: var(--text-primary); font-size: 11.5px; }
+.ai-permission-denied { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--accent-amber-text); border-radius: 7px; background: var(--accent-amber-bg); color: var(--text-primary); font-size: 11.5px; user-select: text; -webkit-user-select: text; }
 .ai-permission-denied > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .ai-permission-header { display: flex; align-items: center; gap: 6px; }
 .ai-permission-tool { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: 10px; font-weight: 600; background: color-mix(in srgb, var(--accent-amber-text) 16%, transparent); color: var(--accent-amber-text); }
-.ai-permission-denied code { overflow-wrap: anywhere; color: var(--text-secondary); font-size: 10.5px; }
+.ai-permission-denied code { overflow-wrap: anywhere; color: var(--text-secondary); font-size: 10.5px; user-select: text; -webkit-user-select: text; }
 .ai-permission-denied p { margin: 0; color: var(--text-secondary); font-size: 10.5px; overflow-wrap: anywhere; }
-.ai-permission-text { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-primary) !important; background: color-mix(in srgb, var(--bg-primary) 50%, transparent); padding: 4px 6px; border-radius: 4px; }
-.ai-permission-denied .button { flex: none; }
+.ai-permission-text { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-primary) !important; background: color-mix(in srgb, var(--bg-primary) 50%, transparent); padding: 4px 6px; border-radius: 4px; user-select: text; -webkit-user-select: text; word-break: break-all; }
+.ai-permission-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.ai-permission-copy { color: var(--text-secondary); }
+.ai-permission-copy:hover { color: var(--text-primary); }
+.ai-permission-actions .button { flex: none; }
 .ai-extra-dirs li { display: flex; align-items: center; gap: 6px; }
 .ai-extra-dirs code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 

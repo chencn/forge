@@ -236,6 +236,22 @@ pub fn validate_paths(app: &AppHandle, paths: &[String]) -> Result<Vec<PathBuf>,
         .collect()
 }
 
+/// 把沙箱里的一张图读成剪贴板载荷。只认缓存内的普通文件和文件头，不按扩展名放行。
+pub fn read_for_clipboard(app: &AppHandle, path: &str) -> Result<Value, String> {
+    let file = confined(app, path)?;
+    let bytes = std::fs::read(&file).map_err(|error| format!("无法读取附件图片：{error}"))?;
+    clipboard_body(&bytes)
+}
+
+/// 文件头决定 MIME；正文交给前端写入系统剪贴板。空文件、超限和非图片在这里停下。
+fn clipboard_body(bytes: &[u8]) -> Result<Value, String> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+        return Err("图片不能为空且不能超过 8 MiB".into());
+    }
+    let (_, media_type) = detect_kind(bytes).ok_or("仅支持 PNG、JPEG、GIF 和 WebP 图片")?;
+    Ok(json!({ "mediaType": media_type, "base64": STANDARD.encode(bytes) }))
+}
+
 /// 输入框里撤掉一张还没发出去的附件：已经进过历史的有引用标记，那条路只能随会话删除。
 pub fn delete(app: &AppHandle, path: &str) -> Result<(), String> {
     let file = confined(app, path)?;
@@ -430,6 +446,18 @@ mod tests {
         assert_eq!(detect_kind(b"\x89PNG\r\n\x1a\n\x00"), Some(("png", "image/png")));
         assert_eq!(detect_kind(b"MZ\x90\x00\x03\x00"), None);
         assert_eq!(detect_kind(b""), None);
+    }
+
+    /// 复制只交出真实图片字节；文本、空内容和超限都不能进剪贴板载荷。
+    #[test]
+    fn clipboard_body_keeps_real_images_only() {
+        let png = b"\x89PNG\r\n\x1a\n\x00";
+        let body = clipboard_body(png).unwrap();
+        assert_eq!(body["mediaType"], json!("image/png"));
+        assert_eq!(body["base64"], json!(STANDARD.encode(png)));
+        assert!(clipboard_body(b"just text").is_err());
+        assert!(clipboard_body(b"").is_err());
+        assert!(clipboard_body(&vec![0u8; MAX_IMAGE_BYTES + 1]).is_err());
     }
 
     /// 清理只认自己生成过的名字：陌生文件、标记文件、别的扩展名都不能被删。

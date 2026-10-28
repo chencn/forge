@@ -254,6 +254,7 @@ pub fn run() {
             ai_runtime::ai_runtime_save_text_attachment,
             ai_runtime::ai_runtime_file_line_count,
             ai_runtime::ai_runtime_delete_image,
+            ai_runtime::ai_runtime_read_image,
             ai_runtime::ai_runtime_image_limits,
             ai_runtime::ai_runtime_create,
             ai_runtime::ai_runtime_models,

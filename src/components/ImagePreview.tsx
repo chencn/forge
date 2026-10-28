@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Check, Copy, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { assetUrl } from "../lib/fs";
 import { useI18n } from "../i18n";
 
@@ -8,6 +8,8 @@ interface ImagePreviewProps {
   path: string;
   /** 磁盘指纹；变了就换 URL 的查询串，绕过 webview 缓存。 */
   stamp: number;
+  /** 提供时在工具条上显示复制；失败由调用方处理，这里不把按钮标成已复制。 */
+  onCopy?: () => Promise<void>;
 }
 
 /** 缩放倍率档位，点加号 / 减号在档位间跳。 */
@@ -26,10 +28,11 @@ const CANVAS_PADDING = 48;
  * 部分落在滚动区之外，滚不到。基准是「适应窗口」——按容器与图片原始尺寸算一个
  * 初始比例，图片一打开就完整可见，倍率在此基础上乘。
  */
-export default function ImagePreview({ path, stamp }: ImagePreviewProps) {
+export default function ImagePreview({ path, stamp, onCopy }: ImagePreviewProps) {
   const { t } = useI18n();
   const [zoom, setZoom] = useState(1);
   const [failed, setFailed] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -39,8 +42,15 @@ export default function ImagePreview({ path, stamp }: ImagePreviewProps) {
   useEffect(() => {
     setZoom(1);
     setFailed(false);
+    setCopied(false);
     setNatural(null);
   }, [path, stamp]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   // 盯住画布尺寸：窗口一改，适应窗口的比例要跟着重算。
   useEffect(() => {
@@ -105,6 +115,21 @@ export default function ImagePreview({ path, stamp }: ImagePreviewProps) {
         >
           <Maximize2 size={14} />
         </button>
+        {onCopy ? (
+          <button
+            type="button"
+            className="icon-button is-inline"
+            title={t(copied ? "action.copied" : "ai.chat.copyImage")}
+            aria-label={t(copied ? "action.copied" : "ai.chat.copyImage")}
+            onClick={() => {
+              const copy = onCopy;
+              if (!copy) return;
+              void copy().then(() => setCopied(true), () => {});
+            }}
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+        ) : null}
       </div>
       <div ref={canvasRef} className="image-canvas">
         {failed ? (

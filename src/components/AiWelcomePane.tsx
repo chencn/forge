@@ -17,6 +17,7 @@ import AiAgentPills from "./AiAgentPills";
 import AiCommandMenu from "./AiCommandMenu";
 import AiComposerShell from "./AiComposerShell";
 import AiComposerOptions, { type AiComposerHandle } from "./AiComposerOptions";
+import AiChatImage from "./AiChatImage";
 import AiImageDialog from "./AiImageDialog";
 import { watchAiInputDelivery } from "../lib/aiInputBridge";
 
@@ -271,7 +272,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
               overlay={menuVisible ? <AiCommandMenu id={menuId} suggestions={suggestions} selected={selectedCommand}
                 onChoose={chooseCommand} menuRef={commandMenu} showDiscovery={provider === "claude"} /> : null}
               attachments={images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
-                {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
+                {images.map((image) => <figure key={image.path}><AiChatImage path={image.path} name={image.name} onPreview={setLightbox} onError={setError} /><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
                   onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
               </div> : null}
               editor={<textarea
@@ -316,7 +317,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
       <div className="ai-welcome-tip">
         <span className="ai-welcome-tip-pill"><Lightbulb size={14} aria-hidden /><WelcomeTipText text={tip} /></span>
       </div>
-      <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} />
+      <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} onCopyError={setError} />
     </section>
   );
 }

@@ -792,6 +792,16 @@ pub async fn ai_runtime_file_line_count(app: AppHandle, path: String) -> Result<
     .await
 }
 
+/// 会话里复制一张已保存的截图：只读沙箱副本，把图片字节交回前端写剪贴板。
+#[tauri::command]
+pub async fn ai_runtime_read_image(app: AppHandle, path: String) -> Result<Value, String> {
+    block(move || {
+        enabled(&app)?;
+        images::read_for_clipboard(&app, &path)
+    })
+    .await
+}
+
 /// 输入框里撤掉一张还没发出去的附件；已经进历史的由后端拒绝，只能随会话删除。
 #[tauri::command]
 pub async fn ai_runtime_delete_image(app: AppHandle, path: String) -> Result<(), String> {

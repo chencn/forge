@@ -1273,6 +1273,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "ai.chat.taskListEmptyHint": "當助手拆解步驟或執行複雜任務時，清單與進度將在此呈現",
   "ai.chat.backToMessage": "回到該輪訊息",
   "ai.chat.previewImage": "預覽圖片",
+  "ai.chat.copyImage": "複製圖片",
   "ai.chat.previewFile": "預覽檔案",
   "ai.chat.previewUnavailable": "沒有可預覽的內容；讀取片段未隨結果傳回。",
   "ai.chat.resizeWidth": "拖動調整聊天列寬，雙擊恢復預設",

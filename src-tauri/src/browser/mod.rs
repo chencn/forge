@@ -12,6 +12,7 @@ use forge_browser::{failure, Request, VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -90,6 +91,9 @@ pub struct Tab {
     pub picker: picker::Picker,
     #[serde(skip)]
     pub queue: Arc<tokio::sync::Mutex<()>>,
+    /// 截图临时改设备缩放时为真。这段时间侧栏同步必须等截图结束，不能把视口改回整屏。
+    #[serde(skip)]
+    pub capturing: Arc<AtomicBool>,
 }
 #[derive(Clone)]
 pub struct NodeRef {
@@ -385,6 +389,7 @@ async fn create(app: &AppHandle, scope: &Scope, managed: bool) -> Result<Tab, St
         dialog: None,
         picker: picker::Picker::default(),
         queue: Arc::default(),
+        capturing: Arc::default(),
     };
     {
         let mut state = host(app).lock();
@@ -830,20 +835,64 @@ pub async fn browser_panel_command(app: AppHandle, tab_id: String, command: Pane
             surface::cdp(&app, &tab_id, "Page.handleJavaScriptDialog", json!({"accept":accept,"promptText":text}), None, false).await?;
         }
         PanelCommand::Screenshot => {
-            let metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
-            let viewport = &metrics["cssVisualViewport"];
-            let number = |key: &str| viewport[key].as_f64().filter(|n|n.is_finite()).ok_or("页面可视区域不可用");
-            let (x, y, width, height, scale) = (number("pageX")?, number("pageY")?, number("clientWidth")?, number("clientHeight")?, number("scale")?);
-            let zoom = number("zoom")?;
-            if width <= 0.0 || height <= 0.0 || scale <= 0.0 || zoom <= 0.0 { return Err("页面可视区域为空".into()); }
-            // 默认 surface 截图包含滚动条旁的留白；clip 使用文档坐标，仅取当前可视网页。
-            // 保留触摸缩放及设备 DPR，由引擎输出清晰 PNG，不截宿主或自动裁白色网页内容。
-            // CDP clip 使用 DIP；文档位置和尺寸都乘页面 zoom，触摸 scale 独立保留。
-            let image = picker::capture(&app, &tab_id, json!({"format":"png","captureBeyondViewport":false,
-                "clip":{"x":x*zoom,"y":y*zoom,"width":width*zoom,"height":height*zoom,"scale":scale}}), None, false).await?;
-            let data = image["data"].as_str().filter(|data|data.len()<=8*1024*1024).ok_or("screenshot exceeds limit")?;
-            // 用户截图交给现有会话附件沙箱和剪贴板，不再接受任意写盘路径，也不改变 AI 授权。
-            result = json!({"dataUrl":format!("data:image/png;base64,{data}")});
+            // 手机/平板的可视区域经常是整块侧栏。按它截图会得到整屏，两侧是留白。
+            // 只裁设备视口；测量结果比设备更大时，先把预览缩放收回 1，再按设备尺寸取中间那一块。
+            // 不改原生窗口大小，避免截图瞬间把页面铺满窗口。clip 的触摸缩放不除设备像素比。
+            let (device, capture, restore) = {
+                let state = host(&app).lock();
+                let tab = state.tabs.get(&tab_id).ok_or("页面已关闭")?;
+                tab.capturing.store(true, Ordering::Release);
+                (
+                    tab.emulation.width.map(|width| (width as f64, tab.emulation.height as f64)),
+                    tab.emulation.capture_metrics(),
+                    tab.emulation.metrics(&tab.preview_bounds),
+                )
+            };
+            let captured = async {
+                let read = |metrics: &Value| -> Result<(emulation::CssBox, emulation::CssBox, f64, f64), String> {
+                    let visual = &metrics["cssVisualViewport"];
+                    let layout = &metrics["cssLayoutViewport"];
+                    let number = |value: &Value, key: &str| value[key].as_f64().filter(|n| n.is_finite()).ok_or("页面可视区域不可用");
+                    let visual_box = emulation::CssBox {
+                        x: number(visual, "pageX")?, y: number(visual, "pageY")?,
+                        width: number(visual, "clientWidth")?, height: number(visual, "clientHeight")?,
+                    };
+                    let layout_box = emulation::CssBox {
+                        x: number(layout, "pageX").unwrap_or(visual_box.x),
+                        y: number(layout, "pageY").unwrap_or(visual_box.y),
+                        width: number(layout, "clientWidth").unwrap_or(visual_box.width),
+                        height: number(layout, "clientHeight").unwrap_or(visual_box.height),
+                    };
+                    Ok((visual_box, layout_box, number(visual, "scale")?, number(visual, "zoom")?))
+                };
+                let mut metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
+                let (visual, _, _, _) = read(&metrics)?;
+                let oversized = device.is_some_and(|(width, height)| visual.width > width + 1.0 || visual.height > height + 1.0);
+                if oversized {
+                    if let Some((method, params)) = &capture {
+                        surface::cdp(&app, &tab_id, method, params.clone(), None, false).await?;
+                        for _ in 0..2 {
+                            surface::cdp(&app, &tab_id, "Runtime.evaluate", json!({"expression":"new Promise(requestAnimationFrame)","awaitPromise":true}), None, false).await?;
+                        }
+                        metrics = surface::cdp(&app, &tab_id, "Page.getLayoutMetrics", json!({}), None, false).await?;
+                    }
+                }
+                let (visual, layout, scale, zoom) = read(&metrics)?;
+                if visual.width <= 0.0 || visual.height <= 0.0 || scale <= 0.0 || zoom <= 0.0 { return Err("页面可视区域为空".into()); }
+                let region = emulation::screenshot_region(visual, layout, device);
+                if region.width <= 0.0 || region.height <= 0.0 { return Err("页面可视区域为空".into()); }
+                // 默认 surface 截图包含滚动条旁的留白；clip 使用文档坐标，仅取当前设备视口。
+                // 保留触摸缩放及设备 DPR，由引擎输出清晰 PNG。CDP clip 使用 DIP，位置和尺寸乘页面 zoom。
+                let image = picker::capture(&app, &tab_id, json!({"format":"png","captureBeyondViewport":false,
+                    "clip":{"x":region.x*zoom,"y":region.y*zoom,"width":region.width*zoom,"height":region.height*zoom,"scale":scale}}), None, false).await?;
+                let data = image["data"].as_str().filter(|data| data.len() <= 8 * 1024 * 1024).ok_or("screenshot exceeds limit")?;
+                Ok::<_, String>((json!({"dataUrl":format!("data:image/png;base64,{data}")}), oversized))
+            }.await;
+            if device.is_some() && captured.as_ref().map(|(_, oversized)| *oversized).unwrap_or(true) {
+                let _ = surface::cdp(&app, &tab_id, restore.0, restore.1, None, false).await;
+            }
+            if let Some(tab) = host(&app).lock().tabs.get(&tab_id) { tab.capturing.store(false, Ordering::Release); }
+            result = captured.map(|(image, _)| image)?;
         }
         PanelCommand::ElementScreenshot { selection_id } => {
             result = picker::screenshot(&app, &tab_id, selection_id).await?;

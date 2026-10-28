@@ -58,7 +58,7 @@ impl Emulation {
         let height = (self.height as f64 * scale).min(bounds.height);
         Bounds { x: bounds.x + (bounds.width - width) / 2.0, y: bounds.y + (bounds.height - height) / 2.0, width, height }
     }
-    fn metrics(&self, bounds: &Bounds) -> (&'static str, Value) {
+    pub fn metrics(&self, bounds: &Bounds) -> (&'static str, Value) {
         match self.width {
             None => ("Emulation.clearDeviceMetricsOverride", json!({})),
             Some(width) => ("Emulation.setDeviceMetricsOverride", json!({"width":width,"height":self.height,
@@ -66,6 +66,20 @@ impl Emulation {
                 "screenWidth":width,"screenHeight":self.height,
                 "screenOrientation":{"type":if width>self.height {"landscapePrimary"}else{"portraitPrimary"},"angle":if width>self.height {90}else{0}}})),
         }
+    }
+    /// 截图专用设备参数：临时将 scale 置为 1.0，避免侧栏缩小适配导致截图中内容缩在局部、周围产生大片留白。
+    pub fn capture_metrics(&self) -> Option<(&'static str, Value)> {
+        self.width.map(|width| {
+            ("Emulation.setDeviceMetricsOverride", json!({
+                "width": width, "height": self.height,
+                "deviceScaleFactor": self.device_scale_factor, "mobile": self.mobile, "scale": 1.0,
+                "screenWidth": width, "screenHeight": self.height,
+                "screenOrientation": {
+                    "type": if width > self.height { "landscapePrimary" } else { "portraitPrimary" },
+                    "angle": if width > self.height { 90 } else { 0 }
+                }
+            }))
+        })
     }
     fn operations(&self, bounds: &Bounds) -> Vec<(&'static str, Value)> {
         // Mbps 是十进制比特率，CDP 要求字节/秒；0 表示不限速，不能误发成断流。
@@ -125,8 +139,50 @@ pub async fn apply(app: &AppHandle, id: &str, patch: Value, ticket: Option<&Tick
     Ok(json!({"dispatch":"dispatched","emulation":next,"reloadRecommended":patch.get("userAgent").is_some()}))
 }
 
+/// 设备截图的 CSS 裁剪框。
+/// 可视区域比设备更大时，多出来的是侧栏或窗口，不能整屏截进去。
+/// 布局视口已是设备尺寸时从布局原点取；两边都是整屏时取居中的设备框。
+/// 可视区域更小时是触摸缩放，只保留当前看见的那一块。
+pub fn screenshot_region(visual: CssBox, layout: CssBox, device: Option<(f64, f64)>) -> CssBox {
+    let Some((width, height)) = device else { return visual };
+    if visual.width + 1.0 < width || visual.height + 1.0 < height {
+        return CssBox {
+            x: visual.x,
+            y: visual.y,
+            width: visual.width.min(width),
+            height: visual.height.min(height),
+        };
+    }
+    if visual.width <= width + 1.0 && visual.height <= height + 1.0 {
+        return CssBox { x: visual.x, y: visual.y, width: visual.width.min(width), height: visual.height.min(height) };
+    }
+    if layout.width <= width + 1.0 && layout.height <= height + 1.0 {
+        return CssBox { x: layout.x, y: layout.y, width, height };
+    }
+    CssBox {
+        x: visual.x + ((visual.width - width) / 2.0).max(0.0),
+        y: visual.y + ((visual.height - height) / 2.0).max(0.0),
+        width,
+        height,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CssBox {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// 改侧栏尺寸时先取消旧 AI 请求，再串行更新设备缩放，保证呈现不越过侧栏边界。
 pub async fn present(app: &AppHandle, id: String, bounds: Bounds) -> Result<(), String> {
+    let tab = panel_tab(app, &id)?;
+    // 截图会临时改设备缩放。这时如果跟着侧栏尺寸把预览缩放写回去，裁出来的仍是整屏。
+    if tab.capturing.load(std::sync::atomic::Ordering::Acquire) {
+        let queue = tab.queue.clone();
+        let _hold = queue.lock().await;
+    }
     let tab = panel_tab(app, &id)?;
     let resized = tab.preview_bounds.width != bounds.width || tab.preview_bounds.height != bounds.height;
     if !resized || tab.emulation.width.is_none() {
@@ -159,3 +215,51 @@ pub async fn present(app: &AppHandle, id: String, bounds: Bounds) -> Result<(), 
     if resized { changed(app); }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_emulation_capture_metrics_resets_preview_scale() {
+        let mut emu = Emulation::default();
+        assert!(emu.capture_metrics().is_none());
+
+        emu.width = Some(390);
+        emu.height = 844;
+        emu.device_scale_factor = 3.0;
+        emu.mobile = true;
+
+        // 模拟窄侧栏环境：容器宽高只有 300x600，预览 scale 必然小于 1.0 (约 0.71)
+        let bounds = Bounds { x: 0.0, y: 0.0, width: 300.0, height: 600.0 };
+        let preview_scale = emu.scale(&bounds);
+        assert!(preview_scale < 1.0, "preview scale must adapt down in narrow sidebar");
+
+        let (_, preview_metrics) = emu.metrics(&bounds);
+        assert_eq!(preview_metrics["scale"], json!(preview_scale));
+
+        // 截图 metrics 必须强制 scale = 1.0，保证 100% 满幅无多余空白
+        let (method, capture_metrics) = emu.capture_metrics().expect("must produce capture metrics");
+        assert_eq!(method, "Emulation.setDeviceMetricsOverride");
+        assert_eq!(capture_metrics["scale"], json!(1.0));
+        assert_eq!(capture_metrics["width"], json!(390));
+        assert_eq!(capture_metrics["height"], json!(844));
+        assert_eq!(capture_metrics["deviceScaleFactor"], json!(3.0));
+
+        let phone = CssBox { x: 0.0, y: 40.0, width: 390.0, height: 844.0 };
+        let layout = CssBox { x: 3.0, y: 40.0, width: 390.0, height: 844.0 };
+        assert_eq!(screenshot_region(phone, layout, Some((390.0, 844.0))), phone);
+        // 可视区域是整屏、布局已是设备时，从布局原点取设备视口。
+        let screen = CssBox { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0 };
+        assert_eq!(screenshot_region(screen, layout, Some((390.0, 844.0))), CssBox { x: 3.0, y: 40.0, width: 390.0, height: 844.0 });
+        // 布局测量也是整屏时，页面在侧栏里居中，只取正中的设备框。
+        assert_eq!(
+            screenshot_region(screen, screen, Some((390.0, 844.0))),
+            CssBox { x: 765.0, y: 118.0, width: 390.0, height: 844.0 }
+        );
+        let pinched = CssBox { x: 12.0, y: 20.0, width: 260.0, height: 500.0 };
+        assert_eq!(screenshot_region(pinched, layout, Some((390.0, 844.0))), pinched);
+        assert_eq!(screenshot_region(screen, layout, None), screen);
+    }
+}
+

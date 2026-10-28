@@ -1300,6 +1300,7 @@ export const zh = {
   "ai.chat.taskListEmptyHint": "当助手拆解步骤或执行复杂任务时，清单与进度将在此呈现",
   "ai.chat.backToMessage": "回到该轮消息",
   "ai.chat.previewImage": "预览图片",
+  "ai.chat.copyImage": "复制图片",
   "ai.chat.previewFile": "预览文件",
   "ai.chat.previewUnavailable": "没有可预览的内容；读取片段未随结果返回。",
   "ai.chat.resizeWidth": "拖动调整聊天列宽，双击恢复默认",

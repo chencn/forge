@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
 import AiChatWidthHandles from "./AiChatWidthHandles";
+import { copyChatImage } from "../lib/chatImage";
 import AiImageDialog from "./AiImageDialog";
 import AiJumpToBottom from "./AiJumpToBottom";
 import AiMarkdown from "./AiMarkdown";
@@ -18,7 +19,7 @@ import { aiArrival, aiArrivalOf, formatAiClock, formatAiSeconds, useAiElapsed } 
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { compactionFacts } from "../lib/aiCompaction";
 import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiCapabilities, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiAgentMessage, sendAiMessage, setAiGoalStatus, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
-import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiThreadGoal } from "../lib/aiRuntime";
+import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiThreadGoal, AiPermissionDenied } from "../lib/aiRuntime";
 import { buildNavRows, NAV_PAGE, visibleNavRows, parseNavPrompt } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
@@ -696,6 +697,77 @@ const AiGoalBar = memo(function AiGoalBar({ goal, busy, onStatus, onHide }: {
   </section>;
 });
 
+/** 权限拦截卡片：展示被拒绝的工具、命令或路径，并提供一键复制与划选支持。 */
+const AiPermissionDeniedBanner = memo(function AiPermissionDeniedBanner({
+  denied,
+  sending,
+  stopping,
+  onGrantDirectory,
+  onDismiss,
+}: {
+  denied: AiPermissionDenied;
+  sending: boolean;
+  stopping: boolean;
+  onGrantDirectory?: (path: string) => void;
+  onDismiss: () => void;
+}) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const copyText = denied.text || denied.path || "";
+  const copy = () => {
+    if (!copyText) return;
+    void navigator.clipboard.writeText(copyText).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }, () => {});
+  };
+  return (
+    <section className="ai-permission-denied" role="status">
+      <CircleAlert size={14} aria-hidden />
+      <div>
+        <div className="ai-permission-header">
+          <strong>{t("ai.permission.denied")}</strong>
+          {denied.tool ? <span className="ai-permission-tool">{denied.tool}</span> : null}
+        </div>
+        {denied.path ? <code>{denied.path}</code> : null}
+        {denied.text ? <p className="ai-permission-text">{denied.text}</p> : null}
+      </div>
+      <div className="ai-permission-actions">
+        {copyText ? (
+          <button
+            type="button"
+            className="icon-button is-inline ai-permission-copy"
+            aria-label={copied ? t("action.copied") : t("action.copy")}
+            title={copied ? t("action.copied") : t("action.copy")}
+            onClick={copy}
+          >
+            {copied ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
+          </button>
+        ) : null}
+        {denied.path && onGrantDirectory ? (
+          <button
+            type="button"
+            className="button is-primary"
+            disabled={sending || stopping}
+            onClick={() => onGrantDirectory(denied.path!)}
+          >
+            {t("ai.permission.grantDirectory")}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="icon-button is-inline"
+          aria-label={t("ai.permission.dismiss")}
+          title={t("ai.permission.dismiss")}
+          onClick={onDismiss}
+        >
+          <X size={13} />
+        </button>
+      </div>
+    </section>
+  );
+});
+
 interface AiChatEntryRowProps {
   entry: AiEntry;
   request?: AiRequest;
@@ -709,6 +781,9 @@ interface AiChatEntryRowProps {
   onOpenAgent?: (id: string) => void;
   onLightbox: (path: string) => void;
   onImageLoad: () => void;
+  copiedImage?: string | null;
+  onCopyImage?: (path: string) => void;
+  onImageContextMenu?: (event: ReactMouseEvent, path: string) => void;
   /** 允许写入类工具前先快照；由会话层提供会话 id 与工作区。 */
   onBeforeAllow?: (request: AiRequest) => Promise<void>;
   /** 恢复一条改动快照。 */
@@ -729,6 +804,9 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
   onOpenAgent,
   onLightbox,
   onImageLoad,
+  copiedImage,
+  onCopyImage,
+  onImageContextMenu,
   onBeforeAllow,
   onRestoreCheckpoint,
 }: AiChatEntryRowProps) {
@@ -744,23 +822,40 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
           images={entry.images?.map((path) => ({
             key: path,
             node: (
-              <button
-                type="button"
-                className="ai-msg-image"
-                aria-label={t("ai.chat.previewImage")}
-                title={t("ai.chat.previewImage")}
-                onClick={() => onLightbox(path)}
-              >
-                <img
-                  src={assetUrl(path, 0)}
-                  alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")}
-                  onLoad={onImageLoad}
-                  onError={(event) => {
-                    event.currentTarget.alt = t("ai.chat.imageMissing");
-                    event.currentTarget.classList.add("is-missing");
-                  }}
-                />
-              </button>
+              <span className="ai-chat-image" onContextMenu={(event) => onImageContextMenu?.(event, path)}>
+                <button
+                  type="button"
+                  className="ai-msg-image"
+                  aria-label={t("ai.chat.previewImage")}
+                  title={t("ai.chat.previewImage")}
+                  onClick={() => onLightbox(path)}
+                >
+                  <img
+                    src={assetUrl(path, 0)}
+                    alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")}
+                    onLoad={onImageLoad}
+                    onError={(event) => {
+                      event.currentTarget.alt = t("ai.chat.imageMissing");
+                      event.currentTarget.classList.add("is-missing");
+                    }}
+                  />
+                </button>
+                {onCopyImage ? (
+                  <button
+                    type="button"
+                    className="ai-chat-image-copy"
+                    aria-label={copiedImage === path ? t("action.copied") : t("ai.chat.copyImage")}
+                    title={copiedImage === path ? t("action.copied") : t("ai.chat.copyImage")}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onCopyImage(path);
+                    }}
+                  >
+                    {copiedImage === path ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+                  </button>
+                ) : null}
+              </span>
             ),
           }))}
         />
@@ -920,6 +1015,25 @@ export default function AiSessionPane({
   const [compactPrefs, setCompactPrefs] = useState(readCompactPrefs);
   const [error, setError] = useState<string | null>(null);
   const [goalUpdating, setGoalUpdating] = useState(false);
+  const [copiedImagePath, setCopiedImagePath] = useState<string | null>(null);
+  const handleCopyImage = useCallback((path: string) => {
+    void copyChatImage(path).then(
+      () => {
+        setCopiedImagePath(path);
+        window.setTimeout(() => setCopiedImagePath((curr) => (curr === path ? null : curr)), 1600);
+      },
+      (cause) => setError(String(cause)),
+    );
+  }, []);
+  const handleImageContextMenu = useCallback((event: ReactMouseEvent, path: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [{ label: t("ai.chat.copyImage"), onSelect: () => void handleCopyImage(path) }],
+    });
+  }, [handleCopyImage, t]);
   // 只记住当前会话里用户主动隐藏的 Goal；Goal 数据本身仍由运行时保留。
   const [hiddenGoalKey, setHiddenGoalKey] = useState<string | null>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -1730,23 +1844,38 @@ export default function AiSessionPane({
           images={entry.images?.map((path) => ({
             key: path,
             node: (
-              <button
-                type="button"
-                className="ai-msg-image"
-                aria-label={t("ai.chat.previewImage")}
-                title={t("ai.chat.previewImage")}
-                onClick={() => setLightbox(path)}
-              >
-                <img
-                  src={assetUrl(path, 0)}
-                  alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")}
-                  onLoad={handleImageLoad}
-                  onError={(event) => {
-                    event.currentTarget.alt = t("ai.chat.imageMissing");
-                    event.currentTarget.classList.add("is-missing");
+              <span className="ai-chat-image" onContextMenu={(event) => handleImageContextMenu(event, path)}>
+                <button
+                  type="button"
+                  className="ai-msg-image"
+                  aria-label={t("ai.chat.previewImage")}
+                  title={t("ai.chat.previewImage")}
+                  onClick={() => setLightbox(path)}
+                >
+                  <img
+                    src={assetUrl(path, 0)}
+                    alt={path.split(/[\\/]/).pop() ?? t("ai.chat.pastedImage")}
+                    onLoad={handleImageLoad}
+                    onError={(event) => {
+                      event.currentTarget.alt = t("ai.chat.imageMissing");
+                      event.currentTarget.classList.add("is-missing");
+                    }}
+                  />
+                </button>
+                <button
+                  type="button"
+                  className="ai-chat-image-copy"
+                  aria-label={copiedImagePath === path ? t("action.copied") : t("ai.chat.copyImage")}
+                  title={copiedImagePath === path ? t("action.copied") : t("ai.chat.copyImage")}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleCopyImage(path);
                   }}
-                />
-              </button>
+                >
+                  {copiedImagePath === path ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+                </button>
+              </span>
             ),
           }))}
         />
@@ -1766,6 +1895,9 @@ export default function AiSessionPane({
       onOpenAgent={onOpenAgent}
       onLightbox={setLightbox}
       onImageLoad={handleImageLoad}
+      copiedImage={copiedImagePath}
+      onCopyImage={handleCopyImage}
+      onImageContextMenu={handleImageContextMenu}
       onBeforeAllow={snapshotBeforeAllow}
       onRestoreCheckpoint={restoreCheckpoint}
     />;
@@ -1784,6 +1916,9 @@ export default function AiSessionPane({
     questionRequestRuns,
     onOpenAgent,
     handleImageLoad,
+    copiedImagePath,
+    handleCopyImage,
+    handleImageContextMenu,
     t,
   ]);
   // 原生历史里提不出标题时 meta 就是空的；标题行不能是一条空白。
@@ -1964,23 +2099,15 @@ export default function AiSessionPane({
       <Loader2 size={13} className="is-spinning" aria-hidden />
       <span>{t(runtime.background.settled ? "ai.background.settled" : "ai.background.pending", { count: runtime.background.pending })}</span>
     </section> : null}
-    {runtime.permissionDenied && denialKey !== dismissedDenial ? <section className="ai-permission-denied" role="status">
-      <CircleAlert size={14} aria-hidden />
-      <div>
-        <div className="ai-permission-header">
-          <strong>{t("ai.permission.denied")}</strong>
-          {runtime.permissionDenied.tool ? <span className="ai-permission-tool">{runtime.permissionDenied.tool}</span> : null}
-        </div>
-        {runtime.permissionDenied.path ? <code>{runtime.permissionDenied.path}</code> : null}
-        {runtime.permissionDenied.text ? <p className="ai-permission-text">{runtime.permissionDenied.text}</p> : null}
-      </div>
-      {runtime.permissionDenied.path ? <button type="button" className="button is-primary" disabled={sending || runtime.stopping}
-        onClick={() => void grantDirectory(runtime.permissionDenied!.path!).then(() => setDismissedDenial(denialKey)).catch((cause) => setError(String(cause)))}>
-        {t("ai.permission.grantDirectory")}
-      </button> : null}
-      <button type="button" className="icon-button is-inline" aria-label={t("ai.permission.dismiss")} title={t("ai.permission.dismiss")}
-        onClick={() => setDismissedDenial(denialKey)}><X size={13} /></button>
-    </section> : null}
+    {runtime.permissionDenied && denialKey !== dismissedDenial ? (
+      <AiPermissionDeniedBanner
+        denied={runtime.permissionDenied}
+        sending={sending}
+        stopping={runtime.stopping}
+        onGrantDirectory={runtime.permissionDenied.path ? (path) => void grantDirectory(path).then(() => setDismissedDenial(denialKey)).catch((cause) => setError(String(cause))) : undefined}
+        onDismiss={() => setDismissedDenial(denialKey)}
+      />
+    ) : null}
     {error || (runtime.error && runtime.error !== latestTask?.error ? runtime.error : null) ? <p className="ai-session-alert" role="alert">{error ?? runtime.error}</p> : null}
     {queuedTasks.length ? <section className="ai-task-queue" aria-label={t("ai.runtime.queue")} ref={queueHost}>
         <header>
@@ -2033,7 +2160,35 @@ export default function AiSessionPane({
         {mentionVisible ? <AiMentionMenu id={`${menuId}-mention`} items={mentionItems} selected={Math.min(mentionIndex, mentionItems.length - 1)} onChoose={acceptMention} /> : null}
       </>}
       attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
-        {images.map((image) => <figure key={image.path}><button type="button" className="ai-msg-image" aria-label={t("ai.chat.previewImage")} title={t("ai.chat.previewImage")} onClick={() => setLightbox(image.path)}><img src={image.preview} alt={image.name} /></button><button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
+        {images.map((image) => (
+          <figure key={image.path}>
+            <span className="ai-chat-image" onContextMenu={(event) => handleImageContextMenu(event, image.path)}>
+              <button
+                type="button"
+                className="ai-msg-image"
+                aria-label={t("ai.chat.previewImage")}
+                title={t("ai.chat.previewImage")}
+                onClick={() => setLightbox(image.path)}
+              >
+                <img src={image.preview} alt={image.name} />
+              </button>
+              <button
+                type="button"
+                className="ai-chat-image-copy"
+                aria-label={copiedImagePath === image.path ? t("action.copied") : t("ai.chat.copyImage")}
+                title={copiedImagePath === image.path ? t("action.copied") : t("ai.chat.copyImage")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleCopyImage(image.path);
+                }}
+              >
+                {copiedImagePath === image.path ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+              </button>
+            </span>
+            <button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button>
+          </figure>
+        ))}
       </div> : null}
       editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
         aria-autocomplete="list" aria-controls={menuVisible ? menuId : undefined} aria-expanded={menuVisible} aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
@@ -2161,7 +2316,7 @@ export default function AiSessionPane({
     </div>
     </div>
     </footer>
-    <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} />
+    <AiImageDialog path={lightbox} onClose={() => setLightbox(null)} onCopyError={setError} />
     {contextMenu ? <ContextMenu anchor={contextMenu} onClose={() => setContextMenu(null)} /> : null}
   </section>
   </AiOpenFileProvider>;

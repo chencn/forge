@@ -1304,6 +1304,7 @@ export const en: Record<TranslationKey, string> = {
   "ai.chat.taskListEmptyHint": "Steps and progress will appear here when the assistant breaks down tasks",
   "ai.chat.backToMessage": "Back to this message",
   "ai.chat.previewImage": "Preview image",
+  "ai.chat.copyImage": "Copy image",
   "ai.chat.previewFile": "Preview file",
   "ai.chat.previewUnavailable": "Nothing to preview; the read snippet was not returned with the result.",
   "ai.chat.resizeWidth": "Drag to resize chat width; double-click to reset",
