@@ -967,7 +967,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "forge"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "base64 0.23.1",
  "encoding_rs",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "forge-browser"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "getrandom 0.3.4",
  "serde",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "forge-shell-cmd"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "forge-shell-ext",
  "windows",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "forge-shell-ext"
-version = "1.1.1"
+version = "1.1.2"
 
 [[package]]
 name = "form_urlencoded"

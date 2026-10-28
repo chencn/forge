@@ -7,7 +7,7 @@ name = "forge"
 # Tauri dev 使用 cargo run；原生回归入口必须通过 --bin 显式选择。
 default-run = "forge"
 # 本地版本与前端、Tauri 配置保持同步；发布构建由 CI 使用 tag 覆盖。
-version = "1.1.1"
+version = "1.1.2"
 description = "Forge - Tauri desktop app"
 edition = "2021"
 rust-version = "1.80"

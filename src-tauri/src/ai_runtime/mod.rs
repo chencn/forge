@@ -562,7 +562,8 @@ pub(crate) fn browser_smoke_cli(workspace:&str,lease:&crate::browser::Lease,run_
         command.env(if provider==Provider::Codex {"CODEX_HOME"}else{"CLAUDE_CONFIG_DIR"},&config);
         let process=Process::spawn(command,workspace)?;
         if provider==Provider::Codex {
-            rpc(&process,1,"initialize",json!({"clientInfo":{"name":"forge-browser-native-probe","version":"1.1.1"},"capabilities":{"experimentalApi":true}}))?;
+            // 使用 crate 版本保持探针信息与应用版本动态一致
+            rpc(&process,1,"initialize",json!({"clientInfo":{"name":"forge-browser-native-probe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
             process.write(&json!({"method":"initialized","params":{}}))?;
             let config=rpc(&process,2,"config/read",json!({"cwd":workspace,"includeLayers":false}))?;
             let instructions=format!("{}\n\n{}",config["config"]["developer_instructions"].as_str().unwrap_or(""),forge_browser::INSTRUCTIONS);
