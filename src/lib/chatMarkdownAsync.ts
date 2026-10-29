@@ -1,5 +1,6 @@
 import { renderChatTokenBlocks } from "./chatMarkdownCore";
 import { sanitizeChatHtml } from "./chatSanitize";
+import { fenceLanguages, prepareHighlight } from "./cm/grammars";
 
 export interface ChatBlock {
   key: string;
@@ -9,13 +10,12 @@ export interface ChatBlock {
 /**
  * 聊天 markdown 的增量渲染入口。
  *
- * 解析与高亮在渲染 Worker 里跑（marked + highlight.js），这里收下逐块 HTML 后只在
- * 主线程做两件事：对新出现的块做 DOMPurify 清洗（按块 LRU 缓存，内容没变的块直接
- * 复用上次结果），再把块按顺序拼回整段。流式刷新时绝大多数块原样复用，真正的
- * 成本只剩最后那个正在生长的块。
+ * 解析与高亮在渲染 Worker 里跑（marked + Lezer），这里收下逐块 HTML 后只在主线程做
+ * 两件事：对新出现的块做 DOMPurify 清洗（按块 LRU 缓存，内容没变的块直接复用上次结果），
+ * 再把块按顺序拼回整段。流式刷新时绝大多数块原样复用，真正的成本只剩最后那个在变的块。
  *
- * 没有 Worker 的环境（vitest、SSR、worker 创建失败）整条链同步走主线程，行为
- * 与旧的全量渲染一致——首帧也是这么兜底的，Worker 只让后续帧变快。
+ * 没有 Worker 的环境（vitest、SSR、worker 创建失败）整条链走主线程兜底，行为与 Worker
+ * 一致——包括先把围栏语法装上，所以兜底那一路出的也是带高亮的终态。
  */
 
 /** 单块清洗结果的 LRU；按 token 指纹命中，流式中历史块永不重洗。 */
@@ -38,8 +38,9 @@ function sanitizeAll(blocks: ChatBlock[]): ChatBlock[] {
   return blocks.map((block) => ({ key: block.key, html: sanitizeBlock(block.key, block.html) }));
 }
 
-/** 主线程同步兜底：与旧全量渲染同一语义，只是按块出。 */
-function renderSync(source: string, copyLabel: string, openBlocks: boolean): ChatBlock[] {
+/** 主线程兜底：与 Worker 同一条链——先把围栏语法装上，再按块出，最后清洗。 */
+async function renderSync(source: string, copyLabel: string, openBlocks: boolean): Promise<ChatBlock[]> {
+  await prepareHighlight(fenceLanguages(source));
   return sanitizeAll(renderChatTokenBlocks(source, copyLabel, openBlocks));
 }
 
@@ -89,18 +90,21 @@ export function renderChatMarkdownBlocks(
 ): Promise<ChatBlock[]> {
   if (!source) return Promise.resolve([]);
   const instance = ensureWorker();
-  if (!instance) return Promise.resolve(renderSync(source, copyLabel, openBlocks));
+  if (!instance) return renderSync(source, copyLabel, openBlocks);
   const id = nextRequestId++;
   return new Promise((resolve) => {
     const timeout = window.setTimeout(() => {
       // Worker 假死（极少见）：放弃等待，主线程自己算，别让一条消息永远空着。
-      if (pending.delete(id) && !signal?.aborted) resolve(renderSync(source, copyLabel, openBlocks));
+      if (pending.delete(id)) void renderSync(source, copyLabel, openBlocks).then((blocks) => {
+        if (!signal?.aborted) resolve(blocks);
+      });
     }, 3000);
     pending.set(id, (blocks) => {
       window.clearTimeout(timeout);
       if (signal?.aborted) return;
       // 空结果说明那一帧在 Worker 里失败了：退回主线程全量渲染兜底。
-      resolve(blocks.length ? sanitizeAll(blocks) : renderSync(source, copyLabel, openBlocks));
+      if (blocks.length) resolve(sanitizeAll(blocks));
+      else void renderSync(source, copyLabel, openBlocks).then(resolve);
     });
     instance.postMessage({ id, source, copyLabel, openBlocks });
   });

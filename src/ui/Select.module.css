@@ -1,0 +1,151 @@
+/* 下拉选择框：28px 字段高度，内嵌阴影与焦点环 */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-field, 28px);
+  min-width: 0;
+  padding: 0 6px 0 9px;
+  border-radius: var(--radius-control, 4px);
+  color: var(--fg-strong, #dfe1e5);
+  font-size: var(--fs-ui, 13px);
+  cursor: pointer;
+  border: none;
+  transition:
+    background var(--dur-fast, 120ms) ease,
+    box-shadow var(--dur-fast, 120ms) ease;
+}
+
+.framed {
+  background: var(--bg-field, var(--bg-button, #26282c));
+  box-shadow: inset 0 0 0 1px var(--border-button, #383a40);
+}
+
+.framed[aria-expanded="true"],
+.framed:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring, #3574f0),
+    0 0 0 1px var(--focus-ring, #3574f0);
+}
+
+.framed:disabled {
+  background: transparent;
+  color: var(--fg-faint, #5f6269);
+  box-shadow: inset 0 0 0 1px var(--border, #33353b);
+  cursor: not-allowed;
+}
+
+.ghost {
+  background: transparent;
+  height: var(--h-control, 24px);
+  color: var(--fg-secondary, #b4b8bf);
+  padding: 0 4px 0 6px;
+}
+
+.ghost:hover,
+.ghost[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.ghost:disabled {
+  color: var(--fg-faint, #5f6269);
+  cursor: not-allowed;
+}
+
+.value {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.placeholder {
+  color: var(--fg-faint, #5f6269);
+}
+
+.chevron {
+  color: var(--fg-muted, #8c8f95);
+  flex: none;
+}
+
+.popup {
+  padding: 6px 0;
+  overflow: hidden;
+}
+
+.popupInner {
+  display: flex;
+  flex-direction: column;
+}
+
+.popupInner:focus-visible {
+  outline: none;
+}
+
+.list {
+  max-height: 320px;
+}
+
+.check {
+  width: 14px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted, #8c8f95);
+}
+
+.sizer {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.sizerRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 var(--list-inset, 6px);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.sizerDetail {
+  max-width: 240px;
+  overflow: hidden;
+}
+
+.optionLabel {
+  flex: 1 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.withDetail {
+  max-width: 70%;
+}
+
+.detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted, #8c8f95);
+  font-size: var(--fs-small, 11px);
+}
+
+.disabled {
+  color: var(--fg-faint, #5f6269);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trigger {
+    transition: none;
+  }
+}

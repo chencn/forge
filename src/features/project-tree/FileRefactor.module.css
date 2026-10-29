@@ -1,0 +1,54 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 380px;
+}
+
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  font-size: var(--fs-small, 11px);
+  color: var(--fg-subtle, #8c8c8c);
+}
+
+.input {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.2));
+  border-radius: var(--radius-small, 4px);
+  background: var(--bg-control, rgba(255, 255, 255, 0.05));
+  color: var(--fg-strong, #ffffff);
+  font: inherit;
+  font-size: var(--fs-ui, 12px);
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent, #3574f0);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-ui, 12px);
+  color: var(--fg, #d4d4d4);
+  cursor: pointer;
+}
+
+.errorText {
+  color: var(--danger, #f44336);
+  font-size: var(--fs-small, 11px);
+}

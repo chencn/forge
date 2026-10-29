@@ -64,7 +64,7 @@ pub struct ScanFilter {
 
 /// 路径归一化成比较用的键：正斜杠、小写。Windows 的分隔符与大小写都不敏感，
 /// 忽略前缀与目录项路径必须同一套口径才比得准。
-fn normalize(path: &Path) -> String {
+pub(super) fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/").to_lowercase()
 }
 
@@ -82,7 +82,7 @@ fn hidden(entry: &walkdir::DirEntry) -> bool {
 }
 
 /// 这条路径是否落在任一忽略前缀之下。前缀与路径都已归一化。
-fn under_any(key: &str, prefixes: &[String]) -> bool {
+pub(super) fn under_any(key: &str, prefixes: &[String]) -> bool {
     prefixes.iter().any(|prefix| {
         key.starts_with(prefix.as_str())
             && (key.len() == prefix.len() || key.as_bytes()[prefix.len()] == b'/')
@@ -91,7 +91,7 @@ fn under_any(key: &str, prefixes: &[String]) -> bool {
 
 /// 这一条该不该进结果。根（depth 0）永远留，否则起点先被自己剪掉。
 /// 目录被剪时整棵子树跟着走，文件被剪只丢它自己。
-fn keeps(entry: &walkdir::DirEntry, show_hidden: bool, ignored: &[String]) -> bool {
+pub(super) fn keeps(entry: &walkdir::DirEntry, show_hidden: bool, ignored: &[String]) -> bool {
     if entry.depth() == 0 {
         return true;
     }
@@ -109,7 +109,7 @@ fn keeps(entry: &walkdir::DirEntry, show_hidden: bool, ignored: &[String]) -> bo
 
 /// 统一的扫描配置：不跟软链、限深度、按名排序、剪掉构建目录与不可见项。
 /// 单个条目读不到就跳过它，不让一次失败废掉整趟。
-fn scan(root: &Path, filter: &ScanFilter) -> impl Iterator<Item = walkdir::DirEntry> {
+pub(super) fn scan(root: &Path, filter: &ScanFilter) -> impl Iterator<Item = walkdir::DirEntry> {
     let show_hidden = filter.show_hidden;
     let ignored: Vec<String> = filter
         .ignored
@@ -127,7 +127,7 @@ fn scan(root: &Path, filter: &ScanFilter) -> impl Iterator<Item = walkdir::DirEn
 
 /// 目录相对工作区根的所在目录，分隔符统一成 `/`；直接挂在根下时为空串。
 /// 前端把它和文件名拼在一起显示出处，绝对路径只用来打开。
-fn container_of(root: &Path, full: &Path) -> String {
+pub(super) fn container_of(root: &Path, full: &Path) -> String {
     let Some(parent) = full.parent() else {
         return String::new();
     };
@@ -148,7 +148,7 @@ fn container_of(root: &Path, full: &Path) -> String {
 /// 每个造两份 String 就是四十万次分配，而其中绝大多数连关键词都不含。
 /// 关键词含非 ASCII 字符时折叠不等价（西里尔字母的大小写不是 ASCII 规则），
 /// 那种由 [`score_name_full`] 退回按 `to_lowercase` 比，一次搜索只有一个关键词。
-fn score_name(name: &str, query: &str) -> Option<u8> {
+pub(super) fn score_name(name: &str, query: &str) -> Option<u8> {
     if query.is_empty() {
         return None;
     }
@@ -173,7 +173,7 @@ fn score_name(name: &str, query: &str) -> Option<u8> {
 }
 
 /// 非 ASCII 关键词那一档：照旧折整份再比，但只有关键词本身带非 ASCII 时才会走到这里。
-fn score_name_full(name: &str, query: &str) -> Option<u8> {
+pub(super) fn score_name_full(name: &str, query: &str) -> Option<u8> {
     let name = name.to_lowercase();
     let query = query.to_lowercase();
     if name == query {
@@ -242,7 +242,7 @@ pub struct FileHits {
 }
 
 /// 把分页参数收成实际条数：0 走默认档，超上限按上限。
-fn page_limit(limit: usize) -> usize {
+pub(super) fn page_limit(limit: usize) -> usize {
     if limit == 0 {
         DEFAULT_PAGE
     } else {

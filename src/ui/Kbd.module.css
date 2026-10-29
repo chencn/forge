@@ -1,0 +1,7 @@
+.kbd {
+  font-family: var(--font-keys, var(--font-mono, monospace));
+  font-size: var(--fs-small, 11px);
+  color: var(--fg-muted, #737373);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}

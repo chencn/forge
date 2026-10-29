@@ -13,12 +13,13 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录其中�
 [../features/ai-assistants/](../features/ai-assistants/)。它们统一广播到 `ai-runtime://events`，
 载荷由会话日志投影。
 
-## 文件与目录（17）
+## 文件与目录（18）
 
-`find_files` / `search_text` 已接进界面：`src/lib/fs.ts` 的 `findFiles` / `searchText` 各包一条，发出调用的
-只有 `src/components/SearchEverywhere.tsx` 一处（文件页签发 `find_files`，文本页签发 `search_text`，全页签两条
-并发）。底部 `src/components/FindPane.tsx` 不再发查询，画的是弹层交过来的那一整页。挂点与键位见
-[../features/search/](../features/search/)。两条都是 `async` 命令，只读，一趟扫完即回，不带游标，也没有取消句柄。
+`find_files` / `search_text` / `find_symbols` 已接进界面：`src/lib/fs.ts` 的 `findFiles` / `searchText` /
+`findSymbols` 各包一条，发出调用的只有 `src/components/SearchEverywhere.tsx` 一处（文件档发 `find_files`，
+类与符号两档发 `find_symbols`，文本档发 `search_text`，各档并发、各自收口）。底部 `src/components/FindPane.tsx`
+不再发查询，画的是弹层交过来的那一整页。挂点与键位见
+[../features/search/](../features/search/)。三条都是 `async` 命令，只读，一趟扫完即回，不带游标，也没有取消句柄。
 
 | 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
 | --- | --- | --- | --- | --- |
@@ -36,6 +37,7 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录其中�
 | `fs_allow_asset` | `root` | `()` | 把该目录连子树加进 asset 允许名单，不落盘 | `fs/mod.rs:373` |
 | `open_external` | `url` | `()` | `ShellExecuteW`，不经 cmd。入参先过白名单：协议只认 `http` / `https` / `mailto` / `tel`，其余写法（`file:` / `ms-msdt:` / `javascript:` …）与盘上不存在的路径、可执行后缀（`.exe` / `.lnk` / `.ps1` …）一律 `EXTERNAL_BLOCKED`。markdown 里的链接是外部输入，不能让它决定执行什么 | `fs/mod.rs:381` |
 | `find_files` | `root, query, limit?, filter?{showHidden,ignored[]}` | `FileHits{query,items[],truncated}` | 按名字找文件与目录。名字打分四档：全等 4 > 前缀 3 > 包含 2 > 逐字顺次出现 1；排序按档位降序、路径短的在前、再字典序。剪掉 `.git` / `node_modules` / `target` / `dist` / `build` / `out`，不跟软链，深 24 层、访问 200_000 条目封顶，匹配攒到 2000 条即停，触闸置 `truncated`。`filter` 是可见性闸门（`ScanFilter`）：`showHidden` 为假时剪掉隐藏项，`ignored` 里那些绝对前缀之下的路径整棵剪掉，两者都在扫描层生效、不占条目与命中预算。`limit` 传 0 或缺省走 100 条那档，钳到 1..5000；词全空白回空表不报错；`root` 不是目录给 `NOT_DIR` | `fs/search.rs:253` |
+| `find_symbols` | `root, query, kindFilter?("types"\|"all"), limit?, filter?{showHidden,ignored[]}` | `SymbolHits{query,items[],truncated}`，条 `SymbolHit{path,name,kind,container,line,column}` | 按名字找定义，给弹层的「类」「符号」两档供货。按扩展名选一套行锚定的定义正则（ts/tsx/jsx/mjs…、java、kt、rs、py、go、c/cpp、cs），一行一条定义；种类名沿用 openidea（class/interface/struct/enum/trait/typeAlias/function/method/constant/variable/module/record/annotation/object/union）。`kindFilter:"types"` 只回类型那张表（与前端 `seModel.ts` 的 `TYPE_KINDS` 同步）。打分复用 `search.rs:151` 的 `score_name` 四档（4 全等 > 3 前缀 > 2 包含 > 1 逐字顺次出现，词全空白返回 `None` 即不收），关键词带非 ASCII 时再退一层 `score_name_full`（`search.rs:176`）把两边都折成小写再比；排序档位降序 → 目录短 → 名字（`symbols.rs:581`）。单文件超过 2 MiB 不抽符号（`SYMBOL_SIZE_CEILING`，`symbols.rs:27`），一个根最多攒 80_000 条（`MAX_SYMBOLS`，`symbols.rs:29`），触上限或被 `limit` 截时 `truncated` 为真（`symbols.rs:586`）；`limit` 同 `find_files` 那两档（`page_limit`）。整棵结果按根缓存 60 秒（`CACHE_TTL`，`symbols.rs:31`），之后的查询只对着缓存比名字，没有增量失效。`filter` 同 `find_files`，但隐藏项在这一档按目录段名前缀判（`hidden_container`，`symbols.rs:531`：建缓存时没留 metadata，只认点开头那一段，Windows 隐藏属性在这一档不追）。规则以行首锚定，看不见注释的边界：`// fn foo()` 这类行注释自然不收，块注释里自成一行的一条照样算定义（测试 `line_comments_are_skipped_but_block_comments_leak`）；空词回空表不报错，`root` 不是目录给 `NOT_DIR` | `fs/symbols.rs:612`，注册在 `src-tauri/src/lib.rs:110` |
 | `search_text` | `root, query, options{caseSensitive,wholeWords,regex,fileMask,limit}, filter?{showHidden,ignored[]}` | `TextPage{query,hits[],files,truncated,skipped}` | 逐文件扫正文。每条命中带 `line`（1 起）、`snippet`、`snippetFrom`（片段首字符在原行里的列号）和这一行的 `ranges{column,length}`（1 起、按字符数）；片段最长 240 字符，整行超过它就以首处命中为中心截。单文件 20 MiB 封顶，开头 4096 字节里见 NUL 当二进制跳过；太大、二进制、非 UTF-8、读不到四类合并计入 `skipped`。`filter` 同 `find_files`，剪掉的项不计入 `skipped`。`fileMask` 逗号或分号分隔、只认 `*`、空表示不限；`wholeWords` 只在非正则下生效；`regex` 为真时词编不成正则给 `BAD_REGEX`；`limit` 同 `find_files` 那两档；`root` 不是目录给 `NOT_DIR` | `fs/search.rs:596` |
 | `fs_watch_start` | `root, generation` | `()` | 按根开槽的递归监听：槽是 `HashMap<root, ActiveWatch>`，这条只插入或替换**该根**那一轮，别的根不受影响。`generation` 是前端每次新监听递增的代号，`(root, generation)` 合起来是令牌，锁内比对，慢到的旧请求直接放弃；`.git` 内部噪声在这一层剔（`objects/`、`logs/`、`hooks/`、`info/`、`*.lock` 滤掉，指针文件与 `refs/**` 放行）；去抖 150ms、持续写入满 1s 先放行一轮，之后发 `fs://change{root,paths}`，单批 256 条是发送粒度不是丢弃阈值 | `watch.rs:174` |
 | `fs_watch_stop` | `root, generation` | `()` | 令牌与 root 都对上该根槽里那轮才清槽，过期请求什么都不动；丢句柄后那条转发线程随之退出，退出前把剩余路径发完。没有可失败的分支，签名不带 `Result` | `watch.rs:261` |
@@ -143,7 +145,7 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录其中�
 | `lsp_config_load` | — | `LspConfig` | 读取 `<app_config_dir>/lsp.json`；文件不存在时按种子生成一份，并顺带迁移同目录 `settings.json` 中的 `lsp` 段；JSON 解析失败同样回退为种子并重写文件，不报错 | `lsp_config.rs:576` |
 | `lsp_config_save` | `config` | `()` | 归一化（非法档位与空字段按种子补齐）后 `to_string_pretty` 原子写入 `lsp.json`，目录不存在时先创建 | `lsp_config.rs:582` |
 | `lsp_resolve_root` | `server, workspaceRoot, file?` | `RootHit{root,marker}` 或 null | 按配置中的 `rootMarkers` 确定真正的项目根：先从文件所在目录向上查找（不越过 `workspaceRoot`），未命中时再从 `workspaceRoot` 向下扫描 2 层，跳过 `node_modules` / `.git` / `target` / `dist` / `build` / `out` / `vendor` / `__pycache__` / `.venv`；标志表为空时直接返回 `workspaceRoot`；结果缓存 60 秒；目录不存在或未命中一律返回 null，不报错 | `lsp_detect.rs:215` |
-| `lsp_probe` | — | `LspProbeReport{config,servers[]}` | 逐项探测是否已安装：进程 PATH 加几个常用安装位置（`%APPDATA%\npm`、`WindowsApps`、`~/.cargo/bin`、`~/go/bin`、`/usr/local/bin`、`/opt/homebrew/bin` 等），按 `PATHEXT` 构造候选并补充 `.ps1`，rust-analyzer 额外执行一次 `--version` 以排除占位垫片；单次结果缓存 10 秒。只把「启用外部档但本机未安装」的档位回退为 `off`（`builtin` 使用 Monaco 自带语义，与是否安装无关，不做调整），安装完成后不自动启用；确有改动才写回 `lsp.json`（无改动不落盘），校正后的配置随报告带回；不报错 | `lsp_probe.rs:310` |
+| `lsp_probe` | — | `LspProbeReport{config,servers[]}` | 逐项探测是否已安装：进程 PATH 加几个常用安装位置（`%APPDATA%\npm`、`WindowsApps`、`~/.cargo/bin`、`~/go/bin`、`/usr/local/bin`、`/opt/homebrew/bin` 等），按 `PATHEXT` 构造候选并补充 `.ps1`，rust-analyzer 额外执行一次 `--version` 以排除占位垫片；单次结果缓存 10 秒。档位不是 `off` 而本机未安装的一律落回 `off`（编辑器换成 CodeMirror 之后没有「渲染进程里的内置语义」可退，`builtin` 与 `lsp` 都得真起一条进程，故两档同规矩，`lsp_probe.rs:353`），安装完成后不自动启用；确有改动才写回 `lsp.json`（无改动不落盘），校正后的配置随报告带回；不报错 | `lsp_probe.rs:310` |
 | `lsp_install` | `server` | `InstallResult{command,output,exitCode}` | 使用系统 shell 执行配置中的 `installCommand`（Windows `%COMSPEC% /D /C`，其余 `/bin/sh -c`），不设超时（全局安装通常需要数分钟）；输出只保留尾部 32 KiB。该项不存在回 `LSP_NO_SERVER`，未配置安装命令回 `LSP_NO_INSTALL`，shell 无法启动回 `LSP_INSTALL_SPAWN` | `lsp_probe.rs:316` |
 
 ## 设置与系统（7）

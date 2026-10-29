@@ -2460,6 +2460,35 @@ span.entry-icon > svg {
   text-align: center;
 }
 
+.rail-badge.is-error {
+  background: var(--danger, #f57e84);
+  color: #fff;
+}
+
+/* 顶栏右上角通知铃铛的徽章（与 openidea New UI 顶栏保持一致） */
+.titlebar-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent, #3574f0);
+  color: #fff;
+  font-family: var(--font-ui, sans-serif);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.titlebar-badge.is-error {
+  background: var(--danger, #f57e84);
+}
+
 /* 活动栏「运行」入口右下角的存活绿点（IDEA Execution Live Indicator）。 */
 .rail-dot {
   position: absolute;
@@ -2615,8 +2644,9 @@ span.entry-icon > svg {
   background: transparent;
 }
 
-/* 会话列表自己负责滚动；父层必须提供完整的可用高度，否则“最近”的 auto 外边距没有空间可推到底。 */
-.panel-body.is-ai-sessions {
+/* 会话列表与项目树自己负责虚拟化滚动；父层必须提供完整的可用高度与 flex 容器约束。 */
+.panel-body.is-ai-sessions,
+.panel-body.is-explorer {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3319,8 +3349,9 @@ span.entry-icon > svg {
   opacity: 0.25;
 }
 
-/* 装订线那一栏 ▶：盖在「行号与代码之间」那条带上，位置由 monaco 的布局现算，
-   所以整层不吃指针（只有那颗 ▶ 吃），也不裁剪——气泡要出到代码区上面。 */
+/* 装订线那一栏 ▶：整层挂进编辑器的行号槽里（那一格是 sticky、高度跟着整篇内容），
+   所以 `top` 直接用文档坐标，滚动时由浏览器带着走，不用每帧重算。
+   整层不吃指针（只有那颗 ▶ 吃），也不裁剪——气泡要出到代码区上面。 */
 .run-gutter-layer {
   position: absolute;
   inset: 0;
@@ -3685,9 +3716,11 @@ span.entry-icon > svg {
 }
 
 /* 光标闪烁：xterm 默认是 `step-end` 硬切（一亮一灭，看着扎眼、显得快）。
-   改成整段 opacity 平滑淡入淡出，周期仍取 1s（半周期 500ms，与 IDEA 的 caret 一致）。 */
+   改成整段 opacity 平滑淡入淡出，周期仍取 1s（半周期 500ms，与 IDEA 的 caret 一致）。
+   编辑器光标走同一条（CM 自带的是 `steps(1)` 1.2s 硬切，一样扎眼）。 */
 .term-host .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar,
-.term-live .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar {
+.term-live .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar,
+body .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
   animation: forge-caret-blink 1s ease-in-out infinite !important;
 }
 
@@ -4000,7 +4033,7 @@ span.entry-icon > svg {
     opacity: 1;
   }
   50% {
-    opacity: 0.15;
+    opacity: 0;
   }
 }
 
@@ -4431,124 +4464,144 @@ body.is-editor-tab-dragging * {
   min-height: 0;
 }
 
-/* 相对上次提交的标记。色条贴在行号与代码之间那条带的左缘，运行按钮仍居中，同一行可以并存。
-   删掉的行没有留下行高，用三角挂在缺口上沿或下沿。右侧概览条和小地图的颜色在装饰选项里。 */
-.monaco-editor .change-mark-added,
-.monaco-editor .change-mark-modified {
-  box-sizing: border-box;
-  border-left-width: 3px;
-  border-left-style: solid;
+/* 悬停文档浮层：排版与配色全套用聊天那组类名（见 lib/cm/lsp.ts），这里只管尺寸。
+   限高不然一段长文档会把整屏正文盖住；字号跟着编辑器走，读的是同一份代码。 */
+.cm-tooltip .lsp-hover {
+  max-width: min(520px, 60vw);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  font-size: var(--editor-font-size, 13px);
 }
 
-.monaco-editor .change-mark-added {
-  border-left-color: var(--accent-green);
+/* 小地图：它自己顶着 .cm-gutters 的类名，所以发丝线长在右边，这里翻到左边贴正文。
+   选择器多带一层 .cm-editor 才压得过扩展自带的主题（它注入得比这份样式晚）。 */
+.code-editor .cm-editor .cm-minimap-gutter {
+  border-right: none;
+  border-left: 1px solid var(--editor-gutter-border);
 }
 
-.monaco-editor .change-mark-modified {
-  border-left-color: var(--accent-blue);
+.code-editor .cm-editor .cm-minimap-box-shadow {
+  box-shadow: -6px 0 14px rgba(15, 23, 42, 0.08);
 }
 
-.monaco-editor .change-mark-deleted::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 0;
-  height: 0;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  border-left: 4px solid var(--accent-red);
-  pointer-events: none;
+.code-editor .cm-editor .cm-minimap-overlay-container .cm-minimap-overlay {
+  background: var(--editor-selection-inactive);
+  opacity: 0.55;
 }
 
-.monaco-editor .change-mark-deleted.is-before::after {
-  bottom: auto;
-  top: 0;
+/* 彩虹括号：深度循环三档，取自 IntelliJ 那组括号色；配不上的那半颗走告警红。
+   类名由 lib/cm/rainbowBrackets.ts 挂在单个字符上，`Prec.high` 保证盖过语法高亮的装饰。
+   但装饰是嵌套的 span：语法高亮那层坐在里面，它的 color 会压过外层，所以每档都补一条 ` *`。
+   多带一层 .cm-editor 是把特异度抬到 `.tok-*` 那组规则之上，免得靠样式的先后顺序碰运气。 */
+.cm-editor .cm-content .cm-rainbow-bracket-1,
+.cm-editor .cm-content .cm-rainbow-bracket-1 * {
+  color: var(--syn-bracket-1);
 }
 
-/* monaco 把 --vscode-* 只写在 .monaco-editor 上，而它的浮层宿主是这条链的兄弟节点，
-   右键菜单在 shadow root 里取不到变量就成了透明底。自定义属性能穿进 shadow tree，补齐即可。 */
-/* Lithe monaco-editor.css 查找条原样：卡片 surface，输入框白底、字用 foreground（#000）。
-   Monaco 用内联样式写颜色，这里必须 !important。 */
-.monaco-editor .find-widget {
-  margin-top: 6px;
-  padding: 0 0.375rem;
-  border: 1px solid color-mix(in srgb, var(--sidebar-border) 78%, transparent);
-  border-radius: 6px;
-  background-color: color-mix(in srgb, var(--sidebar-rail) 94%, var(--bg-primary)) !important;
-  color: var(--sidebar-fg) !important;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+.cm-editor .cm-content .cm-rainbow-bracket-2,
+.cm-editor .cm-content .cm-rainbow-bracket-2 * {
+  color: var(--syn-bracket-2);
 }
 
-.monaco-editor .find-widget > .find-part,
-.monaco-editor .find-widget > .replace-part {
-  font-size: 13px;
+.cm-editor .cm-content .cm-rainbow-bracket-3,
+.cm-editor .cm-content .cm-rainbow-bracket-3 * {
+  color: var(--syn-bracket-3);
 }
 
-/* 页面的 .button 是白底带边。查找条的图标也叫 button，这里把那层底和边去掉。 */
-.monaco-editor .find-widget .button {
-  background: transparent;
+.cm-editor .cm-content .cm-rainbow-bracket-unmatched,
+.cm-editor .cm-content .cm-rainbow-bracket-unmatched * {
+  color: var(--accent-red);
+}
+
+.cm-editor .cm-content .cm-rainbow-bracket-unmatched {
+  background: var(--accent-red-bg);
+  font-weight: 600;
+}
+
+/* 跳转结果列表（多处定义、查找用法）。面板本体交给 CodeMirror 的 .cm-panel 摆，
+   这里只管行、列与 hover。 */
+.cm-panel.lsp-locations {
+  display: flex;
+  flex-direction: column;
+  max-height: 40vh;
+  border-top: 1px solid var(--editor-gutter-border);
+  font-size: 12px;
+}
+
+.lsp-locations-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.lsp-locations-head span {
+  flex: 1;
+  font-weight: 600;
+}
+
+.lsp-locations-close {
   border: none;
-  box-shadow: none;
-  color: var(--sidebar-fg);
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
 }
 
-.monaco-editor .find-widget .monaco-inputbox,
-.monaco-editor .find-widget .monaco-inputbox .input,
-.monaco-editor .find-widget .monaco-inputbox .mirror {
-  border-radius: 6px;
-  background-color: var(--bg-primary) !important;
-  color: var(--sidebar-fg) !important;
-  -webkit-text-fill-color: var(--sidebar-fg);
+.lsp-locations-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-radius: 4px;
 }
 
-.monaco-editor .find-widget .monaco-inputbox .input::placeholder {
-  color: var(--sidebar-subtle) !important;
-  -webkit-text-fill-color: var(--sidebar-subtle);
-  opacity: 1;
+.lsp-locations-list {
+  overflow-y: auto;
+  padding: 2px 0;
 }
 
-.monaco-editor .findMatch {
-  background-color: var(--sidebar-selected) !important;
+.lsp-locations-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 28%) 1fr;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 8px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.monaco-editor .currentFindMatch {
-  background-color: var(--selection-bg) !important;
-  border: 2px solid #3871e1 !important;
+.lsp-locations-row:hover,
+.lsp-locations-row:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
 }
 
-.monaco-editor .find-widget .matchesCount,
-.monaco-editor .find-widget.no-results .matchesCount {
-  color: var(--sidebar-subtle) !important;
+.lsp-locations-where {
+  color: var(--accent-blue-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.monaco-editor .find-widget .button:not(.disabled):hover,
-.monaco-editor .find-widget .codicon-find-selection:hover {
-  background: var(--sidebar-hover) !important;
-  color: var(--sidebar-fg) !important;
+.lsp-locations-text {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
 }
 
-.monaco-editor .find-widget .button:focus-visible,
-.monaco-editor .find-widget .monaco-inputbox.synthetic-focus {
-  outline: 1px solid #3871e1;
-  outline-offset: -1px;
-}
-
-:root[data-theme="dark"] .monaco-editor .find-widget {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-
-.shadow-root-host {
-  --vscode-menu-background: var(--bg-tertiary);
-  --vscode-menu-foreground: var(--text-primary);
-  --vscode-menu-border: var(--border-light);
-  --vscode-menu-separatorBackground: var(--border-color);
-  --vscode-list-hoverBackground: var(--accent-blue-bg);
-  --vscode-list-hoverForeground: var(--accent-blue-text);
-  --vscode-widget-shadow: rgba(15, 23, 42, 0.25);
-  --vscode-shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.22);
-  --vscode-strokeThickness: 1px;
-  --vscode-cornerRadius-large: var(--radius-md);
+.lsp-locations-empty {
+  padding: 8px;
+  color: var(--text-muted);
 }
 
 .code-error {
@@ -4615,7 +4668,7 @@ body.is-editor-tab-dragging * {
 }
 
 /*
- * markdown 只读预览里的页内查找条：源码那侧靠 Monaco 自带 Ctrl+F，这一侧没有编辑器，
+ * markdown 只读预览里的页内查找条：源码那侧靠编辑器自带 Ctrl+F，这一侧没有编辑器，
  * 就自己浮一枚在预览右上角，压在正文之上、视图切换栏的左边，不挤占正文高度。
  */
 .md-find {
@@ -4758,7 +4811,7 @@ body.is-editor-tab-dragging * {
   word-break: break-all;
 }
 
-/* 源码容器撑满；切到预览时用 hidden 藏起来，Monaco 实例留着。 */
+/* 源码容器撑满；切到预览时用 hidden 藏起来，编辑器实例留着。 */
 .doc-source {
   flex: 1;
   min-height: 0;
@@ -4833,8 +4886,10 @@ body.is-editor-tab-dragging * {
 .ai-file-preview-editor { height: 100%; }
 .ai-file-preview-pane > .ai-diff-editor { flex: 1; min-height: 0; }
 /* 读取记录使用整行底色和装订线标记，光标离开后仍能辨认读取范围。 */
+/* 读过的那一段：整行一条淡蓝，行号那一栏再留一条竖标。竖标只认行号槽——
+   gutterLineClass 会把类发给这一行的每一格，折叠扣那边跟着长一条就成两道杠了。 */
 .ai-file-read-highlight { background: color-mix(in srgb, var(--accent-blue) 12%, transparent); }
-.ai-file-read-gutter { border-left: 3px solid var(--accent-blue); }
+.cm-lineNumbers .ai-file-read-gutter { border-left: 3px solid var(--accent-blue); }
 .editor-pane-body {
   display: flex;
   flex-direction: column;
@@ -4884,38 +4939,10 @@ body.is-editor-tab-dragging * {
 }
 
 /* ===== markdown 预览与排版 ===== */
+/* 代码块底色用工作台的浮起面，与编辑器岛状底色同档；语法文字色统一在下面的 tok 规则，
+   值取自 tokens.css 的 --syn-*——编辑器、预览、聊天三处共用同一套，不再单设一份。 */
 :root {
-  --code-bg: #f6f8fa;
-  --hljs-comment: #6a737d;
-  --hljs-keyword: #cf222e;
-  --hljs-string: #0a3069;
-  --hljs-number: #0550ae;
-  --hljs-function: #8250df;
-  --hljs-title: #8250df;
-  --hljs-type: #116329;
-  --hljs-attr: #0550ae;
-  --hljs-variable: #953800;
-  --hljs-literal: #0550ae;
-  --hljs-meta: #6e7781;
-  --hljs-tag: #116329;
-  --hljs-inline-code: #bf3989;
-}
-
-:root[data-theme="dark"] {
-  --code-bg: #161b22;
-  --hljs-comment: #8b949e;
-  --hljs-keyword: #ff7b72;
-  --hljs-string: #a5d6ff;
-  --hljs-number: #79c0ff;
-  --hljs-function: #d2a8ff;
-  --hljs-title: #d2a8ff;
-  --hljs-type: #7ee787;
-  --hljs-attr: #79c0ff;
-  --hljs-variable: #ffa657;
-  --hljs-literal: #79c0ff;
-  --hljs-meta: #8b949e;
-  --hljs-tag: #7ee787;
-  --hljs-inline-code: #ff7b72;
+  --code-bg: var(--bg-tertiary);
 }
 
 .markdown-body {
@@ -5082,7 +5109,7 @@ body.is-editor-tab-dragging * {
   border: 0;
 }
 
-/* 行内代码 */
+/* 行内代码：IDEA 的预览不给它单独上色，就是正文色配一块浅底。 */
 :is(.markdown-body, .ai-message-markdown) code:not(pre code) {
   font-family: var(--font-mono), monospace;
   font-size: 12.5px;
@@ -5090,7 +5117,6 @@ body.is-editor-tab-dragging * {
   border-radius: 4px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  color: var(--hljs-inline-code);
 }
 
 /* 图片 */
@@ -5137,7 +5163,7 @@ body.is-editor-tab-dragging * {
   line-height: 1.55;
 }
 
-/* 代码文字色三处共用。token 色在下面的 hljs 规则，不在这里。 */
+/* 代码文字色三处共用。token 色在下面的 tok 规则，不在这里。 */
 :is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) pre code {
   background: none;
   border: 0;
@@ -5472,91 +5498,131 @@ body.is-editor-tab-dragging * {
   color: var(--text-tertiary);
 }
 
-/* Highlight.js 语法高亮色盘 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-comment,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-quote {
-  color: var(--hljs-comment);
-  font-style: italic;
+/* Lezer classHighlighter 的 token 色：正文代码块、md 预览、工具源码三处共用。
+   类名来自 @lezer/highlight 的 classHighlighter，颜色与编辑器里的 HighlightStyle 同源
+   （见 lib/cm/highlight.ts）——同一批 tag，只是一个落成 class、一个落成内联样式。 */
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-comment {
+  color: var(--syn-comment);
+  font-style: var(--syn-comment-style, italic);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-keyword,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-tag,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-subst {
-  color: var(--hljs-keyword);
-  font-weight: 600;
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-keyword,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-atom,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-bool,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-literal {
+  color: var(--syn-keyword);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-string,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-regexp,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-addition {
-  color: var(--hljs-string);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-string,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-string2 {
+  color: var(--syn-string);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-number,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-literal {
-  color: var(--hljs-number);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-number {
+  color: var(--syn-number);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-title,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-section,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-title.function_ {
-  color: var(--hljs-function);
-  font-weight: 600;
+/* 定义处的函数名蓝，调用处按 IDEA 保持正文色：classHighlighter 用两个类名区分。 */
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName.tok-definition {
+  color: var(--syn-function);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-type,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-class .hljs-title {
-  color: var(--hljs-type);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-typeName,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-className,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-namespace {
+  color: var(--syn-type);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-attr,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-attribute {
-  color: var(--hljs-attr);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-propertyName {
+  color: var(--syn-property);
 }
 
-/* CSS 选择器：highlight.js 打的是 selector-class / id / attr / pseudo，不是 attribute。
-   类、id、属性选择器跟属性名一档蓝；伪类跟标签一档绿。 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-class,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-id,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-attr {
-  color: var(--hljs-attr);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName2 {
+  color: var(--syn-constant);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-selector-pseudo {
-  color: var(--hljs-tag);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-meta,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-macroName {
+  color: var(--syn-annotation);
 }
 
-/* var() / rgb() / url() 这类函数名是 built_in，原先落在默认灰上。 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-built_in,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-symbol {
-  color: var(--hljs-variable);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-labelName {
+  color: var(--syn-constant);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-variable,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-template-variable {
-  color: var(--hljs-variable);
+/* var() / rgb() / url() 这类函数名在 Lezer 里落在普通变量名上，与正文同色：
+   IDEA 也不单独给它们一档色，原来靠 highlight.js 的 built_in 才显出来。 */
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName.tok-local {
+  color: var(--syn-variable);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-meta {
-  color: var(--hljs-meta);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-operator,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-punctuation {
+  color: var(--syn-punct);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-tag,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-name {
-  color: var(--hljs-tag);
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-link,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-url {
+  color: var(--syn-link);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-deletion {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-heading {
+  color: var(--syn-markup-heading);
+  font-weight: 700;
+}
+
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-inserted {
+  color: var(--accent-green);
+}
+
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-deleted {
   color: var(--accent-red);
   background-color: var(--accent-red-bg);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-emphasis {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-invalid {
+  color: var(--syn-invalid);
+}
+
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-emphasis {
   font-style: italic;
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .hljs-strong {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-strong {
   font-weight: bold;
+}
+
+/* Mermaid：源码占位由 lib/mermaid.ts 换成 SVG。画好了就把源码藏起来，
+   画砸了（或还在画）就让用户看见自己写的那段源码，而不是一个空洞。 */
+.markdown-body [data-mermaid] {
+  margin: 16px 0;
+}
+
+.markdown-body [data-mermaid] > pre {
+  margin: 0;
+}
+
+.markdown-body [data-mermaid][data-mermaid-state="ok"] > pre {
+  display: none;
+}
+
+.markdown-body .mermaid-output {
+  overflow-x: auto;
+  text-align: center;
+}
+
+.markdown-body [data-mermaid][data-mermaid-state="error"] > .mermaid-output {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent-red);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--accent-red);
+  font-family: var(--font-mono), monospace;
+  font-size: 13px;
+  text-align: left;
+  white-space: pre-wrap;
 }
 
 /* ===== 图片预览 ===== */
@@ -5927,6 +5993,105 @@ body.is-editor-tab-dragging * {
 .diff-host {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+}
+
+/* ===== 比对视图（@codemirror/merge）=====
+   尺寸与滚动这类结构规则认 `.cm-mergeView`——只有并排那一档有这个外框。
+   配色规则一律改认编辑器元素上的 `forge-diff`：单栏那一档没外框，靠 `.cm-mergeView`
+   圈不到它。带四段类名是为了压过库自带的主题（它的注入比这份样式晚，同权重会它赢）。
+   这几台比对的宿主（.diff-host、本地历史、聊天里的补丁）都由外层给死高度。 */
+
+/* 并排那一档，库把两栏各自的竖向滚动条关了——整份外框才是一条滚动条，
+   所以栏高由内容定，不能跟着 forgeTheme 那条 height:100% 走。 */
+.cm-mergeView {
+  height: 100%;
+}
+
+.cm-mergeViewEditor > .cm-editor {
+  height: auto;
+}
+
+.cm-mergeViewEditor + .cm-mergeViewEditor {
+  border-left: 1px solid var(--border-color);
+}
+
+/* 外框那条滚动条照编辑器的尺寸与配色来，否则右侧会比打开文件时宽出一截。 */
+.cm-mergeView::-webkit-scrollbar {
+  width: 20px;
+  height: 11px;
+}
+
+.cm-mergeView::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 10px;
+}
+
+.cm-mergeView::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+.cm-mergeView::-webkit-scrollbar-corner {
+  background-color: transparent;
+}
+
+/* 改动块：左栏是基线（那份里少了什么），右栏是当前（多了什么）。
+   按 IDEA 的口径旧红新绿，色档与行号槽那些 VCS 标记同一组 token。
+   单栏那一档编辑器带的是 cm-merge-b，改动行跟着绿。 */
+.cm-editor.cm-merge-a.forge-diff .cm-changedLine {
+  background-color: var(--accent-red-bg);
+}
+
+.cm-editor.cm-merge-b.forge-diff .cm-changedLine {
+  background-color: var(--accent-green-bg);
+}
+
+/* 块里只有几个词真变了：词级再压深一档，一眼能看出动的是哪几个字。 */
+.cm-editor.cm-merge-a.forge-diff .cm-changedText {
+  background: color-mix(in srgb, var(--accent-red) 30%, transparent);
+}
+
+.cm-editor.cm-merge-b.forge-diff .cm-changedText {
+  background: color-mix(in srgb, var(--accent-green) 30%, transparent);
+}
+
+/* 单栏那一档：删掉的行摆在那块改动上面，整块是基线独有的内容，跟着红。 */
+.cm-editor.forge-diff .cm-deletedChunk {
+  background-color: var(--accent-red-bg);
+  border-left: 3px solid var(--accent-red);
+  padding-left: 7px;
+}
+
+.cm-editor.cm-merge-b.forge-diff .cm-deletedChunk .cm-deletedText {
+  background: none;
+}
+
+/* 行号左边那条 3px 竖标：并排时指着各自那一侧，单栏时删掉的那块也留一条。 */
+.cm-editor.cm-merge-a.forge-diff .cm-changedLineGutter,
+.cm-editor.forge-diff .cm-deletedLineGutter {
+  background: var(--accent-red);
+}
+
+.cm-editor.cm-merge-b.forge-diff .cm-changedLineGutter {
+  background: var(--accent-green);
+}
+
+.cm-editor.forge-diff .cm-inlineChangedLineGutter {
+  background: var(--accent-blue);
+}
+
+/* 折起来的没改区：一条安静地带，点它展开。那两个 ⦚ 是库自带的装饰，字库里没这个字形。 */
+.cm-editor.forge-diff .cm-collapsedLines {
+  padding: 3px 10px;
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.cm-editor.forge-diff .cm-collapsedLines::before,
+.cm-editor.forge-diff .cm-collapsedLines::after {
+  content: none;
 }
 
 /* ===== Git 面板 ===== */
@@ -6612,63 +6777,90 @@ body.is-editor-tab-dragging * {
   background: var(--accent-red);
 }
 
-/* 右下角/角落浮动通知气泡 (Notification Balloon / Toast) */
+/* 右下角/角落浮动通知气泡宿主 (Notification Balloon / Toast Host)
+ * 1:1 对标 openidea / IntelliJ IDEA Islands 规范：
+ * - 默认位于状态栏上方 12px，距离窗口右边框 20px；
+ * - 堆叠模式：最新气泡置于最贴近底部的底层，旧气泡垂直向上平推；
+ * - 采用 var(--z-toast, 1100) 确保独立于普通对话框之上的浮动层级。
+ */
 .notification-toasts-host {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-toast, 1100);
   display: flex;
   gap: 8px;
   pointer-events: none;
 }
 
 .notification-toasts-host.is-bottom-right {
-  right: 16px;
-  bottom: 34px;
+  right: 20px;
+  bottom: calc(var(--h-statusbar, 30px) + 12px);
   flex-direction: column-reverse;
+  align-items: flex-end;
 }
 
 .notification-toasts-host.is-top-right {
-  right: 16px;
-  top: 40px;
+  right: 20px;
+  top: calc(var(--h-titlebar, 40px) + 12px);
   flex-direction: column;
+  align-items: flex-end;
 }
 
 .notification-toasts-host.is-bottom-left {
-  left: 56px;
-  bottom: 34px;
+  left: 20px;
+  bottom: calc(var(--h-statusbar, 30px) + 12px);
   flex-direction: column-reverse;
+  align-items: flex-start;
 }
 
 .notification-toasts-host.is-top-left {
-  left: 56px;
-  top: 40px;
+  left: 20px;
+  top: calc(var(--h-titlebar, 40px) + 12px);
   flex-direction: column;
+  align-items: flex-start;
+}
+
+.notification-toasts-host.is-top-right .notification-balloon,
+.notification-toasts-host.is-top-left .notification-balloon {
+  animation-name: notification-balloon-in-top;
+}
+
+@keyframes notification-balloon-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .notification-balloon {
   pointer-events: auto;
   width: 360px;
-  max-width: calc(100vw - 32px);
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-light);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  max-width: calc(100vw - 40px);
+  padding: 12px 14px;
+  border-radius: var(--radius-popup-large, 10px);
+  background: var(--bg-popup, #26282c);
+  border: 1px solid var(--border-popup, #33353b);
+  box-shadow: var(--shadow-balloon, 0 8px 24px rgba(0, 0, 0, 0.45));
+  color: var(--fg, #d1d3d9);
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: flex-start;
   position: relative;
-  animation: notification-slide-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: notification-balloon-in var(--dur, 140ms) var(--ease, cubic-bezier(0.2, 0, 0, 1));
+  box-sizing: border-box;
 }
 
-@keyframes notification-slide-in {
+@keyframes notification-balloon-in {
   from {
     opacity: 0;
-    transform: translateY(12px) scale(0.97);
+    transform: translateX(16px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateX(0);
   }
 }
 
@@ -6680,15 +6872,19 @@ body.is-editor-tab-dragging * {
 }
 
 .notification-icon.is-error {
-  color: var(--accent-red);
+  color: var(--danger, #f57e84);
 }
 
 .notification-icon.is-warn {
-  color: var(--accent-yellow);
+  color: var(--warning, #d59637);
 }
 
 .notification-icon.is-info {
-  color: var(--accent-blue);
+  color: var(--info, #548af7);
+}
+
+.notification-icon.is-success {
+  color: var(--success, #6db083);
 }
 
 .notification-balloon-body {
@@ -6696,132 +6892,247 @@ body.is-editor-tab-dragging * {
   min-width: 0;
 }
 
+.notification-balloon-group {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted, #8c8f95);
+  margin-bottom: 2px;
+  line-height: 1.2;
+}
+
 .notification-balloon-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 3px;
+  color: var(--fg-strong, #dfe1e5);
+  margin-bottom: 4px;
   line-height: 1.35;
 }
 
 .notification-balloon-content {
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--fg-secondary, #9fa2a8);
   line-height: 1.45;
   word-break: break-word;
-  max-height: 120px;
+  max-height: 140px;
   overflow-y: auto;
-  font-family: var(--font-mono);
   user-select: text;
 }
 
-.notification-balloon-close {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  color: var(--text-muted);
-  border-radius: var(--radius-sm);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.notification-balloon-close:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-/* 通知历史面板 (Notifications Tool Window / Panel) */
-.notification-panel {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
-  width: 380px;
-  max-width: calc(100vw - 24px);
-  max-height: 480px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+.notification-balloon-actions {
   display: flex;
-  flex-direction: column;
-  z-index: 50;
-  overflow: hidden;
-  animation: notification-slide-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-top: 8px;
 }
 
-.notification-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-secondary);
+.notification-action-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--link, #71a1fe);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color var(--dur-fast, 80ms) ease;
 }
 
-.notification-panel-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
+.notification-action-link:hover {
+  color: var(--link-hover, #92b7ff);
+}
+
+.notification-action-link.is-primary {
+  color: var(--accent, #3871e1);
   font-weight: 600;
-  color: var(--text-primary);
 }
 
-.notification-panel-badge {
-  font-size: 11px;
-  font-weight: normal;
-  padding: 1px 6px;
-  border-radius: 9999px;
-  background: var(--bg-hover);
-  color: var(--text-tertiary);
+.notification-action-link.is-primary:hover {
+  color: var(--link-hover, #92b7ff);
 }
 
-.notification-panel-actions {
+.notification-balloon-controls {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-left: 4px;
+  flex-shrink: 0;
 }
 
-.notification-panel-actions .icon-button {
-  width: 22px;
-  height: 22px;
+.notification-balloon-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted, #8c8f95);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.65;
+  transition: all var(--dur-fast, 80ms) ease;
+}
+
+.notification-balloon-btn:hover {
+  background: var(--bg-hover, #2e2f30);
+  color: var(--fg-strong, #dfe1e5);
+  opacity: 1;
+}
+
+.notification-gear-menu {
+  position: absolute;
+  top: 32px;
+  right: 10px;
+  background: var(--bg-popup, #26282c);
+  border: 1px solid var(--border-popup, #33353b);
+  border-radius: 6px;
+  box-shadow: var(--shadow-dialog, 0 10px 24px rgba(0, 0, 0, 0.35));
+  z-index: 100;
+  padding: 4px 0;
+  min-width: 140px;
+  font-size: 12px;
+}
+
+.notification-gear-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--fg, #d1d3d9);
+  transition: background var(--dur-fast, 80ms) ease;
+}
+
+.notification-gear-item:hover {
+  background: var(--bg-hover, #2e2f30);
+  color: var(--fg-strong, #dfe1e5);
+}
+
+/* 通知历史面板与工具窗口 (Notifications Tool Window / Panel)
+ * 1:1 对标 openidea / IntelliJ IDEA Notifications 面板规范
+ */
+.notifications-tool-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-island, var(--bg-primary, #191a1c));
+  color: var(--fg, #d1d3d9);
+}
+
+.notification-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #26282c);
+  gap: 8px;
+  font-size: 12px;
+  background: var(--bg-frame, var(--bg-elev, #212326));
+}
+
+.notification-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.notification-filter-btn {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted, #8c8f95);
+  cursor: pointer;
+  font-size: 11px;
+  transition: all var(--dur-fast, 80ms) ease;
+}
+
+.notification-filter-btn:hover {
+  background: var(--bg-hover, #2e2f30);
+  color: var(--fg, #d1d3d9);
+}
+
+.notification-filter-btn.is-active {
+  background: var(--bg-active, #40434a);
+  color: var(--fg-emphasis, #d1d3d9);
+  font-weight: 600;
+}
+
+.notification-filter-btn.is-danger-active {
+  background: var(--bg-active, #40434a);
+  color: var(--danger, #f57e84);
+  font-weight: 600;
+}
+
+.notification-search-box {
+  position: relative;
+  flex: 1;
+  max-width: 200px;
+}
+
+.notification-search-icon {
+  position: absolute;
+  left: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted, #8c8f95);
+  pointer-events: none;
+}
+
+.notification-search-input {
+  width: 100%;
+  padding: 3px 8px 3px 24px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--border-popup, #33353b);
+  background: var(--bg-input, #191a1c);
+  color: var(--fg, #d1d3d9);
+  box-sizing: border-box;
+}
+
+.notification-search-input:focus {
+  border-color: var(--accent, #3871e1);
+  outline: none;
+}
+
+.notification-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .notification-panel-list {
   flex: 1;
   overflow-y: auto;
-  max-height: 400px;
-  padding: 6px 0;
+  padding: 0;
 }
 
 .notification-panel-empty {
-  padding: 36px 16px;
+  padding: 48px 16px;
   text-align: center;
-  color: var(--text-muted);
+  color: var(--fg-subtle, #73767c);
   font-size: 12.5px;
 }
 
 .notification-item {
   display: flex;
-  gap: 10px;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border-color);
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border, #26282c);
   position: relative;
-  transition: background 100ms ease-out;
-}
-
-.notification-item:last-child {
-  border-bottom: none;
+  transition: background var(--dur-fast, 80ms) ease;
 }
 
 .notification-item:hover {
-  background: var(--bg-hover);
+  background: var(--bg-hover, #2e2f30);
+}
+
+.notification-item.is-read {
+  opacity: 0.85;
 }
 
 .notification-item-icon {
   flex-shrink: 0;
-  padding-top: 1px;
+  padding-top: 2px;
 }
 
 .notification-item-main {
@@ -6833,46 +7144,73 @@ body.is-editor-tab-dragging * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 2px;
+  gap: 8px;
+  margin-bottom: 3px;
 }
 
 .notification-item-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--fg-strong, #dfe1e5);
   line-height: 1.35;
+}
+
+.notification-item-group-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-right: 6px;
+  color: var(--fg-subtle, #73767c);
+  text-transform: uppercase;
 }
 
 .notification-item-time {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--fg-subtle, #73767c);
   white-space: nowrap;
 }
 
 .notification-item-content {
-  font-size: 11.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--fg-secondary, #9fa2a8);
   line-height: 1.45;
   word-break: break-word;
-  max-height: 72px;
+  max-height: 80px;
   overflow-y: auto;
-  font-family: var(--font-mono);
   user-select: text;
+}
+
+.notification-item-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
 }
 
 .notification-item-remove {
   opacity: 0;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   position: absolute;
   top: 8px;
   right: 8px;
-  background: var(--bg-primary);
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted, #8c8f95);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--dur-fast, 80ms) ease;
 }
 
 .notification-item:hover .notification-item-remove {
-  opacity: 1;
+  opacity: 0.7;
+}
+
+.notification-item-remove:hover {
+  background: var(--bg-active, #40434a);
+  color: var(--fg-strong, #dfe1e5);
+  opacity: 1 !important;
 }
 
 /* ===== Notifications 工具窗口 (Tool Window) ===== */
@@ -7330,88 +7668,172 @@ body.is-editor-tab-dragging * {
 /* IDEA 把这个弹层摆在窗口上部而不是正中：结果列表要长，居中的话底部会顶出屏幕。 */
 .dialog-backdrop.is-search {
   place-items: start center;
-  padding: 12vh 24px 24px;
+  padding: 10vh 24px 24px;
 }
 
 .search-pop {
+  /* 页签行与页脚共用那一层底色：IDEA 的弹层头和尾都是框架色，正文层更亮。 */
+  --se-bg-header: var(--bg-frame);
   display: flex;
   flex-direction: column;
-  width: min(880px, 100%);
-  max-height: 72vh;
+  width: min(760px, 100%);
+  max-height: 80vh;
+  margin-top: 9vh;
   overflow: hidden;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
-  background: var(--surface-island-strong);
-  box-shadow: var(--island-shadow);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-popup-large);
+  background: var(--bg-popup);
+  box-shadow: var(--shadow-popup);
+  color: var(--fg-strong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
   animation: pop-in 190ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.search-tabs {
-  display: flex;
-  gap: 2px;
+/* 页签、可见性那颗勾、预览与漏斗与查找窗口那几颗：IDEA 的弹层头只有这一行。 */
+.search-head {
   flex: none;
-  padding: 7px 8px 0;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 8px;
+  background: var(--se-bg-header);
+  border-bottom: 1px solid var(--border-popup);
+}
+
+.search-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .search-tab {
-  padding: 5px 11px 8px;
-  border: 0;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small);
   background: none;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  cursor: pointer;
+  color: var(--fg-strong);
+  font: inherit;
+  white-space: nowrap;
+  cursor: default;
 }
 
 .search-tab:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--bg-toolbar-hover);
 }
 
-/* 选中态只抬底色，不给彩色条：和活动栏那颗一条规矩。 */
-.search-tab.is-active {
-  background: var(--surface-island-strong);
-  color: var(--text-primary);
+.search-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
 }
 
-/* 关闭那颗顶到页签行的右端，中心跟页签文字对齐（行有 7px 上衬，那颗 20px 高）。 */
-.search-tabs .search-close {
-  margin-left: auto;
-  align-self: flex-start;
-  margin-top: 4px;
+/* 选中态给 IDEA 那颗页签的底色与描边，不再是「只抬底色」。 */
+.search-tab.is-active,
+.search-tab.is-active:hover {
+  background: var(--bg-tab-selected);
+  border-color: var(--border-tab-selected);
+  color: var(--fg-strong);
 }
 
-.search-field {
-  display: flex;
+.search-include {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   flex: none;
-  padding: 10px 10px 0;
+  color: var(--fg-strong);
+  cursor: default;
+}
+
+.search-include input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.search-head .icon-button {
+  flex: none;
+}
+
+.search-query-row {
+  flex: none;
+  padding: 6px 8px;
+}
+
+/* 输入框是颗带 2px 描边的「井」：放大镜、转圈、命令提示都住在里面，不排在外面。 */
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px 0 8px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-input);
+}
+
+.search-field:focus-within {
+  border-color: var(--border-strong);
+}
+
+/* 放大镜带一颗下拉箭头：点开的是这个页签的搜索历史，Alt+↑/↓ 翻的是同一份。 */
+.search-magnifier {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  height: 22px;
+  padding: 0 2px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-subtle);
+  cursor: default;
+}
+
+.search-magnifier:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.search-magnifier:focus-visible {
+  outline: 2px solid var(--focus-ring);
 }
 
 .search-input {
-  flex: 1 1 auto;
+  flex: 1;
   min-width: 0;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: 14px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-strong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  caret-color: var(--fg-strong);
 }
 
 .search-input:focus {
-  outline: 2px solid var(--focus-ring);
-  border-color: var(--accent-blue);
+  outline: none;
 }
 
-.search-switches {
-  display: flex;
-  gap: 4px;
+.search-input::placeholder {
+  color: var(--fg-faint);
+}
+
+.search-hint {
   flex: none;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.search-spinner {
+  flex: none;
+  color: var(--fg-subtle);
 }
 
 .switch-chip {
@@ -7438,116 +7860,268 @@ body.is-editor-tab-dragging * {
   color: var(--text-primary);
 }
 
-.search-mask {
-  flex: none;
-  height: 28px;
-  margin: 8px 10px 0;
-  padding: 0 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-
-.search-mask:focus {
-  outline: 2px solid var(--focus-ring);
-  border-color: var(--accent-blue);
-}
-
 .search-list {
   flex: 1 1 auto;
-  min-height: 96px;
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px 6px;
+  padding: 0 6px 8px;
+}
+
+.search-list::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.search-list::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: content-box;
+}
+
+.search-list::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+.search-list::-webkit-scrollbar-track,
+.search-list::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 空查询那一屏的分节标题：一行高、压暗，点不动它。 */
+.search-section {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+
+/* 符号种类那颗字母章：底色由种类色自己兑出来，IDEA 的图标也是这个分工。 */
+.search-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-selection);
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg-subtle);
+}
+
+.search-badge.is-class,
+.search-badge.is-struct,
+.search-badge.is-record {
+  color: var(--accent-amber-text);
+}
+
+.search-badge.is-interface,
+.search-badge.is-trait {
+  color: var(--accent-cyan-text);
+}
+
+.search-badge.is-enum,
+.search-badge.is-union,
+.search-badge.is-typeAlias {
+  color: var(--accent-yellow);
+}
+
+.search-badge.is-function,
+.search-badge.is-method,
+.search-badge.is-constructor {
+  color: var(--accent-blue);
+}
+
+.search-badge.is-constant,
+.search-badge.is-variable {
+  color: var(--accent-red-text);
+}
+
+.search-badge.is-annotation,
+.search-badge.is-object,
+.search-badge.is-module {
+  color: var(--accent-green);
 }
 
 .search-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 26px;
+  gap: 6px;
+  height: 24px;
   padding: 0 8px;
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  font-size: 12.5px;
-  cursor: pointer;
+  border-radius: var(--radius-selection);
+  color: var(--fg-strong);
+  white-space: nowrap;
+  cursor: default;
 }
 
-.search-row.is-active {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+.search-row:hover {
+  background: var(--bg-tree-hover);
+}
+
+/* 选中那颗是 IDEA 的树选底色（浅色主题下是淡蓝），不是一层灰。 */
+.search-row.is-active,
+.search-row.is-active:hover {
+  background: var(--bg-tree-selected);
+}
+
+/* 命中的那几段涂搜索命中的底色，字色跟着底色走；跨行折断时每段各自圆角。 */
+.search-row mark {
+  background: var(--bg-search-match);
+  color: var(--fg-search-match);
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .search-row > svg {
   flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-subtle);
 }
 
 .search-row-main {
-  flex: 1 1 auto;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.search-name {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: pre;
+  color: var(--fg-strong);
 }
 
-/* 出处那一格是行的兄弟节点，不浮在片段上面：float 在 nowrap + overflow hidden 的格子里
-   不占行宽，出处会压在片段尾部上。主格 flex:1 把它顶到右边，长出处自己截断。 */
-.search-row-dir {
-  flex: 0 1 auto;
-  min-width: 64px;
-  max-width: 46%;
-  color: var(--text-muted);
-  font-size: 11.5px;
+/* 正文命中那一行按 UI 字体排，但缩进与空格照原样（white-space: pre）。 */
+.search-code {
+  font-family: var(--font-ui);
+  color: var(--fg);
+  tab-size: 2;
+  white-space: pre;
+}
+
+/* 名字后面挂的「在哪个目录里」「在哪个类里」「快捷键」：比名字暗一档，挤不动名字。 */
+.search-location {
+  flex: 0 1000 auto;
+  min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
 }
 
-.search-row-tag {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.search-shortcut {
+  font-family: var(--font-keys);
+}
+
+.search-line-suffix {
+  color: var(--fg-muted);
+}
+
+.search-cmd {
+  font-family: var(--font-mono);
+  color: var(--fg-strong);
+}
+
+/* 右侧那一格：文件名、行号。选中行压亮一档，同文件第二处起文件名再压暗一档。 */
+.search-right {
   flex: none;
-  color: var(--text-muted);
-  font-size: 11.5px;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+  text-align: right;
 }
 
-.search-row-tag em {
+.search-row.is-active .search-right {
+  color: var(--fg-muted);
+}
+
+.search-right em {
   font-family: var(--font-mono);
   font-style: normal;
-  color: var(--text-tertiary);
 }
 
-.search-failed {
-  margin: 4px 0;
-  padding: 6px 10px;
-  color: var(--accent-red-text);
-  font-size: 12px;
+.search-right .is-repeat {
+  color: var(--fg-faint);
+}
+
+/* 「更多」那行比条目再暗一档，它不是结果。 */
+.search-row.is-more {
+  padding-left: 26px;
+  color: var(--fg-subtle);
 }
 
 .search-none {
-  margin: 6px 0;
-  padding: 6px 10px;
-  color: var(--text-muted);
-  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  color: var(--fg-faint);
 }
 
 .search-foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
   flex: none;
-  padding: 7px 12px;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  color: var(--text-tertiary);
-  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 30px;
+  padding: 0 12px;
+  background: var(--se-bg-header);
+  border-top: 1px solid var(--border-popup);
+  color: var(--fg-subtle);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.search-keys {
-  color: var(--text-muted);
+.search-foot-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 预览格：列表下方那一块，读的是选中行的文件。 */
+.search-preview {
+  flex: none;
+  display: flex;
+  height: 220px;
+  border-top: 1px solid var(--border-popup);
+  overflow: hidden;
+}
+
+/* 页脚那颗「在右侧拆分中打开」：看着像链接，点了就拆一栏。 */
+.search-split {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: default;
+}
+
+.search-split:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.search-split:focus-visible {
+  outline: 2px solid var(--focus-ring);
 }
 
 /* ---------- 查找结果窗口 ---------- */

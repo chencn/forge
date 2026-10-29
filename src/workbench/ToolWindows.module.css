@@ -1,0 +1,141 @@
+.stripe {
+  --stripe-button: 32px;
+  --stripe-pad: var(--island-gap, 6px);
+  width: calc(var(--stripe-button) + var(--stripe-pad) * 2);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0 6px;
+  background: transparent;
+  user-select: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+
+.stripe::-webkit-scrollbar {
+  display: none;
+}
+
+.stripeSpacer {
+  flex: 1;
+}
+
+.stripeGroup {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.stripeButton {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: var(--radius-small, 4px);
+  color: var(--fg-muted, #8c8f95);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background var(--dur-fast, 120ms) ease,
+    color var(--dur-fast, 120ms) ease;
+}
+
+.stripeButton:hover,
+.stripeButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.stripeActive,
+.stripeActive:hover {
+  background: var(--bg-selected, #2a4371);
+  color: #fff;
+}
+
+.stripeButton:focus-visible {
+  outline: 2px solid var(--focus-ring, #3574f0);
+  outline-offset: -2px;
+}
+
+.badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent, #3574f0);
+  color: #fff;
+  font-family: var(--font-ui, sans-serif);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+/* 停靠窗口标题栏与容器 */
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-island, #1e1f22);
+  border-radius: var(--island-radius, 8px);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.header {
+  height: var(--h-header, 32px);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 10px;
+  user-select: none;
+  border-bottom: 1px solid var(--border, #33353b);
+  box-sizing: border-box;
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  font-size: var(--fs-ui, 13px);
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}

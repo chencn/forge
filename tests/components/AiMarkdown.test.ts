@@ -66,7 +66,7 @@ describe("AiMarkdown", () => {
     expect(html).toContain('class="ai-message-markdown"');
     expect(html).toContain('data-code-copy="1"');
     expect(html).toContain("_action.copy");
-    expect(html).toContain('class="hljs language-ts"');
+    expect(html).toContain('class="language-ts"');
   });
 
   it("copies the raw code, not the highlight markup", async () => {

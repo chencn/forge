@@ -44,7 +44,7 @@ import { pasteLineCount, pasteNeedsConfirm } from "../lib/termPaste";
 import { parseOsc7 } from "../lib/termOsc";
 import { describeError } from "../lib/errors";
 import { errorText, statEntries } from "../lib/fs";
-import { monoFont } from "../lib/monacoEnv";
+import { monoFont } from "../lib/editorEnv";
 import { DEFAULT_SETTINGS, TERMINAL_FONT_SIZE_RANGE } from "../lib/settings";
 import type { TerminalSettings } from "../lib/settings";
 import { useSettings } from "../hooks/useSettings";

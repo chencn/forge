@@ -619,6 +619,70 @@ pub async fn sys_memory() -> Memory {
     )
     .await
 }
+
+/// 唤起操作系统原生通知中心（Windows 10/11 Toast / macOS / Linux）
+///
+/// 当应用在后台、最小化或被遮挡时，通过操作系统通知中心向用户展示重要事件。
+#[tauri::command]
+pub async fn sys_notify(title: String, body: String) -> Result<(), String> {
+    block_value(
+        move || {
+            notify_native(&title, &body)
+        },
+        || Err("系统通知线程池不可用".to_string()),
+    )
+    .await
+}
+
+fn notify_native(title: &str, body: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // Windows 10/11: 使用 PowerShell 后台派发 Windows.UI.Notifications Action Center Toast
+        // 使用与应用主窗口相同的 AppUserModelID "app.forge.desktop" 进行归组展示
+        let escaped_title = title.replace('`', "``").replace('"', "`\"").replace('$', "`$");
+        let escaped_body = body.replace('`', "``").replace('"', "`\"").replace('$', "`$");
+        let script = format!(
+            concat!(
+                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; ",
+                "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); ",
+                "$textNodes = $template.GetElementsByTagName('text'); ",
+                "$textNodes.Item(0).AppendChild($template.CreateTextNode(\"{}\")) > $null; ",
+                "$textNodes.Item(1).AppendChild($template.CreateTextNode(\"{}\")) > $null; ",
+                "$toast = [Windows.UI.Notifications.ToastNotification]::new($template); ",
+                "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('app.forge.desktop').Show($toast);"
+            ),
+            escaped_title, escaped_body
+        );
+
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script]);
+        hide_console(&mut cmd);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"display notification "{}" with title "{}""#,
+            escaped_body, escaped_title
+        );
+        let mut cmd = Command::new("osascript");
+        cmd.args(["-e", &script]);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut cmd = Command::new("notify-send");
+        cmd.args([title, body]);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{group, ExclusiveFileLock, ProcInfo, MB};

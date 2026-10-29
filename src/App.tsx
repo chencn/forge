@@ -6,13 +6,10 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Archive,
-  ArrowUpRight,
   Bell,
   Globe,
   Check,
-  CheckCheck,
   Copy,
-  Eraser,
   FilePlus,
   FolderPlus,
   FileDiff,
@@ -21,12 +18,11 @@ import {
   LocateFixed,
   Maximize2,
   Minimize2,
+  MoreVertical,
   Sparkles,
   Minus,
   PanelBottom,
-  PanelLeftClose,
   PanelRight,
-  PanelRightClose,
   Play,
   RefreshCw,
   Save,
@@ -38,12 +34,16 @@ import MavenIcon from "./components/MavenIcon";
 import TitleBar from "./components/TitleBar";
 import ContextMenu from "./components/ContextMenu";
 import type { MenuAnchor, MenuItem } from "./components/ContextMenu";
-import { flatMenu } from "./components/ContextMenu";
 import ErrorBoundary from "./components/ErrorBoundary";
 import PromptDialog from "./components/PromptDialog";
 import ResolveConflictsDialog from "./components/ResolveConflictsDialog";
 import type { DialogRequest } from "./components/PromptDialog";
-import ExplorerTree from "./components/ExplorerTree";
+import {
+  ProjectTree,
+  buildProjectContextMenu,
+  createScratchFile,
+  type ProjectTreeNode,
+} from "./features/project-tree";
 import EntryIcon from "./components/EntryIcon";
 import EditorTabs from "./components/EditorTabs";
 import BrowserPanel from "./components/BrowserPanel";
@@ -70,14 +70,17 @@ import WelcomeScreen from "./components/WelcomeScreen";
 import type { SettingsModule } from "./components/SettingsPage";
 import MemoryGauge from "./components/MemoryGauge";
 import {
-  NotificationsView,
-  NotificationToasts,
-} from "./components/NotificationCenter";
+  NotificationsToolWindow,
+  NotificationsHeaderActions,
+  Balloons,
+} from "./workbench/Notifications";
 import DepSyncToast from "./components/DepSyncToast";
 import { isManifestDeclarationFile } from "./lib/depSync";
 import { planWorkspaceFlush, type WorkspaceFlush } from "./lib/watchBatch";
-import { loadNotifications, saveNotifications } from "./lib/notifications";
-import type { AppNotification } from "./lib/notifications";
+import {
+  notificationCenter,
+  useNotificationCenter,
+} from "./lib/notifications";
 import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
 import { useDepSync } from "./hooks/useDepSync";
 import { useFileWatch } from "./hooks/useFileWatch";
@@ -111,9 +114,8 @@ import {
   languageForPath,
   languageLabel,
   selectedText,
-  setKeymapScheme,
   setOpenTargetHandler,
-} from "./lib/monacoEnv";
+} from "./lib/editorEnv";
 import {
   EMPTY_TREE_HASH,
   gitCommitDetail,
@@ -142,7 +144,6 @@ import {
   deleteEntry,
   errorText,
   moveEntry,
-  openExternal,
   readFile,
   renameEntry,
   revealEntry,
@@ -153,6 +154,7 @@ import { dropHintKey, splitDrop } from "./lib/dropIn";
 import { dispatchDrop, dropPosition } from "./lib/dropOwner";
 import { codedError, describeError } from "./lib/errors";
 import { invalidateJavaIcons } from "./lib/javaKindIcons";
+import { pushRecentFile } from "./lib/seStore";
 import { IS_WINDOWS, MOD_LABEL } from "./lib/sys";
 import { applyShellIntegration, takeShellOpen } from "./lib/shellOpen";
 import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
@@ -181,7 +183,7 @@ import {
 import type { FileContent, FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
 import { resolveFileLink } from "./lib/fileLinks";
-import { appExit, cancelAppExit, onWindowBlur, onWindowFocus, setTrayLabels } from "./lib/window";
+import { appExit, cancelAppExit, onWindowBlur, onWindowFocus, setTrayLabels, useWindowControls } from "./lib/window";
 import { useI18n } from "./i18n";
 import type { TranslationKey } from "./i18n/lang/zh";
 import { RunPaneToolbar, RunSessionTabs } from "./components/RunPaneHead";
@@ -212,7 +214,7 @@ import "./components/aiAssistants.css";
 /**
  * 编辑区与工具窗口按「首次用到」才取。
  *
- * 这几块带着 Monaco、xterm、marked 与 DOMPurify：静态引它们就等于把约 4.6MB 放在
+ * 这几块带着编辑器（连语法包）、xterm、marked 与 DOMPurify：静态引它们就等于把好几 MB 放在
  * `createRoot().render()` 之前求值，而首屏要么是空白页要么是目录树，一样都用不到。
  * 类型仍走 `import type`，编译期擦掉，不产生依赖。
  */
@@ -380,6 +382,11 @@ export default function App() {
   const { settings, patch, applied: resolved } = useSettings();
   const { history, patch: patchHistory, remember, forget } = useHistory();
   const { config: lspConfig } = useLspConfig();
+
+  // 同步 settings 到通知中心，保证勿扰模式与各组系统通知设置实时联动
+  useEffect(() => {
+    notificationCenter.syncSettings(settings);
+  }, [settings]);
   /** 终端会话增删或退出时递增，触发常驻文件夹运行态绿点重算。 */
   const [termRev, setTermRev] = useState(0);
   useEffect(() => watchTermTabs(() => setTermRev((value) => value + 1)), []);
@@ -397,37 +404,12 @@ export default function App() {
   );
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => initialActiveRoot);
 
-  /** 当前项目最近 7 天通知历史（从持久化缓存加载并自动过滤过期记录）。 */
-  const [notifications, setNotifications] = useState<AppNotification[]>(() =>
-    loadNotifications(initialActiveRoot)
-  );
-  /** 当前在右下角悬浮展示的气泡列表（最多同时展示 3 条）。 */
-  const [activeToasts, setActiveToasts] = useState<AppNotification[]>([]);
+  /** 当前项目最近 7 天通知历史（从单例通知总线响应式订阅）。 */
+  const notifications = useNotificationCenter((s) => s.history);
 
-  // 按目标根更新并持久化通知：后台根产生的通知落回后台根自己的存储，不串进当前激活根。
-  const updateNotifications = useCallback(
-    (
-      updater: (prev: AppNotification[]) => AppNotification[],
-      targetRoot: string | null = workspaceRoot
-    ) => {
-      if (samePath(targetRoot ?? "", workspaceRoot ?? "")) {
-        setNotifications((prev) => {
-          const next = updater(prev);
-          saveNotifications(workspaceRoot, next);
-          return next;
-        });
-        return;
-      }
-      const next = updater(loadNotifications(targetRoot));
-      saveNotifications(targetRoot, next);
-    },
-    [workspaceRoot]
-  );
-
-  // 工作区项目切换时，加载该项目的 7 天通知历史并重置屏幕浮动气泡与跟项目绑定的弹层/日志筛选
+  // 工作区项目切换时，通知总线自动切入对应项目的隔离存储，并重置关联浮层状态
   useEffect(() => {
-    setNotifications(loadNotifications(workspaceRoot));
-    setActiveToasts([]);
+    notificationCenter.switchProjectRoot(workspaceRoot);
     setLogReference("");
     setLogCompareRef(null);
     setLogPath("");
@@ -437,73 +419,116 @@ export default function App() {
     setMenu(null);
   }, [workspaceRoot]);
 
-  /** 统一上报错误与通知（参照 IDEA：右下角弹出 Notification Balloon，并留存在最近 7 天通知历史中）。 */
+  /** 延迟引用的工具窗口与设置页跳转，解除上游通知上报逻辑与下游界面的循环依赖。 */
+  const dockPaneRef = useRef<(pane: BottomPane) => void>(() => {});
+  const openSettingsTabRef = useRef<(module?: unknown) => void>(() => {});
+
+  /**
+   * 统一上报错误与通知（1:1 对标 openidea 体系）：
+   * - 自动识别通知来源组（Git / Maven / LSP / System 等）；
+   * - 严格遵循用户设置的组行为规则（气泡形态 Balloon/Sticky/None、是否记入历史、勿扰模式）；
+   * - 支持快捷处置动作（Actions）。
+   */
   const reportError = useCallback(
     (raw: string, titleKey?: string) => {
       const desc = describeError(raw, t);
       let title = t("notifications.error");
-      if (titleKey === "fetch") title = t("notifications.fetchFailed");
-      else if (titleKey === "pull") title = t("notifications.pullFailed");
-      else if (titleKey === "push") title = t("notifications.pushFailed");
-      else if (titleKey) title = titleKey;
-      else if (desc.includes("fatal:") || desc.includes("error:") || raw.startsWith("GIT\u0001")) {
+      let groupId: string = "system";
+      let groupTitle: string = "系统";
+
+      if (titleKey === "fetch") {
+        title = t("notifications.fetchFailed");
+        groupId = "git";
+        groupTitle = "Git";
+      } else if (titleKey === "pull") {
+        title = t("notifications.pullFailed");
+        groupId = "git";
+        groupTitle = "Git";
+      } else if (titleKey === "push") {
+        title = t("notifications.pushFailed");
+        groupId = "git";
+        groupTitle = "Git";
+      } else if (titleKey) {
+        title = titleKey;
+      } else if (desc.includes("fatal:") || desc.includes("error:") || raw.startsWith("GIT\u0001")) {
         title = t("notifications.gitErrorTitle");
+        groupId = "git";
+        groupTitle = "Git";
+      } else if (raw.toLowerCase().includes("lsp") || raw.toLowerCase().includes("language server")) {
+        groupId = "lsp";
+        groupTitle = "代码分析 (LSP)";
+      } else if (raw.toLowerCase().includes("maven")) {
+        groupId = "maven";
+        groupTitle = "Maven";
       }
 
-      const notif: AppNotification = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      // 遵循用户组配置与勿扰模式
+      const groupRule = settings.notificationGroups[groupId] ?? {
+        displayType: "balloon",
+        log: true,
+        system: false,
+      };
+      const isDoNotDisturb = settings.notificationDoNotDisturb;
+      const isBalloon = !isDoNotDisturb && groupRule.displayType !== "none";
+      const isSticky = groupRule.displayType === "sticky";
+
+      // 针对具体错误挂载交互动作 Actions
+      const actions = [];
+      if (groupId === "git") {
+        actions.push({
+          label: "查看日志",
+          run: () => dockPaneRef.current("log"),
+        });
+      }
+
+      notificationCenter.notify({
+        groupId,
+        groupTitle,
         title,
         content: desc,
         level: "error",
-        timestamp: Date.now(),
-        read: false,
-        projectRoot: workspaceRoot ?? "",
-      };
-
-      // 记入历史并弹出右下角气泡（最多保留最新 3 条未关闭气泡）
-      updateNotifications((prev) => [notif, ...prev]);
-      setActiveToasts((prev) => [notif, ...prev.slice(0, 2)]);
+        balloon: isBalloon,
+        sticky: isSticky,
+        logged: groupRule.log,
+        actions: actions.length > 0 ? actions : undefined,
+        projectRoot: workspaceRoot ?? undefined,
+      });
     },
-    [t, updateNotifications, workspaceRoot]
+    [settings.notificationDoNotDisturb, settings.notificationGroups, t, workspaceRoot]
   );
-
-  const dismissToast = useCallback((id: string) => {
-    setActiveToasts((prev) => prev.filter((item) => item.id !== id));
-  }, []);
 
   const markAllNotificationsRead = useCallback(() => {
-    updateNotifications((prev) => prev.map((item) => ({ ...item, read: true })));
-  }, [updateNotifications]);
+    notificationCenter.markAllAsRead();
+  }, []);
 
-  const clearAllNotifications = useCallback(() => {
-    updateNotifications(() => []);
-    setActiveToasts([]);
-  }, [updateNotifications]);
-
-  const removeNotification = useCallback(
-    (id: string) => {
-      updateNotifications((prev) => prev.filter((item) => item.id !== id));
-      setActiveToasts((prev) => prev.filter((item) => item.id !== id));
-    },
-    [updateNotifications]
-  );
-
-  /** 自动更新流程的通报走同一条管道：进 7 天历史 + 右下角气泡。 */
+  /** 自动更新流程的通报：带快速操作按钮。 */
   const pushUpdateNotice = useCallback(
     (level: "info" | "warn", title: string, content: string) => {
-      const notif: AppNotification = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      const groupRule = settings.notificationGroups.system ?? {
+        displayType: "balloon",
+        log: true,
+        system: false,
+      };
+      notificationCenter.notify({
+        groupId: "system",
+        groupTitle: "系统更新",
         title,
         content,
         level,
-        timestamp: Date.now(),
-        read: false,
-        projectRoot: workspaceRoot ?? "",
-      };
-      updateNotifications((prev) => [notif, ...prev]);
-      setActiveToasts((prev) => [notif, ...prev.slice(0, 2)]);
+        balloon: !settings.notificationDoNotDisturb && groupRule.displayType !== "none",
+        sticky: groupRule.displayType === "sticky",
+        logged: groupRule.log,
+        actions: [
+          {
+            label: "打开设置",
+            primary: true,
+            run: () => openSettingsTabRef.current("general"),
+          },
+        ],
+        projectRoot: workspaceRoot ?? undefined,
+      });
     },
-    [updateNotifications, workspaceRoot]
+    [settings.notificationDoNotDisturb, settings.notificationGroups.system, workspaceRoot]
   );
 
   /** 下载完成后的「立即安装？」弹窗；挂起的是版本号，resolve 值回给自动更新流程。 */
@@ -592,7 +617,7 @@ export default function App() {
   useEffect(() => {
     const run = () => {
       lastLspSyncRef.current = Date.now();
-      // 客户端拉得到 monaco，静态引它就把整份编辑器打进启动 chunk；
+      // 这条链一直通到编辑器的键位与语法表，静态引就把它们打进启动 chunk；
       // 这里已经在等文档打开，动态引一次同一片 chunk，加载时机反而更准。
       void import("./lib/lspClient")
         .then(({ reconcileLsp }) => reconcileLsp(workspaceRoot, lspConfig, lspDocuments()))
@@ -693,6 +718,7 @@ export default function App() {
   const [clipboard, setClipboard] = useState<{ entries: FsEntry[]; cut: boolean } | null>(null);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
+  const { toggleMaximize } = useWindowControls();
   /** 编辑区页签栏里的比对，按根隔离，同一根内按打开顺序排。 */
   const [diffsByRoot, setDiffsByRoot] = useState<Record<string, DiffTab[]>>({});
   const diffs = useMemo(() => diffsByRoot[rootKey] ?? EMPTY_DIFFS, [diffsByRoot, rootKey]);
@@ -1014,6 +1040,11 @@ export default function App() {
   } | null>(null);
   /** 每开一次换一个序号当 key：同一份状态里再按一次 Ctrl+Shift+N 也要重置页签与词。 */
   const searchSeq = useRef(0);
+  /**
+   * 「在右侧拆分中打开」欠下的那一页。新标签要先进目录才拆得动（拆分按目录里的
+   * 标签归属分栏），所以先记下 id，等目录更新的下一帧补上。
+   */
+  const pendingSplit = useRef<string | null>(null);
   /** 底部查找窗口里那一趟的结果，按根隔离。一次只看一趟，重跑就地覆盖。 */
   const [findByRoot, setFindByRoot] = useState<Record<string, FindState>>({});
   const find = useMemo(() => findByRoot[rootKey] ?? EMPTY_FIND, [findByRoot, rootKey]);
@@ -1058,7 +1089,7 @@ export default function App() {
     ai: settings.aiAssistantsEnabled,
     browser: settings.aiAssistantsEnabled && Boolean(workspaceRoot),
     maven: mavenHere,
-    notifications: notifications.length > 0,
+    notifications: true,
   };
   const activeRightPanel = rightPanel !== null
     && sideOfTool(toolRailLayout, rightPanel) === "right"
@@ -1205,12 +1236,6 @@ export default function App() {
     }
     if (workspaceRoot) void allowAssetDir(workspaceRoot).catch(() => {});
   }, [openFolders, workspaceRoot]);
-
-  // 键位方案只存值：装绑定要 monaco，编辑器还没建起来时为它加载编辑器不划算。
-  // 编辑器模块加载时取当前值装一次，之后换方案由那边撤掉上一套再装。
-  useEffect(() => {
-    setKeymapScheme(settings.editor.keymap);
-  }, [settings.editor.keymap]);
 
   // 托盘菜单是系统画的，吃不到界面这套 i18n，文字得由这边递过去。
   useEffect(() => {
@@ -1657,6 +1682,7 @@ export default function App() {
     },
     [getLastPlace, setPlaces]
   );
+  dockPaneRef.current = dockPane;
 
   /** 收起：只藏界面，shell 和任务继续在后台跑。 */
   const hidePane = useCallback(
@@ -1877,15 +1903,70 @@ export default function App() {
   }, [getDiffChains]);
 
   /**
+   * 解析当前搜索应该生效的目标工程根或目录：
+   * 1. 显式指定的 scope（如右键菜单点击“在目录中查找”传入的 targetDir，最高优先级）；
+   * 2. 随处搜索为工程级搜索：优先定位当前正在编辑的文件所属的工程根（docs.activePath 在 openFolders 中匹配）；
+   * 3. 资源管理器当前选中的条目所属的工程根（explorerPick[0] 在 openFolders 中匹配）；
+   * 4. 若选中的条目不属于任何 openFolders，取其自身目录或父目录；
+   * 5. 当前正在编辑的非工程文件所在目录；
+   * 6. 当前激活工作区根 workspaceRoot 或 openFolders 中的首个工程。
+   */
+  const resolveActiveDirectory = useCallback(
+    (explicitScope?: string | null): string | null => {
+      // 1. 显式指定的 scope 最高优先级
+      if (explicitScope) return explicitScope;
+
+      // 2. 优先匹配当前正在编辑的活动文档所属的项目根
+      if (docs.activePath) {
+        const activeDocPath = docs.activePath;
+        const matchedRoot = openFolders.find(
+          (folder) => pathWithin(folder, activeDocPath) || samePath(folder, activeDocPath)
+        );
+        if (matchedRoot) {
+          return matchedRoot;
+        }
+      }
+
+      // 3. 检查资源管理器选中的条目所属的项目根
+      if (explorerPick.length > 0) {
+        const picked = explorerPick[0];
+        const matchedRoot = openFolders.find(
+          (folder) => pathWithin(folder, picked.path) || samePath(folder, picked.path)
+        );
+        if (matchedRoot) {
+          return matchedRoot;
+        }
+        if (picked.kind === "directory") {
+          return picked.path;
+        }
+        const parent = parentPath(picked.path);
+        if (parent) return parent;
+        return picked.path;
+      }
+
+      // 4. 当前正在编辑的非工程文件所在父目录
+      if (docs.activePath) {
+        const parent = parentPath(docs.activePath);
+        if (parent) return parent;
+      }
+
+      // 5. 降级为当前工作区根，或 openFolders 中的第一个工程
+      return workspaceRoot ?? (openFolders.length > 0 ? openFolders[0] : null);
+    },
+    [docs.activePath, explorerPick, openFolders, workspaceRoot]
+  );
+
+  /**
    * 开随处搜索弹层。`query` 是从编辑器选区带过来的词（IDEA 的 `PREDEFINED_TEXT`），
-   * 没选东西就留空；`scope` 为空表示搜整个工程，非空就是 IDEA 的 Look in Directory。
+   * 没选东西就留空；`scope` 为空时自动推导当前活跃的目录或工程，非空就是显式指定。
    */
   const openEverywhere = useCallback(
     (tab: SearchTab = "all", query = "", scope: string | null = null) => {
       searchSeq.current += 1;
-      setEverywhere({ tab, query, scope });
+      const targetScope = resolveActiveDirectory(scope);
+      setEverywhere({ tab, query, scope: targetScope });
     },
-    []
+    [resolveActiveDirectory]
   );
 
   /**
@@ -1914,15 +1995,33 @@ export default function App() {
    * 目录那一条没有正文可开，落点全在树上——展开它并把它选住。
    */
   const openSearchFile = useCallback(
-    (path: string, isDir: boolean) => {
+    (path: string, isDir: boolean, side?: boolean) => {
       if (!isDir) {
         setActiveTab(`doc|${path}`);
         void docs.open(path);
+        if (side) pendingSplit.current = `doc|${path}`;
       }
       revealInTree(path);
     },
     [docs, revealInTree]
   );
+
+  /** 弹层里点开一处符号定义：落到那一行，把名字选住；`side` 同样要新的拆分。 */
+  const openSearchSymbol = useCallback(
+    (path: string, line: number, column: number, length: number, side?: boolean) => {
+      setActiveTab(`doc|${path}`);
+      void docs.openHit(path, line, column, length);
+      if (side) pendingSplit.current = `doc|${path}`;
+      revealInTree(path);
+    },
+    [docs, revealInTree]
+  );
+
+  // 「最近文件」那一档记的是编辑区去过哪儿：翻到哪一页就补一笔，重复的挪到最前。
+  useEffect(() => {
+    if (!activeTab?.startsWith("doc|")) return;
+    pushRecentFile(activeTab.slice("doc|".length));
+  }, [activeTab]);
 
   /** 点击依赖同步气泡中的构建清单链接：在编辑器中打开该清单并在项目树定位。 */
   const openDepSyncManifest = useCallback(
@@ -1943,9 +2042,10 @@ export default function App() {
    * IDEA 那边 Enter 之后弹层关掉、结果还摆在 Find 窗口，这边一样。
    */
   const openSearchHit = useCallback(
-    (hit: TextHit, page: TextPage, options: SearchOptions) => {
+    (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean) => {
       setFind({ query: page.query, options, page });
       dockPane("find");
+      if (side) pendingSplit.current = `doc|${hit.path}`;
       revealHit(hit);
     },
     [dockPane, revealHit]
@@ -1989,23 +2089,26 @@ export default function App() {
   }, [places.run, hidePane, dockPane]);
 
   /**
-   * 搜索那三颗键位是应用级的，不走 monaco 的键绑定，三个快捷键方案里都是同一套。
+   * 搜索那三颗键位是应用级的，不走编辑器的键绑定，三个快捷键方案里都是同一套。
    *
    * 双击 Shift 照 IDEA 那条键盘手势（`$default.xml` 里的 `shift SHIFT`）：两次轻击 Shift 的
    * 间隔不超过 350ms 才算，中间落了别的键就重新计。长按 Shift（持续按住或发生 repeat）
    * 严格判定为长按，绝不触发搜索。焦点在输入框里时不认这条，
-   * 否则重命名框里连按两下 Shift 会把弹层盖上去；monaco 那块输入面除外，
+   * 否则重命名框里连按两下 Shift 会把弹层盖上去；编辑器那块输入面除外，
    * 它是编辑器本体，IDEA 在这儿照样生效。终端的辅助 textarea 不除外，那边敲的是 shell。
    */
   useEffect(() => {
     const detector = new DoubleShiftDetector();
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      const inEditor = target?.classList.contains("inputarea") ?? false;
+      // 编辑器本体那块输入面不算「输入框」。CodeMirror 收键的是 `.cm-content`，
+      // 而它是 contenteditable——不列进来会被下面那条 isContentEditable 误判，
+      // 于是光标在代码里时双击 Shift 找不到东西。
+      const inEditor = !!target && target.classList.contains("cm-content");
       const inField =
         !!target &&
-        (target.isContentEditable ||
-          ((target.tagName === "INPUT" || target.tagName === "TEXTAREA") && !inEditor));
+        !inEditor &&
+        (target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA");
       // 搜索的键位取自注册表（设置页可改绑），匹配要求修饰键精确相等。
       if (comboMatchesEvent(event, effectiveShortcut("search.findInFiles", shortcutOverrides))) {
         event.preventDefault();
@@ -2179,7 +2282,7 @@ export default function App() {
 
       if (closingCurrent) {
         setClipboard(null);
-        setActiveToasts([]);
+        notificationCenter.getState().toasts.forEach((t) => notificationCenter.dismissBalloon(t.id));
         const fallback =
           remaining.length > 0
             ? (remaining[Math.min(Math.max(0, idx), remaining.length - 1)] ?? null)
@@ -2256,7 +2359,7 @@ export default function App() {
       if (keepSettingsActive) {
         setActiveTabByRoot((prev) => ({ ...prev, [existing]: "settings" }));
       }
-      setActiveToasts([]);
+      notificationCenter.getState().toasts.forEach((t) => notificationCenter.dismissBalloon(t.id));
       setWorkspaceRoot(existing);
       remember("recentFolders", existing);
       openSideTool("explorer");
@@ -2567,7 +2670,7 @@ export default function App() {
     pushUpdateNotice("info", t("menu.localHistory"), t("history.reverted"));
   }, [docs, pushUpdateNotice, t]);
 
-  // 窗口级 Ctrl+S / Cmd+S：焦点不在 Monaco 内（例如正看预览或点在侧栏/页签栏）时也能保存。
+  // 窗口级 Ctrl+S / Cmd+S：焦点不在编辑器内（例如正看预览或点在侧栏/页签栏）时也能保存。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (dialog || menu || resolveOpen || everywhere) return;
@@ -3259,169 +3362,137 @@ export default function App() {
   );
 
   /**
-   * 目录树那一句右键菜单，照 IDEA 的 ProjectViewPopupMenu 排：
-   * 新建一组 / 剪切复制粘贴一组 / 打开 / 重命名与删除 / 路径与外部打开 / Git 子菜单 / 比对 / 刷新。
-   * 每一项作用在整批选中上，只有要求「恰好一条」的那几条多选时点不动。
+   * 目录树右键菜单，1:1 对齐 openidea ProjectViewPopupMenu / IntelliJ IDEA 商业级规范
    */
   const requestMenu = useCallback(
-    (selection: FsEntry[], position: { x: number; y: number }) => {
-      const one = selection.length === 1 ? (selection[0] ?? null) : null;
-      const needOne = one === null ? t("menu.needOne") : undefined;
-      const dir = targetDirOf(selection);
-      const files = selection.filter((entry) => entry.kind !== "directory");
-      const sole = one !== null && one.kind !== "directory" ? one : null;
-      const has = selection.length > 0;
+    (selection: FsEntry[], position: { x: number; y: number }, node?: ProjectTreeNode) => {
+      // 组装选择节点的模型（支持外部库、Scratches 与常规项目节点）
+      const nodes: ProjectTreeNode[] = selection.map((entry) => {
+        if (node && node.entry.path === entry.path) return node;
+        let domain: "project" | "libraries" | "scratches" = "project";
+        if (entry.path.startsWith("virtual:lib") || entry.isReadonly) {
+          domain = "libraries";
+        } else if (entry.path.includes("/scratches/") || entry.path.includes("\\scratches\\")) {
+          domain = "scratches";
+        }
+        return {
+          key: entry.path.replaceAll("\\", "/").toLowerCase(),
+          domain,
+          entry,
+          displayName: entry.name,
+          deepestPath: entry.path,
+          depth: 1,
+          isReadonly: entry.isReadonly,
+        };
+      });
 
-      // IDEA 在树里给的是整个 Git 子菜单（Git.ContextMenu），这里只摆后端撑得住的三条。
-      // 未跟踪那一条还没有来路可查：历史记录查的是这条路径在提交里的经过，一次都没提交过就是空的。
-      const untrackedSole =
-        sole !== null &&
-        (git.status?.changes ?? []).some(
-          (change) => change.untracked && change.path === repoRelative(sole.path)
-        );
-      const gitGroup: MenuItem[] =
-        !git.root || files.length === 0
-          ? []
-          : [
-              {
-                label: "Git",
-                children: [
-                  {
-                    label: t("git.stage"),
-                    onSelect: () => void git.stage(files.map((entry) => entry.path)),
-                  },
-                  ...(sole && !untrackedSole
-                    ? [
-                        {
-                          label: t("git.history"),
-                          onSelect: () => showFileHistory(repoRelative(sole.path)),
-                        },
-                      ]
-                    : []),
-                  {
-                    label: t("git.ignoreFile"),
-                    onSelect: () =>
-                      void addToGitignore(files.map((entry) => repoRelative(entry.path))),
-                  },
-                ],
+      const items = buildProjectContextMenu({
+        selection: nodes,
+        workspaceRoot: workspaceRoot ?? "",
+        modKey: MOD_LABEL,
+        hasClipboard: Boolean(clipboard),
+        t,
+        git: git.root
+          ? {
+              root: git.root,
+              changes: git.status?.changes ?? [],
+              stage: (paths) => void git.stage(paths),
+              history: (rel) => showFileHistory(rel),
+              commit: () => openSideTool("git"),
+              diff: (paths) => {
+                if (paths.length > 0) {
+                  const targetPath = paths[0];
+                  const change = (git.status?.changes ?? []).find(
+                    (c) => git.absoluteOf(c.path) === targetPath || c.path === targetPath
+                  );
+                  if (change) {
+                    openChange(change, false, []);
+                  }
+                }
               },
-            ];
+              rollback: (paths) => {
+                if (paths.length > 0) void git.unstage(paths);
+              },
+              push: () => void git.push(false),
+              pull: () => void git.pull(),
+              branches: () => openSideTool("git"),
+            }
+          : undefined,
+        onNewFile: (targetDir, templateExt) =>
+          setDialog({
+            kind: "newFile",
+            name: templateExt ? `untitled.${templateExt}` : "untitled.txt",
+            dir: targetDir,
+            entry: null,
+          }),
+        onNewFolder: (targetDir) =>
+          setDialog({
+            kind: "newFolder",
+            name: t("dialog.newFolderDefault"),
+            dir: targetDir,
+            entry: null,
+          }),
+        onNewScratch: (lang) => {
+          void createScratchFile(lang)
+            .then((file) => {
+              setActiveTab(`doc|${file.path}`);
+              void docs.open(file.path);
+              refreshTree();
+            })
+            .catch((cause: unknown) => reportError(errorText(cause)));
+        },
+        onCut: (entries) => copyPicked(entries, true),
+        onCopy: (entries) => copyPicked(entries, false),
+        onCopyPath: (type, entries) => {
+          let text = "";
+          if (type === "name") {
+            text = entries.map((e) => e.name).join("\n");
+          } else if (type === "relative" && workspaceRoot) {
+            const prefix = workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
+            text = entries
+              .map((e) => {
+                const p = e.path.replaceAll("\\", "/");
+                return p.startsWith(prefix) ? p.slice(prefix.length + 1) : p;
+              })
+              .join("\n");
+          } else {
+            text = entries.map((e) => e.path).join("\n");
+          }
+          void navigator.clipboard.writeText(text);
+        },
+        onPaste: (targetDir) => void pasteInto(targetDir),
+        onOpenFile: (entry) => openFile(entry),
+        onRename: (entry) => confirmRename(entry),
+        onMove: (entries) => {
+          if (entries.length > 0) confirmRename(entries[0]);
+        },
+        onDelete: (entries) => confirmDelete(entries),
+        onReveal: (path) => void revealEntry(path),
+        onOpenTerminal: () => {
+          focusPane("terminal");
+        },
+        onFindInFiles: (targetDir) =>
+          openEverywhere("text", selectedText(), targetDir),
+        onReplaceInFiles: (targetDir) =>
+          openEverywhere("text", selectedText(), targetDir),
+        onLocalHistory: (path) => showLocalHistory(path),
+        onReload: () => {
+          refreshTree();
+          void git.refresh();
+        },
+        onCompareFiles: (entries) => compareFiles(entries),
+        onCompareWith: (entry) => openFile(entry),
+        onMarkDirectory: (targetDir, role) => {
+          if (role === "excluded") {
+            void addToGitignore([repoRelative(targetDir)]);
+          }
+        },
+        onAiInput: (entry) => aiInputMenu({ kind: "file", path: entry.path, startLine: 1 }),
+      });
 
       setMenu({
         ...position,
-        items: flatMenu([
-          [
-            {
-              label: t("action.newFile"),
-              onSelect: () =>
-                setDialog({ kind: "newFile", name: "untitled.txt", dir, entry: null }),
-            },
-            {
-              label: t("action.newFolder"),
-              onSelect: () =>
-                setDialog({
-                  kind: "newFolder",
-                  name: t("dialog.newFolderDefault"),
-                  dir,
-                  entry: null,
-                }),
-            },
-          ],
-          [
-            {
-              label: t("menu.cut"),
-              shortcut: `${MOD_LABEL}+X`,
-              disabled: !has,
-              onSelect: () => copyPicked(selection, true),
-            },
-            {
-              label: t("action.copy"),
-              shortcut: `${MOD_LABEL}+C`,
-              disabled: !has,
-              onSelect: () => copyPicked(selection, false),
-            },
-            ...(clipboard
-              ? [
-                  {
-                    label: t("action.paste"),
-                    shortcut: `${MOD_LABEL}+V`,
-                    onSelect: () => void pasteInto(dir),
-                  },
-                ]
-              : []),
-          ],
-          // 目录靠单击展开，「打开」与「用关联应用打开」都只给文件。
-          sole ? [
-            { label: t("menu.open"), onSelect: () => openFile(sole) },
-            aiInputMenu({ kind: "file", path: sole.path, startLine: 1 }),
-          ] : [],
-          [
-            {
-              label: t("menu.rename"),
-              shortcut: "F2",
-              disabled: one === null,
-              hint: needOne,
-              onSelect: () => {
-                if (one) confirmRename(one);
-              },
-            },
-            {
-              label: t("menu.delete"),
-              shortcut: "Delete",
-              danger: true,
-              disabled: !has,
-              onSelect: () => confirmDelete(selection),
-            },
-          ],
-          [
-            {
-              label: t("menu.copyPath"),
-              disabled: !has,
-              onSelect: () =>
-                void navigator.clipboard.writeText(selection.map((entry) => entry.path).join("\n")),
-            },
-            ...(one !== null
-              ? [{ label: t("menu.reveal"), onSelect: () => void revealEntry(one.path) }]
-              : []),
-            ...(sole
-              ? [
-                  {
-                    label: t("menu.openWith"),
-                    onSelect: () =>
-                      void openExternal(sole.path).catch((cause: unknown) =>
-                        reportError(errorText(cause))
-                      ),
-                  },
-                ]
-              : []),
-          ],
-          gitGroup,
-          sole ? [{ label: t("menu.localHistory"), onSelect: () => showLocalHistory(sole.path) }] : [],
-          // IDEA 把 Find in Path 紧跟在 Git 组后面。作用层照 `setDirectoryName` 那套取：
-          // 目录取自身，文件取父目录，空白处取工程根，`targetDirOf` 已是这个口径。
-          // 落在工程根时传 null，弹层底部那句作用域才不会出现「整个工程里再搜一个子目录」的怪话。
-          workspaceRoot
-            ? [
-                {
-                  label: t("menu.findInDirectory"),
-                  onSelect: () =>
-                    openEverywhere("text", selectedText(), dir === workspaceRoot ? null : dir),
-                },
-              ]
-            : [],
-          files.length === 2
-            ? [{ label: t("menu.compareFiles"), onSelect: () => compareFiles(selection) }]
-            : [],
-          [
-            {
-              label: t("tool.refresh"),
-              onSelect: () => {
-                refreshTree();
-                void git.refresh();
-              },
-            },
-          ],
-        ]),
+        items,
       });
     },
     [
@@ -3432,16 +3503,20 @@ export default function App() {
       confirmDelete,
       confirmRename,
       copyPicked,
+      docs,
+      focusPane,
       git,
       openEverywhere,
       openFile,
+      openSideTool,
       pasteInto,
       refreshTree,
       repoRelative,
       reportError,
+      selectedText,
       showFileHistory,
+      showLocalHistory,
       t,
-      targetDirOf,
       workspaceRoot,
     ]
   );
@@ -3450,7 +3525,7 @@ export default function App() {
    * 选中一段文字后，Ctrl/Cmd+C 把这段文字写入系统剪贴板。
    *
    * 挂在捕获阶段：下面资源管理器那段冒泡监听会把同一次按键当成「复制文件」。
-   * 输入框、Monaco 与终端的 textarea 不在这里处理，编辑和粘贴仍走原来的路。
+   * 输入框、编辑器与终端的 textarea 不在这里处理，编辑和粘贴仍走原来的路。
    */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3491,7 +3566,7 @@ export default function App() {
       // 这一侧要整句让开，否则两个确认框叠着弹，先出来的那个把后一个顶掉。
       if (focus?.closest(".log-refs")) return;
       const key = event.key.toLowerCase();
-      // 主修饰键按平台认：macOS 上 Cmd+C/V，其余平台 Ctrl+C/V（对齐 Monaco 的 CtrlCmd 语义）。
+      // 主修饰键按平台认：macOS 上 Cmd+C/V，其余平台 Ctrl+C/V（与编辑器键位方案的 CtrlCmd 一致）。
       const mod = event.ctrlKey || event.metaKey;
       if (mod && !event.altKey && (key === "c" || key === "x")) {
         // 页面上已有文字选区时，这次按键属于那段文字。捕获阶段会把 Ctrl+C 写入剪贴板；
@@ -3531,7 +3606,7 @@ export default function App() {
     targetDirOf,
   ]);
 
-  /** 已关闭的标签页要连 Monaco model 一起丢，否则内容留在内存里。支持单文件或被删目录下全部已打开文档清理。 */
+  /** 已关闭的标签页要连编辑器的常驻 state 一起丢，否则内容留在内存里。支持单文件或被删目录下全部已打开文档清理。 */
   const dropDocument = useCallback(
     (targetPath: string) => {
       for (const doc of docs.documents) {
@@ -3948,6 +4023,14 @@ export default function App() {
     selectTab(id);
   });
 
+  // 搜索弹层里「在右侧拆分中打开」：新标签进目录的这一帧才拆得动，欠着的在这儿补。
+  useEffect(() => {
+    const id = pendingSplit.current;
+    if (!id || !tabCatalog.some((tab) => tab.id === id)) return;
+    pendingSplit.current = null;
+    splitEditor(id, "horizontal");
+  }, [splitEditor, tabCatalog]);
+
   // 只在目录真正移除标签后清理归属；脏文件取消关闭时，分组保持原样。
   useEffect(() => {
     if (!editorSplit) return;
@@ -4094,6 +4177,7 @@ export default function App() {
     setSettingsTab(true);
     setActiveTab("settings");
   }, []);
+  openSettingsTabRef.current = openSettingsTab;
 
   /** 编辑程序配置也从页签栏进：开着就跳过去，没开就新添一页。 */
   const openRunConfigsTab = useCallback(() => {
@@ -4159,49 +4243,314 @@ export default function App() {
   );
 
   /**
-   * 命令面板（随处搜索的动作页签）的动作表：只收能独立执行的应用级操作。
-   * 上下文动作（关某个标签、重命名某个文件）依赖当前选中，不进表——
-   * 列表里点一条却什么都没发生，比少一条更糟。
+   * 命令面板（随处搜索的动作页签）的动作表：
+   * 全面收录系统顶层主菜单与常用应用级命令（文件、编辑、视图、导航、代码、运行、Git、设置等）。
+   * 包含中英文检索关键词与对应快捷键，支持在随处搜索中直接搜索并执行任意菜单项。
    */
   const paletteCommands = useMemo<ForgeCommand[]>(() => {
     const commands: ForgeCommand[] = [
-      { id: "search.everywhere", label: t("command.searchEverywhere"), run: () => openEverywhere("all") },
-      { id: "search.gotoFile", label: t("shortcut.search.gotoFile"), shortcut: formatShortcut("search.gotoFile", shortcutOverrides), run: () => openEverywhere("files") },
-      { id: "search.findInFiles", label: t("shortcut.search.findInFiles"), shortcut: formatShortcut("search.findInFiles", shortcutOverrides), run: () => openEverywhere("text", selectedText()) },
-      { id: "file.save", label: t("shortcut.file.save"), shortcut: formatShortcut("file.save", shortcutOverrides), run: () => void saveActive() },
-      { id: "file.saveAll", label: t("command.saveAll"), run: () => void flushDirtyDocs() },
-      { id: "run.run", label: t("shortcut.run.run"), shortcut: formatShortcut("run.run", shortcutOverrides), run: runSelectedConfig },
-      { id: "run.rerun", label: t("shortcut.run.rerun"), shortcut: formatShortcut("run.rerun", shortcutOverrides), run: rerunSelectedConfig },
-      { id: "run.stop", label: t("shortcut.run.stop"), shortcut: formatShortcut("run.stop", shortcutOverrides), run: stopAllRuns },
-      { id: "run.chooseConfig", label: t("shortcut.run.chooseConfig"), shortcut: formatShortcut("run.chooseConfig", shortcutOverrides), run: chooseRunConfig },
-      { id: "run.toggleTool", label: t("shortcut.run.toggleTool"), shortcut: formatShortcut("run.toggleTool", shortcutOverrides), run: toggleRunPane },
-      { id: "ai.newSession", label: t("command.newAiSession"), run: openAiDraft },
-      { id: "settings.open", label: t("command.openSettings"), run: () => openSettingsTab("general") },
-      { id: "settings.shortcuts", label: t("command.openShortcutSettings"), run: () => openSettingsTab("shortcuts") },
+      // 导航与搜索 (Navigate / Search)
+      { id: "search.everywhere", label: `${t("command.searchEverywhere")} (Search Everywhere)`, run: () => openEverywhere("all") },
+      { id: "search.gotoClass", label: `${t("command.gotoClass")} (Go to Class)`, run: () => openEverywhere("classes") },
+      { id: "search.gotoSymbol", label: `${t("command.gotoSymbol")} (Go to Symbol)`, run: () => openEverywhere("symbols") },
+      { id: "search.gotoFile", label: `${t("shortcut.search.gotoFile")} (Go to File)`, shortcut: formatShortcut("search.gotoFile", shortcutOverrides), run: () => openEverywhere("files") },
+      { id: "search.findInFiles", label: `${t("shortcut.search.findInFiles")} (Find in Files)`, shortcut: formatShortcut("search.findInFiles", shortcutOverrides), run: () => openEverywhere("text", selectedText()) },
+      {
+        id: "navigate.locateInSidebar",
+        label: `${t("menu.locateInSidebar")} (Select in Project View)`,
+        run: () => {
+          if (docs.activePath) revealInTree(docs.activePath);
+        },
+      },
+
+      // 文件菜单 (File)
+      {
+        id: "file.newFile",
+        label: `${t("action.newFile")} (New File)`,
+        run: () => {
+          const dir = resolveActiveDirectory() ?? workspaceRoot;
+          setDialog({ kind: "newFile", name: "untitled.txt", dir, entry: null });
+        },
+      },
+      {
+        id: "file.newFolder",
+        label: `${t("action.newFolder")} (New Folder)`,
+        run: () => {
+          const dir = resolveActiveDirectory() ?? workspaceRoot;
+          setDialog({ kind: "newFolder", name: t("dialog.newFolderDefault"), dir, entry: null });
+        },
+      },
+      {
+        id: "file.openFolder",
+        label: `${t("menu.open")}... (Open Folder...)`,
+        run: () => void openFolder(),
+      },
+      { id: "file.save", label: `${t("shortcut.file.save")} (Save)`, shortcut: formatShortcut("file.save", shortcutOverrides), run: () => void saveActive() },
+      { id: "file.saveAll", label: `${t("command.saveAll")} (Save All)`, run: () => void flushDirtyDocs() },
+      {
+        id: "file.closeActive",
+        label: `关闭当前文件 (Close Active Editor)`,
+        run: () => {
+          if (docs.activePath) closeDocTab(docs.activePath);
+        },
+      },
+      {
+        id: "file.closeOthers",
+        label: `${t("menu.closeOthers")} (Close Other Tabs)`,
+        run: () => {
+          if (activeTab) closeOtherTabs(activeTab);
+        },
+      },
+      {
+        id: "file.closeAll",
+        label: `${t("menu.closeAll")} (Close All Tabs)`,
+        run: () => closeAllTabs(),
+      },
+      {
+        id: "file.closeProject",
+        label: `关闭项目 (Close Project)`,
+        run: () => {
+          if (workspaceRoot) closeFolder();
+        },
+      },
+      {
+        id: "file.refresh",
+        label: `${t("tool.refresh")} (Reload from Disk)`,
+        run: () => {
+          refreshTree();
+          void git.refresh();
+        },
+      },
+      {
+        id: "file.reveal",
+        label: `${t("menu.reveal")} (Reveal in Explorer)`,
+        run: () => {
+          const target = docs.activePath ?? workspaceRoot;
+          if (target) void revealEntry(target);
+        },
+      },
+      {
+        id: "file.copyPath",
+        label: `${t("menu.copyPath")} (Copy Path)`,
+        run: () => {
+          const target = docs.activePath ?? workspaceRoot;
+          if (target) void navigator.clipboard.writeText(target);
+        },
+      },
+      {
+        id: "file.localHistory",
+        label: `${t("menu.localHistory")}: ${t("menu.showHistory")} (Show Local History)`,
+        run: () => {
+          if (docs.activePath) showLocalHistory(docs.activePath);
+        },
+      },
+
+      // 编辑菜单 (Edit)
+      {
+        id: "edit.rename",
+        label: `${t("menu.rename")}... (Rename)`,
+        run: () => {
+          if (docs.activePath) {
+            setDialog({
+              kind: "rename",
+              name: basenameOf(docs.activePath),
+              path: docs.activePath,
+              entry: null,
+              dir: null,
+            });
+          }
+        },
+      },
+      {
+        id: "edit.delete",
+        label: `${t("menu.delete")}... (Delete)`,
+        run: () => {
+          if (docs.activePath) {
+            setDialog({
+              kind: "delete",
+              name: basenameOf(docs.activePath),
+              path: docs.activePath,
+              entry: null,
+              dir: null,
+            });
+          }
+        },
+      },
+
+      // 视图菜单 (View)
+      {
+        id: "view.toggleSidebar",
+        label: `视图: 切换左侧边栏 (Toggle Left Sidebar)`,
+        run: () => {
+          if (activeLeftPanel) {
+            setSidebarOpen(false);
+          } else {
+            const next = [...toolRailLayout.left.top, ...toolRailLayout.left.bottom].find(
+              (id): id is Panel => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id]
+            );
+            if (next) {
+              setPanel(next);
+              setSidebarOpen(true);
+            }
+          }
+        },
+      },
+      {
+        id: "view.toggleRightSidebar",
+        label: `视图: 切换右侧边栏 (Toggle Right Sidebar)`,
+        run: () => {
+          if (activeRightPanel) {
+            setRightPanel(null);
+          } else {
+            const next = [...toolRailLayout.right.top, ...toolRailLayout.right.bottom].find(
+              (id): id is Panel => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id]
+            );
+            if (next) setRightPanel(next);
+          }
+        },
+      },
+      {
+        id: "view.toggleFullscreen",
+        label: `视图: 切换全屏/最大化 (Toggle Fullscreen)`,
+        run: () => toggleMaximize(),
+      },
+      {
+        id: "view.splitRight",
+        label: `${t("menu.splitRight")} (Split Right)`,
+        run: () => {
+          if (activeTab) splitEditor(activeTab, "horizontal");
+        },
+      },
+      {
+        id: "view.splitDown",
+        label: `${t("menu.splitDown")} (Split Down)`,
+        run: () => {
+          if (activeTab) splitEditor(activeTab, "vertical");
+        },
+      },
+      {
+        id: "view.unsplit",
+        label: `${t("menu.unsplit")} (Unsplit)`,
+        run: () => closeSplit(),
+      },
+      {
+        id: "view.collapseAll",
+        label: `${t("tool.collapseAll")} (Collapse All)`,
+        run: () => setCollapseSignal((s) => s + 1),
+      },
+
+      // 运行菜单 (Run)
+      { id: "run.run", label: `${t("shortcut.run.run")} (Run)`, shortcut: formatShortcut("run.run", shortcutOverrides), run: runSelectedConfig },
+      { id: "run.rerun", label: `${t("shortcut.run.rerun")} (Rerun)`, shortcut: formatShortcut("run.rerun", shortcutOverrides), run: rerunSelectedConfig },
+      { id: "run.stop", label: `${t("shortcut.run.stop")} (Stop)`, shortcut: formatShortcut("run.stop", shortcutOverrides), run: stopAllRuns },
+      { id: "run.chooseConfig", label: `${t("shortcut.run.chooseConfig")} (Choose Configuration)`, shortcut: formatShortcut("run.chooseConfig", shortcutOverrides), run: chooseRunConfig },
+      { id: "run.toggleTool", label: `${t("shortcut.run.toggleTool")} (Toggle Run Window)`, shortcut: formatShortcut("run.toggleTool", shortcutOverrides), run: toggleRunPane },
+      { id: "run.editConfigs", label: `编辑运行配置... (Edit Configurations...)`, run: openRunConfigsTab },
+
+      // Git 菜单 (Git / Version Control)
+      {
+        id: "git.commit",
+        label: `Git: 提交... (Commit...)`,
+        run: () => {
+          openSideTool("git");
+          setCommitFocus((v) => v + 1);
+        },
+      },
+      {
+        id: "git.pull",
+        label: `Git: 拉取 (Pull)`,
+        run: () => void git.pull(),
+      },
+      {
+        id: "git.push",
+        label: `Git: 推送 (Push)`,
+        run: () => void git.push(false),
+      },
+      {
+        id: "git.fetch",
+        label: `Git: 获取 (Fetch)`,
+        run: () => void git.fetch(),
+      },
+      {
+        id: "git.refresh",
+        label: `Git: 刷新状态 (Refresh Git Status)`,
+        run: () => void git.refresh(),
+      },
+      {
+        id: "git.log",
+        label: `Git: 查看提交日志 (Show Git Log)`,
+        run: () => dockPane("log"),
+      },
+      {
+        id: "git.newBranch",
+        label: `Git: 新建分支... (New Branch...)`,
+        run: () => {
+          setDialog({ kind: "newBranch", name: "", dir: null, entry: null });
+        },
+      },
+
+      // 设置与工具菜单 (Settings & Tools)
+      { id: "ai.newSession", label: `${t("command.newAiSession")} (New AI Session)`, run: openAiDraft },
+      { id: "settings.open", label: `${t("command.openSettings")} (Settings)`, run: () => openSettingsTab("general") },
+      { id: "settings.shortcuts", label: `${t("command.openShortcutSettings")} (Keymap)`, run: () => openSettingsTab("shortcuts") },
+      { id: "settings.ai", label: `设置: AI 助手设置 (AI Assistant Settings)`, run: () => openSettingsTab("aiCli") },
+      { id: "tools.reloadMaven", label: `${t("maven.reload")} (Reload Maven Project)`, run: reloadMaven },
     ];
+
     // 面板与侧栏入口照活动栏的文案与顺序来，不另起一套名字。
-    for (const pane of ["terminal", "log", "find"] as BottomPane[]) {
-      commands.push({ id: `pane.open.${pane}`, label: t(BOTTOM_LABEL[pane]), run: () => dockPane(pane) });
+    for (const pane of ["terminal", "run", "log", "find", "notifications"] as BottomPane[]) {
+      commands.push({ id: `pane.open.${pane}`, label: `视图: 工具窗口 - ${t(BOTTOM_LABEL[pane])}`, run: () => dockPane(pane) });
     }
-    for (const tool of ["explorer", "git", "ai", "maven", "notifications"] as Panel[]) {
-      commands.push({ id: `tool.open.${tool}`, label: t(RAIL_LABEL[tool]), run: () => openSideTool(tool) });
+    for (const tool of ["explorer", "git", "ai", "browser", "maven", "notifications"] as Panel[]) {
+      commands.push({ id: `tool.open.${tool}`, label: `视图: 工具窗口 - ${t(RAIL_LABEL[tool])}`, run: () => openSideTool(tool) });
     }
     return commands;
   }, [
+    activeLeftPanel,
+    activeRightPanel,
+    activeTab,
     chooseRunConfig,
+    closeAllTabs,
+    closeDocTab,
+    closeFolder,
+    closeOtherTabs,
+    closeSplit,
     dockPane,
+    docs.activePath,
     flushDirtyDocs,
+    git,
     openAiDraft,
     openEverywhere,
+    openFolder,
+    openRunConfigsTab,
     openSettingsTab,
     openSideTool,
+    refreshTree,
+    reloadMaven,
     rerunSelectedConfig,
+    resolveActiveDirectory,
+    revealInTree,
+    rightPanelAvailable,
     runSelectedConfig,
     saveActive,
+    setCollapseSignal,
+    setCommitFocus,
+    setDialog,
+    setPanel,
+    setRightPanel,
+    setSidebarOpen,
     shortcutOverrides,
+    showLocalHistory,
+    splitEditor,
     stopAllRuns,
     t,
+    toggleMaximize,
     toggleRunPane,
+    toolRailLayout.left.bottom,
+    toolRailLayout.left.top,
+    toolRailLayout.right.bottom,
+    toolRailLayout.right.top,
+    workspaceRoot,
   ]);
 
   const terminalPlacement = (docked: boolean) => ({
@@ -4229,10 +4578,7 @@ export default function App() {
         onOpen={revealHit}
       />
     ) : key === "notifications" ? (
-      <NotificationsView
-        notifications={notifications}
-        onRemoveItem={removeNotification}
-      />
+      <NotificationsToolWindow isOpen={places.notifications !== "hidden"} />
     ) : (
       <GitLogPane
         key={workspaceRoot ?? ""}
@@ -4276,26 +4622,7 @@ export default function App() {
           <TerminalTabs cwd={workspaceRoot} placement={terminalPlacement(docked)} />
         ) : null}
         {key === "notifications" ? (
-          <>
-            <button
-              type="button"
-              className="icon-button is-inline"
-              onClick={markAllNotificationsRead}
-              disabled={notifications.length === 0}
-              title={t("notifications.markAllRead")}
-            >
-              <CheckCheck size={14} />
-            </button>
-            <button
-              type="button"
-              className="icon-button is-inline"
-              onClick={clearAllNotifications}
-              disabled={notifications.length === 0}
-              title={t("notifications.clearAll")}
-            >
-              <Eraser size={14} />
-            </button>
-          </>
+          <NotificationsHeaderActions />
         ) : null}
         <span className="status-spacer" />
         {key === "run" && run.notice ? (
@@ -4929,7 +5256,17 @@ export default function App() {
     >
       {icon}
       {id === "git" && changeCount > 0 ? <span className="rail-badge">{changeCount}</span> : null}
-      {id === "notifications" && notifications.length > 0 ? <span className="rail-badge">{notifications.length}</span> : null}
+      {id === "notifications" && notifications.filter((n) => !n.read).length > 0 ? (
+        <span
+          className={`rail-badge${
+            notifications.some((n) => !n.read && n.level === "error") ? " is-error" : ""
+          }`}
+        >
+          {notifications.filter((n) => !n.read).length > 99
+            ? "99+"
+            : notifications.filter((n) => !n.read).length}
+        </span>
+      ) : null}
       {hasRunning ? <span className="rail-dot" aria-hidden="true" /> : null}
     </span>;
   };
@@ -4962,12 +5299,56 @@ export default function App() {
       <button type="button" ref={commitGearRef} className={`icon-button is-inline${commitGearAnchor ? " is-on" : ""}`} onClick={() => setCommitGearAnchor((current) => current ? null : commitGearRef.current)} aria-expanded={commitGearAnchor !== null} aria-haspopup="menu" title={t("git.commitOptions")}><Settings size={16} /></button>
     </> : null}
     {tool === "maven" ? <button type="button" className="icon-button is-inline" title={t("maven.reload")} onClick={reloadMaven}><RefreshCw size={14} className={maven.status === "loading" ? "is-spinning" : undefined} /></button> : null}
-    {tool === "notifications" ? <>
-      <button type="button" className="icon-button is-inline" onClick={markAllNotificationsRead} disabled={notifications.length === 0} title={t("notifications.markAllRead")}><CheckCheck size={14} /></button>
-      <button type="button" className="icon-button is-inline" onClick={clearAllNotifications} disabled={notifications.length === 0} title={t("notifications.clearAll")}><Eraser size={14} /></button>
-      <button type="button" className="icon-button is-inline" onClick={() => tabPane("notifications")} title={t("tool.showAsTab")}><ArrowUpRight size={15} /></button>
-    </> : null}
+    {tool === "notifications" ? <NotificationsHeaderActions /> : null}
   </>;
+  /** 1:1 对标 openidea 工具窗口头部三个点选项菜单 (Move To, Maximize/Restore, Close) */
+  const openToolWindowMenu = useCallback(
+    (
+      e: React.MouseEvent<HTMLButtonElement>,
+      toolId: Panel,
+      side: ToolRailSide
+    ) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const otherSide = side === "left" ? "right" : "left";
+      const otherSideLabel =
+        side === "left" ? t("tool.moveToRight") : t("tool.moveToLeft");
+      const isExpanded = side === "right" && rightPanelExpanded;
+
+      const items: MenuItem[] = [
+        {
+          label: otherSideLabel,
+          onSelect: () => relocateRailTool(toolId, otherSide),
+        },
+      ];
+
+      if (side === "right") {
+        items.push({
+          label: isExpanded ? t("window.restore") : t("window.maximize"),
+          shortcut: "Ctrl+Shift+'",
+          onSelect: () => setRightPanelExpanded((expanded) => !expanded),
+        });
+      }
+
+      items.push(
+        { separator: true },
+        {
+          label: t("tool.closePanel"),
+          shortcut: "Shift+Esc",
+          onSelect: () => {
+            if (side === "left") setSidebarOpen(false);
+            else setRightPanel(null);
+          },
+        }
+      );
+
+      setMenu({
+        x: rect.left,
+        y: rect.bottom + 4,
+        items,
+      });
+    },
+    [relocateRailTool, rightPanelExpanded, t]
+  );
   const sidePanelBody = (tool: Panel) => <ErrorBoundary label={t(RAIL_LABEL[tool])} onError={reportError}>
     {tool === "browser" ? workspaceRoot ? <BrowserPanel key={workspaceRoot} workspace={workspaceRoot} sessions={aiSessions.sessions} defaultSessionId={browserChatId} targetTabId={browserTarget} onTargetHandled={() => setBrowserTarget(null)} onAddToChat={addBrowserToChat} chatTargetLabel={browserChatLabel} /> : null
       : tool === "maven" ? <MavenDock
@@ -4977,12 +5358,14 @@ export default function App() {
         onStop={() => { for (const session of run.sessions) if (session.status === "running" && session.config.id.startsWith("maven-goal:")) run.stop(session.id); }}
         onOpenFile={(path) => { setActiveTab(`doc|${path}`); void docs.open(path); }}
       />
-      : tool === "notifications" ? <NotificationsView notifications={notifications} onRemoveItem={removeNotification} />
-      : tool === "explorer" ? workspaceRoot ? <ExplorerTree
+      : tool === "notifications" ? (
+        <NotificationsToolWindow isOpen={activeLeftPanel === "notifications" || activeRightPanel === "notifications"} />
+      )
+      : tool === "explorer" ? workspaceRoot ? <ProjectTree
         root={workspaceRoot} repoRoot={git.root} changes={git.status?.changes ?? EMPTY_CHANGES}
         collapseSignal={collapseSignal} refresh={treeRefresh} reveal={treeReveal}
         showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden}
-        openRoots={watchedRoots} picked={explorerPickedPaths} onPick={setExplorerPick}
+        openRoots={watchedRoots} activeFile={locatePath} openFiles={visibleDocs.map((doc) => doc.path)} picked={explorerPickedPaths} onPick={setExplorerPick}
         onOpenFile={treeOpenFile} onContextMenu={treeContextMenu}
       /> : <div className="tool-window-empty"><p>{t("explorer.noFolder")}</p></div>
       : tool === "ai" ? settings.aiAssistantsEnabled ? <AiSessionsPanel
@@ -5120,153 +5503,107 @@ export default function App() {
               ref={sidePanelRef}
               style={{ width: activeLeftPanel === "browser" ? browserSidebarWidth : sidebarWidth }}
             >
-              <header className={`tool-window-head${panel === "ai" ? " ai-sessions-head" : ""}`}>
-                <span className="tool-window-title" title={panel === "ai" ? t("ai.title") : undefined}>
-                  {sidePanelTitle(panel)}
-                </span>
-                <span className="status-spacer" />
-                {panel === "ai" && settings.aiAssistantsEnabled ? (
-                  <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} />
-                ) : null}
-                {panel === "explorer" && workspaceRoot ? (
-                  <>
-                    <button
-                      type="button"
-                      className="icon-button is-inline is-hover"
-                      onClick={() => setDialog({ kind: "newFile", name: "untitled.txt", dir: workspaceRoot, entry: null })}
-                      title={t("action.newFile")}
-                    >
-                      <FilePlus size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button is-inline is-hover"
-                      onClick={() =>
-                        setDialog({
-                          kind: "newFolder",
-                          name: t("dialog.newFolderDefault"),
-                          dir: workspaceRoot,
-                          entry: null,
-                        })
-                      }
-                      title={t("action.newFolder")}
-                    >
-                      <FolderPlus size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button is-inline is-hover"
-                      onClick={() => setCollapseSignal((signal) => signal + 1)}
-                      title={t("tool.collapseAll")}
-                    >
-                      <ListTree size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button is-inline is-hover"
-                      onClick={() => {
-                        refreshTree();
-                        void git.refresh();
-                      }}
-                      title={t("tool.refresh")}
-                    >
-                      <RefreshCw size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button is-inline"
-                      disabled={locatePath === null}
-                      onClick={() => {
-                        if (locatePath) revealInTree(locatePath);
-                      }}
-                      title={t("menu.locateInSidebar")}
-                    >
-                      <LocateFixed size={16} />
-                    </button>
-                  </>
-                ) : null}
-                {panel === "git" && git.root ? (
-                  <>
-                    {/* IDEA 的 CommitView.GearActions 挂在工具窗口头部那颗齿轮上。 */}
-                    <Popover
-                      anchor={commitGearAnchor}
-                      onClose={() => setCommitGearAnchor(null)}
-                      minWidth={230}
-                    >
-                      <p className="popover-label">{t("git.showOnDoubleClick")}</p>
-                      {(["preview", "source"] as const).map((target) => (
+              {panel !== "explorer" ? (
+                <header className={`tool-window-head${panel === "ai" ? " ai-sessions-head" : ""}`}>
+                  <span className="tool-window-title" title={panel === "ai" ? t("ai.title") : undefined}>
+                    {sidePanelTitle(panel)}
+                  </span>
+                  <span className="status-spacer" />
+                  {panel === "ai" && settings.aiAssistantsEnabled ? (
+                    <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} />
+                  ) : null}
+                  {panel === "git" && git.root ? (
+                    <>
+                      {/* IDEA 的 CommitView.GearActions 挂在工具窗口头部那颗齿轮上。 */}
+                      <Popover
+                        anchor={commitGearAnchor}
+                        onClose={() => setCommitGearAnchor(null)}
+                        minWidth={230}
+                      >
+                        <p className="popover-label">{t("git.showOnDoubleClick")}</p>
+                        {(["preview", "source"] as const).map((target) => (
+                          <button
+                            key={target}
+                            type="button"
+                            className="popover-item"
+                            onClick={() =>
+                              patch({ commit: { ...settings.commit, showOnDoubleClick: target } })
+                            }
+                          >
+                            {settings.commit.showOnDoubleClick === target ? (
+                              <Check size={13} aria-hidden="true" />
+                            ) : (
+                              <span className="menu-icon-spacer" />
+                            )}
+                            <span className="popover-item-label">
+                              {t(target === "preview" ? "git.doubleClickDiff" : "git.doubleClickSource")}
+                            </span>
+                          </button>
+                        ))}
+                        <div className="popover-sep" />
                         <button
-                          key={target}
                           type="button"
                           className="popover-item"
                           onClick={() =>
-                            patch({ commit: { ...settings.commit, showOnDoubleClick: target } })
+                            patch({
+                              commit: {
+                                ...settings.commit,
+                                commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged,
+                              },
+                            })
                           }
                         >
-                          {settings.commit.showOnDoubleClick === target ? (
+                          {settings.commit.commitAllWhenNothingStaged ? (
                             <Check size={13} aria-hidden="true" />
                           ) : (
                             <span className="menu-icon-spacer" />
                           )}
                           <span className="popover-item-label">
-                            {t(target === "preview" ? "git.doubleClickDiff" : "git.doubleClickSource")}
+                            {t("git.commitAllWhenNothingStaged")}
                           </span>
                         </button>
-                      ))}
-                      <div className="popover-sep" />
+                      </Popover>
                       <button
                         type="button"
-                        className="popover-item"
-                        onClick={() =>
-                          patch({
-                            commit: {
-                              ...settings.commit,
-                              commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged,
-                            },
-                          })
-                        }
+                        ref={commitGearRef}
+                        className={`icon-button is-inline${commitGearAnchor ? " is-on" : ""}`}
+                        onClick={() => setCommitGearAnchor((current) => (current ? null : commitGearRef.current))}
+                        aria-expanded={commitGearAnchor !== null}
+                        aria-haspopup="menu"
+                        title={t("git.commitOptions")}
                       >
-                        {settings.commit.commitAllWhenNothingStaged ? (
-                          <Check size={13} aria-hidden="true" />
-                        ) : (
-                          <span className="menu-icon-spacer" />
-                        )}
-                        <span className="popover-item-label">
-                          {t("git.commitAllWhenNothingStaged")}
-                        </span>
+                        <Settings size={16} />
                       </button>
-                    </Popover>
-                    <button
-                      type="button"
-                      ref={commitGearRef}
-                      className={`icon-button is-inline${commitGearAnchor ? " is-on" : ""}`}
-                      onClick={() => setCommitGearAnchor((current) => (current ? null : commitGearRef.current))}
-                      aria-expanded={commitGearAnchor !== null}
-                      aria-haspopup="menu"
-                      title={t("git.commitOptions")}
-                    >
-                      <Settings size={16} />
-                    </button>
-                  </>
-                ) : null}
-                {panel === "maven" || panel === "notifications" || panel === "browser" ? sidePanelActions(panel) : null}
-                {/* 收起那颗不跟着隐藏：指针没进头部时也得找得到出口。 */}
-                <button
-                  type="button"
-                  className="icon-button is-inline"
-                  onClick={() => setSidebarOpen(false)}
-                  title={t("tool.closePanel")}
-                >
-                  <PanelLeftClose size={16} />
-                </button>
-              </header>
+                    </>
+                  ) : null}
+                  {panel === "maven" || panel === "notifications" || panel === "browser" ? sidePanelActions(panel) : null}
+                  <button
+                    type="button"
+                    className="icon-button is-inline"
+                    title={t("tool.options")}
+                    aria-label={t("tool.options")}
+                    onClick={(e) => openToolWindowMenu(e, panel, "left")}
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+                  {/* 收起那颗不跟着隐藏：指针没进头部时也得找得到出口。 */}
+                  <button
+                    type="button"
+                    className="icon-button is-inline"
+                    onClick={() => setSidebarOpen(false)}
+                    title={t("tool.closePanel")}
+                  >
+                    <Minus size={16} />
+                  </button>
+                </header>
+              ) : null}
 
               {/* AI 会话列表要占满正文剩余高度，“最近”才能相对面板底部定位。 */}
-              <div className={`panel-body${panel === "ai" ? " is-ai-sessions" : panel === "browser" ? " is-browser" : ""}`}>
+              <div className={`panel-body${panel === "ai" ? " is-ai-sessions" : panel === "browser" ? " is-browser" : panel === "explorer" ? " is-explorer" : ""}`}>
                 <ErrorBoundary label={t(RAIL_LABEL[panel])} onError={reportError}>
                 {panel === "maven" || panel === "notifications" || panel === "browser" ? sidePanelBody(panel) : panel === "explorer" ? (
                   workspaceRoot ? (
-                    <ExplorerTree
+                    <ProjectTree
                       root={workspaceRoot}
                       repoRoot={git.root}
                       changes={git.status?.changes ?? EMPTY_CHANGES}
@@ -5276,10 +5613,13 @@ export default function App() {
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
                       openRoots={watchedRoots}
+                      activeFile={locatePath}
+                      openFiles={visibleDocs.map((doc) => doc.path)}
                       picked={explorerPickedPaths}
                       onPick={setExplorerPick}
                       onOpenFile={treeOpenFile}
                       onContextMenu={treeContextMenu}
+                      onHide={() => setSidebarOpen(false)}
                     />
                   ) : (
                     <div className="tool-window-empty">
@@ -5582,34 +5922,78 @@ export default function App() {
               ref={rightSidePanelRef}
               style={{ width: rightPanelExpanded ? undefined : (activeRightPanel === "browser" ? browserSidebarWidth : rightSidebarWidth) }}
             >
-              <header className="tool-window-head">
-                <span className="tool-window-title">
-                  {sidePanelTitle(activeRightPanel)}
-                </span>
-                <span className="status-spacer" />
-                {sidePanelActions(activeRightPanel)}
-                <button
-                  type="button"
-                  className="icon-button is-inline"
-                  title={rightPanelExpanded ? t("window.restore") : t("window.maximize")}
-                  aria-label={rightPanelExpanded ? t("window.restore") : t("window.maximize")}
-                  aria-pressed={rightPanelExpanded}
-                  onClick={() => setRightPanelExpanded((expanded) => !expanded)}
+              {/* explorer 内部自带 ExpUI 规范的 ProjectHeader，仅非 explorer 工具视窗才渲染外层通用头部 */}
+              {activeRightPanel !== "explorer" ? (
+                <header
+                  className="tool-window-head"
+                  onDoubleClick={(e) => {
+                    if (e.target === e.currentTarget) setRightPanelExpanded((expanded) => !expanded);
+                  }}
                 >
-                  {rightPanelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                </button>
-                <button
-                  type="button"
-                  className="icon-button is-inline"
-                  onClick={() => setRightPanel(null)}
-                  title={t("tool.closePanel")}
-                >
-                  <PanelRightClose size={16} />
-                </button>
-              </header>
+                  <span className="tool-window-title">
+                    {sidePanelTitle(activeRightPanel)}
+                  </span>
+                  <span className="status-spacer" />
+                  {sidePanelActions(activeRightPanel)}
+                  <button
+                    type="button"
+                    className="icon-button is-inline"
+                    title={t("tool.options")}
+                    aria-label={t("tool.options")}
+                    onClick={(e) => openToolWindowMenu(e, activeRightPanel, "right")}
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button is-inline"
+                    title={rightPanelExpanded ? t("window.restore") : t("window.maximize")}
+                    aria-label={rightPanelExpanded ? t("window.restore") : t("window.maximize")}
+                    aria-pressed={rightPanelExpanded}
+                    onClick={() => setRightPanelExpanded((expanded) => !expanded)}
+                  >
+                    {rightPanelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button is-inline"
+                    onClick={() => setRightPanel(null)}
+                    title={t("tool.closePanel")}
+                  >
+                    <Minus size={16} />
+                  </button>
+                </header>
+              ) : null}
               {/* 左右侧栏共用同一条 AI 高度链，避免换边后列表重新按内容高度收缩。 */}
-              <div className={`panel-body${activeRightPanel === "ai" ? " is-ai-sessions" : activeRightPanel === "browser" ? " is-browser" : ""}`}>
-                {activeRightPanel === "explorer" || activeRightPanel === "git" || activeRightPanel === "ai" || activeRightPanel === "browser"
+              <div className={`panel-body${activeRightPanel === "ai" ? " is-ai-sessions" : activeRightPanel === "browser" ? " is-browser" : activeRightPanel === "explorer" ? " is-explorer" : ""}`}>
+                {activeRightPanel === "explorer" ? (
+                  workspaceRoot ? (
+                    <ProjectTree
+                      root={workspaceRoot}
+                      repoRoot={git.root}
+                      changes={git.status?.changes ?? EMPTY_CHANGES}
+                      collapseSignal={collapseSignal}
+                      refresh={treeRefresh}
+                      reveal={treeReveal}
+                      showIgnored={settings.explorer.showIgnored}
+                      showHidden={settings.explorer.showHidden}
+                      openRoots={watchedRoots}
+                      activeFile={locatePath}
+                      openFiles={visibleDocs.map((doc) => doc.path)}
+                      picked={explorerPickedPaths}
+                      onPick={setExplorerPick}
+                      onOpenFile={treeOpenFile}
+                      onContextMenu={treeContextMenu}
+                      onHide={() => setRightPanel(null)}
+                      isExpanded={rightPanelExpanded}
+                      onToggleExpand={() => setRightPanelExpanded((expanded) => !expanded)}
+                    />
+                  ) : (
+                    <div className="tool-window-empty">
+                      <p>{t("explorer.noFolder")}</p>
+                    </div>
+                  )
+                ) : activeRightPanel === "git" || activeRightPanel === "ai" || activeRightPanel === "browser"
                   ? sidePanelBody(activeRightPanel) : null}
                 {activeRightPanel === "maven" ? (
                   <MavenDock
@@ -5635,10 +6019,7 @@ export default function App() {
                   />
                 ) : null}
                 {activeRightPanel === "notifications" ? (
-                  <NotificationsView
-                    notifications={notifications}
-                    onRemoveItem={removeNotification}
-                  />
+                  <NotificationsToolWindow isOpen={true} />
                 ) : null}
               </div>
             </section>
@@ -5749,13 +6130,11 @@ export default function App() {
         ) : null}
       </footer>
 
-      {/* IDEA 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角；统一堆栈流防重叠) */}
-      <NotificationToasts
-        toasts={activeToasts}
-        position={settings.notificationPosition}
-        onDismiss={dismissToast}
-      >
-        {depSync.items.length > 0 ? (
+      {/* openidea / IntelliJ 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角) */}
+      {/* 1:1 对标 openidea / IntelliJ 规范：气泡堆叠于右下角，面板展开时自动隐退 */}
+      <Balloons isListOpen={activeRightPanel === "notifications" || activeLeftPanel === "notifications" || places.notifications !== "hidden"} />
+      {depSync.items.length > 0 ? (
+        <div style={{ position: "fixed", right: 78, bottom: "calc(var(--h-statusbar, 24px) + 16px)", zIndex: 899 }}>
           <DepSyncToast
             items={depSync.items}
             inline
@@ -5763,14 +6142,15 @@ export default function App() {
             onDismiss={depSync.dismissItem}
             onOpenManifest={openDepSyncManifest}
           />
-        ) : null}
-      </NotificationToasts>
+        </div>
+      ) : null}
 
-      {everywhere && workspaceRoot ? (
+      {everywhere && (everywhere.scope || workspaceRoot) ? (
         <Suspense fallback={null}>
           <SearchEverywhere
             key={searchSeq.current}
-            root={everywhere.scope ?? workspaceRoot}
+            root={everywhere.scope ?? workspaceRoot!}
+            openFolders={openFolders}
             repoRoot={git.root}
             showHidden={settings.explorer.showHidden}
             showIgnored={settings.explorer.showIgnored}
@@ -5780,6 +6160,7 @@ export default function App() {
             onClose={() => setEverywhere(null)}
             onOpenFile={openSearchFile}
             onOpenHit={openSearchHit}
+            onOpenSymbol={openSearchSymbol}
           />
         </Suspense>
       ) : null}

@@ -3,7 +3,7 @@ import { samePath } from "./format";
 /**
  * 同时留着的文件 model 数，含当前这篇。
  *
- * 再早的标签还在，正文仍在文档列表里；Monaco 那份（词法、撤销栈）关掉，
+ * 再早的标签还在，正文仍在文档列表里；编辑器那份（语法树、撤销栈）关掉，
  * 切回来用文档正文重建。
  */
 export const KEPT_FILE_MODELS = 8;

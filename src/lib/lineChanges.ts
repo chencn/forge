@@ -1,7 +1,7 @@
 import { canonicalPath, isWindowsPath, pathWithin } from "./format";
 import { gitShow } from "./git";
 import type { GitChange } from "./git";
-import { DefaultLinesDiffComputer } from "monaco-editor/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.js";
+import { lineDiff, textLines } from "./cm/lineDiff";
 
 /**
  * 普通编辑器里相对上次提交的一块标记。
@@ -30,155 +30,47 @@ export interface ChangeBaseline {
   allowEmpty: boolean;
 }
 
-/** 超过这个行数就不同步算了：算法在主线程上，大文件会把输入卡住。 */
-const MAX_LINES = 20_000;
-
-const computer = new DefaultLinesDiffComputer();
-
-/** 与 Monaco 模型同一套拆行：末尾换行会多出一行空行。 */
-function textLines(text: string): string[] {
-  return text.split(/\r\n|\n|\r/);
-}
-
 /**
  * 当前正文相对 HEAD 原文，哪些行要画。
  *
- * 空原文换成有内容时整段算新增：算法会把那一行空行看成「被改掉」，
- * 画成蓝色，和「这个文件是新写出来的」对不上。
+ * 差异引擎与比对视图同一份（`cm/lineDiff` 的行级比对），但这里只看行：
+ * 一行折成一个字符，改一个词与改一整行在行号槽上本来就是同一档标记。比对视图那一头
+ * 还多做了一步——把改动扩到词边界、好把变了哪几个字画出来，两条路不该混在一起。
  */
 export function gutterChanges(original: string, modified: string): GutterChange[] {
-  const originalLines = textLines(original);
   const modifiedLines = textLines(modified);
-  if (originalLines.length > MAX_LINES || modifiedLines.length > MAX_LINES) return [];
-
-  let mappings: ReturnType<DefaultLinesDiffComputer["computeDiff"]>["changes"];
-  try {
-    mappings = computer.computeDiff(originalLines, modifiedLines, {
-      ignoreTrimWhitespace: false,
-      maxComputationTimeMs: 1000,
-      computeMoves: false,
-    }).changes;
-  } catch {
-    return [];
+  // 空原文换成有内容时整篇算新增：diff 会把那一行空行看成「被改掉」，画成蓝色，
+  // 和「这个文件是新写出来的」对不上。
+  if (original === "" && modified !== "") {
+    return [{ kind: "added", startLine: 1, endLine: modifiedLines.length, edge: "line" }];
   }
 
-  const originalBlank = originalLines.length === 1 && originalLines[0] === "";
+  const changes = lineDiff(original, modified);
+  if (!changes) return [];
+
   const marks: GutterChange[] = [];
-  for (const mapping of mappings) {
-    if (mapping.original.isEmpty && mapping.modified.isEmpty) continue;
-    if (mapping.modified.isEmpty) {
-      const anchor = mapping.modified.startLineNumber - 1;
-      if (anchor < 1) {
-        marks.push({ kind: "deleted", startLine: 1, endLine: 1, edge: "before" });
-      } else {
-        marks.push({ kind: "deleted", startLine: anchor, endLine: anchor, edge: "after" });
-      }
+  for (const change of changes) {
+    // 偏移即行下标，+1 换成编辑器那一套 1 起的行号；end 是「最后一行的下一行」。
+    const startLine = change.fromB + 1;
+    const endLine = change.toB;
+    if (startLine > endLine) {
+      // 删除没有留下行，三角挂在缺口旁边那一行上：文件开头被删只能挂第 1 行的上沿。
+      const anchor = startLine - 1;
+      marks.push(
+        anchor < 1
+          ? { kind: "deleted", startLine: 1, endLine: 1, edge: "before" }
+          : { kind: "deleted", startLine: anchor, endLine: anchor, edge: "after" }
+      );
       continue;
     }
-    const endLine = mapping.modified.endLineNumberExclusive - 1;
-    if (endLine < mapping.modified.startLineNumber) continue;
-    const added = mapping.original.isEmpty || (originalBlank && !mapping.modified.isEmpty);
     marks.push({
-      kind: added ? "added" : "modified",
-      startLine: mapping.modified.startLineNumber,
+      kind: change.fromA === change.toA ? "added" : "modified",
+      startLine,
       endLine,
       edge: "line",
     });
   }
   return marks;
-}
-
-/**
- * 概览条把不够高的色块撑到这么高（和 Monaco 画的时候同一套），
- * 点击热区必须跟着撑开，否则一个一行的改动根本点不中。
- */
-const MIN_RULER_MARK = 6;
-
-/** 没开右侧小地图时，短标记向左仍可点的宽度。 */
-const RULER_CLICK_SLACK = 48;
-
-/**
- * 右侧滚动条上的点击范围。
- * 小地图有自己的纵坐标：短文件只画在上方一截，不能按整条编辑器高度去对。
- * 点小地图交给编辑器自己，这里只认滚动条；没开小地图时向左留一段。
- */
-export function rulerClickBounds(
-  rulerLeft: number,
-  rulerWidth: number,
-  minimapLeft: number,
-  minimapWidth: number
-): { left: number; right: number } {
-  const right = rulerLeft + rulerWidth;
-  let left = rulerLeft - RULER_CLICK_SLACK;
-  if (minimapWidth > 0 && minimapLeft < rulerLeft) {
-    const minimapRight = minimapLeft + minimapWidth;
-    if (minimapRight > left) left = Math.max(left, minimapRight);
-  }
-  return { left, right };
-}
-
-/**
- * 点在右侧概览条上时，该落到哪一行。
- *
- * 右侧只在改动的起始行画一个短标记，不按整段改动拉成一条。热区跟着这个短标记，
- * 点在空白处返回 null，滚动条还能拖。
- */
-export function lineForRulerClick(
-  y: number,
-  rulerHeight: number,
-  scrollHeight: number,
-  lineHeight: number,
-  marks: readonly { startLine: number; endLine: number }[],
-  lineTop: (line: number) => number
-): number | null {
-  if (rulerHeight <= 0 || scrollHeight <= 0 || lineHeight <= 0 || marks.length === 0) return null;
-  const ratio = rulerHeight / scrollHeight;
-  let bestLine: number | null = null;
-  let bestDist = Infinity;
-  for (const mark of marks) {
-    if (mark.endLine < mark.startLine) continue;
-    const band = paintedBand(
-      lineTop(mark.startLine) * ratio,
-      (lineTop(mark.endLine) + lineHeight) * ratio,
-      rulerHeight
-    );
-    if (y < band.top - 1 || y > band.bottom + 1) continue;
-    const line = closestLine(y / ratio, mark.startLine, mark.endLine, lineTop, lineHeight);
-    const dist = Math.abs(y - (band.top + band.bottom) / 2);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestLine = line;
-    }
-  }
-  return bestLine;
-}
-
-function paintedBand(y1: number, y2: number, rulerHeight: number): { top: number; bottom: number } {
-  if (y2 - y1 >= MIN_RULER_MARK) return { top: y1, bottom: y2 };
-  const half = MIN_RULER_MARK / 2;
-  let center = (y1 + y2) / 2;
-  if (center < half) center = half;
-  else if (center + half > rulerHeight) center = rulerHeight - half;
-  return { top: center - half, bottom: center + half };
-}
-
-function closestLine(
-  offset: number,
-  start: number,
-  end: number,
-  lineTop: (line: number) => number,
-  lineHeight: number
-): number {
-  let best = start;
-  let bestDist = Infinity;
-  for (let line = start; line <= end; line++) {
-    const dist = Math.abs(lineTop(line) + lineHeight / 2 - offset);
-    if (dist < bestDist) {
-      best = line;
-      bestDist = dist;
-    }
-  }
-  return best;
 }
 
 /**

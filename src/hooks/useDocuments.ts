@@ -3,7 +3,7 @@ import { errorText, fileStamp, readFile, writeFile, type FileContent } from "../
 import { codedError, parseSaveConflict } from "../lib/errors";
 import { recordSnapshot } from "../lib/localHistory";
 import { canonicalPath, pathWithin, samePath } from "../lib/format";
-import { languageForPath } from "../lib/monacoEnv";
+import { languageForPath } from "../lib/editorEnv";
 import { docKindOf, hasTextContent, previewsFromDisk } from "../lib/docKind";
 import type { DocKind } from "../lib/docKind";
 
@@ -14,7 +14,7 @@ export type DocView = "source" | "preview" | "split";
  * 搜索命中要落到的位置。
  *
  * `line` 与 `column` 都从 1 起，直接是后端 `TextHit` 给的那两个数：行号按行算，
- * 列号按**字符**算。monaco 的列按 UTF-16 码元算，宽字符会让两者错开，
+ * 列号按**字符**算。编辑器里的位置按 UTF-16 码元计，宽字符会让两者错开，
  * 所以换算放在编辑器那一侧按真实行内容做，不在这里折算。
  */
 export interface RevealTarget {
@@ -50,7 +50,7 @@ export interface OpenDocument {
   hasBom: boolean;
   /** 文本编码标签（`utf-8` / `gb18030`），打开时认下，保存时按它回写。 */
   encoding: "utf-8" | "gb18030";
-  /** Monaco 语言 id。 */
+  /** 语言 id（`languageForPath` 那张表给的）。 */
   language: string;
   /** 只读预览：二进制、超大或带只读属性的文件。 */
   readOnly: boolean;

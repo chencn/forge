@@ -1,30 +1,28 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { parseToolDiff } from "../lib/aiTools";
+import { applyFontMetrics } from "../lib/cmEditor";
+import { createDiffView } from "../lib/cm/diffView";
+import { languageForPath } from "../lib/editorEnv";
 
 /**
- * 工具明细里的 diff：**Git 管理面板同款的 Monaco DiffEditor**（参数照抄 DiffPane/
- * LocalHistoryDialog），不再是手搓的 HTML 行。
- *
- * Monaco 体积大且依赖 window：**挂载后才动态加载**——静态渲染（SSR/测试）不跑
- * effect，永远不会碰它。加载完成前渲染占位框，高度不跳。
+ * 工具明细里的 diff：**Git 管理面板同款的比对视图**（同一份 `createDiffView`），
+ * 不再是手搓的 HTML 行。
  *
  * 明细里只有 unified diff 的 hunk（没有整份文件）：把 hunk 按真实行号摆进两份对齐的
- * 文本里重建 original/modified——hunk 之间的空档两侧都是空行，Monaco 对齐后就是
+ * 文本里重建 original/modified——hunk 之间的空档两侧都是空行，比对视图对齐后就是
  * 一段安静的同文区，与完整 diff 的观感一致。
  */
-
-let seq = 0;
 
 /**
  * unified diff → 两侧对齐文本。规则：
  * - 行内游标按真实文件位置推进——add 只推 new，delete 只推 old，context 推两侧；
  * - hunk 头给出的 old/new 起点各自权威；hunk 之间与首 hunk 之前的未改动区间**整段跳过**
  *   （游标直接跳到起点，不垫空行）——按行号垫空会让 L1374 的补丁先产出 1373 行空白对；
- * - 两侧保留真实文本长度；行对齐交给 Monaco 的 diff 算法。
+ * - 两侧保留真实文本长度；行对齐交给比对视图那套 chunk。
  */
 export function alignDiffSides(diff: string, startLine?: number): {
   original: string; modified: string;
-  /** 模型每行对应的真实文件行号（hunk 间跳过的区间不占号）；Monaco 行号回调据此显示。 */
+  /** 模型每行对应的真实文件行号（hunk 间跳过的区间不占号）；行号槽照这个显示。 */
   oldNos: number[]; newNos: number[];
 } {
   const oldLines: string[] = [];
@@ -40,7 +38,7 @@ export function alignDiffSides(diff: string, startLine?: number): {
       if (hunk) {
         inHunk = true;
         // 两个 hunk 之间未改动的区间**整段跳过**（不垫空行）：用户要看的只有修改本身。
-        // 各自游标直接跳到 hunk 起点——Monaco 只比对送进去的文本，跳过的区间不影响对齐。
+        // 各自游标直接跳到 hunk 起点——比对视图只比对送进去的文本，跳过的区间不影响对齐。
         oldAt = Number(hunk[1]);
         newAt = Number(hunk[2]);
       } else if (/^(?:@@|diff --git |index |--- |\+\+\+ |\\ No newline)/.test(line.text)) {
@@ -76,7 +74,7 @@ export function alignDiffSides(diff: string, startLine?: number): {
   return { original: oldLines.join("\n"), modified: newLines.join("\n"), oldNos, newNos };
 }
 
-export default memo(function AiDiffEditor({ diff, original, modified, path, sideBySide, height = 320, revealChange = false }: {
+export default memo(function AiDiffEditor({ diff, original, modified, path, sideBySide, height, revealChange = false }: {
   /** unified diff；与 original/modified 二选一。 */
   diff?: string;
   /** 改动前/后的完整文本（补丁 old/new、新建文件 original="" modified=content）。 */
@@ -91,7 +89,6 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
   revealChange?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
-  const [ready, setReady] = useState(false);
   const sides = useMemo(() => {
     if (original !== undefined && modified !== undefined) return { original, modified, oldNos: [] as number[], newNos: [] as number[] };
     if (diff !== undefined) return alignDiffSides(diff);
@@ -104,69 +101,30 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
   }, [sides]);
 
   useEffect(() => {
-    let cancelled = false;
-    let editor: import("../lib/monacoEditor").monaco.editor.IStandaloneDiffEditor | null = null;
-    let models: Array<{ dispose(): void }> = [];
-    let diffSubscription: { dispose(): void } | undefined;
-    void Promise.all([import("../lib/monacoEditor"), import("../lib/monacoEnv")]).then(([{ monaco }, { languageForPath, monoFont }]) => {
-      if (cancelled) return;
-      const element = host.current;
-      if (!element) return;
-      editor = monaco.editor.createDiffEditor(element, {
-        readOnly: true,
-        renderSideBySide: sideBySide,
-        automaticLayout: true,
-        fontFamily: monoFont(),
-        fontSize: 12,
-        // 行高必须显式交出去：编辑器嵌在聊天正文（line-height 1.8）里，无单位
-        // line-height 会继承进 Monaco 的行盒，行距被撑成正文档——Git 面板没有这问题
-        // 只是因为它不在正文容器里。
-        lineHeight: 18,
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        renderOverviewRuler: false,
-        scrollbar: { verticalScrollbarSize: 14, horizontalScrollbarSize: 10, useShadows: false },
-        overviewRulerLanes: 0,
-        diffWordWrap: "off",
-        editContext: false,
-      });
-      const modelSeq = (seq += 1);
-      const uri = (side: string) => monaco.Uri.parse(`inmemory://forge/ai-diff-${modelSeq}-${side}`);
-      const left = monaco.editor.createModel(sides.original, languageForPath(path), uri("original"));
-      const right = monaco.editor.createModel(sides.modified, languageForPath(path), uri("modified"));
-      editor.setModel({ original: left, modified: right });
-      if (revealChange) {
-        const view = editor;
-        let revealed = false;
-        const reveal = () => {
-          if (revealed) return;
-          const first = view.getLineChanges()?.[0];
-          if (!first) return;
-          revealed = true;
-          view.getModifiedEditor().revealLineInCenter(Math.max(1, first.modifiedStartLineNumber));
-        };
-        diffSubscription = view.onDidUpdateDiff(reveal);
-        reveal();
-      }
-      // 行号显示真实文件行号：模型从 1 起数，但每行的文件行号来自对齐映射
-      // （hunk 之间跳过的区间不占号，所以不是简单的 start + n）。
-      const { oldNos, newNos } = sides;
-      editor.getOriginalEditor().updateOptions({
-        lineNumbers: (line: number) => String(oldNos[line - 1] ?? line),
-      });
-      editor.getModifiedEditor().updateOptions({
-        lineNumbers: (line: number) => String(newNos[line - 1] ?? line),
-      });
-      models = [left, right];
-      setReady(true);
+    const element = host.current;
+    if (!element) return;
+    // 行高必须显式交出去：这台嵌在聊天正文（line-height 1.8）里，不写就跟着正文的行距被撑开。
+    applyFontMetrics(element, 12);
+    const { oldNos, newNos } = sides;
+    const view = createDiffView({
+      parent: element,
+      original: sides.original,
+      modified: sides.modified,
+      language: languageForPath(path),
+      path,
+      mode: sideBySide ? "side" : "unified",
+      // 行号显示真实文件行号：模型从 1 起数，每行的文件行号来自对齐映射
+      // （hunk 之间跳过的区间不占号，所以不是简单的 start + n）。没给映射时按模型行号走。
+      numbers: oldNos.length || newNos.length
+        ? {
+            original: (line) => String(oldNos[line - 1] ?? line),
+            modified: (line) => String(newNos[line - 1] ?? line),
+          }
+        : undefined,
     });
-    return () => {
-      cancelled = true;
-      diffSubscription?.dispose();
-      editor?.dispose();
-      models.forEach((model) => model.dispose());
-    };
+    if (revealChange) view.land("first");
+    return () => view.destroy();
   }, [sides, path, sideBySide, revealChange]);
 
-  return <div className={`ai-diff-editor${ready ? "" : " is-loading"}`} style={{ height: height ?? contentHeight }} ref={host} />;
+  return <div className="ai-diff-editor" style={{ height: height ?? contentHeight }} ref={host} />;
 });

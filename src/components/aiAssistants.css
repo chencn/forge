@@ -306,8 +306,6 @@
 .ai-reasoning, .ai-timeline-notice { color: var(--text-secondary); font-size: 12px; }
 .ai-tool-path { font: 11px/1.6 var(--font-mono); color: var(--text-secondary); margin-top: 6px; overflow-wrap: anywhere; }
 .ai-tool-raw { font-size: 11px; margin: 6px 0; }
-.ai-tool-details .ai-diff-old { border-left: 2px solid var(--accent-red-text); }
-.ai-tool-details .ai-diff-new { border-left: 2px solid var(--accent-green-text); }
 .ai-request-card { margin: 12px 0 20px; padding: 14px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 12px; line-height: 1.6; }
 .ai-request-card > strong { font-weight: 500; overflow-wrap: anywhere; }
 .ai-request-card fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
@@ -2218,7 +2216,7 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 
 /* ===== 本轮增量：读取内容高亮、搜索命中分组、目录不可点、改动色标 ===== */
 
-/* 读取内容的高亮容器：贴明细节的内边距，复用全局 hljs 配色；语言标签收掉（题头已是文件名）。
+/* 读取内容的高亮容器：贴明细节的内边距，复用全局 tok 配色；语言标签收掉（题头已是文件名）。
    行号规则与聊天代码块同一套（计数器画在伪元素里），这里按容器补一份作用域。 */
 .ai-tool-source-code .code-block-wrapper { border: 0; border-radius: 0; margin: 0; background: transparent; }
 .ai-tool-source-code .code-block-wrapper .code-lang-tag { display: none; }
@@ -2300,12 +2298,10 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-artifact-preview .code-block-wrapper { margin: 0; }
 .ai-artifact-preview pre { max-height: 320px; overflow: auto; }
 
-/* Monaco diff（Git 面板同款）：贴明细卡内边距，边框交给外层卡。 */
+/* 比对视图（Git 面板同款）：贴明细卡内边距，边框交给外层卡。
+   行高不用另管——编辑器主题按 `--editor-line-height` 写死在 `.cm-scroller` 上，
+   聊天正文那个 1.8 的无单位行高渗不进去。 */
 .ai-patch-diff .ai-diff-editor, .ai-artifact-preview .ai-diff-editor { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
-.ai-diff-editor.is-loading { background: color-mix(in srgb, var(--bg-tertiary) 40%, transparent); }
-
-/* Monaco 编辑器子树的行高归 Monaco 自己管：切断聊天正文 line-height 的继承泄漏。 */
-.ai-diff-editor, .ai-diff-editor .monaco-editor, .ai-diff-editor .monaco-editor .view-line { line-height: normal; }
 
 /* 正在思考：最近几行并排显示（每行一条、超宽省略），看得见思路在推进。 */
 .ai-thinking-live { flex: 1 1 auto; min-width: 0; display: grid; gap: 1px; }

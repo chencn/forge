@@ -2,12 +2,12 @@ import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { lspFailed, lspResolveRoot, lspStart, lspStop, lspWrite } from "./lsp";
 import type { LspExit, LspLog, LspMessage } from "./lsp";
-import { programOf, serverEntries, serverForLanguage } from "./lspConfig";
+import { programOf, serverEnabled, serverEntries, serverForLanguage } from "./lspConfig";
 import type { LspConfig, LspServerEntry } from "./lspConfig";
-import { canonicalPath, parentPath, pathWithin, samePath } from "./format";
+import { canonicalPath, parentPath, pathWithin } from "./format";
 import { translate } from "../i18n";
 import { windowLabel } from "./window";
-import { monaco } from "./monacoEditor";
+import { pathToUri, uriToPath } from "./lspUri";
 
 /**
  * 一份要交给语言服务的文档快照。
@@ -18,7 +18,7 @@ import { monaco } from "./monacoEditor";
 export interface LspDocument {
   /** 文件绝对路径，同时是 LSP 的 URI 键。 */
   path: string;
-  /** Monaco 语言 id，用来选 server。 */
+  /** 语言 id，用来选 server。 */
   language: string;
   /** 当前文本（含未保存改动）。 */
   text: string;
@@ -50,7 +50,7 @@ interface RunningServer {
 const running = new Map<string, RunningServer>();
 /**
  * 最近一次 reconcile 用到的那份配置。
- * provider 回调是 Monaco 直接调的，拿不到调用参数，语言归哪个 server 管要按当前配置查。
+ * 编辑器那侧的调用只交语言 id（补全、悬停、跳转都是），语言归哪个 server 管要按当前配置查。
  */
 let current: LspConfig = { version: 1, servers: {} };
 /**
@@ -88,16 +88,12 @@ let detachExit: UnlistenFn | null = null;
 let detachLog: UnlistenFn | null = null;
 /** 同步哨兵：订阅是否已经发起（与 detachMessage 是否已赋值无关）。 */
 let subscribed = false;
-/** 诊断落到 Monaco 的 owner 串：清旧标记时靠它只清这个 server 的。 */
-const DIAGNOSTIC_OWNER = "lsp";
 /** 会话键的分隔符：server 名与路径里都不会出现的字符。 */
 const KEY_SEP = String.fromCharCode(1);
 /** 待发出的请求 id，用来把响应配回请求。 */
 let nextId = 1;
 /** 还没收到响应的请求：id → 回调解法。 */
 const inflight = new Map<number, (result: unknown) => void>();
-/** 已注册过 provider 的语言，避免重复注册。 */
-const providersRegistered = new Set<string>();
 /**
  * 普通请求的超时。initialize 有自己的握手超时（更短，先落地），这里管其余请求：
  * server 半死（活着但不回话）时 hover / 补全 / 跳定义不能永远挂着不落。
@@ -129,11 +125,6 @@ export function watchLspStatus(watch: StatusWatcher): () => void {
   return () => {
     statusWatchers.delete(watch);
   };
-}
-
-/** 把 LSP 的 `file://` URI 和本地路径互转。前后端都用真实路径，不另造虚拟路径。 */
-function toUri(path: string): string {
-  return monaco.Uri.file(path).toString();
 }
 
 /**
@@ -235,7 +226,7 @@ async function initialize(server: RunningServer): Promise<void> {
   const settled = await Promise.race([
     request(server, "initialize", {
       processId: null,
-      rootUri: toUri(server.root),
+      rootUri: pathToUri(server.root),
       ...(entry.initOptions === null || entry.initOptions === undefined
         ? {}
         : { initializationOptions: entry.initOptions }),
@@ -336,7 +327,6 @@ async function launchSession(
   if (owners.size > 256) {
     for (const stale of [...owners.keys()].slice(0, 128)) owners.delete(stale);
   }
-  ensureProviders(entry);
 
   try {
     await initialize(server);
@@ -519,7 +509,7 @@ function handleExit(payload: LspExit): void {
 }
 
 /** 一条 LSP 诊断，字段按协议给的最小子集。 */
-interface LspDiagnostic {
+export interface LspDiagnostic {
   range: {
     start: { line: number; character: number };
     end: { line: number; character: number };
@@ -529,455 +519,90 @@ interface LspDiagnostic {
   source?: string;
 }
 
-/** 把诊断落到 Monaco 的 marker 上。行号要 +1：LSP 从 0 起，Monaco 从 1 起。 */
-const diagnosticsByPath = new Map<string, monaco.editor.IMarkerData[]>();
-
+/**
+ * 这条 URI 管的是哪个文件。
+ *
+ * 服务器回的串与 `didOpen` 发出去的那条常不逐字节相同（盘符大小写、冒号编码与否），
+ * 一律过 `uriToPath` + `canonicalPath` 归一，诊断才落得回同一份文档。
+ */
 function diagnosticsKey(raw: string): string | null {
-  try {
-    const path = monaco.Uri.parse(raw).fsPath;
-    return path ? canonicalPath(path) : null;
-  } catch {
-    return null;
-  }
+  const path = uriToPath(raw);
+  return path ? canonicalPath(path) : null;
+}
+
+/**
+ * 诊断的「按文件」缓存与订阅，供编辑器侧落地。
+ *
+ * 视图随时可能没挂上（后台页签、比对面板），所以原文按路径留一份，编辑器挂载时自己取，
+ * 推送时通知订阅者，两条路共用同一份事实，不会出现「server 说了但界面没收到」。
+ */
+const rawDiagnosticsByPath = new Map<string, LspDiagnostic[]>();
+const diagnosticsListeners = new Set<(path: string) => void>();
+
+/** 某文件当前的诊断（LSP 原样，行列都从 0 起）。 */
+export function diagnosticsFor(path: string): LspDiagnostic[] {
+  return rawDiagnosticsByPath.get(canonicalPath(path)) ?? [];
+}
+
+/** 订阅诊断变化，回调带文件路径；返回退订。 */
+export function onDiagnosticsChange(listener: (path: string) => void): () => void {
+  diagnosticsListeners.add(listener);
+  return () => {
+    diagnosticsListeners.delete(listener);
+  };
+}
+
+function rememberDiagnostics(uri: string, diagnostics: LspDiagnostic[]): string | null {
+  const key = diagnosticsKey(uri);
+  if (!key) return null;
+  if (diagnostics.length) rawDiagnosticsByPath.set(key, diagnostics);
+  else rawDiagnosticsByPath.delete(key);
+  return key;
+}
+
+function notifyDiagnostics(key: string | null): void {
+  if (!key) return;
+  for (const listener of diagnosticsListeners) listener(key);
 }
 
 function applyDiagnostics(params: { uri: string; diagnostics: LspDiagnostic[] }): void {
-  const markers = params.diagnostics.map((diagnostic) => ({
-    severity: severityOf(diagnostic.severity),
-    message: diagnostic.message,
-    source: diagnostic.source,
-    startLineNumber: diagnostic.range.start.line + 1,
-    startColumn: diagnostic.range.start.character + 1,
-    endLineNumber: diagnostic.range.end.line + 1,
-    endColumn: diagnostic.range.end.character + 1,
-  }));
-  const key = diagnosticsKey(params.uri);
-  if (key) diagnosticsByPath.set(key, markers);
-  const model = findModelByUri(params.uri);
-  if (!model) return;
-  monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, markers);
+  notifyDiagnostics(rememberDiagnostics(params.uri, params.diagnostics));
 }
-
-function restoreDiagnostics(model: monaco.editor.ITextModel): void {
-  if (model.uri.scheme !== "file") return;
-  const cached = diagnosticsByPath.get(canonicalPath(model.uri.fsPath));
-  if (!cached) return;
-  monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, cached);
-}
-
-monaco.editor.onDidCreateModel((model) => restoreDiagnostics(model));
 
 /**
- * 按 URI 找 model。
+ * 发一条以「某个文件的某个语言」为目标的 LSP 请求，不依赖任何编辑器实例。
  *
- * 先直接按解析出的 URI 查；查不到再按归一化文件路径扫一遍。server 回的 URI 常带编码
- * （`file:///c%3A/...`，盘符小写且冒号被编码），和我们用 `Uri.file` 建的可能不逐字节相同，
- * 只靠第一次查会漏掉诊断，marker 就永远不显示。
+ * 只对已经 didOpen 的文档发：协议要求请求前文档必须已打开，比对面板那两份内存里的
+ * 虚拟文档没经过 didOpen，不挡就会拿一个 server 不认识的 URI 去问，回一堆错。
  */
-function findModelByUri(raw: string): monaco.editor.ITextModel | null {
-  const direct = monaco.editor.getModel(monaco.Uri.parse(raw));
-  if (direct) return direct;
-  let target: string;
-  try {
-    target = monaco.Uri.parse(raw).fsPath;
-  } catch {
-    return null;
-  }
-  for (const model of monaco.editor.getModels()) {
-    if (model.uri.scheme === "file" && samePath(model.uri.fsPath, target)) return model;
-  }
-  return null;
-}
-
-function severityOf(severity: number | undefined): monaco.MarkerSeverity {
-  switch (severity) {
-    case 1:
-      return monaco.MarkerSeverity.Error;
-    case 2:
-      return monaco.MarkerSeverity.Warning;
-    case 3:
-      return monaco.MarkerSeverity.Info;
-    default:
-      return monaco.MarkerSeverity.Hint;
-  }
-}
-
-/**
- * 给这个 server 管的语言注册 Monaco provider，把请求转成 LSP 往返。
- * 每种语言只注册一次；内置语义该关的地方由 `configureBuiltin` 处理。
- */
-function ensureProviders(entry: LspServerEntry): void {
-  for (const language of entry.languages) {
-    if (providersRegistered.has(language)) continue;
-    providersRegistered.add(language);
-
-    monaco.languages.registerHoverProvider(language, {
-      provideHover: async (model, position) => {
-        const result = await serverRequest(model, "textDocument/hover", {
-          position: { line: position.lineNumber - 1, character: position.column - 1 },
-        });
-        return hoverFromLsp(result);
-      },
-    });
-
-    monaco.languages.registerCompletionItemProvider(language, {
-      triggerCharacters: [".", ":", "<", "/", "@", '"', "'"],
-      provideCompletionItems: async (model, position) => {
-        const result = await serverRequest(model, "textDocument/completion", {
-          position: { line: position.lineNumber - 1, character: position.column - 1 },
-        });
-        return completionsFromLsp(result, model, position);
-      },
-    });
-
-    monaco.languages.registerReferenceProvider(language, {
-      provideReferences: async (model, position) => {
-        const result = await serverRequest(model, "textDocument/references", {
-          position: { line: position.lineNumber - 1, character: position.column - 1 },
-          context: { includeDeclaration: true },
-        });
-        return locationsFromLsp(result);
-      },
-    });
-
-    monaco.languages.registerDefinitionProvider(language, {
-      provideDefinition: async (model, position) => {
-        const result = await serverRequest(model, "textDocument/definition", {
-          position: { line: position.lineNumber - 1, character: position.column - 1 },
-        });
-        return locationsFromLsp(result);
-      },
-    });
-
-    monaco.languages.registerDocumentSymbolProvider(language, {
-      provideDocumentSymbols: async (model) => {
-        const result = await serverRequest(model, "textDocument/documentSymbol", {});
-        return symbolsFromLsp(result);
-      },
-    });
-  }
-}
-
-/**
- * LSP completion → Monaco completion。带范围信息时用它做替换范围，否则从光标到词尾。
- *
- * 只做最小必要的映射：标签、插入文本、种类、详情、文档。snippet / 附加编辑这些
- * 冒进的能力先不接——接错比不接更糟（往文档里插进不对的文本）。
- */
-function completionsFromLsp(
-  result: unknown,
-  model: monaco.editor.ITextModel,
-  position: monaco.Position
-): monaco.languages.CompletionList {
-  if (!result || typeof result !== "object") return { suggestions: [] };
-  const raw = Array.isArray(result)
-    ? result
-    : (((result as { items?: unknown }).items as unknown[]) ?? []);
-  const word = model.getWordUntilPosition(position);
-  const fallbackRange: monaco.IRange = {
-    startLineNumber: position.lineNumber,
-    startColumn: word.startColumn,
-    endLineNumber: position.lineNumber,
-    endColumn: word.endColumn,
-  };
-  const suggestions: monaco.languages.CompletionItem[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const node = item as {
-      label?: unknown;
-      kind?: number;
-      detail?: string;
-      documentation?: unknown;
-      insertText?: string;
-      textEdit?: { newText?: string; range?: LspRange };
-      filterText?: string;
-      sortText?: string;
-    };
-    const label = labelOf(node.label);
-    if (!label) continue;
-    const insertText = node.textEdit?.newText ?? node.insertText ?? label;
-    suggestions.push({
-      label,
-      kind: completionKind(node.kind),
-      detail: node.detail,
-      documentation: markupToText(node.documentation) || undefined,
-      insertText,
-      filterText: node.filterText,
-      sortText: node.sortText,
-      range: node.textEdit?.range
-        ? rangeFromLsp(node.textEdit.range)
-        : (node.textEdit as { insert?: LspRange })?.insert
-          ? rangeFromLsp((node.textEdit as { insert: LspRange }).insert)
-          : fallbackRange,
-    });
-  }
-  return { suggestions };
-}
-
-/** completion 的 label 可能是字符串，也可能是 `{ label, description }`。 */
-function labelOf(label: unknown): string {
-  if (typeof label === "string") return label;
-  if (label && typeof label === "object") {
-    const value = (label as { label?: unknown }).label;
-    if (typeof value === "string") return value;
-  }
-  return "";
-}
-
-/**
- * LSP `CompletionItemKind` → Monaco `CompletionItemKind`。
- *
- * 不能像 `SymbolKind` 那样减一：两边顺序不一样（LSP 里 Text=1、Method=2、Class=7，
- * Monaco 里 Method=0、Class=5、Text=18）。按 LSP 的 1…25 逐条对着写下标。
- */
-const COMPLETION_KIND_BY_LSP: monaco.languages.CompletionItemKind[] = [
-  monaco.languages.CompletionItemKind.Text, // 1
-  monaco.languages.CompletionItemKind.Method, // 2
-  monaco.languages.CompletionItemKind.Function, // 3
-  monaco.languages.CompletionItemKind.Constructor, // 4
-  monaco.languages.CompletionItemKind.Field, // 5
-  monaco.languages.CompletionItemKind.Variable, // 6
-  monaco.languages.CompletionItemKind.Class, // 7
-  monaco.languages.CompletionItemKind.Interface, // 8
-  monaco.languages.CompletionItemKind.Module, // 9
-  monaco.languages.CompletionItemKind.Property, // 10
-  monaco.languages.CompletionItemKind.Unit, // 11
-  monaco.languages.CompletionItemKind.Value, // 12
-  monaco.languages.CompletionItemKind.Enum, // 13
-  monaco.languages.CompletionItemKind.Keyword, // 14
-  monaco.languages.CompletionItemKind.Snippet, // 15
-  monaco.languages.CompletionItemKind.Color, // 16
-  monaco.languages.CompletionItemKind.File, // 17
-  monaco.languages.CompletionItemKind.Reference, // 18
-  monaco.languages.CompletionItemKind.Folder, // 19
-  monaco.languages.CompletionItemKind.EnumMember, // 20
-  monaco.languages.CompletionItemKind.Constant, // 21
-  monaco.languages.CompletionItemKind.Struct, // 22
-  monaco.languages.CompletionItemKind.Event, // 23
-  monaco.languages.CompletionItemKind.Operator, // 24
-  monaco.languages.CompletionItemKind.TypeParameter, // 25
-];
-
-function completionKind(kind: number | undefined): monaco.languages.CompletionItemKind {
-  if (kind === undefined) return monaco.languages.CompletionItemKind.Text;
-  return COMPLETION_KIND_BY_LSP[kind - 1] ?? monaco.languages.CompletionItemKind.Text;
-}
-
-/**
- * 发一条以当前 model 为目标的请求。
- *
- * 只对已经 didOpen 的文档发：协议要求请求前文档必须已打开，比对面板那两份
- * `inmemory://` 模型（`DiffPane` 建的，没经过 didOpen）也走同一个 provider，
- * 不挡就会拿一个 server 不认识的 URI 去问，回一堆错。
- */
-async function serverRequest(
-  model: monaco.editor.ITextModel,
+export async function lspRequest(
+  path: string,
+  language: string,
   method: string,
   params: Record<string, unknown>
 ): Promise<unknown> {
-  // 只认 file:// 的真实文件；虚拟 URI 一律不发。
-  if (model.uri.scheme !== "file") return null;
-  const entry = serverForLanguage(current, model.getLanguageId());
+  const entry = serverForLanguage(current, language);
   if (!entry) return null;
   // 同一个 server 可能有多条会话（monorepo 每个子根一条），按这份文件落在哪个根里挑，
   // 嵌套命中时取最深的那条。
   const owners = [...running.values()].filter(
-    (item) => item.entry.id === entry.id && pathWithin(item.root, model.uri.fsPath)
+    (item) => item.entry.id === entry.id && pathWithin(item.root, path)
   );
   if (owners.length === 0) return null;
   const server = owners.reduce((best, item) =>
     item.root.length > best.root.length ? item : best
   );
-  // 用 model 自己的 uri 串：它就是建 model 与发 didOpen 时用的那条，键天然对得上。
-  const uri = model.uri.toString();
+  // 键一律用 pathToUri(path)：它就是 didOpen 时发出去的那条串，两边天然对得上。
+  const uri = pathToUri(path);
   if (!server.opened.has(uri)) return null;
   return request(server, method, { textDocument: { uri }, ...params });
-}
-
-/** LSP hover → Monaco hover。 */
-function hoverFromLsp(result: unknown): monaco.languages.Hover | null {
-  if (!result || typeof result !== "object") return null;
-  const contents = (result as { contents?: unknown }).contents;
-  const text = markupToText(contents);
-  if (!text) return null;
-  const range = (result as { range?: LspRange }).range;
-  return {
-    contents: [{ value: text }],
-    range: range ? rangeFromLsp(range) : undefined,
-  };
-}
-
-/** LSP 的 contents 可能是字符串、{value}，或它们的数组。 */
-function markupToText(contents: unknown): string {
-  if (typeof contents === "string") return contents;
-  if (Array.isArray(contents)) return contents.map(markupToText).filter(Boolean).join("\n\n");
-  if (contents && typeof contents === "object") {
-    const value = (contents as { value?: unknown }).value;
-    if (typeof value === "string") return value;
-  }
-  return "";
-}
-
-interface LspRange {
-  start: { line: number; character: number };
-  end: { line: number; character: number };
-}
-
-function rangeFromLsp(range: LspRange): monaco.IRange {
-  return {
-    startLineNumber: range.start.line + 1,
-    startColumn: range.start.character + 1,
-    endLineNumber: range.end.line + 1,
-    endColumn: range.end.character + 1,
-  };
-}
-
-/** LSP definition → Monaco location（可能是单个、数组，或 null）。 */
-function locationsFromLsp(result: unknown): monaco.languages.Location[] | null {
-  if (!result) return null;
-  const items = Array.isArray(result) ? result : [result];
-  const out: monaco.languages.Location[] = [];
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
-    const loc = item as { uri?: string; range?: LspRange; targetUri?: string; targetRange?: LspRange };
-    const uri = loc.uri ?? loc.targetUri;
-    const range = loc.range ?? loc.targetRange;
-    if (!uri || !range) continue;
-    out.push({ uri: monaco.Uri.parse(uri), range: rangeFromLsp(range) });
-  }
-  return out.length > 0 ? out : null;
-}
-
-/** LSP documentSymbol → Monaco SymbolInformation。递归展开子节点。 */
-function symbolsFromLsp(result: unknown): monaco.languages.DocumentSymbol[] {
-  if (!Array.isArray(result)) return [];
-  const out: monaco.languages.DocumentSymbol[] = [];
-  for (const item of result) {
-    if (!item || typeof item !== "object") continue;
-    const node = item as {
-      name?: string;
-      kind?: number;
-      range?: LspRange;
-      selectionRange?: LspRange;
-      location?: { range?: LspRange };
-      children?: unknown[];
-    };
-    const range = node.range ?? node.location?.range;
-    if (!range) continue;
-    out.push({
-      name: node.name ?? "",
-      detail: "",
-      kind: symbolKind(node.kind),
-      tags: [],
-      range: rangeFromLsp(range),
-      selectionRange: rangeFromLsp(node.selectionRange ?? range),
-      children: symbolsFromLsp(node.children ?? []),
-    });
-  }
-  return out;
-}
-
-/**
- * LSP 的 `SymbolKind` 从 1 起（File=1…TypeParameter=26），Monaco 的从 0 起（File=0…TypeParameter=25），
- * 两边一一对应。直接强转会整体错一格，所以减一。
- */
-function symbolKind(kind: number | undefined): monaco.languages.SymbolKind {
-  const last = monaco.languages.SymbolKind.TypeParameter;
-  if (kind === undefined || kind < 1 || kind - 1 > last) {
-    return monaco.languages.SymbolKind.Variable;
-  }
-  return (kind - 1) as monaco.languages.SymbolKind;
-}
-
-/**
- * 关掉某个语言的内置语义。只对 typescript 有实际作用——它内置了 tsserver，
- * 开着会和外部 LSP 同时弹 hover、同时出诊断。`builtin` 档不调这里。
- */
-function disableBuiltin(language: string): void {
-  const defaults =
-    language === "typescript"
-      ? monaco.typescript.typescriptDefaults
-      : language === "javascript"
-        ? monaco.typescript.javascriptDefaults
-        : null;
-  if (!defaults) return;
-  defaults.setModeConfiguration({
-    completionItems: false,
-    hovers: false,
-    definitions: false,
-    references: false,
-    rename: false,
-    diagnostics: false,
-    documentSymbols: false,
-    signatureHelp: false,
-    documentHighlights: false,
-    codeActions: false,
-  });
-  // 清除 Monaco 已存在于该语言所有模型上的内置 markers，
-  // 否则 setModeConfiguration 仅关闭后续 worker 诊断，已存在的 TS2792 等旧错误会一直残留在界面上
-  const owner = language === "typescript" ? "typescript" : "javascript";
-  for (const model of monaco.editor.getModels()) {
-    if (model.getLanguageId() === language) {
-      monaco.editor.setModelMarkers(model, owner, []);
-    }
-  }
-}
-
-/** 把内置语义恢复到默认（全开）。切回 builtin 时用。 */
-function enableBuiltin(language: string): void {
-  const defaults =
-    language === "typescript"
-      ? monaco.typescript.typescriptDefaults
-      : language === "javascript"
-        ? monaco.typescript.javascriptDefaults
-        : null;
-  if (!defaults) return;
-  defaults.setModeConfiguration({
-    completionItems: true,
-    hovers: true,
-    definitions: true,
-    references: true,
-    rename: true,
-    diagnostics: true,
-    documentSymbols: true,
-    signatureHelp: true,
-    documentHighlights: true,
-    codeActions: true,
-  });
-  // 切回内置语义时，清空该语言模型上由外部 LSP 遗留的诊断标记
-  for (const model of monaco.editor.getModels()) {
-    if (model.getLanguageId() === language) {
-      monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, []);
-    }
-  }
-}
-
-/** 每种语言当前的内置语义开关状态，避免每次 reconcile 都白改一遍（改会触发语言服务重算）。 */
-const builtinState = new Map<string, "on" | "off">();
-
-/**
- * 按配置同步内置语义的开关。每种语言算一遍：
- * 只有 `builtin` 档启用内置，`lsp` 与 `off` 都关掉。
- * 外部服务没装上时也不把 tsserver 拉回渲染进程：那份编译器比外部进程更沉，
- * 失败就保持关闭。只有 ts / js 有内置语义可切。状态没变就不动。
- */
-function configureBuiltin(config: LspConfig): void {
-  for (const entry of serverEntries(config)) {
-    const wanted = entry.mode === "builtin" ? "on" : "off";
-    for (const language of entry.languages) {
-      if (builtinState.get(language) === wanted) continue;
-      builtinState.set(language, wanted);
-      if (wanted === "off") disableBuiltin(language);
-      else enableBuiltin(language);
-    }
-  }
 }
 
 /**
  * 主入口：把当前工作区、设置、打开的文档对到语言服务上。幂等，随便调多少次。
  *
- * 做四件事：该起的 server 起起来、不该留的停掉、文档按增删改发 didOpen / didChange / didClose、
- * 内置语义的开关跟着设置走。App 在文档列表、工作区或设置变化时调用即可。
+ * 做三件事：该起的 server 起起来、不该留的停掉、文档按增删改发 didOpen / didChange / didClose。
+ * App 在文档列表、工作区或设置变化时调用即可。
  *
  * 它是异步的，而调用方在每次击键都会触发一次，所以外面套一个「最新优先」的合并队列：
  * 正在跑的时候再来的调用只更新待办参数，不并排跑第二遍。少了这层，两次 reconcile 会交叉执行，
@@ -1014,15 +639,14 @@ async function reconcileOnce(
   config: LspConfig,
   documents: LspDocument[]
 ): Promise<void> {
-  // provider 回调按这份查语言归属，先落地再算会话。
+  // `lspRequest` 那边按这份查语言归属，先落地再算会话。
   current = config;
-  configureBuiltin(config);
 
   // 该跑的会话按 (server, 根) 分组：一份文档归它自己那个根管。
   const groups = new Map<string, { entry: LspServerEntry; root: string; docs: LspDocument[] }>();
   for (const document of documents) {
     const entry = serverForLanguage(config, document.language);
-    if (!entry || entry.mode !== "lsp") continue;
+    if (!entry || !serverEnabled(entry)) continue;
     const found = await resolveRoot(entry, root, document.path);
     if (!found) {
       // 工程该子目录里没有这门语言的技术栈：按文件所在目录记跳过，TTL 与根解析一致，不锁死整个工作区。
@@ -1075,7 +699,7 @@ async function reconcileOnce(
 }
 
 /**
- * 将 Monaco 内部语言 id 规范化为标准 LSP 协议的 languageId。
+ * 把编辑器那侧的语言 id（`languageForPath` 给的）规范成 LSP 协议的 languageId。
  * .tsx 必须传 "typescriptreact"、.jsx 必须传 "javascriptreact"，
  * 否则外部 tsserver 会以纯 ts/js 语法解析，将 JSX 解析为大量语法错误。
  */
@@ -1133,25 +757,26 @@ function cancelAllChanges(server: RunningServer): void {
 }
 
 /**
- * 会话不再需要时，把它管过的文档的诊断备忘一并摘掉。
+ * 会话不再需要时，把它管过的文档的诊断一并摘掉。
  *
- * `diagnosticsByPath` 是「关标签后重建 model 还能把波浪线摆回去」的备份，会话在的时候
- * 是必要的；会话已经收掉之后这份备份就只是残留，而它按文件路径累积、每条都带着完整
- * 诊断文本，多工程来回切时只涨不落。文档重新打开会重新收到诊断。
+ * 这份缓存按文件路径累积、每条都带着完整诊断文本；会话已经收掉之后它就只是残留，
+ * 多工程来回切时只涨不落。文档重新打开会重新收到诊断。
  */
 function forgetDiagnostics(server: RunningServer): void {
   for (const uri of server.opened.keys()) {
     const key = diagnosticsKey(uri);
-    if (key) diagnosticsByPath.delete(key);
+    if (!key) continue;
+    rawDiagnosticsByPath.delete(key);
+    notifyDiagnostics(key);
   }
 }
 
 /** 一条会话的文档增删改。调用方已经把落在它那个根里的那批传进来，这里不再筛。 */
 function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
-  // 键一律用规范化 URI 串，跟请求侧（`serverRequest` 用 model 的 uri）对得上。
-  // 若这里存原始路径、那里查 `uri.toString()`，Windows 上盘符大小写与分隔符对不上，
+  // 键一律用 pathToUri 出来的 URI 串，跟请求侧（`lspRequest` 也走 pathToUri）对得上。
+  // 若这里存原始路径、那里查编码后的串，Windows 上盘符大小写与分隔符对不上，
   // 请求会被 `opened.has` 挡掉，hover / 补全 / 跳定义全部静默失效。
-  const live = new Set(mine.map((document) => toUri(document.path)));
+  const live = new Set(mine.map((document) => pathToUri(document.path)));
 
   // 关掉已开但这次不在的。
   for (const uri of [...server.opened.keys()]) {
@@ -1162,14 +787,14 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
     server.opened.delete(uri);
     server.sent.delete(uri);
     const cached = diagnosticsKey(uri);
-    if (cached) diagnosticsByPath.delete(cached);
-    // 关标签时 model 常已 dispose，清 marker 要判一下，否则会在这个已死的 model 上写。
-    const model = findModelByUri(uri);
-    if (model) monaco.editor.setModelMarkers(model, DIAGNOSTIC_OWNER, []);
+    if (cached) {
+      rawDiagnosticsByPath.delete(cached);
+      notifyDiagnostics(cached);
+    }
   }
 
   for (const document of mine) {
-    const uri = toUri(document.path);
+    const uri = pathToUri(document.path);
     const sentText = server.sent.get(uri);
     if (sentText === undefined) {
       const version = ++server.version;
@@ -1221,7 +846,7 @@ export async function wakeLsp(
   documents: LspDocument[]
 ): Promise<WakeResult> {
   const entry = serverEntries(config).find((item) => item.id === serverId);
-  if (!entry || entry.mode !== "lsp") return { state: "off" };
+  if (!entry || !serverEnabled(entry)) return { state: "off" };
   if ([...running.values()].some((server) => server.entry.id === entry.id))
     return { state: "running" };
   // 没有文件可依据，就按「这个项目里有没有这门语言」问一次：从工作区根向下扫描标志文件。
@@ -1262,9 +887,6 @@ export async function shutdownLsp(): Promise<void> {
   owners.clear();
   logs.clear();
   orphans.clear();
-  diagnosticsByPath.clear();
-  // providersRegistered 不清：provider 一旦注册就撤不掉（monaco 只在 dispose 时移除），
-  // 清掉只会让下次 reconcile 又注册一遍，同一个语言就挂上两份 provider，hover 弹两次。
   detachMessage?.();
   detachExit?.();
   detachLog?.();

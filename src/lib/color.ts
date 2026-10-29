@@ -1,13 +1,13 @@
 /**
- * monaco 与 xterm 的配色只认 `#RRGGBB` / `#RRGGBBAA`，别的写法都要先规整过来。
+ * 设计令牌读回来还是 CSS 里那串写法（`rgb(…)`，或生产构建压缩后的 `#fff`），
+ * 终端主题只按 `#RRGGBB` / `#RRGGBBAA` 配色，先统一过来。
  *
  * 两种输入：
  * - `rgb()` / `rgba()` 换算成十六进制（含百分比写法）。
- * - 三位 / 四位简写（`#fff` / `#fff8`）展开成六位 / 八位。生产构建的 CSS 压缩会把
- *   `#ffffff` 压成 `#fff`，而 monaco 的颜色表只匹配六位，喂简写进去会**抛异常**
- *   （`Illegal value for token color`），一路冒到 `setTheme` 之外，把整棵界面掀掉。
+ * - 三位 / 四位简写（`#fff` / `#fff8`）展开成六位 / 八位。CSS 压缩会把 `#ffffff`
+ *   压成 `#fff`，留着简写就各处自己解释一遍。
  */
-export function toHex(color: string): string {
+function toHex(color: string): string {
   const shorthand = /^#([0-9a-fA-F]{3,4})$/.exec(color);
   if (shorthand) {
     const digits = shorthand[1];
@@ -37,4 +37,24 @@ export function toHex(color: string): string {
 /** 读一个颜色令牌，顺带换算格式。 */
 export function tokenColor(name: string): string {
   return toHex(getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+}
+
+/**
+ * 把一个设计令牌算成浏览器认账的具体颜色，供 CSS 之外的消费者用（Mermaid、原生窗口）。
+ *
+ * 令牌可能写成 `var(--别的令牌)` 或 `color-mix(...)`：`getPropertyValue` 读回来还是那串
+ * 未求值的记号，直接喂给 Mermaid 就成了废值。这种写法先挂一个隐藏探针，让浏览器按
+ * `color` 属性算完再读回来——算色这件事只有引擎自己靠得住。
+ */
+export function computedColor(name: string): string | null {
+  const root = document.documentElement;
+  const raw = getComputedStyle(root).getPropertyValue(name).trim();
+  if (/^(#[0-9a-f]{3,8}|rgba?\([^)]*\))$/i.test(raw)) return raw;
+  const probe = document.createElement("span");
+  probe.hidden = true;
+  probe.style.color = `var(${name})`;
+  root.appendChild(probe);
+  const color = getComputedStyle(probe).color;
+  probe.remove();
+  return color || null;
 }

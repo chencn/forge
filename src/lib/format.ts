@@ -50,17 +50,17 @@ export function resolveRelative(baseDir: string, relative: string): string {
   return built;
 }
 
-/** 上一级目录；已在根时返回 null。 */
+/** 上一级目录；已在根时返回 null。兼容正反斜杠混用。 */
 export function parentPath(path: string): string | null {
-  const sep = separator(path);
   const trimmed = path.replace(/[\\/]+$/, "");
-  if (trimmed === "" || trimmed === sep || /^[A-Za-z]:$/.test(trimmed)) return null;
-  const index = trimmed.lastIndexOf(sep);
+  if (trimmed === "" || /^[A-Za-z]:[\\/]?$/.test(trimmed)) return null;
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   if (index < 0) return null;
+  const sep = trimmed[index];
   const head = trimmed.slice(0, index);
   if (head === "" || /^[A-Za-z]:$/.test(head)) return `${head}${sep}`;
   // UNC 共享（\\server\share）本身算根，不再往上退。
-  if (head.startsWith(sep + sep)) return head + sep;
+  if (head.startsWith("\\\\") || head.startsWith("//")) return head + sep;
   return head;
 }
 

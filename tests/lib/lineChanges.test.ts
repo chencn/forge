@@ -1,10 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  gutterChanges,
-  lineChangeBaseline,
-  lineForRulerClick,
-  rulerClickBounds,
-} from "../../src/lib/lineChanges";
+import { gutterChanges, lineChangeBaseline } from "../../src/lib/lineChanges";
 import type { GitChange } from "../../src/lib/git";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -73,50 +68,36 @@ describe("gutterChanges 相对上次提交的行标记", () => {
       { kind: "modified", startLine: 2, endLine: 2, edge: "line" },
     ]);
   });
-});
 
-describe("lineForRulerClick 点右侧色块落到哪一行", () => {
-  const lineHeight = 20;
-  const scrollHeight = 1000;
-  const rulerHeight = 100;
-  const lineTop = (line: number) => (line - 1) * lineHeight;
-  const click = (y: number, marks: { startLine: number; endLine: number }[]) =>
-    lineForRulerClick(y, rulerHeight, scrollHeight, lineHeight, marks, lineTop);
-
-  it("点在一行改动撑开的色块上，落到那一行", () => {
-    expect(click(19, [{ startLine: 10, endLine: 10 }])).toBe(10);
+  it("一行里改两个词，仍是一处", () => {
+    expect(gutterChanges("let a = 1 + 2\n", "let A = 1 + B\n")).toEqual([
+      { kind: "modified", startLine: 1, endLine: 1, edge: "line" },
+    ]);
   });
 
-  it("点在色块外面，不抢滚动条", () => {
-    expect(click(10, [{ startLine: 10, endLine: 10 }])).toBeNull();
+  it("连续改动几行合成一块", () => {
+    expect(gutterChanges("a\nb\nc\nd\n", "a\nB\nC\nd\n")).toEqual([
+      { kind: "modified", startLine: 2, endLine: 3, edge: "line" },
+    ]);
   });
 
-  it("跨很多行的改动只在起始行留一个短标记，下面留给滚动条", () => {
-    const mark = [{ startLine: 10, endLine: 10 }];
-    expect(click(18, mark)).toBe(10);
-    expect(click(27, mark)).toBeNull();
+  it("隔一行没改，就是两处", () => {
+    expect(gutterChanges("a\nb\nc\nd\n", "A\nb\nc\nD\n")).toEqual([
+      { kind: "modified", startLine: 1, endLine: 1, edge: "line" },
+      { kind: "modified", startLine: 4, endLine: 4, edge: "line" },
+    ]);
   });
 
-  it("贴在概览条顶端的色块也能点中", () => {
-    expect(click(2, [{ startLine: 1, endLine: 1 }])).toBe(1);
+  it("整块新增一段，一块绿", () => {
+    expect(gutterChanges("a\nd\n", "a\nb\nc\nd\n")).toEqual([
+      { kind: "added", startLine: 2, endLine: 3, edge: "line" },
+    ]);
   });
 
-  it("没有改动时不处理", () => {
-    expect(click(19, [])).toBeNull();
-  });
-});
-
-describe("rulerClickBounds 横向能点多宽", () => {
-  it("小地图在右边时，点击区停在滚动条上，小地图用自己的坐标", () => {
-    expect(rulerClickBounds(900, 20, 800, 100)).toEqual({ left: 900, right: 920 });
-  });
-
-  it("没开小地图时，从滚动条向左留出一段，不用贴着边", () => {
-    expect(rulerClickBounds(900, 20, 0, 0)).toEqual({ left: 852, right: 920 });
-  });
-
-  it("小地图在左边时，不把左边那条当成右侧点击区", () => {
-    expect(rulerClickBounds(900, 20, 0, 100)).toEqual({ left: 852, right: 920 });
+  it("整块删掉一段，一个三角", () => {
+    expect(gutterChanges("a\nb\nc\nd\ne\n", "a\ne\n")).toEqual([
+      { kind: "deleted", startLine: 1, endLine: 1, edge: "after" },
+    ]);
   });
 });
 

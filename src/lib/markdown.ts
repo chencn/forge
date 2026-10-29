@@ -2,11 +2,24 @@ import DOMPurify from "dompurify";
 import { Marked } from "marked";
 import { resolveRelative, isWindowsPath, nativeSeparators } from "./format";
 import { sanitizeChatHtml } from "./chatSanitize";
+import { escapeHtml } from "./cm/grammars";
 // 聊天的解析核心（marked 实例、高亮、流式修补）都住在 chatMarkdownCore：
 // 那边不碰 DOMPurify，才能原样进渲染 Worker；这边只保留有 DOM 依赖的清洗层。
 import { renderChatHtmlRaw, renderCodeBlock, repairStreamingMarkdown } from "./chatMarkdownCore";
 
 export { renderCodeBlock, repairStreamingMarkdown };
+
+/**
+ * ```mermaid 围栏在文档预览里不排成代码，而是留一个占位 div，源码仍然摆在里面：
+ * SVG 由 lib/mermaid.ts 在提交后补上，补不上（语法错）时用户看的是自己写的那段源码。
+ * 聊天那边不认这个，图会被白名单挡掉，所以只有这一条路径转占位。
+ */
+function codeBlock({ text, lang }: { text: string; lang?: string | null }): string {
+  if ((lang || "").trim().split(/\s+/)[0]?.toLowerCase() === "mermaid") {
+    return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+  }
+  return renderCodeBlock(text, lang);
+}
 
 /** 链接是不是要走系统浏览器：绝对 URL 带协议，或协议相对（//host）。 */
 function isExternal(href: string): boolean {
@@ -67,9 +80,7 @@ export function renderMarkdown(
 
   parser.use({
     renderer: {
-      code({ text, lang }) {
-        return renderCodeBlock(text, lang);
-      },
+      code: codeBlock,
       image({ href, title, text }) {
         const { url } = resolveHref(href, docDir, assetOf);
         const alt = text.replace(/"/g, "&quot;");
@@ -133,7 +144,7 @@ export function renderChatMarkdown(source: string, copyLabel: string, openBlocks
     if (cached !== undefined) return cached;
   }
 
-  const parsed = renderChatHtmlRaw(source, copyLabel, openBlocks);
+  const parsed = renderChatHtmlRaw(source, copyLabel);
   const sanitized = sanitizeChatHtml(parsed);
 
   if (cacheKey) {

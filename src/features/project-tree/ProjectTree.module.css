@@ -1,0 +1,136 @@
+.view {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-row, 4px);
+}
+
+.icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.folderIcon {
+  color: var(--fg-subtle);
+}
+.faded {
+  opacity: 0.55;
+}
+
+.nameWrapper {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rootLabel {
+  flex: none;
+  max-width: 60%;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+/* IDEA's "excluded" look: ignored / excluded entries are dimmed. */
+.excluded {
+  color: var(--vcs-ignored, #d69a6b);
+}
+.error {
+  text-decoration: underline wavy var(--danger, #f57e84);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+.detail {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle, #73767c);
+}
+.badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: var(--radius-small, 4px);
+  font-size: var(--fs-tiny, 11px);
+  color: var(--fg-muted, #8c8f95);
+  background: var(--bg-control, #26282c);
+}
+
+.cut {
+  opacity: 0.45;
+}
+
+.dropTarget {
+  box-shadow: inset 0 0 0 1px var(--accent, #3871e1);
+  background: var(--accent-soft, rgba(56, 113, 225, 0.16));
+}
+
+.inlineInput {
+  flex: 1;
+  min-width: 60px;
+  height: 18px;
+  padding: 0 4px;
+  margin-right: 4px;
+  border: 1px solid var(--accent, #3871e1);
+  border-radius: var(--radius-small, 4px);
+  background: var(--bg-app, #191a1c);
+  color: var(--fg-strong, #dfe1e5);
+  font: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+.inlineInvalid {
+  border-color: var(--danger, #f57e84) !important;
+}
+.inlineError {
+  padding: 4px 8px;
+  max-width: 320px;
+  font-size: var(--fs-small, 12px);
+  color: var(--fg-strong, #dfe1e5);
+  background: var(--bg-popup, #26282c);
+  border: 1px solid color-mix(in srgb, var(--danger, #f57e84) 60%, transparent);
+  border-radius: var(--radius-small, 4px);
+  box-shadow: var(--shadow-popup, 0 6px 20px rgba(0, 0, 0, 0.45));
+}
+
+.dragGhost {
+  position: fixed;
+  z-index: var(--z-tooltip, 1200);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-small, 4px);
+  background: var(--bg-popup, #26282c);
+  border: 1px solid var(--border-strong, #40434a);
+  box-shadow: var(--shadow-tooltip, 0 4px 12px rgba(0, 0, 0, 0.4));
+  color: var(--fg, #d1d3d9);
+  font-size: var(--fs-ui, 13px);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 8px 12px;
+  color: var(--fg-subtle, #73767c);
+  font-size: var(--fs-ui, 13px);
+}

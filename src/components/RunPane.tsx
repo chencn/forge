@@ -21,7 +21,7 @@ import {
   terminalColors,
 } from "../lib/term";
 import type { NativeScrollBinding } from "../lib/term";
-import { monoFont } from "../lib/monacoEnv";
+import { monoFont } from "../lib/editorEnv";
 import { useI18n } from "../i18n";
 import { attachTerminalUrls, isHttpUrl } from "../lib/termUrl";
 import { openExternal, statEntries, writeFile } from "../lib/fs";

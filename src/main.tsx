@@ -1,16 +1,16 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { resolveLang } from "./i18n";
 import { ensureFileIcons } from "./lib/fileIcons";
 import { loadHistory } from "./lib/history";
 import { loadLspConfig } from "./lib/lspConfig";
 import { loadSettings } from "./lib/settings";
+import "@fontsource-variable/jetbrains-mono";
 import "./themes/tokens.css";
 import "./styles.css";
 
 /**
- * monaco 在模块求值时就固化自己的文案，语言表必须先进去，
- * 所以界面整体延后到设置读回来之后再 import。
+ * 界面整体延后到三份配置读回来之后再 import：读回之前渲染首帧，会先闪一下空态，
+ * 语言服务还会多起一次进程。
  */
 async function bootstrap() {
   // 三份配置一起读：语言服务那份首帧的 reconcile 就要用，晚一步会多起一次进程；
@@ -21,15 +21,12 @@ async function bootstrap() {
     loadLspConfig(),
   ]);
   // 上一回页面留下的 shell 与语言服务先收干净：两者一挂载就会起新进程，晚了就来不及了。
-  // 语言服务这条走 `lib/lsp`（只有 Tauri 壳），不要引 `lib/lspClient`——它拉得到 monaco，
-  // 会在启动路径上多打出一个几百模块的 chunk。
+  // 这两条各自只走 `lib/term` 与 `lib/lsp`（只有 Tauri 壳的那一层），别换成 `lspClient`——
+  // 那条会连带把编辑器与 i18n 整串模块都拉进启动路径上。
   const { termReap } = await import("./lib/term");
   await termReap().catch(() => {});
   const { lspReap } = await import("./lib/lsp");
   await lspReap().catch(() => {});
-  if (resolveLang(settings.language || null) === "zh") {
-    await import("monaco-editor/nls/lang/zh-cn.js");
-  }
   const [{ default: App }, { SettingsProvider }, { HistoryProvider }, { LspConfigProvider }] =
     await Promise.all([
       import("./App"),

@@ -5,7 +5,7 @@ import ImagePreview from "./ImagePreview";
 import PaneNotice from "./PaneNotice";
 import { canPreview } from "../hooks/useDocuments";
 import { retainEditorModels } from "../lib/modelRetention";
-import { disposeModel } from "../lib/monacoEnv";
+import { disposeModel } from "../lib/editorEnv";
 import type { DocView, OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import type { DocKind } from "../lib/docKind";
 import { describeError } from "../lib/errors";
@@ -33,7 +33,7 @@ interface DocPaneProps {
   runConfigs: RunConfiguration[];
   /** 工程根绝对路径。 */
   projectRoot: string;
-  /** 还开着的文档路径。超出最近几篇的 Monaco model 按这个名单回收。 */
+  /** 还开着的文档路径。超出最近几篇的常驻 state 按这个名单回收。 */
   openPaths: readonly string[];
   /** 点了装订线那颗 ▶：一条就直接跑，几条就开选择器让他挑。 */
   onRunConfig: (configs: RunConfiguration[]) => void;
@@ -64,7 +64,7 @@ function previewLabel(kind: DocKind): "preview.markdown" | "preview.svg" | "prev
 /**
  * 编辑区里一篇文档的落点：按类型分派到源码编辑器与预览。
  *
- * 有源码的文档（text / markdown / svg）把 Monaco 一直挂着，切到预览只是把它藏起来——
+ * 有源码的文档（text / markdown / svg）把编辑器一直挂着，切到预览只是把它藏起来——
  * 这样来回切视图不会丢掉撤销栈与光标位置。图片没有源码，只画预览。
  *
  * 视图切换是编辑区右上角那组浮动图标（照 IDEA）：左边源码、右边预览，纯图标不带字，
@@ -127,7 +127,7 @@ export default function DocPane({
 
   /**
    * 响应那台编辑器用的是自己造的一份「虚拟文档」，不在 `openPaths` 名单里，
-   * `retainEditorModels` 不认识它，关掉分栏后它的 Monaco model 会一直留在内存里
+   * `retainEditorModels` 不认识它，关掉分栏后它那篇文档的 state 会一直留在内存里
    * （还带着整份响应正文）。这里跟着响应路径走：换了或没了就把它关掉。
    */
   const responsePath = responseDoc?.path ?? null;
@@ -220,7 +220,7 @@ export default function DocPane({
     <div className="doc-pane">
       <div className={`doc-body${layoutSplit ? " is-split" : ""}`} ref={bodyRef}>
         {sourceCapable ? (
-          // 藏起来而不是卸载：Monaco 实例留着，撤销栈和光标才不会丢；分栏模式下按比例划分宽度。
+          // 藏起来而不是卸载：编辑器实例留着，撤销栈和光标才不会丢；分栏模式下按比例划分宽度。
           <div
             className="doc-source"
             hidden={hideSource}

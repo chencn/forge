@@ -1,80 +1,100 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as FieldKeyEvent } from "react";
-import { Command, X } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as TabKeyEvent,
+  type KeyboardEvent as FieldKeyEvent,
+  type ReactNode
+} from "react";
+import {
+  ArrowUpRight,
+  ChevronDown,
+  Command,
+  FileText,
+  List,
+  Loader2,
+  Search
+} from "lucide-react";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
-import { describeError } from "../lib/errors";
 import type { ForgeCommand } from "../lib/commands";
 import {
-  errorText,
   findFiles,
+  findSymbols,
+  readFile,
   searchText,
-  type FileHits,
   type ScanFilter,
   type SearchOptions,
   type TextHit,
-  type TextPage,
+  type TextPage
 } from "../lib/fs";
 import { ignoredRoots } from "../lib/git";
 import { loadIgnored } from "../lib/ignoredCache";
+import { indexRuns } from "../lib/seMatch";
+import { parseLocationQuery } from "../lib/seQuery";
+import { SeController, type SeSnapshot } from "../lib/seController";
+import {
+  MORE_STEP_ALL,
+  MORE_STEP_TAB,
+  TABS,
+  buildRows,
+  isSectionRow,
+  parseCommand,
+  stableIndex,
+  topResultSettled,
+  type SeRow,
+  type SeTab,
+  type SectionId
+} from "../lib/seModel";
+import {
+  pushRecentAction,
+  pushSearchHistory,
+  recentActions,
+  recentFiles,
+  searchHistory
+} from "../lib/seStore";
+import { applyFontMetrics, detachedState, EditorView, highlightRange, scrollToPos } from "../lib/cmEditor";
+import { languageForPath } from "../lib/editorEnv";
+import { basenameOf, samePath } from "../lib/format";
+import { ensureFileIcons } from "../lib/fileIcons";
 import EntryIcon from "./EntryIcon";
-import MatchSnippet from "./MatchSnippet";
+import SymbolIcon from "./SymbolIcon";
+import styles from "./SearchEverywhere.module.css";
 
-/** 弹窗上那几个页签。 */
-export type SearchTab = "all" | "files" | "text" | "actions";
-type Tab = SearchTab;
+/** 弹窗页签。openidea 的六档：全部 / 类 / 文件 / 符号 / 动作 / 文本。 */
+export type SearchTab = SeTab;
 
-const TABS: { key: Tab; label: TranslationKey }[] = [
-  { key: "all", label: "search.tab.all" },
-  { key: "files", label: "search.tab.files" },
-  { key: "text", label: "search.tab.text" },
-  { key: "actions", label: "search.tab.actions" },
-];
+const TAB_LABELS: Record<SeTab, TranslationKey> = {
+  all: "search.tab.all",
+  classes: "search.tab.classes",
+  files: "search.tab.files",
+  symbols: "search.tab.symbols",
+  actions: "search.tab.actions",
+  text: "search.tab.text"
+};
 
-/** 列表里的一行：要么是个文件、一处正文命中，要么是一条可执行动作。 */
-type Row =
-  | {
-      kind: "file";
-      path: string;
-      name: string;
-      container: string;
-      isDir: boolean;
-      hit?: undefined;
-      command?: undefined;
-    }
-  | {
-      kind: "text";
-      path: string;
-      name: string;
-      container: string;
-      isDir: boolean;
-      hit: TextHit;
-      command?: undefined;
-    }
-  | {
-      kind: "action";
-      path?: undefined;
-      name: string;
-      container?: undefined;
-      isDir?: undefined;
-      hit?: undefined;
-      command: ForgeCommand;
-    };
+const SECTION_LABELS: Record<SectionId, TranslationKey> = {
+  recent: "search.section.recent",
+  recentActions: "search.section.recentActions",
+  classes: "search.tab.classes",
+  files: "search.tab.files",
+  symbols: "search.tab.symbols",
+  actions: "search.tab.actions",
+  text: "search.tab.text"
+};
 
-/** 弹窗里正文只回这么多行：整页结果要点开底部那块工具窗口看。 */
-const POPUP_TEXT_PAGE = 20;
+const ROW = 24;
+const MAX_LIST = 672;
+const MAX_LIST_PREVIEW = 312;
+const MIN_LIST = 10 * ROW;
+const TYPE_DELAY = 60;
 
-/** 弹窗里文件只回这么多条。 */
-const POPUP_FILE_PAGE = 20;
-
-/** 打字途中不碰磁盘，停这么久而不发新查询。 */
-const TYPE_DELAY = 260;
-
-/** 少于这么多字符就什么都不搜，否则整棵树都被第一个字母刷一遍。 */
-const MIN_QUERY = 2;
-
-interface SearchEverywhereProps {
-  /** 搜索范围：IDEA 的 Look in Directory，这边就是传给两条命令的那个根。 */
+export interface SearchEverywhereProps {
+  /** 搜索范围：当前选中的目录（如用户右键的目录、在资源管理器高亮的目录）或工程根。 */
   root: string;
+  /** 所有打开的项目根列表（多项目模式），用于在弹窗顶部展示和切换作用域。 */
+  openFolders?: string[];
   /** 仓库根；与 root 不同时忽略项按仓库根折算，没有仓库时为 null。 */
   repoRoot: string | null;
   /** 显示隐藏项（Windows 隐藏属性 / 点开头），跟着设置里的资源管理器开关走。 */
@@ -82,75 +102,217 @@ interface SearchEverywhereProps {
   /** 显示被 .gitignore 忽略的项；关着时忽略范围不搜。 */
   showIgnored: boolean;
   onClose: () => void;
-  /** 打开一个文件；目录也走这一条，`isDir` 告诉外面它没有正文可开。 */
-  onOpenFile: (path: string, isDir: boolean) => void;
-  /** 打开一处正文命中，并把这一整页结果交给底部的查找窗口。 */
-  onOpenHit: (hit: TextHit, page: TextPage, options: SearchOptions) => void;
+  /** 打开一个文件；目录也走这一条，`isDir` 告诉外面它没有正文可开。`side` 要新的拆分。 */
+  onOpenFile: (path: string, isDir: boolean, side?: boolean) => void;
+  /** 打开一处正文命中，并把这一整页结果交给底部的查找窗口。`side` 要新的拆分。 */
+  onOpenHit: (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean) => void;
+  /** 打开一处符号定义：落到那一行并把名字选住。 */
+  onOpenSymbol: (path: string, line: number, column: number, length: number, side?: boolean) => void;
   /** 打开时停在哪个页签。IDEA 的 Goto File 不是另一个框，是同一弹层落在 Files 页签上。 */
   initialTab?: SearchTab;
   /** 预填的搜索词，取的是编辑器选区，对应 IDEA 的 `PREDEFINED_TEXT`。 */
   initialQuery?: string;
-  /** 可执行动作表（命令面板的数据源）；没有就只搜文件与正文。 */
+  /** 可执行动作表（命令面板的数据源）；「动作」档与最近动作都从它取。 */
   commands?: ForgeCommand[];
 }
 
+interface Selection {
+  key: string | null;
+  index: number;
+  moved: boolean;
+}
+
+/** 文本高亮组件：将匹配到的字符区间使用带有背景色的高亮标签渲染。 */
+function HighlightedText({ text, indices }: { text: string; indices?: readonly number[] | null }) {
+  if (!indices || indices.length === 0) {
+    return <span>{text}</span>;
+  }
+  const parts: ReactNode[] = [];
+  let pos = 0;
+  for (const [s, e] of indexRuns(indices)) {
+    if (s >= text.length) break;
+    if (s > pos) parts.push(text.slice(pos, s));
+    parts.push(
+      <mark key={s} className={styles.matchHighlight}>
+        {text.slice(s, e)}
+      </mark>
+    );
+    pos = e;
+  }
+  if (pos < text.length) parts.push(text.slice(pos));
+  return <span>{parts}</span>;
+}
+
+/** 代码预览面板：使用 CodeMirror 渲染只读文件内容，并在高亮命中行居中定位。 */
+function CodePreviewPane({
+  path,
+  line
+}: {
+  path: string | null;
+  line: number;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!path) {
+      setContent(null);
+      setError(null);
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      readFile(path)
+        .then((file) => {
+          if (alive) {
+            setContent(file.contents);
+            setError(null);
+          }
+        })
+        .catch((err) => {
+          if (alive) {
+            setContent(null);
+            setError(String(err));
+          }
+        });
+    }, 60);
+
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [path]);
+
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || content === null || !path) {
+      if (viewRef.current) {
+        viewRef.current.destroy();
+        viewRef.current = null;
+      }
+      return;
+    }
+    applyFontMetrics(el, 12);
+    const targetLine = Math.max(1, line);
+    const state = detachedState(
+      {
+        path,
+        contents: content,
+        language: languageForPath(path),
+        readOnly: true,
+        tabSize: 2,
+        showLineNumbers: true
+      },
+      [highlightRange(targetLine, targetLine)]
+    );
+    const view = new EditorView({ state, parent: el });
+    viewRef.current = view;
+
+    try {
+      const pos = state.doc.line(Math.min(targetLine, state.doc.lines)).from;
+      scrollToPos(view, pos);
+    } catch {
+      // 容错防止行越界
+    }
+
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, [content, path, line]);
+
+  const hasDoc = !!path && content !== null;
+  const placeholder = !path ? "选择条目以预览代码" : error && !hasDoc ? error : null;
+
+  return (
+    <div className={styles.preview} role="region" aria-label="代码预览">
+      <div
+        ref={hostRef}
+        className={`${styles.previewEditor}${!hasDoc || placeholder ? ` ${styles.previewHidden}` : ""}`}
+      />
+      {placeholder && <div className={styles.previewEmpty}>{placeholder}</div>}
+    </div>
+  );
+}
+
+/** 判断两条文本命中是否在同一个文件（若是则弱化第二条的文件名展示） */
+function sameFile(prev: SeRow | undefined, row: SeRow): boolean {
+  return row.kind === "text" && prev?.kind === "text" && prev.path === row.path;
+}
+
 /**
- * IDEA 的「随处搜索」：居中弹窗，上面页签、中间输入框、下面结果。
- *
- * 只有三处能关掉它：右上那颗关闭、Enter 或点开一条结果、Esc。点遮罩不关——
- * 输入到一半手滑点到旁边就把词丢了，这一下没人想要。IDEA 那边靠失焦关闭，
- * 这边没有「焦点离开整层」这条判定可依赖，就不拿点击当关闭。
- *
- * IDEA 那侧还有 Classes / Symbols / Actions 三档，靠的是它自己的符号索引和动作注册表；
- * 这边没有等价数据，就不摆一颗点了没反应的页签。
+ * 随处搜索（Search Everywhere）
+ * 100% 对齐 openidea everywhere 交互与布局体系：
+ * - 顶栏：TabList、Scope 下拉、Preview 切换、Filter、转到底部 Find 窗口；
+ * - 搜索行：放大镜历史下拉、自适应无边框输入框、Spinner 与提示；
+ * - 列表区：分节渲染、多类型条目高亮、同文件合并、底部键盘导航；
+ * - 预览区：支持 CodeMirror 代码语法高亮与行居中滚动；
+ * - 多项目处理：精准定位至当前选中目录，并支持在各个工程与当前目录间秒切。
  */
 export default function SearchEverywhere({
   root,
+  openFolders = [],
   repoRoot,
   showHidden,
   showIgnored,
   onClose,
   onOpenFile,
   onOpenHit,
+  onOpenSymbol,
   initialTab,
   initialQuery,
-  commands,
+  commands
 }: SearchEverywhereProps) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<Tab>(initialTab ?? "all");
-  const [query, setQuery] = useState(initialQuery ?? "");
-  const [caseSensitive, setCaseSensitive] = useState(false);
-  const [wholeWords, setWholeWords] = useState(false);
-  const [regex, setRegex] = useState(false);
-  const [fileMask, setFileMask] = useState("");
-  const [files, setFiles] = useState<FileHits | null>(null);
-  const [page, setPage] = useState<TextPage | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState<string | null>(null);
-  const [caret, setCaret] = useState(0);
-  /** 被忽略项的绝对前缀；「显示忽略项」开着时为空表，不剪任何路径。 */
+  const [tab, setTabState] = useState<SeTab>(initialTab ?? "all");
+  const [query, setQueryState] = useState(initialQuery ?? "");
+  const [debounced, setDebounced] = useState(initialQuery ?? "");
+  const [includeIgnored, setIncludeIgnored] = useState(false);
+  const [preview, setPreview] = useState(false);
+
+  // 针对多项目多目录：当前生效的搜索目录（默认取外部传入的精确选中目录 root）
+  const [activeRoot, setActiveRoot] = useState<string>(root);
+
+  useEffect(() => {
+    setActiveRoot(root);
+  }, [root]);
+
+  // 作用域候选项列表（当前选中目录、所有已打开工程根）
+  const scopeOptions = useMemo(() => {
+    const list: Array<{ value: string; label: string }> = [];
+    const rootName = basenameOf(activeRoot) || activeRoot;
+    list.push({ value: activeRoot, label: `当前目录: ${rootName}` });
+
+    for (const folder of openFolders) {
+      if (!samePath(folder, activeRoot)) {
+        list.push({ value: folder, label: `工程: ${basenameOf(folder) || folder}` });
+      }
+    }
+    return list;
+  }, [activeRoot, openFolders]);
+
+  const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const [ignored, setIgnored] = useState<string[]>([]);
+  const [extra, setExtra] = useState<Partial<Record<SectionId, number>>>({});
+  const [snap, setSnap] = useState<SeSnapshot | null>(null);
+  const [sel, setSel] = useState<Selection>({ key: null, index: -1, moved: false });
+
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  /** 只认最后一次发出的查询，早发的那份回来晚了直接丢。 */
-  const seq = useRef(0);
+  const history = useRef({ pos: -1, draft: "" });
+  const pendingEnter = useRef<{ side: boolean } | null>(null);
 
-  const options = useMemo<SearchOptions>(
-    () => ({ caseSensitive, wholeWords, regex, fileMask, limit: POPUP_TEXT_PAGE }),
-    [caseSensitive, wholeWords, regex, fileMask]
-  );
+  const filter = useMemo<ScanFilter>(() => ({ showHidden, ignored }), [showHidden, ignored]);
 
-  /**
-   * 取忽略前缀。弹层每次打开都是新实例，所以只取一次；「显示忽略项」开着时不必问，
-   * 这一趟要走完整棵工作树的 git，能省则省。取不到（纯浏览器预览、没有仓库）就当没忽略。
-   */
+  // 载入 Git 忽略前缀缓存
   useEffect(() => {
     if (showIgnored || !repoRoot) {
       setIgnored([]);
       return;
     }
     let stale = false;
-    // 与目录树、Git 面板共用一份扫描结果：新鲜期内不另起 `git status --ignored` 全仓扫描。
     void loadIgnored(repoRoot)
       .then((list) => {
         if (!stale) setIgnored(ignoredRoots(repoRoot, list));
@@ -163,343 +325,619 @@ export default function SearchEverywhere({
     };
   }, [repoRoot, showIgnored]);
 
-  const filter = useMemo<ScanFilter>(
-    () => ({ showHidden, ignored }),
-    [showHidden, ignored]
+  // 动态引用：让控制器每次搜索时现取最新的当前选中目录、命令集和过滤闸门
+  const live = useRef({ root: activeRoot, commands, filter });
+  live.current = { root: activeRoot, commands, filter };
+
+  const [controller] = useState(
+    () =>
+      new SeController(
+        {
+          findFiles: (needle, limit, gate) =>
+            findFiles(live.current.root, needle, limit, gate).then((hits) => hits.items),
+          findSymbols: (needle, kindFilter, limit, gate) =>
+            findSymbols(live.current.root, needle, kindFilter, limit, gate).then((hits) => hits.items),
+          searchText: (textOptions, gate) =>
+            searchText(live.current.root, textOptions, gate),
+          actions: () => live.current.commands ?? [],
+          recentFiles: () => recentFiles(live.current.root),
+          recentActions,
+          root: () => live.current.root,
+          now: () => performance.now()
+        },
+        setSnap
+      )
   );
 
-  const needle = query.trim();
-  const searching = needle.length >= MIN_QUERY;
-
+  useEffect(() => () => controller.dispose(), [controller]);
   useEffect(() => {
-    inputRef.current?.focus();
+    // 随处搜索打开时立即预热文件图标资源，杜绝占位闪烁
+    void ensureFileIcons();
   }, []);
 
+  // 键入防抖
   useEffect(() => {
-    if (!searching || tab === "actions") {
-      setFiles(null);
-      setPage(null);
-      setFailed(null);
-      setBusy(false);
-      return;
-    }
-    const token = ++seq.current;
-    setBusy(true);
-    const timer = window.setTimeout(() => {
-      const jobs: Promise<void>[] = [];
-      if (tab !== "text") {
-        jobs.push(
-          findFiles(root, needle, POPUP_FILE_PAGE, filter)
-            .then((result) => {
-              if (seq.current === token) {
-                setFiles(result);
-                setFailed(null);
-              }
-            })
-            .catch((error: unknown) => {
-              if (seq.current === token) setFailed(errorText(error));
-            })
-        );
-      }
-      if (tab !== "files") {
-        jobs.push(
-          searchText(root, needle, options, filter)
-            .then((result) => {
-              if (seq.current === token) {
-                setPage(result);
-                setFailed(null);
-              }
-            })
-            .catch((error: unknown) => {
-              if (seq.current === token) {
-                setPage(null);
-                setFailed(describeError(errorText(error), t));
-              }
-            })
-        );
-      }
-      void Promise.all(jobs).finally(() => {
-        if (seq.current === token) setBusy(false);
-      });
-    }, TYPE_DELAY);
-    return () => window.clearTimeout(timer);
-  }, [filter, needle, options, root, searching, t, tab]);
+    if (query === debounced) return;
+    const timer = setTimeout(() => setDebounced(query), TYPE_DELAY);
+    return () => clearTimeout(timer);
+  }, [query, debounced]);
 
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    if (tab !== "text") {
-      for (const hit of files?.items ?? []) {
-        out.push({
-          kind: "file",
-          path: hit.path,
-          name: hit.name,
-          container: hit.container,
-          isDir: hit.isDir,
-        });
-      }
-    }
-    if (tab !== "files") {
-      for (const hit of page?.hits ?? []) {
-        out.push({
-          kind: "text",
-          path: hit.path,
-          name: hit.name,
-          container: hit.container,
-          isDir: false,
-          hit,
-        });
-      }
-    }
-    // 动作排在文件与命中后面：面板主要还是找东西，命令是顺手的一档。
-    if (commands && (tab === "all" || tab === "actions")) {
-      const lower = needle.toLowerCase();
-      const starts: Row[] = [];
-      const includes: Row[] = [];
-      for (const command of commands) {
-        const label = command.label.toLowerCase();
-        if (lower && label.startsWith(lower)) starts.push({ kind: "action", name: command.label, command });
-        else if (lower && label.includes(lower)) includes.push({ kind: "action", name: command.label, command });
-      }
-      const matched = [...starts, ...includes];
-      if (tab === "actions") {
-        // 动作页签空查询就列出全部——命令面板的用法里本来就有「先看有什么」这一档。
-        if (matched.length) out.push(...matched.slice(0, 50));
-        else if (!needle) out.push(...commands.slice(0, 50).map((command) => ({ kind: "action" as const, name: command.label, command })));
-      } else {
-        out.push(...matched.slice(0, 50));
-      }
-    }
-    return out;
-  }, [commands, files, page, tab, needle]);
+  // 查询词或页签切换时，重置分页与选区
+  const [prevInputs, setPrevInputs] = useState({ debounced, tab, activeRoot });
+  if (
+    prevInputs.debounced !== debounced ||
+    prevInputs.tab !== tab ||
+    prevInputs.activeRoot !== activeRoot
+  ) {
+    setPrevInputs({ debounced, tab, activeRoot });
+    setExtra({});
+    setSel({ key: null, index: -1, moved: false });
+  }
 
-  // 换页签或改关键词后行数会变，选中位要夹回来，否则回车落在空位上。
+  const getTabLabel = (targetTab: SeTab) => t(TAB_LABELS[targetTab]);
+
+  const listing = useMemo(() => {
+    const c = parseCommand(query, getTabLabel);
+    return c?.kind === "list" ? c.rows : null;
+  }, [query]);
+  const searchQuery = parseCommand(debounced, getTabLabel)?.kind === "list" ? "" : debounced;
+
   useEffect(() => {
-    setCaret((current) => (rows.length === 0 ? 0 : Math.min(current, rows.length - 1)));
-  }, [rows.length]);
+    controller.run({
+      query: searchQuery,
+      tab,
+      includeIgnored,
+      filter,
+      text: { caseSensitive: false, wholeWords: false, regex: false },
+      extra
+    });
+  }, [controller, searchQuery, tab, includeIgnored, filter, extra, activeRoot]);
 
-  const open = useCallback(
-    (row: Row | undefined) => {
-      if (!row) return;
-      if (row.kind === "action") {
-        row.command.run();
-        onClose();
-        return;
-      }
-      if (row.kind === "file") {
-        onOpenFile(row.path, row.isDir);
-        onClose();
-        return;
-      }
-      if (page) onOpenHit(row.hit, page, options);
-      onClose();
-    },
-    [onClose, onOpenFile, onOpenHit, options, page]
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  const parsed = useMemo(() => parseLocationQuery(searchQuery), [searchQuery]);
+  const mix = tab === "all" ? parsed.text : undefined;
+  const rows = useMemo(
+    () => listing ?? (snap ? buildRows(snap.sections, { headers: !parsed.text.trim(), mix }) : []),
+    [listing, snap, parsed.text, mix]
   );
+  const active = stableIndex(rows, sel.key, sel.index, sel.moved);
+  const activeRow = active >= 0 ? rows[active] : undefined;
+  const settled =
+    !!snap &&
+    query === debounced &&
+    snap.query === debounced &&
+    snap.tab === tab &&
+    topResultSettled(snap.sections, mix);
 
-  const step = (delta: number) => {
-    setCaret((current) => (rows.length === 0 ? 0 : (current + delta + rows.length) % rows.length));
+  const select = (index: number) => setSel({ key: rows[index]?.key ?? null, index, moved: true });
+
+  const setQuery = (value: string) => {
+    history.current.pos = -1;
+    const c = parseCommand(value, getTabLabel);
+    if (c?.kind === "run") {
+      setTabState(c.tab);
+      setQueryState(c.rest);
+    } else {
+      setQueryState(value);
+    }
   };
 
-  /** 选中行露出列表边缘时滚一下，只在键盘走的时候动。 */
-  useEffect(() => {
-    const list = listRef.current;
-    const row = list?.children[caret] as HTMLElement | undefined;
-    if (!list || !row) return;
-    if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop;
-    else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) {
-      list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight;
-    }
-  }, [caret]);
-
-  const foot = () => {
-    if (tab === "actions") {
-      if (busy) return t("search.busy");
-      const count = rows.length;
-      if (count === 0) return t("search.empty");
-      return t("search.count.actions", { count });
-    }
-    if (!searching) return t("search.hint.type");
-    if (busy) return t("search.busy");
-    const fileCount = files?.items.length ?? 0;
-    const hitCount = page?.hits.length ?? 0;
-    if (fileCount === 0 && hitCount === 0) return t("search.empty");
-    const parts: string[] = [];
-    if (tab !== "text" && fileCount > 0) {
-      parts.push(t("search.count.files", { count: fileCount }));
-      if (files?.truncated) parts.push(t("search.more.files"));
-    }
-    if (tab !== "files" && hitCount > 0) {
-      parts.push(t("search.count.hits", { hits: hitCount, files: page?.files ?? 0 }));
-      if (page?.truncated) parts.push(t("search.more.hits"));
-    }
-    return parts.join(" · ");
+  const browseHistory = (dir: 1 | -1) => {
+    const entries = searchHistory(tab);
+    const current = history.current;
+    const pos = Math.max(-1, Math.min(entries.length - 1, current.pos + dir));
+    if (pos === current.pos) return;
+    if (current.pos < 0) current.draft = query;
+    current.pos = pos;
+    setQueryState(pos < 0 ? current.draft : entries[pos]!);
   };
 
-  return (
-    <div
-      className="dialog-backdrop is-search"
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onClose();
-      }}
-    >
-      <div
-        className="search-pop"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("search.title")}
-      >
-        <div className="search-tabs" role="tablist">
-          {TABS.map((item, index) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              aria-selected={tab === item.key}
-              className={`search-tab${tab === item.key ? " is-active" : ""}`}
-              title={`${t(item.label)} · Alt+${index + 1}`}
-              onClick={() => setTab(item.key)}
-            >
-              {t(item.label)}
-            </button>
-          ))}
-          {/* 关闭那颗在页签这一行的右端，IDEA 的弹层标题行就是这个位置。 */}
-          <button
-            type="button"
-            className="icon-button is-tiny search-close"
-            onClick={onClose}
-            title={t("window.close")}
-            aria-label={t("window.close")}
-          >
-            <X size={15} />
-          </button>
-        </div>
+  const setTab = (next: SeTab) => {
+    history.current.pos = -1;
+    setTabState(next);
+    inputRef.current?.focus();
+  };
 
-        <div className="search-field">
-          <input
-            ref={inputRef}
-            className="search-input"
-            value={query}
-            placeholder={t(
-              tab === "actions"
-                ? "search.placeholder.actions"
-                : tab === "files"
-                  ? "search.placeholder.files"
-                  : "search.placeholder"
-            )}
-            spellCheck={false}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={onFieldKey}
-          />
-          {tab !== "files" ? (
-            <div className="search-switches">
-              <button
-                type="button"
-                className={`switch-chip${caseSensitive ? " is-on" : ""}`}
-                aria-pressed={caseSensitive}
-                title={t("search.option.case")}
-                onClick={() => setCaseSensitive((on) => !on)}
-              >
-                Aa
-              </button>
-              <button
-                type="button"
-                className={`switch-chip${wholeWords ? " is-on" : ""}`}
-                aria-pressed={wholeWords}
-                title={t("search.option.words")}
-                onClick={() => setWholeWords((on) => !on)}
-              >
-                W
-              </button>
-              <button
-                type="button"
-                className={`switch-chip${regex ? " is-on" : ""}`}
-                aria-pressed={regex}
-                title={t("search.option.regex")}
-                onClick={() => setRegex((on) => !on)}
-              >
-                .*
-              </button>
-            </div>
-          ) : null}
-        </div>
+  const cycleTab = (dir: 1 | -1) => {
+    const at = TABS.findIndex((item) => item.id === tab);
+    setTab(TABS[(at + dir + TABS.length) % TABS.length]!.id);
+  };
 
-        {tab !== "files" ? (
-          <input
-            className="search-mask"
-            value={fileMask}
-            placeholder={t("search.fileMask")}
-            spellCheck={false}
-            onChange={(event) => setFileMask(event.target.value)}
-            onKeyDown={onFieldKey}
-          />
-        ) : null}
+  const closeThen = (fn: () => void) => {
+    onClose();
+    setTimeout(fn, 0);
+  };
 
-        <div className="search-list" ref={listRef} role="listbox" aria-label={t("search.title")}>
-          {rows.map((row, index) => (
-            <div
-              key={row.kind === "action" ? `action|${row.command.id}` : `${row.kind}|${row.name}|${row.container}|${row.hit?.line ?? 0}`}
-              role="option"
-              aria-selected={index === caret}
-              className={`search-row${index === caret ? " is-active" : ""}`}
-              onMouseEnter={() => setCaret(index)}
-              onClick={() => open(row)}
-            >
-              {row.kind === "action" ? (
-                <Command size={16} aria-hidden />
-              ) : (
-                <EntryIcon name={row.name} path={row.isDir ? undefined : row.path} isDirectory={row.isDir} size={16} />
-              )}
-              <span className="search-row-main">
-                {row.kind === "text" ? <MatchSnippet hit={row.hit} /> : row.name}
-              </span>
-              {row.container ? <span className="search-row-dir">{row.container}</span> : null}
-              <span className="search-row-tag">
-                {row.kind === "action" ? (
-                  row.command.shortcut ?? t("search.tab.actions")
-                ) : row.kind === "text" ? (
-                  <>
-                    {row.name}
-                    <em>{row.hit.line}</em>
-                  </>
-                ) : (
-                  t("search.tab.files")
-                )}
-              </span>
-            </div>
-          ))}
-          {failed ? <p className="search-failed">{failed}</p> : null}
-          {searching && !busy && rows.length === 0 && !failed ? (
-            <p className="search-none">{t("search.empty")}</p>
-          ) : null}
-        </div>
+  const activate = (row: SeRow | undefined, side = false) => {
+    if (!row) return;
+    if (row.kind === "file" || row.kind === "symbol" || row.kind === "text" || row.kind === "action") {
+      pushSearchHistory(tab, query);
+    }
+    switch (row.kind) {
+      case "section":
+        return;
+      case "command":
+        setTab(row.tab);
+        setQueryState("");
+        return;
+      case "more": {
+        const step = tab === "all" ? MORE_STEP_ALL : MORE_STEP_TAB;
+        setExtra((prev) => ({ ...prev, [row.section]: (prev[row.section] ?? 0) + step }));
+        setSel({ key: null, index: rows.indexOf(row), moved: true });
+        return;
+      }
+      case "file":
+        closeThen(() => onOpenFile(row.path, row.isDir, side));
+        return;
+      case "symbol":
+        closeThen(() => onOpenSymbol(row.path, row.line, row.col, row.name.length, side));
+        return;
+      case "text": {
+        const page = snap?.textPage;
+        if (!page) return;
+        closeThen(() => onOpenHit(row.hit, page, { caseSensitive: false, wholeWords: false, regex: false }, side));
+        return;
+      }
+      case "action": {
+        pushRecentAction(row.id);
+        const cmd = commands?.find((c) => c.id === row.id);
+        if (cmd) closeThen(() => cmd.run());
+        return;
+      }
+    }
+  };
 
-        <div className="search-foot">
-          <span>{foot()}</span>
-          <span className="search-keys">{t("search.keys")}</span>
-        </div>
-      </div>
-    </div>
-  );
+  useEffect(() => {
+    const pending = pendingEnter.current;
+    if (!pending || !settled) return;
+    pendingEnter.current = null;
+    activate(activeRow, pending.side);
+  });
 
-  /** 输入框与文件名过滤框共用这条键位。 */
-  function onFieldKey(event: FieldKeyEvent<HTMLInputElement>) {
+  const onFieldKey = (event: FieldKeyEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Escape") {
       onClose();
       return;
     }
-    if (event.altKey && /^[1-4]$/.test(event.key)) {
-      setTab(TABS[Number(event.key) - 1]?.key ?? "all");
+    if (event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      cycleTab(event.shiftKey ? -1 : 1);
       return;
     }
-    if (event.key === "ArrowDown") {
+    if (event.altKey && /^[1-6]$/.test(event.key)) {
       event.preventDefault();
-      step(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      step(-1);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      open(rows[caret]);
+      setTab(TABS[Number(event.key) - 1]!.id);
+      return;
     }
-  }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (listing) activate(activeRow);
+      else if (!settled && !sel.moved) pendingEnter.current = { side: event.shiftKey };
+      else activate(activeRow, event.shiftKey);
+      return;
+    }
+    if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      browseHistory(event.key === "ArrowUp" ? 1 : -1);
+      return;
+    }
+    if (["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(event.key)) {
+      const dir = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? 5 : -5;
+      event.preventDefault();
+      let next = active + dir;
+      while (next >= 0 && next < rows.length && isSectionRow(rows[next]!)) {
+        next += dir > 0 ? 1 : -1;
+      }
+      if (next >= 0 && next < rows.length) select(next);
+    }
+  };
+
+  const onTabKey = (event: TabKeyEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    cycleTab(event.key === "ArrowRight" ? 1 : -1);
+  };
+
+  // 滚动可视区域跟踪
+  useEffect(() => {
+    const list = listRef.current;
+    const item = list?.children[active] as HTMLElement | undefined;
+    if (!list || !item) return;
+    if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
+    else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight;
+    }
+  }, [active]);
+
+  const emptyQuery = !parsed.text.trim();
+  const loading = !!snap?.loading;
+  const showEmpty = !rows.length && !!snap && !loading && (!emptyQuery || tab !== "all");
+
+  const listHeight = Math.min(
+    preview ? MAX_LIST_PREVIEW : MAX_LIST,
+    Math.max(parsed.text.trim() && !listing ? MIN_LIST : 0, rows.length * ROW)
+  );
+
+  const canSplit =
+    activeRow?.kind === "file" || activeRow?.kind === "symbol" || activeRow?.kind === "text";
+
+  const previewTarget = useMemo(() => {
+    if (!preview || !activeRow) return null;
+    if (activeRow.kind === "file") return { path: activeRow.path, line: activeRow.line ?? 1 };
+    if (activeRow.kind === "symbol") return { path: activeRow.path, line: activeRow.line };
+    if (activeRow.kind === "text") return { path: activeRow.path, line: activeRow.line };
+    return null;
+  }, [preview, activeRow]);
+
+  const describeCurrentRow = (row: SeRow | undefined): string => {
+    if (!row) return "";
+    switch (row.kind) {
+      case "section":
+      case "more":
+      case "command":
+        return "";
+      case "action":
+        return row.title;
+      case "file":
+        return row.dir ? `${row.dir}/${row.name}` : row.name;
+      case "symbol":
+        return `${row.dir ? `${row.dir}/${row.file}` : row.file}:${row.line}`;
+      case "text":
+        return `${row.dir ? `${row.dir}/${row.name}` : row.name}:${row.line}`;
+    }
+  };
+
+  return (
+    <div
+      className={styles.backdrop}
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className={styles.dialog} role="dialog" aria-modal="true" aria-label={t("search.title")}>
+        {/* 顶部 Header：Tabs 胶囊与右侧 Actions（完全对齐 openidea） */}
+        <div className={styles.header}>
+          <div role="tablist" aria-label={t("search.title")} className={styles.tabs} onKeyDown={onTabKey}>
+            {TABS.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.id}
+                tabIndex={tab === item.id ? 0 : -1}
+                className={`${styles.tab}${tab === item.id ? ` ${styles.tabActive}` : ""}`}
+                title={`${t(TAB_LABELS[item.id])} (Alt+${index + 1})`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setTab(item.id)}
+              >
+                {t(TAB_LABELS[item.id])}
+              </button>
+            ))}
+          </div>
+
+          <div className={styles.headerActions}>
+            {/* 对齐 openidea：All 或 Actions 页签显示 Checkbox，其余页签显示 Scope 下拉 */}
+            {tab === "all" || tab === "actions" ? (
+              <label className={styles.include}>
+                <input
+                  type="checkbox"
+                  checked={includeIgnored}
+                  onChange={(e) => {
+                    setIncludeIgnored(e.target.checked);
+                    inputRef.current?.focus();
+                  }}
+                />
+                <span>{tab === "actions" ? "包含已禁用动作" : "包含非工程项"}</span>
+              </label>
+            ) : (
+              <select
+                className={styles.scopeSelect}
+                value={activeRoot}
+                onChange={(e) => {
+                  setActiveRoot(e.target.value);
+                  inputRef.current?.focus();
+                }}
+                title="搜索作用域"
+                aria-label="搜索作用域"
+              >
+                {scopeOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* 代码预览切换小按钮（size="small" 20px） */}
+            <button
+              type="button"
+              className={`${styles.headerButton}${preview ? ` ${styles.headerButtonActive}` : ""}`}
+              title="代码预览"
+              aria-pressed={preview}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setPreview((p) => !p)}
+            >
+              <List size={14} />
+            </button>
+
+            {/* 转到底部查找窗口小按钮 */}
+            <button
+              type="button"
+              className={styles.headerButton}
+              title="在查找工具窗口中打开 (Ctrl+Enter)"
+              onClick={() => {
+                if (snap?.textPage) {
+                  closeThen(() =>
+                    onOpenHit(
+                      snap.textPage!.hits[0] ?? {
+                        path: "",
+                        name: "",
+                        container: "",
+                        line: 1,
+                        snippetFrom: 1,
+                        snippet: "",
+                        ranges: []
+                      },
+                      snap.textPage!,
+                      { caseSensitive: false, wholeWords: false, regex: false }
+                    )
+                  );
+                } else {
+                  setTab("text");
+                }
+              }}
+            >
+              <ArrowUpRight size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* 查询行：放大镜下拉历史 + 复合输入框 + Spinner + 提示 */}
+        <div className={styles.queryRow}>
+          <div className={styles.field}>
+            <button
+              type="button"
+              className={styles.magnifier}
+              title="搜索历史 (Alt+↑ / Alt+↓)"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setHistoryMenuOpen((o) => !o)}
+            >
+              <Search size={14} />
+              <ChevronDown size={10} />
+            </button>
+            <input
+              id="se-query"
+              ref={inputRef}
+              className={styles.query}
+              value={query}
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              role="combobox"
+              aria-expanded
+              aria-controls="se-results"
+              aria-autocomplete="list"
+              aria-label={t("search.title")}
+              placeholder={t("search.placeholder")}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onFieldKey}
+            />
+            {loading && !emptyQuery ? (
+              <Loader2 size={14} className={styles.spinner} aria-hidden />
+            ) : null}
+            <span className={styles.hint} aria-hidden>
+              {tab === "all"
+                ? "键入 / 查看命令"
+                : tab === "text"
+                ? "Ctrl+Enter 在查找工具窗口中打开"
+                : "Enter 打开 · Shift+Enter 拆分打开"}
+            </span>
+          </div>
+        </div>
+
+        {/* 搜索历史浮层 */}
+        {historyMenuOpen && (
+          <div className={styles.historyMenu}>
+            <div className={styles.historyHeader}>最近搜索记录</div>
+            {searchHistory(tab).length > 0 ? (
+              searchHistory(tab).map((h) => (
+                <div
+                  key={h}
+                  className={styles.historyItem}
+                  onClick={() => {
+                    setQuery(h);
+                    setHistoryMenuOpen(false);
+                    inputRef.current?.focus();
+                  }}
+                >
+                  {h}
+                </div>
+              ))
+            ) : (
+              <div className={styles.historyItem} style={{ color: "var(--fg-muted)" }}>
+                无最近搜索
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 结果列表区 */}
+        {(rows.length > 0 || showEmpty) && (
+          <div
+            ref={listRef}
+            id="se-results"
+            className={styles.results}
+            style={{ height: rows.length ? listHeight + 8 : undefined }}
+          >
+            {rows.map((row, idx) => {
+              if (row.kind === "section") {
+                return (
+                  <div key={row.key} className={styles.section}>
+                    {t(SECTION_LABELS[row.section])}
+                  </div>
+                );
+              }
+              if (row.kind === "more") {
+                return (
+                  <div
+                    key={row.key}
+                    className={`${styles.row} ${styles.more}`}
+                    onClick={() => activate(row)}
+                  >
+                    … 展开更多 {t(SECTION_LABELS[row.section])}
+                  </div>
+                );
+              }
+              if (row.kind === "command") {
+                return (
+                  <div
+                    key={row.key}
+                    className={`${styles.row}${idx === active ? ` ${styles.rowActive}` : ""}`}
+                    onClick={() => activate(row)}
+                  >
+                    <Search size={14} className={styles.icon} />
+                    <span className={styles.main}>
+                      <span className={styles.name}>{row.name}</span>
+                    </span>
+                    <span className={styles.right}>{row.label}</span>
+                  </div>
+                );
+              }
+
+              const isSelected = idx === active;
+
+              if (row.kind === "file") {
+                return (
+                  <div
+                    key={row.key}
+                    className={`${styles.row}${isSelected ? ` ${styles.rowActive}` : ""}`}
+                    onClick={(e) => activate(row, e.shiftKey)}
+                  >
+                    <span className={styles.icon}>
+                      <EntryIcon name={row.name} isDirectory={row.isDir} path={row.path} size={16} />
+                    </span>
+                    <span className={styles.main}>
+                      <span className={styles.name}>
+                        <HighlightedText text={row.name} indices={row.nameIndices} />
+                        {row.line !== null ? (
+                          <span className={styles.lineSuffix}>:{row.line}</span>
+                        ) : null}
+                      </span>
+                      {row.dir ? <span className={styles.location}>{row.dir}</span> : null}
+                    </span>
+                  </div>
+                );
+              }
+
+              if (row.kind === "symbol") {
+                return (
+                  <div
+                    key={row.key}
+                    className={`${styles.row}${isSelected ? ` ${styles.rowActive}` : ""}`}
+                    onClick={(e) => activate(row, e.shiftKey)}
+                  >
+                    <span className={styles.icon}>
+                      <SymbolIcon kind={row.symbolKind} size={16} />
+                    </span>
+                    <span className={styles.main}>
+                      <span className={styles.name}>
+                        <HighlightedText text={row.display} indices={row.indices} />
+                      </span>
+                      {row.dir ? (
+                        <span className={styles.location}>{row.dir}</span>
+                      ) : null}
+                    </span>
+                    <span className={styles.right}>{row.file}</span>
+                  </div>
+                );
+              }
+
+              if (row.kind === "action") {
+                return (
+                  <div
+                    key={row.key}
+                    className={`${styles.row}${isSelected ? ` ${styles.rowActive}` : ""}`}
+                    onClick={() => activate(row)}
+                  >
+                    <span className={styles.icon}>
+                      <Command size={14} />
+                    </span>
+                    <span className={styles.main}>
+                      <span className={styles.name}>
+                        <HighlightedText text={row.title} indices={row.indices} />
+                      </span>
+                    </span>
+                    {row.shortcut ? <span className={styles.right}>{row.shortcut}</span> : null}
+                  </div>
+                );
+              }
+
+              if (row.kind === "text") {
+                const repeat = sameFile(rows[idx - 1], row);
+                return (
+                  <div
+                    key={row.key}
+                    className={`${styles.row}${isSelected ? ` ${styles.rowActive}` : ""}`}
+                    onClick={(e) => activate(row, e.shiftKey)}
+                  >
+                    <span className={styles.icon}>
+                      <FileText size={14} />
+                    </span>
+                    <span className={styles.main}>
+                      <HighlightedText text={row.text} indices={row.indices} />
+                    </span>
+                    <span className={`${styles.right}${isSelected ? ` ${styles.rightActive}` : ""}`}>
+                      <span className={repeat && !isSelected ? styles.repeat : undefined}>
+                        {row.name}
+                      </span>{" "}
+                      :{row.line}
+                    </span>
+                  </div>
+                );
+              }
+
+              return null;
+            })}
+
+            {showEmpty && (
+              <div className={styles.empty}>
+                {emptyQuery ? "键入关键字开始搜索" : "未在当前目录或项目中找到匹配结果"}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 下方代码预览窗格（对齐 openidea CodePreview） */}
+        {preview && rows.length > 0 && (
+          <CodePreviewPane path={previewTarget?.path ?? null} line={previewTarget?.line ?? 1} />
+        )}
+
+        {/* 底部页脚：显示选中条目信息与拆分打开链接 */}
+        {rows.length > 0 && (
+          <footer className={styles.footer}>
+            <span className={styles.footerInfo}>{describeCurrentRow(activeRow)}</span>
+            {canSplit && (
+              <button
+                type="button"
+                className={styles.footerLink}
+                onClick={() => activate(activeRow, true)}
+                title="在右侧拆分中打开 (Shift+Enter)"
+              >
+                在右侧拆分中打开
+              </button>
+            )}
+          </footer>
+        )}
+      </div>
+    </div>
+  );
 }

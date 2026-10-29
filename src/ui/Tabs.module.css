@@ -1,0 +1,302 @@
+.strip {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+/* Islands 标签页：选中的标签为圆角药丸胶囊（tab-selected-bg / -border），无底边单线，无硬分割线 */
+.editor {
+  height: var(--h-header, 32px);
+  padding: 0 4px;
+}
+
+.compact {
+  flex: 0 1 auto;
+  height: 28px;
+}
+
+.scroller {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  height: calc(100% - 6px);
+  min-height: 22px;
+  max-height: 28px;
+  border-radius: var(--radius-tab, 6px);
+  color: var(--fg-strong, #dfe1e5);
+  transition:
+    color var(--dur-fast, 120ms) ease,
+    background var(--dur-fast, 120ms) ease;
+}
+
+.tab:hover {
+  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
+}
+
+.selected,
+.selected:hover {
+  background: var(--bg-tab-selected, #26282c);
+  box-shadow: inset 0 0 0 1px var(--border-tab-selected, #383a40);
+}
+
+.tinted,
+.tinted:hover {
+  background: color-mix(in srgb, var(--tab-tint) var(--tint-strength, 22%), transparent);
+}
+
+.tinted.selected {
+  background: color-mix(in srgb, var(--tab-tint) var(--tint-strength, 22%), var(--bg-tab-selected, #26282c));
+}
+
+.tabButton {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: inherit;
+  white-space: nowrap;
+  color: inherit;
+  background: transparent;
+  border: none;
+  font-size: var(--fs-ui, 13px);
+  cursor: pointer;
+  outline: none;
+}
+
+.compact .tabButton {
+  padding: 0 10px;
+}
+
+.closable .tabButton {
+  padding-right: 2px;
+}
+
+.tabButton:focus-visible {
+  outline: 2px solid var(--focus-ring, #3574f0);
+  outline-offset: -2px;
+}
+
+.tabIcon {
+  flex: none;
+  color: var(--fg-muted, #8c8f95);
+}
+
+.tabLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.italic {
+  font-style: italic;
+}
+
+.closeSlot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 20px;
+  margin-right: 4px;
+}
+
+.close {
+  color: var(--fg-muted, #8c8f95);
+  opacity: 0;
+  transition: opacity var(--dur-fast, 120ms) ease;
+}
+
+.tab:hover .close,
+.selected .close,
+.close:focus-visible {
+  opacity: 1;
+}
+
+.modified {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted, #8c8f95);
+  flex: none;
+}
+
+.closeSlot .modified {
+  position: absolute;
+  left: 7px;
+  pointer-events: none;
+  transition: opacity var(--dur-fast, 120ms) ease;
+}
+
+.tab:hover .closeSlot .modified,
+.selected .closeSlot .modified {
+  opacity: 0;
+}
+
+.more {
+  align-self: center;
+  margin: 0 4px;
+}
+
+.trailing {
+  flex: 1 0 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* 挤压模式与换行模式 */
+.squeeze .scroller {
+  flex: 0 1 auto;
+}
+
+.squeeze .tab {
+  flex: 0 1 auto;
+  min-width: 40px;
+}
+
+.squeeze .tabButton {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.squeeze .tabLabel {
+  min-width: 0;
+}
+
+.wrap {
+  height: auto;
+  min-height: var(--h-header, 32px);
+}
+
+.wrap .scroller {
+  flex: 1;
+  flex-wrap: wrap;
+  overflow: visible;
+  row-gap: 2px;
+  padding: 3px 0;
+}
+
+.wrap .tab {
+  height: calc(var(--h-header, 32px) - 6px);
+}
+
+/* 纵向排列布局 */
+.vertical {
+  flex-direction: column;
+  height: auto;
+  min-height: 0;
+  padding: 4px;
+}
+
+.vertical .scroller {
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.vertical .scroller::-webkit-scrollbar {
+  display: initial;
+}
+
+.vertical .tab {
+  height: 24px;
+  min-height: 24px;
+}
+
+.vertical .tabButton {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vertical .tabLabel {
+  min-width: 0;
+  max-width: none;
+}
+
+.vertical .trailing {
+  flex: none;
+  justify-content: flex-end;
+  padding-bottom: 4px;
+}
+
+.vertical .dropBefore::before,
+.vertical .dropAfter::after {
+  top: auto;
+  bottom: auto;
+  left: 4px;
+  right: 4px;
+  width: auto;
+  height: 2px;
+}
+
+.vertical .dropBefore::before {
+  top: -2px;
+}
+
+.vertical .dropAfter::after {
+  bottom: -2px;
+}
+
+/* 左侧关闭按钮 */
+.closeLeft .closeSlot {
+  order: -1;
+  margin: 0 0 0 4px;
+}
+
+.closeLeft .closable .tabButton {
+  padding: 0 10px 0 2px;
+}
+
+/* 拖拽反馈指示线 */
+.dragging {
+  opacity: 0.5;
+}
+
+.dropBefore::before,
+.dropAfter::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent, #3574f0);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.dropBefore::before {
+  left: -2px;
+}
+
+.dropAfter::after {
+  right: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab,
+  .close,
+  .closeSlot .modified {
+    transition: none;
+  }
+}

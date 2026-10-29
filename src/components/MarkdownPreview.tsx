@@ -3,15 +3,20 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import ContextMenu, { type MenuAnchor, type MenuItem } from "./ContextMenu";
 import { useI18n } from "../i18n";
 import { assetUrl, openExternal } from "../lib/fs";
+import { fenceLanguages } from "../lib/cm/grammars";
+import { useGrammarsReady } from "../lib/cm/useGrammarsReady";
+import { hasMermaid, renderMermaidIn, subscribeTheme, themeKey } from "../lib/mermaid";
 import { renderMarkdown } from "../lib/markdown";
 
 /** 供分栏模式下双向同步滚动位置的指令句柄。 */
@@ -70,7 +75,7 @@ const MARK_CLASS = "md-find-mark";
  * 链接的点击在容器上统一拦一次：外链交系统浏览器，本地文件交编辑器，
  * 页内锚点留给浏览器自己滚。
  *
- * 这一侧是只读渲染，不像源码那台 Monaco 自带 Ctrl+F，所以这里自己实现一套页内查找：
+ * 这一侧是只读渲染，不像源码那台编辑器自带 Ctrl+F，所以这里自己实现一套页内查找：
  * 遍历渲染后的文本节点，把命中的片段套进 <mark>，上一个/下一个在活动的那处滚动定位。
  * 正文换了（重渲染）时 React 会把整段 innerHTML 重设，我们的 <mark> 随之消失，
  * 于是跟着重跑一次当前关键词。
@@ -135,15 +140,33 @@ export default forwardRef<MarkdownPreviewHandle, MarkdownPreviewProps>(function 
     }
   };
 
+  const grammars = useMemo(() => fenceLanguages(source), [source]);
+  // 正文里的围栏语言第一次出现时语法包还没下载，那一遍只能出素文本；装好后计数 +1，
+  // 下面的 memo 重算一次。语言早就在内存里时计数不动，正在键入时不会多渲染一遍。
+  const ready = useGrammarsReady(grammars);
+
   const html = useMemo(
     () => renderMarkdown(source, docPath, (absolute) => assetUrl(absolute, 0)),
-    [source, docPath]
+    [source, docPath, ready]
   );
 
   // 换文档或重渲染后把滚动位置拉回顶部，免得接着上一篇的位置。
   useEffect(() => {
     hostRef.current?.scrollTo({ top: 0 });
   }, [docPath]);
+
+  // 图在 paint 之前画完：缓存命中的那张不会先闪一下源码再变成图。
+  // diagrams 按块序号存着上一次画好的节点，正文改动时未变的那几张直接顶旧图。
+  const diagrams = useRef<Node[]>([]);
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
+  useLayoutEffect(() => {
+    const root = hostRef.current;
+    if (!root || !hasMermaid(root)) return;
+    const pass = renderMermaidIn(root, diagrams.current);
+    return () => {
+      pass.cancel();
+    };
+  }, [html, theme]);
 
   // 摘掉我们套进去的 <mark>，把文本节点还原回去，再合并相邻文本恢复原结构。
   const clearMarks = useCallback(() => {

@@ -1,0 +1,81 @@
+.header {
+  height: var(--h-header, 28px);
+  min-height: var(--h-header, 28px);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 6px 0 8px;
+  user-select: none;
+  background: var(--bg-toolwindow-header, transparent);
+  color: var(--fg-emphasis, #dfe1e5);
+}
+
+.titleArea {
+  flex: none;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border-radius: var(--radius-small, 4px);
+  color: var(--fg-strong, #ffffff);
+  font-size: var(--fs-ui, 12px);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fast, 0.1s) var(--ease, ease);
+}
+
+.titleArea:hover,
+.titleArea[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover, rgba(128, 128, 128, 0.12));
+}
+
+.titleChevron {
+  flex: none;
+  color: var(--fg-muted, #8c8c8c);
+  display: flex;
+  align-items: center;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur, 0.15s) var(--ease, ease);
+}
+
+.header:hover .actions,
+.header:focus-within .actions,
+:global(.window):hover .actions,
+:global(.window):focus-within .actions,
+.actions:has([aria-expanded="true"]) {
+  opacity: 1;
+}
+
+.actionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small, 4px);
+  background: transparent;
+  color: var(--fg-muted, #8c8c8c);
+  cursor: pointer;
+  transition: background var(--dur-fast, 0.1s) var(--ease, ease), color var(--dur-fast, 0.1s) var(--ease, ease);
+}
+
+.actionButton:not(:disabled):hover,
+.actionButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover, rgba(128, 128, 128, 0.12));
+  color: var(--fg-strong, #ffffff);
+}
+
+.actionButton:not(:disabled):active {
+  background: var(--bg-toolbar-pressed, rgba(128, 128, 128, 0.2));
+}

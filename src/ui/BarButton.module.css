@@ -1,0 +1,69 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-small, 4px);
+  transition:
+    background var(--dur-fast, 120ms) ease,
+    color var(--dur-fast, 120ms) ease;
+}
+
+.button:not(:disabled):hover,
+.button[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.button:not(:disabled):active {
+  background: var(--bg-toolbar-pressed, rgba(255, 255, 255, 0.12));
+}
+
+.button:disabled {
+  color: var(--fg-faint, #5f6269);
+  cursor: not-allowed;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--focus-ring, #3574f0);
+  outline-offset: -2px;
+}
+
+/* 状态栏微件：22px 高度，次级文字颜色，悬停微圆角 */
+.status {
+  height: 22px;
+  margin: 0 -2px;
+  padding: 0 6px;
+  color: var(--fg-secondary, #b4b8bf);
+  font-size: var(--fs-ui, 13px);
+}
+
+/* 主工具栏微件：28px 高度，6px 圆角 */
+.title {
+  height: 28px;
+  margin: 0 -4px;
+  padding: 0 8px;
+  border-radius: var(--radius-toolbar-button, 6px);
+  color: var(--fg-strong, #dfe1e5);
+  font-size: var(--fs-ui, 13px);
+}
+
+.mono {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-small, 11px);
+}
+
+.emphasis {
+  color: var(--fg-strong, #dfe1e5);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+}

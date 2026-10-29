@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import { lspProbe } from "../lib/lsp";
 import type { LspServerProbe } from "../lib/lsp";
-import { saveLspConfig, serverEntries } from "../lib/lspConfig";
+import { saveLspConfig, serverEnabled, serverEntries } from "../lib/lspConfig";
 import type { LspConfig, LspServerConfig } from "../lib/lspConfig";
 import { useLspSessions } from "./useLspSessions";
 import type { LspSessions } from "./useLspSessions";
@@ -91,9 +91,9 @@ export function LspConfigProvider({
     }
   }, []);
 
-  // 只有真有人用外部档时才轮会话状态：没人用就没东西可采。
+  // 只有真有人要起服务时才轮会话状态：没人用就没东西可采。
   const sessions = useLspSessions(
-    serverEntries(config).some((entry) => entry.mode === "lsp")
+    serverEntries(config).some((entry) => serverEnabled(entry))
   );
 
   const value = useMemo(

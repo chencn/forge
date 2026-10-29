@@ -68,4 +68,5 @@ describe("AI 编程助手设置", () => {
     invoke.mockRejectedValue(new Error("unavailable"));
     expect((await loadSettings()).aiAssistantsEnabled).toBe(false);
   });
+
 });

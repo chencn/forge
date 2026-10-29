@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { monaco } from "../lib/monacoEditor";
-import { monoFont } from "../lib/monacoEnv";
+import { EditorView, applyFontMetrics, detachedState, textOf, textReplacement } from "../lib/cmEditor";
 import { errorText, readFile, type FileContent } from "../lib/fs";
 import { useI18n } from "../i18n";
 import {
@@ -20,8 +19,9 @@ import type { SaveConflictInfo } from "../hooks/useDocuments";
  * 底下那一整格可编辑，默认填带冲突标记的合并文本（`<<<<<<< / ======= / >>>>>>>`），
  * 人删掉不要的一侧、抹掉标记即可。三颗快捷按钮按合并块整体取本地 / 取磁盘 / 两边都要，覆盖结果格。
  *
- * 「保存」把结果格当前正文和本次读到的磁盘版本一起交出去，由上层再次做乐观锁校验后写盘。Monaco standalone 没有公开的
- * merge editor，所以这里是「只读两份 + 一份可编辑」的拼法，而不是内置三栏合并控件。
+ * 「保存」把结果格当前正文和本次读到的磁盘版本一起交出去，由上层再次做乐观锁校验后写盘。
+ * 这里不做三栏合并控件——那是给「一次挑一块」用的，冲突块带标记铺进结果格让人直接删，
+ * 对保存冲突这种「两份都得留」的场合更快，所以是「只读两份 + 一份可编辑」的拼法。
  */
 interface MergeConflictDialogProps {
   conflict: SaveConflictInfo;
@@ -32,32 +32,39 @@ interface MergeConflictDialogProps {
   onCancel: () => void;
 }
 
-/** 挂一台只读编辑器进 host，返回 dispose。换 text 走 setValue 不重建 model。 */
-function mountReadonly(
+/**
+ * 挂一台编辑器进 host：上面两格只读、下面结果格可编辑，配置只差在 readOnly 那一档。
+ *
+ * 正文不进常驻表（`detachedState`）：这几格对着的是磁盘那份与手里那份，跟工作区里
+ * 同路径那篇不是同一份内容，共用一格会把那边的撤销栈与光标顶掉。
+ */
+function mountPane(
   host: HTMLElement,
-  uri: monaco.Uri,
-  language: string
-): { dispose: () => void; set: (text: string) => void } {
-  const model = monaco.editor.createModel("", language, uri);
-  const editor = monaco.editor.create(host, {
-    model,
-    readOnly: true,
-    automaticLayout: true,
-    fontFamily: monoFont(),
-    fontSize: 12,
-    minimap: { enabled: false },
-    lineNumbers: "on",
-    scrollBeyondLastLine: false,
-    overviewRulerLanes: 0,
-    renderLineHighlight: "none",
-    scrollbar: { verticalScrollbarSize: 14, horizontalScrollbarSize: 10, useShadows: false },
+  options: { text: string; language: string; readOnly: boolean; onChange?: (text: string) => void }
+): { set: (text: string) => void; destroy: () => void } {
+  applyFontMetrics(host, 12);
+  const extra = options.onChange
+    ? [EditorView.updateListener.of((update) => { if (update.docChanged) options.onChange!(textOf(update.view)); })]
+    : [];
+  const view = new EditorView({
+    state: detachedState(
+      {
+        path: "",
+        contents: options.text,
+        language: options.language,
+        readOnly: options.readOnly,
+        tabSize: 4,
+      },
+      extra
+    ),
+    parent: host,
   });
   return {
-    dispose: () => {
-      editor.dispose();
-      model.dispose();
+    set: (text: string) => {
+      const transaction = textReplacement(view.state, text);
+      if (transaction) view.dispatch(transaction);
     },
-    set: (text: string) => model.setValue(text),
+    destroy: () => view.destroy(),
   };
 }
 
@@ -88,10 +95,8 @@ export default function MergeConflictDialog({
   /** 合并结果块序列，读完磁盘才算得出。 */
   const [merged, setMerged] = useState<MergeResult | null>(null);
 
-  const resultRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const resultModelRef = useRef<monaco.editor.ITextModel | null>(null);
-  // 每次挂载发一号：几格 model 共用一套 URI 会撞车。
-  const seq = useMemo(() => Date.now() + Math.random(), []);
+  /** 结果格那台编辑器：三颗快捷按钮往它里换正文。 */
+  const resultRef = useRef<{ set: (text: string) => void; destroy: () => void } | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -109,59 +114,51 @@ export default function MergeConflictDialog({
     };
   }, [conflict.path, conflict.base, conflict.ours]);
 
-  // 只读两格：host 一定在，model 一次建，正文换时 setValue。
+  // 只读两格：本地手里那份与磁盘现在那份，正文换了重挂。
   useEffect(() => {
     if (!oursHost.current || !theirsHost.current) return;
-    const ours = mountReadonly(oursHost.current, monaco.Uri.parse(`inmemory://forge/merge-${seq}-ours`), conflict.language);
-    const theirs = mountReadonly(theirsHost.current, monaco.Uri.parse(`inmemory://forge/merge-${seq}-theirs`), conflict.language);
-    ours.set(conflict.ours);
-    theirs.set(disk ? disk.contents : "");
+    const ours = mountPane(oursHost.current, {
+      text: conflict.ours,
+      language: conflict.language,
+      readOnly: true,
+    });
+    const theirs = mountPane(theirsHost.current, {
+      text: disk ? disk.contents : "",
+      language: conflict.language,
+      readOnly: true,
+    });
     return () => {
-      ours.dispose();
-      theirs.dispose();
+      ours.destroy();
+      theirs.destroy();
     };
-  }, [conflict.language, conflict.ours, disk, seq]);
+  }, [conflict.language, conflict.ours, disk]);
 
-  // 结果格：编辑器建一次，默认正文是带标记的合并文本；用户后续手改不覆盖。
+  // 结果格：默认正文是带标记的合并文本；用户后续手改由它自己的监听记着，不覆盖。
   const initialResult = merged ? renderWithMarkers(merged) : "";
   const resultTextRef = useRef<string>("");
   useEffect(() => {
     const host = resultHost.current;
     if (!host) return;
-    const model = monaco.editor.createModel(initialResult, conflict.language, monaco.Uri.parse(`inmemory://forge/merge-${seq}-result`));
-    const editor = monaco.editor.create(host, {
-      model,
-      readOnly: false,
-      automaticLayout: true,
-      fontFamily: monoFont(),
-      fontSize: 12,
-      minimap: { enabled: false },
-      lineNumbers: "on",
-      scrollBeyondLastLine: false,
-      overviewRulerLanes: 0,
-      renderLineHighlight: "all",
-      scrollbar: { verticalScrollbarSize: 14, horizontalScrollbarSize: 10, useShadows: false },
-    });
-    resultRef.current = editor;
-    resultModelRef.current = model;
     resultTextRef.current = initialResult;
-    const sub = editor.onDidChangeModelContent(() => {
-      resultTextRef.current = model.getValue();
+    const pane = mountPane(host, {
+      text: initialResult,
+      language: conflict.language,
+      readOnly: false,
+      onChange: (text) => {
+        resultTextRef.current = text;
+      },
     });
+    resultRef.current = pane;
     return () => {
-      sub.dispose();
-      editor.dispose();
-      model.dispose();
       resultRef.current = null;
-      resultModelRef.current = null;
+      pane.destroy();
     };
     // 合并结果一旦算出就定型填进结果格；再读磁盘或换 conflict 由外层重开对话框，这里不重挂。
     // 依赖只认 initialResult：它在 merged 到位前一直是空串。
-  }, [initialResult, conflict.language, seq]);
+  }, [initialResult, conflict.language]);
 
   const overwrite = (text: string) => {
-    resultModelRef.current?.setValue(text);
-    resultTextRef.current = text;
+    resultRef.current?.set(text);
   };
 
   // Esc 关掉。

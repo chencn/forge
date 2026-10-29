@@ -28,20 +28,20 @@ describe("活动栏布局", () => {
 
   it("左右迁移时保留上下分组", () => {
     const top = moveToolRail(DEFAULT_TOOL_RAIL_LAYOUT, "explorer", "right");
-    const bottom = moveToolRail(top, "notifications", "left");
+    const bottom = moveToolRail(top, "terminal", "right");
     expect(top.right.top.at(-1)).toBe("explorer");
-    expect(bottom.left.bottom.at(-1)).toBe("notifications");
-    expect(bottom.left.top).not.toContain("notifications");
+    expect(bottom.right.bottom.at(-1)).toBe("terminal");
+    expect(bottom.right.top).not.toContain("terminal");
   });
 
   it("归一化坏数据并补回遗漏工具", () => {
     const layout = normalizeToolRailLayout({
       left: { top: ["git", "git", "terminal", "unknown"], bottom: ["run"] },
-      right: { top: ["maven"], bottom: ["notifications"] },
+      right: { top: ["maven"], bottom: [] },
     });
     expect(layout.left.top).toEqual(["git", "explorer"]);
     expect(layout.left.bottom).toEqual(["run", "terminal", "log"]);
-    expect(layout.right.top).toEqual(["maven", "ai", "browser"]);
+    expect(layout.right.top).toEqual(["maven", "notifications", "ai", "browser"]);
   });
 
   it("使用独立存储键往返布局", () => {
@@ -53,11 +53,11 @@ describe("活动栏布局", () => {
   it("首次读取 v1 布局时把 AI 迁到右侧顶部第一位", () => {
     memory.set("forge:tool-rail-layout:v1", JSON.stringify({
       left: { top: ["explorer", "ai", "git"], bottom: ["terminal", "run", "log"] },
-      right: { top: ["maven"], bottom: ["notifications"] },
+      right: { top: ["maven"], bottom: [] },
     }));
     const layout = loadToolRailLayout();
     expect(layout.left.top).toEqual(["explorer", "git"]);
-    expect(layout.right.top).toEqual(["ai", "maven", "browser"]);
+    expect(layout.right.top).toEqual(["notifications", "ai", "maven", "browser"]);
   });
 
   it("已有布局补入右侧浏览器，并保留用户之后的移栏选择", () => {

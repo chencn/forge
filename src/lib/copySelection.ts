@@ -15,7 +15,7 @@ export interface CopySelectionTarget {
 
 /**
  * 焦点在输入框、文本域或可编辑区域。
- * 这些地方的复制留给浏览器，以及 Monaco、终端各自的处理。
+ * 这些地方的复制留给浏览器，以及编辑器、终端各自的处理。
  */
 export function isTextEditingTarget(target: CopySelectionTarget | null): boolean {
   if (!target) return false;

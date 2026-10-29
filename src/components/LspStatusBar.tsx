@@ -5,8 +5,8 @@ import CopyButton from "./CopyButton";
 import { lspRetry } from "../lib/lsp";
 import type { LspSessionStatus } from "../lib/lsp";
 import { useLspConfig, useLspSessionStatuses } from "../hooks/useLspConfig";
-import { serverEntries } from "../lib/lspConfig";
-import { languageNames } from "../lib/monacoEnv";
+import { serverEnabled, serverEntries } from "../lib/lspConfig";
+import { languageNames } from "../lib/editorEnv";
 import { pathWithin } from "../lib/format";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
@@ -60,8 +60,8 @@ export default function LspStatusBar({ workspace, onKicked, onOpenSettings, onEr
     closeTimer.current = window.setTimeout(() => setOpen(false), 150);
   };
 
-  // 没有任何一项处在外部 LSP 档时不占状态条的一格。
-  const wanted = serverEntries(config).some((entry) => entry.mode === "lsp");
+  // 没有任何一项要起语言服务时不占状态条的一格。
+  const wanted = serverEntries(config).some((entry) => serverEnabled(entry));
   if (!workspace || !wanted) return null;
 
   const items = Object.values(sessions.byServer)

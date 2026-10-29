@@ -1,0 +1,154 @@
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-strong, #dfe1e5);
+  cursor: pointer;
+  user-select: none;
+}
+
+.disabled {
+  color: var(--fg-faint, #5f6269);
+  cursor: default;
+}
+
+.label {
+  min-width: 0;
+  font-size: var(--fs-ui, 13px);
+}
+
+.boxWrap {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+}
+
+.native {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.disabled .native {
+  cursor: default;
+}
+
+.box {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: var(--bg-checkbox, var(--bg-button, transparent));
+  box-shadow: inset 0 0 0 1px var(--border-checkbox, var(--control-off, #5f6269));
+  color: var(--fg-button-primary, #ffffff);
+  transition:
+    background var(--dur-fast, 80ms) ease,
+    box-shadow var(--dur-fast, 80ms) ease;
+  pointer-events: none;
+}
+
+.on {
+  background: var(--bg-button-primary, var(--accent, #3871e1));
+  box-shadow: none;
+}
+
+.disabled .box {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border, #26282c);
+  color: var(--fg-faint, #5f6269);
+}
+
+.disabled .on {
+  background: var(--border, #26282c);
+}
+
+.native:focus-visible + .box {
+  outline: 2px solid var(--focus-ring, var(--accent, #3871e1));
+  outline-offset: 1px;
+}
+
+/* OnOff 开关 */
+.switch {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  width: 42px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  border: none;
+  background: var(--bg-toggle-off, var(--bg-elev, #212326));
+  box-shadow: inset 0 0 0 1px var(--border-toggle, var(--control-off, #5f6269));
+  color: var(--fg-toggle-off, var(--fg-muted, #8c8f95));
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background var(--dur, 140ms) ease,
+    color var(--dur, 140ms) ease;
+}
+
+.switchOn {
+  background: var(--bg-toggle-on, var(--success, #6db083));
+  box-shadow: none;
+  color: var(--fg-toggle-on, #ffffff);
+}
+
+.knobLabel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  right: 0;
+  pointer-events: none;
+}
+
+.switchOn .knobLabel {
+  left: 0;
+  right: auto;
+}
+
+.knob {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 1px;
+  width: 16px;
+  border-radius: 2px;
+  background: var(--bg-toggle-knob, var(--control-off, #5f6269));
+  transition: transform var(--dur, 140ms) ease;
+}
+
+.switchOn .knob {
+  transform: translateX(24px);
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent, #3871e1));
+  outline-offset: 1px;
+}
+
+.switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .box,
+  .knob,
+  .switch {
+    transition: none;
+  }
+}

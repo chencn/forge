@@ -280,6 +280,43 @@ export function findFiles(
   return invoke<FileHits>("find_files", { root, query, limit, filter });
 }
 
+/** 一条符号定义，来自 Rust `SymbolHit`。行号与列号都 1 起，口径同 [`TextHit`]。 */
+export interface SymbolHit {
+  /** 定义所在文件绝对路径，分隔符跟随平台。 */
+  path: string;
+  /** 符号名。 */
+  name: string;
+  /** 符号种类：class/interface/struct/enum/trait/typeAlias/function/method/constant/variable/... */
+  kind: string;
+  /** 所在目录相对工作区根，`/` 连接；根下是空串。 */
+  container: string;
+  /** 定义所在行，1 起。 */
+  line: number;
+  /** 名字所在列，1 起。 */
+  column: number;
+}
+
+/** 一次符号搜索的结果，来自 Rust `SymbolHits`。 */
+export interface SymbolHits {
+  /** 传进去的原词，回显用。 */
+  query: string;
+  /** 已按档排好的一批定义。 */
+  items: SymbolHit[];
+  /** 结果被截，或根上符号太多没扫完时为真。 */
+  truncated: boolean;
+}
+
+/** 按名字找文件里的定义。第一次查某个根要整棵扫一遍，之后吃一分钟缓存。 */
+export function findSymbols(
+  root: string,
+  query: string,
+  kindFilter?: "types" | "all",
+  limit?: number,
+  filter?: ScanFilter
+): Promise<SymbolHits> {
+  return invoke<SymbolHits>("find_symbols", { root, query, kindFilter, limit, filter });
+}
+
 /** 在正文里找词。正则写错时 reject 出 BAD_REGEX，别的都不算失败。 */
 export function searchText(
   root: string,

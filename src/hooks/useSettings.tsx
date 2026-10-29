@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import { I18nProvider, resolveLang } from "../i18n";
 import { loadSettings, saveSettings } from "../lib/settings";
 import type { Settings, SettingsPatch } from "../lib/settings";
-import { resolveTheme } from "../lib/window";
 import type { ThemeMode } from "../lib/window";
+import { applyThemeAttributes, resolveThemeId, themeKind } from "../themes/themeManager";
 
 interface SettingsValue {
   /** 当前生效的全局设置。 */
@@ -25,7 +25,7 @@ export function useSettings(): SettingsValue {
 }
 
 interface SettingsProviderProps {
-  /** 入口在 import monaco 前读好的设置，语言决定编辑器文案，不能等渲染后再补。 */
+  /** 入口在 import 界面之前读好的设置：语言与编辑器文案都在首帧就要对。 */
   initial: Settings;
   children: ReactNode;
 }
@@ -64,8 +64,10 @@ export function SettingsProvider({ initial, children }: SettingsProviderProps) {
   );
   useEffect(() => {
     const apply = () => {
-      const next = resolveTheme(mode);
-      document.documentElement.dataset.theme = next;
+      const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const targetId = resolveThemeId(mode, isDark);
+      applyThemeAttributes(targetId);
+      const next = themeKind(targetId);
       setApplied(next);
     };
     apply();

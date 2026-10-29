@@ -1,0 +1,924 @@
+/*
+ * Design tokens after PyCharm 2026.1 "Islands". :root holds Islands Dark,
+ * [data-theme="light"] Islands Light (the default theme), [data-theme="dark-hc"]
+ * the high-contrast dark variant. Colours come from ManyIslandsDark/Light.theme.json
+ * (+ expUI parents) and the Islands Dark / Light editor schemes; metrics are the
+ * theme JSON values at 100% zoom. Components use only these variables.
+ */
+/*
+ * Editor font weights (Settings › Editor › Font › Typography Settings; set on
+ * the root at runtime). Outside `:root` so scheme tokens such as
+ * `--matched-brace-weight` keep referring to them instead of a resolved value.
+ */
+html {
+  --fw-code: 400;
+  --fw-code-bold: 700;
+}
+:root {
+  /* surfaces */
+  --bg-app: #191a1c;
+  --bg-elev: #212326;
+  --bg-popup: #26282c;
+  --bg-hover: #2e2f30;
+  --bg-selected: #2a4371;
+  --bg-selected-strong: #2e4d89;
+  --bg-current-line: #1f2024;
+  --bg-debug-line: #2a5091;
+  --bg-breakpoint-line: #3b2425;
+  --bg-backdrop: #26282c;
+  --bg-input: #191a1c;
+
+  /* lines */
+  --border: #26282c;
+  --border-popup: #33353b;
+  --border-strong: #40434a;
+  --border-window: #40434a;
+  --control-off: #5f6269;
+
+  /* text */
+  --fg-strong: #dfe1e5;
+  --fg-emphasis: #d1d3d9;
+  --fg: #d1d3d9;
+  --fg-secondary: #9fa2a8;
+  --fg-muted: #8c8f95;
+  --fg-subtle: #73767c;
+  --fg-faint: #5f6269;
+  --fg-gutter: #4b5059;
+  --fg-icon: #ced0d6;
+
+  /* accent (PyCharm brand blue; the appearance setting can override it) */
+  --accent: #3871e1;
+  --link: #71a1fe;
+  --link-hover: #92b7ff;
+
+  /* charts (IDEA's first series colour) */
+  --chart-series: #e07a7c;
+
+  /* status */
+  --danger: #f57e84;
+  --warning: #d59637;
+  --success: #6db083;
+  /* Database tree: the dot on a connected data source (IDEA paints it vivid green with a thin ring). */
+  --db-connected: #2fe02f;
+  --db-connected-ring: #1d6b1d;
+  --info: #548af7;
+
+  /* vcs (FILESTATUS_* / gutter *_LINES_COLOR) */
+  --vcs-modified: #70aeff;
+  --vcs-added: #73bd79;
+  --vcs-deleted: #6f737a;
+  --vcs-untracked: #e88f89;
+  --vcs-ignored: #d69a6b;
+  --vcs-conflict: #de6a66;
+  --gutter-modified: #375fad;
+  --gutter-added: #549159;
+  --gutter-deleted: #868a91;
+
+  /* coverage (IDEA LINE_FULL / PARTIAL / NONE_COVERAGE), following the theme's status colours */
+  --coverage-covered: var(--gutter-added);
+  --coverage-partial: var(--warning);
+  --coverage-uncovered: var(--danger);
+  /* profiler flame graph: warm, low-contrast frames; search matches in the accent */
+  --flame-1: color-mix(in srgb, var(--warning) 45%, var(--bg-elev));
+  --flame-2: color-mix(in srgb, var(--warning) 32%, var(--bg-elev));
+  --flame-3: color-mix(in srgb, var(--danger) 36%, var(--bg-elev));
+  --flame-4: color-mix(in srgb, var(--danger) 26%, var(--bg-elev));
+  --flame-match: color-mix(in srgb, var(--accent) 60%, var(--bg-elev));
+  --flame-fg: var(--fg-strong);
+
+  /* syntax (Islands Dark scheme) */
+  --syn-keyword: #cf8e6d;
+  --syn-string: #6aab73;
+  --syn-type: #bcbec4;
+  --syn-function: #56a8f5;
+  --syn-function-call: #bcbec4;
+  --syn-comment: #7a7e85;
+  --syn-comment-style: normal;
+  --syn-doc-comment: #5f826b;
+  --syn-docstring: #5f826b;
+  --syn-annotation: #b3ae60;
+  --syn-decorator: #b3ae60;
+  --syn-number: #2aacb8;
+  --syn-punct: #bcbec4;
+  --syn-variable: #bcbec4;
+  --syn-param: #bcbec4;
+  --syn-property: #c77dbb;
+  --syn-constant: #c77dbb;
+  --syn-builtin: #8888c6;
+  --syn-self: #94558d;
+  --syn-keyword-arg: #aa4926;
+  --syn-predefined: #b200b2;
+  --syn-escape: #cf8e6d;
+  --syn-regexp: #42c3d4;
+  --syn-tag: #d5b778;
+  --syn-attribute: #bcbec4;
+  --syn-todo: #8bb33d;
+  --syn-link: #548af7;
+  --syn-markup-heading: #cf8e6d;
+  --syn-markup-code: #6aab73;
+  --syn-invalid: #f75464;
+  --syn-inline-value: #868a91;
+  --syn-rainbow-1: #6fafbd;
+  --syn-rainbow-2: #d79b6e;
+  --syn-rainbow-3: #9fbf6b;
+  --syn-rainbow-4: #c98bc6;
+  --syn-rainbow-5: #8e9cf0;
+  --syn-bracket-1: #e8c25b;
+  --syn-bracket-2: #d78bd6;
+  --syn-bracket-3: #4ea7f0;
+
+  /* editor (scheme colours) */
+  --fg-editor: #bcbec4;
+  --caret: #ced0d6;
+  --fg-line-number: #4b5059;
+  --fg-line-number-current: #a1a3ab;
+  --border-gutter: #26282c;
+  --border-indent-guide: #323438;
+  --border-indent-guide-active: #4e5157;
+  --border-right-margin: #323438;
+  --bg-editor-selection: #214283;
+  --bg-editor-selection-inactive: #1d3460;
+  --bg-text-search-result: #114957;
+  --bg-text-search-result-current: #165e70;
+  --bg-matched-brace: #43454a;
+  --matched-brace-weight: var(--fw-code-bold);
+  --bg-matched-tag: #3f4045;
+  --bg-fold-placeholder: #393b40;
+  --fg-fold-placeholder: #868991;
+  --fg-fold-marker: #6f737a;
+  --fg-whitespace: #6f737a;
+  --fg-unused: #6f737a;
+  --bg-identifier-under-caret: #373b39;
+  --bg-identifier-under-caret-write: #402f33;
+  --fg-inlay: #868a91;
+  --bg-inlay: #393b40;
+  --wave-error: #fa6675;
+  --wave-warning: #f2c55c;
+  --editor-error-decoration: underline wavy #fa6675;
+  --editor-warning-decoration: underline wavy #f2c55c;
+  --editor-warning-background: transparent;
+  --bg-breakpoint-line: #40252b;
+  --fg-completion-match: #538af9;
+  --bg-editor-inline: #212326;
+  --bg-editor-banner: #233558;
+  --fg-weak-warning: #6f737a;
+  --fg-bulb: #f2c55c;
+
+  /* terminal / console ANSI palette */
+  --ansi-black: #000000;
+  --ansi-red: #f0524f;
+  --ansi-green: #5c962c;
+  --ansi-yellow: #a68a0d;
+  --ansi-blue: #3993d4;
+  --ansi-magenta: #a771bf;
+  --ansi-cyan: #00a3a3;
+  --ansi-white: #808080;
+  --ansi-bright-black: #595959;
+  --ansi-bright-red: #ff4050;
+  --ansi-bright-green: #4fc414;
+  --ansi-bright-yellow: #e5bf00;
+  --ansi-bright-blue: #1fb0ff;
+  --ansi-bright-magenta: #ed7eed;
+  --ansi-bright-cyan: #00e5e5;
+  --ansi-bright-white: #ffffff;
+
+  /* terminal ANSI palette (the Run console keeps --ansi-*) */
+  --terminal-ansi-black: #000000;
+  --terminal-ansi-red: #f27481;
+  --terminal-ansi-green: #6bcc62;
+  --terminal-ansi-yellow: #e0ce70;
+  --terminal-ansi-blue: #5594fa;
+  --terminal-ansi-magenta: #c092fa;
+  --terminal-ansi-cyan: #47ccbd;
+  --terminal-ansi-white: #ced0d6;
+  --terminal-ansi-bright-black: #4e5157;
+  --terminal-ansi-bright-red: #ff6b7a;
+  --terminal-ansi-bright-green: #67ff59;
+  --terminal-ansi-bright-yellow: #ffec1a;
+  --terminal-ansi-bright-blue: #3399ff;
+  --terminal-ansi-bright-magenta: #d970ff;
+  --terminal-ansi-bright-cyan: #40ffe9;
+  --terminal-ansi-bright-white: #ffffff;
+
+  /* typography (Inter 13 UI, JetBrains Mono 13 editor) */
+  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+  /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
+  --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --fs-ui: 13px;
+  --fs-small: 12px;
+  --fs-tiny: 11px;
+  --fs-code: 13px;
+  --fs-input-large: 15px;
+  --lh-code: 22px;
+
+  /* metrics (theme JSON at 100%) */
+  --h-titlebar: 40px;
+  --h-stripe-button: 48px;
+  --h-header: 40px;
+  --h-tabbar: 38px;
+  --h-tab: 28px;
+  --h-row: 24px;
+  --h-list-row: 24px;
+  --h-statusbar: 30px;
+  --h-field: 28px;
+  --h-button: 28px;
+  --w-gutter: 52px;
+  --radius-popup: 8px;
+  --radius-popup-large: 10px;
+  --radius-dialog: 10px;
+  --radius-small: 4px;
+  --radius-row: 4px;
+  --radius-selection: 5px;
+  --radius-control: 4px;
+  --radius-tab: 6px;
+  --radius-toolbar-button: 6px;
+  --radius-tooltip: 6px;
+
+  --shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.45);
+  /* macOS window shadow (dialogs are separate windows in IDEA) */
+  --shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.6), 0 10px 24px rgba(0, 0, 0, 0.35), 0 24px 72px rgba(0, 0, 0, 0.45);
+  /* NSWindow standard buttons */
+  --traffic-close: #ff5f57;
+  --traffic-close-border: #e0443e;
+  --traffic-close-pressed: #bf4942;
+  --traffic-glyph: #4d0000;
+  --traffic-off: #4b4c4f;
+  --traffic-off-border: #404144;
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 80ms;
+  --dur: 140ms;
+
+  /* additive: overlays, layers, controls */
+  --bg-tooltip: #33353b;
+  --fg-tooltip: #d1d3d9;
+  --border-tooltip: #33353b;
+  --bg-control: #26282c;
+  --bg-control-hover: #33353b;
+  --bg-active: #40434a;
+  --bg-scrim: rgba(0, 0, 0, 0.45);
+  --fg-on-accent: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-hover: color-mix(in srgb, var(--accent) 86%, var(--fg-strong));
+  --match: var(--accent);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-balloon: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --h-control: 24px;
+  --h-control-small: 20px;
+  --w-project-panel: 240px;
+  --z-panel: 10;
+  --z-dialog: 900;
+  --z-popup: 1000;
+  --z-toast: 1100;
+  --z-tooltip: 1200;
+  --dur-slow: 220ms;
+
+  /* PyCharm "Islands" contract */
+  --bg-frame: #26282c;
+  --bg-island: #191a1c;
+  --island-gap: 6px;
+  --island-radius: 10px;
+  --bg-stripe: var(--bg-frame);
+  --bg-stripe-hover: #ffffff17;
+  --bg-stripe-selected: #ffffff29;
+  --bg-stripe-selected-active: var(--accent);
+  --fg-stripe-selected-active: #ffffff;
+  --fg-stripe-label: #9fa2a8;
+  --fs-stripe-label: 11px;
+  --stripe-button-w: 58px;
+  --stripe-button-radius: 6px;
+  --bg-tab-selected: #233558;
+  --border-tab-selected: #2e4d89;
+  --bg-tab-selected-inactive: #26282c;
+  --border-tab-selected-inactive: #40434a;
+  --bg-tab-hover: #ffffff17;
+  --border-editor-tabs: #26282c;
+  --bg-tree-selected: #2a4371;
+  --bg-tree-selected-inactive: #33353b;
+  --bg-tree-hover: #ffffff10;
+  --bg-list-selected: var(--bg-tree-selected);
+  --bg-toolbar-hover: #ffffff17;
+  --bg-toolbar-pressed: #ffffff29;
+  --bg-toolbar-selected: #2e4d89;
+  --bg-toolbar-selected-hover: #2f5eb9;
+  --bg-button-primary: var(--accent);
+  --bg-button-primary-hover: var(--accent-hover);
+  --fg-button-primary: #ffffff;
+  --bg-button: transparent;
+  --border-button: #40434a;
+  --bg-field: #191a1c;
+  --bg-checkbox: #191a1c;
+  --border-checkbox: #5f6269;
+  --bg-toggle-on: #338555;
+  --fg-toggle-on: #ffffff;
+  --bg-toggle-off: #191a1c;
+  --fg-toggle-off: #73767c;
+  --border-toggle: #5f6269;
+  --bg-toggle-knob: #5f6269;
+  --focus-ring: var(--accent);
+  --focus-ring-soft: #3d6185;
+  --scrollbar-thumb: #ffffff33;
+  --scrollbar-thumb-hover: #ffffff59;
+  --bg-search-match: #ba9752;
+  --bg-search-match-current: #f2c55c;
+  --fg-search-match: #191a1c;
+  --bg-dialog: #191a1c;
+  --bg-popup-inline: #26282c;
+  --bg-popup-advertiser: #26282c;
+  --bg-feedback-info: #233558;
+  --border-feedback-info: #2e4d89;
+  --bg-feedback-error: #56272b;
+  --border-feedback-error: #80383e;
+  --bg-feedback-warning: #44321d;
+  --border-feedback-warning: #694820;
+  --bg-feedback-success: #203b2a;
+  --border-feedback-success: #29583c;
+  --bg-counter: #73767c;
+  --fg-counter: #000000;
+  --bg-progress-track: #40434a;
+  --bg-editor: var(--bg-island);
+  --bg-editor-gutter: var(--bg-editor);
+  --project-gradient-strength: 22%;
+
+  color-scheme: dark;
+}
+
+/* RecentProject.ColorN.Avatar Start/End — identical in Islands Light and Dark. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"] {
+  --project-color-1: #e08855;
+  --project-color-1-end: #e9806f;
+  --project-color-2: #b08b14;
+  --project-color-2-end: #bb7f19;
+  --project-color-3: #a1a359;
+  --project-color-3-end: #87aa59;
+  --project-color-4: #3b92b8;
+  --project-color-4-end: #6183ec;
+  --project-color-5: #3574f0;
+  --project-color-5-end: #7a64f0;
+  --project-color-6: #c84d8f;
+  --project-color-6-end: #a956cf;
+  --project-color-7: #955ae0;
+  --project-color-7-end: #a84de0;
+  --project-color-8: #24a394;
+  --project-color-8-end: #279ccd;
+  --project-color-9: #5fad65;
+  --project-color-9-end: #3d968b;
+  /* Data source colours (IDEA's Color: red marks production); drawn as tints. */
+  --db-color-red: #e5534b;
+  --db-color-orange: #e08855;
+  --db-color-yellow: #d4b106;
+  --db-color-green: #5fad65;
+  --db-color-blue: #3b92b8;
+  --db-color-violet: #955ae0;
+  --tint-strength: 22%;
+}
+
+/* Windows caption buttons (frameless title bar): the system close red in every theme. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"] {
+  --caption-close-hover: #c42b1c;
+  --caption-close-pressed: #b3271a;
+  --fg-caption-close-hover: #ffffff;
+}
+
+/*
+ * Islands Light. Every colour token of :root is redefined here. Values are
+ * PyCharm's own; its secondary greys, comment / metadata colours, line numbers
+ * and change bars sit below WCAG AA on white (see contrast.test.ts).
+ */
+:root[data-theme="light"] {
+  /* surfaces */
+  --bg-app: #ffffff;
+  --bg-elev: #f7f8f9;
+  --bg-popup: #ffffff;
+  --bg-hover: #ededed;
+  --bg-selected: #d0dffe;
+  --bg-selected-strong: #bdd3ff;
+  --bg-current-line: #f5f8fe;
+  --bg-debug-line: #d4e2ff;
+  --bg-breakpoint-line: #faeae6;
+  --bg-backdrop: #e9eaee;
+  --bg-input: #ffffff;
+
+  /* lines */
+  --border: #e9eaee;
+  --border-popup: #d1d3d9;
+  --border-strong: #d1d3d9;
+  --border-window: #d1d3d9;
+  --control-off: #c3c5cb;
+
+  /* text */
+  --fg-strong: #000000;
+  --fg-emphasis: #000000;
+  --fg: #000000;
+  --fg-secondary: #5f6269;
+  --fg-muted: #6c707e;
+  --fg-subtle: #73767c;
+  --fg-faint: #9fa2a8;
+  --fg-gutter: #aeb3c2;
+  --fg-icon: #6c707e;
+
+  /* accent */
+  --accent: #3871e1;
+  --link: #2f5eb9;
+  --link-hover: #2e4d89;
+
+  /* charts */
+  --chart-series: #d9686a;
+
+  /* status */
+  --danger: #c54e58;
+  --warning: #a56906;
+  --success: #338555;
+  --db-connected: #00ff00;
+  --db-connected-ring: #5b995b;
+  --info: #3871e1;
+
+  /* vcs */
+  --vcs-modified: #0033b3;
+  --vcs-added: #067d17;
+  --vcs-deleted: #6c707e;
+  --vcs-untracked: #b23247;
+  --vcs-ignored: #8c4f00;
+  --vcs-conflict: #de1b2e;
+  --gutter-modified: #88adf7;
+  --gutter-added: #7fc784;
+  --gutter-deleted: #767a8a;
+
+  /* syntax (Light scheme + Default / Python defaults) */
+  --syn-keyword: #0033b3;
+  --syn-string: #067d17;
+  --syn-type: #000000;
+  --syn-function: #00627a;
+  --syn-function-call: #080808;
+  --syn-comment: #8c8c8c;
+  --syn-comment-style: italic;
+  --syn-doc-comment: #8c8c8c;
+  --syn-docstring: #067d17;
+  --syn-annotation: #9e880d;
+  --syn-decorator: #9e880d;
+  --syn-number: #1750eb;
+  --syn-punct: #080808;
+  --syn-variable: #080808;
+  --syn-param: #080808;
+  --syn-property: #871094;
+  --syn-constant: #871094;
+  --syn-builtin: #000080;
+  --syn-self: #94558d;
+  --syn-keyword-arg: #660099;
+  --syn-predefined: #b200b2;
+  --syn-escape: #0037a6;
+  --syn-regexp: #264eff;
+  --syn-tag: #0033b3;
+  --syn-attribute: #174ad4;
+  --syn-todo: #008dde;
+  --syn-link: #006dcc;
+  --syn-markup-heading: #871094;
+  --syn-markup-code: #067d17;
+  --syn-invalid: #f50000;
+  --syn-inline-value: #8c8c8c;
+  --syn-rainbow-1: #9b3b6a;
+  --syn-rainbow-2: #114d77;
+  --syn-rainbow-3: #9c6a2c;
+  --syn-rainbow-4: #005910;
+  --syn-rainbow-5: #bc5150;
+  --syn-bracket-1: #0431fa;
+  --syn-bracket-2: #319331;
+  --syn-bracket-3: #7b3814;
+
+  /* editor */
+  --fg-editor: #080808;
+  --caret: #000000;
+  --fg-line-number: #aeb3c2;
+  --fg-line-number-current: #767a8a;
+  --border-gutter: #ebecf0;
+  --border-indent-guide: #ebecf0;
+  --border-indent-guide-active: #aeb3c2;
+  --border-right-margin: #ebecf0;
+  --bg-editor-selection: #a6d2ff;
+  --bg-editor-selection-inactive: #c9e3ff;
+  --bg-text-search-result: #fcd47e;
+  --bg-text-search-result-current: #f2bf57;
+  --bg-matched-brace: #93d9d9;
+  --matched-brace-weight: inherit;
+  --bg-matched-tag: #c9ecec;
+  --bg-fold-placeholder: #e9f5e6;
+  --fg-fold-placeholder: #414d41;
+  --fg-fold-marker: #8b8e94;
+  --fg-whitespace: #b5b7bd;
+  --fg-unused: #8c8c8c;
+  --bg-identifier-under-caret: #edebfc;
+  --bg-identifier-under-caret-write: #fce8f4;
+  --fg-inlay: #73767c;
+  --bg-inlay: #00000012;
+  --wave-error: #f50000;
+  --wave-warning: #f2bf57;
+  --editor-error-decoration: underline wavy #f50000;
+  --editor-warning-decoration: none;
+  --editor-warning-background: #fcf4d4;
+  --bg-breakpoint-line: #faeae6;
+  --fg-completion-match: #2f5eb9;
+  --bg-editor-inline: #f7f8f9;
+  --bg-editor-banner: #f7f8ff;
+  --fg-weak-warning: #a8adbd;
+  --fg-bulb: #ffaf0f;
+
+  /* ANSI palette as PyCharm renders it on white */
+  --ansi-black: #000000;
+  --ansi-red: #e5372a;
+  --ansi-green: #367a29;
+  --ansi-yellow: #ad8d2b;
+  --ansi-blue: #3866d1;
+  --ansi-magenta: #a33cae;
+  --ansi-cyan: #3c8b8d;
+  --ansi-white: #8b8e94;
+  --ansi-bright-black: #73767c;
+  --ansi-bright-red: #f05046;
+  --ansi-bright-green: #2e9b3f;
+  --ansi-bright-yellow: #b58e00;
+  --ansi-bright-blue: #3d82f0;
+  --ansi-bright-magenta: #c04bcf;
+  --ansi-bright-cyan: #1b9ea3;
+  --ansi-bright-white: #5f6269;
+
+  /* terminal ANSI palette (the Run console keeps --ansi-*) */
+  --terminal-ansi-black: #000000;
+  --terminal-ansi-red: #c93645;
+  --terminal-ansi-green: #357d1f;
+  --terminal-ansi-yellow: #b2a400;
+  --terminal-ansi-blue: #225cd6;
+  --terminal-ansi-magenta: #6e32e5;
+  --terminal-ansi-cyan: #007a80;
+  --terminal-ansi-white: #bec0c5;
+  --terminal-ansi-bright-black: #6c707e;
+  --terminal-ansi-bright-red: #ff5462;
+  --terminal-ansi-bright-green: #3dcc3d;
+  --terminal-ansi-bright-yellow: #d4bb00;
+  --terminal-ansi-bright-blue: #009dff;
+  --terminal-ansi-bright-magenta: #d659ff;
+  --terminal-ansi-bright-cyan: #31c4b3;
+  --terminal-ansi-bright-white: #d2d4d9;
+
+  /* shadows and window controls */
+  --shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.12);
+  --shadow-dialog: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 10px 24px rgba(0, 0, 0, 0.1), 0 24px 72px rgba(0, 0, 0, 0.2);
+  --traffic-close: #ff5f57;
+  --traffic-close-border: #e0443e;
+  --traffic-close-pressed: #bf4942;
+  --traffic-glyph: #4d0000;
+  --traffic-off: #dddddd;
+  --traffic-off-border: #c8c8c8;
+
+  /* additive */
+  --bg-tooltip: #ffffff;
+  --fg-tooltip: #000000;
+  --border-tooltip: #d1d3d9;
+  --bg-control: #ffffff;
+  --bg-control-hover: #f7f8f9;
+  --bg-active: #dddfe4;
+  --bg-scrim: rgba(0, 0, 0, 0.16);
+  --fg-on-accent: #ffffff;
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --shadow-balloon: 0 8px 24px rgba(0, 0, 0, 0.14);
+
+  /* Islands contract */
+  --bg-frame: #e9eaee;
+  --bg-island: #ffffff;
+  --bg-stripe-hover: #00000012;
+  --bg-stripe-selected: #00000020;
+  --fg-stripe-selected-active: #ffffff;
+  --fg-stripe-label: #5f6269;
+  --bg-tab-selected: #e3ebfe;
+  --border-tab-selected: #a7c5ff;
+  --bg-tab-selected-inactive: #e9eaee;
+  --border-tab-selected-inactive: #d1d3d9;
+  --bg-tab-hover: #00000012;
+  --border-editor-tabs: #e9eaee;
+  --bg-tree-selected: #d0dffe;
+  --bg-tree-selected-inactive: #e9eaee;
+  --bg-tree-hover: #00000008;
+  --bg-toolbar-hover: #00000012;
+  --bg-toolbar-pressed: #00000020;
+  --bg-toolbar-selected: #d0dffe;
+  --bg-toolbar-selected-hover: #bdd3ff;
+  --bg-button-primary-hover: var(--accent-hover);
+  --fg-button-primary: #ffffff;
+  --bg-button: #ffffff;
+  --border-button: #d1d3d9;
+  --bg-field: #ffffff;
+  --bg-checkbox: #ffffff;
+  --border-checkbox: #a8adbd;
+  --bg-toggle-on: #4e9d6c;
+  --fg-toggle-on: #ffffff;
+  --bg-toggle-off: #f7f8f9;
+  --fg-toggle-off: #73767c;
+  --border-toggle: #c3c5cb;
+  --bg-toggle-knob: #c3c5cb;
+  --focus-ring-soft: #97c3f3;
+  --scrollbar-thumb: #00000033;
+  --scrollbar-thumb-hover: #00000080;
+  --bg-search-match: #fee6b1;
+  --bg-search-match-current: #fcd47e;
+  --fg-search-match: #000000;
+  --bg-dialog: #f7f8f9;
+  --bg-popup-inline: #f7f8f9;
+  --bg-popup-advertiser: #f7f8f9;
+  --bg-feedback-info: #f7f8ff;
+  --border-feedback-info: #bdd3ff;
+  --bg-feedback-error: #fff6f5;
+  --border-feedback-error: #ffc4c5;
+  --bg-feedback-warning: #fff6e9;
+  --border-feedback-warning: #f4cd9a;
+  --bg-feedback-success: #f5faf3;
+  --border-feedback-success: #bbdbc2;
+  --bg-counter: #8b8e94;
+  --fg-counter: #ffffff;
+  --bg-progress-track: #dddfe4;
+
+  color-scheme: light;
+}
+
+/*
+ * High-contrast dark: brighter text and lines on a deeper background. Applied
+ * as data-theme="dark-hc", or as data-contrast="high" on top of the dark theme
+ * (the settings feature sets that for the `dark-hc` appearance setting).
+ */
+:root[data-theme="dark-hc"],
+:root[data-theme="dark"][data-contrast="high"] {
+  --bg-app: #000000;
+  --bg-elev: #0e0f11;
+  --bg-popup: #111214;
+  --bg-hover: #1c1e22;
+  --bg-selected: #1f3a73;
+  --bg-selected-strong: #2a4b8f;
+  --bg-current-line: #131418;
+  --bg-debug-line: #1b2c52;
+  --bg-breakpoint-line: #3a1c1f;
+  --bg-backdrop: #1a1b1e;
+  --bg-input: #000000;
+
+  --border: #45474d;
+  --border-popup: #55585f;
+  --border-strong: #6f737a;
+  --border-window: #6f737a;
+  --control-off: #8b8e94;
+
+  --fg-strong: #ffffff;
+  --fg-emphasis: #f1f2f4;
+  --fg: #e3e4e8;
+  --fg-secondary: #ccced3;
+  --fg-muted: #b6b8be;
+  --fg-subtle: #9fa2a9;
+  --fg-faint: #8b8e95;
+  --fg-gutter: #8b8e95;
+  --fg-icon: #e3e4e8;
+
+  --accent: #8fb3ff;
+  --link: #a7c5ff;
+  --link-hover: #d0dffe;
+
+  --chart-series: #ff9b9f;
+
+  --danger: #ff9b9f;
+  --warning: #f2c55c;
+  --success: #8ec39d;
+  --db-connected: #5cf05c;
+  --db-connected-ring: #2b7a2b;
+  --info: #92b7ff;
+
+  --vcs-modified: #92c3ff;
+  --vcs-added: #8ed694;
+  --vcs-deleted: #a5a8ae;
+  --vcs-untracked: #ffaaa5;
+  --vcs-ignored: #e5b48c;
+  --vcs-conflict: #ff8f8a;
+  --gutter-modified: #6e95e8;
+  --gutter-added: #6fb875;
+  --gutter-deleted: #a5a8ae;
+
+  --syn-keyword: #e8a885;
+  --syn-string: #8ccc94;
+  --syn-type: #e3e4e8;
+  --syn-function: #7cc0ff;
+  --syn-function-call: #e3e4e8;
+  --syn-comment: #a5a9b0;
+  --syn-doc-comment: #8fb89c;
+  --syn-docstring: #8fb89c;
+  --syn-annotation: #d6d17a;
+  --syn-decorator: #d6d17a;
+  --syn-number: #4fd0dc;
+  --syn-punct: #e3e4e8;
+  --syn-variable: #e3e4e8;
+  --syn-param: #e3e4e8;
+  --syn-property: #e0a0d6;
+  --syn-constant: #e0a0d6;
+  --syn-builtin: #b0b0f0;
+  --syn-self: #d08ac8;
+  --syn-keyword-arg: #e0805c;
+  --syn-predefined: #f080f0;
+  --syn-escape: #e8a885;
+  --syn-regexp: #6ad8e6;
+  --syn-tag: #ecd39a;
+  --syn-attribute: #e3e4e8;
+  --syn-todo: #aad35a;
+  --syn-link: #8fb3ff;
+  --syn-markup-heading: #e8a885;
+  --syn-markup-code: #8ccc94;
+  --syn-invalid: #ff8a95;
+  --syn-inline-value: #a5a8ae;
+  --syn-rainbow-1: #8fd0de;
+  --syn-rainbow-2: #f0b88a;
+  --syn-rainbow-3: #bedc8a;
+  --syn-rainbow-4: #e8a8e4;
+  --syn-rainbow-5: #b0bcff;
+  --syn-bracket-1: #ffd700;
+  --syn-bracket-2: #ee90ee;
+  --syn-bracket-3: #87cefa;
+
+  --fg-editor: #e3e4e8;
+  --caret: #ffffff;
+  --fg-line-number: #8b8e95;
+  --fg-line-number-current: #e3e4e8;
+  --border-gutter: #45474d;
+  --border-indent-guide: #45474d;
+  --border-indent-guide-active: #8b8e95;
+  --border-right-margin: #45474d;
+  --bg-editor-selection: #2a5bb8;
+  --bg-editor-selection-inactive: #1f3f7a;
+  --bg-text-search-result: #146a7d;
+  --bg-text-search-result-current: #1d8aa3;
+  --bg-matched-brace: #55585f;
+  --bg-matched-tag: #45474d;
+  --bg-fold-placeholder: #33353b;
+  --fg-fold-placeholder: #ccced3;
+  --fg-fold-marker: #9fa2a9;
+  --fg-whitespace: #8b8e95;
+  --fg-unused: #8b8e95;
+  --bg-identifier-under-caret: #3f4a44;
+  --bg-identifier-under-caret-write: #553840;
+  --fg-inlay: #ccced3;
+  --bg-inlay: #33353b;
+  --wave-error: #ff6b78;
+  --wave-warning: #ffd36b;
+  --editor-error-decoration: underline wavy #ff6b78;
+  --editor-warning-decoration: underline wavy #ffd36b;
+  --editor-warning-background: transparent;
+  --bg-breakpoint-line: #4d1f28;
+  --fg-completion-match: #8fb3ff;
+  --bg-editor-inline: #1a1b1e;
+  --bg-editor-banner: #1b2c52;
+  --fg-weak-warning: #9fa2a9;
+  --fg-bulb: #ffd36b;
+
+  --ansi-black: #000000;
+  --ansi-red: #ff6b68;
+  --ansi-green: #7ac74f;
+  --ansi-yellow: #e5c33f;
+  --ansi-blue: #5aaaf0;
+  --ansi-magenta: #c79be0;
+  --ansi-cyan: #2fc7c7;
+  --ansi-white: #b6b8be;
+  --ansi-bright-black: #8b8e95;
+  --ansi-bright-red: #ff8080;
+  --ansi-bright-green: #7ae04a;
+  --ansi-bright-yellow: #ffd84d;
+  --ansi-bright-blue: #6cc8ff;
+  --ansi-bright-magenta: #ff9cff;
+  --ansi-bright-cyan: #4ff0f0;
+  --ansi-bright-white: #ffffff;
+  /* the terminal keeps the high-contrast console palette */
+  --terminal-ansi-black: var(--ansi-black);
+  --terminal-ansi-red: var(--ansi-red);
+  --terminal-ansi-green: var(--ansi-green);
+  --terminal-ansi-yellow: var(--ansi-yellow);
+  --terminal-ansi-blue: var(--ansi-blue);
+  --terminal-ansi-magenta: var(--ansi-magenta);
+  --terminal-ansi-cyan: var(--ansi-cyan);
+  --terminal-ansi-white: var(--ansi-white);
+  --terminal-ansi-bright-black: var(--ansi-bright-black);
+  --terminal-ansi-bright-red: var(--ansi-bright-red);
+  --terminal-ansi-bright-green: var(--ansi-bright-green);
+  --terminal-ansi-bright-yellow: var(--ansi-bright-yellow);
+  --terminal-ansi-bright-blue: var(--ansi-bright-blue);
+  --terminal-ansi-bright-magenta: var(--ansi-bright-magenta);
+  --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
+  --terminal-ansi-bright-white: var(--ansi-bright-white);
+
+  --bg-tooltip: #24262b;
+  --fg-tooltip: #ffffff;
+  --border-tooltip: #6f737a;
+  --bg-control: #1c1e22;
+  --bg-control-hover: #26292e;
+  --bg-active: #30343c;
+  --bg-scrim: rgba(0, 0, 0, 0.6);
+  --fg-on-accent: #000000;
+
+  --bg-frame: #1a1b1e;
+  --bg-island: #000000;
+  --bg-stripe-hover: #ffffff24;
+  --bg-stripe-selected: #ffffff38;
+  --fg-stripe-selected-active: #000000;
+  --fg-stripe-label: #ccced3;
+  --bg-tab-selected: #1f3a73;
+  --border-tab-selected: #8fb3ff;
+  --bg-tab-selected-inactive: #26282c;
+  --border-tab-selected-inactive: #6f737a;
+  --bg-tab-hover: #ffffff24;
+  --border-editor-tabs: #45474d;
+  --bg-tree-selected: #1f3a73;
+  --bg-tree-selected-inactive: #33353b;
+  --bg-tree-hover: #ffffff1a;
+  --bg-toolbar-hover: #ffffff24;
+  --bg-toolbar-pressed: #ffffff38;
+  --bg-toolbar-selected: #2a4b8f;
+  --bg-toolbar-selected-hover: #3560b0;
+  --bg-button-primary-hover: var(--accent-hover);
+  --fg-button-primary: #000000;
+  --bg-button: transparent;
+  --border-button: #8b8e95;
+  --bg-field: #000000;
+  --bg-checkbox: #000000;
+  --border-checkbox: #8b8e95;
+  --bg-toggle-on: #4e9d6c;
+  --fg-toggle-on: #ffffff;
+  --bg-toggle-off: #000000;
+  --fg-toggle-off: #b6b8be;
+  --border-toggle: #8b8e95;
+  --bg-toggle-knob: #b6b8be;
+  --focus-ring-soft: #5a86c2;
+  --scrollbar-thumb: #ffffff4d;
+  --scrollbar-thumb-hover: #ffffff80;
+  --bg-search-match: #e5bf5c;
+  --bg-search-match-current: #ffd36b;
+  --fg-search-match: #000000;
+  --bg-dialog: #0e0f11;
+  --traffic-close: #ff5f57;
+  --traffic-close-border: #e0443e;
+  --traffic-close-pressed: #bf4942;
+  --traffic-glyph: #4d0000;
+  --traffic-off: #55585f;
+  --traffic-off-border: #6f737a;
+  --bg-popup-inline: #1a1b1e;
+  --bg-popup-advertiser: #1a1b1e;
+  --bg-feedback-info: #1b2c52;
+  --border-feedback-info: #4a6fb8;
+  --bg-feedback-error: #4d1f24;
+  --border-feedback-error: #a0464e;
+  --bg-feedback-warning: #3d2c17;
+  --border-feedback-warning: #8c6227;
+  --bg-feedback-success: #1a3323;
+  --border-feedback-success: #3d7a52;
+  --bg-counter: #b6b8be;
+  --fg-counter: #000000;
+  --bg-progress-track: #55585f;
+}
+
+/*
+ * Appearance options (Settings › Appearance), applied as attributes on :root
+ * by the settings runtime.
+ */
+/* Compact mode: smaller rows, toolbars and tabs. */
+:root[data-compact] {
+  --h-titlebar: 32px;
+  --h-header: 32px;
+  --h-tabbar: 32px;
+  --h-tab: 24px;
+  --h-row: 20px;
+  --h-list-row: 20px;
+  --h-statusbar: 24px;
+  --h-stripe-button: 40px;
+  --h-field: 24px;
+  --h-button: 24px;
+}
+/* Use contrast scrollbars. */
+:root[data-contrast-scrollbars] {
+  --scrollbar-thumb: #ffffff80;
+  --scrollbar-thumb-hover: #ffffffb3;
+}
+:root[data-theme="light"][data-contrast-scrollbars] {
+  --scrollbar-thumb: #00000080;
+  --scrollbar-thumb-hover: #000000b3;
+}
+/* Red-green vision deficiency: additions in blue, modifications in amber instead of green / blue. */
+:root[data-red-green] {
+  --vcs-added: #5ea4f2;
+  --vcs-modified: #d6a24a;
+  --gutter-added: #3f7fd0;
+  --gutter-modified: #a37a2c;
+  --success: #6aa6f0;
+  --db-connected: var(--success);
+  --db-connected-ring: var(--success);
+}
+:root[data-theme="light"][data-red-green] {
+  --vcs-added: #0a5bd1;
+  --vcs-modified: #8c5a00;
+  --gutter-added: #7aaaf2;
+  --gutter-modified: #e0b45a;
+  --success: #1f66cc;
+  --db-connected: var(--success);
+  --db-connected-ring: var(--success);
+}

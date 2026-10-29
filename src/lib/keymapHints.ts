@@ -1,8 +1,8 @@
 /**
- * 空编辑器告示页要宣传的那几颗命令（纯数据，不引 monaco）。
+ * 空编辑器告示页要宣传的那几颗命令（纯数据，不引编辑器引擎）。
  *
- * 单独一个模块是因为告示页在启动路径上：跟着 `keymap.ts` 一起写就为了几张键位表
- * 把编辑器本体拉进首屏。`keymap.ts` 那侧才是真正装绑定的地方。
+ * 单独一个模块是因为告示页在启动路径上：跟着 `cm/keymap.ts` 一起写就为了几张键位表
+ * 把编辑器本体拉进首屏。`cm/keymap.ts` 那侧才是真正装绑定的地方。
  */
 import type { KeymapScheme } from "./settings";
 import type { TranslationKey } from "../i18n/lang/zh";
@@ -17,7 +17,7 @@ export interface ShortcutHint {
  * 免得告示页承诺做不到的事。
  */
 export const SHORTCUT_HINTS: ShortcutHint[] = [
-  // 前三行是应用级的搜索入口，不走 monaco 的键绑定，三个方案里都是同一套键，
+  // 前三行是应用级的搜索入口，不吃编辑器那三档方案，三个方案里都是同一套键，
   // 所以三档给同一个值。双击 Shift 取的是 IDEA 那条键盘手势（`shift SHIFT`）。
   {
     label: "welcome.everywhere",

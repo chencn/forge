@@ -3,7 +3,7 @@ import { normalizeExtraExtensions } from "./shellWhitelist";
 import type { ThemeMode } from "./window";
 import type { Lang } from "../i18n";
 
-/** 编辑器快捷键方案，对应 `lib/keymap.ts` 里的三套。 */
+/** 编辑器快捷键方案，对应 `lib/cm/keymap.ts` 里的三套。 */
 export type KeymapScheme = "default" | "idea" | "eclipse";
 
 /** 代码保存策略：只手动存，还是失去焦点时自动存。 */
@@ -208,6 +208,24 @@ export interface UpdateSettings {
 
 /** 通知弹窗气泡显示位置，对应 IDEA 的 NotificationLocation。 */
 export type NotificationPosition = "bottom-right" | "top-right" | "bottom-left" | "top-left";
+export type NotificationPopupType = "balloon" | "sticky" | "none";
+
+export interface NotificationGroupRule {
+  displayType: NotificationPopupType;
+  log: boolean;
+  system: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_GROUPS: Record<string, NotificationGroupRule> = {
+  git: { displayType: "balloon", log: true, system: false },
+  maven: { displayType: "balloon", log: true, system: false },
+  build: { displayType: "balloon", log: true, system: false },
+  lsp: { displayType: "balloon", log: true, system: false },
+  ai: { displayType: "balloon", log: true, system: false },
+  dependencies: { displayType: "balloon", log: true, system: false },
+  terminal: { displayType: "balloon", log: true, system: false },
+  system: { displayType: "balloon", log: true, system: false },
+};
 
 /**
  * 一份全局设置，落在系统配置目录的 settings.json。
@@ -239,6 +257,10 @@ export interface Settings {
   shell: ShellSettings;
   /** 通知弹窗气泡位置。 */
   notificationPosition: NotificationPosition;
+  /** 通知勿扰模式：开启后静默所有浮动气泡，仅静默记录到工具窗口。 */
+  notificationDoNotDisturb: boolean;
+  /** 按通知组配置的弹出模式与归档策略。 */
+  notificationGroups: Record<string, NotificationGroupRule>;
   /** 应用内更新。 */
   updates: UpdateSettings;
   /** 运行工具窗口。 */
@@ -286,6 +308,8 @@ export const DEFAULT_SETTINGS: Settings = {
   explorer: { showIgnored: true, showHidden: false },
   shell: { openFolder: false, openFile: false, defaultFile: false, extraExtensions: [] },
   notificationPosition: "bottom-right",
+  notificationDoNotDisturb: false,
+  notificationGroups: DEFAULT_NOTIFICATION_GROUPS,
   updates: {
     autoDownload: false,
     autoPromptInstall: true,
@@ -349,6 +373,11 @@ function merge(raw: Partial<Settings> | null): Settings {
       raw?.notificationPosition === "top-left"
         ? raw.notificationPosition
         : "bottom-right",
+    notificationDoNotDisturb: raw?.notificationDoNotDisturb === true,
+    notificationGroups: {
+      ...DEFAULT_NOTIFICATION_GROUPS,
+      ...(raw?.notificationGroups && typeof raw.notificationGroups === "object" ? raw.notificationGroups : {}),
+    },
   };
 }
 

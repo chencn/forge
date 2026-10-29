@@ -1,0 +1,19 @@
+.ghost {
+  position: fixed;
+  z-index: var(--z-tooltip, 1000);
+  margin: 0;
+  opacity: 0.85;
+  pointer-events: none;
+  box-shadow: var(--shadow-tooltip, 0 4px 12px rgba(0, 0, 0, 0.35));
+  background: var(--bg-popup, #26282c);
+}
+
+.noTarget {
+  opacity: 0.5;
+}
+
+.dragging,
+.dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}

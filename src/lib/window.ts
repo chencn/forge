@@ -12,7 +12,8 @@ const win = getCurrentWindow();
  */
 export const windowLabel = win.label;
 
-export type ThemeMode = "light" | "dark" | "system";
+import type { ThemePreference } from "../themes/themeManager";
+export type ThemeMode = ThemePreference;
 
 /**
  * 托盘菜单那两项的文字。
@@ -79,8 +80,10 @@ export function onWindowFocus(handler: () => void): () => void {
 
 /** 把模式解析成实际生效的深浅色。 */
 export function resolveTheme(mode: ThemeMode): "light" | "dark" {
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  return mode === "dark" || (mode === "system" && prefersDark) ? "dark" : "light";
+  if (mode === "light") return "light";
+  if (mode === "dark" || mode === "dark-hc") return "dark";
+  const prefersDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  return prefersDark ? "dark" : "light";
 }
 
 /** 自定义标题栏的三个窗口动作，decorations=false 后由前端自己画。 */

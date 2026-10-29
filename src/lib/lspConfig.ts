@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
  * 前端拿到的值已经是可用的，不再校验。
  */
 
-/** off 全关 / builtin 用 Monaco 内置语义 / lsp 用外部语言服务。三态而不是两个布尔，非法组合存不下。 */
+/** off 全关 / builtin 用 Forge 预置好的那条服务 / lsp 用户自己指的那条。三态而不是两个布尔，非法组合存不下。 */
 export type LspMode = "off" | "builtin" | "lsp";
 
 /** 一个语言服务的配置，对应 Rust `LspServerConfig`。 */
@@ -20,7 +20,7 @@ export interface LspServerConfig {
   path: string;
   /** 启动参数文本，含空格的片段用双引号包住；拆分在后端。 */
   args: string;
-  /** 这个 server 管哪些 Monaco 语言 id。一个 server 可管多个（ts 管 typescript 与 javascript）。 */
+  /** 这个 server 管哪些语言 id（`languageForPath` 那一套）。一个 server 可管多个（ts 管 typescript 与 javascript）。 */
   languages: string[];
   /** 技术栈标志文件名，认工程根用；支持 `*.csproj` 这类后缀通配。 */
   rootMarkers: string[];
@@ -30,7 +30,7 @@ export interface LspServerConfig {
   startupTimeoutMs: number;
   /** 交给 server 的 initializationOptions；null 表示不传。 */
   initOptions: unknown;
-  /** 是否允许 `builtin` 档。只有 ts 系有 Monaco 内置语义可退。 */
+  /** 是否允许 `builtin` 档。只有表里预置好了一条服务的语言才有这一档可退。 */
   supportsBuiltin: boolean;
 }
 
@@ -42,6 +42,11 @@ export interface LspConfig {
 
 /** 带 id 的一项，界面与客户端按它迭代。 */
 export type LspServerEntry = LspServerConfig & { id: string };
+
+/** 这个档要不要真起一条语言服务进程。`off` 之外都要。 */
+export function serverEnabled(entry: { mode: LspMode }): boolean {
+  return entry.mode !== "off";
+}
 
 /** 这个 server 允许的档位。 */
 export function modesFor(server: LspServerConfig): LspMode[] {
@@ -58,7 +63,7 @@ export function serverEntries(config: LspConfig): LspServerEntry[] {
   return Object.entries(config.servers).map(([id, server]) => ({ id, ...server }));
 }
 
-/** 某个 Monaco 语言 id 归哪个 server 管；没有对应项返回 null。 */
+/** 某个语言 id 归哪个 server 管；没有对应项返回 null。 */
 export function serverForLanguage(
   config: LspConfig,
   language: string

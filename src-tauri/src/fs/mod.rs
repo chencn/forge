@@ -36,8 +36,10 @@ mod windows;
 mod unix;
 
 mod search;
+mod symbols;
 
 pub use search::*;
+pub use symbols::*;
 
 #[cfg(windows)]
 use windows as platform;
@@ -123,7 +125,7 @@ fn lossy(value: &Path) -> String {
 
 /// 按目标行尾归一正文。
 ///
-/// 已经是那一侧的原样交回：monaco 存一份 CRLF 文件时正文本来就带 `\r\n`，
+/// 已经是那一侧的原样交回：编辑器存一份 CRLF 文件时正文本来就带 `\r\n`，
 /// 原先那连着两次 `replace` 等于把整份文件白拷两遍。真要改也只走一趟。
 fn normalize_endings(text: String, crlf: bool) -> String {
     if already_normalized(&text, crlf) {

@@ -1,0 +1,81 @@
+.list {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+
+.list::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.list::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb, rgba(128, 128, 128, 0.25));
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: content-box;
+}
+
+.list::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover, rgba(128, 128, 128, 0.45));
+}
+
+.list::-webkit-scrollbar-track,
+.list::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.emptyWrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint, #5f6269);
+  padding: 16px;
+}
+
+.sizer {
+  position: relative;
+  width: 100%;
+}
+
+.row,
+.section {
+  position: absolute;
+  top: 0;
+  left: var(--list-inset, 6px);
+  width: calc(100% - 2 * var(--list-inset, 6px));
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+.row {
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: var(--radius-selection, 5px);
+  color: var(--fg-strong, #dfe1e5);
+  white-space: nowrap;
+  user-select: none;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--bg-tree-hover, color-mix(in srgb, var(--fg-strong, #dfe1e5) 4%, transparent));
+}
+
+.active,
+.active:hover {
+  background: var(--bg-tree-selected, var(--bg-selected, #2a4371));
+}
+
+/* 列表失去焦点时展示次级选区高亮色 */
+.list[tabindex="0"]:not(:focus-within) .active {
+  background: var(--bg-tree-selected-inactive, rgba(255, 255, 255, 0.08));
+}
+
+.section {
+  padding: 0 8px;
+  color: var(--fg-muted, #8c8f95);
+  font-size: var(--fs-small, 11px);
+}

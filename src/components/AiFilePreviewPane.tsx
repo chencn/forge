@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { readFile } from "../lib/fs";
 import { reconstructFileChange, type AiFilePreview } from "../lib/aiFilePreview";
+import { applyFontMetrics, detachedState, EditorView, fromDiskText, highlightRange, scrollToPos } from "../lib/cmEditor";
+import { languageForPath } from "../lib/editorEnv";
 import { useI18n } from "../i18n";
 import { useAiDiffViewMode } from "../lib/aiDiffView";
 import AiDiffEditor from "./AiDiffEditor";
@@ -9,29 +11,30 @@ import AiDiffEditor from "./AiDiffEditor";
 function ReadEditor({ preview, text, firstLine = 1 }: { preview: AiFilePreview; text: string; firstLine?: number }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void Promise.all([import("../lib/monacoEditor"), import("../lib/monacoEnv")]).then(([{ monaco }, { languageForPath, monoFont }]) => {
-      if (cancelled || !host.current) return;
-      const model = monaco.editor.createModel(text, languageForPath(preview.path));
-      const editor = monaco.editor.create(host.current, {
-        model, readOnly: true, automaticLayout: true, fontFamily: monoFont(), fontSize: 13,
-        lineNumbers: preview.kind === "change" && preview.start === undefined ? "off" : (line) => String(firstLine + line - 1), minimap: { enabled: false },
-        scrollBeyondLastLine: false, editContext: false,
-      });
-      const start = Math.min(model.getLineCount(), Math.max(1, (preview.start ?? 1) - firstLine + 1));
-      const end = Math.min(model.getLineCount(), Math.max(start, (preview.end ?? preview.start ?? model.getLineCount()) - firstLine + 1));
-      if (preview.kind === "read") editor.createDecorationsCollection([{
-        range: new monaco.Range(start, 1, end, model.getLineMaxColumn(end)),
-        options: {
-          isWholeLine: true, className: "ai-file-read-highlight", linesDecorationsClassName: "ai-file-read-gutter",
-          overviewRuler: { color: "#58a6ff80", position: monaco.editor.OverviewRulerLane.Full },
-        },
-      }]);
-      editor.revealLineInCenter(start);
-      dispose = () => { editor.dispose(); model.dispose(); };
-    });
-    return () => { cancelled = true; dispose?.(); };
+    const element = host.current;
+    if (!element) return;
+    applyFontMetrics(element, 13);
+    // 行号：预览的是文件中间一段，就得写真实行号；整篇且没有起点信息的（改动的一侧未知）不写。
+    const numbered = !(preview.kind === "change" && preview.start === undefined);
+    const lines = fromDiskText(text).split("\n").length;
+    const start = Math.min(lines, Math.max(1, (preview.start ?? 1) - firstLine + 1));
+    const end = Math.min(lines, Math.max(start, (preview.end ?? preview.start ?? lines) - firstLine + 1));
+    const state = detachedState(
+      {
+        path: preview.path,
+        contents: text,
+        language: languageForPath(preview.path),
+        readOnly: true,
+        tabSize: 4,
+        lineNumberFormat: numbered ? (line) => String(firstLine + line - 1) : undefined,
+        showLineNumbers: numbered,
+      },
+      // 读过的那一段整行上底色，行号那一栏留一条竖标。
+      preview.kind === "read" ? [highlightRange(start, end)] : []
+    );
+    const view = new EditorView({ state, parent: element });
+    scrollToPos(view, state.doc.line(start).from);
+    return () => view.destroy();
   }, [preview, text, firstLine]);
   return <div className="ai-file-preview-editor" ref={host} />;
 }

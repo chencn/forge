@@ -47,7 +47,8 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LspServerConfig {
-    /// off 全关 / builtin 用 Monaco 内置语义 / lsp 用外部语言服务。启用与关闭只看这一项。
+    /// off 全关 / builtin 用应用预置的那条服务 / lsp 用用户自己填的那条。启用与关闭只看这一项。
+    /// 编辑器是 CodeMirror，两档起的都是同一个外部进程，区别只在「命令谁配的」与缺省档位。
     pub mode: String,
     /// 在 PATH 里找的那个可执行文件名。
     pub program: String,
@@ -55,7 +56,7 @@ pub struct LspServerConfig {
     pub path: String,
     /// 启动参数，一行文本，含空格的片段用双引号包住；拆分在 `lsp.rs::parse_args`。
     pub args: String,
-    /// 这个 server 管哪些 Monaco 语言 id。一个 server 可管多个（ts 管 typescript 与 javascript）。
+    /// 这个 server 管哪些语言 id。一个 server 可管多个（ts 管 typescript 与 javascript）。
     pub languages: Vec<String>,
     /// 技术栈标志文件名，认工程根用。支持 `*.csproj` 这类后缀通配。
     pub root_markers: Vec<String>,
@@ -65,7 +66,7 @@ pub struct LspServerConfig {
     pub startup_timeout_ms: u64,
     /// 交给 server 的 initializationOptions；null 表示不传。
     pub init_options: serde_json::Value,
-    /// 是否允许 `builtin` 档。只有 ts 系有 Monaco 内置语义可退。
+    /// 是否允许 `builtin` 档。只有 ts 系有这一档可退（起的仍是本机装的 typescript-language-server）。
     pub supports_builtin: bool,
 }
 
@@ -128,8 +129,9 @@ fn server(
 
 /// 认识的语言服务。加一个语言就往这里加一行。
 ///
-/// typescript 缺省走 `builtin`。外部 `typescript-language-server` 是单独的 Node 进程，
-/// 总内存比渲染进程里的内置服务更大，所以不把它当成缺省。其余语言缺省 `off`。
+/// typescript 缺省走 `builtin`。编辑器换成 CodeMirror 之后，这一档起的也是表里预置的
+/// `typescript-language-server`（Monaco 那份渲染进程里的 tsserver 不再是智能来源），
+/// 所以它和 `lsp` 一样要求本机真装着，没装会被探测回退成 `off`。其余语言缺省 `off`。
 fn seed() -> BTreeMap<String, LspServerConfig> {
     let mut servers = BTreeMap::new();
     let mut put = |id: &str, config: LspServerConfig| {

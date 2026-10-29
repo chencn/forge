@@ -5,6 +5,7 @@ import {
   renderChatTokenBlocks,
   repairStreamingMarkdown,
 } from "../../src/lib/chatMarkdownCore";
+import { fenceLanguages, hasGrammar, prepareHighlight } from "../../src/lib/cm/grammars";
 
 /**
  * 增量渲染的核心不变量：整段渲染 == 各顶层 token 渲染的拼接。
@@ -22,30 +23,60 @@ const SAMPLES = [
   "",
 ];
 
+function join(blocks: Array<{ html: string }>): string {
+  return blocks.map((block) => block.html).join("");
+}
+
 describe("renderChatTokenBlocks", () => {
   it("逐块拼接与整段渲染等价", () => {
     for (const source of SAMPLES) {
-      const joined = renderChatTokenBlocks(source, "copy", false)
-        .map((block) => block.html)
-        .join("");
-      expect(joined).toBe(renderChatHtmlRaw(source, "copy", false));
+      expect(join(renderChatTokenBlocks(source, "copy", false))).toBe(renderChatHtmlRaw(source, "copy"));
     }
   });
 
-  it("流式开关只影响无语言代码块的自动高亮", () => {
-    // 带已知语言的块：两条路径完全一致（openBlocks 只用于跳过 highlightAuto）。
-    expect(renderChatTokenBlocks("```ts\nconst a = 1;\n```", "copy", true).map((b) => b.html).join(""))
-      .toBe(renderChatHtmlRaw("```ts\nconst a = 1;\n```", "copy", true));
-    // 无语言的短代码：非流式走 highlightAuto 出高亮 span，流式直接转义。
-    const open = renderChatTokenBlocks("```\nconst a = 1;\nconst b = 2;\n```", "copy", true).map((b) => b.html).join("");
-    const closed = renderChatTokenBlocks("```\nconst a = 1;\nconst b = 2;\n```", "copy", false).map((b) => b.html).join("");
-    expect(open).not.toBe(closed);
+  it("流式开关不改变 HTML，只改变块指纹", () => {
+    // 原来流式那一档要跳过 highlightAuto 的全表试探；Lezer 没有猜语言这一步，
+    // 两条路径出的是同一份 HTML，开关只剩下让缓存区分流式与落定这一件事还有用。
+    for (const source of ["```ts\nconst a = 1;\n```", "```\nconst a = 1;\n```"]) {
+      expect(join(renderChatTokenBlocks(source, "copy", true))).toBe(join(renderChatTokenBlocks(source, "copy", false)));
+    }
+    expect(blockKey("同一段", "copy", true)).not.toBe(blockKey("同一段", "copy", false));
+  });
+
+  it("没标语言的围栏按素文本排，不去猜", () => {
+    const html = join(renderChatTokenBlocks("```\nconst a = 1;\n```", "copy", false));
+    expect(html).toContain("const a = 1;");
+    expect(html).not.toContain("tok-keyword");
   });
 
   it("块指纹只随内容变化", () => {
     expect(blockKey("同一段", "copy", false)).toBe(blockKey("同一段", "copy", false));
     expect(blockKey("同一段", "copy", false)).not.toBe(blockKey("另一段", "copy", false));
     expect(blockKey("同一段", "copy", false)).not.toBe(blockKey("同一段", "copy", true));
+  });
+});
+
+describe("Lezer 高亮", () => {
+  it("扫出围栏标注的语言", () => {
+    expect(fenceLanguages("```ts\nx\n```")).toEqual(["ts"]);
+    expect(fenceLanguages("``` python\nx\n```\n~~~sh\ny\n~~~")).toEqual(["python", "sh"]);
+    expect(fenceLanguages("没有围栏")).toEqual([]);
+  });
+
+  it("语法没装上时不产出 span，装上后同一份正文出 tok-* 类", async () => {
+    const source = "```ts\nconst a = 1;\n```";
+    expect(hasGrammar("ts")).toBe(true);
+    expect(join(renderChatTokenBlocks(source, "copy", false))).not.toContain("tok-");
+    expect(await prepareHighlight(fenceLanguages(source))).toBe(true);
+    const html = join(renderChatTokenBlocks(source, "copy", false));
+    expect(html).toContain("tok-keyword");
+    // 已经装好了，再问一次不该重复加载。
+    expect(await prepareHighlight(["ts"])).toBe(false);
+  });
+
+  it("认不出的语言不占加载名额", async () => {
+    expect(hasGrammar("不存在的语言")).toBe(false);
+    expect(await prepareHighlight(["不存在的语言", "text", ""])).toBe(false);
   });
 });
 

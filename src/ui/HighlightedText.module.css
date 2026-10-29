@@ -1,0 +1,10 @@
+.match {
+  background: var(--bg-search-match, #ba9752);
+  color: var(--fg-search-match, #191a1c);
+  border-radius: 3px;
+  box-decoration-break: clone;
+}
+
+.accent {
+  color: var(--fg-search-match, #191a1c);
+}

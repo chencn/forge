@@ -119,8 +119,6 @@ export default function TitleBar({
         ) : null}
         {settings}
 
-        <span className="titlebar-divider" />
-
         <div className="window-controls">
           <button
             type="button"

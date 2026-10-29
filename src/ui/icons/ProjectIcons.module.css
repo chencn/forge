@@ -1,0 +1,19 @@
+/* JetBrains ExpUI 图标主题自适应控制：
+ * 在浅色模式（:root[data-theme="light"]）下呈现 .light 矢量层，隐藏 .dark 矢量层；
+ * 在暗色或其它主题下呈现 .dark 矢量层，隐藏 .light 矢量层。
+ */
+.light {
+  display: none;
+}
+
+.dark {
+  display: inline;
+}
+
+:global(:root[data-theme="light"]) .light {
+  display: inline;
+}
+
+:global(:root[data-theme="light"]) .dark {
+  display: none;
+}

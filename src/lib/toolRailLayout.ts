@@ -17,10 +17,11 @@ export interface ToolRailLayout {
   right: Record<ToolRailGroup, ToolRailId[]>;
 }
 
-const STORAGE_KEY = "forge:tool-rail-layout:v2";
-const LEGACY_STORAGE_KEY = "forge:tool-rail-layout:v1";
+const STORAGE_KEY = "forge:tool-rail-layout:v3";
+const LEGACY_STORAGE_KEY = "forge:tool-rail-layout:v2";
 
 export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
+  notifications: "top",
   ai: "top",
   browser: "top",
   explorer: "top",
@@ -29,12 +30,11 @@ export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   terminal: "bottom",
   run: "bottom",
   log: "bottom",
-  notifications: "bottom",
 };
 
 export const DEFAULT_TOOL_RAIL_LAYOUT: ToolRailLayout = {
   left: { top: ["explorer", "git"], bottom: ["terminal", "run", "log"] },
-  right: { top: ["ai", "browser", "maven"], bottom: ["notifications"] },
+  right: { top: ["notifications", "ai", "browser", "maven"], bottom: [] },
 };
 
 const TOOL_IDS = Object.keys(TOOL_RAIL_GROUP) as ToolRailId[];
@@ -76,18 +76,32 @@ export function normalizeToolRailLayout(value: unknown): ToolRailLayout {
 export function loadToolRailLayout(): ToolRailLayout {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored !== null) return normalizeToolRailLayout(JSON.parse(stored));
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (stored !== null) {
+      const parsed = normalizeToolRailLayout(JSON.parse(stored));
+      // 1:1 对标 openidea 规范 (anchor: "right", order: 0)：
+      // notifications 必须且永远置于右侧顶端第一位，严禁遗留在 bottom 或其他位置。
+      parsed.left.bottom = parsed.left.bottom.filter((id) => id !== "notifications");
+      parsed.right.bottom = parsed.right.bottom.filter((id) => id !== "notifications");
+      parsed.left.top = parsed.left.top.filter((id) => id !== "notifications");
+      parsed.right.top = ["notifications", ...parsed.right.top.filter((id) => id !== "notifications")];
+      saveToolRailLayout(parsed);
+      return parsed;
+    }
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY) ?? localStorage.getItem("forge:tool-rail-layout:v1");
     if (legacy === null) return copyDefault();
     const migrated = normalizeToolRailLayout(JSON.parse(legacy));
-    // v1 默认把 AI 放左栏；升级时只强制迁移一次，v2 之后继续尊重用户自己的拖放结果。
-    const withoutAi: ToolRailLayout = {
-      left: { ...migrated.left, top: migrated.left.top.filter((id) => id !== "ai") },
-      right: { ...migrated.right, top: migrated.right.top.filter((id) => id !== "ai") },
-    };
+    // 迁移升级：若旧版本中 ai 在左侧则迁至右侧；notifications 强制置于右侧顶端首位
+    const leftTopClean = migrated.left.top.filter((id) => id !== "notifications" && id !== "ai");
+    const rightTopClean = migrated.right.top.filter((id) => id !== "notifications" && id !== "ai");
     const next: ToolRailLayout = {
-      ...withoutAi,
-      right: { ...withoutAi.right, top: ["ai", ...withoutAi.right.top] },
+      left: {
+        top: leftTopClean,
+        bottom: migrated.left.bottom.filter((id) => id !== "notifications"),
+      },
+      right: {
+        top: ["notifications", "ai", ...rightTopClean],
+        bottom: migrated.right.bottom.filter((id) => id !== "notifications"),
+      },
     };
     saveToolRailLayout(next);
     return next;

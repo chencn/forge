@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reconcileLsp, shutdownLsp } from "../../src/lib/lspClient";
-import { monaco } from "../../src/lib/monacoEditor";
 import { lspStart } from "../../src/lib/lsp";
 import type { LspConfig } from "../../src/lib/lspConfig";
 
@@ -8,32 +7,18 @@ import type { LspConfig } from "../../src/lib/lspConfig";
  * didChange 防抖的行为测试：驱动真实的 reconcileLsp 流程，
  * 断言「150ms 内多次 reconcile 只发一次 didChange、版本号连续」。
  *
- * 只 mock 边界：后端 IPC（lib/lsp）、事件订阅、窗口标签与 Monaco（模块顶层就会求值
- * CompletionItemKind 表，node 环境加载不了真的 monaco-editor）。lspConfig / format
- * 是纯函数，用真实现，语言归属与路径归一不用另测。
+ * 只 mock 边界：后端 IPC（lib/lsp）、事件订阅、窗口标签。lspConfig / format / lspUri
+ * 是纯函数，用真实现，语言归属、路径归一与 URI 写法不用在这里另测。
  *
  * 集中放在 tests/lib/，目录与 src/lib 镜像（团队约定的集中式测试布局）。
  * 注意 vi.mock 的说明符按本文件解析，要和被测模块内部的 import 落到同一文件。
  */
 
-const { listeners, writes, COMPLETION_KIND_NAMES, SYMBOL_KIND_NAMES } = vi.hoisted(() => ({
+const { listeners, writes } = vi.hoisted(() => ({
   /** 模拟后端事件：键是事件名，值是最后注册的那个 handler。 */
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
   /** lspWrite 收到的全部消息，按发出顺序。 */
   writes: [] as { id: string; body: string }[],
-  /** Monaco 的两套枚举名，mock 工厂按顺序编上号（见被测模块里的两张映射表）。 */
-  COMPLETION_KIND_NAMES: [
-    "Text", "Method", "Function", "Constructor", "Field", "Variable", "Class",
-    "Interface", "Module", "Property", "Unit", "Value", "Enum", "Keyword",
-    "Snippet", "Color", "File", "Reference", "Folder", "EnumMember", "Constant",
-    "Struct", "Event", "Operator", "TypeParameter",
-  ] as const,
-  SYMBOL_KIND_NAMES: [
-    "File", "Module", "Namespace", "Package", "Class", "Method", "Property",
-    "Field", "Constructor", "Enum", "Interface", "Function", "Variable",
-    "Constant", "String", "Number", "Boolean", "Array", "Object", "Key", "Null",
-    "EnumMember", "Struct", "Event", "Operator", "TypeParameter",
-  ] as const,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -60,38 +45,6 @@ vi.mock("../../src/lib/lsp", () => ({
 
 vi.mock("../../src/lib/window", () => ({
   windowLabel: "main",
-}));
-
-vi.mock("../../src/lib/monacoEditor", () => ({
-  monaco: {
-    Uri: {
-      // 键只要自洽即可：测试里 didOpen / didChange / didClose 用同一套 URI。
-      file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path }),
-      parse: (raw: string) => ({ toString: () => raw, fsPath: raw }),
-    },
-    MarkerSeverity: { Hint: 1, Info: 2, Warning: 4, Error: 8 },
-    languages: {
-      CompletionItemKind: Object.fromEntries(
-        COMPLETION_KIND_NAMES.map((name, index) => [name, index + 1])
-      ),
-      SymbolKind: Object.fromEntries(SYMBOL_KIND_NAMES.map((name, index) => [name, index])),
-      registerHoverProvider: vi.fn(),
-      registerCompletionItemProvider: vi.fn(),
-      registerReferenceProvider: vi.fn(),
-      registerDefinitionProvider: vi.fn(),
-      registerDocumentSymbolProvider: vi.fn(),
-    },
-    editor: {
-      getModel: vi.fn(() => null),
-      getModels: vi.fn(() => []),
-      setModelMarkers: vi.fn(),
-      onDidCreateModel: vi.fn(),
-    },
-    typescript: {
-      typescriptDefaults: { setModeConfiguration: vi.fn() },
-      javascriptDefaults: { setModeConfiguration: vi.fn() },
-    },
-  },
 }));
 
 const config: LspConfig = {
@@ -265,7 +218,7 @@ describe("didChange 防抖", () => {
   });
 });
 
-describe("内置语义开关", () => {
+describe("档位与进程", () => {
   const doc = { path: "D:/proj/a.ts", language: "typescript", text: "v1" };
   const tsConfig = (mode: "off" | "builtin" | "lsp"): LspConfig => ({
     version: 2,
@@ -285,33 +238,23 @@ describe("内置语义开关", () => {
     },
   });
 
-  const modeConfig = () =>
-    monaco.typescript.typescriptDefaults.setModeConfiguration as unknown as ReturnType<typeof vi.fn>;
-
-  it("外部服务起不来时也不把内置 tsserver 拉起来", async () => {
-    await reconcileLsp("D:/proj", tsConfig("builtin"), []);
-    await flush();
-    modeConfig().mockClear();
-
-    vi.mocked(lspStart).mockRejectedValueOnce("NOT_FOUND");
-    await reconcileLsp("D:/proj", tsConfig("lsp"), [doc]);
-    await flush();
-    expect(modeConfig()).toHaveBeenCalledWith(
-      expect.objectContaining({ diagnostics: false, hovers: false })
-    );
-  });
-
-  it("外部服务跑起来之后关掉内置语义", async () => {
-    await reconcileLsp("D:/proj", tsConfig("builtin"), []);
-    await flush();
-    modeConfig().mockClear();
-
-    const started = reconcileLsp("D:/proj", tsConfig("lsp"), [doc]);
+  /**
+   * 编辑器换成 CodeMirror 之后没有「渲染进程里的内置 tsserver」可退，
+   * `builtin` 档起的也是表里预置的那条外部服务——这一条断言就是那件事。
+   */
+  it("builtin 档起预置的那条服务，并把文档 didOpen 过去", async () => {
+    const started = reconcileLsp("D:/proj", tsConfig("builtin"), [doc]);
     await flush();
     respondInitialize();
     await started;
-    expect(modeConfig()).toHaveBeenCalledWith(
-      expect.objectContaining({ diagnostics: false, hovers: false })
-    );
+    expect(vi.mocked(lspStart)).toHaveBeenCalledTimes(1);
+    expect(notifications("textDocument/didOpen")).toHaveLength(1);
+  });
+
+  it("off 档一条进程都不起", async () => {
+    await reconcileLsp("D:/proj", tsConfig("off"), [doc]);
+    await flush();
+    expect(vi.mocked(lspStart)).not.toHaveBeenCalled();
+    expect(notifications("textDocument/didOpen")).toHaveLength(0);
   });
 });

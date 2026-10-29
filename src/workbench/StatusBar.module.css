@@ -1,0 +1,73 @@
+/* Islands 规范：状态栏紧贴窗口底框，无硬分割线 */
+.bar {
+  height: calc(var(--h-statusbar, 24px) + 4px);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 12px;
+  font-family: var(--font-ui, sans-serif);
+  font-size: var(--fs-ui, 13px);
+  color: var(--fg-muted, #8c8f95);
+  background: var(--bg-frame, var(--bg-island, #1e1f22));
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.item {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 4px;
+  font-family: var(--font-ui, sans-serif);
+}
+
+.item button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* 窄窗口下优先挤压左侧状态文字与长路径 */
+.shrink {
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+
+.shrink > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item:empty {
+  display: none;
+}
+
+.spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+.info {
+  color: var(--fg-secondary, #b4b8bf);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  color: var(--fg-secondary, #b4b8bf);
+}
+
+.taskTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

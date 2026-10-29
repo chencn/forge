@@ -1,0 +1,159 @@
+/* IntelliJ new UI buttons */
+.button {
+  --button-radius: var(--radius-control, 4px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--h-button, 28px);
+  min-width: 72px;
+  padding: 0 16px;
+  border-radius: var(--button-radius);
+  font-size: var(--fs-ui, 13px);
+  line-height: 1;
+  white-space: nowrap;
+  border: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition:
+    background var(--dur-fast, 80ms) ease,
+    color var(--dur-fast, 80ms) ease,
+    box-shadow var(--dur-fast, 80ms) ease;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent, #3871e1));
+  outline-offset: 1px;
+}
+
+.button:disabled {
+  cursor: default;
+}
+
+.small {
+  height: var(--h-control, 24px);
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.primary {
+  background: var(--bg-button-primary, var(--accent, #3871e1));
+  color: var(--fg-button-primary, #ffffff);
+}
+
+.primary:not(:disabled):hover {
+  background: var(--bg-button-primary-hover, color-mix(in srgb, var(--accent, #3871e1) 88%, #ffffff));
+}
+
+.secondary {
+  background: var(--bg-button, transparent);
+  color: var(--fg-strong, #dfe1e5);
+  box-shadow: inset 0 0 0 1px var(--border-button, var(--border, #40434a));
+}
+
+.secondary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--bg-button, transparent) 94%, var(--fg-strong, #ffffff));
+}
+
+.primary:disabled,
+.secondary:disabled {
+  background: transparent;
+  color: var(--fg-faint, #5f6269);
+  box-shadow: inset 0 0 0 1px var(--border, #26282c);
+}
+
+.ghost {
+  min-width: 0;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--fg-secondary, #9fa2a8);
+}
+
+.ghost:not(:disabled):hover {
+  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.ghost:not(:disabled):active {
+  background: var(--bg-toolbar-pressed, rgba(255, 255, 255, 0.16));
+}
+
+.ghost:disabled {
+  color: var(--fg-faint, #5f6269);
+}
+
+/* ActionButton / Toolbar 图标按钮 */
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-toolbar-button, 6px);
+  color: var(--fg-muted, #8c8f95);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition:
+    background var(--dur-fast, 80ms) ease,
+    color var(--dur-fast, 80ms) ease;
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent, #3871e1));
+  outline-offset: -2px;
+}
+
+.iconButton:not(:disabled):hover {
+  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.iconButton:not(:disabled):active {
+  background: var(--bg-toolbar-pressed, rgba(255, 255, 255, 0.16));
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.iconButton[aria-pressed="true"] {
+  background: var(--bg-toolbar-selected, var(--bg-selected, #2a4371));
+  color: var(--fg-strong, #dfe1e5);
+}
+
+.iconButton[aria-pressed="true"]:not(:disabled):hover {
+  background: var(--bg-toolbar-selected-hover, #2f5eb9);
+}
+
+.is-small {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-small, 4px);
+}
+
+.is-normal {
+  width: 24px;
+  height: 24px;
+}
+
+.is-large {
+  width: 28px;
+  height: 28px;
+}
+
+.tone-danger {
+  color: var(--danger, #f57e84);
+}
+
+.tone-accent {
+  color: var(--accent, #3871e1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .iconButton {
+    transition: none;
+  }
+}

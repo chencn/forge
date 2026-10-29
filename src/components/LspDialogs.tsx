@@ -3,7 +3,7 @@ import Select from "./Select";
 import { modesFor } from "../lib/lspConfig";
 import type { LspMode, LspServerEntry } from "../lib/lspConfig";
 import type { LspServerProbe } from "../lib/lsp";
-import { languageNames } from "../lib/monacoEnv";
+import { languageNames } from "../lib/editorEnv";
 import { useI18n } from "../i18n";
 import { Copy, Download, X } from "lucide-react";
 

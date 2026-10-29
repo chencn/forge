@@ -1,0 +1,6 @@
+/* 允许用户选中文本并复制的只读内容区域样式 */
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}

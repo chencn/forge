@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useMemo } from "react";
+import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Check, ChevronRight } from "lucide-react";
+import { Menu as UiMenu, type MenuItem as UiMenuItem } from "../ui/Menu";
+import type { LucideIconType } from "../ui/Icon";
 
 export interface MenuItem {
   /** 菜单文案；分隔线项不写文案。 */
@@ -10,7 +12,7 @@ export interface MenuItem {
   /** 右侧灰字快捷键，画了就必须真绑了键。 */
   shortcut?: string;
   /** 左侧图标，缺省则留空对齐。 */
-  icon?: LucideIcon;
+  icon?: LucideIcon | LucideIconType | string | ReactNode;
   /** 危险动作（删除），用告警色绘制。 */
   danger?: boolean;
   /** 不可点，例如没有选中项时的重命名。 */
@@ -31,16 +33,6 @@ export interface MenuAnchor {
   items: MenuItem[];
 }
 
-const MENU_WIDTH = 244;
-// 与 CSS 的 --menu-item-height 同步，DOM 尚未量到尺寸时定位也不能沿用旧的高行距。
-const ITEM_HEIGHT = 28;
-const SEP_HEIGHT = 9;
-/** 指针从父层跨进子层要走过两层之间那条缝，这段时间里子层不能被判成「已离开」。 */
-const SUBMENU_GRACE_MS = 220;
-
-const menuHeight = (items: MenuItem[]) =>
-  items.reduce((sum, item) => sum + (item.separator ? SEP_HEIGHT : ITEM_HEIGHT), 0) + 12;
-
 /** 把分组后的菜单摊平：空组丢掉，组与组之间才画分隔线。 */
 export function flatMenu(groups: MenuItem[][]): MenuItem[] {
   return groups
@@ -48,166 +40,47 @@ export function flatMenu(groups: MenuItem[][]): MenuItem[] {
     .flatMap((group, index) => (index === 0 ? group : [{ separator: true }, ...group]));
 }
 
-/** 一层菜单。带 children 的那行点开在右侧再起一层，父层留着不关。 */
-function MenuList({
-  items,
-  left,
-  top,
-  onClose,
-  onPick,
-  onEnter,
-  onLeave,
-}: {
-  items: MenuItem[];
-  left: number;
-  top: number;
-  onClose: () => void;
-  /** 只有最外层传：选中末端动作时把整条菜单链关掉。 */
-  onPick?: () => void;
-  /** 只有子层传：指针进到子层时，父层那份「已离开」要撤回。 */
-  onEnter?: () => void;
-  onLeave?: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ left, top });
-  /** 展开着的那层子菜单：行号与它自己的坐标。 */
-  const [sub, setSub] = useState<{ index: number; left: number; top: number } | null>(null);
-  const grace = useRef<number | null>(null);
-
-  const hold = useCallback(() => {
-    if (grace.current === null) return;
-    window.clearTimeout(grace.current);
-    grace.current = null;
-  }, []);
-
-  const drop = useCallback(() => {
-    hold();
-    grace.current = window.setTimeout(() => {
-      grace.current = null;
-      setSub(null);
-    }, SUBMENU_GRACE_MS);
-  }, [hold]);
-
-  useEffect(
-    () => () => {
-      if (grace.current !== null) window.clearTimeout(grace.current);
-    },
-    []
-  );
-
-  useLayoutEffect(() => {
-    const box = ref.current?.getBoundingClientRect();
-    const height = box?.height ?? menuHeight(items);
-    const width = box?.width ?? MENU_WIDTH;
-    setPosition({
-      left: Math.max(8, Math.min(left, window.innerWidth - width - 8)),
-      top: Math.max(8, Math.min(top, window.innerHeight - height - 8)),
-    });
-  }, [left, top, items]);
-
-  return (
-    <>
-      <div
-        ref={ref}
-        className="context-menu"
-        role="menu"
-        style={{ left: position.left, top: position.top }}
-        onMouseEnter={() => {
-          hold();
-          onEnter?.();
-        }}
-        onMouseLeave={() => {
-          drop();
-          onLeave?.();
-        }}
-      >
-        {items.map((item, index) =>
-          item.separator ? (
-            <div key={`sep-${index}`} className="menu-separator" role="separator" />
-          ) : (
-            <button
-              key={`${item.label}-${index}`}
-              type="button"
-              role="menuitem"
-              className={`menu-item${item.danger ? " is-danger" : ""}${
-                sub?.index === index ? " is-open" : ""
-              }`}
-              disabled={item.disabled}
-              title={item.hint}
-              onMouseEnter={(event) => {
-                hold();
-                if (!item.children) {
-                  if (sub !== null) setSub(null);
-                  return;
-                }
-                const box = event.currentTarget.getBoundingClientRect();
-                setSub({ index, left: box.right - 4, top: box.top - 6 });
-              }}
-              onClick={(event) => {
-                if (item.children) {
-                  const box = event.currentTarget.getBoundingClientRect();
-                  setSub({ index, left: box.right - 4, top: box.top - 6 });
-                  return;
-                }
-                if (onPick) onPick();
-                else onClose();
-                item.onSelect?.();
-              }}
-            >
-              {item.icon ? (
-                <item.icon size={15} aria-hidden="true" />
-              ) : item.checked ? (
-                <Check size={15} aria-hidden="true" />
-              ) : (
-                <span className="menu-icon-spacer" />
-              )}
-              <span className="menu-item-label">{item.label}</span>
-              {item.shortcut ? <span className="menu-accel">{item.shortcut}</span> : null}
-              {item.children ? <ChevronRight size={13} aria-hidden="true" /> : null}
-            </button>
-          )
-        )}
-      </div>
-      {sub && items[sub.index]?.children ? (
-        <MenuList
-          items={items[sub.index].children ?? []}
-          left={sub.left}
-          top={sub.top}
-          onClose={() => setSub(null)}
-          onPick={onPick ?? onClose}
-          onEnter={hold}
-          onLeave={drop}
-        />
-      ) : null}
-    </>
-  );
+/**
+ * 将业务 MenuItem 转换为设计系统标准 UiMenuItem 格式
+ */
+function toUiMenuItem(item: MenuItem): UiMenuItem {
+  if (item.separator) {
+    return { kind: "separator" };
+  }
+  return {
+    kind: "item",
+    label: item.label ?? "",
+    icon: item.icon as string | LucideIconType | ReactNode,
+    shortcut: item.shortcut,
+    disabled: item.disabled,
+    checked: item.checked,
+    danger: item.danger,
+    run: item.onSelect,
+    submenu: item.children ? item.children.map(toUiMenuItem) : undefined,
+  };
 }
 
-export default function ContextMenu({ anchor, onClose }: { anchor: MenuAnchor; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    // 监听键盘 Esc 和窗口失焦（如点击原生 WebView2 或切换窗口），保证右键菜单自然关闭
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("blur", onClose);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", onClose);
-    };
-  }, [onClose]);
+/**
+ * 右键上下文菜单组件
+ * 内部已平滑升级为基于 floating-ui 的设计系统 UI 组件，
+ * 获得自动视口边缘避让、子菜单平滑防抖展开以及全局层级栈控制。
+ */
+export default function ContextMenu({
+  anchor,
+  onClose,
+}: {
+  anchor: MenuAnchor;
+  onClose: () => void;
+}) {
+  const uiItems = useMemo(() => anchor.items.map(toUiMenuItem), [anchor.items]);
 
   return (
-    <>
-      <div
-        className="menu-overlay"
-        onClick={onClose}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          onClose();
-        }}
-      />
-      <MenuList items={anchor.items} left={anchor.x} top={anchor.y} onClose={onClose} />
-    </>
+    <UiMenu
+      open={true}
+      onClose={onClose}
+      anchor={{ x: anchor.x, y: anchor.y }}
+      items={uiItems}
+      placement="bottom-start"
+    />
   );
 }

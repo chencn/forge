@@ -1,0 +1,136 @@
+/* TextField / SearchField */
+.input {
+  height: var(--h-field, 28px);
+  min-width: 0;
+  padding: 0 8px;
+  appearance: none;
+  border: 0;
+  background: var(--bg-input, var(--bg-app, #191a1c));
+  color: var(--fg-strong, #dfe1e5);
+  font-size: var(--fs-ui, 13px);
+  outline: none;
+  box-sizing: border-box;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.input::placeholder,
+.searchInput::placeholder {
+  color: var(--fg-faint, #5f6269);
+}
+
+.mono {
+  font-family: var(--font-mono, monospace);
+}
+
+.framed {
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-field, var(--bg-button, transparent));
+  box-shadow: inset 0 0 0 1px var(--border-button, var(--border, #40434a));
+  transition: box-shadow var(--dur-fast, 80ms) ease;
+}
+
+.framed:focus,
+.framed:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring, var(--accent, #3871e1)),
+    0 0 0 1px var(--focus-ring, var(--accent, #3871e1));
+}
+
+.framed:disabled {
+  background: transparent;
+  color: var(--fg-faint, #5f6269);
+  box-shadow: inset 0 0 0 1px var(--border, #26282c);
+}
+
+.bare {
+  border: 0;
+  padding: 0;
+  background: none;
+}
+
+.input[aria-invalid="true"].framed,
+.invalid.framed {
+  box-shadow:
+    inset 0 0 0 1px var(--danger, #f57e84),
+    0 0 0 1px var(--danger, #f57e84);
+}
+
+.searchField {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--h-field, 28px);
+  min-width: 0;
+  padding: 0 4px 0 8px;
+  box-sizing: border-box;
+}
+
+.leading {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted, #8c8f95);
+  margin-right: 2px;
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  appearance: none;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--fg-strong, #dfe1e5);
+  font-size: var(--fs-ui, 13px);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.input:focus-visible,
+.searchInput:focus-visible {
+  outline: none;
+}
+
+.multiline {
+  height: auto;
+  align-items: flex-start;
+  padding-block: 4px;
+}
+
+.multiline .leading {
+  margin-top: 3px;
+}
+
+.searchArea {
+  resize: none;
+  font-family: inherit;
+  line-height: 20px;
+  padding: 0;
+}
+
+.searchAreaSingle {
+  height: 20px;
+  overflow: hidden;
+}
+
+.invalid .searchInput {
+  color: var(--danger, #f57e84);
+}
+
+.large {
+  height: 38px;
+  padding: 0 8px 0 12px;
+  gap: 6px;
+}
+
+.large .searchInput {
+  font-size: 14px;
+  color: var(--fg-strong, #dfe1e5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .framed {
+    transition: none;
+  }
+}

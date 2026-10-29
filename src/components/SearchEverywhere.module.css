@@ -1,0 +1,513 @@
+/* Search Everywhere 对齐 openidea everywhere 标准样式规范 */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog, 1000);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  background: transparent;
+}
+
+.dialog {
+  --se-bg-header: var(--bg-frame, var(--bg-app));
+  max-height: 80vh;
+  width: min(760px, calc(100vw - 48px));
+  background: var(--bg-popup, var(--bg-elev));
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  font-size: var(--fs-ui, 13px);
+  border: 1px solid var(--border-popup, var(--border, #33353b));
+  border-radius: var(--radius-popup-large, 8px);
+  box-shadow: var(--shadow-popup, 0 16px 40px rgba(0, 0, 0, 0.35));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 8px 0 8px;
+  background: var(--se-bg-header);
+  border-bottom: 1px solid var(--border-popup, var(--border, #33353b));
+}
+
+.tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tab {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small, 4px);
+  background: none;
+  color: var(--fg, #d1d3d9);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--bg-toolbar-hover, var(--bg-hover, #2e2f30));
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent, #3871e1));
+  outline-offset: -1px;
+}
+
+.tabActive,
+.tabActive:hover {
+  background: var(--bg-tab-selected, var(--accent-soft, rgba(56, 113, 225, 0.2)));
+  border-color: var(--border-tab-selected, var(--accent, #3871e1));
+  color: var(--fg-strong, #ffffff);
+}
+
+.headerActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.include {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg, #d1d3d9);
+  cursor: pointer;
+  user-select: none;
+}
+
+.include input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.scopeSelect {
+  height: 24px;
+  padding: 0 6px;
+  border-radius: var(--radius-small, 4px);
+  border: 1px solid var(--border, #33353b);
+  background: var(--bg-input, #191a1c);
+  color: var(--fg, #d1d3d9);
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+  max-width: 220px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.scopeSelect:focus {
+  border-color: var(--accent, #3871e1);
+}
+
+/* 微型动作按钮（对齐 openidea IconButton size="small"） */
+.headerButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small, 4px);
+  background: transparent;
+  color: var(--fg-muted, #8c8f95);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.headerButton:hover {
+  background: var(--bg-toolbar-hover, var(--bg-hover, #2e2f30));
+  color: var(--fg-strong, #ffffff);
+}
+
+.headerButtonActive,
+.headerButton[aria-pressed="true"] {
+  background: var(--bg-toolbar-selected, var(--bg-tree-selected, rgba(56, 113, 225, 0.2)));
+  color: var(--fg-strong, #ffffff);
+}
+
+.queryRow {
+  flex: none;
+  padding: 6px 8px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px 0 8px;
+  background: var(--bg-input, #191a1c);
+  border: 2px solid var(--border, #33353b);
+  border-radius: var(--radius-small, 4px);
+}
+
+.field:focus-within {
+  border-color: var(--border-strong, var(--accent, #3871e1));
+}
+
+.magnifier {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  height: 22px;
+  padding: 0 2px;
+  border: none;
+  border-radius: var(--radius-small, 4px);
+  background: none;
+  color: var(--fg-subtle, #73767c);
+  cursor: pointer;
+}
+
+.magnifier:hover {
+  background: var(--bg-hover, #2e2f30);
+  color: var(--fg, #d1d3d9);
+}
+
+.query {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: none;
+  border: 0;
+  outline: none;
+  color: var(--fg-strong, #dfe1e5);
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  font-size: var(--fs-ui, 13px);
+  caret-color: var(--fg-strong, #dfe1e5);
+}
+
+.spinner {
+  flex: none;
+  animation: spin 1s linear infinite;
+  color: var(--fg-subtle, #73767c);
+}
+
+@keyframes spin {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.hint {
+  flex: none;
+  color: var(--fg-faint, #5f6269);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.results {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.results::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.results::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb, rgba(148, 163, 184, 0.58));
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: content-box;
+}
+
+.results::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover, rgba(148, 163, 184, 0.72));
+}
+
+.results::-webkit-scrollbar-track,
+.results::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 列表行与分节标题：左右缩进 6px，圆角 5px，对齐 IDEA Popup.Selection.arc */
+.row,
+.section {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  box-sizing: border-box;
+}
+
+.row {
+  margin: 0 6px;
+  padding: 0 8px;
+  gap: 6px;
+  border-radius: 5px;
+  color: var(--fg-strong, #dfe1e5);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.row:hover {
+  background: var(--bg-tree-hover, rgba(255, 255, 255, 0.05));
+}
+
+.rowActive,
+.rowActive:hover {
+  background: var(--bg-tree-selected, #2a4371);
+}
+
+/* 分节标题：小号弱化灰字，不加粗，高度 24px，左右缩进 6px */
+.section {
+  margin: 0 6px;
+  padding: 0 8px;
+  color: var(--fg-muted, #8c8f95);
+  font-size: 11px;
+  font-weight: normal;
+  user-select: none;
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  color: var(--fg-faint, #5f6269);
+  font-size: 12px;
+}
+
+.icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-subtle, #73767c);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  color: var(--fg-strong, #dfe1e5);
+}
+
+/* 匹配字符高亮：背景色带有 3px 圆角与 clone 断行渲染 */
+.matchHighlight {
+  background: var(--bg-search-match, #2d5a3f);
+  color: var(--fg-search-match, #73bd79);
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.location {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle, #73767c);
+  font-size: 12px;
+}
+
+.lineSuffix {
+  color: var(--fg-muted, #8c8f95);
+  font-size: 11px;
+}
+
+.shortcut {
+  font-size: 11px;
+  color: var(--fg-subtle, #73767c);
+  font-family: var(--font-keys, monospace);
+}
+
+.right {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle, #73767c);
+  text-align: right;
+  font-size: 12px;
+}
+
+.rightActive {
+  color: var(--fg-muted, #8c8f95);
+}
+
+.repeat {
+  color: var(--fg-faint, #5f6269);
+}
+
+.actionRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.disabled .name,
+.disabled .location,
+.disabled .right {
+  color: var(--fg-faint, #5f6269);
+}
+
+/* 更多项：高度 24px，左缩进 26px，使用弱化灰字 */
+.more {
+  padding-left: 26px;
+  color: var(--fg-subtle, #73767c);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.more:hover {
+  text-decoration: underline;
+}
+
+/* 代码预览区：固定 220px，顶部 1px 边框 */
+.preview {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  height: 220px;
+  border-top: 1px solid var(--border-popup, #33353b);
+  background: var(--bg-app, #191a1c);
+  position: relative;
+  overflow: hidden;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-ui, 13px);
+  line-height: 19px;
+}
+
+.previewEditor {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.previewHidden {
+  visibility: hidden;
+}
+
+.previewEmpty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint, #5f6269);
+  font-family: var(--font-ui, sans-serif);
+  font-size: 12px;
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 30px;
+  padding: 0 12px;
+  background: var(--se-bg-header);
+  border-top: 1px solid var(--border-popup, #33353b);
+  color: var(--fg-subtle, #73767c);
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.footerInfo {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.footerLink {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link, #71a1fe);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.footerLink:hover {
+  color: var(--link-hover, #92b7ff);
+  text-decoration: underline;
+}
+
+.historyMenu {
+  position: absolute;
+  top: 74px;
+  left: 12px;
+  z-index: 1010;
+  min-width: 240px;
+  max-width: 380px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--bg-popup, #26282c);
+  border: 1px solid var(--border-popup, #33353b);
+  border-radius: var(--radius-popup, 6px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+}
+
+.historyHeader {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--fg-muted, #8c8f95);
+  user-select: none;
+}
+
+.historyItem {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--fg-strong, #dfe1e5);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.historyItem:hover {
+  background: var(--bg-hover, #2e2f30);
+}

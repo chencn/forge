@@ -139,7 +139,7 @@ export function terminalColors(isDark?: boolean): Record<string, string> {
       foreground: tokenColor("--text-primary"),
       cursor: tokenColor("--accent-blue"),
       selectionBackground: tokenColor("--selection-bg"),
-      // 滚动条滑块取设计令牌，与代码区 monaco 滚动条一致
+      // 滚动条滑块取设计令牌，与代码区编辑器的滚动条一致
       scrollbarSliderBackground: tokenColor("--scrollbar-thumb"),
       scrollbarSliderHoverBackground: tokenColor("--scrollbar-thumb-hover"),
       scrollbarSliderActiveBackground: tokenColor("--scrollbar-thumb-active"),

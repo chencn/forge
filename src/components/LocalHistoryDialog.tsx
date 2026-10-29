@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { History, RotateCcw, X } from "lucide-react";
-import { monaco } from "../lib/monacoEditor";
-import { monoFont } from "../lib/monacoEnv";
+import { applyFontMetrics } from "../lib/cmEditor";
+import { createDiffView } from "../lib/cm/diffView";
 import { useI18n } from "../i18n";
 import {
   getSnapshot,
@@ -21,8 +21,6 @@ interface LocalHistoryDialogProps {
   onRestored: (content: FileContent) => void;
   onClose: () => void;
 }
-
-let historyDiffSeq = 0;
 
 function formatTime(ms: number): string {
   const date = new Date(ms);
@@ -53,10 +51,6 @@ export default function LocalHistoryDialog({
   const [restoring, setRestoring] = useState(false);
 
   const diffHostRef = useRef<HTMLDivElement>(null);
-  const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
-  const modelsRef = useRef<{ left: monaco.editor.ITextModel; right: monaco.editor.ITextModel } | null>(
-    null
-  );
 
   // 挂载时拉取快照清单（最新在前）
   useEffect(() => {
@@ -94,67 +88,25 @@ export default function LocalHistoryDialog({
     };
   }, [path, root, selectedAt]);
 
-  // 初始化 Diff Editor
+  /**
+   * 比对视图：选中哪一条快照就换一份正文，两侧都只读、并排。
+   *
+   * 换正文重挂一台，比在旧视图上换文档省事——`@codemirror/merge` 的 chunk 跟着两份文档一起建。
+   */
   useEffect(() => {
     const host = diffHostRef.current;
     if (!host) return;
-
-    const editor = monaco.editor.createDiffEditor(host, {
-      readOnly: true,
-      renderSideBySide: true,
-      automaticLayout: true,
-      fontFamily: monoFont(),
-      fontSize: 12.5,
-      minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      renderOverviewRuler: false,
-      scrollbar: { verticalScrollbarSize: 14, horizontalScrollbarSize: 10, useShadows: false },
-      overviewRulerLanes: 0,
-      diffWordWrap: "off",
-      editContext: false,
+    applyFontMetrics(host, 12.5);
+    const view = createDiffView({
+      parent: host,
+      original: selectedSnapshot ? selectedSnapshot.contents : "",
+      modified: currentContent,
+      language,
+      path,
+      mode: "side",
     });
-    diffEditorRef.current = editor;
-
-    return () => {
-      diffEditorRef.current = null;
-      editor.dispose();
-      if (modelsRef.current) {
-        modelsRef.current.left.dispose();
-        modelsRef.current.right.dispose();
-        modelsRef.current = null;
-      }
-    };
-  }, []);
-
-  // 每次选中快照内容变更时，更新 Diff Editor 的两侧 Model
-  useEffect(() => {
-    const editor = diffEditorRef.current;
-    if (!editor) return;
-
-    if (modelsRef.current) {
-      modelsRef.current.left.dispose();
-      modelsRef.current.right.dispose();
-      modelsRef.current = null;
-    }
-
-    const seq = (historyDiffSeq += 1);
-    const leftText = selectedSnapshot ? selectedSnapshot.contents : "";
-    const rightText = currentContent;
-
-    const left = monaco.editor.createModel(
-      leftText,
-      language,
-      monaco.Uri.parse(`inmemory://forge/local-history-${seq}-snapshot`)
-    );
-    const right = monaco.editor.createModel(
-      rightText,
-      language,
-      monaco.Uri.parse(`inmemory://forge/local-history-${seq}-current`)
-    );
-
-    modelsRef.current = { left, right };
-    editor.setModel({ original: left, modified: right });
-  }, [currentContent, language, selectedSnapshot]);
+    return () => view.destroy();
+  }, [currentContent, language, path, selectedSnapshot]);
 
   const handleRestore = useCallback(async () => {
     if (!selectedSnapshot || restoring) return;

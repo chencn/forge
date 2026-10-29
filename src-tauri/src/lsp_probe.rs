@@ -350,8 +350,9 @@ fn probe_and_reconcile(app: &tauri::AppHandle) -> crate::lsp_config::LspProbeRep
     for (id, entry) in &mut config.servers {
         let probe = resolve_command(&entry.effective_program());
         let installed = probe.is_some();
-        // 只有外部档需要本机真装着；`builtin` 用的是 Monaco 自带的语义，不关装没装。
-        if !installed && entry.mode == "lsp" {
+        // `builtin` 与 `lsp` 都得真起一条进程（编辑器换成 CodeMirror 之后没有「渲染进程里的
+        // 内置语义」可退），所以两档都要求本机装着那个程序。
+        if !installed && entry.mode != "off" {
             entry.mode = "off".to_string();
             changed = true;
         }

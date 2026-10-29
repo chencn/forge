@@ -1,7 +1,8 @@
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
-import hljs from "highlight.js";
 import type { AiEntry } from "../lib/aiRuntime";
 import { useI18n } from "../i18n";
+import { hasGrammar } from "../lib/cm/grammars";
+import { useGrammarsReady } from "../lib/cm/useGrammarsReady";
 import { describeAiTool, parseToolDiff, toolLineRange, toolLiveDiffCounts, toolObject, toolReadLines, toolText as show } from "../lib/aiTools";
 import type { ToolView } from "../lib/aiTools";
 import { AI_CLOCK_AFTER_MS, formatAiClock, useAiElapsed } from "../lib/aiClock";
@@ -256,10 +257,21 @@ export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasReques
   </details>;
 });
 
-/** 展开才序列化的大块内容：JSON/代码按语言高亮（复用聊天那套 hljs），认不出的语言保持素文本。 */
+/**
+ * 展开才序列化的大块内容：JSON/代码按语言高亮（复用聊天那套 Lezer 高亮）。
+ *
+ * 认不出的语言不再猜——highlight.js 的 highlightAuto 会把 .env 猜成 bash 染出一片错色。
+ * 但带着真实文件行号来时必须照样出编号块：行号说的是「这是第 12~80 行」，比颜色重要。
+ */
 export function CodeText({ text, lang, startLine }: { text: string; lang?: string; startLine?: number }) {
   const clean = (lang || "").trim().split(/\s+/)[0].toLowerCase();
-  const html = useMemo(() => clean && hljs.getLanguage(clean) ? renderCodeBlock(text, clean, undefined, false, startLine ?? 1) : null, [text, clean, startLine]);
+  const known = hasGrammar(clean);
+  // 语法包懒加载：第一次遇到这门语言时先出素文本，装好后计数 +1 触发这一次重算。
+  const ready = useGrammarsReady(known ? [clean] : []);
+  const html = useMemo(
+    () => (known || startLine !== undefined ? renderCodeBlock(text, clean, undefined, startLine ?? 1) : null),
+    [text, clean, startLine, known, ready]
+  );
   return html
     ? <div className="ai-tool-source-code" dangerouslySetInnerHTML={{ __html: html }} />
     : <pre>{text}</pre>;
@@ -387,7 +399,7 @@ function toSplitRows(lines: ReturnType<typeof parseToolDiff>): SplitRow[] {
   return rows;
 }
 
-/** 补丁明细的 diff：Git 面板同款 Monaco DiffEditor（行内/分栏跟随全局偏好）。 */
+/** 补丁明细的 diff：Git 面板同款比对视图（行内/分栏跟随全局偏好）。 */
 function PatchDiff({ diff, path }: { diff: string; path: string }) {
   const [mode] = useAiDiffViewMode();
   return <div className="ai-patch-diff"><AiDiffEditor diff={diff} path={path} sideBySide={mode === "split"} /></div>;
@@ -484,9 +496,11 @@ export default function AiToolDetails({ entry }: AiToolDetailsProps) {
     </ToolSection> : null}
     {view.source ? <>
       {/* 单文件读取展开后只有代码本体：路径在摘要行出现过，这里不再重复标题。 */}
-      <div className="ai-tool-source-code" dangerouslySetInnerHTML={{ __html: renderCodeBlock(
-        view.source.content.split(/\r?\n/).slice(0, view.source.end - view.source.start + 1).join("\n"),
-        view.source.path.split(".").pop() || undefined, undefined, false, view.source.start ?? 1) }} />
+      <CodeText
+        text={view.source.content.split(/\r?\n/).slice(0, view.source.end - view.source.start + 1).join("\n")}
+        lang={view.source.path.split(".").pop()}
+        startLine={view.source.start ?? 1}
+      />
       {view.source.truncated ? <div className="ai-muted">{t("ai.tool.truncated")}</div> : null}
     </> : null}
     {view.patches.length ? view.patches.map((patch, index) => <section key={index} className="ai-tool-file-change">

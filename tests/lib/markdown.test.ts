@@ -1,33 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
 
 // node 环境里 DOMPurify 拿不到 window，连 sanitize 方法都不会挂上（和
-// tests/components/AiSessionPane.test.ts 同样的处理）。所以这里断言的是 marked + hljs
+// tests/components/AiSessionPane.test.ts 同样的处理）。所以这里断言的是 marked + Lezer
 // 产出的标记形状；白名单真正洗掉了什么，只能在浏览器里验。
 const sanitize = vi.hoisted(() => vi.fn((html: string) => html));
 vi.mock("dompurify", () => ({ default: { sanitize } }));
 
 import { renderChatMarkdown, renderCodeBlock, renderMarkdown } from "../../src/lib/markdown";
+import { prepareHighlight } from "../../src/lib/cm/grammars";
 
 describe("renderCodeBlock", () => {
-  it("highlights a known language and labels it", () => {
+  it("highlights a known language and labels it", async () => {
+    // 语法包懒加载：没装上之前出的是转义后的原文，装上之后同一份正文才有 tok-* 类。
+    expect(await prepareHighlight(["typescript"])).toBe(true);
     const html = renderCodeBlock("const a = 1;", "TypeScript");
     expect(html).toContain('<div class="code-block-wrapper">');
-    expect(html).toContain('class="hljs language-typescript"');
+    expect(html).toContain('class="language-typescript"');
     expect(html).toContain('<span class="code-lang-tag">typescript</span>');
-    expect(html).toContain('<span class="hljs-keyword">const</span>');
+    expect(html).toContain("tok-keyword");
   });
 
   it("escapes code when highlighting is skipped", () => {
     const html = renderCodeBlock("<script>alert(1)</script>", "plaintext");
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain("<script>");
-    expect(html).not.toContain("hljs-keyword");
+    expect(html).not.toContain("tok-");
   });
 
   it("still wraps an unknown language instead of dropping it", () => {
     const html = renderCodeBlock("plain words only", "klingon");
-    expect(html).toContain('class="hljs language-klingon"');
+    expect(html).toContain('class="language-klingon"');
     expect(html).toContain("<pre><code");
+    // 不再猜语言：认不出就保持素文本，不会把一句白话染成某种语言的配色。
+    expect(html).not.toContain("tok-");
   });
 
   it("omits the copy affordance unless a label is given", () => {
@@ -51,10 +56,11 @@ describe("renderCodeBlock", () => {
 });
 
 describe("renderChatMarkdown", () => {
-  it("renders fenced code with highlight and a copy button", () => {
-    const html = renderChatMarkdown("```ts\nconst a = 1;\n```\n", "Copy");
-    expect(html).toContain('class="hljs language-ts"');
-    expect(html).toContain('<span class="hljs-keyword">const</span>');
+  it("renders fenced code with highlight and a copy button", async () => {
+    await prepareHighlight(["ts"]);
+    const html = renderChatMarkdown("```ts\nlet b = 2;\n```\n", "Copy");
+    expect(html).toContain('class="language-ts"');
+    expect(html).toContain("tok-keyword");
     expect(html).toContain('data-code-copy="1"');
     expect(html).toContain(">Copy</span>");
   });
@@ -110,8 +116,17 @@ describe("renderChatMarkdown", () => {
 describe("renderMarkdown", () => {
   it("keeps the doc-preview code block copy-free", () => {
     const html = renderMarkdown("```ts\nconst a = 1;\n```", "D:/docs/a.md", (p) => `asset:///${p}`);
-    expect(html).toContain('class="hljs language-ts"');
+    expect(html).toContain('class="language-ts"');
     expect(html).toContain('<span class="code-lang-tag">ts</span>');
     expect(html).not.toContain("data-code-copy");
+  });
+
+  it("turns a mermaid fence into a placeholder holding its source", () => {
+    const html = renderMarkdown("```mermaid\ngraph TD;\nA-->B;\n```", "D:/docs/a.md", (p) => `asset:///${p}`);
+    expect(html).toContain('data-mermaid=""');
+    expect(html).toContain("graph TD;");
+    // 占位不是代码块：没有语言标签，也没有逐块高亮。
+    expect(html).not.toContain("code-lang-tag");
+    expect(html).not.toContain("code-block-wrapper");
   });
 });
