@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from "react";
+import { isValidElement, type ComponentType, type ReactNode } from "react";
 import * as LucideIcons from "lucide-react";
 import {
   LibraryIcon,
@@ -39,6 +39,9 @@ import {
   Filter,
   Trash2,
   Bell,
+  Undo2,
+  ArrowDownToLine,
+  Eye,
 } from "lucide-react";
 
 export type LucideIconType = ComponentType<{
@@ -82,6 +85,10 @@ const ICON_NAME_MAP: Record<string, LucideIconType> = {
   filter: Filter,
   trash: Trash2,
   bell: Bell,
+  undo: Undo2 as unknown as LucideIconType,
+  "arrow-down-to-line": ArrowDownToLine as unknown as LucideIconType,
+  "git-pull": ArrowDownToLine as unknown as LucideIconType,
+  eye: Eye as unknown as LucideIconType,
   library: LibraryIcon as unknown as LucideIconType,
   scratches: ScratchesIcon as unknown as LucideIconType,
   locate: LocateIcon as unknown as LucideIconType,
@@ -107,32 +114,47 @@ export function Icon({ icon, name, size = 16, className, color }: IconProps) {
   const target = icon ?? name;
   if (!target) return null;
 
-  // 如果已经是 React 元素
-  if (typeof target === "object" && "type" in (target as object)) {
-    return target as ReactNode;
+  // 如果已经是 React 元素（如 JSX）
+  if (isValidElement(target)) {
+    return target;
   }
 
-  // 如果直接传入了 Lucide 图标组件（函数式或类）
-  if (typeof target === "function") {
-    const Component = target as LucideIconType;
+  // 如果传入了 Lucide 图标组件（包含标准函数式、类或 React.forwardRef 对象）
+  if (
+    typeof target === "function" ||
+    (typeof target === "object" && target !== null && "$$typeof" in (target as object))
+  ) {
+    const Component = target as unknown as ComponentType<any>;
     return <Component size={size} className={className} color={color} />;
   }
 
   // 如果传入了字符串名称
   if (typeof target === "string") {
+    const lower = target.toLowerCase();
     // 1. 尝试直接从预设映射表拿
-    const mapped = ICON_NAME_MAP[target.toLowerCase()];
+    const mapped = ICON_NAME_MAP[lower];
     if (mapped) {
-      const Component = mapped;
+      const Component = mapped as unknown as ComponentType<any>;
       return <Component size={size} className={className} color={color} />;
     }
 
-    // 2. 尝试从 Lucide 全量导出的 PascalCase 名称找（例如 "ChevronDown" 或 "search"）
+    // 2. 尝试从 Lucide 全量导出中查找（支持 kebab-case、PascalCase、数字变体如 Undo2）
     const pascal = target
       .replace(/(^\w|-\w)/g, (s) => s.replace("-", "").toUpperCase());
-    const Dynamic = (LucideIcons as Record<string, any>)[pascal];
-    if (typeof Dynamic === "function") {
-      return <Dynamic size={size} className={className} color={color} />;
+    const candidates = [
+      pascal,
+      `${pascal}2`,
+      `Lucide${pascal}`,
+    ];
+    for (const cand of candidates) {
+      const Dynamic = (LucideIcons as Record<string, any>)[cand];
+      if (
+        typeof Dynamic === "function" ||
+        (typeof Dynamic === "object" && Dynamic !== null && "$$typeof" in Dynamic)
+      ) {
+        const Component = Dynamic as unknown as ComponentType<any>;
+        return <Component size={size} className={className} color={color} />;
+      }
     }
   }
 

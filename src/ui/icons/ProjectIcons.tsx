@@ -115,8 +115,8 @@ export function LocateIcon(props: SVGProps<SVGSVGElement>) {
 export function CollapseAllIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
-      <path d="M4.5 2.5L8 6L11.5 2.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4.5 13.5L8 10L11.5 13.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4.5 2.5L8 6L11.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4.5 13.5L8 10L11.5 13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -127,8 +127,8 @@ export function CollapseAllIcon(props: SVGProps<SVGSVGElement>) {
 export function ExpandAllIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
-      <path d="M4.5 5.5L8 2L11.5 5.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4.5 10.5L8 14L11.5 10.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4.5 5.5L8 2L11.5 5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4.5 10.5L8 14L11.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

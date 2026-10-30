@@ -37,12 +37,12 @@
 }
 
 .primary {
-  background: var(--bg-button-primary, var(--accent, #3871e1));
-  color: var(--fg-button-primary, #ffffff);
+  background: var(--bg-button-primary, var(--button-solid, var(--accent, #3871e1)));
+  color: var(--fg-button-primary, var(--button-solid-text, #ffffff));
 }
 
 .primary:not(:disabled):hover {
-  background: var(--bg-button-primary-hover, color-mix(in srgb, var(--accent, #3871e1) 88%, #ffffff));
+  background: var(--bg-button-primary-hover, color-mix(in srgb, var(--bg-button-primary, var(--button-solid, var(--accent, #3871e1))) 88%, #ffffff));
 }
 
 .secondary {
@@ -82,14 +82,14 @@
   color: var(--fg-faint, #5f6269);
 }
 
-/* ActionButton / Toolbar 图标按钮 */
+/* ActionButton / Toolbar 图标按钮（1:1 对标 IntelliJ IDEA / ExpUI 规范） */
 .iconButton {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-toolbar-button, 6px);
-  color: var(--fg-muted, #8c8f95);
+  color: var(--fg-icon, var(--icon-color, var(--fg-muted, #6c707e)));
   background: transparent;
   border: none;
   cursor: pointer;
@@ -105,16 +105,16 @@
 }
 
 .iconButton:not(:disabled):hover {
-  background: var(--bg-toolbar-hover, rgba(255, 255, 255, 0.08));
-  color: var(--fg-strong, #dfe1e5);
+  background: var(--bg-toolbar-hover, color-mix(in srgb, var(--fg, currentColor) 8%, transparent));
+  color: var(--fg-emphasis, var(--fg-strong, #000000));
 }
 
 .iconButton:not(:disabled):active {
-  background: var(--bg-toolbar-pressed, rgba(255, 255, 255, 0.16));
+  background: var(--bg-toolbar-pressed, color-mix(in srgb, var(--fg, currentColor) 14%, transparent));
 }
 
 .iconButton:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: default;
 }
 
