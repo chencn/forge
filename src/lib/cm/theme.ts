@@ -17,12 +17,14 @@ export const forgeTheme = EditorView.theme({
     "--editor-line-number-current": "var(--fg-line-number-current)",
     "--editor-gutter-border": "var(--border-gutter, var(--border-color))",
     "--editor-caret-row": "var(--bg-editor-current-line)",
+    "--editor-indent-guide": "var(--border-indent-guide, var(--border-color))",
     "--editor-selection": "var(--bg-editor-selection, var(--selection-bg))",
     "--editor-selection-inactive": "var(--bg-editor-selection-inactive, var(--selection-bg))",
     "--editor-search": "var(--accent-amber-bg)",
     "--editor-search-current": "var(--accent-yellow)",
     "--editor-brace": "color-mix(in srgb, var(--accent-blue) 22%, transparent)",
-    "--editor-fold-chip": "color-mix(in srgb, var(--text-muted) 14%, transparent)",
+    "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--text-muted) 14%, transparent))",
+    "--bg-identifier-under-caret": "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg-editor, var(--text-primary)) 9%, transparent))",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
@@ -30,13 +32,13 @@ export const forgeTheme = EditorView.theme({
     cursor: "text",
     fontFamily: "var(--font-mono)",
     fontSize: "var(--editor-font-size, 13px)",
-    lineHeight: "var(--editor-line-height, 20px)",
+    lineHeight: "var(--editor-line-height, 22px)",
     fontVariantLigatures: "none",
     overscrollBehavior: "contain",
   },
   ".cm-content": {
-    // 上下留白照原来 Monaco 那版（padding top 10 / bottom 12），换了引擎不该把这一眼看得出的间距改掉。
-    padding: "10px 0 12px 0",
+    // 上下留白对齐 openidea（padding top 4 / bottom 8）；lineTop 已按 documentPadding 动态取，无联动断点。
+    padding: "4px 0 8px 0",
     caretColor: "var(--caret, var(--text-primary))",
   },
   ".cm-line": { padding: "0 16px 0 6px" },
@@ -44,7 +46,7 @@ export const forgeTheme = EditorView.theme({
   // 起点 6px 是 .cm-line 的左内边距，`1ch` 在这套等宽字体里正好是一个字符宽。
   ".cm-indent-guide": {
     backgroundImage:
-      "repeating-linear-gradient(to right, var(--editor-indent-guide, var(--border-color)) 0 1px, transparent 1px calc(var(--forge-guide-step) * 1ch))",
+      "repeating-linear-gradient(to right, var(--editor-indent-guide, var(--border-indent-guide, var(--border-color))) 0 1px, transparent 1px calc(var(--forge-guide-step) * 1ch))",
     backgroundSize: "calc(var(--forge-guide-levels) * var(--forge-guide-step) * 1ch) 100%",
     backgroundRepeat: "no-repeat",
     backgroundPosition: "6px 0",
@@ -59,12 +61,17 @@ export const forgeTheme = EditorView.theme({
   },
   ".cm-activeLine": { backgroundColor: "var(--editor-caret-row)" },
   ".cm-selectionMatch": {
-    backgroundColor: "color-mix(in srgb, var(--fg-editor, var(--text-primary)) 9%, transparent)",
+    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg-editor, var(--text-primary)) 9%, transparent))",
   },
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
     color: "inherit",
+    fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
+  },
+  ".cm-matchingTag, &.cm-focused .cm-matchingTag": {
+    backgroundColor: "var(--bg-matched-tag, var(--editor-brace))",
+    fontWeight: "inherit",
   },
   ".cm-nonmatchingBracket, &.cm-focused .cm-nonmatchingBracket": {
     color: "var(--accent-red)",
@@ -109,7 +116,7 @@ export const forgeTheme = EditorView.theme({
     height: "0",
     borderTop: "3px solid transparent",
     borderBottom: "3px solid transparent",
-    borderLeft: "6px solid var(--accent-red)",
+    borderLeft: "6px solid var(--gutter-deleted)",
     zIndex: "1",
   },
   ".change-lane-wedge.is-before": { bottom: "auto", top: "-3px" },
@@ -179,13 +186,14 @@ export const forgeTheme = EditorView.theme({
   },
   ".cm-panel button:hover": { backgroundColor: "var(--bg-hover)" },
 
-  // 查找命中：IDEA 把非当前项涂成浅黄、当前项描一圈边。
+  // 查找命中：非当前项 --bg-search-match，当前项 --bg-search-match-current 且描边（对齐 openidea theme）。
   ".cm-searchMatch": {
-    backgroundColor: "var(--editor-search)",
-    outline: "1px solid color-mix(in srgb, var(--accent-amber-text) 40%, transparent)",
+    backgroundColor: "var(--bg-search-match, var(--editor-search))",
+    borderRadius: "2px",
   },
   ".cm-searchMatch.cm-searchMatch-selected": {
-    backgroundColor: "var(--editor-search-current)",
+    backgroundColor: "var(--bg-search-match-current, var(--editor-search-current))",
+    outline: "1px solid color-mix(in srgb, var(--bg-search-match-current, var(--editor-search-current)) 60%, var(--fg-strong))",
   },
 
   // 诊断波浪线：颜色由 tokens.css 那两档方案色决定，深浅色各一套。

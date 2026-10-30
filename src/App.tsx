@@ -33,6 +33,8 @@ import {
 import MavenIcon from "./components/MavenIcon";
 import TitleBar from "./components/TitleBar";
 import ContextMenu from "./components/ContextMenu";
+import { ContextMenuGuardHost } from "./components/ContextMenuGuard";
+import { installContextMenuGuard } from "./lib/contextMenuGuard";
 import type { MenuAnchor, MenuItem } from "./components/ContextMenu";
 import ErrorBoundary from "./components/ErrorBoundary";
 import PromptDialog from "./components/PromptDialog";
@@ -73,12 +75,14 @@ import {
   NotificationsToolWindow,
   NotificationsHeaderActions,
   Balloons,
+  useUnreadNotifications,
 } from "./workbench/Notifications";
 import DepSyncToast from "./components/DepSyncToast";
 import { isManifestDeclarationFile } from "./lib/depSync";
 import { planWorkspaceFlush, type WorkspaceFlush } from "./lib/watchBatch";
 import {
   notificationCenter,
+  registerSettingsWriter,
   useNotificationCenter,
 } from "./lib/notifications";
 import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
@@ -119,6 +123,7 @@ import {
 import {
   EMPTY_TREE_HASH,
   gitCommitDetail,
+  gitApplyPatch,
   gitCommitFile,
   gitDiffText,
   gitIgnoreRule,
@@ -275,6 +280,8 @@ interface DiffTab {
   landOn?: "first" | "last";
   /** 跳到源码落在那个工作区文件上（绝对路径）；工作区里没有对应文件时不给。 */
   openIn?: string;
+  /** 预览标签：会被下一个预览顶替（IDEA 提交树双击打开的那一档）。 */
+  preview?: boolean;
 }
 
 /**
@@ -283,7 +290,7 @@ interface DiffTab {
  * `tabId` 是要写回哪一颗标签：IDEA 的比对标签装的是整条链，走链只换里面那一篇，所以这一步
  * 带着它自己那颗回来，不再新开。`land` 是上下箭头走到本篇尽头转过来时才给的落点。
  */
-type ChainStep = { tabId: string; land?: "first" | "last" };
+type ChainStep = { tabId?: string; land?: "first" | "last"; /** 双击变更树开的那档：预览标签，会被下一个预览顶替。 */ preview?: boolean };
 
 /** 比对里一篇文件的两条路径与状态：提交清单和 name-status 都满足这一份。 */
 type DiffFileRef = { path: string; oldPath: string; status: string };
@@ -406,6 +413,8 @@ export default function App() {
 
   /** 当前项目最近 7 天通知历史（从单例通知总线响应式订阅）。 */
   const notifications = useNotificationCenter((s) => s.history);
+  // rail 徽标口径与 openidea 一致：只数 !read && logged（工具窗列表里未读的那部分）
+  const unreadNotifications = useUnreadNotifications();
 
   // 工作区项目切换时，通知总线自动切入对应项目的隔离存储，并重置关联浮层状态
   useEffect(() => {
@@ -424,11 +433,14 @@ export default function App() {
   const openSettingsTabRef = useRef<(module?: unknown) => void>(() => {});
 
   /**
-   * 统一上报错误与通知（1:1 对标 openidea 体系）：
+   * 统一上报错误与通知（1:1 对标 IntelliJ IDEA 体系）：
    * - 自动识别通知来源组（Git / Maven / LSP / System 等）；
    * - 严格遵循用户设置的组行为规则（气泡形态 Balloon/Sticky/None、是否记入历史、勿扰模式）；
    * - 支持快捷处置动作（Actions）。
    */
+  // 「不再显示」要写回用户设置：把 patch 递给通知中心（注册一次，patch 引用稳定）。
+  useEffect(() => registerSettingsWriter((p) => patch(p)), [patch]);
+
   const reportError = useCallback(
     (raw: string, titleKey?: string) => {
       const desc = describeError(raw, t);
@@ -462,16 +474,7 @@ export default function App() {
         groupTitle = "Maven";
       }
 
-      // 遵循用户组配置与勿扰模式
-      const groupRule = settings.notificationGroups[groupId] ?? {
-        displayType: "balloon",
-        log: true,
-        system: false,
-      };
-      const isDoNotDisturb = settings.notificationDoNotDisturb;
-      const isBalloon = !isDoNotDisturb && groupRule.displayType !== "none";
-      const isSticky = groupRule.displayType === "sticky";
-
+      // 组配置（弹出形态/是否记日志）由通知中心统一消费，这里只报语义。
       // 针对具体错误挂载交互动作 Actions
       const actions = [];
       if (groupId === "git") {
@@ -487,14 +490,11 @@ export default function App() {
         title,
         content: desc,
         level: "error",
-        balloon: isBalloon,
-        sticky: isSticky,
-        logged: groupRule.log,
         actions: actions.length > 0 ? actions : undefined,
         projectRoot: workspaceRoot ?? undefined,
       });
     },
-    [settings.notificationDoNotDisturb, settings.notificationGroups, t, workspaceRoot]
+    [t, workspaceRoot]
   );
 
   const markAllNotificationsRead = useCallback(() => {
@@ -504,20 +504,12 @@ export default function App() {
   /** 自动更新流程的通报：带快速操作按钮。 */
   const pushUpdateNotice = useCallback(
     (level: "info" | "warn", title: string, content: string) => {
-      const groupRule = settings.notificationGroups.system ?? {
-        displayType: "balloon",
-        log: true,
-        system: false,
-      };
       notificationCenter.notify({
         groupId: "system",
         groupTitle: "系统更新",
         title,
         content,
         level,
-        balloon: !settings.notificationDoNotDisturb && groupRule.displayType !== "none",
-        sticky: groupRule.displayType === "sticky",
-        logged: groupRule.log,
         actions: [
           {
             label: "打开设置",
@@ -528,7 +520,7 @@ export default function App() {
         projectRoot: workspaceRoot ?? undefined,
       });
     },
-    [settings.notificationDoNotDisturb, settings.notificationGroups.system, workspaceRoot]
+    [workspaceRoot]
   );
 
   /** 下载完成后的「立即安装？」弹窗；挂起的是版本号，resolve 值回给自动更新流程。 */
@@ -1297,13 +1289,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isSideToolOpen, places.log]);
 
-  // WebView2 自带的「刷新 / 打印 / 检查」菜单在桌面应用里不该出现。
-  // 各面板自己的菜单是事件处理器，preventDefault 不会挡掉它们。
-  useEffect(() => {
-    const block = (event: MouseEvent) => event.preventDefault();
-    window.addEventListener("contextmenu", block, true);
-    return () => window.removeEventListener("contextmenu", block, true);
-  }, []);
+  // WebView2 自带的「刷新 / 打印 / 检查」菜单在桌面应用里不该出现（1:1 抄 openidea browserGuards）。
+  // 组件没接手的右键，落在可读文本（如通知内容）上时弹自绘「复制」菜单，而不是什么都不给。
+  useEffect(() => installContextMenuGuard(), []);
 
   // 窗口重新激活时（对齐 IDEA 的 Frame Activation / VSCode 的 focus 刷新）：
   // 外部敲完 git 命令（如外部终端提交/切分支）切回应用窗口时，自动静默同步一次 Git 状态与最近提交。
@@ -1872,7 +1860,8 @@ export default function App() {
         const list = prev[key] ?? EMPTY_DIFFS;
         const next = list.some((item) => item.id === tab.id)
           ? list.map((item) => (item.id === tab.id ? tab : item))
-          : [...list, tab];
+          : // 新开的预览标签顶掉旧的预览（IDEA 的单预览槽），普通标签照常追加。
+            [...list.filter((item) => !(tab.preview && item.preview)), tab];
         return { ...prev, [key]: next };
       });
       if (activate) {
@@ -2780,6 +2769,7 @@ export default function App() {
           language: languageForPath(change.path),
           chain: { id: chainId, index, total: list.length },
           landOn: step?.land,
+          preview: step?.preview,
           // 哪一侧写着删除，工作区里就没这份文件，跳到源码去不了。
           openIn:
             change.indexStatus === "D" || change.workStatus === "D" ? undefined : absolute,
@@ -3208,6 +3198,22 @@ export default function App() {
    * 序号也从标签上现读，不靠谁记住走到哪了。写回同一颗是 IDEA 的规矩：比对标签装的是整条链，
    * 走链只换里面那一篇。
    */
+  /** 比对窗口里按块打补丁：暂存此块打到索引（--cached），还原此块反打到工作区（-R）。 */
+  const applyDiffPatch = useCallback(
+    async (patch: string, cached: boolean, reverse: boolean) => {
+      const root = git.root;
+      if (!root) return;
+      try {
+        await gitApplyPatch(root, patch, cached, reverse);
+      } catch (cause) {
+        reportError(errorText(cause), cached ? "git.stage" : undefined);
+        return;
+      }
+      await git.refreshChanges();
+    },
+    [git, reportError]
+  );
+
   const stepChain = useCallback(
     (tabId: string, delta: number, land?: "first" | "last") => {
       const tab = diffs.find((item) => item.id === tabId);
@@ -3244,6 +3250,20 @@ export default function App() {
    * `land` 非空是上下箭头走到本篇尽头转过来的——换篇之后要落在首 / 末那一处差异上，
    * 跟左右两枚本身的换篇（从头看起）区分开。
    */
+  /**
+   * 这一篇比对能不能按块打补丁：只有「索引 ↔ 工作区」的普通文件可以。
+   * 已暂存比对（HEAD ↔ 索引）的块操作要动的是索引与 HEAD 的关系，这里的补丁口径不适用；
+   * 重命名（路径带箭头）两侧路径不同，补丁头也写不出来。这两类一律不给那两颗按钮。
+   */
+  const diffChunkOps = useCallback(
+    (tab: DiffTab): boolean => {
+      if (!tab.chain || tab.path.includes(" → ")) return false;
+      const chain = getDiffChains().get(tab.chain.id);
+      return chain?.kind === "change" && !chain.staged;
+    },
+    [getDiffChains]
+  );
+
   const diffGroupOf = useCallback(
     (tab: DiffTab): DiffGroup | undefined =>
       tab.chain
@@ -3272,6 +3292,30 @@ export default function App() {
       many: selection.map((entry) => entry.path),
     });
   }, []);
+
+  /** 目录树 F6/拖拽的落点执行：逐条移动，收尾与粘贴同款（清选中、刷树、同步 Git）。 */
+  const moveTreeEntries = useCallback(
+    async (entries: FsEntry[], targetDir: string) => {
+      let done = 0;
+      for (const entry of entries) {
+        const target = joinPath(targetDir, entry.name);
+        if (samePath(target, entry.path)) continue;
+        try {
+          await moveEntry(entry.path, target);
+          done += 1;
+        } catch (cause) {
+          reportError(errorText(cause));
+        }
+      }
+      if (done > 0) {
+        setExplorerPick([]);
+        refreshTree();
+        suppressGitEcho();
+        void git.refreshChanges();
+      }
+    },
+    [git.refreshChanges, refreshTree]
+  );
 
   const confirmRename = useCallback((entry: FsEntry) => {
     setDialog({
@@ -3362,7 +3406,7 @@ export default function App() {
   );
 
   /**
-   * 目录树右键菜单，1:1 对齐 openidea ProjectViewPopupMenu / IntelliJ IDEA 商业级规范
+   * 目录树右键菜单，1:1 对齐 IntelliJ IDEA ProjectViewPopupMenu / IntelliJ IDEA 商业级规范
    */
   const requestMenu = useCallback(
     (selection: FsEntry[], position: { x: number; y: number }, node?: ProjectTreeNode) => {
@@ -3708,7 +3752,12 @@ export default function App() {
           deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
           dropDocument(target);
         }
-        setExplorerPick([]);
+        // 删除后按可见顺序选中下一存活行（对齐 openidea selectionAfterDelete）。
+        // 树的最新可见行从这里拿不到——交一个「选兄弟」的最小语义：选中集清空，
+        // 由树在 refresh 后把 lead 落到删除位置的第一行（这里只保证不再引用死路径）。
+        setExplorerPick(
+          explorerPick.filter((entry) => !targets.some((t) => samePath(t, entry.path)))
+        );
         completed = true;
       } finally {
         fsDeletingRef.current = false;
@@ -3739,7 +3788,7 @@ export default function App() {
         }, 2400);
       }
     },
-    [deleteEntry, dropDocument, git.refreshChanges, refreshTree]
+    [deleteEntry, dropDocument, explorerPick, git.refreshChanges, refreshTree]
   );
 
   const submitDialog = useCallback(
@@ -3908,10 +3957,11 @@ export default function App() {
     ...diffs.map((tab) => ({
       id: `diff|${tab.id}`,
       kind: "diff" as const,
-      name: tab.name,
+      name: tab.leftLabel && tab.rightLabel ? `${tab.name} (${tab.leftLabel} ↔ ${tab.rightLabel})` : tab.name,
       title: tab.path,
       filePath: tab.openIn,
       dirty: false,
+      preview: tab.preview === true,
       icon: <FileDiff size={13} className="entry-icon" aria-hidden="true" />,
     })),
     ...aiFilePreviews.map((preview) => ({
@@ -4608,7 +4658,7 @@ export default function App() {
    */
   const paneFrame = (key: BottomPane, docked: boolean) => (
     <section
-      className={docked ? "bottom-panel island" : "pane-body"}
+      className={`${docked ? "bottom-panel island" : "pane-body"}${key === "notifications" ? " is-notifications" : ""}`}
       // 只有停在底部的那块归分割条管，挪进页签栏的那块没有可调的边。
       ref={docked ? bottomPanelRef : null}
       style={docked ? { height: bottomHeight } : undefined}
@@ -4710,7 +4760,24 @@ export default function App() {
             selectTab(`doc|${path}`);
             void docs.open(path);
           } : undefined}
-          onClose={() => closeDiff(activeDiffTab.id)}
+          onRefresh={() => stepChain(activeDiffTab.id, 0)}
+          onStageChunk={
+            diffChunkOps(activeDiffTab)
+              ? (patch) => void applyDiffPatch(patch, true, false).then(() => stepChain(activeDiffTab.id, 0))
+              : undefined
+          }
+          onRevertChunk={
+            diffChunkOps(activeDiffTab)
+              ? (patch) =>
+                  void (async () => {
+                    // 还原打的是磁盘版本：编辑器里没存的改动先落盘，否则 patch 会打在旧文件上。
+                    const absolute = git.absoluteOf(activeDiffTab.path);
+                    if (docs.dirty(absolute)) await saveDoc(absolute);
+                    await applyDiffPatch(patch, false, true);
+                    stepChain(activeDiffTab.id, 0);
+                  })()
+              : undefined
+          }
         />
       ) : activePane && places[activePane] === "tabbed" ? (
         paneFrame(activePane, false)
@@ -5025,7 +5092,11 @@ export default function App() {
    */
   const treeOpenFile = useStable(openFile);
   const treeContextMenu = useStable(requestMenu);
-  const panelOpenChange = useStable(openChange);
+  /** 提交树那一侧的入口：双击 / Enter 带 preview，落成预览标签。 */
+  const panelOpenChangeFromTree = useStable(
+    (change: GitChange, staged: boolean, siblings: GitChange[], preview?: boolean) =>
+      openChange(change, staged, siblings, preview ? { preview: true } : undefined)
+  );
   const panelOpenFile = useStable((path: string) => {
     setActiveTab(`doc|${path}`);
     void docs.open(path);
@@ -5087,12 +5158,7 @@ export default function App() {
   const panelFileAction = useStable(commitFileAction);
   const panelCommitted = useStable((message: string) => remember("commitMessages", message));
   const panelUnignore = useStable((relative: string) => void removeFromGitignore(relative));
-  const panelOpenCommitFile = useStable((revision: string, file: GitCommitFile) => {
-    if (!git.root) return;
-    void gitCommitDetail(git.root, revision)
-      .then((detail) => openCommitFile(detail, file, false))
-      .catch((cause: unknown) => reportError(errorText(cause)));
-  });
+
   const panelToggleIgnored = useStable(() =>
     setCommitView((current) => ({ ...current, ignored: !current.ignored }))
   );
@@ -5256,15 +5322,13 @@ export default function App() {
     >
       {icon}
       {id === "git" && changeCount > 0 ? <span className="rail-badge">{changeCount}</span> : null}
-      {id === "notifications" && notifications.filter((n) => !n.read).length > 0 ? (
+      {id === "notifications" && unreadNotifications > 0 ? (
         <span
           className={`rail-badge${
             notifications.some((n) => !n.read && n.level === "error") ? " is-error" : ""
           }`}
         >
-          {notifications.filter((n) => !n.read).length > 99
-            ? "99+"
-            : notifications.filter((n) => !n.read).length}
+          {unreadNotifications > 99 ? "99+" : unreadNotifications}
         </span>
       ) : null}
       {hasRunning ? <span className="rail-dot" aria-hidden="true" /> : null}
@@ -5291,17 +5355,13 @@ export default function App() {
           <span className="popover-item-label">{t(target === "preview" ? "git.doubleClickDiff" : "git.doubleClickSource")}</span>
         </button>)}
         <div className="popover-sep" />
-        <button type="button" className="popover-item" onClick={() => patch({ commit: { ...settings.commit, commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged } })}>
-          {settings.commit.commitAllWhenNothingStaged ? <Check size={13} aria-hidden="true" /> : <span className="menu-icon-spacer" />}
-          <span className="popover-item-label">{t("git.commitAllWhenNothingStaged")}</span>
-        </button>
       </Popover>
       <button type="button" ref={commitGearRef} className={`icon-button is-inline${commitGearAnchor ? " is-on" : ""}`} onClick={() => setCommitGearAnchor((current) => current ? null : commitGearRef.current)} aria-expanded={commitGearAnchor !== null} aria-haspopup="menu" title={t("git.commitOptions")}><Settings size={16} /></button>
     </> : null}
     {tool === "maven" ? <button type="button" className="icon-button is-inline" title={t("maven.reload")} onClick={reloadMaven}><RefreshCw size={14} className={maven.status === "loading" ? "is-spinning" : undefined} /></button> : null}
     {tool === "notifications" ? <NotificationsHeaderActions /> : null}
   </>;
-  /** 1:1 对标 openidea 工具窗口头部三个点选项菜单 (Move To, Maximize/Restore, Close) */
+  /** 1:1 对标 IntelliJ IDEA 工具窗口头部三个点选项菜单 (Move To, Maximize/Restore, Close) */
   const openToolWindowMenu = useCallback(
     (
       e: React.MouseEvent<HTMLButtonElement>,
@@ -5367,6 +5427,8 @@ export default function App() {
         showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden}
         openRoots={watchedRoots} activeFile={locatePath} openFiles={visibleDocs.map((doc) => doc.path)} picked={explorerPickedPaths} onPick={setExplorerPick}
         onOpenFile={treeOpenFile} onContextMenu={treeContextMenu}
+        onDelete={(entries) => void deleteTargets(entries.map((entry) => entry.path))}
+        onMove={(entries, targetDir) => void moveTreeEntries(entries, targetDir)}
       /> : <div className="tool-window-empty"><p>{t("explorer.noFolder")}</p></div>
       : tool === "ai" ? settings.aiAssistantsEnabled ? <AiSessionsPanel
         key={rootKey} sessions={aiSessions.sessions} openIds={aiSessions.openIds} activeId={activeTab}
@@ -5374,14 +5436,14 @@ export default function App() {
         onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
       /> : null
       : workspaceRoot ? <Suspense fallback={null}><GitPanel
-        key={workspaceRoot} git={git} workspaceRoot={workspaceRoot} onOpenChange={panelOpenChange} onOpenFile={panelOpenFile}
+        key={workspaceRoot} git={git} workspaceRoot={workspaceRoot} onOpenChange={panelOpenChangeFromTree} onOpenFile={panelOpenFile}
         focusSignal={commitFocus} rewordSignal={rewordSignal} history={history.commitMessages} onCommitted={panelCommitted}
         groupByDir={commitView.byDir} groupByModule={commitView.byModule} showIgnored={commitView.ignored}
         onToggleIgnored={panelToggleIgnored} repoName={basenameOf(git.root ?? workspaceRoot)} onFileAction={panelFileAction}
-        onUnignore={panelUnignore} onOpenCommitFile={panelOpenCommitFile} onToggleByDir={panelToggleByDir}
+        onUnignore={panelUnignore} onToggleByDir={panelToggleByDir}
         onToggleByModule={panelToggleByModule} showOnDoubleClick={settings.commit.showOnDoubleClick}
-        commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged} onOpenSource={panelOpenSource}
-        onOpenResolve={panelOpenResolve} onOpenAiSettings={panelOpenAiSettings}
+        onOpenSource={panelOpenSource}
+        onOpenResolve={panelOpenResolve} locatePath={docs.activePath ?? null} onOpenAiSettings={panelOpenAiSettings}
       /></Suspense> : <p className="tool-window-empty">{t("git.noWorkspace")}</p>}
   </ErrorBoundary>;
   const logRefAction = useStable(refAction);
@@ -5499,7 +5561,7 @@ export default function App() {
           <div className={`workbench-row${activeRightPanel && rightPanelExpanded ? " has-expanded-right-panel" : ""}`}>
           {activeLeftPanel ? (
             <section
-              className={`tool-window is-left${activeLeftPanel === "browser" ? " is-browser" : ""}`}
+              className={`tool-window is-left${activeLeftPanel === "browser" ? " is-browser" : ""}${activeLeftPanel === "notifications" ? " is-notifications" : ""}`}
               ref={sidePanelRef}
               style={{ width: activeLeftPanel === "browser" ? browserSidebarWidth : sidebarWidth }}
             >
@@ -5541,27 +5603,6 @@ export default function App() {
                           </button>
                         ))}
                         <div className="popover-sep" />
-                        <button
-                          type="button"
-                          className="popover-item"
-                          onClick={() =>
-                            patch({
-                              commit: {
-                                ...settings.commit,
-                                commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged,
-                              },
-                            })
-                          }
-                        >
-                          {settings.commit.commitAllWhenNothingStaged ? (
-                            <Check size={13} aria-hidden="true" />
-                          ) : (
-                            <span className="menu-icon-spacer" />
-                          )}
-                          <span className="popover-item-label">
-                            {t("git.commitAllWhenNothingStaged")}
-                          </span>
-                        </button>
                       </Popover>
                       <button
                         type="button"
@@ -5618,6 +5659,8 @@ export default function App() {
                       picked={explorerPickedPaths}
                       onPick={setExplorerPick}
                       onOpenFile={treeOpenFile}
+                      onDelete={(entries) => void deleteTargets(entries.map((entry) => entry.path))}
+                      onMove={(entries, targetDir) => void moveTreeEntries(entries, targetDir)}
                       onContextMenu={treeContextMenu}
                       onHide={() => setSidebarOpen(false)}
                     />
@@ -5645,7 +5688,7 @@ export default function App() {
                       key={workspaceRoot}
                       git={git}
                       workspaceRoot={workspaceRoot}
-                      onOpenChange={panelOpenChange}
+                      onOpenChange={panelOpenChangeFromTree}
                       onOpenFile={panelOpenFile}
                       focusSignal={commitFocus}
                       rewordSignal={rewordSignal}
@@ -5658,13 +5701,13 @@ export default function App() {
                       repoName={basenameOf(git.root ?? workspaceRoot)}
                       onFileAction={panelFileAction}
                       onUnignore={panelUnignore}
-                      onOpenCommitFile={panelOpenCommitFile}
                       onToggleByDir={panelToggleByDir}
                       onToggleByModule={panelToggleByModule}
                       showOnDoubleClick={settings.commit.showOnDoubleClick}
-                      commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged}
+
                       onOpenSource={panelOpenSource}
                       onOpenResolve={panelOpenResolve}
+                      locatePath={docs.activePath ?? null}
                       onOpenAiSettings={panelOpenAiSettings}
                     />
                   </Suspense>
@@ -5918,7 +5961,7 @@ export default function App() {
           ) : null}
           {activeRightPanel ? (
             <section
-              className={`tool-window is-right${activeRightPanel === "browser" ? " is-browser" : ""}`}
+              className={`tool-window is-right${activeRightPanel === "browser" ? " is-browser" : ""}${activeRightPanel === "notifications" ? " is-notifications" : ""}`}
               ref={rightSidePanelRef}
               style={{ width: rightPanelExpanded ? undefined : (activeRightPanel === "browser" ? browserSidebarWidth : rightSidebarWidth) }}
             >
@@ -5983,6 +6026,8 @@ export default function App() {
                       picked={explorerPickedPaths}
                       onPick={setExplorerPick}
                       onOpenFile={treeOpenFile}
+                      onDelete={(entries) => void deleteTargets(entries.map((entry) => entry.path))}
+                      onMove={(entries, targetDir) => void moveTreeEntries(entries, targetDir)}
                       onContextMenu={treeContextMenu}
                       onHide={() => setRightPanel(null)}
                       isExpanded={rightPanelExpanded}
@@ -6130,9 +6175,12 @@ export default function App() {
         ) : null}
       </footer>
 
-      {/* openidea / IntelliJ 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角) */}
-      {/* 1:1 对标 openidea / IntelliJ 规范：气泡堆叠于右下角，面板展开时自动隐退 */}
-      <Balloons isListOpen={activeRightPanel === "notifications" || activeLeftPanel === "notifications" || places.notifications !== "hidden"} />
+      {/* IntelliJ 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角) */}
+      {/* 1:1 对标 IntelliJ 规范：气泡堆叠于右下角，面板展开时自动隐退 */}
+      <Balloons
+        isListOpen={activeRightPanel === "notifications" || activeLeftPanel === "notifications" || places.notifications !== "hidden"}
+        position={settings.notificationPosition}
+      />
       {depSync.items.length > 0 ? (
         <div style={{ position: "fixed", right: 78, bottom: "calc(var(--h-statusbar, 24px) + 16px)", zIndex: 899 }}>
           <DepSyncToast
@@ -6176,6 +6224,7 @@ export default function App() {
         </Suspense>
       ) : null}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
+      <ContextMenuGuardHost />
       {dialog ? (
         <PromptDialog
           request={dialog}

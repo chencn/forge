@@ -24,10 +24,12 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   compact: true,
   foldersFirst: true,
   autoscrollToSource: false,
-  autoscrollFromSource: true,
+  // 对齐 openidea 默认值：不随标签切换自动跟随，仅点「选择已打开的文件」按钮才定位
+  autoscrollFromSource: false,
   singleClickOpen: false,
   singleClickExpand: false,
-  previewTab: true,
+  // 对齐 openidea/IDEA 默认：单击仅选中，双击才打开；previewTab 开启时单击才开标签
+  previewTab: false,
 };
 
 export interface ProjectHeaderProps {
@@ -36,6 +38,8 @@ export interface ProjectHeaderProps {
   options: ViewOptions;
   onOptionsChange: (options: ViewOptions) => void;
   onLocate?: () => void;
+  /** 无已打开文件可定位时置灰（对齐旧版「定位文件位置」按钮的 disabled 行为） */
+  locateDisabled?: boolean;
   onExpandAll?: () => void;
   onCollapseAll?: () => void;
   onHide?: () => void;
@@ -51,6 +55,7 @@ export const ProjectHeader = memo(function ProjectHeader({
   options,
   onOptionsChange,
   onLocate,
+  locateDisabled,
   onExpandAll,
   onCollapseAll,
   onHide,
@@ -211,6 +216,7 @@ export const ProjectHeader = memo(function ProjectHeader({
           type="button"
           className={styles.actionButton}
           onClick={onLocate}
+          disabled={locateDisabled}
           title={t("project.view.locate")}
           aria-label={t("project.view.locate")}
         >

@@ -10,6 +10,13 @@
  */
 import { LanguageSupport, StreamLanguage } from "@codemirror/language";
 import { simpleMode } from "@codemirror/legacy-modes/mode/simple-mode";
+// 官方 legacy 模式里现成的几门：直接包一层补齐 openidea 有而 language-data 没有的语言。
+import { diff } from "@codemirror/legacy-modes/mode/diff";
+import { erlang } from "@codemirror/legacy-modes/mode/erlang";
+import { haskell } from "@codemirror/legacy-modes/mode/haskell";
+import { oCaml } from "@codemirror/legacy-modes/mode/mllike";
+import { sass } from "@codemirror/legacy-modes/mode/sass";
+import { stex } from "@codemirror/legacy-modes/mode/stex";
 
 type States = Parameters<typeof simpleMode>[0];
 
@@ -277,8 +284,18 @@ const TYPESPEC = stream({
  * 名字 → 语法。键是 `describeGrammar` 归一化之后的名字（SPELLINGS 的结果），
  * 不是文件后缀。
  */
+const legacy = (mode: Parameters<typeof StreamLanguage.define>[0]) =>
+  new LanguageSupport(StreamLanguage.define(mode));
+
 const EXTRA: Record<string, () => LanguageSupport> = {
   batch: () => BATCH,
+  diff: () => legacy(diff),
+  haskell: () => legacy(haskell),
+  erlang: () => legacy(erlang),
+  ocaml: () => legacy(oCaml),
+  latex: () => legacy(stex),
+  tex: () => legacy(stex),
+  sass: () => legacy(sass),
   gomod: () => GOMOD,
   "pip-requirements": () => PIP_REQUIREMENTS,
   makefile: () => MAKEFILE,

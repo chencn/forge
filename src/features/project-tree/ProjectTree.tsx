@@ -1,7 +1,7 @@
 /**
  * 项目侧边栏 1:1 复刻树视窗组件 (ProjectTree)
  *
- * 严格 1:1 全量对标 openidea ProjectView / IntelliJ IDEA 商业级项目视窗：
+ * 严格 1:1 全量对标 IntelliJ IDEA ProjectView / IntelliJ IDEA 商业级项目视窗：
  * 1. 宿主与视图结构：采用 `.view` 弹性容器，直接承载 `<Tree<ProjectTreeNode>>` 虚拟化树引擎；
  * 2. 真实 IDEA 样式体系：24px 虚拟行高、20px 缩进阶梯、6px inset 浮动选区、聚焦 `--bg-tree-selected` / 失焦 `--bg-tree-selected-inactive`；
  * 3. 树行内部 1:1 CSS：`.content`（gap 5px）、`.icon`、`.folderIcon`、`.rootLabel`、`.excluded`（严格采用 `var(--vcs-ignored)` 专属色）、`.detail`；
@@ -40,7 +40,6 @@ import { detectExternalLibraries, type LibraryGroup } from "./libraries";
 import { getScratchesDir, createScratchFile, SCRATCH_LANGUAGES } from "./scratches";
 import {
   ProjectHeader,
-  DEFAULT_VIEW_OPTIONS,
   type ProjectViewMode,
   type ViewOptions,
 } from "./ProjectHeader";
@@ -74,6 +73,7 @@ import {
   isGroupKey,
 } from "./model";
 import { InlineEditor } from "./InlineEditor";
+import { loadExpanded, loadViewMode, loadViewOptions, saveExpanded, saveViewMode, saveViewOptions } from "./viewState";
 import styles from "./ProjectTree.module.css";
 
 const DRAG_THRESHOLD = 4;
@@ -152,17 +152,20 @@ function isInside(child: string, ancestor: string): boolean {
 }
 
 /**
- * 递归计算 targetPath 在 ancestor 内部的所有父级祖先目录物理路径
+ * 递归计算 targetPath 在 ancestor 内部的所有父级祖先目录物理路径。
+ * 归属比较用小写折叠；切分保留原文大小写 —— 返回值会传给 listDirectory，
+ * 若喂小写化路径，后端拼出的子条目 path 也会带上小写前缀，污染文档路径形态。
  */
 function ancestorsWithin(ancestor: string, targetPath: string): string[] {
   const normBase = normalizePathKey(ancestor).replace(/\/+$/, "");
   const normTarget = normalizePathKey(targetPath).replace(/\/+$/, "");
   if (!normTarget.startsWith(normBase)) return [];
+  const rawBase = ancestor.replaceAll("\\", "/").replace(/\/+$/, "");
   const folders: string[] = [];
-  let cur = normTarget;
-  while (cur.length > normBase.length) {
+  let cur = targetPath.replaceAll("\\", "/").replace(/\/+$/, "");
+  while (cur.length > rawBase.length) {
     const slash = cur.lastIndexOf("/");
-    if (slash <= normBase.length) break;
+    if (slash <= rawBase.length) break;
     cur = cur.slice(0, slash);
     folders.push(cur);
   }
@@ -230,19 +233,24 @@ function useLazyChildren(
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map());
   const childrenRef = useRef(children);
   childrenRef.current = children;
+  // 小写缓存 key → 首次登记的原文形态路径。expanded/行 key 都是小写契约，
+  // 若按 key 还原出的小写路径去 listDirectory，后端拼出的子条目 path 会带上小写前缀。
+  const rawPathByKey = useRef<Map<string, string>>(new Map());
 
   const reloadDir = useCallback(
     (dir: string) => {
       // 虚拟目录（外部库根、分组等）不发起物理文件系统读取
       if (!dir || isVirtualPath(dir)) return;
       const key = pathKey(dir);
+      rawPathByKey.current.set(key, dir);
       void listDirectory(dir)
         .then((listing) => {
           setChildren((prev) => new Map(prev).set(key, listing.entries));
         })
         .catch(() => {
-          // 受限或不存在目录设为空列表，不触发顶层红色报错横条
-          setChildren((prev) => new Map(prev).set(key, []));
+          // 首次读取失败（不存在/受限）：置空列表显示空目录，不触发红色横条；
+          // 已有缓存时刷新失败：保留旧内容（对齐 openidea loadDir 的错误分级）。
+          setChildren((prev) => (prev.has(key) ? prev : new Map(prev).set(key, [])));
         });
     },
     []
@@ -253,7 +261,8 @@ function useLazyChildren(
       if (!dir || isVirtualPath(dir)) return;
       const key = pathKey(dir);
       if (childrenRef.current.has(key)) return;
-      reloadDir(dir);
+      // 优先还原原文形态（调用方可能只拿得到小写化的行 key）
+      reloadDir(rawPathByKey.current.get(key) ?? dir);
     },
     [reloadDir]
   );
@@ -313,12 +322,23 @@ export function ProjectTree({
   const { t } = useI18n();
 
   // 1. 顶部 Header 状态（视图模式 + 选项）
-  const [viewMode, setViewMode] = useState<ProjectViewMode>("project");
-  const [options, setOptions] = useState<ViewOptions>({
-    ...DEFAULT_VIEW_OPTIONS,
+  // 视图选项/模式/展开状态按工程根持久化（对齐 openidea store 的 localStorage 层）
+  const [viewMode, setViewModeRaw] = useState<ProjectViewMode>(() => loadViewMode(pathKey(root)));
+  const [options, setOptionsRaw] = useState<ViewOptions>(() => ({
+    ...loadViewOptions(pathKey(root)),
     showHidden: propShowHidden,
     showExcluded: propShowIgnored,
-  });
+  }));
+
+  const setViewMode = useCallback((mode: ProjectViewMode) => {
+    setViewModeRaw(mode);
+    saveViewMode(pathKey(root), mode);
+  }, [root]);
+
+  const setOptions = useCallback((next: ViewOptions) => {
+    setOptionsRaw(next);
+    saveViewOptions(pathKey(root), next);
+  }, [root]);
 
   // 2. 弹窗状态 (NewPopup & FileRefactorDialogs)
   const [newPopupOpen, setNewPopupOpen] = useState(false);
@@ -340,8 +360,20 @@ export function ProjectTree({
   // 树引用与展开/选中状态
   const treeHandleRef = useRef<TreeHandle | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([normalizeNodeKey(root)]));
-  // 待执行的滚动/聚焦定位请求引用 (1:1 对标 openidea revealRequest)
+  const [expanded, setExpandedRaw] = useState<Set<string>>(() => {
+    const saved = loadExpanded(pathKey(root));
+    return saved ?? new Set([normalizeNodeKey(root)]);
+  });
+  const expandedSaveTimer = useRef<number | null>(null);
+  const setExpanded = useCallback((value: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    setExpandedRaw((prev) => {
+      const next = typeof value === "function" ? value(prev) : value;
+      if (expandedSaveTimer.current !== null) window.clearTimeout(expandedSaveTimer.current);
+      expandedSaveTimer.current = window.setTimeout(() => saveExpanded(pathKey(root), next), 300);
+      return next;
+    });
+  }, [root]);
+  // 待执行的滚动/聚焦定位请求引用 (1:1 对标 IntelliJ IDEA revealRequest)
   const pendingRevealRef = useRef<{
     path: string;
     focus: boolean;
@@ -452,7 +484,7 @@ export function ProjectTree({
   }, [changes, repoRoot]);
 
   /**
-   * 1:1 对标 openidea revealPath 规范：展开祖先目录、异步加载并在可见后滚动定位
+   * 1:1 对标 IntelliJ IDEA revealPath 规范：展开祖先目录、异步加载并在可见后滚动定位
    */
   const revealPath = useCallback(
     (targetPath: string, focus = true): boolean => {
@@ -461,6 +493,10 @@ export function ProjectTree({
       const baseNorm = root.replaceAll("\\", "/").replace(/\/+$/, "");
 
       // 1. 判断属于主工程、草稿还是外部库
+      // 归属判定必须大小写不敏感：文档路径可能来自后端按小写化目录拼出的子路径
+      // （如 d:/proj\file.ts），与原始盘符大写的 root 直接字符串比对永远撞不上。
+      const fold = (p: string) => normalizePathKey(p).replace(/\/+$/, "");
+      const targetFold = fold(targetNorm);
       let inProject = false;
       let inScratches = false;
       let inLibrary: {
@@ -470,11 +506,11 @@ export function ProjectTree({
         rootDir: string;
       } | null = null;
 
-      if (targetNorm === baseNorm || targetNorm.startsWith(`${baseNorm}/`)) {
+      if (targetFold === fold(baseNorm) || targetFold.startsWith(`${fold(baseNorm)}/`)) {
         inProject = true;
       } else if (scratchesDir) {
-        const scratchNorm = scratchesDir.replaceAll("\\", "/").replace(/\/+$/, "");
-        if (targetNorm === scratchNorm || targetNorm.startsWith(`${scratchNorm}/`)) {
+        const scratchFold = fold(scratchesDir);
+        if (targetFold === scratchFold || targetFold.startsWith(`${scratchFold}/`)) {
           inScratches = true;
         }
       }
@@ -482,8 +518,8 @@ export function ProjectTree({
       if (!inProject && !inScratches && libraries.length > 0) {
         for (const lib of libraries) {
           for (const libRoot of lib.roots) {
-            const rootNorm = libRoot.path.replaceAll("\\", "/").replace(/\/+$/, "");
-            if (targetNorm === rootNorm || targetNorm.startsWith(`${rootNorm}/`)) {
+            const rootFold = fold(libRoot.path);
+            if (targetFold === rootFold || targetFold.startsWith(`${rootFold}/`)) {
               inLibrary = {
                 groupId: lib.id,
                 groupKey: `${GROUP_PREFIX}${lib.id}`,
@@ -501,8 +537,9 @@ export function ProjectTree({
         return false;
       }
 
-      // 2. 模式联动：如果处于 Open Files / Changed Files 且目标不在当前视图中，自动切回 Project 模式
-      if (viewMode !== "project") {
+      // 2. 模式联动（对齐 openidea modeShows）：只有目标在主工程、而当前停在过滤视图时才切回 Project；
+      // 在 Scratches 模式定位草稿文件不该被拉走。
+      if (viewMode !== "project" && (inProject || inLibrary || (inScratches && viewMode !== "scratches"))) {
         setViewMode("project");
       }
 
@@ -585,7 +622,12 @@ export function ProjectTree({
     }
     if (viewMode === "changedFiles") {
       const prefix = repoRoot ? repoRoot.replace(/[\\/]+$/, "") : root.replace(/[\\/]+$/, "");
-      return new Set(changes.map((c) => pathKey(`${prefix}/${c.path}`)));
+      // 已删除（D）的文件磁盘上不存在，树上只会展开成空壳，剔除掉（对齐 openidea localChangedPaths）。
+      return new Set(
+        changes
+          .filter((c) => c.workStatus !== "D" && c.indexStatus !== "D")
+          .map((c) => pathKey(`${prefix}/${c.path}`))
+      );
     }
     return null;
   }, [viewMode, openFiles, changes, repoRoot, root]);
@@ -709,7 +751,7 @@ export function ProjectTree({
           const endKey = groupNamespace
             ? libKey(groupNamespace, endEntry.path)
             : normalizeNodeKey(endEntry.path);
-          const isExp = isFiltered || expanded.has(itemKey) || expanded.has(endKey);
+          const isExp = expanded.has(itemKey) || expanded.has(endKey);
           const isExcluded = isExcludedFolder(endEntry.name) || isIgnored(endEntry.path);
 
           const node: ProjectTreeNode = {
@@ -782,7 +824,7 @@ export function ProjectTree({
       }
     }
 
-    // 2. External Libraries 根节点 (1:1 严格对标 openidea librariesRoot)
+    // 2. External Libraries 根节点 (1:1 严格对标 IntelliJ IDEA librariesRoot)
     if (viewMode === "project" && libraries.length > 0) {
       const libRootKey = `${GROUP_PREFIX}externalLibraries`;
       const isLibExp = expanded.has(libRootKey);
@@ -807,7 +849,7 @@ export function ProjectTree({
         const groupKey = `${GROUP_PREFIX}externalLibraries/${group.id}`;
         const groupExp = expanded.has(groupKey);
 
-        // 1:1 对标 openidea 的 GROUP_ICONS 映射
+        // 1:1 对标 IntelliJ IDEA 的 GROUP_ICONS 映射
         const groupIcon =
           group.kind === "nodeModules"
             ? "file-npm"
@@ -852,7 +894,7 @@ export function ProjectTree({
             hasChildren: libRoot.isDirectory,
             isReadonly: true,
             locationDetail: libRoot.detail || "library root",
-            // 1:1 对标 openidea librariesRoot：依赖项统一赋予库文件夹或归档图标
+            // 1:1 对标 IntelliJ IDEA librariesRoot：依赖项统一赋予库文件夹或归档图标
             icon: libRoot.isArchive ? "file-archive" : "folder-library",
           };
           libNodes.push(libNode);
@@ -940,7 +982,26 @@ export function ProjectTree({
     }
   }, [treeModel, onPick]);
 
-  // 获取同级项名称集合供 InlineEditor 实时校验重名
+  /** 新建条目落盘后的 FsEntry（后端已返回过一次，这里按路径规格重建给树与编辑器用）。 */
+function makeEntryFor(fullPath: string, name: string): FsEntry {
+  return {
+    name,
+    path: fullPath,
+    kind: "file",
+    extension: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : null,
+    size: 0,
+    modifiedMs: Date.now(),
+    isSymlink: false,
+    isHidden: false,
+    isReadonly: false,
+  };
+}
+
+  // 最新 childrenMap 的 ref：Expand All 的轮询在回调里读，不能吃渲染闭包的旧值。
+  const childrenMapRef = useRef(treeModel.childrenMap);
+  childrenMapRef.current = treeModel.childrenMap;
+
+// 获取同级项名称集合供 InlineEditor 实时校验重名
   const editingSiblings = useMemo(() => {
     if (!editing) return [];
     const parentDir = editing.kind === "new" ? editing.parent : parentOfPath(editing.path);
@@ -959,9 +1020,13 @@ export function ProjectTree({
             await createFolder(fullPath);
           } else {
             await createFile(fullPath);
+            // 新建文件随后在编辑器里打开（对齐 openidea commitEditing → openFile）
+            onOpenFile(makeEntryFor(fullPath, value));
           }
           reloadDir(editing.parent);
           setEditing(null);
+          // 新条目露出来并定位（对齐 openidea refreshAfterCreate → revealPath）
+          revealPath(fullPath, true);
           return true;
         } catch (err) {
           // 操作失败发布通知气泡，避免破坏树形结构
@@ -987,7 +1052,7 @@ export function ProjectTree({
         }
       }
     },
-    [editing, reloadDir]
+    [editing, reloadDir, revealPath, onOpenFile]
   );
 
   const handleCancelEditing = useCallback(() => {
@@ -997,7 +1062,8 @@ export function ProjectTree({
   // 获得选中节点中最高优先级的目标文件夹
   const getSelectedTargetFolder = useCallback((): string => {
     if (picked.length > 0) {
-      const leadPath = picked[0];
+      // picked 存的是原始大小写/反斜杠路径，byKey 的 key 是 normalizeNodeKey（小写正斜杠）
+      const leadPath = normalizeNodeKey(picked[0]);
       const found = treeModel.byKey.get(leadPath);
       if (found) {
         return found.entry.kind === "directory" ? found.entry.path : parentOfPath(found.entry.path);
@@ -1020,7 +1086,7 @@ export function ProjectTree({
   // 快捷重命名
   const startRenameItem = useCallback(() => {
     if (picked.length !== 1) return;
-    const targetPath = picked[0];
+    const targetPath = normalizeNodeKey(picked[0]);
     const node = treeModel.byKey.get(targetPath);
     if (!node || node.isRoot || node.entry.isReadonly) return;
     setEditing({
@@ -1123,7 +1189,7 @@ export function ProjectTree({
     // F6: 移动选中的条目
     if (!e.shiftKey && e.key === "F6") {
       const selectedEntries = picked
-        .map((p) => treeModel.byKey.get(p)?.entry)
+        .map((p) => treeModel.byKey.get(normalizeNodeKey(p))?.entry)
         .filter((e): e is FsEntry => !!e);
       if (selectedEntries.length > 0 && onMove) {
         e.preventDefault();
@@ -1140,7 +1206,7 @@ export function ProjectTree({
     // Delete: 安全删除选中的条目
     if (e.key === "Delete") {
       const selectedEntries = picked
-        .map((p) => treeModel.byKey.get(p)?.entry)
+        .map((p) => treeModel.byKey.get(normalizeNodeKey(p))?.entry)
         .filter((e): e is FsEntry => !!e);
       if (selectedEntries.length > 0 && onDelete) {
         e.preventDefault();
@@ -1153,13 +1219,18 @@ export function ProjectTree({
       }
     }
 
-    // Esc: 取消剪贴板剪切态
-    if (e.key === "Escape" && clipboard?.cut) {
-      setClipboard(null);
+    // Esc: 取消剪贴板剪切态与进行中的拖拽
+    if (e.key === "Escape") {
+      if (clipboard?.cut) setClipboard(null);
+      if (dragActiveRef.current) {
+        dragActiveRef.current = false;
+        setDrag(null);
+        setDropTarget(null);
+      }
     }
   };
 
-  // 统一的展开/折叠核心调度函数（1:1 对标 openidea toggleExpanded 规范）
+  // 统一的展开/折叠核心调度函数（1:1 对标 IntelliJ IDEA toggleExpanded 规范）
   const toggleNodeExpanded = useCallback(
     (node: ProjectTreeNode) => {
       if (!node.hasChildren) return;
@@ -1254,7 +1325,7 @@ export function ProjectTree({
           label: paths.length === 1 ? nameOfPath(paths[0]) : `${paths.length} items`,
           x: ev.clientX,
           y: ev.clientY,
-          copy: ev.altKey || ev.ctrlKey,
+          copy: ev.altKey,
         });
       };
 
@@ -1275,7 +1346,7 @@ export function ProjectTree({
             !paths.some((p) => samePath(destDir, p) || isInside(destDir, p));
 
           if (isValid) {
-            const isCopy = ev.altKey || ev.ctrlKey;
+            const isCopy = ev.altKey;
             for (const src of paths) {
               const name = nameOfPath(src);
               const dest = `${destDir.replace(/[/\\]+$/, "")}/${name}`;
@@ -1346,12 +1417,14 @@ export function ProjectTree({
   const handleActivate = useCallback(
     (node: ProjectTreeNode) => {
       if (node.hasChildren) {
+        // 「单击展开」开启时，双击的第一段单击已经切过一次，这里再切就等于没变（对齐 openidea 的 stopPropagation 语义）。
+        if (options.singleClickExpand) return;
         toggleNodeExpanded(node);
       } else {
         onOpenFile(node.entry);
       }
     },
-    [toggleNodeExpanded, onOpenFile]
+    [options.singleClickExpand, toggleNodeExpanded, onOpenFile]
   );
 
   // 右键菜单
@@ -1429,7 +1502,7 @@ export function ProjectTree({
                 isPackage={node.isPackage}
                 path={node.entry.path}
                 excluded={node.isExcluded}
-                size={15}
+                size={16}
               />
             )}
           </span>
@@ -1565,7 +1638,9 @@ export function ProjectTree({
     ];
   }, [t, startNewItem, getSelectedTargetFolder, onOpenFile]);
 
-  const selectedSet = useMemo(() => new Set(picked), [picked]);
+  // Tree 的受控选中按行 key（normalizeNodeKey 小写正斜杠）比对，picked 是原始大小写路径，
+  // 必须先规范化，否则 Windows 盘符大写/反斜杠永远对不上，整棵树点不出选中态。
+  const selectedSet = useMemo(() => new Set(picked.map((p) => normalizeNodeKey(p))), [picked]);
 
   return (
     <div
@@ -1581,16 +1656,53 @@ export function ProjectTree({
         onOptionsChange={setOptions}
         onLocate={() => {
           const target = activeFile || (openFiles && openFiles.length > 0 ? openFiles[0] : null);
-          if (target) {
+              if (target) {
             revealPath(target, true);
           }
         }}
+        locateDisabled={!activeFile && openFiles.length === 0}
         onExpandAll={() => {
+          // BFS 逐层展开：深层目录还没读到 childrenMap 里，只收已加载层会漏；
+          // 按队列加载（上限 400 个目录，对齐 openidea expandAll），加载完的下一轮补进展开集。
           const all = new Set<string>([normalizeNodeKey(root)]);
           for (const k of treeModel.childrenMap.keys()) {
             all.add(k);
           }
           setExpanded(all);
+          const queue = [...all];
+          let loaded = 0;
+          const step = () => {
+            while (queue.length > 0 && loaded < 400) {
+              const dir = queue.shift()!;
+              if (isVirtualPath(dir) || children.has(pathKey(dir))) continue;
+              loaded += 1;
+              load(dir);
+              return;
+            }
+            if (queue.length > 0) {
+              window.setTimeout(step, 50);
+            }
+          };
+          // 已加载层的 children 到位后，treeModel 会把新目录填进 childrenMap——
+          // 轮询把新出现的目录 key 补进展开集与队列。
+          const poll = window.setInterval(() => {
+            if (loaded >= 400) {
+              window.clearInterval(poll);
+              return;
+            }
+            for (const k of treeModel.childrenMap.keys()) {
+              if (!all.has(k)) {
+                all.add(k);
+                setExpanded((prev) => new Set(prev).add(k));
+                queue.push(k);
+              }
+            }
+            step();
+            if (queue.length === 0 && loaded > 0) {
+              // 队列空了不代表加载完——等两轮没新目录再收
+              window.clearInterval(poll);
+            }
+          }, 120);
         }}
         onCollapseAll={() => setExpanded(new Set([normalizeNodeKey(root)]))}
         onHide={onHide}

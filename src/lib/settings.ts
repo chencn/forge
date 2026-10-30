@@ -20,6 +20,8 @@ export type HttpResponseLayout = "split" | "tab";
 
 /** 编辑器偏好，对应 Rust `EditorSettings`。 */
 export interface EditorSettings {
+  /** 括号按嵌套深度上色（openidea 默认关）。 */
+  rainbowBrackets: boolean;
   /** 字号（px），编辑器与两个控制台共用。 */
   fontSize: number;
   /** 制表宽度。 */
@@ -259,6 +261,10 @@ export interface Settings {
   notificationPosition: NotificationPosition;
   /** 通知勿扰模式：开启后静默所有浮动气泡，仅静默记录到工具窗口。 */
   notificationDoNotDisturb: boolean;
+  /** 通知气泡总开关（对齐 openidea「Display balloon notifications」）。 */
+  notificationBalloons: boolean;
+  /** 通知提示音（对齐 openidea「Play sound」）。 */
+  notificationSound: boolean;
   /** 按通知组配置的弹出模式与归档策略。 */
   notificationGroups: Record<string, NotificationGroupRule>;
   /** 应用内更新。 */
@@ -279,6 +285,7 @@ export const DEFAULT_SETTINGS: Settings = {
   httpResponse: "split",
   closeBehavior: "tray",
   editor: {
+    rainbowBrackets: false,
     fontSize: 13,
     tabSize: 2,
     minimap: true,
@@ -309,6 +316,8 @@ export const DEFAULT_SETTINGS: Settings = {
   shell: { openFolder: false, openFile: false, defaultFile: false, extraExtensions: [] },
   notificationPosition: "bottom-right",
   notificationDoNotDisturb: false,
+  notificationBalloons: true,
+  notificationSound: false,
   notificationGroups: DEFAULT_NOTIFICATION_GROUPS,
   updates: {
     autoDownload: false,

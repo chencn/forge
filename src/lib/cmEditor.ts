@@ -6,7 +6,7 @@
  * 没在屏幕上的页签不挂载视图，撤销栈、光标、滚动位置都留在表里，切回来原样复现。
  * 打字之后的 state 由 {@link captureState} 收回来，表里那份必须始终等于屏幕上那份。
  */
-import {
+import { type Range,
   Compartment,
   EditorSelection,
   EditorState,
@@ -24,15 +24,14 @@ import {
   dropCursor,
   GutterMarker,
   gutterLineClass,
-  highlightActiveLine,
   highlightActiveLineGutter,
   highlightSpecialChars,
   keymap,
   lineNumbers,
   rectangularSelection,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import {
+import { defaultKeymap, history, historyKeymap, indentWithTab, redo } from "@codemirror/commands";
+import { type MatchResult,
   bracketMatching,
   codeFolding,
   foldGutter,
@@ -54,6 +53,7 @@ import { grammarSupport, loadGrammar, pathExtension } from "./cm/grammars";
 import { forgeHighlightStyle } from "./cm/highlight";
 import { indentGuides } from "./cm/indentGuides";
 import { rainbowBrackets } from "./cm/rainbowBrackets";
+import { caretRowHighlight } from "./cm/caretRow";
 import { forgeTheme } from "./cm/theme";
 import { changeMarksField } from "./cm/changeMarks";
 import { overviewLane } from "./cm/overview";
@@ -98,6 +98,7 @@ const readOnlySlot = new Compartment();
 const tabSlot = new Compartment();
 const minimapSlot = new Compartment();
 const keymapSlot = new Compartment();
+const rainbowSlot = new Compartment();
 
 // ---------------------------------------------------------------- 行尾
 
@@ -228,6 +229,23 @@ function foldChevron(open: boolean): HTMLElement {
   return span;
 }
 
+const matchingBracketMark = Decoration.mark({ class: "cm-matchingBracket" });
+const matchingTagMark = Decoration.mark({ class: "cm-matchingBracket cm-matchingTag" });
+const nonmatchingBracketMark = Decoration.mark({ class: "cm-nonmatchingBracket" });
+
+/** IDEA 的 MATCHED_TAG_NAME：HTML/XML/JSX 的标签名与括号分开染色（对齐 openidea renderMatch）。 */
+function renderMatch(match: MatchResult, state: EditorState): readonly Range<Decoration>[] {
+  const mark = (from: number, to: number) =>
+    !match.matched
+      ? nonmatchingBracketMark
+      : /^[()[\]{}]$/.test(state.sliceDoc(from, to))
+        ? matchingBracketMark
+        : matchingTagMark;
+  const out = [mark(match.start.from, match.start.to).range(match.start.from, match.start.to)];
+  if (match.end) out.push(mark(match.end.from, match.end.to).range(match.end.from, match.end.to));
+  return out;
+}
+
 function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
   const format = doc.lineNumberFormat;
   const numbers =
@@ -240,7 +258,8 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     changeMarksField,
     // 右侧滚动条那条改动色带（IDEA 的错误条位置），点一下跳到那一行。
     overviewLane,
-    highlightActiveLine(),
+    // 当前行高亮（对齐 openidea caretRowHighlight）：有选区时整行底色会盖住选区色，所以只有空光标才画。
+    caretRowHighlight,
     highlightActiveLineGutter(),
     highlightSpecialChars(),
     history(),
@@ -254,12 +273,19 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     rectangularSelection(),
     EditorState.allowMultipleSelections.of(true),
     indentOnInput(),
-    bracketMatching(),
+    bracketMatching({ renderMatch }),
     closeBrackets(),
-    // 缩进参考线：Monaco 默认就画，换了引擎得自己带上（这一版 CodeMirror 没有内置）。
+    // 正文属性：禁掉系统拼写检查/自动纠正（不然代码被画红色拼写点），并给可达性一个标签。
+  EditorView.contentAttributes.of({
+    spellcheck: "false",
+    autocorrect: "off",
+    autocapitalize: "off",
+    "aria-label": `Editor for ${doc.path}`,
+  }),
+  // 缩进参考线：Monaco 默认就画，换了引擎得自己带上（这一版 CodeMirror 没有内置）。
     indentGuides,
     // 括号按嵌套深度上色：IDEA 默认就是这样，只影视口，几千行的文件也扛得住。
-    rainbowBrackets(),
+    rainbowSlot.of([]),
     highlightSelectionMatches(),
     copyLineOnEmpty,
     // 补全浮层由 lib/cm/lsp.ts 那组装配（它要给候选列表装 LSP 那一路的来源），这里只留按键。
@@ -278,6 +304,9 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
       ...defaultKeymap,
       ...searchKeymap,
       ...historyKeymap,
+      // IDEA 的 Windows 重做是 Ctrl+Shift+Z（Ctrl+Y 已被删除行占用）；
+      // CodeMirror 只在 macOS/Linux 绑了它，Windows 必须补（对齐 openidea baseKeymap）。
+      { win: "Ctrl-Shift-z", run: redo, preventDefault: true },
       ...completionKeymap,
       // 折叠扣与问题导航属于引擎能力，三套键位方案都不该把它们换掉；
       // 方案里另有同名键时由 `Prec.high` 压过这里（见 cm/keymap.ts）。
@@ -429,6 +458,11 @@ export function minimapConfigOf(view: EditorView): MinimapConfig | null {
 }
 
 /** 换一套键位方案（`cm/keymap` 按设置里那三档算出来的那组绑定）。 */
+/** 括号彩虹上色开关（openidea 默认关）：设置切换时不重建 state，只换这一格。 */
+export function setRainbowBrackets(view: EditorView, enabled: boolean): void {
+  view.dispatch({ effects: rainbowSlot.reconfigure(enabled ? rainbowBrackets() : []) });
+}
+
 export function setKeymap(view: EditorView, scheme: Extension): void {
   view.dispatch({ effects: keymapSlot.reconfigure(scheme) });
 }
@@ -585,14 +619,16 @@ export function revealRange(view: EditorView, line: number, from: number, to: nu
 }
 
 /**
- * 第 `line` 行的顶部在**文档坐标**里的位置（从内容顶算起，不含滚动量）。
+ * 第 `line` 行的顶部在滚动内容里的位置（▶ 层挂在 scrollDOM 上，同一坐标系）。
  *
- * 装订线那颗 ▶ 挂在行号槽里，跟着内容一起滚，所以要的是文档坐标；
+ * `lineBlockAt` 的几何 0 点是第一行顶（`.cm-content` 的 padding 之后），
+ * 而 scrollDOM 的内容顶是 content 盒顶（padding 之前）——两者差一个
+ * `documentPadding.top`，不补上这 10px，▶ 会整体漂上去半行。
  * `coordsAtPos` 对没渲染的行给的是假值，`lineBlockAt` 才算得出来。
  */
 export function lineTop(view: EditorView, line: number): number | null {
   if (line < 1 || line > view.state.doc.lines) return null;
-  return view.lineBlockAt(view.state.doc.line(line).from).top;
+  return view.lineBlockAt(view.state.doc.line(line).from).top + view.documentPadding.top;
 }
 
 /**
@@ -621,12 +657,12 @@ export function saveKeymap(onSave: () => void): Extension {
  * 字号与行高不进主题对象：宿主元素上写两个自定义属性，主题按 var() 取，
  * 改设置只换属性，不重建主题也不重配 state。
  *
- * 行高跟着字号走：原来 Monaco 那版写死 20px，字号调到 20 以上字就挤在一起。
- * 13px 时仍然正好折算成 20px，默认观感不变。
+ * 行高跟着字号走：openidea/IDEA 13px 字号配 22px 行高（--lh-code: 22px），
+ * 换算系数 1.69；大字号时仍按比例放大不挤字。
  */
 export function applyFontMetrics(host: HTMLElement, fontSize: number): void {
   host.style.setProperty("--editor-font-size", `${fontSize}px`);
-  host.style.setProperty("--editor-line-height", `${Math.round(fontSize * 1.538)}px`);
+  host.style.setProperty("--editor-line-height", `${Math.round(fontSize * 1.69)}px`);
 }
 
 /**

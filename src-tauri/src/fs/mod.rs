@@ -473,8 +473,14 @@ pub async fn create_folder(path: String) -> Result<FsEntry, String> {
 }
 
 fn create_folder_impl(path: String) -> Result<FsEntry, String> {
-    fs::create_dir(&path).map_err(|e| io_err(&path, e))?;
-    entry_at(Path::new(&path))
+    // 对齐 openidea ide-vfs：先查重报 TARGET_EXISTS（报裸 IO 错前端没法走「换名重试」），
+    // 再 create_dir_all——行内编辑允许输入 `a/b/c` 这类嵌套名，单层 create_dir 直接失败。
+    let target = Path::new(&path);
+    if target.exists() {
+        return Err(err("TARGET_EXISTS", &path));
+    }
+    fs::create_dir_all(target).map_err(|e| io_err(&path, e))?;
+    entry_at(target)
 }
 
 #[tauri::command]
@@ -487,6 +493,13 @@ pub async fn create_file(path: String) -> Result<FsEntry, String> {
 }
 
 fn create_file_impl(path: String) -> Result<FsEntry, String> {
+    // ensure_parent（对齐 openidea ops.rs:29-36）：新建 `a/b/c.ts` 时父目录一并建出来，
+    // 不用让用户先手动建一层。
+    if let Some(parent) = Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| io_err(&path, e))?;
+        }
+    }
     // create_new = O_CREAT | O_EXCL：已存在直接失败。不能用 File::create——那是
     // create+truncate，撞上已有文件会把人家的内容整个清空，等于一次静默数据丢失。
     match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -544,18 +557,36 @@ fn rename_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
 /// 把一条连目录里的内容一起搬到 `to`。撞名不让 std 覆盖，前端换名重试。
 fn copy_tree(from: &Path, to: &Path) -> Result<(), std::io::Error> {
     let meta = from.symlink_metadata()?;
-    if !(meta.is_dir() && !meta.file_type().is_symlink()) {
-        return fs::copy(from, to).map(|_| ());
+    // 符号链接按链接本身复制（std::fs::copy 会跟随链接把目标内容复制成实体），
+    // 目录链接被当目录递归会把整棵真身复制一份——都重建成同指的链接。
+    if meta.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            let target = fs::read_link(from)?;
+            if meta.is_dir() {
+                std::os::windows::fs::symlink_dir(&target, to)
+            } else {
+                std::os::windows::fs::symlink_file(&target, to)
+            }
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&fs::read_link(from)?, to)
+        }
+    } else if !meta.is_dir() {
+        fs::copy(from, to).map(|_| ())?;
+        Ok(())
+    } else {
+        fs::create_dir(to)?;
+        for item in fs::read_dir(from)? {
+            let child = item?.path();
+            let Some(name) = child.file_name() else {
+                continue;
+            };
+            copy_tree(&child, &to.join(name))?;
+        }
+        Ok(())
     }
-    fs::create_dir(to)?;
-    for item in fs::read_dir(from)? {
-        let child = item?.path();
-        let Some(name) = child.file_name() else {
-            continue;
-        };
-        copy_tree(&child, &to.join(name))?;
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -570,6 +601,13 @@ pub async fn copy_entry(from: String, to: String) -> Result<FsEntry, String> {
 fn copy_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     if Path::new(&to).exists() {
         return Err(err("TARGET_EXISTS", &to));
+    }
+    // 「复制进自身」防护（对齐 openidea ops.rs:133-147）：把目录粘到它自己的子目录里，
+    // 递归复制会随层级加深无限循环，直到路径超长才炸——必须复制前拒绝。
+    if let (Ok(src_canon), Ok(dst_canon)) = (Path::new(&from).canonicalize(), Path::new(&to).canonicalize()) {
+        if dst_canon.starts_with(&src_canon) {
+            return Err(err("CANNOT_COPY_INTO_ITSELF", &to));
+        }
     }
     copy_tree(Path::new(&from), Path::new(&to)).map_err(|e| io_err(&format!("{from} → {to}"), e))?;
     entry_at(Path::new(&to))

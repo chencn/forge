@@ -12,12 +12,82 @@
  *
  * 这里不碰 DOMPurify，也不碰 DOM：聊天把这份模块放进渲染 Worker 里跑。
  */
-import { LanguageDescription, type LanguageSupport } from "@codemirror/language";
+import { LanguageDescription, LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { classHighlighter, highlightCode } from "@lezer/highlight";
 import { extraGrammar } from "./extraGrammars";
 
 /** 显式声明"这就是纯文本"的围栏标记：不去猜语法，也别浪费一次加载。 */
+
+/**
+ * 注释符补全（对齐 openidea 的后端 commentTokens 注入）：官方 lang-* 包多数自带
+ * commentTokens，但 language-data 里那批 legacy 模式（shell/lua/perl/erlang…）
+ * 和 extraGrammars 的 simpleMode 全都没有——缺了它们 Ctrl+/ 就是死键。
+ * 表只列「确认官方没带」的；官方已带的（js/ts/css/html/python/rust/java/c…）不要重复注入。
+ */
+const COMMENT_TOKENS: Record<string, { line?: string; block?: [string, string] }> = {
+  gomod: { line: "//" }, "go-work": { line: "//" }, gowork: { line: "//" },
+  "pip-requirements": { line: "#" },
+  makefile: { line: "#" },
+  hcl: { line: "#" }, terraform: { line: "#" }, "terraform-vars": { line: "#" },
+  bicep: { line: "//" },
+  graphql: { line: "#" },
+  elixir: { line: "#" },
+  st: { line: "//" },
+  msdax: { line: "//" },
+  powerquery: { line: "//" },
+  sol: { line: "//" },
+  wgsl: { line: "//" },
+  typespec: { line: "//" },
+  yaml: { line: "#" }, toml: { line: "#" }, dotenv: { line: "#" },
+  properties: { line: "#" }, ini: { line: ";" }, gitignore: { line: "#" }, gitattributes: { line: "#" },
+  shell: { line: "#" }, bash: { line: "#" }, shellsession: { line: "#" }, powershell: { line: "#" },
+  dockerfile: { line: "#" },
+  lua: { line: "--" }, perl: { line: "#" }, r: { line: "#" }, ruby: { line: "#" },
+  erlang: { line: "%" }, haskell: { line: "--" }, nix: { line: "#" }, zig: { line: "//" },
+  gdscript: { line: "#" }, sass: { line: "//" }, less: { line: "//" },
+  clojure: { line: ";;" }, scheme: { line: ";" }, fsharp: { line: "//" },
+  vb: { line: "'" }, vim: { line: '"' }, "objective-c": { line: "//" }, "objective-c++": { line: "//" },
+};
+
+/**
+ * 语法配色补丁（1:1 抄 openidea cm/languages.ts EXTRA_TAGS/patchSupport）：
+ * Java 注解、CSS/SCSS/Sass 的 tag↔attribute 互换、YAML 键染关键字——官方语法包的
+ * 缺口，IntelliJ 里这些是别的颜色。键是 LanguageDescription.name，走 LRLanguage.configure。
+ */
+import { styleTags, tags as t } from "@lezer/highlight";
+import { LRLanguage } from "@codemirror/language";
+const CSS_TAGS: Parameters<typeof styleTags>[0] = {
+  "FeatureName PropertyName": t.attributeName,
+  "ValueName FontName Unit": t.attributeValue,
+  "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
+};
+const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
+  Java: { "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation },
+  CSS: CSS_TAGS,
+  SCSS: CSS_TAGS,
+  Sass: CSS_TAGS,
+  YAML: { "Key/Literal Key/QuotedLiteral": t.keyword },
+};
+
+/** 给语法包装上 commentTokens 覆盖层；表里没有的语言原样返回。 */
+function withCommentTokens(support: LanguageSupport, lang: string): LanguageSupport {
+  const tokens = COMMENT_TOKENS[lang.toLowerCase()];
+  if (!tokens || !support.language) return support;
+  // Language.data 是官方的 language-data 注入口（每实例一个 facet）
+  return new LanguageSupport(support.language, [
+    support.support ?? [],
+    support.language.data.of({ commentTokens: tokens }),
+  ]);
+}
+
+/** 配色补丁：只对 LR 语法生效（对齐 openidea patchSupport）。键用 LanguageDescription.name。 */
+function patchSyntaxTags(support: LanguageSupport, name: string): LanguageSupport {
+  const extra = EXTRA_TAGS[name];
+  if (!extra || !(support.language instanceof LRLanguage)) return support;
+  return new LanguageSupport(support.language.configure({ props: [styleTags(extra)] }), support.support);
+}
+
 const PLAIN = new Set(["", "text", "txt", "plaintext", "plain", "none", "log", "output", "console"]);
 
 /**
@@ -41,6 +111,11 @@ const SPELLINGS: Record<string, string> = {
   pq: "powerquery",
   tsp: "typespec",
   requirements: "pip-requirements",
+  tex: "latex",
+  sty: "latex",
+  ml: "ocaml",
+  mli: "ocaml",
+  haskell: "haskell", lhs: "haskell", erl: "erlang", patch: "diff",
   // 没有对应语法的这几门走最近的亲戚：Twig / FreeMarker / Handlebars 都是 Jinja 那一路
   // 的 {{ }} 模板，Razor 是 HTML + C#，MDX 与 reST 先按 Markdown 染（比素文本强，
   // 又不会像把 reST 认成 LaTeX 那样整篇串色）。
@@ -111,7 +186,7 @@ export function describeGrammar(lang: string, fileExt = ""): LanguageDescription
   // 自己补的那批先查：它们在 language-data 里根本没有条目，硬查只会拿到 null。
   const custom = extraGrammar(name);
   const found = custom
-    ? LanguageDescription.of({ name, support: custom })
+    ? LanguageDescription.of({ name, support: patchSyntaxTags(withCommentTokens(custom, name), name) })
     : LanguageDescription.matchLanguageName(languages, name, true);
   descriptions.set(cacheKey, found ?? null);
   return found ?? null;
@@ -141,7 +216,9 @@ export function loadGrammar(lang: string, fileExt = ""): Promise<LanguageSupport
       .catch(() => null)
       .then((support) => {
         inFlight.delete(key);
-        const value = support ?? null;
+        const value = support
+          ? patchSyntaxTags(withCommentTokens(support, description.name), description.name)
+          : null;
         loaded.set(key, value);
         return value;
       });

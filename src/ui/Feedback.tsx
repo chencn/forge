@@ -138,7 +138,8 @@ export function Toast({
   return (
     <div
       className={clsx(styles.toast, className)}
-      role="status"
+      role={level === "error" ? "alert" : "status"}
+      data-level={level}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
@@ -180,7 +181,7 @@ export function Toast({
       </div>
       {onClose && (
         <span className={styles.toastClose}>
-          <IconButton icon="close" size="small" title="关闭" onClick={onClose} />
+          <IconButton icon="close" size="small" iconSize={12} title="关闭" onClick={onClose} />
         </span>
       )}
     </div>

@@ -16,7 +16,6 @@ import {
   applyFontMetrics,
   captureState,
   emptyState,
-  gutterHost,
   gutterWidth,
   lineTop,
   lineText,
@@ -39,6 +38,7 @@ import {
   setMounted,
   setScrollRatio,
   setKeymap,
+  setRainbowBrackets,
   stateFor,
   textOf,
   textReplacement,
@@ -162,9 +162,17 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
    * `setState`（换文档、语法包加载完重配）会把整层 `.cm-gutters` 拆掉重造，
    * 老的那份从此刻起脱离文档——portal 还挂在它上面，▶ 就一个都不显示了。
    */
+  /**
+   * ▶ 层挂在编辑器的滚动盒本体上：把 scrollDOM 置为 relative，文档坐标（lineTop）
+   * 在这里随内容一起滚，行高怎么变都天然与行对齐。
+   *
+   * 不能挂行号槽（.cm-gutters）：那是 sticky 盒，坐标系是视口——文档坐标挂进去，
+   * 滚动条一离开顶部 ▶ 就整体漂移（行号是引擎按视口系重摆的，所以只有 ▶ 错位）。
+   */
   const ensurePinHost = useCallback((view: EditorView) => {
-    const next = gutterHost(view);
-    if (!next || next === pinHostRef.current) return;
+    const next = view.scrollDOM;
+    if (next === pinHostRef.current) return;
+    if (getComputedStyle(next).position === "static") next.style.position = "relative";
     pinHostRef.current = next;
     setPinHost(next);
   }, []);
@@ -197,7 +205,10 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
    */
   const syncKeymap = useCallback(() => {
     const view = viewRef.current;
-    if (view) setKeymap(view, forgeKeymap(optionsRef.current.keymap));
+    if (view) {
+      setKeymap(view, forgeKeymap(optionsRef.current.keymap));
+      setRainbowBrackets(view, optionsRef.current.rainbowBrackets);
+    }
   }, []);
 
   /**

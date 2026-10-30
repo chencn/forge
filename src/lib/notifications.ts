@@ -1,7 +1,7 @@
 /**
  * 通知系统核心数据结构、响应式总线与本地持久化。
  *
- * 1:1 参照 openidea / IntelliJ IDEA 通知中心设计：
+ * 1:1 参照 IntelliJ IDEA 通知中心设计：
  * - 每个功能模块归属独立的 NotificationGroup（如 Git, Maven, Build, LSP, AI, System）；
  * - 支持 Action 操作按钮（如查看日志、重试、解决冲突）；
  * - 区分气泡形态（None / Balloon / Sticky）与是否记入工具窗口历史；
@@ -31,6 +31,8 @@ export interface NotificationAction {
 
 export interface AppNotification {
   id: string;
+  /** 业务去重键：同一条件的通知（如同一类 git 错误连发）按 key 替换而非堆叠（对齐 openidea）。 */
+  key?: string;
   groupId: string;
   groupTitle?: string;
   title: string;
@@ -54,6 +56,8 @@ export interface AppNotification {
 
 export interface NotifyOptions {
   groupId?: string;
+  /** 业务去重键：带 key 的新通知会替换同 key 的旧通知（气泡与历史都替换）。 */
+  key?: string;
   groupTitle?: string;
   title: string;
   content?: string;
@@ -68,10 +72,35 @@ export interface NotifyOptions {
   logged?: boolean;
 }
 
-/** 智能超时：常驻或错误气泡常驻（返回 null），警告 9 秒，其他 6 秒 */
-export function balloonTimeout(n: AppNotification): number | null {
-  if (n.sticky || n.level === "error") return null;
-  return n.level === "warn" || n.level === "warning" ? 9000 : 6000;
+/**
+ * 气泡淡出节奏（1:1 对齐 openidea）：普通气泡 10 秒；错误与显式常驻 5 分钟后
+ * 淡出（前提是已记录进历史——没记录的常驻气泡只能手动关）；返回 null 表示不自动淡出。
+ */
+export const STICKY_BALLOON_TIMEOUT = 5 * 60 * 1000;
+
+export function balloonTimeout(n: Pick<AppNotification, "level" | "sticky" | "logged">): number | null {
+  if (n.sticky || n.level === "error") {
+    return n.logged === false ? null : STICKY_BALLOON_TIMEOUT;
+  }
+  return 10000;
+}
+
+/** 通知提示音（对齐 openidea playSound：880Hz 短促一声）。 */
+let audio: AudioContext | null = null;
+export function playSound(): void {
+  try {
+    audio ??= new AudioContext();
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.08, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.25);
+    osc.connect(gain).connect(audio.destination);
+    osc.start();
+    osc.stop(audio.currentTime + 0.25);
+  } catch {
+    // 无音频输出时静默
+  }
 }
 
 /** 7 天的毫秒数，用于历史保留窗口。 */
@@ -79,8 +108,6 @@ export const NOTIFICATION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 最大保留历史条数 */
 const MAX_HISTORY_ITEMS = 200;
-/** 屏幕最多同时展示的浮动气泡数，防止重叠铺满 */
-const MAX_BALLOONS_COUNT = 3;
 
 /** 产生存储 Key，未打开项目时归入全局。 */
 function storageKey(projectRoot: string | null): string {
@@ -118,7 +145,12 @@ export function saveNotifications(
     const now = Date.now();
     const active = list
       .filter((item) => now - item.timestamp <= NOTIFICATION_MAX_AGE_MS)
-      .slice(0, MAX_HISTORY_ITEMS);
+      .slice(0, MAX_HISTORY_ITEMS)
+      // balloon 是会话内的浮动气泡状态，不随历史持久化，避免重启后幽灵气泡
+      .map((item) => (item.balloon ? { ...item, balloon: false } : item))
+      // actions 是函数、body 可能是 ReactNode：序列化只会得到僵尸数据，恢复的条目
+      // 按 content/title/level/time 渲染即可（Toast 已有 body ?? content 兜底）。
+      .map(({ actions: _actions, body: _body, ...rest }) => rest);
     localStorage.setItem(storageKey(projectRoot), JSON.stringify(active));
   } catch {
     // 存储满或被禁用时忽略
@@ -241,7 +273,7 @@ export const notificationCenter = {
     return () => listeners.delete(listener);
   },
 
-  /** 切换当前活跃工程根，自动同步载入对应的隔离历史。 */
+  /** 切换当前活跃工程根，自动同步载入对应的隔离历史；浮动气泡随会话废弃。 */
   switchProjectRoot: (projectRoot: string | null) => {
     if (state.projectRoot === projectRoot) return;
     const history = loadNotifications(projectRoot);
@@ -250,6 +282,7 @@ export const notificationCenter = {
       projectRoot,
       history,
       items: history,
+      toasts: [],
     }));
   },
 
@@ -264,17 +297,23 @@ export const notificationCenter = {
     const root = opts.projectRoot ?? state.projectRoot ?? "";
     const level = opts.level ?? "info";
     const groupId = opts.groupId ?? "system";
-    const isSticky = opts.sticky ?? (level === "error");
+    // 组配置在 store 里统一消费（1:1 对齐 openidea 的 notificationPrefs）——
+    // 之前只有 App 的两条调用路径手动换算，其余调用全绕过设置页的开关。
+    const groupRule = activeSettings?.notificationGroups?.[groupId];
+    const displayType = groupRule?.displayType ?? "balloon";
+    const isSticky = opts.sticky ?? (displayType === "sticky" || level === "error");
 
-    // 勿扰模式下静默所有浮动气泡
+    // 勿扰或「气泡总开关」关闭时静默所有浮动气泡；组配置 display:none 同样不弹
     const isDnd = activeSettings?.notificationDoNotDisturb === true;
-    const isBalloon = !isDnd && opts.balloon !== false;
-    const isLogged = opts.logged !== false;
+    const balloonsEnabled = activeSettings?.notificationBalloons !== false;
+    const isBalloon = balloonsEnabled && !isDnd && opts.balloon !== false && displayType !== "none";
+    const isLogged = groupRule?.log ?? (opts.logged !== false);
     const now = Date.now();
     const contentText = typeof opts.body === "string" ? opts.body : (opts.content ?? "");
 
     const notif: AppNotification = {
       id,
+      key: opts.key,
       groupId,
       groupTitle: opts.groupTitle,
       title: opts.title,
@@ -292,8 +331,16 @@ export const notificationCenter = {
     };
 
     updateState((prev) => {
-      const nextHistory = isLogged ? [notif, ...prev.history].slice(0, MAX_HISTORY_ITEMS) : prev.history;
-      const nextToasts = isBalloon ? [notif, ...prev.toasts].slice(0, MAX_BALLOONS_COUNT) : prev.toasts;
+      // 同 key 替换而非堆叠（对齐 openidea notify 的 key 去重）
+      const rest = opts.key
+        ? prev.history.filter((x) => x.key !== opts.key)
+        : prev.history;
+      const nextHistory = isLogged ? [notif, ...rest].slice(0, MAX_HISTORY_ITEMS) : prev.history;
+      // 气泡队列存全量：第 4 条起排队，关掉一条补位（对齐 openidea Balloons 的 slice 语义）
+      const restToasts = opts.key
+        ? prev.toasts.filter((x) => x.key !== opts.key)
+        : prev.toasts;
+      const nextToasts = isBalloon ? [notif, ...restToasts] : prev.toasts;
       if (isLogged) {
         saveNotifications(prev.projectRoot, nextHistory);
       }
@@ -304,6 +351,11 @@ export const notificationCenter = {
         toasts: nextToasts,
       };
     });
+
+    // 气泡 + 声音开关（对齐 openidea：balloon && prefs.sound）
+    if (isBalloon && activeSettings?.notificationSound === true) {
+      playSound();
+    }
 
     // 检查并调度操作系统原生通知：
     // 条件：未开启勿扰、组配置开启了系统通知、且窗口处于非前台聚焦状态（最小化或后台失焦）
@@ -334,15 +386,17 @@ export const notificationCenter = {
     }));
   },
 
-  /** 标记全部通知已读 */
+  /** 标记全部通知已读（1:1 对齐 openidea：面板被看过，已记录条目的浮动气泡随之撤下） */
   markAllAsRead: () => {
     updateState((prev) => {
-      const nextHistory = prev.history.map((it) => ({ ...it, read: true }));
+      const nextHistory = prev.history.map((it) => ({ ...it, read: true, balloon: false }));
       saveNotifications(prev.projectRoot, nextHistory);
       return {
         ...prev,
         history: nextHistory,
         items: nextHistory,
+        // 面板被看过，气泡一并收走（1:1 对齐 openidea markAllNotificationsRead）
+        toasts: [],
       };
     });
   },
@@ -358,6 +412,14 @@ export const notificationCenter = {
         toasts: [],
       };
     });
+  },
+
+  /** 撤下某个业务键的气泡：条件不再成立时由调用方收掉（对齐 openidea expireNotification）。 */
+  expireNotification: (key: string) => {
+    updateState((prev) => ({
+      ...prev,
+      toasts: prev.toasts.filter((t) => t.key !== key),
+    }));
   },
 
   /** 删除单条历史通知 */
@@ -376,6 +438,33 @@ export const notificationCenter = {
     });
   },
 };
+
+/** 设置写回器：suppressGroup 要把「整组关闭」落进用户设置（App 挂载时注册 patch）。 */
+let settingsWriter: ((patch: Partial<import("./settings").Settings>) => void) | null = null;
+
+export function registerSettingsWriter(fn: (patch: Partial<import("./settings").Settings>) => void): void {
+  settingsWriter = fn;
+}
+
+/**
+ * 「不再显示」（对齐 openidea suppressGroup）：把该组的弹出形态改成 none——
+ * 气泡立即收下、历史照记，写回设置持久化。
+ */
+export function suppressGroup(group: string): void {
+  const groups = { ...(activeSettings?.notificationGroups ?? {}) };
+  groups[group] = { ...(groups[group] ?? { displayType: "balloon", log: true, system: false }), displayType: "none" };
+  if (activeSettings) {
+    activeSettings = { ...activeSettings, notificationGroups: groups };
+  }
+  updateState((prev) => ({
+    ...prev,
+    items: prev.items.flatMap((x) =>
+      x.groupId !== group || !x.balloon ? [x] : x.logged === false ? [] : [{ ...x, balloon: false }]
+    ),
+    toasts: prev.toasts.filter((t) => t.groupId !== group),
+  }));
+  settingsWriter?.({ notificationGroups: groups });
+}
 
 /**
  * 响应式 Hook：订阅通知中心状态

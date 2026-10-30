@@ -1826,11 +1826,6 @@ span.entry-icon > svg {
   width: 26px;
   height: 28px;
 }
-.activity-rail.is-right .status-notification-area {
-  display: flex;
-  justify-content: center;
-}
-
 /* portal 挂载点摊平成 panel-body 的直接子节点。 */
 .right-dock-slot {
   display: contents;
@@ -2465,7 +2460,7 @@ span.entry-icon > svg {
   color: #fff;
 }
 
-/* 顶栏右上角通知铃铛的徽章（与 openidea New UI 顶栏保持一致） */
+/* 顶栏右上角通知铃铛的徽章（与 IntelliJ IDEA New UI 顶栏保持一致） */
 .titlebar-badge {
   position: absolute;
   top: 1px;
@@ -2572,6 +2567,30 @@ span.entry-icon > svg {
   gap: 4px;
   padding: 0 8px 0 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--sidebar-border) 72%, transparent);
+}
+
+/* 通知面板头部不画分隔线（对齐文件管理面板）：侧栏形态会继承工具窗头部的横线，这里显式关掉。 */
+.tool-window.is-notifications .tool-window-head,
+.bottom-panel.island.is-notifications .tool-window-head,
+.pane-body.is-notifications .tool-window-head {
+  border-bottom: none;
+}
+
+/* 通知面板头部整排图标（垃圾桶/选项/最大化/收起/关闭）hover 才现身，对齐文件管理面板的头部交互。 */
+.is-notifications .tool-window-head .icon-button.is-inline {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.is-notifications .tool-window-head:hover .icon-button.is-inline,
+.is-notifications .tool-window-head .icon-button.is-inline:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.is-notifications .tool-window-head:hover .icon-button.is-inline:disabled,
+.is-notifications .tool-window-head .icon-button.is-inline:disabled:focus-visible {
+  opacity: 0.4;
 }
 
 .workbench-row > .tool-window .tool-window-title {
@@ -3355,6 +3374,9 @@ span.entry-icon > svg {
 .run-gutter-layer {
   position: absolute;
   inset: 0;
+  /* 挂在滚动盒（scrollDOM，relative 化）里随内容滚；行号槽是 z-index 200 的 sticky 盒，
+     这层必须压过它，▶ 才不会被装订线盖住。 */
+  z-index: 210;
   pointer-events: none;
 }
 
@@ -5843,12 +5865,38 @@ body.is-editor-tab-dragging * {
 }
 
 .diff-head {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  gap: 2px;
+  height: 40px;
+  padding: 0 6px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+}
+
+/* 比对工具栏的按钮与提交树同款：20px 小方钮，按下的挂底色。 */
+.diff-head .icon-button.is-inline {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+}
+
+.icon-button.is-pressed {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* 高亮选择器：原生 select，收成工具栏同档的矮条。 */
+.diff-select {
+  height: 20px;
+  padding: 0 2px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
 }
 
 /* 顶栏按组分簇：一组之内挨得紧，组与组之间由那条竖线隔开。 */
@@ -5932,12 +5980,25 @@ body.is-editor-tab-dragging * {
 .diff-side-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
-  padding-left: 8px;
+  padding: 0 12px;
   color: var(--text-secondary);
-  font-size: 11.5px;
-  line-height: 16px;
+  font-size: 12px;
+  line-height: 24px;
+  font-family: var(--font-mono);
+}
+
+/* 右侧是工作区那份时的「working copy」小徽章。 */
+.diff-side-badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue-text);
+  font-size: 11px;
+  line-height: 15px;
+  font-family: var(--font-family, inherit);
 }
 
 .diff-side-row svg {
@@ -5994,6 +6055,26 @@ body.is-editor-tab-dragging * {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* 比对正文 13px / 22px（IDEA 的比对行距比编辑器松一档）。 */
+  --editor-line-height: 22px;
+  position: relative;
+}
+
+/* F7 走到头的提示气泡：底部居中，2.5 秒自己散。 */
+.diff-nav-hint {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 20;
+  padding: 6px 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--surface-island-strong);
+  color: var(--text-primary);
+  box-shadow: var(--island-shadow);
+  font-size: 12px;
+  pointer-events: none;
 }
 
 /* ===== 比对视图（@codemirror/merge）=====
@@ -6036,56 +6117,111 @@ body.is-editor-tab-dragging * {
 }
 
 /* 改动块：左栏是基线（那份里少了什么），右栏是当前（多了什么）。
-   按 IDEA 的口径旧红新绿，色档与行号槽那些 VCS 标记同一组 token。
-   单栏那一档编辑器带的是 cm-merge-b，改动行跟着绿。 */
-.cm-editor.cm-merge-a.forge-diff .cm-changedLine {
-  background-color: var(--accent-red-bg);
+   按 IDEA 比对窗口的口径：整行用装订线色的 12%，词级用 danger / success 的 26%。
+   单栏那一档编辑器带的是 cm-merge-b，改动行跟着 added。 */
+.cm-editor.cm-merge-a.forge-diff .cm-changedLine,
+.cm-editor.forge-diff .cm-deletedChunk {
+  background-color: color-mix(in srgb, var(--gutter-deleted) 12%, transparent);
 }
 
-.cm-editor.cm-merge-b.forge-diff .cm-changedLine {
-  background-color: var(--accent-green-bg);
+.cm-editor.cm-merge-b.forge-diff .cm-changedLine,
+.cm-editor.forge-diff .cm-inlineChangedLine {
+  background-color: color-mix(in srgb, var(--gutter-added) 12%, transparent);
 }
 
 /* 块里只有几个词真变了：词级再压深一档，一眼能看出动的是哪几个字。 */
-.cm-editor.cm-merge-a.forge-diff .cm-changedText {
-  background: color-mix(in srgb, var(--accent-red) 30%, transparent);
+.cm-editor.cm-merge-a.forge-diff .cm-changedText,
+.cm-editor.forge-diff .cm-deletedText {
+  background: color-mix(in srgb, var(--vcs-danger) 26%, transparent);
 }
 
 .cm-editor.cm-merge-b.forge-diff .cm-changedText {
-  background: color-mix(in srgb, var(--accent-green) 30%, transparent);
+  background: color-mix(in srgb, var(--vcs-success) 26%, transparent);
 }
 
-/* 单栏那一档：删掉的行摆在那块改动上面，整块是基线独有的内容，跟着红。 */
+/* 单栏那一档：删掉的整块是基线独有的内容，左缘一条装订线色的缝。 */
 .cm-editor.forge-diff .cm-deletedChunk {
-  background-color: var(--accent-red-bg);
-  border-left: 3px solid var(--accent-red);
+  border-left: 3px solid var(--gutter-deleted);
   padding-left: 7px;
 }
 
-.cm-editor.cm-merge-b.forge-diff .cm-deletedChunk .cm-deletedText {
-  background: none;
+/* 「不高亮」那档：外框挂了 noHighlight，所有改动背景全部关掉。 */
+.cm-editor.forge-diff.noHighlight .cm-changedLine,
+.cm-editor.forge-diff.noHighlight .cm-changedText,
+.cm-editor.forge-diff.noHighlight .cm-deletedChunk,
+.cm-editor.forge-diff.noHighlight .cm-deletedText,
+.cm-editor.forge-diff.noHighlight .cm-inlineChangedLine {
+  background: none !important;
 }
 
-/* 行号左边那条 3px 竖标：并排时指着各自那一侧，单栏时删掉的那块也留一条。 */
+/* 「不同步滚动」：两栏各自成滚动列，外框不滚（默认同步时外框才是一条滚动条）。 */
+.forge-diff-unsynced .cm-mergeView {
+  display: flex;
+  overflow: hidden;
+}
+
+.forge-diff-unsynced .cm-mergeViewEditor {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* 每块行尾的 ‹ › 控件：行自身成为定位基准，控件浮在右缘，不参与文字排版。 */
+.cm-editor.forge-diff .cm-line {
+  position: relative;
+}
+
+.cm-diff-arrows {
+  position: absolute;
+  right: 6px;
+  top: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cm-diff-arrow {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--surface-island, var(--bg-secondary));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.cm-diff-arrow:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* 行号左边那条 3px 竖标：左栏灰蓝、右栏蓝，单栏删块也留一条（IDEA 的 gutter 色组）。 */
 .cm-editor.cm-merge-a.forge-diff .cm-changedLineGutter,
 .cm-editor.forge-diff .cm-deletedLineGutter {
-  background: var(--accent-red);
+  background: var(--gutter-deleted);
 }
 
 .cm-editor.cm-merge-b.forge-diff .cm-changedLineGutter {
-  background: var(--accent-green);
+  background: var(--gutter-modified);
 }
 
 .cm-editor.forge-diff .cm-inlineChangedLineGutter {
-  background: var(--accent-blue);
+  background: var(--gutter-modified);
 }
 
 /* 折起来的没改区：一条安静地带，点它展开。那两个 ⦚ 是库自带的装饰，字库里没这个字形。 */
 .cm-editor.forge-diff .cm-collapsedLines {
-  padding: 3px 10px;
-  background: var(--bg-tertiary);
+  padding: 2px 10px;
+  background: var(--bg-secondary);
   color: var(--text-tertiary);
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -6235,30 +6371,6 @@ body.is-editor-tab-dragging * {
   flex: none;
   white-space: nowrap;
   cursor: pointer;
-}
-
-.commit-lines {
-  display: inline-flex;
-  gap: 7px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  /* 图例版放不下就换紧凑版，靠的是这两行：不折行、溢出量得出来。 */
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.commit-lines .is-deleted {
-  color: var(--accent-red-text);
-}
-
-.commit-lines .is-added {
-  color: var(--accent-green-text);
-}
-
-/* IDEA 那组数字是按状态分的文件数：新增绿、修改蓝。 */
-.commit-lines .is-modified {
-  color: var(--accent-blue);
 }
 
 .commit-buttons {
@@ -6514,6 +6626,27 @@ body.is-editor-tab-dragging * {
   color: var(--text-muted);
 }
 
+/* 目录行右侧的「N 个文件」与完整路径：Git 日志第三栏还在用。 */
+.dir-count {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.dir-path {
+  flex: none;
+  max-width: 34%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* 预览标签：斜体，IDEA 的单预览槽那一档。 */
+.editor-tab.is-preview .tab-label {
+  font-style: italic;
+}
 /* ===== 底部状态条 ===== */
 .global-status {
   display: flex;
@@ -6730,55 +6863,8 @@ body.is-editor-tab-dragging * {
   white-space: nowrap;
 }
 
-/* ===== 通知系统 (参考 IDEA Notifications) ===== */
-.status-notification-area {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.notification-trigger {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  transition: background 120ms ease-out, color 120ms ease-out;
-}
-
-.notification-trigger:hover,
-.notification-trigger[aria-expanded="true"] {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.notification-trigger.has-error {
-  color: var(--accent-red);
-}
-
-.notification-badge {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  min-width: 6px;
-  height: 6px;
-  padding: 0 1px;
-  border-radius: 9999px;
-  background: var(--button-solid);
-  color: #ffffff;
-  font-size: 8px;
-  line-height: 1;
-}
-
-.notification-badge.is-error {
-  background: var(--accent-red);
-}
-
 /* 右下角/角落浮动通知气泡宿主 (Notification Balloon / Toast Host)
- * 1:1 对标 openidea / IntelliJ IDEA Islands 规范：
+ * 1:1 对标 IntelliJ IDEA Islands 规范：
  * - 默认位于状态栏上方 12px，距离窗口右边框 20px；
  * - 堆叠模式：最新气泡置于最贴近底部的底层，旧气泡垂直向上平推；
  * - 采用 var(--z-toast, 1100) 确保独立于普通对话框之上的浮动层级。
@@ -7008,7 +7094,7 @@ body.is-editor-tab-dragging * {
 }
 
 /* 通知历史面板与工具窗口 (Notifications Tool Window / Panel)
- * 1:1 对标 openidea / IntelliJ IDEA Notifications 面板规范
+ * 1:1 对标 IntelliJ IDEA Notifications 面板规范
  */
 .notifications-tool-window {
   display: flex;

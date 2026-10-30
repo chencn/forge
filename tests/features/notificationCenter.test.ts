@@ -52,7 +52,7 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     expect(item.sticky).toBe(false);
   });
 
-  it("Sticky 策略：错误级别默认常驻，balloonTimeout 返回 null", () => {
+  it("Sticky 策略：错误级别默认常驻，已记录的 5 分钟后淡出（对齐 openidea）", () => {
     notificationCenter.notify({
       title: "Git 推送失败",
       content: "网络连接超时",
@@ -63,10 +63,12 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     const state = notificationCenter.getState();
     const item = state.toasts[0];
     expect(item.sticky).toBe(true);
-    expect(balloonTimeout(item)).toBeNull();
+    expect(balloonTimeout(item)).toBe(5 * 60 * 1000);
+    // 没记录进历史的常驻气泡不会自己消失，只能手动关
+    expect(balloonTimeout({ ...item, logged: false })).toBeNull();
   });
 
-  it("超时计算：普通 info 返回 6000ms，warn 返回 9000ms", () => {
+  it("超时计算：普通 info/warn 统一 10 秒（对齐 openidea）", () => {
     notificationCenter.notify({
       title: "更新提示",
       content: "新版本可用",
@@ -79,8 +81,8 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     });
 
     const [warnItem, infoItem] = notificationCenter.getState().toasts;
-    expect(balloonTimeout(infoItem)).toBe(6000);
-    expect(balloonTimeout(warnItem)).toBe(9000);
+    expect(balloonTimeout(infoItem)).toBe(10000);
+    expect(balloonTimeout(warnItem)).toBe(10000);
   });
 
   it("Action 操作回调：通知绑定的 action 可被正确触发执行", () => {
@@ -123,6 +125,44 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     notificationCenter.dismissBalloon(id);
     expect(notificationCenter.getState().toasts.length).toBe(0);
     expect(notificationCenter.getState().history.length).toBe(1);
+  });
+
+  it("气泡关闭回归：error/sticky 常驻气泡点叉后立即从 toasts 消失，不再常驻", () => {
+    // error 级别默认 sticky（balloonTimeout 为 null，不会自动超时），只能手动关闭
+    const id = notificationCenter.notify({
+      title: "Git 推送失败",
+      content: "网络连接超时",
+      level: "error",
+      groupId: "git",
+    });
+
+    const balloon = notificationCenter.getState().toasts.find((t) => t.id === id);
+    expect(balloon).toBeDefined();
+
+    notificationCenter.dismissBalloon(id);
+    expect(notificationCenter.getState().toasts.some((t) => t.id === id)).toBe(false);
+    // 历史里仍可查到这条错误
+    expect(notificationCenter.getState().history.some((t) => t.id === id)).toBe(true);
+  });
+
+  it("markAllAsRead 对齐 openidea：已记录条目的浮动气泡随之撤下", () => {
+    notificationCenter.notify({ title: "提示 A", content: "a" });
+    notificationCenter.notify({ title: "提示 B", content: "b" });
+    expect(notificationCenter.getState().toasts.length).toBe(2);
+
+    notificationCenter.markAllAsRead();
+    expect(notificationCenter.getState().toasts.length).toBe(0);
+    expect(notificationCenter.getState().history.every((n) => n.read && !n.balloon)).toBe(true);
+  });
+
+  it("持久化剥离 balloon 标志：重启载入历史不会复活幽灵气泡", () => {
+    const id = notificationCenter.notify({ title: "气泡通知", content: "x" });
+    expect(notificationCenter.getState().history[0].id).toBe(id);
+    // notify 时已同步持久化，此时磁盘上的记录不应携带 balloon=true
+    const raw = JSON.parse(
+      localStorage.getItem(`forge:notifications:global`) ?? "[]"
+    ) as Array<{ id: string; balloon: boolean }>;
+    expect(raw.find((n) => n.id === id)?.balloon).toBe(false);
   });
 
   it("markAllAsRead 与 clearHistory 批量状态流转", () => {

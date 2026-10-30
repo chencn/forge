@@ -16,6 +16,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
+import { useI18n } from "../i18n";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Icon, type LucideIconType } from "./Icon";
@@ -104,6 +105,8 @@ function useControllableSet(value: ReadonlySet<string> | undefined, initial: Ite
 }
 
 export function Tree<T>(props: TreeProps<T>) {
+  const { t } = useI18n();
+  const loadingText = t("common.loading");
   const {
     roots,
     getKey,
@@ -492,7 +495,7 @@ export function Tree<T>(props: TreeProps<T>) {
                   style={{ ...style, paddingLeft: pad + 20 }}
                   role="presentation"
                 >
-                  <Spinner size={12} /> <span>正在加载...</span>
+                  <Spinner size={12} /> <span>{loadingText}</span>
                 </div>
               );
             }

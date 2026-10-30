@@ -40,7 +40,7 @@ export interface ProjectTreeNode {
   readonly isGroup?: boolean;
   /** 是否为 JVM 包节点（如 com.example） */
   readonly isPackage?: boolean;
-  /** 自定义特定图标名称 (1:1 对齐 openidea node.icon) */
+  /** 自定义特定图标名称 (1:1 对齐 IntelliJ IDEA node.icon) */
   readonly icon?: string;
   /** 是否为归档文件节点 (如 .jar / .zip) */
   readonly isArchive?: boolean;
@@ -52,7 +52,7 @@ export function normalizePathKey(path: string): string {
 }
 
 /**
- * 将用户家目录前缀缩写为 `~`（1:1 对标 openidea / IntelliJ IDEA 路径规范）
+ * 将用户家目录前缀缩写为 `~`（1:1 对标 IntelliJ IDEA 路径规范）
  */
 export function tildify(path: string, home: string | null | undefined): string {
   if (!home || home === "/") return path.replaceAll("\\", "/");
@@ -64,7 +64,7 @@ export function tildify(path: string, home: string | null | undefined): string {
 }
 
 /**
- * 命名空间前缀与规整契约（1:1 对标 openidea）
+ * 命名空间前缀与规整契约（1:1 对标 IntelliJ IDEA）
  * GROUP_PREFIX: 虚拟组根节点或虚拟分类
  * LIB_PREFIX: 外部依赖库独立命名空间，杜绝与项目工程同名物理路径冲突
  */
@@ -111,8 +111,8 @@ export function isPathEqualOrChild(child: string, parent: string): boolean {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的系统忽略文件规则
- * 注意：点开头文件（如 .github, .openidea, .env, .gitignore）在 IDEA 中默认完全可见！
+ * 1:1 对标 JetBrains 的系统忽略文件规则
+ * 注意：点开头文件（如 .github, .config, .env, .gitignore）在 IDEA 中默认完全可见！
  * 只有系统隐藏名单中的特殊项（如 .git, .DS_Store）才受 showHidden 限制。
  */
 export const DEFAULT_IGNORED_NAMES = new Set([
@@ -121,21 +121,25 @@ export const DEFAULT_IGNORED_NAMES = new Set([
   ".jj",
   ".svn",
   "cvs",
+  "_svn",
   ".ds_store",
   "thumbs.db",
   "desktop.ini",
   "__pycache__",
+  "vssver.scc",
+  "vssver2.scc",
 ]);
 
 export function isIgnoredName(name: string): boolean {
   const lower = name.toLowerCase();
   if (DEFAULT_IGNORED_NAMES.has(lower)) return true;
-  if (lower.endsWith(".pyc") || lower.endsWith(".pyo") || lower.endsWith("~")) return true;
+  if (lower.endsWith(".pyc") || lower.endsWith(".pyo") || lower.endsWith(".rbc") || lower.endsWith(".yarb") || lower.endsWith("~"))
+    return true;
   return false;
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 Excluded 排除目录规则
+ * 1:1 对标 JetBrains 的 Excluded 排除目录规则
  * node_modules, dist, target 等构建输出或依赖包目录默认为排除目录，
  * 在树中赋予专属橙色文件夹高亮。
  */
@@ -183,7 +187,7 @@ export interface ValidateOptions {
 const WINDOWS_INVALID = /[<>:"|?*\\]/;
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i;
 
-/** 1:1 对标 openidea / IntelliJ IDEA 校验行内编辑输入的文件/目录名 */
+/** 1:1 对标 IntelliJ IDEA 校验行内编辑输入的文件/目录名 */
 export function validateName(raw: string, opts: ValidateOptions): NameCheck {
   const name = raw.trim();
   if (!name) return { error: "Name cannot be empty" };

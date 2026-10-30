@@ -201,7 +201,7 @@ const NOTIFICATION_GROUP_LABELS: Record<string, string> = {
 };
 
 /**
- * 1:1 对标 openidea / IntelliJ IDEA 的通知设置页
+ * 1:1 对标 IntelliJ IDEA 的通知设置页
  */
 export function AppearanceNotificationsPage() {
   const { t } = useI18n();
@@ -245,6 +245,30 @@ export function AppearanceNotificationsPage() {
         <p className="settings-hint">
           全局弹窗与重要事件提示的出现停靠角落。
         </p>
+
+        {/* 1b. 气泡总开关（对齐 openidea「Display balloon notifications」） */}
+        <div style={{ marginBottom: 12 }}>
+          <label className="settings-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={settings.notificationBalloons}
+              onChange={(e) => patch({ notificationBalloons: e.target.checked })}
+            />
+            显示通知气泡 (Display balloon notifications)
+          </label>
+        </div>
+
+        {/* 1c. 通知提示音（对齐 openidea「Play sound」） */}
+        <div style={{ marginBottom: 12 }}>
+          <label className="settings-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={settings.notificationSound}
+              onChange={(e) => patch({ notificationSound: e.target.checked })}
+            />
+            播放提示音 (Play sound)
+          </label>
+        </div>
 
         {/* 2. 勿扰模式开关 */}
         <div className="settings-row" style={{ marginTop: 16 }}>

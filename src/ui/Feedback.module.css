@@ -52,7 +52,7 @@
   padding: 0 4px;
   border-radius: 7px;
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--fs-tiny);
   line-height: 1;
   background: var(--bg-active, #40434a);
   color: var(--fg-emphasis, #d1d3d9);
@@ -69,21 +69,25 @@
 .tone-accent {
   background: var(--accent, #3871e1);
   color: var(--fg-on-accent, #ffffff);
+  --icon-color: currentColor;
 }
 
 .tone-danger {
   background: var(--danger, #f57e84);
   color: var(--fg-on-accent, #ffffff);
+  --icon-color: currentColor;
 }
 
 .tone-warning {
   background: var(--warning, #d59637);
   color: var(--fg-on-accent, #ffffff);
+  --icon-color: currentColor;
 }
 
 .tone-success {
   background: var(--success, #6db083);
   color: var(--fg-on-accent, #ffffff);
+  --icon-color: currentColor;
 }
 
 .empty {
@@ -106,13 +110,11 @@
 
 .emptyTitle {
   color: var(--fg-muted, #8c8f95);
-  font-weight: 500;
 }
 
 .emptyBody {
   max-width: 320px;
   color: var(--fg-muted, #8c8f95);
-  font-size: 12px;
 }
 
 .emptyActions {
@@ -175,12 +177,14 @@
   color: var(--fg-strong, #dfe1e5);
   font-weight: 600;
   overflow-wrap: anywhere;
+  /* 通知内容可选中，右键走系统原生「复制」（对齐 openidea：全局不禁文本选择） */
+  user-select: text;
 }
 
 .toastMeta {
   flex: none;
   color: var(--fg-subtle, #73767c);
-  font-size: 11px;
+  font-size: var(--fs-small);
 }
 
 .toastBody {
