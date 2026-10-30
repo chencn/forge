@@ -413,6 +413,20 @@ interface EditorBridge {
   selectedText(limit: number): string;
   formatDocument(path: string): boolean;
   findUsages(path: string): boolean;
+  organizeImports(path: string): boolean;
+  gotoDefinition(path: string): boolean;
+  gotoDeclaration(path: string): boolean;
+  gotoTypeDefinition(path: string): boolean;
+  gotoImplementation(path: string): boolean;
+  showCodeActions(path: string): boolean;
+  renameSymbol(path: string): boolean;
+  showSignatureHelp(path: string): boolean;
+  showDocumentSymbols(path: string): boolean;
+  showWorkspaceSymbols(path: string): boolean;
+  showIncomingCalls(path: string): boolean;
+  showOutgoingCalls(path: string): boolean;
+  showSuperTypes(path: string): boolean;
+  showSubTypes(path: string): boolean;
 }
 
 let bridge: EditorBridge | null = null;
@@ -466,4 +480,60 @@ export function formatDocument(path: string): boolean {
 
 export function findUsages(path: string): boolean {
   return bridge?.findUsages(path) ?? false;
+}
+
+export function organizeImports(path: string): boolean {
+  return bridge?.organizeImports(path) ?? false;
+}
+
+export function gotoDefinition(path: string): boolean {
+  return bridge?.gotoDefinition(path) ?? false;
+}
+
+export function gotoDeclaration(path: string): boolean {
+  return bridge?.gotoDeclaration(path) ?? false;
+}
+
+export function gotoTypeDefinition(path: string): boolean {
+  return bridge?.gotoTypeDefinition(path) ?? false;
+}
+
+export function gotoImplementation(path: string): boolean {
+  return bridge?.gotoImplementation(path) ?? false;
+}
+
+export function showCodeActions(path: string): boolean {
+  return bridge?.showCodeActions(path) ?? false;
+}
+
+export function renameSymbol(path: string): boolean {
+  return bridge?.renameSymbol(path) ?? false;
+}
+
+export function showSignatureHelp(path: string): boolean {
+  return bridge?.showSignatureHelp(path) ?? false;
+}
+
+export function showDocumentSymbols(path: string): boolean {
+  return bridge?.showDocumentSymbols(path) ?? false;
+}
+
+export function showWorkspaceSymbols(path: string): boolean {
+  return bridge?.showWorkspaceSymbols(path) ?? false;
+}
+
+export function showIncomingCalls(path: string): boolean {
+  return bridge?.showIncomingCalls(path) ?? false;
+}
+
+export function showOutgoingCalls(path: string): boolean {
+  return bridge?.showOutgoingCalls(path) ?? false;
+}
+
+export function showSuperTypes(path: string): boolean {
+  return bridge?.showSuperTypes(path) ?? false;
+}
+
+export function showSubTypes(path: string): boolean {
+  return bridge?.showSubTypes(path) ?? false;
 }

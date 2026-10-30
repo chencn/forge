@@ -15,6 +15,7 @@ import {
   applyChangeMarks,
   applyFontMetrics,
   captureState,
+  clearWorkspaceUndo,
   emptyState,
   gutterWidth,
   lineTop,
@@ -47,7 +48,25 @@ import {
   type ChangeMark,
   type LineEnding,
 } from "../lib/cmEditor";
-import { findUsages, formatDocument, lspExtensions } from "../lib/cm/lsp";
+import {
+  findUsages,
+  formatDocument,
+  gotoDeclaration,
+  gotoDefinition,
+  gotoImplementation,
+  gotoTypeDefinition,
+  lspExtensions,
+  organizeImports,
+  renameSymbol,
+  showCodeActions,
+  showDocumentSymbols,
+  showIncomingCalls,
+  showOutgoingCalls,
+  showSignatureHelp,
+  showSubTypes,
+  showSuperTypes,
+  showWorkspaceSymbols,
+} from "../lib/cm/lsp";
 import { attachMinimapPointer } from "../lib/cm/minimapPointer";
 import { forgeKeymap } from "../lib/cm/keymap";
 import { basenameOf, samePath } from "../lib/format";
@@ -76,7 +95,7 @@ interface CodeEditorProps {
   /** 当前标签对应的文档；为 null 时编辑器留空。 */
   document: OpenDocument | null;
   onChange: (path: string, contents: string) => void;
-  onSave: () => void;
+  onSave: (protectedLine?: number) => void;
   /** 焦点离开整个编辑器挂件（点向目录树、终端、提交面板等外部区域）时触发。 */
   onBlur?: () => void;
   /** 搜索命中的落点；不属于当前文档或已经消费掉时为 null。 */
@@ -273,9 +292,15 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       // 小地图得在建 state 时就带上：库的行表只在那一刻算（见 minimapExtension）。
       // 这里给的是空色带，真色带由 syncMinimap 之后补上。
       minimapExtension(minimapConfig([])),
-      saveKeymap(() => saveRef.current()),
+      saveKeymap(() => {
+        const view = viewRef.current;
+        saveRef.current(view ? view.state.doc.lineAt(view.state.selection.main.head).number : undefined);
+      }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
+           if (!swapping.current && update.transactions.some((transaction) => transaction.isUserEvent("input") || transaction.isUserEvent("undo") || transaction.isUserEvent("redo"))) {
+             clearWorkspaceUndo();
+           }
           captureState(update.view);
           measureRef.current();
           refreshMarksRef.current();
@@ -308,18 +333,18 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
    * 光标就该留在原位，把上次存的落点贴回去会把光标弹走。
    */
   const attach = useCallback(
-    (view: EditorView, path: string, contents: string, language: string, readOnly: boolean, restore = true) => {
+    (view: EditorView, path: string, contents: string, language: string, readOnly: boolean, tabSize: number, restore = true) => {
       swapping.current = true;
       view.setState(
         stateFor(
-          { path, contents, language, readOnly, tabSize: optionsRef.current.tabSize },
+          { path, contents, language, readOnly, tabSize },
           permanentExtensions
         )
       );
       swapping.current = false;
       pathRef.current = path;
       setMounted(path, view);
-      wiredRef.current = { language, tabSize: optionsRef.current.tabSize, readOnly, failed: false };
+      wiredRef.current = { language, tabSize, readOnly, failed: false };
       if (restore) {
         // 恢复光标与滚动位置不算外部改动：不压住这一次回调，上一篇的内容会被写进这篇文档。
         swapping.current = true;
@@ -371,7 +396,24 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   }, [ensurePinHost]);
 
   useEffect(() => {
-    setEditorCommandHandlers({ formatDocument, findUsages });
+    setEditorCommandHandlers({
+      formatDocument,
+      findUsages,
+      organizeImports,
+      gotoDefinition,
+      gotoDeclaration,
+      gotoTypeDefinition,
+      gotoImplementation,
+      showCodeActions,
+      renameSymbol,
+      showSignatureHelp,
+      showDocumentSymbols,
+      showWorkspaceSymbols,
+      showIncomingCalls,
+      showOutgoingCalls,
+      showSuperTypes,
+      showSubTypes,
+    });
     return () => setEditorCommandHandlers(null);
   }, []);
 
@@ -417,13 +459,14 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     }
 
     const readOnly = doc.readOnly || doc.error !== null;
+    const tabSize = doc.editorConfig?.tabSize ?? settings.editor.tabSize;
     const wired = wiredRef.current;
     const sameWiring =
       wired !== null &&
       pathRef.current !== null &&
       samePath(pathRef.current, doc.path) &&
       wired.language === doc.language &&
-      wired.tabSize === settings.editor.tabSize &&
+      wired.tabSize === tabSize &&
       wired.readOnly === readOnly &&
       wired.failed === (doc.error !== null);
 
@@ -442,7 +485,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       persistView(previous, view);
       setMounted(previous, null);
     }
-    attach(view, doc.path, doc.contents, doc.language, readOnly);
+    attach(view, doc.path, doc.contents, doc.language, readOnly, tabSize);
 
     // 语法包是异步装进来的：落定后重配一次，语言 id 没变但 `languageOf` 有值了。
     // 这一趟不换正文、也不贴回旧光标：这篇可能已经打了几个字，贴回去会把光标弹到上次的位置。
@@ -451,7 +494,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     void loadLanguage(wanted, forPath).then(() => {
       const live = viewRef.current;
       if (!live || pathRef.current !== forPath) return;
-      attach(live, forPath, textOf(live), wanted, live.state.readOnly, false);
+      attach(live, forPath, textOf(live), wanted, live.state.readOnly, tabSize, false);
     });
   }, [doc, settings.editor.tabSize, attach, syncMinimap]);
 

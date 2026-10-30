@@ -35,6 +35,7 @@ export interface GitMenuHandlers {
   readonly history?: (relative: string) => void;
   readonly commit?: () => void;
   readonly fetch?: () => void | Promise<void>;
+  readonly putLabel?: () => void;
   readonly diff?: (paths: string[]) => void;
   readonly rollback?: (paths: string[]) => void;
   readonly push?: () => void;
@@ -79,6 +80,7 @@ export interface ProjectMenuContext {
   readonly onCompareFiles?: (entries: FsEntry[]) => void;
   readonly onMarkDirectory?: (dir: string, role: ProjectDirectoryRole | null) => void;
   readonly onReformatCode?: (entry: FsEntry) => void;
+  readonly onOptimizeImports?: (entry: FsEntry) => void;
   readonly onFindUsages?: (entry: FsEntry) => void;
   readonly onAiInput?: (entry: FsEntry) => void;
 }
@@ -318,6 +320,10 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         onSelect: () => git.commit?.(),
       },
       {
+        label: t("git.putLabel"),
+        onSelect: () => git.putLabel?.(),
+      },
+      {
         label: t("git.fetch"),
         disabled: git.remotes !== undefined && git.remotes.length === 0,
         onSelect: () => void git.fetch?.(),
@@ -415,12 +421,16 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     groups.push([{ label: t("project.view.markDirectory"), children: markSubmenu }]);
   }
 
-  // 文件级编辑器动作只展示真实已有的能力；Optimize Imports / Put Label 尚无实现，不能放空壳菜单。
+  // 文件级编辑器动作只展示真实已有的能力；Optimize Imports 复用 LSP source action。
   if (singleFile) {
     groups.push([
       {
         label: t("welcome.format"),
         onSelect: () => ctx.onReformatCode?.(singleFile),
+      },
+      {
+        label: t("project.view.optimizeImports"),
+        onSelect: () => ctx.onOptimizeImports?.(singleFile),
       },
       {
         label: t("editor.usages.find"),

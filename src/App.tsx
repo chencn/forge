@@ -86,6 +86,17 @@ import {
   useNotificationCenter,
 } from "./lib/notifications";
 import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
+import { lspManager } from "./lib/lspManager";
+import {
+  applyWorkspaceEdit,
+  fileSystemWorkspaceEditContext,
+  pathOfWorkspaceUri,
+} from "./lib/lspWorkspaceEdit";
+import type { LspSaveReason, LspTextEdit } from "./lib/lspTypes";
+import { pathToUri } from "./lib/lspUri";
+import { applySaveActions } from "./lib/saveActions";
+import { clearEditorConfigCache } from "./lib/editorConfig";
+import { registerWorkspaceUndo } from "./lib/cmEditor";
 import { useDepSync } from "./hooks/useDepSync";
 import { useFileWatch } from "./hooks/useFileWatch";
 import { useGitState } from "./hooks/useGitState";
@@ -125,6 +136,20 @@ import {
   selectedText,
   formatDocument,
   findUsages,
+  organizeImports,
+  gotoDefinition,
+  gotoDeclaration,
+  gotoTypeDefinition,
+  gotoImplementation,
+  showCodeActions,
+  showDocumentSymbols,
+  showIncomingCalls,
+  showOutgoingCalls,
+  renameSymbol,
+  showSignatureHelp,
+  showSubTypes,
+  showSuperTypes,
+  showWorkspaceSymbols,
   setOpenTargetHandler,
 } from "./lib/editorEnv";
 import {
@@ -194,7 +219,7 @@ import {
   parseHttpFile,
 } from "./lib/httpFile";
 import type { FileContent, FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
-import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
+import { basenameOf, canonicalPath, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
 import { resolveFileLink } from "./lib/fileLinks";
 import { appExit, cancelAppExit, onWindowBlur, onWindowFocus, setTrayLabels, useWindowControls } from "./lib/window";
 import { useI18n } from "./i18n";
@@ -409,6 +434,9 @@ export default function App() {
   useEffect(() => watchTermTabs(() => setTermRev((value) => value + 1)), []);
   /** 递增即再对一趟语言服务：状态条里手动重启或停用之后要立刻反映到进程上。 */
   const [lspKick, setLspKick] = useState(0);
+  /** 命令面板的 capability 可用性只从 Manager 状态刷新，不在每个菜单项里猜进程状态。 */
+  const [lspStatusRevision, setLspStatusRevision] = useState(0);
+  useEffect(() => lspManager.watchStatus(() => setLspStatusRevision((value) => value + 1)), []);
 
   /**
    * 启动时默认只恢复原来激活的单个项目。
@@ -423,7 +451,7 @@ export default function App() {
 
   /** 当前项目最近 7 天通知历史（从单例通知总线响应式订阅）。 */
   const notifications = useNotificationCenter((s) => s.history);
-  // rail 徽标口径与 openidea 一致：只数 !read && logged（工具窗列表里未读的那部分）
+  // rail 徽标口径与 IDEA 一致：只数 !read && logged（工具窗列表里未读的那部分）
   const unreadNotifications = useUnreadNotifications();
 
   // 工作区项目切换时，通知总线自动切入对应项目的隔离存储，并重置关联浮层状态
@@ -563,15 +591,99 @@ export default function App() {
     gitEchoUntilRef.current = Date.now() + 800;
   }, []);
   const git = useGitState(workspaceRoot, reportError, suppressGitEcho);
+  /**
+   * 保存前动作的唯一入口：格式化走 WorkspaceEdit，本地卫生动作走纯函数。
+   * 每次 await 后都重新从 useDocuments 读取文档，防止格式化期间的新编辑被旧快照覆盖。
+   */
+  const prepareSave = useCallback(async (path: string, protectedLine?: number, reason: LspSaveReason = "manual"): Promise<boolean> => {
+    const initial = docs.get(path);
+    if (!initial || initial.readOnly || initial.contents === initial.baseline) return true;
+    let expectedText = initial.contents;
+    const language = initial.language;
+    const applyServerEdits = async (edits: LspTextEdit[], source: string): Promise<boolean> => {
+      if (!edits.length) return true;
+      const current = docs.get(path);
+      if (!current || current.contents !== expectedText) return false;
+      const uri = pathToUri(path);
+      const version = lspManager.documentVersion(path, language);
+      const edit = version === undefined
+        ? { changes: { [uri]: edits } }
+        : { documentChanges: [{ textDocument: { uri, version }, edits }] };
+      const applied = await lspManager.applyWorkspaceEdit(edit, {
+        positionEncoding: lspManager.positionEncoding(path, language),
+        source,
+      });
+      if (!applied.applied) {
+        reportError(applied.failureReason ?? "保存前语言服务编辑失败");
+        return false;
+      }
+      expectedText = docs.get(path)?.contents ?? expectedText;
+      return true;
+    };
+    try {
+      const edits = await lspManager.willSave(path, language, reason);
+      if (edits && !await applyServerEdits(edits, "save-willSave")) return false;
+    } catch {
+      // willSaveWaitUntil 是增强能力；服务端超时或拒绝时仍允许用户保存原文。
+    }
+    const capability = lspManager.capabilities(path, language)?.documentFormattingProvider;
+    if (settings.editor.formatOnSave && capability !== undefined && capability !== null && capability !== false) {
+      let result: unknown;
+      try {
+        result = await lspManager.request(path, language, "textDocument/formatting", {
+          options: {
+            tabSize: initial.editorConfig?.tabSize ?? settings.editor.tabSize,
+            insertSpaces: initial.editorConfig?.insertSpaces ?? true,
+          },
+        });
+      } catch {
+        result = null;
+      }
+      const current = docs.get(path);
+      // 格式化响应按旧正文计算；用户在等待期间继续输入时必须放弃这次保存动作。
+      if (!current || current.contents !== expectedText) return false;
+      const edits = Array.isArray(result) ? result as LspTextEdit[] : [];
+      if (edits.length && !await applyServerEdits(edits, "save-format")) return false;
+    }
+    const latest = docs.get(path);
+    if (!latest || latest.contents !== expectedText) return false;
+    const local = applySaveActions(expectedText, {
+      trimTrailingWhitespace: latest.editorConfig?.trimTrailingWhitespace ?? settings.editor.trimTrailingWhitespace,
+      insertFinalNewline: latest.editorConfig?.insertFinalNewline ?? settings.editor.insertFinalNewline,
+      protectedLine,
+    });
+    if (local.changed) docs.update(path, local.text);
+    return true;
+  }, [docs, reportError, settings.editor.formatOnSave, settings.editor.insertFinalNewline, settings.editor.tabSize, settings.editor.trimTrailingWhitespace]);
+
+  const saveOne = useCallback(async (path: string, protectedLine?: number, reason: LspSaveReason = "manual"): Promise<boolean> => {
+    if (!await prepareSave(path, protectedLine, reason)) return false;
+    const saved = await docs.save(path);
+    const current = docs.get(path);
+    if (saved && current && current.contents === current.baseline) lspManager.didSave(path, current.language, current.contents);
+    return saved;
+  }, [docs, prepareSave]);
+
   /** 全量存盘并同步刷新 Git 变更列表，供失焦自动保存、退出前保存与保存按钮共用。 */
-  const flushDirtyDocs = useCallback(async () => {
-    const saved = await docs.saveAll();
+  const flushDirtyDocs = useCallback(async (reason: LspSaveReason = "manual") => {
+    let saved = 0;
+    for (const doc of docs.documents) {
+      if (!doc.readOnly && doc.contents !== doc.baseline && await saveOne(doc.path, undefined, reason)) saved += 1;
+    }
     if (saved > 0) {
       suppressGitEcho();
       void git.refreshChanges();
     }
     return saved;
-  }, [docs, git, suppressGitEcho]);
+  }, [docs.documents, git, saveOne, suppressGitEcho]);
+
+  const flushDirtyDocsForRoot = useCallback(async (root: string, reason: LspSaveReason): Promise<number> => {
+    let saved = 0;
+    for (const doc of docs.documents) {
+      if (belongsToRoot(doc, root) && !doc.readOnly && doc.contents !== doc.baseline && await saveOne(doc.path, undefined, reason)) saved += 1;
+    }
+    return saved;
+  }, [docs.documents, saveOne]);
   /**
    * 挂载期注册的监听要读最新的那份，但绝不能把它写进依赖。
    * 这两个对象每次渲染都是新的（依赖 documents / status），进依赖就等于每次渲染
@@ -581,6 +693,82 @@ export default function App() {
   saveAllRef.current = flushDirtyDocs;
   const docsRef = useRef(docs);
   docsRef.current = docs;
+  /** WorkspaceEdit 关闭文档写盘后的单路径回声登记；事件不带事务 id，只在短时限内按正文核验。 */
+  const workspaceEditEchoesRef = useRef<Map<string, { text: string; expiresAt: number }>>(new Map());
+  const filterWorkspaceEditEchoes = useCallback(async (paths: string[]): Promise<string[]> => {
+    const kept: string[] = [];
+    const now = Date.now();
+    for (const path of paths) {
+      const key = canonicalPath(path);
+      const echo = workspaceEditEchoesRef.current.get(key);
+      if (!echo) {
+        kept.push(path);
+        continue;
+      }
+      workspaceEditEchoesRef.current.delete(key);
+      if (echo.expiresAt < now) {
+        kept.push(path);
+        continue;
+      }
+      try {
+        const current = await readFile(path);
+        // watcher 载荷没有事务 id，必须比正文；同路径的外部不同内容不能被时间窗口吞掉。
+        if (current.contents !== echo.text) kept.push(path);
+      } catch {
+        // 删除或读失败不是自己的写回回声，交给正常刷新路径处理。
+        kept.push(path);
+      }
+    }
+    return kept;
+  }, []);
+  /** LSP 的多文件编辑统一经过文档状态；打开文档只改内存，关闭文档才直接落盘。 */
+  useEffect(() => {
+    return lspManager.setWorkspaceEditHandler(async (edit, requestContext) => {
+      const base = fileSystemWorkspaceEditContext(requestContext?.positionEncoding);
+      const context = {
+        ...base,
+        async read(uri: string) {
+          const path = pathOfWorkspaceUri(uri);
+          const doc = path
+            ? docsRef.current.documents.find((item) => samePath(item.path, path))
+            : undefined;
+          if (!doc) return base.read(uri);
+          return {
+            uri,
+            text: doc.contents,
+            version: lspManager.documentVersion(doc.path, doc.language),
+            dirty: doc.contents !== doc.baseline,
+            lineEnding: doc.lineEnding,
+            hasBom: doc.hasBom,
+            encoding: doc.encoding,
+            opened: true,
+          };
+        },
+        async updateOpened(uri: string, text: string) {
+          const path = pathOfWorkspaceUri(uri);
+          if (!path) throw new Error(`WorkspaceEdit URI 无效：${uri}`);
+          const doc = docsRef.current.documents.find((item) => samePath(item.path, path));
+          if (!doc) throw new Error(`WorkspaceEdit 文档已关闭：${uri}`);
+          docsRef.current.update(doc.path, text);
+        },
+        async writeClosed(uri: string, text: string, document: Parameters<typeof base.writeClosed>[2]) {
+          await base.writeClosed(uri, text, document);
+          const path = pathOfWorkspaceUri(uri);
+          if (path) workspaceEditEchoesRef.current.set(canonicalPath(path), { text, expiresAt: Date.now() + 1200 });
+        },
+        registerUndo(undo: () => Promise<void>) {
+          registerWorkspaceUndo(undo);
+        },
+        async rename(oldUri: string, newUri: string, options: Parameters<typeof base.rename>[2]) {
+          await base.rename(oldUri, newUri, options);
+          const oldPath = pathOfWorkspaceUri(oldUri);
+          const newPath = pathOfWorkspaceUri(newUri);
+          if (oldPath && newPath) docsRef.current.renamePath(oldPath, newPath);
+        },
+      };
+      return applyWorkspaceEdit(edit, context);
+    });
+  }, []);
   const gitRef = useRef(git);
   gitRef.current = git;
   /** 磁盘事件触发的 git 刷新防抖计时器；只留最后一趟，风暴期间不起中间的子进程。 */
@@ -621,8 +809,8 @@ export default function App() {
       lastLspSyncRef.current = Date.now();
       // 这条链一直通到编辑器的键位与语法表，静态引就把它们打进启动 chunk；
       // 这里已经在等文档打开，动态引一次同一片 chunk，加载时机反而更准。
-      void import("./lib/lspClient")
-        .then(({ reconcileLsp }) => reconcileLsp(workspaceRoot, lspConfig, lspDocuments()))
+      void import("./lib/lspManager")
+        .then(({ lspManager }) => lspManager.reconcile(workspaceRoot, lspConfig, lspDocuments()))
         .catch(() => {});
     };
     // 文档集合本身变了（开 / 关 / 切根）必须立刻对齐：补全与悬停要求新文档已经 didOpen，
@@ -650,8 +838,8 @@ export default function App() {
   const wakeLspServer = useCallback(
     async (serverId: string) => {
       if (!workspaceRoot) return { state: "off" } as const;
-      const { wakeLsp } = await import("./lib/lspClient");
-      const result = await wakeLsp(workspaceRoot, lspConfig, serverId, lspDocuments());
+      const { lspManager } = await import("./lib/lspManager");
+      const result = await lspManager.wake(workspaceRoot, lspConfig, serverId, lspDocuments());
       setLspKick((value) => value + 1);
       return result;
     },
@@ -1252,7 +1440,7 @@ export default function App() {
   // 失焦自动保存：窗口失去焦点、页面切入后台或原生窗口失焦时，把手上改过的都写回磁盘。
   useEffect(() => {
     if (settings.editor.savePolicy !== "blur") return;
-    const flush = () => void saveAllRef.current();
+    const flush = () => void saveAllRef.current("focusOut");
     const onVisibility = () => {
       if (document.visibilityState === "hidden") flush();
     };
@@ -1269,7 +1457,7 @@ export default function App() {
   // 切标签页等同于离开上一篇文档：开启失焦自动保存时，切走即落盘。
   useEffect(() => {
     if (settings.editor.savePolicy !== "blur") return;
-    void saveAllRef.current();
+    void saveAllRef.current("focusOut");
   }, [activeTab, settings.editor.savePolicy]);
 
   // 退出前强制保存：只有所有可写文档都已变干净才确认退出。
@@ -1304,7 +1492,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isSideToolOpen, places.log]);
 
-  // WebView2 自带的「刷新 / 打印 / 检查」菜单在桌面应用里不该出现（1:1 抄 openidea browserGuards）。
+  // WebView2 自带的「刷新 / 打印 / 检查」菜单在桌面应用里不该出现（1:1 抄 IDEA browserGuards）。
   // 组件没接手的右键，落在可读文本（如通知内容）上时弹自绘「复制」菜单，而不是什么都不给。
   useEffect(() => installContextMenuGuard(), []);
 
@@ -1545,7 +1733,9 @@ export default function App() {
    *   会话收尾时攒下的路径改走 `flushWorkspace`，与监听同一套落地。
    */
   const onDiskChange = useCallback(
-    (changedRoot: string, paths: string[], bulk = false) => {
+    async (changedRoot: string, paths: string[], bulk = false) => {
+      paths = await filterWorkspaceEditEchoes(paths);
+      if (paths.length === 0) return;
       invalidateJavaIcons(paths);
       const isGitInternal = (p: string) => {
         const norm = p.replaceAll("\\", "/");
@@ -1553,6 +1743,13 @@ export default function App() {
       };
       const workspacePaths = paths.filter((p) => !isGitInternal(p));
       const gitPaths = paths.filter(isGitInternal);
+
+      // 配置文件是编辑器行为的输入，不是普通正文；失效后只更新已打开文档的配置，
+      // 正文和 dirty 状态由 useDocuments 原样保留。
+      if (workspacePaths.some((path) => basenameOf(path).toLowerCase() === ".editorconfig")) {
+        clearEditorConfigCache();
+        void docsRef.current.refreshEditorConfigs(changedRoot);
+      }
 
       // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
       if (workspacePaths.length > 0) {
@@ -1606,7 +1803,7 @@ export default function App() {
         flushWorkspace(changedRoot, { workspacePaths, gitPaths, bulk });
       }
     },
-    [flushWorkspace, isBulkInstallSession]
+    [filterWorkspaceEditEchoes, flushWorkspace, isBulkInstallSession]
   );
 
   // 包管理/构建会话（npm install、cargo build 等）结束时，把安装期间按住的那批路径补刷掉。
@@ -2305,7 +2502,7 @@ export default function App() {
   const requestCloseRoot = useCallback(
     async (targetRoot: string) => {
       if (settings.editor.savePolicy === "blur") {
-        const saved = await docs.saveAllForRoot(targetRoot);
+        const saved = await flushDirtyDocsForRoot(targetRoot, "focusOut");
         if (saved > 0 && workspaceRoot && samePath(workspaceRoot, targetRoot)) {
           suppressGitEcho();
           void git.refreshChanges();
@@ -2328,14 +2525,14 @@ export default function App() {
       }
       await performCloseRoot(targetRoot);
     },
-    [docs, git, performCloseRoot, run, settings.editor.savePolicy, suppressGitEcho, workspaceRoot]
+    [flushDirtyDocsForRoot, git, performCloseRoot, run, settings.editor.savePolicy, suppressGitEcho, workspaceRoot]
   );
 
   /** 切换或添加文件夹：多工作区模式下常驻并秒切；单工作区模式下替换当前激活根。 */
   const switchOrAddFolder = useCallback(
     async (picked: string) => {
       if (settings.editor.savePolicy === "blur") {
-        void saveAllRef.current();
+        void saveAllRef.current("focusOut");
       }
       const existing = openFolders.find((item) => samePath(item, picked)) ?? picked;
       const keepSettingsActive = activeTab === "settings" && settingsTab;
@@ -2619,8 +2816,8 @@ export default function App() {
   );
 
   const saveDoc = useCallback(
-    async (path: string) => {
-      const saved = await docs.save(path);
+    async (path: string, protectedLine?: number) => {
+      const saved = await saveOne(path, protectedLine);
       // 存盘只动工作区内容，取一份变更清单就够；分支/标签/日志那几条留给显式刷新。
       // 这次刷新和写文件落在同一个仓库上，顺手把随后的 watcher 回声压掉。
       if (saved) {
@@ -2628,7 +2825,7 @@ export default function App() {
         void git.refreshChanges();
       }
     },
-    [docs, git, suppressGitEcho]
+    [git, saveOne, suppressGitEcho]
   );
 
   const saveActive = useCallback(async () => {
@@ -3554,6 +3751,7 @@ export default function App() {
               stage: (paths) => void git.stage(paths),
               history: (rel) => showFileHistory(rel),
               commit: () => openSideTool("git"),
+              putLabel: () => setDialog({ kind: "newTag", name: "", dir: null, entry: null }),
               diff: (paths) => {
                 if (paths.length > 0) {
                   const targetPath = paths[0];
@@ -3636,6 +3834,7 @@ export default function App() {
         onCompareWith: compareTreeFile,
         onMarkDirectory: markTreeDirectory,
         onReformatCode: (entry) => runTreeEditorCommand(entry, formatDocument),
+        onOptimizeImports: (entry) => runTreeEditorCommand(entry, organizeImports),
         onFindUsages: (entry) => runTreeEditorCommand(entry, findUsages),
         onAiInput: (entry) => aiInputMenu({ kind: "file", path: entry.path, startLine: 1 }),
       });
@@ -3863,7 +4062,7 @@ export default function App() {
           deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
           dropDocument(target);
         }
-        // 删除后按可见顺序选中下一存活行（对齐 openidea selectionAfterDelete）。
+        // 删除后按可见顺序选中下一存活行（对齐 IDEA selectionAfterDelete）。
         // 树的最新可见行从这里拿不到——交一个「选兄弟」的最小语义：选中集清空，
         // 由树在 refresh 后把 lead 落到删除位置的第一行（这里只保证不再引用死路径）。
         setExplorerPick(
@@ -4413,6 +4612,16 @@ export default function App() {
    * 包含中英文检索关键词与对应快捷键，支持在随处搜索中直接搜索并执行任意菜单项。
    */
   const paletteCommands = useMemo<ForgeCommand[]>(() => {
+    const activePath = docs.activePath;
+    const activeDocument = activePath
+      ? docs.documents.find((document) => samePath(document.path, activePath))
+      : undefined;
+    const supports = (capability: string): boolean => {
+      if (!activeDocument) return false;
+      const value = (lspManager.capabilities(activeDocument.path, activeDocument.language) as Record<string, unknown> | undefined)?.[capability];
+      return value !== undefined && value !== null && value !== false;
+    };
+    const writableActive = !!activeDocument && !activeDocument.readOnly && activeDocument.error === null;
     const commands: ForgeCommand[] = [
       // 导航与搜索 (Navigate / Search)
       { id: "search.everywhere", label: `${t("command.searchEverywhere")} (Search Everywhere)`, run: () => openEverywhere("all") },
@@ -4541,6 +4750,22 @@ export default function App() {
           }
         },
       },
+
+      // 代码导航与重构统一从 editorEnv 进入当前编辑器，不在命令面板直接碰 LSP。
+      { id: "code.gotoDefinition", label: `${t("editor.definitions.title")} (Go to Definition)`, shortcut: "Ctrl+B", enabled: supports("definitionProvider"), run: () => { if (docs.activePath) gotoDefinition(docs.activePath); } },
+      { id: "code.gotoDeclaration", label: `${t("editor.declarations.title")} (Go to Declaration)`, shortcut: "Ctrl+Alt+Shift+B", enabled: supports("declarationProvider"), run: () => { if (docs.activePath) gotoDeclaration(docs.activePath); } },
+      { id: "code.gotoTypeDefinition", label: `${t("editor.typeDefinitions.title")} (Go to Type Definition)`, shortcut: "Ctrl+Shift+B", enabled: supports("typeDefinitionProvider"), run: () => { if (docs.activePath) gotoTypeDefinition(docs.activePath); } },
+      { id: "code.gotoImplementation", label: `${t("editor.implementations.title")} (Go to Implementation)`, shortcut: "Ctrl+Alt+B", enabled: supports("implementationProvider"), run: () => { if (docs.activePath) gotoImplementation(docs.activePath); } },
+      { id: "code.findUsages", label: `${t("editor.usages.find")} (Find Usages)`, shortcut: "Alt+F7", enabled: supports("referencesProvider"), run: () => { if (docs.activePath) findUsages(docs.activePath); } },
+      { id: "code.quickActions", label: `${t("editor.lsp.codeActions")} (Quick Actions)`, shortcut: "Alt+Enter", enabled: supports("codeActionProvider"), run: () => { if (docs.activePath) showCodeActions(docs.activePath); } },
+      { id: "code.rename", label: `${t("menu.rename")} (Rename Symbol)`, shortcut: "Shift+F6", enabled: writableActive && supports("renameProvider"), run: () => { if (docs.activePath) renameSymbol(docs.activePath); } },
+      { id: "code.signatureHelp", label: "参数提示 (Signature Help)", shortcut: "Ctrl+P", enabled: supports("signatureHelpProvider"), run: () => { if (docs.activePath) showSignatureHelp(docs.activePath); } },
+      { id: "code.documentSymbols", label: "文档符号 (Document Symbols)", enabled: supports("documentSymbolProvider"), run: () => { if (docs.activePath) showDocumentSymbols(docs.activePath); } },
+      { id: "code.workspaceSymbols", label: "工作区符号 (Workspace Symbols)", enabled: supports("workspaceSymbolProvider"), run: () => { if (docs.activePath) showWorkspaceSymbols(docs.activePath); } },
+      { id: "code.incomingCalls", label: "调用层次: 调入 (Incoming Calls)", enabled: supports("callHierarchyProvider"), run: () => { if (docs.activePath) showIncomingCalls(docs.activePath); } },
+      { id: "code.outgoingCalls", label: "调用层次: 调出 (Outgoing Calls)", enabled: supports("callHierarchyProvider"), run: () => { if (docs.activePath) showOutgoingCalls(docs.activePath); } },
+      { id: "code.superTypes", label: "类型层次: 父类型 (Supertypes)", enabled: supports("typeHierarchyProvider"), run: () => { if (docs.activePath) showSuperTypes(docs.activePath); } },
+      { id: "code.subTypes", label: "类型层次: 子类型 (Subtypes)", enabled: supports("typeHierarchyProvider"), run: () => { if (docs.activePath) showSubTypes(docs.activePath); } },
 
       // 视图菜单 (View)
       {
@@ -4682,14 +4907,22 @@ export default function App() {
     closeSplit,
     dockPane,
     docs.activePath,
+    docs.documents,
+    findUsages,
+      organizeImports,
     flushDirtyDocs,
     git,
+    gotoDeclaration,
+    gotoDefinition,
+    gotoImplementation,
+    gotoTypeDefinition,
     openAiDraft,
     openEverywhere,
     openFolder,
     openRunConfigsTab,
     openSettingsTab,
     openSideTool,
+    lspStatusRevision,
     refreshTree,
     reloadMaven,
     rerunSelectedConfig,
@@ -4705,12 +4938,15 @@ export default function App() {
     setRightPanel,
     setSidebarOpen,
     shortcutOverrides,
+    showCodeActions,
+    showSignatureHelp,
     showLocalHistory,
     splitEditor,
     stopAllRuns,
     t,
     toggleMaximize,
     toggleRunPane,
+    renameSymbol,
     toolRailLayout.left.bottom,
     toolRailLayout.left.top,
     toolRailLayout.right.bottom,
@@ -4933,7 +5169,7 @@ export default function App() {
           onChange={docs.update}
           onSave={() => void saveDoc(activeDoc.path)}
           onBlur={() => {
-            if (settings.editor.savePolicy === "blur") void saveAllRef.current();
+            if (settings.editor.savePolicy === "blur") void saveAllRef.current("focusOut");
           }}
           onView={docs.setView}
           onOpenLocal={openLocalFile}
@@ -5549,6 +5785,8 @@ export default function App() {
         root={workspaceRoot} repoRoot={git.root} changes={git.status?.changes ?? EMPTY_CHANGES}
         collapseSignal={collapseSignal} refresh={treeRefresh} reveal={treeReveal}
         showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden} directoryRoles={directoryRoles}
+        /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
+        highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
         openRoots={watchedRoots} activeFile={locatePath} openFiles={visibleDocs.map((doc) => doc.path)} picked={explorerPickedPaths} onPick={setExplorerPick}
         onOpenFile={treeOpenFile} onContextMenu={treeContextMenu}
         onDelete={(entries) => void deleteTargets(entries.map((entry) => entry.path))}
@@ -5798,6 +6036,8 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
+                      highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
                       directoryRoles={directoryRoles}
                       openRoots={watchedRoots}
                       activeFile={locatePath}
@@ -6166,6 +6406,8 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
+                      highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
                       directoryRoles={directoryRoles}
                       openRoots={watchedRoots}
                       activeFile={locatePath}

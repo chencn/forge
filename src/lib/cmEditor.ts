@@ -61,6 +61,32 @@ import { overviewLane } from "./cm/overview";
 export { EditorState, EditorView };
 export type { Extension, Transaction };
 
+/** WorkspaceEdit 的跨文档撤销只保留最近一次，避免另造一套无界历史。 */
+let workspaceUndo: (() => Promise<void>) | null = null;
+let workspaceUndoRunning = false;
+
+export function registerWorkspaceUndo(undo: () => Promise<void>): void {
+  workspaceUndo = undo;
+}
+
+/** 普通用户输入会把 WorkspaceEdit 撤销顶掉，保持 Ctrl+Z 的时间顺序。 */
+export function clearWorkspaceUndo(): void {
+  workspaceUndo = null;
+}
+
+export function undoWorkspaceEdit(): boolean {
+  if (!workspaceUndo || workspaceUndoRunning) return false;
+  const undo = workspaceUndo;
+  workspaceUndo = null;
+  workspaceUndoRunning = true;
+  void undo().catch(() => {
+    // 事务撤销失败时不把错误吞进编辑器事件循环；调用方仍保留普通历史。
+  }).finally(() => {
+    workspaceUndoRunning = false;
+  });
+  return true;
+}
+
 /** 磁盘上的行尾风格，与 `OpenDocument.lineEnding` 同一档。 */
 export type LineEnding = "crlf" | "lf";
 
@@ -233,7 +259,7 @@ const matchingBracketMark = Decoration.mark({ class: "cm-matchingBracket" });
 const matchingTagMark = Decoration.mark({ class: "cm-matchingBracket cm-matchingTag" });
 const nonmatchingBracketMark = Decoration.mark({ class: "cm-nonmatchingBracket" });
 
-/** IDEA 的 MATCHED_TAG_NAME：HTML/XML/JSX 的标签名与括号分开染色（对齐 openidea renderMatch）。 */
+/** IDEA 的 MATCHED_TAG_NAME：HTML/XML/JSX 的标签名与括号分开染色（对齐 IDEA renderMatch）。 */
 function renderMatch(match: MatchResult, state: EditorState): readonly Range<Decoration>[] {
   const mark = (from: number, to: number) =>
     !match.matched
@@ -258,7 +284,7 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     changeMarksField,
     // 右侧滚动条那条改动色带（IDEA 的错误条位置），点一下跳到那一行。
     overviewLane,
-    // 当前行高亮（对齐 openidea caretRowHighlight）：有选区时整行底色会盖住选区色，所以只有空光标才画。
+    // 当前行高亮（对齐 IDEA caretRowHighlight）：有选区时整行底色会盖住选区色，所以只有空光标才画。
     caretRowHighlight,
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -300,12 +326,13 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     keymapSlot.of([]),
     ...extra,
     keymap.of([
+      { key: "Mod-z", run: undoWorkspaceEdit, preventDefault: true },
       ...closeBracketsKeymap,
       ...defaultKeymap,
       ...searchKeymap,
       ...historyKeymap,
       // IDEA 的 Windows 重做是 Ctrl+Shift+Z（Ctrl+Y 已被删除行占用）；
-      // CodeMirror 只在 macOS/Linux 绑了它，Windows 必须补（对齐 openidea baseKeymap）。
+      // CodeMirror 只在 macOS/Linux 绑了它，Windows 必须补（对齐 IDEA baseKeymap）。
       { win: "Ctrl-Shift-z", run: redo, preventDefault: true },
       ...completionKeymap,
       // 折叠扣与问题导航属于引擎能力，三套键位方案都不该把它们换掉；
@@ -349,6 +376,20 @@ export function editorFor(path: string): EditorView | null {
 interface EditorCommandHandlers {
   formatDocument: (view: EditorView) => boolean;
   findUsages: (view: EditorView) => boolean;
+  organizeImports?: (view: EditorView) => boolean;
+  gotoDefinition: (view: EditorView) => boolean;
+  gotoDeclaration: (view: EditorView) => boolean;
+  gotoTypeDefinition: (view: EditorView) => boolean;
+  gotoImplementation: (view: EditorView) => boolean;
+  showCodeActions: (view: EditorView) => boolean;
+  renameSymbol: (view: EditorView) => boolean;
+  showSignatureHelp: (view: EditorView) => boolean;
+  showDocumentSymbols: (view: EditorView) => boolean;
+  showWorkspaceSymbols: (view: EditorView) => boolean;
+  showIncomingCalls: (view: EditorView) => boolean;
+  showOutgoingCalls: (view: EditorView) => boolean;
+  showSuperTypes: (view: EditorView) => boolean;
+  showSubTypes: (view: EditorView) => boolean;
 }
 
 let commandHandlers: EditorCommandHandlers | null = null;
@@ -470,7 +511,7 @@ export function minimapConfigOf(view: EditorView): MinimapConfig | null {
 }
 
 /** 换一套键位方案（`cm/keymap` 按设置里那三档算出来的那组绑定）。 */
-/** 括号彩虹上色开关（openidea 默认关）：设置切换时不重建 state，只换这一格。 */
+/** 括号彩虹上色开关（IDEA 默认关）：设置切换时不重建 state，只换这一格。 */
 export function setRainbowBrackets(view: EditorView, enabled: boolean): void {
   view.dispatch({ effects: rainbowSlot.reconfigure(enabled ? rainbowBrackets() : []) });
 }
@@ -669,7 +710,7 @@ export function saveKeymap(onSave: () => void): Extension {
  * 字号与行高不进主题对象：宿主元素上写两个自定义属性，主题按 var() 取，
  * 改设置只换属性，不重建主题也不重配 state。
  *
- * 行高跟着字号走：openidea/IDEA 13px 字号配 22px 行高（--lh-code: 22px），
+ * 行高跟着字号走：IDEA/IDEA 13px 字号配 22px 行高（--lh-code: 22px），
  * 换算系数 1.69；大字号时仍按比例放大不挤字。
  */
 export function applyFontMetrics(host: HTMLElement, fontSize: number): void {
@@ -699,5 +740,61 @@ attachEditorBridge({
   findUsages: (path: string) => {
     const view = editorFor(path);
     return view ? commandHandlers?.findUsages(view) ?? false : false;
+  },
+  organizeImports: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.organizeImports?.(view) ?? false : false;
+  },
+  gotoDefinition: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.gotoDefinition(view) ?? false : false;
+  },
+  gotoDeclaration: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.gotoDeclaration(view) ?? false : false;
+  },
+  gotoTypeDefinition: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.gotoTypeDefinition(view) ?? false : false;
+  },
+  gotoImplementation: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.gotoImplementation(view) ?? false : false;
+  },
+  showCodeActions: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showCodeActions(view) ?? false : false;
+  },
+  renameSymbol: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.renameSymbol(view) ?? false : false;
+  },
+  showSignatureHelp: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showSignatureHelp(view) ?? false : false;
+  },
+  showDocumentSymbols: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showDocumentSymbols(view) ?? false : false;
+  },
+  showWorkspaceSymbols: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showWorkspaceSymbols(view) ?? false : false;
+  },
+  showIncomingCalls: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showIncomingCalls(view) ?? false : false;
+  },
+  showOutgoingCalls: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showOutgoingCalls(view) ?? false : false;
+  },
+  showSuperTypes: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showSuperTypes(view) ?? false : false;
+  },
+  showSubTypes: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.showSubTypes(view) ?? false : false;
   },
 });

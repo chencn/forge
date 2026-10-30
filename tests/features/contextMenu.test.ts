@@ -50,9 +50,11 @@ describe("Project Tree Context Menu", () => {
     expect(labels).toContain("Local History");
     expect(labels).toContain("Git");
     expect(labels).toContain("Reformat code");
+    expect(labels).toContain("Optimize Imports");
     expect(labels).toContain("Find Usages");
     const git = items.find((item) => item.label === "Git");
     expect(git?.children?.map((item) => item.label)).toContain("Fetch remotes");
+    expect(git?.children?.map((item) => item.label)).toContain("Put Label…");
   });
 
   it("wires file actions and keeps Compare With behind a Git repository", () => {
@@ -60,16 +62,19 @@ describe("Project Tree Context Menu", () => {
     const items = buildProjectContextMenu({
       selection: [dummyFileNode],
       workspaceRoot: "D:/app/code/forge",
-      git: { root: "D:/app/code/forge", changes: [] },
+      git: { root: "D:/app/code/forge", changes: [], putLabel: () => calls.push("label") },
       onCompareWith: () => calls.push("compare"),
       onReformatCode: () => calls.push("format"),
+      onOptimizeImports: () => calls.push("organize-imports"),
       onFindUsages: () => calls.push("usages"),
       t: tEn,
     });
     items.find((item) => item.label === "Compare With…")?.onSelect?.();
     items.find((item) => item.label === "Reformat code")?.onSelect?.();
+    items.find((item) => item.label === "Optimize Imports")?.onSelect?.();
     items.find((item) => item.label === "Find Usages")?.onSelect?.();
-    expect(calls).toEqual(["compare", "format", "usages"]);
+    items.find((item) => item.label === "Git")?.children?.find((item) => item.label === "Put Label…")?.onSelect?.();
+    expect(calls).toEqual(["compare", "format", "organize-imports", "usages", "label"]);
 
     const withoutGit = buildProjectContextMenu({
       selection: [dummyFileNode],
