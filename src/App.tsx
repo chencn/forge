@@ -5158,7 +5158,12 @@ export default function App() {
   const panelFileAction = useStable(commitFileAction);
   const panelCommitted = useStable((message: string) => remember("commitMessages", message));
   const panelUnignore = useStable((relative: string) => void removeFromGitignore(relative));
-
+  const panelOpenCommitFile = useStable((revision: string, file: GitCommitFile) => {
+    if (!git.root) return;
+    void gitCommitDetail(git.root, revision)
+      .then((detail) => openCommitFile(detail, file, false))
+      .catch((cause: unknown) => reportError(errorText(cause)));
+  });
   const panelToggleIgnored = useStable(() =>
     setCommitView((current) => ({ ...current, ignored: !current.ignored }))
   );
@@ -5354,6 +5359,10 @@ export default function App() {
           {settings.commit.showOnDoubleClick === target ? <Check size={13} aria-hidden="true" /> : <span className="menu-icon-spacer" />}
           <span className="popover-item-label">{t(target === "preview" ? "git.doubleClickDiff" : "git.doubleClickSource")}</span>
         </button>)}
+        <button type="button" className="popover-item" onClick={() => patch({ commit: { ...settings.commit, commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged } })}>
+          {settings.commit.commitAllWhenNothingStaged ? <Check size={13} aria-hidden="true" /> : <span className="menu-icon-spacer" />}
+          <span className="popover-item-label">{t("git.commitAllWhenNothingStaged")}</span>
+        </button>
         <div className="popover-sep" />
       </Popover>
       <button type="button" ref={commitGearRef} className={`icon-button is-inline${commitGearAnchor ? " is-on" : ""}`} onClick={() => setCommitGearAnchor((current) => current ? null : commitGearRef.current)} aria-expanded={commitGearAnchor !== null} aria-haspopup="menu" title={t("git.commitOptions")}><Settings size={16} /></button>
@@ -5440,10 +5449,10 @@ export default function App() {
         focusSignal={commitFocus} rewordSignal={rewordSignal} history={history.commitMessages} onCommitted={panelCommitted}
         groupByDir={commitView.byDir} groupByModule={commitView.byModule} showIgnored={commitView.ignored}
         onToggleIgnored={panelToggleIgnored} repoName={basenameOf(git.root ?? workspaceRoot)} onFileAction={panelFileAction}
-        onUnignore={panelUnignore} onToggleByDir={panelToggleByDir}
+        onUnignore={panelUnignore} onOpenCommitFile={panelOpenCommitFile} onToggleByDir={panelToggleByDir}
         onToggleByModule={panelToggleByModule} showOnDoubleClick={settings.commit.showOnDoubleClick}
-        onOpenSource={panelOpenSource}
-        onOpenResolve={panelOpenResolve} locatePath={docs.activePath ?? null} onOpenAiSettings={panelOpenAiSettings}
+        commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged} onOpenSource={panelOpenSource}
+        onOpenResolve={panelOpenResolve} onOpenAiSettings={panelOpenAiSettings}
       /></Suspense> : <p className="tool-window-empty">{t("git.noWorkspace")}</p>}
   </ErrorBoundary>;
   const logRefAction = useStable(refAction);
@@ -5603,6 +5612,27 @@ export default function App() {
                           </button>
                         ))}
                         <div className="popover-sep" />
+                        <button
+                          type="button"
+                          className="popover-item"
+                          onClick={() =>
+                            patch({
+                              commit: {
+                                ...settings.commit,
+                                commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged,
+                              },
+                            })
+                          }
+                        >
+                          {settings.commit.commitAllWhenNothingStaged ? (
+                            <Check size={13} aria-hidden="true" />
+                          ) : (
+                            <span className="menu-icon-spacer" />
+                          )}
+                          <span className="popover-item-label">
+                            {t("git.commitAllWhenNothingStaged")}
+                          </span>
+                        </button>
                       </Popover>
                       <button
                         type="button"
@@ -5701,13 +5731,13 @@ export default function App() {
                       repoName={basenameOf(git.root ?? workspaceRoot)}
                       onFileAction={panelFileAction}
                       onUnignore={panelUnignore}
+                      onOpenCommitFile={panelOpenCommitFile}
                       onToggleByDir={panelToggleByDir}
                       onToggleByModule={panelToggleByModule}
                       showOnDoubleClick={settings.commit.showOnDoubleClick}
-
+                      commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged}
                       onOpenSource={panelOpenSource}
                       onOpenResolve={panelOpenResolve}
-                      locatePath={docs.activePath ?? null}
                       onOpenAiSettings={panelOpenAiSettings}
                     />
                   </Suspense>

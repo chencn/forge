@@ -2,7 +2,7 @@
  * 右侧滚动条上那条改动色带（IDEA 的「错误条」位置）：整篇按比例铺在编辑器右缘，
  * 每段改动画成一根小竖条，点上去跳到那一行。
  *
- * 移植自 openidea 的 `src/editor/core/cm/lanes.ts`（OverviewLane）。
+ * 移植自 IntelliJ IDEA 的 `src/editor/core/cm/lanes.ts`（OverviewLane）。
  *
  * 色带落在滚动条那一列，不动正文宽度；小地图开着时它压在小地图右缘，同 IDEA。
  * 长短文档都按比例算：短到一屏放得下就按像素摆，长的按百分比——窗口改大小不用重写。

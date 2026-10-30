@@ -75,13 +75,13 @@ describe("createDiffView 并排那一档", () => {
     expect(host.querySelectorAll(".cm-editor.cm-merge-b.forge-diff")).toHaveLength(1);
   });
 
-  it("两栏的装订线与右侧概览条都画上改动", async () => {
+  it("两栏的装订线都画上改动（比对窗口不再挂右侧概览条）", async () => {
     const { host } = mount({ original: ORIGINAL, modified: MODIFIED, language: "", mode: "side" });
     await new Promise((resolve) => setTimeout(resolve, 60));
     // 左栏：改动的 beta 算改动档；右栏：改动的 BETA 与新加的 EPSILON 各一条。
     expect(host.querySelectorAll(".cm-merge-a .change-lane-bar").length).toBeGreaterThan(0);
     expect(host.querySelectorAll(".cm-merge-b .change-lane-bar").length).toBeGreaterThan(0);
-    expect(host.querySelectorAll(".cm-merge-b .cm-overviewMark").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll(".cm-merge-b .cm-overviewMark").length).toBe(0);
   });
 
   it("首次打开某门语言：语法到货后比对里也补上颜色", async () => {
@@ -120,7 +120,7 @@ describe("createDiffView 并排那一档", () => {
   it("建好就报条数：两处改动，光标在篇首，只能往后走", () => {
     const nav: DiffNav[] = [];
     mount({ original: ORIGINAL, modified: MODIFIED, language: "", mode: "side", onNav: (item) => nav.push(item) });
-    expect(nav[0]).toEqual({ count: 2, previous: false, next: true });
+    expect(nav[0]).toEqual({ count: 2, previous: false, next: true, index: 0 });
   });
 
   it("下一处落到改动那一行的行首，走到最后一处就不再让走", () => {
@@ -162,7 +162,7 @@ describe("createDiffView 并排那一档", () => {
       mode: "side",
       onNav: (item) => nav.push(item),
     });
-    expect(nav[0]).toEqual({ count: 0, previous: false, next: false });
+    expect(nav[0]).toEqual({ count: 0, previous: false, next: false, index: 0 });
     view.go("next");
     view.land("first");
     expect(nav.length).toBe(1);
@@ -206,7 +206,7 @@ describe("createDiffView 单栏那一档", () => {
       mode: "unified",
       onNav: (item) => nav.push(item),
     });
-    expect(nav[0]).toEqual({ count: 2, previous: false, next: true });
+    expect(nav[0]).toEqual({ count: 2, previous: false, next: true, index: 0 });
     view.land("last");
     expect(caretLine(host)).toBe(5);
   });

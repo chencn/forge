@@ -81,7 +81,7 @@ import {
 } from "../../src/features/project-tree/model";
 
 describe("External Libraries Model & Detection", () => {
-  it("conforms to openidea virtual key contracts", () => {
+  it("conforms to IntelliJ IDEA virtual key contracts", () => {
     // 1. Group key 契约
     const groupKey = `${GROUP_PREFIX}externalLibraries/nodeModules`;
     expect(isGroupKey(groupKey)).toBe(true);
@@ -147,7 +147,7 @@ describe("External Libraries Model & Detection", () => {
     const cargoGroup = groups.find((g) => g.kind === "cargo");
     expect(cargoGroup).toBeDefined();
     expect(cargoGroup?.label).toBe("< Cargo dependencies >");
-    // 依赖项命名严格对齐 openidea 格式："name version"
+    // 依赖项命名严格对齐 IntelliJ IDEA 格式："name version"
     expect(cargoGroup?.roots.some((r) => r.name === "serde 1.0.200")).toBe(true);
     expect(cargoGroup?.roots.some((r) => r.name === "tokio 1.38.0")).toBe(true);
     // 不应包含工程自身 (forge-desktop)

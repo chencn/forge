@@ -2,7 +2,7 @@
 @import "./ideaTokens.css";
 
 :root {
-  /* 桥接 openidea 设计系统 Tokens，使得 Forge 原有组件能无缝吸收 openidea 多主题色板 */
+  /* 桥接 IntelliJ IDEA 设计系统 Tokens，使得 Forge 原有组件能无缝吸收 IntelliJ IDEA 多主题色板 */
   --bg-primary: var(--bg-island, #ffffff);
   --bg-secondary: var(--bg-elev, #f9fafb);
   --bg-tertiary: var(--bg-control, #f3f4f6);

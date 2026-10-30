@@ -3,7 +3,7 @@ import { javaKindSvg } from "../lib/javaKindIcons";
 import { useSettings } from "../hooks/useSettings";
 
 /**
- * 1:1 对标 openidea / IntelliJ IDEA 的各类符号徽章（16x16）
+ * 1:1 对标 IntelliJ IDEA 的各类符号徽章（16x16）
  * 浅色与深色主题分别调教了对比度与发光效果。
  */
 const SYMBOL_SVGS_LIGHT: Record<string, string> = {
@@ -73,7 +73,7 @@ export interface SymbolIconProps {
 /**
  * 规范符号图标组件
  * 将通用符号种类（class, interface, enum, struct, trait, function, method, constant 等）
- * 映射为 JetBrains / openidea 经典彩色徽章。
+ * 映射为 JetBrains 经典彩色徽章。
  */
 export const SymbolIcon: FC<SymbolIconProps> = ({ kind, size = 16, className = "" }) => {
   const { applied } = useSettings();

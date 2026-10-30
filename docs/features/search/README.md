@@ -2,8 +2,8 @@
 
 三条入口，两种落点：一个居中的「随处搜索」弹层，一座底部「查找」工具窗口。照 IDEA 的
 Search Everywhere 与 Find in Files 做，底下是 `src-tauri/src/fs/search.rs` 那两条只读命令加
-`src-tauri/src/fs/symbols.rs` 那条按名字找定义的命令。弹层这一整套按 openidea 的
-`src/features/search/everywhere/` 移植：取数编排、结果模型、本地匹配与打分、输入解析、落盘记忆
+`src-tauri/src/fs/symbols.rs` 那条按名字找定义的命令。弹层这一整套按 IntelliJ IDEA 的
+搜索工程移植：取数编排、结果模型、本地匹配与打分、输入解析、落盘记忆
 分别落在 `src/lib/seController.ts`、`seModel.ts`、`seMatch.ts`、`seRank.ts`、`seQuery.ts`、`seStore.ts`。
 
 相关文件：`src/components/SearchEverywhere.tsx`、`src/components/FindPane.tsx`、
@@ -112,7 +112,7 @@ IDEA 那边靠失焦关闭，这边没有「焦点离开整层」这条判定可
 
 ## 最近、打分与混排
 
-openidea 那侧的类与符号来自持久索引，这边没有等价物，靠 `find_symbols` 现扫 + 前端本地打分补平：
+IntelliJ IDEA 那侧的类与符号来自持久索引，这边没有等价物，靠 `find_symbols` 现扫 + 前端本地打分补平：
 
 - 空词页那两档「最近文件」「最近执行」是 localStorage 里的表（`forge:se:recentFiles.v1` 50 条、
   `forge:se:recentActions.v1` 12 条）。最近文件由编辑区每次换页签补一笔，重复的挪到最前；

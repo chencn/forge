@@ -9,7 +9,7 @@ import {
   toLegacyModule,
 } from "../../src/features/settings/model/legacyAdapter";
 
-describe("openidea 设置菜单模型与路由适配器", () => {
+describe("IntelliJ IDEA 设置菜单模型与路由适配器", () => {
   it("必须完整包含 8 大顶级分类且各分类子项齐全", () => {
     const topIds = SETTINGS_TREE.map((node) => node.id);
     expect(topIds).toEqual([

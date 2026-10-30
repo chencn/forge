@@ -31,6 +31,8 @@ export interface TabItem {
   filePath?: string;
   /** 有没保存的改动，画成小圆点。 */
   dirty: boolean;
+  /** 预览标签：斜体，会被下一个预览顶替（IDEA 的单预览槽）。 */
+  preview?: boolean;
   /** 种类图标；文档按文件名取，和资源管理器同一套。 */
   icon?: ReactNode;
 }
@@ -334,7 +336,7 @@ export default function EditorTabs({
               aria-selected={active}
               className={`editor-tab is-${tab.kind}${active ? " is-active" : ""}${
                 tab.dirty ? " is-dirty" : ""
-              }`}
+              }${tab.preview ? " is-preview" : ""}`}
               title={tab.title}
               data-editor-tab={tab.id}
               onClick={() => {

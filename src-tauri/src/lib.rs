@@ -125,6 +125,7 @@ pub fn run() {
             git::git_stage,
             git::git_unstage,
             git::git_commit,
+            git::git_apply_patch,
             git::git_branches,
             git::git_tags,
             git::git_remotes,

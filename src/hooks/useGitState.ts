@@ -340,10 +340,14 @@ export function useGitState(
     [root, runIndex]
   );
 
+  /**
+   * 提交。`paths` 非空时走 `--only`：只提交点名的那几条，索引里没点名的已暂存块
+   * 原样保留（复选框勾选语义）。
+   */
   const commit = useCallback(
-    async (message: string, amend: boolean) => {
+    async (message: string, amend: boolean, paths?: string[]) => {
       if (!root) return false;
-      return run(() => gitCommit(root, message, amend));
+      return run(() => gitCommit(root, message, amend, paths));
     },
     [root, run]
   );
@@ -516,13 +520,13 @@ export function useGitState(
    * 哪怕后面的推送失败——那段文字已经写进提交里了。
    */
   const commitAndPush = useCallback(
-    async (message: string, amend: boolean, setUpstream = false) => {
+    async (message: string, amend: boolean, setUpstream = false, paths?: string[]) => {
       if (!root) return false;
       pushingCountRef.current += 1;
       setPushing(true);
       let committed = false;
       try {
-        await gitCommit(root, message, amend);
+        await gitCommit(root, message, amend, paths);
         committed = true;
         await gitPush(root, setUpstream);
         return true;

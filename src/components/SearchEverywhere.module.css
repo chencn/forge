@@ -1,4 +1,4 @@
-/* Search Everywhere 对齐 openidea everywhere 标准样式规范 */
+/* Search Everywhere 对齐 IntelliJ IDEA everywhere 标准样式规范 */
 
 .backdrop {
   position: fixed;
@@ -117,7 +117,7 @@
   border-color: var(--accent, #3871e1);
 }
 
-/* 微型动作按钮（对齐 openidea IconButton size="small"） */
+/* 微型动作按钮（对齐 IntelliJ IDEA IconButton size="small"） */
 .headerButton {
   flex: none;
   display: inline-flex;

@@ -448,6 +448,9 @@ html {
   --gutter-modified: #88adf7;
   --gutter-added: #7fc784;
   --gutter-deleted: #767a8a;
+  /* 比对词级高亮与整行插删用的两档：IDEA 的 danger / success。 */
+  --vcs-danger: #c54e58;
+  --vcs-success: #338555;
 
   /* syntax (Light scheme + Default / Python defaults) */
   --syn-keyword: #0033b3;
@@ -696,9 +699,12 @@ html {
   --vcs-untracked: #ffaaa5;
   --vcs-ignored: #e5b48c;
   --vcs-conflict: #ff8f8a;
-  --gutter-modified: #6e95e8;
-  --gutter-added: #6fb875;
-  --gutter-deleted: #a5a8ae;
+  --gutter-modified: #375fad;
+  --gutter-added: #549159;
+  --gutter-deleted: #868a91;
+  /* 比对词级高亮与整行插删用的两档：IDEA 的 danger / success。 */
+  --vcs-danger: #f57e84;
+  --vcs-success: #6db083;
 
   --syn-keyword: #e8a885;
   --syn-string: #8ccc94;

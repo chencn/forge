@@ -51,7 +51,7 @@ describe("sectionsFor 分节选择", () => {
     expect(sectionsFor("text", false)).toEqual(["text"]);
   });
 
-  it("限量与 openidea 同一套口径", () => {
+  it("限量与 IntelliJ IDEA 同一套口径", () => {
     expect({ ALL_TAB_LIMIT, RECENT_LIMIT, TEXT_WEIGHT }).toEqual({ ALL_TAB_LIMIT: 6, RECENT_LIMIT: 15, TEXT_WEIGHT: 350 });
   });
 });

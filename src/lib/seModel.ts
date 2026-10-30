@@ -1,6 +1,6 @@
 /**
  * 随处搜索的结果模型：条目类型、各分节的合并与排序、弹窗渲染的那张平表
- * （分节标题 + 「更多」行 + 条目）。抄 openidea 的 everywhere/model.ts，
+ * （分节标题 + 「更多」行 + 条目）。抄 IntelliJ IDEA 的 everywhere/model.ts，
  * 去掉了这边没有数据源的两块：LSP workspace/symbol 合并与设置页条目。
  */
 import type { FileHit, SymbolHit, TextHit } from "./fs";
@@ -8,7 +8,7 @@ import type { ForgeCommand } from "./commands";
 import { byScore, matchText } from "./seRank";
 import { basenameOf } from "./format";
 
-/** 弹窗页签。openidea 的六档原样搬，动作档的数据源换成命令面板那张表。 */
+/** 弹窗页签。IntelliJ IDEA 的六档原样搬，动作档的数据源换成命令面板那张表。 */
 export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
 /** 数据分节：All 页签按权重混排时，每节各自保持源内顺序。 */
 export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "actions" | "text";
@@ -173,7 +173,7 @@ export function symbolItem(m: SymbolHit, query: string): SymbolItem {
 }
 
 /**
- * 动作匹配，照 openidea 的 matchActions 减去 enabled/hidden/toggled：
+ * 动作匹配，照 IntelliJ IDEA 的 matchActions 减去 enabled/hidden/toggled：
  * 词对齐的标签匹配为主，散落的逐字命中只认 id 包含，最近执行过的往上抬。
  */
 export function matchActions(

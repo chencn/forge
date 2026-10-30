@@ -1,7 +1,7 @@
 /**
  * 项目侧边栏 1:1 复刻上下文右键菜单系统
  *
- * 对标 openidea ProjectViewPopupMenu / IntelliJ IDEA 规范：
+ * 对标 IntelliJ IDEA ProjectViewPopupMenu / IntelliJ IDEA 规范：
  * 1. New › (File, Directory/Package, Scratch File, 常用语言模板)
  * 2. Cut / Copy / Copy Path/Reference… › / Paste
  * 3. Find in Files… / Replace in Files…

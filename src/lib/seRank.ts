@@ -1,7 +1,7 @@
 /**
  * 本地打分：后端不带分的结果（动作、以及混排时对各档的相对度）都吃这条。
  * 与后端 `score_name` 的四档口径对齐：全等 > 前缀 > 连续 > 驼峰 > 逐字，短名获胜。
- * 抄 openidea 的 features/search/common/rank.ts。
+ * 抄 IntelliJ IDEA 的 features/search/common/rank.ts。
  */
 import { fuzzyMatch } from "./seMatch";
 

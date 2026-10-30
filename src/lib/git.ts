@@ -204,8 +204,27 @@ export function gitUnstage(root: string, absolutePaths: string[]): Promise<void>
   return invoke<void>("git_unstage", { root, paths: absolutePaths });
 }
 
-export function gitCommit(root: string, message: string, amend: boolean): Promise<string> {
-  return invoke<string>("git_commit", { root, message, amend });
+/**
+ * 提交。`paths` 非空时走 `--only`：只提交点名的那几条（取工作区内容），
+ * 索引里其它文件的已暂存块原样保留——提交面板复选框的勾选语义就落在这条上。
+ */
+export function gitCommit(
+  root: string,
+  message: string,
+  amend: boolean,
+  paths?: string[]
+): Promise<string> {
+  return invoke<string>("git_commit", { root, message, amend, paths: paths ?? [] });
+}
+
+/** 把一份统一差异打进去：cached=true 只动索引（按块暂存），false 落到工作区；reverse=true 反着打。 */
+export function gitApplyPatch(
+  root: string,
+  patch: string,
+  cached: boolean,
+  reverse = false
+): Promise<void> {
+  return invoke<void>("git_apply_patch", { root, patch, cached, reverse });
 }
 
 export function gitBranches(root: string): Promise<GitBranch[]> {
@@ -468,13 +487,22 @@ export function markClass(mark: string): string {
 
 /**
  * 是不是删除态。文件已经不在盘上了，光靠行尾那个红色的 `D` 认不出来，
- * 提交面板与日志第三栏都要给文件名画一条红线（删除线）。
+ * 日志第三栏要给文件名画一条红线（删除线）。
  *
  * 只认字母本身，不认它从哪来：索引位是 `D`、工作区位是 `D`、还是提交里那一份的状态是 `D`，
  * 三种来源走到这里都是同一个判断。
  */
 export function isDeletedMark(mark: string): boolean {
   return mark === "D";
+}
+
+/**
+ * 部分暂存：索引位与工作区位都有内容（porcelain 的 `AM` / `MM` / `AD` 那一档）。
+ * 这种文件提交树上的复选框默认「只提交已暂存块」（partial 徽标的由来）。
+ */
+export function isPartiallyStaged(change: GitChange): boolean {
+  if (change.untracked || change.conflicted) return false;
+  return change.indexStatus.trim() !== "" && change.workStatus.trim() !== "";
 }
 
 /**

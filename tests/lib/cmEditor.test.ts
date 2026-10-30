@@ -369,7 +369,7 @@ describe("读写、定位与标记", () => {
     const bars = [...view.dom.querySelectorAll(".cm-change-lane .change-lane-bar")];
     expect(bars).toHaveLength(2);
     expect(bars.every((el) => el.parentElement?.className.includes("cm-gutterElement"))).toBe(true);
-    expect((bars[0] as HTMLElement).style.getPropertyValue("--lane-color")).toContain("accent-green");
+    expect((bars[0] as HTMLElement).style.getPropertyValue("--lane-color")).toContain("gutter-added");
     teardown(view, record.path);
   });
 

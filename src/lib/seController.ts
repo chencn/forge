@@ -1,12 +1,12 @@
 /**
- * 随处搜索的取数编排（抄 openidea 的 everywhere/controller.ts）。
+ * 随处搜索的取数编排（抄 IntelliJ IDEA 的 everywhere/controller.ts）。
  *
  * 每个数据分节各查各的、各自收口：任何一节先答上来就先进列表，不等别人。
  * 新一轮查询把旧的顶掉——这边的后端命令是一次性 Promise，没有「取消」这回事，
  * 所以只靠代号（gen）认账：回来的那份结果对不上自己那节的现行代号就整份丢掉。
  * 输入没变的分节不重查，比如某一节点「更多」时，别节的结果原样留着。
  *
- * 少了 openidea 那侧的三样：漏斗过滤器、按根算的范围选择、语言服务的符号合并——
+ * 少了 IntelliJ IDEA 那侧的三样：漏斗过滤器、按根算的范围选择、语言服务的符号合并——
  * 这边都没有等价的数据源。
  */
 import type { FileHit, ScanFilter, SearchOptions, SymbolHit, TextPage } from "./fs";

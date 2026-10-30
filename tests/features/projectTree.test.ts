@@ -136,9 +136,9 @@ describe("ProjectTree Multi-Domain Integration", () => {
     expect(isIgnoredName(".DS_Store")).toBe(true);
     expect(isIgnoredName("Thumbs.db")).toBe(true);
 
-    // 重点：.github, .openidea, .env, .gitignore 绝不可以被误隐藏！
+    // 重点：.github, .config, .env, .gitignore 绝不可以被误隐藏！
     expect(isIgnoredName(".github")).toBe(false);
-    expect(isIgnoredName(".openidea")).toBe(false);
+    expect(isIgnoredName(".custom-notes")).toBe(false);
     expect(isIgnoredName(".env")).toBe(false);
     expect(isIgnoredName(".gitignore")).toBe(false);
   });
@@ -179,8 +179,8 @@ describe("ProjectTree Multi-Domain Integration", () => {
     expect(isVirtual("C:\\Users\\user\\scratches")).toBe(false);
   });
 
-  it("defines standard 5 view modes aligned with openidea", () => {
-    // 验证 5 种标准视图模式在 i18n 与定义上严格对齐 openidea
+  it("defines standard 5 view modes aligned with IntelliJ IDEA", () => {
+    // 验证 5 种标准视图模式在 i18n 与定义上严格对齐 IntelliJ IDEA
     const expectedModes = [
       { id: "project", label: tEn("project.view.title") },
       { id: "projectFiles", label: tEn("project.view.projectFiles") },

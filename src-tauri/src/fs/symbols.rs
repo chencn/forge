@@ -1,6 +1,6 @@
 //! 符号搜索：按名字找定义，给随处搜索的「类」与「符号」两档供货。
 //!
-//! openidea 那边有常驻的 tree-sitter 索引；这边没有等价的底子，退而求其次：
+//! IntelliJ IDEA 那边有常驻的 tree-sitter 索引；这边没有等价的底子，退而求其次：
 //! 按扩展名选一套「每语言的正则规则」从正文里抠定义行，整个根一次扫出的结果
 //! 按根缓存 [`CACHE_TTL`] 这么久，之后的查询只对着缓存比名字。第一条查询付一次
 //! 全盘读的代价，后续查询就和文件名搜索一样快。
@@ -10,7 +10,7 @@
 //! 块注释里自成一行的一条照样算定义（见测试 `line_comments_are_skipped_but_block_comments_leak`）。
 //! 缓存那一棵 60 秒内不失效，也没有跟着文件监听的增量失效，所以新建、改名、挪动过的定义
 //! 在这一分钟内查不到，行号也可能是旧的；触到 [`MAX_SYMBOLS`] 或这一档被截时 `truncated` 为真。
-//! 种类名沿用 openidea 的写法（class/interface/struct/enum/
+//! 种类名沿用 IntelliJ IDEA 的写法（class/interface/struct/enum/
 //! trait/typeAlias/function/method/constant/variable/module…），前端按它发徽章与「类」档过滤。
 //! 行号与列号都 1 起，和 [`super::search::TextHit`] 同一口径，前端可以直接交给编辑器落行。
 
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// 单文件超过这么多字节就不抠符号了（对齐 openidea 的 MAX_SYMBOL_FILE）。
+/// 单文件超过这么多字节就不抠符号了（对齐 IntelliJ IDEA 的 MAX_SYMBOL_FILE）。
 const SYMBOL_SIZE_CEILING: u64 = 2 * 1024 * 1024;
 /// 一个根最多收这么多符号，到数就停止扫描：超大仓库里缓存整棵树的定义没有意义。
 const MAX_SYMBOLS: usize = 80_000;
@@ -511,7 +511,7 @@ pub struct SymbolHits {
     pub truncated: bool,
 }
 
-/// 「类」档收录的种类；其余都只在「符号」档出现。对齐 openidea 的 isTypeKind 再加
+/// 「类」档收录的种类；其余都只在「符号」档出现。对齐 IntelliJ IDEA 的 isTypeKind 再加
 /// record/annotation/object/union 这几种天生就是类型的写法。
 fn is_type_kind(kind: &str) -> bool {
     matches!(

@@ -1,5 +1,5 @@
 /**
- * Forge 现代化 UI 组件库（移植自 openidea 并桥接 Forge Lucide 图标与多主题系统）
+ * Forge 现代化 UI 组件库（移植自 IntelliJ IDEA 并桥接 Forge Lucide 图标与多主题系统）
  */
 
 // 图标适配器

@@ -1,5 +1,5 @@
 /**
- * 侧边栏项目树 1:1 对标 openidea 的文件夹角色与图标体系 (Folder Kind Architecture)
+ * 侧边栏项目树 1:1 对标 IntelliJ IDEA 的文件夹角色与图标体系 (Folder Kind Architecture)
  * 严格使用 JetBrains 官方 expui 矢量 SVG。
  */
 import {
@@ -119,7 +119,7 @@ export function folderKindSvg(kind: FolderKind, dark: boolean): string {
 }
 
 /**
- * 判定目录节点的具体角色类型 (1:1 对标 openidea)
+ * 判定目录节点的具体角色类型 (1:1 对标 IntelliJ IDEA)
  */
 export function resolveFolderKind(
   path: string | undefined,

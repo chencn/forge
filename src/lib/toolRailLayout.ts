@@ -78,7 +78,7 @@ export function loadToolRailLayout(): ToolRailLayout {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored !== null) {
       const parsed = normalizeToolRailLayout(JSON.parse(stored));
-      // 1:1 对标 openidea 规范 (anchor: "right", order: 0)：
+      // 1:1 对标 IntelliJ IDEA 规范 (anchor: "right", order: 0)：
       // notifications 必须且永远置于右侧顶端第一位，严禁遗留在 bottom 或其他位置。
       parsed.left.bottom = parsed.left.bottom.filter((id) => id !== "notifications");
       parsed.right.bottom = parsed.right.bottom.filter((id) => id !== "notifications");

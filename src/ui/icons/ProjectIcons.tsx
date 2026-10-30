@@ -2,7 +2,7 @@ import type { SVGProps } from "react";
 import styles from "./ProjectIcons.module.css";
 
 /**
- * 1:1 对标 openidea / JetBrains 的 External Libraries 库根节点图标 (expui/nodes/library.svg)
+ * 1:1 对标 JetBrains 的 External Libraries 库根节点图标 (expui/nodes/library.svg)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function LibraryIcon(props: SVGProps<SVGSVGElement>) {
@@ -35,7 +35,7 @@ export function LibraryIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 Scratches and Consoles 临时文件图标 (expui/fileTypes/scratches.svg)
+ * 1:1 对标 JetBrains 的 Scratches and Consoles 临时文件图标 (expui/fileTypes/scratches.svg)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function ScratchesIcon(props: SVGProps<SVGSVGElement>) {
@@ -94,7 +94,7 @@ export function ScratchesIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 Locate / Select Opened File 图标
+ * 1:1 对标 IntelliJ IDEA 的 Locate / Select Opened File 图标
  */
 export function LocateIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -110,7 +110,7 @@ export function LocateIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 Collapse All 图标
+ * 1:1 对标 IntelliJ IDEA 的 Collapse All 图标
  */
 export function CollapseAllIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -122,7 +122,7 @@ export function CollapseAllIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 Expand All 图标
+ * 1:1 对标 IntelliJ IDEA 的 Expand All 图标
  */
 export function ExpandAllIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -134,7 +134,7 @@ export function ExpandAllIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 Module/Project 根节点图标 (expui/nodes/module.svg)
+ * 1:1 对标 IntelliJ IDEA 的 Module/Project 根节点图标 (expui/nodes/module.svg)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function ModuleIcon(props: SVGProps<SVGSVGElement>) {
@@ -175,7 +175,7 @@ export function ModuleIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 Hide / 最小化侧边栏图标 (expui/general/hide.svg)
+ * 1:1 对标 IntelliJ IDEA 的 Hide / 最小化侧边栏图标 (expui/general/hide.svg)
  */
 export function HideIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -189,7 +189,7 @@ export function HideIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 Library Folder 黄色库文件夹图标 (expui/nodes/libraryFolder.svg)
+ * 1:1 对标 JetBrains 的 Library Folder 黄色库文件夹图标 (expui/nodes/libraryFolder.svg)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function LibraryFolderIcon(props: SVGProps<SVGSVGElement>) {
@@ -238,7 +238,7 @@ export function LibraryFolderIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 Archive 归档文件图标 (expui/fileTypes/archive.svg)
+ * 1:1 对标 JetBrains 的 Archive 归档文件图标 (expui/fileTypes/archive.svg)
  */
 export function ArchiveIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -262,7 +262,7 @@ export function ArchiveIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 NPM 立方包图标 (openidea/fileTypes/npm.svg)
+ * 1:1 对标 IntelliJ IDEA 的 NPM 立方包图标 (IntelliJ IDEA 官方 npm 包图标)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function NpmIcon(props: SVGProps<SVGSVGElement>) {
@@ -281,7 +281,7 @@ export function NpmIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea 的 Cargo 立方包图标 (openidea/fileTypes/cargo.svg)
+ * 1:1 对标 IntelliJ IDEA 的 Cargo 立方包图标 (IntelliJ IDEA 官方 Cargo 包图标)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function CargoIcon(props: SVGProps<SVGSVGElement>) {
@@ -300,7 +300,7 @@ export function CargoIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 Java 图标 (expui/fileTypes/java.svg)
+ * 1:1 对标 JetBrains 的 Java 图标 (expui/fileTypes/java.svg)
  */
 export function JavaIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -320,7 +320,7 @@ export function JavaIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 Python 图标 (expui/fileTypes/python.svg)
+ * 1:1 对标 JetBrains 的 Python 图标 (expui/fileTypes/python.svg)
  */
 export function PythonIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -342,7 +342,7 @@ export function PythonIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 /**
- * 1:1 对标 openidea / JetBrains 的 JavaScript 图标 (expui/fileTypes/javaScript.svg)
+ * 1:1 对标 JetBrains 的 JavaScript 图标 (expui/fileTypes/javaScript.svg)
  * 具备 light / dark 主题矢量图自适应能力
  */
 export function JavaScriptIcon(props: SVGProps<SVGSVGElement>) {

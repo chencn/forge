@@ -34,7 +34,7 @@ interface EntryIconProps {
    * 不再按名字去取普通文件夹图标。
    */
   excluded?: boolean;
-  /** 显式指定文件夹角色 (1:1 对标 openidea) */
+  /** 显式指定文件夹角色 (1:1 对标 IntelliJ IDEA) */
   folderKind?: FolderKind;
   /** 绝对路径。`.java` 靠它读源码，按顶层声明换成类 / 接口 / 枚举 / 注解 / record / 异常图标。 */
   path?: string;
@@ -48,7 +48,7 @@ interface EntryIconProps {
  * 数据到位后订阅回调触发重渲染，换成 IDEA 彩色图标；深浅主题各取一套 SVG。
  *
  * 铁律契约：文件图标绝对不改动（Java 类/接口/枚举/注解、pom.xml、Spring 等）；
- * 文件夹图标 1:1 对齐 openidea 的 JetBrains 官方 expui 矢量图标体系。
+ * 文件夹图标 1:1 对齐 IntelliJ IDEA 的 JetBrains 官方 expui 矢量图标体系。
  */
 export default function EntryIcon({
   name,
@@ -103,7 +103,7 @@ export default function EntryIcon({
   }
 
   // ---------------------------------------------------------------------------
-  // 文件夹与包图标分支：1:1 对齐 openidea JetBrains 官方矢量图标体系
+  // 文件夹与包图标分支：1:1 对齐 IntelliJ IDEA JetBrains 官方矢量图标体系
   if (isDirectory || isPackage) {
     const kind: FolderKind =
       explicitFolderKind ?? resolveFolderKind(path, baseName, isPackage, excluded);

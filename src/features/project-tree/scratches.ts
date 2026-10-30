@@ -2,7 +2,7 @@
  * Scratches 临时文件服务
  *
  * 临时文件保存在应用数据目录的 `scratches` 子目录下（如 <appData>/scratches）。
- * 支持独立于项目的快速试验、代码草稿与格式化演练，对齐 IntelliJ IDEA / openidea 的标准实现。
+ * 支持独立于项目的快速试验、代码草稿与格式化演练，对齐 IntelliJ IDEA / IntelliJ IDEA 的标准实现。
  */
 
 import { appDataDir, homeDir } from "@tauri-apps/api/path";

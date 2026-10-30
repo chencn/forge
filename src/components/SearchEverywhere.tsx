@@ -62,7 +62,7 @@ import EntryIcon from "./EntryIcon";
 import SymbolIcon from "./SymbolIcon";
 import styles from "./SearchEverywhere.module.css";
 
-/** 弹窗页签。openidea 的六档：全部 / 类 / 文件 / 符号 / 动作 / 文本。 */
+/** 弹窗页签。IntelliJ IDEA 的六档：全部 / 类 / 文件 / 符号 / 动作 / 文本。 */
 export type SearchTab = SeTab;
 
 const TAB_LABELS: Record<SeTab, TranslationKey> = {
@@ -244,7 +244,7 @@ function sameFile(prev: SeRow | undefined, row: SeRow): boolean {
 
 /**
  * 随处搜索（Search Everywhere）
- * 100% 对齐 openidea everywhere 交互与布局体系：
+ * 100% 对齐 IntelliJ IDEA everywhere 交互与布局体系：
  * - 顶栏：TabList、Scope 下拉、Preview 切换、Filter、转到底部 Find 窗口；
  * - 搜索行：放大镜历史下拉、自适应无边框输入框、Spinner 与提示；
  * - 列表区：分节渲染、多类型条目高亮、同文件合并、底部键盘导航；
@@ -603,7 +603,7 @@ export default function SearchEverywhere({
       }}
     >
       <div className={styles.dialog} role="dialog" aria-modal="true" aria-label={t("search.title")}>
-        {/* 顶部 Header：Tabs 胶囊与右侧 Actions（完全对齐 openidea） */}
+        {/* 顶部 Header：Tabs 胶囊与右侧 Actions（完全对齐 IntelliJ IDEA） */}
         <div className={styles.header}>
           <div role="tablist" aria-label={t("search.title")} className={styles.tabs} onKeyDown={onTabKey}>
             {TABS.map((item, index) => (
@@ -624,7 +624,7 @@ export default function SearchEverywhere({
           </div>
 
           <div className={styles.headerActions}>
-            {/* 对齐 openidea：All 或 Actions 页签显示 Checkbox，其余页签显示 Scope 下拉 */}
+            {/* 对齐 IntelliJ IDEA：All 或 Actions 页签显示 Checkbox，其余页签显示 Scope 下拉 */}
             {tab === "all" || tab === "actions" ? (
               <label className={styles.include}>
                 <input
@@ -916,7 +916,7 @@ export default function SearchEverywhere({
           </div>
         )}
 
-        {/* 下方代码预览窗格（对齐 openidea CodePreview） */}
+        {/* 下方代码预览窗格（对齐 IntelliJ IDEA CodePreview） */}
         {preview && rows.length > 0 && (
           <CodePreviewPane path={previewTarget?.path ?? null} line={previewTarget?.line ?? 1} />
         )}

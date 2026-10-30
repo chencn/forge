@@ -1,7 +1,7 @@
 /**
  * External Libraries (外部依赖库) 探测与虚拟树模型
  *
- * 1:1 严格对标 openidea (crates/ide-sdk/src/libraries.rs) 的 External Libraries 机制：
+ * 1:1 严格对标 IntelliJ IDEA (crates/ide-sdk/src/libraries.rs) 的 External Libraries 机制：
  * 1. Node.js: 读取 package.json 直接依赖，分组名恒为 `< node_modules >` 与 `< Node.js Core >`；
  * 2. Rust: 读取 Cargo.toml / Cargo.lock，分组名恒为 `< Cargo dependencies >`；
  * 3. Java: 探测 JDK 与 pom.xml / build.gradle 依赖；
@@ -49,7 +49,7 @@ export interface LibraryRoot {
 const librariesCache = new Map<string, LibraryGroup[]>();
 
 /**
- * 探测工作区关联的外部依赖库（1:1 对齐 openidea 逻辑）
+ * 探测工作区关联的外部依赖库（1:1 对齐 IntelliJ IDEA 逻辑）
  */
 export async function detectExternalLibraries(workspaceRoot: string): Promise<LibraryGroup[]> {
   const normRoot = workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
@@ -59,7 +59,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   const groups: LibraryGroup[] = [];
 
   // -------------------------------------------------------------------------
-  // 1. Node.js / npm 项目探测（1:1 对标 openidea node_libraries）
+  // 1. Node.js / npm 项目探测（1:1 对标 IntelliJ IDEA node_libraries）
   // -------------------------------------------------------------------------
   try {
     let pkgJsonContent = "";
@@ -119,7 +119,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
         }
       }
 
-      // 如果有 @types/node，单独抽出一组 < Node.js Core >（对标 openidea）
+      // 如果有 @types/node，单独抽出一组 < Node.js Core >（对标 IntelliJ IDEA）
       if (coreTypesRoot) {
         groups.push({
           id: "nodeCore",
@@ -144,7 +144,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   }
 
   // -------------------------------------------------------------------------
-  // 2. Rust / Cargo 项目探测（1:1 对标 openidea rust_groups）
+  // 2. Rust / Cargo 项目探测（1:1 对标 IntelliJ IDEA rust_groups）
   // -------------------------------------------------------------------------
   try {
     let cargoLockContent = "";
@@ -204,7 +204,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
         const version = match[2];
         if (name === selfPackageName) continue;
 
-        // openidea 标准命名格式："serde 1.0.200"
+        // IntelliJ IDEA 标准命名格式："serde 1.0.200"
         const label = `${name} ${version}`;
         if (!seen.has(label)) {
           seen.add(label);
@@ -234,7 +234,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   }
 
   // -------------------------------------------------------------------------
-  // 3. Python 虚拟环境探测（1:1 对标 openidea python_groups）
+  // 3. Python 虚拟环境探测（1:1 对标 IntelliJ IDEA python_groups）
   // -------------------------------------------------------------------------
   try {
     const venvDirs = [".venv", "venv", "env"];

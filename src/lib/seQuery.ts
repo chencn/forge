@@ -1,8 +1,8 @@
 /**
  * 弹窗输入的地点解析：`File.kt:42`、`File.kt:42:5`、贴进来的绝对路径、
- * `file://` 链接与 Windows 反斜杠路径都认（抄 openidea 的 common/query.ts）。
+ * `file://` 链接与 Windows 反斜杠路径都认（抄 IntelliJ IDEA 的 common/query.ts）。
  * 输入的行列号 1 起；这边编辑器与后端命令同样吃 1 起，所以原样保留，
- * 只在交给 openidea 那套 0 起口径的地方时注意换算。
+ * 只在交给 IntelliJ IDEA 那套 0 起口径的地方时注意换算。
  */
 
 export interface ParsedQuery {

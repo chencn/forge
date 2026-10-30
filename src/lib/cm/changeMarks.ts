@@ -42,7 +42,7 @@ class LaneMark extends GutterMarker {
       el.className = "change-lane-bar";
       el.style.setProperty(
         "--lane-color",
-        this.kind === "added" ? "var(--accent-green)" : this.kind === "deleted" ? "var(--accent-red)" : "var(--accent-blue)"
+        this.kind === "added" ? "var(--gutter-added)" : this.kind === "deleted" ? "var(--gutter-deleted)" : "var(--gutter-modified)"
       );
     }
     return el;

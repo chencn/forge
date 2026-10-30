@@ -768,18 +768,23 @@ fn git_unstage_impl(root: String, paths: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn git_commit(root: String, message: String, amend: bool) -> Result<String, String> {
-    block(move || git_commit_impl(root, message, amend)).await
+pub async fn git_commit(root: String, message: String, amend: bool, paths: Option<Vec<String>>) -> Result<String, String> {
+    block(move || git_commit_impl(root, message, amend, paths)).await
 }
 
-fn git_commit_impl(root: String, message: String, amend: bool) -> Result<String, String> {
+fn git_commit_impl(
+    root: String,
+    message: String,
+    amend: bool,
+    paths: Option<Vec<String>>,
+) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let message = message.trim();
     // amend 可以只改父提交不带新说明（--no-edit），所以只有非 amend 才要求非空。
     if message.is_empty() && !amend {
         return Err(err("EMPTY_MESSAGE", ""));
     }
-    let args: Vec<&str> = if message.is_empty() {
+    let mut args: Vec<&str> = if message.is_empty() {
         vec!["commit", "--amend", "--no-edit"]
     } else if amend {
         // 少了这个 -m，git 会把说明当成 pathspec 报「did not match any file(s)」。
@@ -787,11 +792,69 @@ fn git_commit_impl(root: String, message: String, amend: bool) -> Result<String,
     } else {
         vec!["commit", "-m", message]
     };
+    // --only：只提交点名的那几条路径（取工作区内容），索引里其它文件的已暂存块不动——
+    // 提交面板的复选框勾选语义就是它：勾了的提交，没勾的连索引都不碰。
+    let relatives: Vec<String>;
+    if let Some(paths) = paths.filter(|list| !list.is_empty()) {
+        args.push("--only");
+        relatives = paths
+            .iter()
+            .map(|path| relative_path(&root, path))
+            .collect::<Result<_, _>>()?;
+        if relatives.len() > PATHSPEC_ARGV_LIMIT {
+            args.push("--pathspec-from-file=-");
+            args.push("--pathspec-file-nul");
+            let mut payload = String::new();
+            for relative in &relatives {
+                payload.push_str(relative);
+                payload.push('\0');
+            }
+            let output = run_git_stdin(&root, &args, &payload)?;
+            if !output.ok {
+                return Err(fail(&output));
+            }
+            return Ok(trim_line(&output.stdout));
+        }
+        args.push("--");
+        args.extend(relatives.iter().map(String::as_str));
+    }
     let output = run_git(&root, &args)?;
     if !output.ok {
         return Err(fail(&output));
     }
     Ok(trim_line(&output.stdout))
+}
+
+/// 把一份统一差异打进去：cached=true 只动索引（按块暂存），false 落到工作区（按块回退）；
+/// reverse=true 反着打（`-R`，把补丁里的新增删回去）。
+#[tauri::command]
+pub async fn git_apply_patch(
+    root: String,
+    patch: String,
+    cached: bool,
+    reverse: bool,
+) -> Result<(), String> {
+    block(move || git_apply_patch_impl(root, patch, cached, reverse)).await
+}
+
+fn git_apply_patch_impl(root: String, patch: String, cached: bool, reverse: bool) -> Result<(), String> {
+    let root = ensure_root(&root)?;
+    if patch.trim().is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn"];
+    if cached {
+        args.push("--cached");
+    }
+    if reverse {
+        args.push("--reverse");
+    }
+    args.push("-");
+    let output = run_git_stdin(&root, &args, &patch)?;
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(())
 }
 
 /// 网络类操作共用的执行体：把 stderr 一并回给前端，进度文案都在那里。

@@ -1,7 +1,7 @@
 /**
  * 随处搜索的落盘记忆（localStorage，键带 forge 前缀）：
  * 最近打开的文件、最近执行的动作、每个页签自己的搜索历史。
- * 对应 openidea 的 everywhere/store.ts + tracking.ts 里前端侧的那几份表。
+ * 对应 IntelliJ IDEA 的 everywhere/store.ts + tracking.ts 里前端侧的那几份表。
  */
 import type { SeTab } from "./seModel";
 import { pathWithin, samePath } from "./format";
