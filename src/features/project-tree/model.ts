@@ -8,6 +8,7 @@
  */
 
 import type { FsEntry } from "../../lib/fs";
+import type { ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
 
 export type ProjectNodeDomain = "project" | "libraries" | "scratches";
 
@@ -32,6 +33,8 @@ export interface ProjectTreeNode {
   readonly hasChildren?: boolean;
   /** 是否被排除（.gitignore 忽略） */
   readonly isExcluded?: boolean;
+  /** 用户显式标记的目录角色；未标记时继续走默认/JVM 推断。 */
+  readonly folderRole?: ProjectDirectoryRole;
   /** 是否为只读节点（如外部依赖库） */
   readonly isReadonly?: boolean;
   /** 附加描述文字，如 "library root"、"crates.io" */

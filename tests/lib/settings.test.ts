@@ -69,4 +69,28 @@ describe("AI 编程助手设置", () => {
     expect((await loadSettings()).aiAssistantsEnabled).toBe(false);
   });
 
+  it("项目目录角色按根和相对路径归一化并持久化", async () => {
+    invoke.mockResolvedValue({
+      projectDirectoryRoles: {
+        "D:\\App\\Code\\Forge\\": {
+          "SRC\\": "source",
+          "bad": "unknown",
+        },
+      },
+    });
+    const loaded = await loadSettings();
+    expect(loaded.projectDirectoryRoles).toEqual({
+      "d:/app/code/forge": { src: "source" },
+    });
+
+    invoke.mockResolvedValue({ projectDirectoryRoles: { "d:/app/code/forge": { src: "test" } } });
+    const saved = await saveSettings({
+      projectDirectoryRoles: { "d:/app/code/forge": { src: "test" } },
+    });
+    expect(invoke).toHaveBeenLastCalledWith("settings_save", {
+      patch: { projectDirectoryRoles: { "d:/app/code/forge": { src: "test" } } },
+    });
+    expect(saved.projectDirectoryRoles["d:/app/code/forge"].src).toBe("test");
+  });
+
 });

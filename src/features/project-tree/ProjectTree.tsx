@@ -75,6 +75,7 @@ import {
 import { InlineEditor } from "./InlineEditor";
 import { loadExpanded, loadViewMode, loadViewOptions, saveExpanded, saveViewMode, saveViewOptions } from "./viewState";
 import styles from "./ProjectTree.module.css";
+import { roleAtPath, type ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
 
 const DRAG_THRESHOLD = 4;
 
@@ -95,6 +96,8 @@ export interface ProjectTreeProps {
   readonly showIgnored: boolean;
   /** 是否显示系统隐藏/点开头文件 */
   readonly showHidden: boolean;
+  /** 当前项目内持久化的显式目录角色。 */
+  readonly directoryRoles?: Readonly<Record<string, ProjectDirectoryRole>>;
   /** 当前仍打开着的工作区根列表（用于常驻工程缓存垃圾回收） */
   readonly openRoots: readonly string[];
   /** 当前正在查看/激活的编辑器文档绝对路径 */
@@ -303,6 +306,7 @@ export function ProjectTree({
   reveal,
   showIgnored: propShowIgnored,
   showHidden: propShowHidden,
+  directoryRoles,
   openRoots: _openRoots,
   activeFile,
   openFiles = [],
@@ -752,7 +756,8 @@ export function ProjectTree({
             ? libKey(groupNamespace, endEntry.path)
             : normalizeNodeKey(endEntry.path);
           const isExp = expanded.has(itemKey) || expanded.has(endKey);
-          const isExcluded = isExcludedFolder(endEntry.name) || isIgnored(endEntry.path);
+          const folderRole = domain === "project" ? roleAtPath(root, endEntry.path, directoryRoles) : null;
+          const isExcluded = folderRole === "excluded" || isExcludedFolder(endEntry.name) || isIgnored(endEntry.path);
 
           const node: ProjectTreeNode = {
             key: itemKey,
@@ -764,6 +769,7 @@ export function ProjectTree({
             isExpanded: isExp,
             hasChildren: true,
             isExcluded,
+            folderRole: folderRole ?? undefined,
             isReadonly: domain === "libraries",
           };
           res.push(node);
@@ -945,6 +951,7 @@ export function ProjectTree({
     expanded,
     children,
     options,
+    directoryRoles,
     isIgnored,
     targetFiles,
     visibleAncestors,
@@ -1502,6 +1509,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
                 isPackage={node.isPackage}
                 path={node.entry.path}
                 excluded={node.isExcluded}
+                folderKind={node.folderRole}
                 size={16}
               />
             )}

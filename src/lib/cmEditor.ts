@@ -346,6 +346,18 @@ export function editorFor(path: string): EditorView | null {
   return null;
 }
 
+interface EditorCommandHandlers {
+  formatDocument: (view: EditorView) => boolean;
+  findUsages: (view: EditorView) => boolean;
+}
+
+let commandHandlers: EditorCommandHandlers | null = null;
+
+/** LSP 命令实现依赖 cm/lsp；由 CodeEditor 注入，避免 cmEditor 与 lsp 互相静态引用。 */
+export function setEditorCommandHandlers(next: EditorCommandHandlers | null): void {
+  commandHandlers = next;
+}
+
 /**
  * 取这篇文档的 state，没有就建一个。
  *
@@ -679,5 +691,13 @@ attachEditorBridge({
       if (text) return text.slice(0, limit);
     }
     return "";
+  },
+  formatDocument: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.formatDocument(view) ?? false : false;
+  },
+  findUsages: (path: string) => {
+    const view = editorFor(path);
+    return view ? commandHandlers?.findUsages(view) ?? false : false;
   },
 });

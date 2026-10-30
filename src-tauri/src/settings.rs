@@ -4,6 +4,7 @@ use crate::sys::write_atomic;
 use json_patch::merge;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
@@ -273,6 +274,8 @@ pub struct Settings {
     pub updates: UpdateSettings,
     /// 运行工具窗口。
     pub run: RunSettings,
+    /// 按项目根保存的目录角色；相对路径到角色名的映射。
+    pub project_directory_roles: HashMap<String, HashMap<String, String>>,
 }
 
 impl Default for Settings {
@@ -294,6 +297,7 @@ impl Default for Settings {
             notification_position: "bottom-right".to_string(),
             updates: UpdateSettings::default(),
             run: RunSettings::default(),
+            project_directory_roles: HashMap::new(),
         }
     }
 }
@@ -559,6 +563,18 @@ mod tests {
         .unwrap();
         assert_eq!(custom.workspace_mode, "single");
         assert_eq!(custom.close_behavior, "quit");
+    }
+
+    /// 项目目录角色是设置文件的一部分，重启后必须保留项目根与相对目录映射。
+    #[test]
+    fn project_directory_roles_round_trip() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"projectDirectoryRoles":{"d:/app/forge":{"src":"source","tests":"test"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.project_directory_roles["d:/app/forge"]["src"], "source");
+        let encoded = serde_json::to_value(settings).unwrap();
+        assert_eq!(encoded["projectDirectoryRoles"]["d:/app/forge"]["tests"], "test");
     }
 
     /// 资源管理器菜单两个开关缺省都是关。旧文件没有这段时不能被读成打开。

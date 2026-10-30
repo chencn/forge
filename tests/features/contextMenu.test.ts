@@ -49,6 +49,34 @@ describe("Project Tree Context Menu", () => {
     expect(labels).toContain("Open In");
     expect(labels).toContain("Local History");
     expect(labels).toContain("Git");
+    expect(labels).toContain("Reformat code");
+    expect(labels).toContain("Find Usages");
+    const git = items.find((item) => item.label === "Git");
+    expect(git?.children?.map((item) => item.label)).toContain("Fetch remotes");
+  });
+
+  it("wires file actions and keeps Compare With behind a Git repository", () => {
+    const calls: string[] = [];
+    const items = buildProjectContextMenu({
+      selection: [dummyFileNode],
+      workspaceRoot: "D:/app/code/forge",
+      git: { root: "D:/app/code/forge", changes: [] },
+      onCompareWith: () => calls.push("compare"),
+      onReformatCode: () => calls.push("format"),
+      onFindUsages: () => calls.push("usages"),
+      t: tEn,
+    });
+    items.find((item) => item.label === "Compare With…")?.onSelect?.();
+    items.find((item) => item.label === "Reformat code")?.onSelect?.();
+    items.find((item) => item.label === "Find Usages")?.onSelect?.();
+    expect(calls).toEqual(["compare", "format", "usages"]);
+
+    const withoutGit = buildProjectContextMenu({
+      selection: [dummyFileNode],
+      workspaceRoot: "D:/app/code/forge",
+      t: tEn,
+    });
+    expect(withoutGit.some((item) => item.label === "Compare With…")).toBe(false);
   });
 
   it("builds complete IDEA right-click menu for project file with Chinese i18n", () => {

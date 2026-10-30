@@ -14,6 +14,7 @@ import {
   pathOfKey,
 } from "../../src/features/project-tree/model";
 import { en } from "../../src/i18n/lang/en";
+import { roleAtPath, setProjectDirectoryRole } from "../../src/lib/projectDirectoryRoles";
 
 const tEn = (k: string) => (en as any)[k] ?? k;
 
@@ -164,6 +165,14 @@ describe("ProjectTree Multi-Domain Integration", () => {
 
     const expandedSet = new Set<string>([norm(unixPath)]);
     expect(expandedSet.has(norm(winPath))).toBe(true);
+  });
+
+  it("persists explicit directory roles by project-relative path", () => {
+    const root = "D:/Project";
+    const marked = setProjectDirectoryRole({}, root, "d:\\project\\src", "source");
+    expect(marked).toEqual({ "d:/project": { src: "source" } });
+    expect(roleAtPath("d:\\PROJECT", "D:/project/src", marked["d:/project"])).toBe("source");
+    expect(setProjectDirectoryRole(marked, root, "D:/project/src", null)).toEqual({});
   });
 
   it("identifies virtual paths strictly to prevent invoking listDirectory", () => {

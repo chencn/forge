@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { normalizeExtraExtensions } from "./shellWhitelist";
 import type { ThemeMode } from "./window";
 import type { Lang } from "../i18n";
+import { normalizeProjectDirectoryRoles, type ProjectDirectoryRoles } from "./projectDirectoryRoles";
 
 /** 编辑器快捷键方案，对应 `lib/cm/keymap.ts` 里的三套。 */
 export type KeymapScheme = "default" | "idea" | "eclipse";
@@ -271,6 +272,8 @@ export interface Settings {
   updates: UpdateSettings;
   /** 运行工具窗口。 */
   run: RunSettings;
+  /** 按项目根隔离的目录角色；相对路径值为 source/test/resources/testResources/excluded。 */
+  projectDirectoryRoles: ProjectDirectoryRoles;
 }
 
 /** 浏览器权限逐项保存，避免旧窗口顺带恢复已撤销的上传或脚本授权。 */
@@ -326,6 +329,7 @@ export const DEFAULT_SETTINGS: Settings = {
     proxyUrl: "https://gh-proxy.com/",
   },
   run: { timestamps: true },
+  projectDirectoryRoles: {},
 };
 
 /** 翻一条引用的收藏标记：名单按引用全名存，日志的分支树和顶栏的分支弹层共用这一份。 */
@@ -376,6 +380,7 @@ function merge(raw: Partial<Settings> | null): Settings {
     },
     updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },
     run: { ...DEFAULT_SETTINGS.run, ...raw?.run },
+    projectDirectoryRoles: normalizeProjectDirectoryRoles(raw?.projectDirectoryRoles),
     notificationPosition:
       raw?.notificationPosition === "top-right" ||
       raw?.notificationPosition === "bottom-left" ||

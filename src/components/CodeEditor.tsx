@@ -38,6 +38,7 @@ import {
   setMounted,
   setScrollRatio,
   setKeymap,
+  setEditorCommandHandlers,
   setRainbowBrackets,
   stateFor,
   textOf,
@@ -46,7 +47,7 @@ import {
   type ChangeMark,
   type LineEnding,
 } from "../lib/cmEditor";
-import { lspExtensions } from "../lib/cm/lsp";
+import { findUsages, formatDocument, lspExtensions } from "../lib/cm/lsp";
 import { attachMinimapPointer } from "../lib/cm/minimapPointer";
 import { forgeKeymap } from "../lib/cm/keymap";
 import { basenameOf, samePath } from "../lib/format";
@@ -368,6 +369,11 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       viewRef.current = null;
     };
   }, [ensurePinHost]);
+
+  useEffect(() => {
+    setEditorCommandHandlers({ formatDocument, findUsages });
+    return () => setEditorCommandHandlers(null);
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;

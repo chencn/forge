@@ -411,6 +411,8 @@ export function monoFont(): string {
 interface EditorBridge {
   disposeModel(path: string): void;
   selectedText(limit: number): string;
+  formatDocument(path: string): boolean;
+  findUsages(path: string): boolean;
 }
 
 let bridge: EditorBridge | null = null;
@@ -455,4 +457,13 @@ export function disposeModel(path: string): void {
  */
 export function selectedText(limit = 10000): string {
   return bridge?.selectedText(limit) ?? "";
+}
+
+/** 右键菜单调用的编辑器命令；路径参数保证异步打开文件后不会误作用于另一篇文档。 */
+export function formatDocument(path: string): boolean {
+  return bridge?.formatDocument(path) ?? false;
+}
+
+export function findUsages(path: string): boolean {
+  return bridge?.findUsages(path) ?? false;
 }

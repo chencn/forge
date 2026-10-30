@@ -25,13 +25,16 @@ import type { FsEntry } from "../../lib/fs";
 import type { GitChange } from "../../lib/git";
 import { SCRATCH_LANGUAGES, type ScratchLanguage } from "./scratches";
 import type { ProjectTreeNode } from "./model";
+import type { ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
 
 export interface GitMenuHandlers {
   readonly root: string | null;
   readonly changes: readonly GitChange[];
+  readonly remotes?: readonly string[];
   readonly stage?: (paths: string[]) => void | Promise<void>;
   readonly history?: (relative: string) => void;
   readonly commit?: () => void;
+  readonly fetch?: () => void | Promise<void>;
   readonly diff?: (paths: string[]) => void;
   readonly rollback?: (paths: string[]) => void;
   readonly push?: () => void;
@@ -74,7 +77,9 @@ export interface ProjectMenuContext {
   readonly onReload?: () => void;
   readonly onCompareWith?: (entry: FsEntry) => void;
   readonly onCompareFiles?: (entries: FsEntry[]) => void;
-  readonly onMarkDirectory?: (dir: string, role: string | null) => void;
+  readonly onMarkDirectory?: (dir: string, role: ProjectDirectoryRole | null) => void;
+  readonly onReformatCode?: (entry: FsEntry) => void;
+  readonly onFindUsages?: (entry: FsEntry) => void;
   readonly onAiInput?: (entry: FsEntry) => void;
 }
 
@@ -313,6 +318,11 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         onSelect: () => git.commit?.(),
       },
       {
+        label: t("git.fetch"),
+        disabled: git.remotes !== undefined && git.remotes.length === 0,
+        onSelect: () => void git.fetch?.(),
+      },
+      {
         label: t("git.stage"),
         disabled: files.length === 0,
         onSelect: () => void git.stage?.(files.map((f) => f.path)),
@@ -368,7 +378,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         onSelect: () => ctx.onCompareFiles?.(files),
       },
     ]);
-  } else if (singleFile) {
+  } else if (singleFile && git?.root) {
     groups.push([
       {
         label: t("project.view.compareWith"),
@@ -403,6 +413,20 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
       },
     ];
     groups.push([{ label: t("project.view.markDirectory"), children: markSubmenu }]);
+  }
+
+  // 文件级编辑器动作只展示真实已有的能力；Optimize Imports / Put Label 尚无实现，不能放空壳菜单。
+  if (singleFile) {
+    groups.push([
+      {
+        label: t("welcome.format"),
+        onSelect: () => ctx.onReformatCode?.(singleFile),
+      },
+      {
+        label: t("editor.usages.find"),
+        onSelect: () => ctx.onFindUsages?.(singleFile),
+      },
+    ]);
   }
 
   // Group 11: AI 助手操作 (Forge 原生集成)
@@ -471,10 +495,6 @@ function buildExternalLibraryContextMenu(ctx: ProjectMenuContext): MenuItem[] {
             onSelect: () => ctx.onReveal?.(single.path),
           },
         ],
-      },
-      {
-        label: t("project.view.compareWith"),
-        onSelect: () => ctx.onCompareWith?.(single),
       },
     ]);
   }

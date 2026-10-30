@@ -96,6 +96,11 @@ import { useHistory } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
 import { useStable } from "./hooks/useStable";
 import type { BranchSettings } from "./lib/settings";
+import {
+  projectPathKey,
+  setProjectDirectoryRole,
+  type ProjectDirectoryRole,
+} from "./lib/projectDirectoryRoles";
 import { installReadyUpdate, relaunchApp, startAutoUpdateChecks } from "./lib/updater";
 import UpdateStatusBar from "./components/UpdateStatusBar";
 import { MavenDock } from "./components/MavenTool";
@@ -118,6 +123,8 @@ import {
   languageForPath,
   languageLabel,
   selectedText,
+  formatDocument,
+  findUsages,
   setOpenTargetHandler,
 } from "./lib/editorEnv";
 import {
@@ -166,6 +173,7 @@ import { canDiff, docKindOf, hasTextContent } from "./lib/docKind";
 import {
   closeTermsForRoot,
   hasAliveTermsForRoot,
+  openTerm,
   runInTerminal,
   termSessions,
   watchTermTabs,
@@ -247,6 +255,8 @@ type PendingDialog = DialogRequest & {
   many?: string[];
   /** 回滚：删完新建文件之后再恢复的已跟踪改动，存交给 git 的 pathspec（`.` 表示仓库根）。 */
   restore?: string;
+  /** 多选文件回滚时逐条恢复，避免把未选中的改动一起还原。 */
+  restoreMany?: string[];
 };
 
 /** 标签页里的一份比对：来源可以是工作区改动，也可以是某次提交里的文件。 */
@@ -692,6 +702,11 @@ export default function App() {
   const rootKey = workspaceRoot ?? "";
   const rootKeyRef = useRef(rootKey);
   rootKeyRef.current = rootKey;
+  /** 当前项目的显式目录角色；目录树只消费当前根，避免多工作区互相污染。 */
+  const directoryRoles = useMemo(
+    () => (workspaceRoot ? settings.projectDirectoryRoles[projectPathKey(workspaceRoot)] ?? {} : {}),
+    [settings.projectDirectoryRoles, workspaceRoot]
+  );
   /** 目录树里选中的那一批，按根分别记忆；最后一条是主行，右键菜单和键位都读这一份。 */
   const [explorerPickByRoot, setExplorerPickByRoot] = useState<Record<string, FsEntry[]>>({});
   const explorerPick = useMemo(
@@ -3405,6 +3420,101 @@ export default function App() {
     [addToGitignore, editSource, git, reportError, showFileHistory, workspaceRoot]
   );
 
+  /** 目录树 Git 菜单的回滚：只处理用户选中的文件，不误还原同目录其它改动。 */
+  const rollbackTreePaths = useCallback(
+    (paths: string[]) => {
+      if (!git.root || paths.length === 0) return;
+      const selected = new Set(paths.map((path) => repoRelative(path).toLowerCase()));
+      const isSelected = (path: string) => selected.has(path.toLowerCase());
+      const deleteRel = git.untrackedChanges.filter((change) => isSelected(change.path)).map((change) => change.path);
+      const restoreAbs = git.trackedChanges
+        .filter((change) => isSelected(change.path))
+        .map((change) => git.absoluteOf(change.path));
+      if (deleteRel.length === 0) {
+        void Promise.all(restoreAbs.map((path) => git.restoreFile("", path))).then(() => {
+          refreshTree();
+          void git.refreshChanges();
+        }).catch((cause: unknown) => reportError(errorText(cause)));
+        return;
+      }
+      setDialog({
+        kind: "rollback",
+        name: basenameOf(deleteRel[0]),
+        count: deleteRel.length,
+        many: deleteRel.map((relative) => git.absoluteOf(relative)),
+        fileList: deleteRel,
+        restoreTracked: restoreAbs.length > 0,
+        restoreMany: restoreAbs.length > 0 ? restoreAbs : undefined,
+        entry: null,
+        dir: null,
+      });
+    },
+    [git, refreshTree, reportError, repoRelative]
+  );
+
+  /** 右键 Compare With 固定比较 HEAD 与当前工作区（含编辑器未保存正文）。 */
+  const compareTreeFile = useCallback(
+    (entry: FsEntry) => {
+      const root = git.root;
+      if (!root) return;
+      const relative = repoRelative(entry.path);
+      void openDiffTab(
+        {
+          id: `tree-head|${relative}`,
+          name: basenameOf(entry.path),
+          leftLabel: t("git.revHead"),
+          rightLabel: t("git.revWorktree"),
+          path: relative,
+          language: languageForPath(entry.path),
+          openIn: entry.path,
+        },
+        async () => ({
+          original: await gitShow(root, "HEAD", entry.path),
+          modified: await worktreeText(entry.path, false),
+        })
+      );
+    },
+    [git.root, openDiffTab, repoRelative, t, worktreeText]
+  );
+
+  /** 菜单可能点在尚未打开的文件上，等文档视图挂载后再执行 LSP 命令。 */
+  const runTreeEditorCommand = useCallback(
+    (entry: FsEntry, command: (path: string) => boolean) => {
+      openFile(entry);
+      let attempts = 0;
+      const run = () => {
+        if (command(entry.path) || attempts++ >= 40) return;
+        window.setTimeout(run, 50);
+      };
+      window.setTimeout(run, 0);
+    },
+    [openFile]
+  );
+
+  const openTreeTerminal = useCallback(
+    (dir: string) => {
+      void openTerm(workspaceRoot, settings.terminal.shell, 80, 24, { dir })
+        .then(() => focusPane("terminal"))
+        .catch((cause: unknown) => reportError(errorText(cause)));
+    },
+    [focusPane, reportError, settings.terminal.shell, workspaceRoot]
+  );
+
+  const markTreeDirectory = useCallback(
+    (dir: string, role: ProjectDirectoryRole | null) => {
+      if (!workspaceRoot) return;
+      patch({
+        projectDirectoryRoles: setProjectDirectoryRole(
+          settings.projectDirectoryRoles,
+          workspaceRoot,
+          dir,
+          role
+        ),
+      });
+    },
+    [patch, settings.projectDirectoryRoles, workspaceRoot]
+  );
+
   /**
    * 目录树右键菜单，1:1 对齐 IntelliJ IDEA ProjectViewPopupMenu / IntelliJ IDEA 商业级规范
    */
@@ -3440,6 +3550,7 @@ export default function App() {
           ? {
               root: git.root,
               changes: git.status?.changes ?? [],
+              remotes: git.probe?.remotes ?? [],
               stage: (paths) => void git.stage(paths),
               history: (rel) => showFileHistory(rel),
               commit: () => openSideTool("git"),
@@ -3454,9 +3565,8 @@ export default function App() {
                   }
                 }
               },
-              rollback: (paths) => {
-                if (paths.length > 0) void git.unstage(paths);
-              },
+              rollback: rollbackTreePaths,
+              fetch: () => void git.fetch(),
               push: () => void git.push(false),
               pull: () => void git.pull(),
               branches: () => openSideTool("git"),
@@ -3512,9 +3622,7 @@ export default function App() {
         },
         onDelete: (entries) => confirmDelete(entries),
         onReveal: (path) => void revealEntry(path),
-        onOpenTerminal: () => {
-          focusPane("terminal");
-        },
+        onOpenTerminal: openTreeTerminal,
         onFindInFiles: (targetDir) =>
           openEverywhere("text", selectedText(), targetDir),
         onReplaceInFiles: (targetDir) =>
@@ -3525,12 +3633,10 @@ export default function App() {
           void git.refresh();
         },
         onCompareFiles: (entries) => compareFiles(entries),
-        onCompareWith: (entry) => openFile(entry),
-        onMarkDirectory: (targetDir, role) => {
-          if (role === "excluded") {
-            void addToGitignore([repoRelative(targetDir)]);
-          }
-        },
+        onCompareWith: compareTreeFile,
+        onMarkDirectory: markTreeDirectory,
+        onReformatCode: (entry) => runTreeEditorCommand(entry, formatDocument),
+        onFindUsages: (entry) => runTreeEditorCommand(entry, findUsages),
         onAiInput: (entry) => aiInputMenu({ kind: "file", path: entry.path, startLine: 1 }),
       });
 
@@ -3553,10 +3659,15 @@ export default function App() {
       openEverywhere,
       openFile,
       openSideTool,
+      openTreeTerminal,
       pasteInto,
       refreshTree,
       repoRelative,
       reportError,
+      rollbackTreePaths,
+      compareTreeFile,
+      markTreeDirectory,
+      runTreeEditorCommand,
       selectedText,
       showFileHistory,
       showLocalHistory,
@@ -3873,7 +3984,11 @@ export default function App() {
          */
         if (kind === "rollback") {
           await deleteTargets(dialog.many ?? []);
-          if (dialog.restore) await git.restoreFile("", dialog.restore);
+          if (dialog.restoreMany) {
+            for (const restorePath of dialog.restoreMany) await git.restoreFile("", restorePath);
+          } else if (dialog.restore) {
+            await git.restoreFile("", dialog.restore);
+          }
         }
         if (kind === "discard" && path) {
           disposeModel(path);
@@ -5433,7 +5548,7 @@ export default function App() {
       : tool === "explorer" ? workspaceRoot ? <ProjectTree
         root={workspaceRoot} repoRoot={git.root} changes={git.status?.changes ?? EMPTY_CHANGES}
         collapseSignal={collapseSignal} refresh={treeRefresh} reveal={treeReveal}
-        showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden}
+        showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden} directoryRoles={directoryRoles}
         openRoots={watchedRoots} activeFile={locatePath} openFiles={visibleDocs.map((doc) => doc.path)} picked={explorerPickedPaths} onPick={setExplorerPick}
         onOpenFile={treeOpenFile} onContextMenu={treeContextMenu}
         onDelete={(entries) => void deleteTargets(entries.map((entry) => entry.path))}
@@ -5683,6 +5798,7 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      directoryRoles={directoryRoles}
                       openRoots={watchedRoots}
                       activeFile={locatePath}
                       openFiles={visibleDocs.map((doc) => doc.path)}
@@ -6050,6 +6166,7 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      directoryRoles={directoryRoles}
                       openRoots={watchedRoots}
                       activeFile={locatePath}
                       openFiles={visibleDocs.map((doc) => doc.path)}
