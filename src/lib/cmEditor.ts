@@ -14,6 +14,7 @@ import { type Range,
   Prec,
   RangeSetBuilder,
   StateEffect,
+  StateField,
   Transaction,
   type Extension,
 } from "@codemirror/state";
@@ -29,16 +30,36 @@ import {
   keymap,
   lineNumbers,
   rectangularSelection,
+  MatchDecorator,
+  ViewPlugin,
+  type DecorationSet,
+  type ViewUpdate,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab, redo } from "@codemirror/commands";
+import {
+  addCursorAbove,
+  addCursorBelow,
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentLess,
+  indentMore,
+  indentWithTab,
+  insertBlankLine,
+  redo,
+  selectLine,
+  toggleTabFocusMode,
+} from "@codemirror/commands";
 import { type MatchResult,
   bracketMatching,
   codeFolding,
+  foldEffect,
   foldGutter,
   foldKeymap,
+  foldedRanges,
   indentOnInput,
   indentUnit,
   syntaxHighlighting,
+  unfoldEffect,
   type LanguageSupport,
 } from "@codemirror/language";
 import { lintGutter, lintKeymap } from "@codemirror/lint";
@@ -54,30 +75,35 @@ import { forgeHighlightStyle } from "./cm/highlight";
 import { indentGuides } from "./cm/indentGuides";
 import { rainbowBrackets } from "./cm/rainbowBrackets";
 import { caretRowHighlight } from "./cm/caretRow";
+import { clearCaret, reportCaret } from "./caretStatus";
+import { stickyScroll } from "./cm/stickyScroll";
 import { forgeTheme } from "./cm/theme";
 import { changeMarksField } from "./cm/changeMarks";
 import { overviewLane } from "./cm/overview";
 
-export { EditorState, EditorView };
+export { EditorState, EditorView, foldEffect, unfoldEffect };
 export type { Extension, Transaction };
 
-/** WorkspaceEdit 的跨文档撤销只保留最近一次，避免另造一套无界历史。 */
-let workspaceUndo: (() => Promise<void>) | null = null;
+/** WorkspaceEdit 的跨文档撤销按时间序留一小组：太长没意义，无界栈反而招旧事务回放。 */
+const WORKSPACE_UNDO_LIMIT = 10;
+const workspaceUndoStack: Array<() => Promise<void>> = [];
 let workspaceUndoRunning = false;
 
 export function registerWorkspaceUndo(undo: () => Promise<void>): void {
-  workspaceUndo = undo;
+  workspaceUndoStack.push(undo);
+  if (workspaceUndoStack.length > WORKSPACE_UNDO_LIMIT) workspaceUndoStack.shift();
 }
 
-/** 普通用户输入会把 WorkspaceEdit 撤销顶掉，保持 Ctrl+Z 的时间顺序。 */
+/** 普通用户输入之后正文已不是任何事务的落点，整栈清空，别让旧回放撞上新编辑。 */
 export function clearWorkspaceUndo(): void {
-  workspaceUndo = null;
+  workspaceUndoStack.length = 0;
 }
 
 export function undoWorkspaceEdit(): boolean {
-  if (!workspaceUndo || workspaceUndoRunning) return false;
-  const undo = workspaceUndo;
-  workspaceUndo = null;
+  if (workspaceUndoStack.length === 0) return false;
+  // 回放还没落地就吞掉连按：下一级等当前这条撤完再撤，别让它掉进普通 undo。
+  if (workspaceUndoRunning) return true;
+  const undo = workspaceUndoStack.pop() as () => Promise<void>;
   workspaceUndoRunning = true;
   void undo().catch(() => {
     // 事务撤销失败时不把错误吞进编辑器事件循环；调用方仍保留普通历史。
@@ -286,6 +312,11 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     overviewLane,
     // 当前行高亮（对齐 IDEA caretRowHighlight）：有选区时整行底色会盖住选区色，所以只有空光标才画。
     caretRowHighlight,
+    // 软换行与空白符显示（IDEA 默认都关）：配置随设置变，由组件 setSoftWrap/setShowWhitespace 现派发。
+    softWrapSlot.of([]),
+    whitespaceSlot.of([]),
+    // stickyScroll（IDEA 2023+ 默认开启）：作用域头部行钉在编辑区顶部，见 cm/stickyScroll.ts。
+    stickyScroll,
     highlightActiveLineGutter(),
     highlightSpecialChars(),
     history(),
@@ -295,6 +326,8 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     lintGutter(),
     // 光标闪烁的样式统一在 styles.css：跟终端光标同一条淡入淡出（见 `forge-caret-blink`）。
     drawSelection(),
+    // Ctrl+滚轮缩放字号（IDEA 的 zoom with Ctrl+Mouse Wheel），见下方 wheelZoom。
+    wheelZoom,
     dropCursor(),
     rectangularSelection(),
     EditorState.allowMultipleSelections.of(true),
@@ -316,6 +349,11 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     copyLineOnEmpty,
     // 补全浮层由 lib/cm/lsp.ts 那组装配（它要给候选列表装 LSP 那一路的来源），这里只留按键。
     syntaxHighlighting(forgeHighlightStyle),
+    // 光标/选区汇报：状态栏的 Line:Column 段从这里拿数字（外部 store，不经 React 树）。
+    EditorView.updateListener.of((update) => {
+      if (!update.selectionSet && !update.docChanged) return;
+      reportCaretOf(doc.path, update.state);
+    }),
     forgeTheme,
     languageSlot.of(languageExtensions(doc)),
     readOnlySlot.of([EditorState.readOnly.of(doc.readOnly), EditorView.editable.of(!doc.readOnly)]),
@@ -328,7 +366,10 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     keymap.of([
       { key: "Mod-z", run: undoWorkspaceEdit, preventDefault: true },
       ...closeBracketsKeymap,
-      ...defaultKeymap,
+      // defaultKeymap 里与 IDEA 语义冲突的键先丢掉（对齐 openidea baseKeymap.ts 的 DROPPED）：
+      // Ctrl+Enter 拆分行、Ctrl+M 滚到屏中、Ctrl+[ / ] 块级导航、Ctrl+Alt+↑↓ 上一/下一出现处。
+      // 这些键位归应用层/方案表管，落到引擎默认绑定只会制造语义分叉。
+      ...defaultKeymap.filter((binding) => !DROPPED_DEFAULT_BINDINGS.has(binding.run)),
       ...searchKeymap,
       ...historyKeymap,
       // IDEA 的 Windows 重做是 Ctrl+Shift+Z（Ctrl+Y 已被删除行占用）；
@@ -345,6 +386,20 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
 }
 
 // ---------------------------------------------------------------- 常驻 state
+
+/**
+ * defaultKeymap 中与 IDEA 语义冲突、必须丢弃的命令（对齐 openidea baseKeymap.ts 的 DROPPED）。
+ * 这些键在 IDEA 里属于 IDE 级动作：拆分行 / 滚到屏中 / 块级上下移 / 上一处下一处出现 / 块缩进。
+ */
+const DROPPED_DEFAULT_BINDINGS = new Set<unknown>([
+  insertBlankLine, // Mod-Enter
+  toggleTabFocusMode, // Ctrl-m / Shift-Alt-m
+  selectLine, // Alt-l / Ctrl-l
+  addCursorAbove, // Mod-Alt-ArrowUp
+  addCursorBelow, // Mod-Alt-ArrowDown
+  indentLess, // Mod-[
+  indentMore, // Mod-]
+]);
 
 /** 文档 → 常驻 state：撤销栈与正文都在这份里，没在屏幕上也不丢。 */
 const held = new Map<string, EditorState>();
@@ -516,6 +571,48 @@ export function setRainbowBrackets(view: EditorView, enabled: boolean): void {
   view.dispatch({ effects: rainbowSlot.reconfigure(enabled ? rainbowBrackets() : []) });
 }
 
+/** 软换行开关（IDEA 默认关）：同 rainbowSlot 的格子模式，切设置不重建 state。 */
+const softWrapSlot = new Compartment();
+export function setSoftWrap(view: EditorView, enabled: boolean): void {
+  view.dispatch({ effects: softWrapSlot.reconfigure(enabled ? EditorView.lineWrapping : []) });
+}
+
+const whitespaceSpaceMark = Decoration.mark({ class: "cm-highlightSpace" });
+const whitespaceTabMark = Decoration.mark({ class: "cm-highlightTab" });
+/** 显示空白符（IDEA 默认关）：前导/内部/行尾的空格画中点、制表符画箭头。 */
+const whitespaceMarks = new MatchDecorator({
+  regexp: /[ \t]+/g,
+  decorate: (add, from, _to, match) => {
+    const text = match[0] ?? "";
+    // 连续空白整段按同一种字符染色即可；混排时段内逐字符分开画反而碎。
+    const hasTab = text.includes("\t");
+    for (let i = 0; i < text.length; i++) {
+      add(from + i, from + i + 1, hasTab ? whitespaceTabMark : whitespaceSpaceMark);
+    }
+  },
+});
+const whitespaceSlot = new Compartment();
+export function setShowWhitespace(view: EditorView, enabled: boolean): void {
+  view.dispatch({
+    effects: whitespaceSlot.reconfigure(
+      enabled
+        ? ViewPlugin.fromClass(
+            class {
+              decorations: DecorationSet;
+              constructor(view: EditorView) {
+                this.decorations = whitespaceMarks.createDeco(view);
+              }
+              update(u: ViewUpdate) {
+                this.decorations = whitespaceMarks.updateDeco(u, this.decorations);
+              }
+            },
+            { decorations: (v) => v.decorations },
+          )
+        : [],
+    ),
+  });
+}
+
 export function setKeymap(view: EditorView, scheme: Extension): void {
   view.dispatch({ effects: keymapSlot.reconfigure(scheme) });
 }
@@ -542,6 +639,25 @@ export function textReplacement(state: EditorState, contents: string): Transacti
 export function captureState(view: EditorView): void {
   const path = pathOf(view.state);
   if (path) held.set(path, view.state);
+}
+
+/**
+ * 从编辑器状态取光标快照并汇报。updateListener 与文档切换（attach）共用同一段：
+ * CodeMirror 的 setState 不触发 updateListener，换到一篇没有视图存档的文档时
+ * 不手动补一次汇报，状态栏的行列会一直空着。
+ */
+export function reportCaretOf(path: string, state: EditorState): void {
+  const sel = state.selection;
+  const headLine = state.doc.lineAt(sel.main.head);
+  let selectedChars = 0;
+  for (const range of sel.ranges) selectedChars += range.to - range.from;
+  reportCaret({
+    path,
+    line: headLine.number,
+    col: sel.main.head - headLine.from + 1,
+    selectedChars,
+    carets: sel.ranges.length,
+  });
 }
 
 /** 卸载视图前存光标与滚动位置。 */
@@ -579,6 +695,7 @@ export function disposeModel(path: string): void {
   for (const key of Array.from(viewByPath.keys())) {
     if (samePath(key, path)) viewByPath.delete(key);
   }
+  clearCaret(path);
 }
 
 /**
@@ -681,7 +798,21 @@ export function revealRange(view: EditorView, line: number, from: number, to: nu
  */
 export function lineTop(view: EditorView, line: number): number | null {
   if (line < 1 || line > view.state.doc.lines) return null;
-  return view.lineBlockAt(view.state.doc.line(line).from).top + view.documentPadding.top;
+  const lineObj = view.state.doc.line(line);
+  const block = view.lineBlockAt(lineObj.from);
+  // 若该行不在其所属视觉行块的首行，说明它已被折叠收进前面的折叠块内部，在屏幕上不可见
+  if (view.state.doc.lineAt(block.from).number !== line) return null;
+
+  // 严格检查该行是否落在已折叠的 Range 范围内部（避免折叠状态更新窗口期内漏检）
+  let inFold = false;
+  foldedRanges(view.state).between(lineObj.from, lineObj.to, (from, to) => {
+    if (from <= lineObj.from && to > lineObj.from) {
+      inFold = true;
+    }
+  });
+  if (inFold) return null;
+
+  return block.top + view.documentPadding.top;
 }
 
 /**
@@ -701,6 +832,45 @@ export function gutterWidth(view: EditorView): number {
 
 // ---------------------------------------------------------------- 保存与偏好
 
+// --- Ctrl+滚轮缩放（对齐 openidea prefs.ts 的 fontZoom / stepFontZoom）---
+
+/** 本编辑器的字号缩放偏移（px）。 */
+const setFontZoom = StateEffect.define<number>();
+const fontZoomField = StateField.define<number>({
+  create: () => 0,
+  update: (value, tr) => tr.effects.reduce((acc, e) => (e.is(setFontZoom) ? e.value : acc), value),
+  // 最高优先级：盖在 applyFontMetrics 写的配置值上。base 变量另存一份配置值，
+  // zoom 在它上面做加法——同一元素上 var 引用自身是非法环。
+  provide: (field) =>
+    Prec.highest(
+      EditorView.editorAttributes.compute([field], (state) => {
+        const zoom = state.field(field);
+        const attrs: Record<string, string> = {};
+        if (zoom)
+          attrs.style = `--editor-font-size: calc(var(--editor-font-base, 13px) + ${zoom}px); --editor-line-height: calc(var(--editor-line-base, 22px) + ${Math.round(zoom * 1.69)}px)`;
+        return attrs;
+      }),
+    ),
+});
+
+/** 步进字号缩放，限制 -6..36。 */
+export function stepFontZoom(view: EditorView, delta: number): void {
+  const zoom = view.state.field(fontZoomField, false);
+  if (zoom === undefined) return;
+  const next = Math.max(-6, Math.min(36, zoom + delta));
+  if (next !== zoom) view.dispatch({ effects: setFontZoom.of(next) });
+}
+
+/** Ctrl/⌘+滚轮：上滚放大、下滚缩小；不带修饰键的滚轮照常滚正文。 */
+const wheelZoom = EditorView.domEventHandlers({
+  wheel(event, view) {
+    if (!event.ctrlKey && !event.metaKey) return false;
+    event.preventDefault();
+    stepFontZoom(view, event.deltaY < 0 ? 1 : -1);
+    return true;
+  },
+});
+
 /** Ctrl+S 交回应用的保存，不落在引擎自己的按键表里。 */
 export function saveKeymap(onSave: () => void): Extension {
   return keymap.of([{ key: "Mod-s", preventDefault: true, run: () => (onSave(), true) }]);
@@ -712,10 +882,25 @@ export function saveKeymap(onSave: () => void): Extension {
  *
  * 行高跟着字号走：IDEA/IDEA 13px 字号配 22px 行高（--lh-code: 22px），
  * 换算系数 1.69；大字号时仍按比例放大不挤字。
+ *
+ * `fontFamily` 非空时写 `--editor-font-family`，空串则摘掉属性回退到 `--font-mono`。
  */
-export function applyFontMetrics(host: HTMLElement, fontSize: number): void {
+export function applyFontMetrics(
+  host: HTMLElement,
+  fontSize: number,
+  fontFamily?: string,
+  lineHeight = 0
+): void {
+  // 行高：设置给了正数用设置的，否则按字号 1.69 倍推导。
+  const lh = lineHeight > 0 ? Math.round(lineHeight) : Math.round(fontSize * 1.69);
+  // base 两份给 zoom 的 calc 做底数，现值两份给主题与其它消费方（styles.css）。
+  host.style.setProperty("--editor-font-base", `${fontSize}px`);
+  host.style.setProperty("--editor-line-base", `${lh}px`);
   host.style.setProperty("--editor-font-size", `${fontSize}px`);
-  host.style.setProperty("--editor-line-height", `${Math.round(fontSize * 1.69)}px`);
+  host.style.setProperty("--editor-line-height", `${lh}px`);
+  const family = fontFamily?.trim();
+  if (family) host.style.setProperty("--editor-font-family", family);
+  else host.style.removeProperty("--editor-font-family");
 }
 
 /**

@@ -9,6 +9,8 @@ interface ResolveConflictsDialogProps {
   files: GitChange[];
   /** 按一边了结：本地取 stage 2，对方取 stage 3，取完顺带记为已解决。 */
   onAccept: (change: GitChange, side: "ours" | "theirs") => void;
+  /** 逐块解决：开块级合并层。 */
+  onMerge: (change: GitChange) => void;
   /** 打开源文件自己改冲突标记。 */
   onOpen: (change: GitChange) => void;
   onClose: () => void;
@@ -18,6 +20,7 @@ interface ResolveConflictsDialogProps {
 export default function ResolveConflictsDialog({
   files,
   onAccept,
+  onMerge,
   onOpen,
   onClose,
 }: ResolveConflictsDialogProps) {
@@ -59,6 +62,13 @@ export default function ResolveConflictsDialog({
                 <GitMerge size={13} aria-hidden="true" />
                 <EntryIcon name={change.path.split(/[\\/]/).pop() ?? change.path} size={13} />
                 <span>{change.path}</span>
+              </button>
+              <button
+                type="button"
+                className="button is-tiny"
+                onClick={() => onMerge(change)}
+              >
+                {t("git.blockMergeOpen")}
               </button>
               <button
                 type="button"

@@ -26,12 +26,12 @@ export const removeNotification = (id: string | number) => {
   notificationCenter.removeNotification(id);
 };
 
-/** 撤下某个业务键的气泡（对齐 openidea expireNotification）。 */
+/** 撤下某个业务键的气泡（对齐 IDEA expireNotification）。 */
 export const expireNotification = (key: string) => {
   notificationCenter.expireNotification(key);
 };
 
-/** 「不再显示」：整组改成不弹气泡，写回用户设置（对齐 openidea suppressGroup）。 */
+/** 「不再显示」：整组改成不弹气泡，写回用户设置（对齐 IDEA suppressGroup）。 */
 export const suppressGroup = (group: string) => {
   suppressGroupImpl(group);
 };

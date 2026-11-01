@@ -738,8 +738,9 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   transition: color 150ms; }
 .ai-scard-actions button:hover { color: var(--sidebar-fg); }
 
-/* 悬停详情气泡：贴行右侧、宽 256px、只读不吃指针。 */
-.ai-scard-hover { position: fixed; z-index: 260; width: 288px; max-width: calc(100vw - 24px);
+/* 悬停详情气泡：贴行右侧、宽 256px、只读不吃指针。
+   fixed 定位、参与全局层叠：压在对话框层之下（token 派生），不再用裸 260。 */
+.ai-scard-hover { position: fixed; z-index: calc(var(--z-dialog, 900) - 1); width: 288px; max-width: calc(100vw - 24px);
   border: 1px solid var(--border-color); border-radius: 16px; background: var(--surface-island-strong);
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2); padding: 12px; pointer-events: auto; }
 .ai-scard-hover-body { min-width: 0; display: flex; flex-direction: column; gap: 12px;

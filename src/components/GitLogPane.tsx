@@ -54,6 +54,7 @@ import {
 } from "../lib/git";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
+import { computeGraph, laneColor, type GraphRow } from "../features/vcs/graph";
 import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import Select from "./Select";
@@ -136,6 +137,53 @@ const SINCE_MS: Record<string, number> = {
   "7d": 7 * 24 * 60 * 60 * 1000,
   "30d": 30 * 24 * 60 * 60 * 1000,
 };
+
+/** 日志一页多少条；滚动到底自动续一页（对齐 openidea logStore 的分页口径）。 */
+const LOG_PAGE = 200;
+
+// --- 提交图渲染（对齐 openidea GitLog.tsx 的 GraphCell） ---
+
+/** 一行日志的高度，SVG 线段的纵向坐标全靠它；.log-commit 的行高与此钉死。 */
+const GRAPH_ROW = 24;
+/** 一个 lane 槽位的横向宽度。 */
+const GRAPH_LANE = 12;
+
+const laneX = (lane: number) => GRAPH_LANE / 2 + lane * GRAPH_LANE;
+
+function segPath(fromX: number, fromY: number, toX: number, toY: number) {
+  if (fromX === toX) return `M${fromX} ${fromY}L${toX} ${toY}`;
+  const mid = (fromY + toY) / 2;
+  return `M${fromX} ${fromY}C${fromX} ${mid} ${toX} ${mid} ${toX} ${toY}`;
+}
+
+function GraphCell({ row }: { row: GraphRow | undefined }) {
+  if (!row) return <span className="log-dot" aria-hidden="true" />;
+  const width = Math.min(row.width, 24) * GRAPH_LANE;
+  const cy = GRAPH_ROW / 2;
+  return (
+    <svg className="log-graph" width={width} height={GRAPH_ROW} aria-hidden="true">
+      {row.up.map((s, i) => (
+        <path
+          key={`u${i}`}
+          d={segPath(laneX(s.from), 0, laneX(s.to), cy)}
+          stroke={laneColor(s.color)}
+          fill="none"
+          strokeWidth={1.5}
+        />
+      ))}
+      {row.down.map((s, i) => (
+        <path
+          key={`d${i}`}
+          d={segPath(laneX(s.from), cy, laneX(s.to), GRAPH_ROW)}
+          stroke={laneColor(s.color)}
+          fill="none"
+          strokeWidth={1.5}
+        />
+      ))}
+      <circle cx={laneX(row.lane)} cy={cy} r={3.2} fill={laneColor(row.color)} />
+    </svg>
+  );
+}
 
 /** 日志窗口的三栏，从左到右。 */
 type LogColumn = "refs" | "list" | "detail";
@@ -308,6 +356,9 @@ function GitLogPane({
   });
   /** 右栏底部那块提交信息，收起来只剩一行标题。 */
   const [infoClosed, setInfoClosed] = useState(false);
+  /** 提交信息区的固定高度（px）；null 表示还没拖过，按内容自适应、封顶六成列高。 */
+  const [infoHeight, setInfoHeight] = useState<number | null>(null);
+  const infoDrag = useRef<{ startY: number; startHeight: number; max: number } | null>(null);
   /** 第三栏文件树的四个视图开关，⋮ 眼睛弹层和快捷键都能翻。 */
   const [groupDir, setGroupDir] = useState(true);
   const [groupModule, setGroupModule] = useState(true);
@@ -330,6 +381,13 @@ function GitLogPane({
   } | null>(null);
 
   const [commits, setCommits] = useState<GitCommit[]>([]);
+  // 提交图：从 parents 客户端算 lane（openidea graph.ts 同款状态机），行序与 commits 一一对应。
+  const graphRows = useMemo<GraphRow[]>(
+    () => computeGraph(commits.map((c) => ({ id: c.hash, parents: c.parents }))).rows,
+    [commits],
+  );
+  /** 已读到历史尽头（本页比页长还短）。 */
+  const [logDone, setLogDone] = useState(false);
   /** 「用户」下拉的候选：最近这些条提交里出现过的人。 */
   const [authors, setAuthors] = useState<string[]>([]);
   const [logLoading, setLogLoading] = useState(false);
@@ -392,6 +450,8 @@ function GitLogPane({
     }
     let stale = false;
     setLogLoading(true);
+    // 新一轮查询重开分页；不用等结果回来，旧的「已到底」不该挡住续页判断。
+    setLogDone(false);
     void gitLog(root, {
       text: settledText,
       regex,
@@ -399,11 +459,12 @@ function GitLogPane({
       reference,
       path: pathFilter,
       sinceMs: since ? Date.now() - SINCE_MS[since] : 0,
-      limit: 200,
+      limit: LOG_PAGE,
     })
       .then((list) => {
         if (stale) return;
         setCommits(list);
+        setLogDone(list.length < LOG_PAGE);
         // 上一次选中的提交可能被过滤掉了，落到列表第一条。
         setPicked((current) => {
           const kept = current.filter((hash) => list.some((commit) => commit.hash === hash));
@@ -415,6 +476,7 @@ function GitLogPane({
         // 查询本身失败了，留着上一次的结果会让人以为过滤生效了。
         setCommits([]);
         setPicked([]);
+        setLogDone(true);
         reportError(errorText(cause));
       })
       .finally(() => {
@@ -426,6 +488,56 @@ function GitLogPane({
     // HEAD 一动就得重查：引用留空那一档查的就是「当前分支」，签出别的分支或提交完
     // HEAD 前移，列表停在旧结果会让人拿别的分支的历史做重置、优选。
   }, [root, settledText, regex, author, reference, pathFilter, since, signal, reportError, git.lastCommit?.hash, git.status?.branch]);
+
+  // 滚动到底自动续一页。observer 只挂一次，回调经 ref 取最新的加载动作，
+  // 免得每次筛选或追加提交都拆一遍 IntersectionObserver。
+  const logListRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreRef = useRef<() => void>(() => {});
+  // 续页在飞标记：sentinel 在响应回来前再次进视口（快滚）时，同一个 skip 不能再发一次，
+  // 否则同一页 concat 两遍，列表出现重复行。
+  const loadingMoreRef = useRef(false);
+  loadMoreRef.current = () => {
+    if (!root || logDone || logLoading || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    void gitLog(root, {
+      text: settledText,
+      regex,
+      author,
+      reference,
+      path: pathFilter,
+      sinceMs: since ? Date.now() - SINCE_MS[since] : 0,
+      skip: commits.length,
+      limit: LOG_PAGE,
+    })
+      .then((page) => {
+        setCommits((current) => current.concat(page));
+        setLogDone(page.length < LOG_PAGE);
+      })
+      .catch((cause: unknown) => {
+        // 续页失败不推翻已有列表，报错并把这一页停掉，滚动不会再触发。
+        setLogDone(true);
+        reportError(errorText(cause));
+      })
+      .finally(() => {
+        loadingMoreRef.current = false;
+      });
+  };
+  useEffect(() => {
+    const list = logListRef.current;
+    const sentinel = sentinelRef.current;
+    if (!list || !sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMoreRef.current();
+      },
+      { root: list, rootMargin: "120px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+    // 依赖带 root：ref 只在 probe 返回、root 就绪后的那次渲染里才有 DOM，
+    // 只挂一次会在「日志先于项目就绪打开」时拿到 null，observer 从此建立不起来。
+  }, [root]);
 
   useEffect(() => {
     if (!root || !selectedHash) {
@@ -477,7 +589,7 @@ function GitLogPane({
     }
     let stale = false;
     const left = detail.parents[0] ?? EMPTY_TREE_HASH;
-    void gitDiffText(root, left, detail.hash, git.absoluteOf(activeFile.path))
+    void gitDiffText(root, left, detail.hash, git.absoluteOf(activeFile.path), activeFile.oldPath)
       .then((diff) => {
         if (!stale) setPreview(diff);
       })
@@ -1624,11 +1736,11 @@ function GitLogPane({
           ) : null}
         </div>
 
-        <div className="log-commits">
+        <div className="log-commits" ref={logListRef}>
           {commits.length === 0 && !logLoading ? (
             <p className="panel-note">{t("log.empty")}</p>
           ) : null}
-          {commits.map((commit) => (
+          {commits.map((commit, index) => (
             <button
               key={commit.hash}
               type="button"
@@ -1637,7 +1749,7 @@ function GitLogPane({
               onContextMenu={(event) => commitMenu(event, commit)}
               title={commit.subject}
             >
-              <span className="log-dot" aria-hidden="true" />
+              <GraphCell row={graphRows[index]} />
               <span className="log-subject">{commit.subject}</span>
               {commit.refs ? <span className="log-refs-badge">{commit.refs}</span> : null}
               <span className="log-author">{commit.author}</span>
@@ -1646,6 +1758,8 @@ function GitLogPane({
               </span>
             </button>
           ))}
+          {/* 无限滚动的哨兵：进视口（含 120px 提前量）就续一页。 */}
+          <div ref={sentinelRef} aria-hidden="true" />
         </div>
       </section>
 
@@ -1754,16 +1868,50 @@ function GitLogPane({
 
         {detail ? (
           <>
-            <button
-              type="button"
-              className="log-info-head"
-              onClick={() => setInfoClosed((state) => !state)}
-              aria-expanded={!infoClosed}
-            >
-              {infoClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-              <span>{t("log.details")}</span>
-            </button>
             {infoClosed ? null : (
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                className="panel-splitter"
+                onPointerDown={(event) => {
+                  const pane = event.currentTarget.nextElementSibling;
+                  const column = event.currentTarget.parentElement;
+                  if (!pane || !column) return;
+                  infoDrag.current = {
+                    startY: event.clientY,
+                    startHeight: pane.clientHeight,
+                    // 文件树至少留 96px 能看到几行文件，信息区自身不少于 64px。
+                    max: Math.max(120, column.clientHeight - 96),
+                  };
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  const drag = infoDrag.current;
+                  if (!drag) return;
+                  // 往上拖信息区变高：位移取反加到起始高度上。
+                  setInfoHeight(
+                    Math.min(drag.max, Math.max(64, drag.startHeight + (drag.startY - event.clientY)))
+                  );
+                }}
+                onPointerUp={() => {
+                  infoDrag.current = null;
+                }}
+              />
+            )}
+            <div
+              className="log-info"
+              style={infoHeight !== null ? { flex: "none", height: infoHeight, maxHeight: "none" } : undefined}
+            >
+              <button
+                type="button"
+                className="log-info-head"
+                onClick={() => setInfoClosed((state) => !state)}
+                aria-expanded={!infoClosed}
+              >
+                {infoClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                <span>{t("log.details")}</span>
+              </button>
+              {infoClosed ? null : (
               <>
                 <div className="log-message">
                   <p className="log-message-subject" title={detail.refs}>
@@ -1803,6 +1951,7 @@ function GitLogPane({
                 </dl>
               </>
             )}
+            </div>
           </>
         ) : null}
 

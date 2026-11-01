@@ -19,3 +19,16 @@ describe("resolveIconPath docker 文件名", () => {
     expect(resolveIconPath("docker", true)).not.toBe(docker);
   });
 });
+
+describe("resolveIconPath 忽略规则文件", () => {
+  it("*ignore 文件统一走 ignored 图标，盖过 material 的工具 logo", () => {
+    expect(resolveIconPath(".dockerignore", false)).toBe("expui/fileTypes/ignored.svg");
+    expect(resolveIconPath(".npmignore", false)).toBe("expui/fileTypes/ignored.svg");
+    expect(resolveIconPath(".eslintignore", false)).toBe("expui/fileTypes/ignored.svg");
+    expect(resolveIconPath(".rgignore", false)).toBe("expui/fileTypes/ignored.svg");
+  });
+
+  it(".gitignore 有专属 gitignore 图标，不吃 ignored 兜底", () => {
+    expect(resolveIconPath(".gitignore", false)).not.toBe("expui/fileTypes/ignored.svg");
+  });
+});

@@ -6,8 +6,10 @@
 //! 原始条目由 `codex debug models` 现场取回并缓存（实测 Codex 0.164.0：11 条、658 KB，其中
 //! `model_messages` 428 KB、`base_instructions` 207 KB，投影掉这两个键给界面只剩约 20 KB；
 //! 系统提示词按需在展开覆盖面板时单独取，见 `ai_cli_codex_catalog_text`）。
-//! 注意这条取回通道不反映 `model_catalog_json`：`codex debug models` 和 `model/list` 都只回内置表
-//! （实测把目录裁到只剩一个模型，两者仍回 11 条），真正会解析它的是 `thread/start` 的 `config` 覆盖。
+//! 注意这条取回通道的回显行为随版本变过：0.164 实测 `codex debug models` 只回内置表，
+//! 0.166 起会把 `model_catalog_json` 指向的清单原样回显。所以 `load_base` 会把返回里
+//! 与当前意图自定义 slug 相同的条目剔掉（`strip_self_customs`），保证 base 始终是官方表；
+//! 真正会解析清单的是 `thread/start` 的 `config` 覆盖。
 //!
 //! 字段合法取值不写死：每次目录刷新都现场问一次 Codex（见 `probe_domains`）——把某个字段写成
 //! 非法值再让它解析目录，它自己的 `unknown variant …, expected one of …` 就是取值域，写 `null`
@@ -272,6 +274,7 @@ fn preview(output: &str) -> String {
 fn load_base(app: &AppHandle) -> (Option<Value>, Option<String>) {
     match run_codex_models() {
         Ok(models) => {
+            let models = strip_self_customs(app, models);
             let path = base_path(app);
             if let (Ok(path), Ok(text)) = (path, serde_json::to_string(&models)) {
                 let _ = write_atomic(&path, &text);
@@ -280,13 +283,32 @@ fn load_base(app: &AppHandle) -> (Option<Value>, Option<String>) {
         }
         Err(error) => {
             let cached = base_path(app).ok().and_then(|path| fs::read_to_string(path).ok())
-                .and_then(|text| serde_json::from_str(&text).ok());
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .map(|models| strip_self_customs(app, models));
             match cached {
                 Some(models) => (Some(models), Some(error)),
                 None => (None, Some(error)),
             }
         }
     }
+}
+
+/// `codex debug models` 的回显行为随版本变过：0.164 只回内置表，0.166 起会把
+/// `model_catalog_json` 指向的清单原样回显。config 指向 Forge 生成的文件时，输出里混着
+/// 我们上次写的自定义条目——把它们当官方模型，base 缓存会越滚越脏。覆盖生效期间，
+/// 从返回里剔掉当前意图的自定义 slug，保证 base 始终是官方表。
+fn strip_self_customs(app: &AppHandle, models: Value) -> Value {
+    if !config_has_key() { return models; }
+    let slugs: Vec<String> = read_intent(app).customs.iter()
+        .map(|custom| custom.slug.trim().to_string())
+        .filter(|slug| !slug.is_empty())
+        .collect();
+    if slugs.is_empty() { return models; }
+    let mut out = models;
+    if let Some(list) = out.get_mut("models").and_then(Value::as_array_mut) {
+        list.retain(|model| model_slug(model).map_or(true, |slug| !slugs.iter().any(|item| item == slug)));
+    }
+    out
 }
 
 fn model_slug(model: &Value) -> Option<&str> { model.get("slug").and_then(Value::as_str) }
@@ -605,9 +627,9 @@ fn generate(base: &Value, intent: &CatalogIntent, domains: &BTreeMap<String, Fie
             apply_handwritten_context(&mut entry, window)?;
         }
         force_custom_visible(&mut entry);
-        if officials.iter().chain(customs.iter()).any(|model| model_slug(model) == Some(slug)) {
-            return Err(format!("自定义模型 {slug} 与现有模型重名"));
-        }
+        // 重名不拦人：自定义覆盖同名条目（官方或更早的自定义），后写的赢。读、存、应用共用这份语义。
+        officials.retain(|model| model_slug(model) != Some(slug));
+        customs.retain(|model| model_slug(model) != Some(slug));
         customs.push(Value::Object(entry));
     }
 
@@ -1156,7 +1178,13 @@ mod tests {
             customs: vec![CustomModel { slug: "gpt-5.5".into(), base: "gpt-5.5".into(), ..CustomModel::default() }],
             ..CatalogIntent::default()
         };
-        assert!(generate(&base(), &intent, &domains()).is_err(), "不能和现有模型重名");
+        // 与现有模型重名不拦人：自定义覆盖同名条目，整份清单里只剩这一份，不会出双份。
+        let models = generate(&base(), &intent, &domains()).unwrap();
+        assert_eq!(
+            models.iter().filter(|model| model_slug(model) == Some("gpt-5.5")).count(),
+            1,
+            "重名条目必须去重"
+        );
         intent = CatalogIntent { excluded: vec!["gpt-5.5".into(), "gpt-6-astra".into()], ..CatalogIntent::default() };
         assert!(generate(&base(), &intent, &domains()).is_err(), "全排除会让 Codex 没有可用模型");
     }

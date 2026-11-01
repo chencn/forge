@@ -1,348 +1,297 @@
 /**
- * 编辑器无关的那半份设施：扩展名表、字体串、语言显示名、文档 state 释放与选区读取。
+ * 编辑器无关的那半份设施：语言目录、语言显示名、字体串、文档 state 释放与选区读取。
  *
  * 这个模块**不许 import 编辑器引擎**：首屏只开图片、只读 Git 面板的用户不应该为了
  * 一个扩展名映射把整份 CodeMirror（连语法包）拖进启动路径。
  * 真正需要编辑器实例的两件事（释放文档 state、读选区）由引擎（`cmEditor.ts`）
  * 在自身加载时通过 `attachEditorBridge` 挂上来；没挂上时它们要么是无意义操作
  * （盘上没有 state 可读），要么退回本模块的静态表。
+ *
+ * 语言目录是对标 IDE 语言表（`languages/*.toml`，71 门）的 1:1 抄本：id、显示名、
+ * 扩展名与文件名逐字对齐，语言服务种子（`lsp_config.rs`）按同一套 id 路由。
+ * 目录之外的少数语言（batch、nsis、solidity 这类编辑器还有语法但目录里没有的）
+ * 放在 `EDITOR_EXTRA`，只参与识别与显示，不进语言服务目录。
  */
-const LANGUAGE_BY_EXTENSION: Record<string, string> = {
-  ts: "typescript",
-  tsx: "typescript",
-  mts: "typescript",
-  cts: "typescript",
-  js: "javascript",
-  jsx: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  json: "json",
-  jsonc: "json",
-  css: "css",
-  scss: "scss",
-  less: "less",
-  html: "html",
-  htm: "html",
-  vue: "html",
-  svelte: "html",
-  xml: "xml",
-  rs: "rust",
-  go: "go",
-  py: "python",
-  java: "java",
-  kt: "kotlin",
-  kts: "kotlin",
-  c: "c",
-  h: "c",
-  cpp: "cpp",
-  cc: "cpp",
-  hpp: "cpp",
-  cs: "csharp",
-  rb: "ruby",
-  php: "php",
-  swift: "swift",
-  sh: "shell",
-  bash: "shell",
-  zsh: "shell",
-  bat: "bat",
-  cmd: "bat",
-  ps1: "powershell",
-  sql: "sql",
-  md: "markdown",
-  markdown: "markdown",
-  yml: "yaml",
-  yaml: "yaml",
-  toml: "ini",
-  ini: "ini",
-  conf: "ini",
-  cfg: "ini",
-  properties: "properties",
-  gradle: "gradle",
-  cmake: "cmake",
-  http: "http",
-  rest: "http",
-  dockerfile: "dockerfile",
-  graphql: "graphql",
-  lua: "lua",
-  r: "r",
-  dart: "dart",
-  nsi: "nsis",
-  nsh: "nsis",
 
-  // 云原生与基础设施（Protobuf / Terraform HCL / Bicep）
-  proto: "proto",
-  tf: "hcl",
-  tfvars: "hcl",
-  hcl: "hcl",
-  bicep: "bicep",
+/** 语言目录里的一项；`filenames` 是扩展名覆盖不到的特例，支持 `*` 通配。 */
+interface CatalogLanguage {
+  id: string;
+  name: string;
+  extensions: readonly string[];
+  filenames?: readonly string[];
+}
 
-  // 现代前端、文档与模板（MDX / Pug / Handlebars / FreeMarker / Liquid / Twig）
-  mdx: "mdx",
-  pug: "pug",
-  jade: "pug",
-  handlebars: "handlebars",
-  hbs: "handlebars",
-  ftl: "freemarker2",
-  ftlh: "freemarker2",
-  ftlx: "freemarker2",
-  liquid: "liquid",
-  twig: "twig",
+/** 目录内 71 门语言，条目顺序与对标 IDE 的 languages 目录一致。 */
+const CATALOG: readonly CatalogLanguage[] = [
+  { id: "c", name: "C", extensions: ["c", "h"] },
+  { id: "clojure", name: "Clojure", extensions: ["clj", "cljs", "cljc", "cljd", "edn", "bb"], filenames: ["deps.edn", "project.clj", "bb.edn"] },
+  { id: "cmake", name: "CMake", extensions: ["cmake"], filenames: ["CMakeLists.txt", "CMakeCache.txt"] },
+  { id: "cpp", name: "C++", extensions: ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "tpp", "inl", "ixx", "cppm"] },
+  { id: "csharp", name: "C#", extensions: ["cs", "csx"] },
+  { id: "css", name: "CSS", extensions: ["css", "pcss", "postcss"] },
+  { id: "dart", name: "Dart", extensions: ["dart"] },
+  { id: "diff", name: "Diff", extensions: ["diff", "patch", "rej"] },
+  { id: "dockerfile", name: "Dockerfile", extensions: ["dockerfile", "containerfile"], filenames: ["Dockerfile", "Containerfile", "Dockerfile.*", "Containerfile.*", "*.Dockerfile"] },
+  { id: "dotenv", name: ".env", extensions: ["env"], filenames: [".env", ".env.*", ".flaskenv"] },
+  { id: "elixir", name: "Elixir", extensions: ["ex", "exs"], filenames: ["mix.lock"] },
+  { id: "erlang", name: "Erlang", extensions: ["erl", "hrl", "escript", "app.src"], filenames: ["rebar.config", "rebar.lock", "sys.config"] },
+  { id: "fsharp", name: "F#", extensions: ["fs", "fsi", "fsx"] },
+  { id: "gdscript", name: "GDScript", extensions: ["gd"] },
+  { id: "gdshader", name: "Godot Shader", extensions: ["gdshader", "gdshaderinc"] },
+  { id: "gitattributes", name: "Git Attributes", extensions: [], filenames: [".gitattributes"] },
+  { id: "go", name: "Go", extensions: ["go"] },
+  { id: "godot-resource", name: "Godot Resource", extensions: ["tscn", "tres", "godot", "import"], filenames: ["export_presets.cfg", "override.cfg", "extension_list.cfg"] },
+  { id: "gomod", name: "Go Module", extensions: [], filenames: ["go.mod"] },
+  { id: "gowork", name: "Go Workspace", extensions: [], filenames: ["go.work"] },
+  { id: "graphql", name: "GraphQL", extensions: ["graphql", "graphqls", "gql"] },
+  { id: "groovy", name: "Groovy", extensions: ["groovy", "gradle", "gvy", "gy", "gsh"], filenames: ["Jenkinsfile"] },
+  { id: "haskell", name: "Haskell", extensions: ["hs", "hs-boot", "hsig"] },
+  { id: "hcl", name: "HCL", extensions: ["hcl", "nomad", "pkr.hcl"] },
+  { id: "html", name: "HTML", extensions: ["html", "htm", "xhtml", "shtml", "html.tmpl"] },
+  { id: "http", name: "HTTP Request", extensions: ["http", "rest"] },
+  {
+    id: "ignore",
+    name: "Ignore File",
+    extensions: ["gitignore", "dockerignore"],
+    filenames: [
+      ".gitignore", ".gitignore_global", ".dockerignore", ".npmignore", ".prettierignore",
+      ".eslintignore", ".stylelintignore", ".hgignore", ".ignore", ".rgignore", ".fdignore",
+      ".helmignore", ".vscodeignore", ".gcloudignore", ".slugignore", ".cfignore", ".containerignore",
+    ],
+  },
+  {
+    id: "ini",
+    name: "INI",
+    extensions: ["ini", "cfg", "conf", "cnf", "inf", "reg", "url", "desktop", "service", "socket", "timer"],
+    filenames: [
+      ".editorconfig", ".gitconfig", ".gitmodules", ".npmrc", ".yarnrc", ".pypirc", ".flake8",
+      ".pylintrc", "pylintrc", "setup.cfg", "tox.ini", "pytest.ini", "mypy.ini", ".coveragerc",
+      "php.ini", ".hgrc", "hgrc", "credentials",
+    ],
+  },
+  { id: "java", name: "Java", extensions: ["java"] },
+  { id: "javascript", name: "JavaScript", extensions: ["js", "mjs", "cjs"] },
+  { id: "javascriptreact", name: "JavaScript JSX", extensions: ["jsx"] },
+  {
+    id: "json",
+    name: "JSON",
+    extensions: ["json", "geojson", "topojson", "webmanifest", "har", "avsc", "jsonl", "ndjson", "json.map"],
+    filenames: [".prettierrc", ".watchmanconfig", "composer.lock", ".arcconfig"],
+  },
+  {
+    id: "jsonc",
+    name: "JSON with Comments",
+    extensions: ["jsonc", "code-workspace", "code-snippets"],
+    filenames: [
+      "tsconfig.json", "jsconfig.json", "tsconfig.*.json", "jsconfig.*.json", ".eslintrc",
+      ".eslintrc.json", ".jshintrc", ".babelrc", ".swcrc", "devcontainer.json", ".devcontainer.json",
+      "launch.json", "tasks.json", "settings.json", "extensions.json", "keybindings.json",
+      "tslint.json", "api-extractor.json", "typedoc.json", "deno.json", "biome.json", "turbo.json",
+      "language-configuration.json",
+    ],
+  },
+  { id: "julia", name: "Julia", extensions: ["jl"] },
+  { id: "kotlin", name: "Kotlin", extensions: ["kt", "kts"] },
+  { id: "latex", name: "LaTeX", extensions: ["tex", "ltx", "sty", "cls", "dtx", "ins", "bbx", "cbx"] },
+  { id: "less", name: "Less", extensions: ["less"] },
+  { id: "log", name: "Log", extensions: ["log"] },
+  { id: "lua", name: "Lua", extensions: ["lua", "luau", "rockspec"], filenames: [".luacheckrc"] },
+  {
+    id: "makefile",
+    name: "Makefile",
+    extensions: ["mk", "mak", "make"],
+    filenames: ["Makefile", "makefile", "GNUmakefile", "BSDmakefile", "Makefile.am", "Makefile.in", "Kbuild"],
+  },
+  {
+    id: "markdown",
+    name: "Markdown",
+    extensions: ["md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "mdx", "ronn", "workbook"],
+  },
+  { id: "nix", name: "Nix", extensions: ["nix"] },
+  { id: "objective-c", name: "Objective-C", extensions: ["m"] },
+  { id: "objective-cpp", name: "Objective-C++", extensions: ["mm"] },
+  { id: "ocaml", name: "OCaml", extensions: ["ml", "mll", "mly"] },
+  { id: "ocaml-interface", name: "OCaml Interface", extensions: ["mli"] },
+  { id: "perl", name: "Perl", extensions: ["pl", "pm", "pod", "psgi", "cgi"], filenames: ["cpanfile", "Makefile.PL", "Build.PL"] },
+  { id: "php", name: "PHP", extensions: ["php", "phtml", "php3", "php4", "php5", "phps", "phpt"] },
+  {
+    id: "plaintext",
+    name: "Plain Text",
+    extensions: ["txt", "text"],
+    filenames: ["LICENSE", "LICENCE", "COPYING", "AUTHORS", "NOTICE", "CODEOWNERS", "README", "CHANGELOG", "CONTRIBUTORS", "requirements.txt"],
+  },
+  { id: "powershell", name: "PowerShell", extensions: ["ps1", "psm1", "psd1", "pssc", "psrc"] },
+  { id: "properties", name: "Properties", extensions: ["properties", "prefs"], filenames: ["gradle.properties", "local.properties"] },
+  { id: "proto", name: "Protocol Buffers", extensions: ["proto"] },
+  { id: "python", name: "Python", extensions: ["py", "pyi", "pyw"], filenames: ["SConstruct", "SConscript"] },
+  { id: "r", name: "R", extensions: ["r", "rprofile"], filenames: [".Rprofile"] },
+  {
+    id: "ruby",
+    name: "Ruby",
+    extensions: ["rb", "rake", "gemspec", "ru", "rbi", "jbuilder", "podspec"],
+    filenames: [
+      "Gemfile", "Rakefile", "Podfile", "Vagrantfile", "Brewfile", "Guardfile", "Fastfile",
+      "Appfile", "Capfile", "Dangerfile", "Steepfile", ".irbrc", ".pryrc",
+    ],
+  },
+  { id: "rust", name: "Rust", extensions: ["rs"] },
+  { id: "sass", name: "Sass", extensions: ["sass"] },
+  { id: "scala", name: "Scala", extensions: ["scala", "sc", "sbt", "mill"] },
+  { id: "scss", name: "SCSS", extensions: ["scss"] },
+  {
+    id: "shellscript",
+    name: "Shell Script",
+    extensions: ["sh", "bash", "zsh", "ksh", "ash", "dash", "bats", "command"],
+    filenames: [
+      ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".bash_aliases", ".profile",
+      ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".kshrc", "PKGBUILD", "APKBUILD",
+      ".envrc", "gradlew", "mvnw", "justfile", "procfile",
+    ],
+  },
+  { id: "sql", name: "SQL", extensions: ["sql", "ddl", "dml", "psql", "pgsql", "mysql"] },
+  { id: "svelte", name: "Svelte", extensions: ["svelte"] },
+  { id: "swift", name: "Swift", extensions: ["swift", "swiftinterface"] },
+  { id: "terraform-vars", name: "Terraform Variables", extensions: ["tfvars"] },
+  { id: "terraform", name: "Terraform", extensions: ["tf", "tofu", "tftest.hcl"], filenames: [".terraformrc", "terraform.rc"] },
+  { id: "toml", name: "TOML", extensions: ["toml"], filenames: ["Cargo.lock", "Pipfile", "poetry.lock", "uv.lock", "pdm.lock", "Gopkg.lock"] },
+  { id: "typescript", name: "TypeScript", extensions: ["ts", "mts", "cts"] },
+  { id: "typescriptreact", name: "TypeScript JSX", extensions: ["tsx"] },
+  { id: "vue", name: "Vue", extensions: ["vue"] },
+  {
+    id: "xml",
+    name: "XML",
+    extensions: ["xml", "xsd", "xsl", "xslt", "svg", "plist", "csproj", "fsproj", "vbproj", "props", "targets", "nuspec", "xaml", "axaml", "resx", "wsdl", "fxml", "iml", "jnlp", "rss", "atom", "xliff", "xlf", "storyboard", "xib", "tld", "pom"],
+    filenames: ["NuGet.Config", "Directory.Build.targets", "web.config", "app.config"],
+  },
+  {
+    id: "yaml",
+    name: "YAML",
+    extensions: ["yaml", "yml"],
+    filenames: [".clang-format", ".clang-tidy", ".clangd", ".gemrc", "pnpm-lock.yaml", "CITATION.cff"],
+  },
+  { id: "zig", name: "Zig", extensions: ["zig", "zon"] },
+];
 
-  // 常用语言体系（Scala / Elixir / Clojure / Julia / Perl / Solidity / CoffeeScript / F# / Objective-C）
-  scala: "scala",
-  sc: "scala",
-  sbt: "scala",
-  // 老表里只有 .gradle（Groovy 那门），.groovy 本体反倒漏了，这次补上。
-  groovy: "groovy",
-  ex: "elixir",
-  exs: "elixir",
-  clj: "clojure",
-  cljs: "clojure",
-  cljc: "clojure",
-  edn: "clojure",
-  jl: "julia",
-  pl: "perl",
-  pm: "perl",
-  sol: "sol",
-  coffee: "coffeescript",
-  fs: "fsharp",
-  fsi: "fsharp",
-  fsx: "fsharp",
-  fsscript: "fsharp",
-  m: "objective-c",
+/**
+ * 目录之外的编辑器专用语言：对标 IDE 的目录里没有这几门，但编辑器这边
+ * 语法包还在、老工程还会打开，识别与显示照旧，只是不进语言服务目录。
+ */
+const EDITOR_EXTRA: readonly CatalogLanguage[] = [
+  { id: "batch", name: "Batch", extensions: ["bat", "cmd"] },
+  { id: "nsis", name: "NSIS", extensions: ["nsi", "nsh"] },
+  { id: "bicep", name: "Bicep", extensions: ["bicep"] },
+  { id: "pug", name: "Pug", extensions: ["pug", "jade"] },
+  { id: "handlebars", name: "Handlebars", extensions: ["handlebars", "hbs"] },
+  { id: "freemarker2", name: "FreeMarker", extensions: ["ftl", "ftlh", "ftlx"] },
+  { id: "liquid", name: "Liquid", extensions: ["liquid"] },
+  { id: "twig", name: "Twig", extensions: ["twig"] },
+  { id: "coffeescript", name: "CoffeeScript", extensions: ["coffee"] },
+  { id: "sol", name: "Solidity", extensions: ["sol"] },
+  { id: "wgsl", name: "WGSL", extensions: ["wgsl"] },
+  { id: "typespec", name: "TypeSpec", extensions: ["tsp"] },
+  { id: "cypher", name: "Cypher", extensions: ["cyp", "cypher"] },
+  { id: "sparql", name: "SPARQL", extensions: ["rq"] },
+  { id: "msdax", name: "DAX", extensions: ["dax", "msdax"] },
+  { id: "powerquery", name: "PowerQuery", extensions: ["pq", "pqm"] },
+  { id: "scheme", name: "Scheme", extensions: ["scm", "ss", "sch", "rkt"] },
+  { id: "pascal", name: "Pascal", extensions: ["pas", "pp", "p"] },
+  { id: "tcl", name: "Tcl", extensions: ["tcl"] },
+  { id: "systemverilog", name: "SystemVerilog", extensions: ["sv", "svh"] },
+  { id: "st", name: "Structured Text", extensions: ["st", "iecst"] },
+  { id: "razor", name: "Razor", extensions: ["cshtml"] },
+  { id: "restructuredtext", name: "reStructuredText", extensions: ["rst"] },
+  { id: "fsharp", name: "F#", extensions: ["fsscript"] },
+  { id: "xml", name: "XML", extensions: ["vcxproj", "wxs", "wxi", "wxl", "manifest", "svgz"] },
+];
 
-  // .NET 项目工程与界面（XML 家族）与 Razor 模板
-  csproj: "xml",
-  fsproj: "xml",
-  vbproj: "xml",
-  vcxproj: "xml",
-  props: "xml",
-  targets: "xml",
-  xaml: "xml",
-  axaml: "xml",
-  svg: "xml",
-  svgz: "xml",
-  wxs: "xml",
-  wxi: "xml",
-  wxl: "xml",
-  manifest: "xml",
-  xsd: "xml",
-  xsl: "xml",
-  xslt: "xml",
-  cshtml: "razor",
+/** 扩展名 → 语言 id：目录表优先，编辑器专用补充表兜底。 */
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {};
+for (const language of [...CATALOG, ...EDITOR_EXTRA]) {
+  for (const ext of language.extensions) {
+    if (!(ext in LANGUAGE_BY_EXTENSION)) LANGUAGE_BY_EXTENSION[ext] = language.id;
+  }
+}
 
-  // Ruby 生态
-  gemspec: "ruby",
-  rbx: "ruby",
-  rjs: "ruby",
+/** 文件名精确表与通配模式：文件名命中优先于扩展名。 */
+const LANGUAGE_BY_NAME: Record<string, string> = {};
+const FILENAME_PATTERNS: Array<{ re: RegExp; id: string }> = [];
+/** 文件名通配转正则：`*` 匹配任意串，其余字符按字面量转义。 */
+function filenameToRegExp(text: string): RegExp {
+  let source = "";
+  for (const char of text) {
+    if (char === "*") source += ".*";
+    else if (".+^${}()|[]\\".includes(char)) source += `\\${char}`;
+    else source += char;
+  }
+  return new RegExp(`^${source}$`, "i");
+}
+for (const language of [...CATALOG, ...EDITOR_EXTRA]) {
+  for (const filename of language.filenames ?? []) {
+    if (!filename.includes("*")) {
+      if (!(filename.toLowerCase() in LANGUAGE_BY_NAME)) {
+        LANGUAGE_BY_NAME[filename.toLowerCase()] = language.id;
+      }
+      continue;
+    }
+    FILENAME_PATTERNS.push({ re: filenameToRegExp(filename.toLowerCase()), id: language.id });
+  }
+}
 
-  // 科学计算、文档与着色器（reStructuredText / WGSL / TypeSpec）
-  rst: "restructuredtext",
-  wgsl: "wgsl",
-  tsp: "typespec",
-
-  // 数据库与数据分析（Cypher / SPARQL / DAX / PowerQuery）
-  cyp: "cypher",
-  cypher: "cypher",
-  rq: "sparql",
-  dax: "msdax",
-  msdax: "msdax",
-  pq: "powerquery",
-  pqm: "powerquery",
-
-  // Lisp 与工业/硬件（Scheme / Pascal / Tcl / SystemVerilog / Structured Text）
-  scm: "scheme",
-  ss: "scheme",
-  sch: "scheme",
-  rkt: "scheme",
-  pas: "pascal",
-  pp: "pascal",
-  p: "pascal",
-  tcl: "tcl",
-  sv: "systemverilog",
-  svh: "systemverilog",
-  st: "st",
-  iecst: "st",
-};
-
-/** 文件名到语言的少数特例，扩展名表覆盖不到（包含无扩展名的构建脚本与配置文件）。 */
-const LANGUAGE_BY_NAME: Record<string, string> = {
-  dockerfile: "dockerfile",
-  makefile: "makefile",
-  gradlew: "shell",
-  mvnw: "shell",
-  gemfile: "ruby",
-  rakefile: "ruby",
-  fastfile: "ruby",
-  podfile: "ruby",
-  vagrantfile: "ruby",
-  "build.sbt": "scala",
-  // 扩展名是 .lock，跟 Cargo.toml 一样是 TOML，走同一套高亮。
-  "cargo.lock": "ini",
-  justfile: "shell",
-  procfile: "shell",
-  ".gitignore": "ini",
-  ".gitmodules": "ini",
-  ".gitconfig": "ini",
-  ".gitattributes": "ini",
-  ".editorconfig": "ini",
-  ".npmrc": "ini",
-  ".bashrc": "shell",
-  ".bash_profile": "shell",
-  ".bash_aliases": "shell",
-  ".zshrc": "shell",
-  ".profile": "shell",
-};
+/**
+ * 首行识别表：扩展名认不出的脚本靠它。条目与对标 IDE 各语言 toml 的
+ * `first-line` 一致，顺序是从特例到泛化（先锚定的声明，再 shebang）。
+ */
+const FIRST_LINE: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^#\s*syntax\s*=\s*docker\/dockerfile/i, "dockerfile"],
+  [/^<\?php/i, "php"],
+  [/^%YAML/i, "yaml"],
+  [/^<\?xml\b/i, "xml"],
+  [/^(diff --git |--- |Index: )/, "diff"],
+  [/\bpython[0-9.]*\b/, "python"],
+  [/\bRscript\b/, "r"],
+  [/\bruby\b/, "ruby"],
+  [/\bperl[0-9.]*\b/, "perl"],
+  [/\bjulia\b/, "julia"],
+  [/\belixir\b/, "elixir"],
+  [/\bescript\b/, "erlang"],
+  [/\bmake\b/, "makefile"],
+  [/\bpwsh\b/, "powershell"],
+  [/\blua(jit)?[0-9.]*\b/, "lua"],
+  [/\bbash\b|\bzsh\b|\bksh\b|\bdash\b|\bash\b|\bsh\b/, "shellscript"],
+  [/\b(node|nodejs|deno|bun)\b/, "javascript"],
+  [/\bgroovy\b/, "groovy"],
+];
 
 /** 路径与内容 → 语言 id，识别不到时退回纯文本。 */
 export function languageForPath(path: string, contents?: string): string {
   const name = (path.split(/[\\/]/).pop() ?? "").toLocaleLowerCase();
-  if (LANGUAGE_BY_NAME[name]) return LANGUAGE_BY_NAME[name];
-  const named = languageByFileName(name);
-  if (named) return named;
-  const dot = name.lastIndexOf(".");
-  const ext = dot >= 0 ? name.slice(dot + 1) : "";
-  if (ext && LANGUAGE_BY_EXTENSION[ext]) return LANGUAGE_BY_EXTENSION[ext];
-
-  // 检查首行 Shebang 标记（如 #!/bin/sh, #!/usr/bin/env bash 等无扩展名脚本）
-  if (contents && contents.startsWith("#!")) {
-    const end = contents.indexOf("\n");
-    const firstLine = (end >= 0 ? contents.slice(0, end) : contents).toLowerCase();
-    if (firstLine.includes("bash") || firstLine.includes("/sh") || firstLine.includes("zsh")) {
-      return "shell";
-    }
-    if (firstLine.includes("python")) {
-      return "python";
-    }
-    if (firstLine.includes("node")) {
-      return "javascript";
-    }
-    if (firstLine.includes("ruby")) {
-      return "ruby";
-    }
-    if (firstLine.includes("perl")) {
-      return "perl";
-    }
+  const byName = LANGUAGE_BY_NAME[name] ?? FILENAME_PATTERNS.find((entry) => entry.re.test(name))?.id;
+  if (byName) return byName;
+  // 多段后缀从最长开始试（a.json.map → "json.map" 命中 JSON；pkr.hcl → "hcl"），
+  // 对齐 openidea cm/languages.ts 的最长后端口径——取最后一段会把多段扩展名退化掉。
+  let dot = name.indexOf(".");
+  while (dot >= 0) {
+    const ext = name.slice(dot + 1);
+    const language = LANGUAGE_BY_EXTENSION[ext];
+    if (language) return language;
+    dot = name.indexOf(".", dot + 1);
   }
 
+  // 首行兜底：无扩展名的脚本、以及凭文件名认不出的内容型文件。
+  if (contents) {
+    const firstLine = contents.slice(0, contents.indexOf("\n") >= 0 ? contents.indexOf("\n") : contents.length);
+    for (const [pattern, id] of FIRST_LINE) {
+      if (pattern.test(firstLine)) return id;
+    }
+  }
   return "plaintext";
 }
 
-/**
- * 扩展名对不上语言的工程文件。
- *
- * `go.mod` 的扩展名是 `mod`，`CMakeLists.txt` 的扩展名是 `txt`，
- * `Dockerfile.dev` 的扩展名是 `dev`。这些要按文件名认，不能等扩展名表。
- */
-function languageByFileName(name: string): string | null {
-  if (name === ".env" || name.startsWith(".env.")) return "ini";
-  if (name === "go.mod" || name === "go.work" || name === "go.sum" || name === "go.work.sum") {
-    return "gomod";
-  }
-  if (name === "cmakelists.txt") return "cmake";
-  if (name === "pipfile" || name === "poetry.lock" || name === "uv.lock") return "ini";
-  if (name === "pipfile.lock" || name === "composer.lock" || name === "package.resolved") {
-    return "json";
-  }
-  if (name === "pubspec.lock") return "yaml";
-  if (name === "gnumakefile" || name === "makefile.am" || name === "makefile.in") return "makefile";
-  if (
-    name === "containerfile" ||
-    name.startsWith("containerfile.") ||
-    name.startsWith("dockerfile.")
-  ) {
-    return "dockerfile";
-  }
-  if (
-    /^(?:dev-)?requirements(?:[._-][\w.-]+)?\.(?:txt|in)$/.test(name) ||
-    /^constraints(?:[._-][\w.-]+)?\.(?:txt|in)$/.test(name)
-  ) {
-    return "pip-requirements";
-  }
-  return null;
+/** 语言的兜底显示名。状态栏与设置页给人看的是名字不是 id。 */
+const LANGUAGE_LABELS: Record<string, string> = {};
+for (const language of [...CATALOG, ...EDITOR_EXTRA]) {
+  if (!(language.id in LANGUAGE_LABELS)) LANGUAGE_LABELS[language.id] = language.name;
 }
-
-/**
- * 语言的兜底显示名。
- *
- * 状态栏与设置页给人看的是名字不是 id；这一份不依赖任何引擎，编辑器没加载也有答案。
- */
-const LANGUAGE_LABELS: Record<string, string> = {
-  plaintext: "Plain Text",
-  typescript: "TypeScript",
-  javascript: "JavaScript",
-  json: "JSON",
-  css: "CSS",
-  scss: "SCSS",
-  less: "Less",
-  html: "HTML",
-  xml: "XML",
-  rust: "Rust",
-  go: "Go",
-  python: "Python",
-  java: "Java",
-  kotlin: "Kotlin",
-  c: "C",
-  cpp: "C++",
-  csharp: "C#",
-  ruby: "Ruby",
-  php: "PHP",
-  swift: "Swift",
-  shell: "Shell",
-  bat: "Batch",
-  powershell: "PowerShell",
-  sql: "SQL",
-  markdown: "Markdown",
-  yaml: "YAML",
-  ini: "Ini",
-  properties: "Properties",
-  gomod: "Go Mod",
-  gradle: "Gradle",
-  cmake: "CMake",
-  "pip-requirements": "Requirements",
-  http: "HTTP",
-  dockerfile: "Dockerfile",
-  graphql: "GraphQL",
-  lua: "Lua",
-  r: "R",
-  dart: "Dart",
-  nsis: "NSIS",
-  makefile: "Makefile",
-  diff: "Diff",
-
-  // 补充语言展示名
-  proto: "Protobuf",
-  hcl: "HCL",
-  bicep: "Bicep",
-  mdx: "MDX",
-  pug: "Pug",
-  handlebars: "Handlebars",
-  freemarker2: "FreeMarker",
-  liquid: "Liquid",
-  twig: "Twig",
-  scala: "Scala",
-  elixir: "Elixir",
-  clojure: "Clojure",
-  julia: "Julia",
-  perl: "Perl",
-  sol: "Solidity",
-  coffeescript: "CoffeeScript",
-  fsharp: "F#",
-  "objective-c": "Objective-C",
-  razor: "Razor",
-  restructuredtext: "reStructuredText",
-  wgsl: "WGSL",
-  typespec: "TypeSpec",
-  cypher: "Cypher",
-  sparql: "SPARQL",
-  scheme: "Scheme",
-  pascal: "Pascal",
-  tcl: "Tcl",
-  msdax: "DAX",
-  powerquery: "PowerQuery",
-  systemverilog: "SystemVerilog",
-  st: "Structured Text",
-};
 
 /** 状态栏要给人看的语言名，不是引擎的内部 id。 */
 export function languageLabel(id: string): string {
@@ -360,35 +309,15 @@ export function languageNames(ids: string[]): string {
 }
 
 /**
- * 路径 → 语言 id，认不出时给 null 而不是 plaintext。
+ * 语言目录全量：id 与显示名，按显示名排序。
  *
- * 筛选要的就是这个区别：「按文件类型筛」不能把扩展名表里没有的文件一律当成纯文本
- * 一起剪掉——[`languageForPath`] 那条是给编辑器选语法用的，认不出也要给个答案。
+ * 设置页「新增语言服务」的语言勾选表、状态栏的过滤建议都从这里取，
+ * 只含目录内 71 门（编辑器专用补充表不参与语言服务路由）。
  */
-export function languageIdOfPath(path: string): string | null {
-  const name = (path.split(/[\\/]/).pop() ?? "").toLocaleLowerCase();
-  if (LANGUAGE_BY_NAME[name]) return LANGUAGE_BY_NAME[name];
-  const named = languageByFileName(name);
-  if (named) return named;
-  const dot = name.lastIndexOf(".");
-  const ext = dot >= 0 ? name.slice(dot + 1) : "";
-  return ext && LANGUAGE_BY_EXTENSION[ext] ? LANGUAGE_BY_EXTENSION[ext] : null;
-}
-
-/**
- * 语言 id 与显示名，按显示名排好序——「按文件类型筛」那张勾选表的数据源。
- *
- * 只 surface 有扩展名可对上的那些：`go.mod` 这类按文件名认的没有勾选价值，
- * 列出来只会多出一行「Go Mod」让人怀疑它管的是哪些文件。
- */
-export function languageChoices(): Array<{ id: string; label: string }> {
-  const ids = new Set<string>();
-  for (const id of Object.values(LANGUAGE_BY_EXTENSION)) ids.add(id);
-  for (const id of Object.values(LANGUAGE_BY_NAME)) ids.add(id);
-  ids.delete("plaintext");
-  return [...ids]
-    .map((id) => ({ id, label: languageLabel(id) }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+export function languageCatalog(): Array<{ id: string; label: string }> {
+  return CATALOG.map((language) => ({ id: language.id, label: language.name })).sort((a, b) =>
+    a.label.localeCompare(b.label)
+  );
 }
 
 function cssToken(name: string): string {
@@ -453,7 +382,7 @@ export function setOpenTargetHandler(handler: OpenTargetHandler | null): void {
   openTarget = handler;
 }
 
-/** 由编辑器模块的 opener 调用；没接上处理者时返回 false，交给调用方自己收尾。 */
+/** 由编辑器的 opener 调用；没接上处理者时返回 false，交给调用方自己收尾。 */
 export function openTargetInEditor(path: string, line: number, column: number): boolean {
   return openTarget ? openTarget(path, line, column) : false;
 }

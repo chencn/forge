@@ -5,6 +5,7 @@ import type { TranslationKey } from "../i18n/lang/zh";
 export type DialogKind =
   | "newFolder"
   | "newFile"
+  | "copy"
   | "newBranch"
   | "renameBranch"
   | "newTag"
@@ -12,6 +13,7 @@ export type DialogKind =
   | "worktree"
   | "patch"
   | "rename"
+  | "move"
   | "delete"
   | "rollback"
   | "deleteRef"
@@ -61,6 +63,7 @@ interface PromptDialogProps {
 const TITLE_KEY: Record<DialogKind, TranslationKey> = {
   newFolder: "dialog.newFolder",
   newFile: "dialog.newFile",
+  copy: "project.view.copy",
   newBranch: "dialog.newBranch",
   renameBranch: "git.dialogRenameBranch",
   newTag: "git.dialogNewTag",
@@ -68,6 +71,7 @@ const TITLE_KEY: Record<DialogKind, TranslationKey> = {
   worktree: "git.dialogWorktree",
   patch: "git.dialogPatch",
   rename: "dialog.rename",
+  move: "dialog.move",
   delete: "dialog.delete",
   rollback: "git.rollback",
   deleteRef: "git.dialogDeleteRef",
@@ -84,6 +88,7 @@ const TITLE_KEY: Record<DialogKind, TranslationKey> = {
 const INPUT_KINDS: DialogKind[] = [
   "newFolder",
   "newFile",
+  "copy",
   "newBranch",
   "renameBranch",
   "newTag",
@@ -91,12 +96,14 @@ const INPUT_KINDS: DialogKind[] = [
   "worktree",
   "patch",
   "rename",
+  "move",
 ];
 
 /** 这两类填的是一个落盘位置，不是名字，字段标题和提示语都换掉。 */
 const PATH_KINDS: Partial<Record<DialogKind, TranslationKey>> = {
   worktree: "git.worktreePathPlaceholder",
   patch: "git.patchPathPlaceholder",
+  move: "dialog.moveTargetPlaceholder",
 };
 
 /** 这一类在落盘位置之外还收一个可选名字：填了先开一个新分支再签出，留空直接签出所选那条。 */
@@ -121,6 +128,7 @@ const CONFIRM_KEY: Partial<Record<DialogKind, TranslationKey>> = {
   resetHard: "dialog.confirm",
   pushUpTo: "dialog.confirm",
   rename: "dialog.confirm",
+  copy: "action.copy",
   restartUpdate: "dialog.confirm",
   resetSettings: "dialog.resetAll",
   discard: "dialog.discard",

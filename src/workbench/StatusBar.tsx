@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import clsx from "clsx";
 import { Spinner } from "../ui";
+import { useI18n } from "../i18n";
 import styles from "./StatusBar.module.css";
 
 export interface StatusItemProps {
@@ -40,10 +41,11 @@ export function StatusBar({
   className,
   ...aria
 }: StatusBarProps) {
+  const { t } = useI18n();
   return (
     <footer
       className={clsx(styles.bar, className)}
-      aria-label={aria["aria-label"] ?? "状态栏"}
+      aria-label={aria["aria-label"] ?? t("status.bar")}
       role="status"
     >
       {left}

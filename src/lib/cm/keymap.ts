@@ -24,10 +24,22 @@ import {
 import { foldAll, foldCode, unfoldAll, unfoldCode } from "@codemirror/language";
 import { nextDiagnostic, previousDiagnostic } from "@codemirror/lint";
 import { Prec, type Extension } from "@codemirror/state";
-import { openSearchPanel } from "@codemirror/search";
+import { gotoLine, openSearchPanel, selectNextOccurrence } from "@codemirror/search";
 import { keymap, type Command, type EditorView } from "@codemirror/view";
 import type { KeymapScheme } from "../settings";
-import { findUsages, formatDocument, gotoDefinition, gotoImplementation, showDocumentation } from "./lsp";
+import {
+  findUsages,
+  formatDocument,
+  gotoDeclaration,
+  gotoDefinition,
+  gotoImplementation,
+  gotoMethod,
+  gotoTypeDefinition,
+  renameSymbol,
+  showCodeActions,
+  showDocumentation,
+  showSignatureHelp,
+} from "./lsp";
 
 /** 只读文档上不该动的命令：按下去不算命中，让按键继续往下走。 */
 function writable(command: Command): Command {
@@ -65,20 +77,34 @@ const IDEA: Binding[] = [
   { key: "Shift-Ctrl-/", command: writable(blockComment) },
   { key: "Ctrl-d", command: writable(copyLineDown) },
   { key: "Ctrl-y", command: writable(deleteLine) },
-  { key: "Alt-ArrowUp", command: writable(moveLineUp) },
-  { key: "Alt-ArrowDown", command: writable(moveLineDown) },
+  // IDEA 的 Alt+↑↓ 是上一个/下一个方法（LSP outline），移行在 Alt+Shift+↑↓（intellij-windows.ts:58-59/97-98）。
+  { key: "Alt-ArrowUp", command: (view) => gotoMethod(view, -1) },
+  { key: "Alt-ArrowDown", command: (view) => gotoMethod(view, 1) },
+  { key: "Alt-Shift-ArrowUp", command: writable(moveLineUp) },
+  { key: "Alt-Shift-ArrowDown", command: writable(moveLineDown) },
   { key: "Ctrl-w", command: selectParentSyntax },
   { key: "Shift-Ctrl-w", command: simplifySelection },
   { key: "Ctrl-Alt-l", command: writable(formatDocument) },
   { key: "Ctrl-Alt-i", command: writable(indentSelection) },
   { key: "Ctrl-b", command: gotoDefinition },
+  { key: "Ctrl-Alt-Shift-b", command: gotoDeclaration },
+  { key: "Ctrl-Shift-b", command: gotoTypeDefinition },
   { key: "Ctrl-Alt-b", command: gotoImplementation },
-  { key: "F12", command: gotoDefinition },
+  // IDEA 的 F12 是应用级「跳回上个工具窗口」，不是编辑器动作——不绑，让键落到应用层。
+  // 跳定义由 Ctrl+B 承担（intellij-windows.ts:22）。
   { key: "Alt-F7", command: findUsages },
+  // Ctrl+Alt+↓ = 下一处出现（IDEA navigate.nextOccurrence，intellij-windows.ts:60）；
+  // CM 没有反向命令，Ctrl+Alt+↑ 暂留空（多光标键位另议，见缺陷 D-53 登记）。
+  { key: "Ctrl-Alt-ArrowDown", command: selectNextOccurrence },
   { key: "Ctrl-Alt-Space", command: startCompletion },
   { key: "Ctrl-f", command: find(false) },
   { key: "Ctrl-r", command: find(true) },
+  // 跳转到行（对齐 openidea intellij-windows.ts:21 的 navigate.gotoLine = Ctrl+G）。
+  { key: "Ctrl-g", command: gotoLine },
   { key: "Ctrl-q", command: showDocumentation },
+  { key: "Ctrl-p", command: showSignatureHelp },
+  { key: "Alt-Enter", command: showCodeActions },
+  { key: "Shift-F6", command: writable(renameSymbol) },
   { key: "F2", command: nextDiagnostic },
   { key: "Shift-F2", command: previousDiagnostic },
   { key: "Ctrl--", command: foldCode },

@@ -77,6 +77,10 @@ pub struct FsEntry {
     pub modified_ms: i64,
     pub is_symlink: bool,
     pub is_hidden: bool,
+    /// 是否命中当前 Git 仓库的忽略规则；非仓库目录恒为 false。
+    pub is_ignored: bool,
+    /// 是否为默认排除目录；用户标记的目录角色由前端叠加。
+    pub is_excluded: bool,
     pub is_readonly: bool,
 }
 
@@ -203,11 +207,30 @@ fn assemble(full: &Path, target: Option<fs::Metadata>, link_is_symlink: bool) ->
         size: if is_dir { 0 } else { target.map(|m| m.len()).unwrap_or(0) },
         is_symlink: flags.reparse || link_is_symlink,
         is_hidden: flags.hidden,
+        is_ignored: false,
+        is_excluded: is_default_excluded(&name, is_dir),
         is_readonly: flags.readonly,
         name,
         kind,
         modified_ms,
     }
+}
+
+/// 默认排除目录只按目录名判断；Git 忽略是另一条正交状态，不能把它们合成一个字段。
+pub(crate) fn is_default_excluded(name: &str, is_dir: bool) -> bool {
+    is_dir
+        && matches!(
+            name.to_ascii_lowercase().as_str(),
+            "node_modules"
+                | "dist"
+                | "target"
+                | "build"
+                | "out"
+                | ".turbo"
+                | ".next"
+                | ".nuxt"
+                | ".cache"
+        )
 }
 
 pub(crate) fn entry_at(path: &Path) -> Result<FsEntry, String> {
@@ -243,6 +266,12 @@ fn list_directory_impl(path: String) -> Result<DirectoryListing, String> {
             }
             Err(e) => unreadable.push(e.to_string()),
         }
+    }
+
+    let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
+    let ignored_names = crate::git::ignored_names_in_dir(&dir, &names);
+    for entry in &mut entries {
+        entry.is_ignored = ignored_names.contains(&entry.name);
     }
 
     // 小写名每项算一次：写在比较函数里的话，5000 条就是约 25000 次比较 × 2 次 String 分配。
@@ -473,7 +502,7 @@ pub async fn create_folder(path: String) -> Result<FsEntry, String> {
 }
 
 fn create_folder_impl(path: String) -> Result<FsEntry, String> {
-    // 对齐 openidea ide-vfs：先查重报 TARGET_EXISTS（报裸 IO 错前端没法走「换名重试」），
+    // 对齐 IDEA ide-vfs：先查重报 TARGET_EXISTS（报裸 IO 错前端没法走「换名重试」），
     // 再 create_dir_all——行内编辑允许输入 `a/b/c` 这类嵌套名，单层 create_dir 直接失败。
     let target = Path::new(&path);
     if target.exists() {
@@ -493,7 +522,7 @@ pub async fn create_file(path: String) -> Result<FsEntry, String> {
 }
 
 fn create_file_impl(path: String) -> Result<FsEntry, String> {
-    // ensure_parent（对齐 openidea ops.rs:29-36）：新建 `a/b/c.ts` 时父目录一并建出来，
+    // ensure_parent（对齐 IDEA ops.rs:29-36）：新建 `a/b/c.ts` 时父目录一并建出来，
     // 不用让用户先手动建一层。
     if let Some(parent) = Path::new(&path).parent() {
         if !parent.as_os_str().is_empty() {
@@ -602,7 +631,7 @@ fn copy_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     if Path::new(&to).exists() {
         return Err(err("TARGET_EXISTS", &to));
     }
-    // 「复制进自身」防护（对齐 openidea ops.rs:133-147）：把目录粘到它自己的子目录里，
+    // 「复制进自身」防护（对齐 IDEA ops.rs:133-147）：把目录粘到它自己的子目录里，
     // 递归复制会随层级加深无限循环，直到路径超长才炸——必须复制前拒绝。
     if let (Ok(src_canon), Ok(dst_canon)) = (Path::new(&from).canonicalize(), Path::new(&to).canonicalize()) {
         if dst_canon.starts_with(&src_canon) {
@@ -866,6 +895,11 @@ pub async fn open_external(url: String) -> Result<(), String> {
     block(move || open_external_impl(url)).await
 }
 
+#[tauri::command]
+pub async fn clipboard_files() -> Result<Vec<String>, String> {
+    block(platform::clipboard_files).await
+}
+
 fn open_external_impl(url: String) -> Result<(), String> {
     external_allowed(&url)?;
     platform::open_external(&url)
@@ -1002,6 +1036,72 @@ mod tests {
             .expect("被标记隐藏的文件应在列表里");
         assert!(hidden.is_hidden);
         assert!(listing.entries.iter().any(|entry| entry.name == "visible.txt"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn listing_marks_git_ignored_and_default_excluded_entries_separately() {
+        let dir = sandbox("listing-flags");
+        let init = std::process::Command::new("git")
+            .args(["-C", &lossy(&dir), "init", "--quiet"])
+            .status()
+            .expect("测试 Git 忽略标记需要 git 可执行文件");
+        assert!(init.success(), "测试沙盒应能初始化 Git 仓库");
+
+        touch(&dir, ".gitignore", b"ignored.txt\nignored-dir/\n");
+        touch(&dir, "ignored.txt", b"ignored");
+        fs::create_dir(dir.join("ignored-dir")).unwrap();
+        fs::create_dir(dir.join("dist")).unwrap();
+        touch(&dir, "source.txt", b"source");
+
+        let listing = list_directory_impl(lossy(&dir)).unwrap();
+        let entry = |name: &str| {
+            listing
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("目录列表缺少 {name}"))
+        };
+
+        assert!(entry("ignored.txt").is_ignored);
+        assert!(entry("ignored-dir").is_ignored);
+        assert!(!entry("ignored.txt").is_excluded, "Git 忽略不应伪装成排除目录");
+        assert!(entry("dist").is_excluded);
+        assert!(!entry("source.txt").is_ignored);
+        assert!(!entry("source.txt").is_excluded);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 批量 check-ignore 的管道死锁回归：输入与输出都超过管道缓冲（64KB）时，
+    /// git 流式地边读 stdin 边写 stdout——写 stdin 抢在读 stdout 之前的老写法
+    /// 会两头互等，目录永远停在「正在加载」。断言这条路径能在常规测试时限内返回。
+    #[test]
+    fn listing_survives_check_ignore_larger_than_pipe_buffer() {
+        let dir = sandbox("listing-check-ignore-deadlock");
+        let init = std::process::Command::new("git")
+            .args(["-C", &lossy(&dir), "init", "--quiet"])
+            .status()
+            .expect("测试 Git 忽略标记需要 git 可执行文件");
+        assert!(init.success(), "测试沙盒应能初始化 Git 仓库");
+
+        touch(&dir, ".gitignore", b"ignored-*\n");
+        for index in 0..3000 {
+            touch(
+                &dir,
+                &format!("ignored-entry-with-a-fairly-long-name-{index:06}.txt"),
+                b"x",
+            );
+        }
+
+        let listing = list_directory_impl(lossy(&dir)).unwrap();
+        let ignored = listing
+            .entries
+            .iter()
+            .filter(|entry| entry.is_ignored)
+            .count();
+        assert_eq!(ignored, 3000, "整批忽略名都该被标记");
 
         let _ = fs::remove_dir_all(&dir);
     }

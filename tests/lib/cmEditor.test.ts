@@ -5,15 +5,18 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   applyChangeMarks,
   captureState,
+  clearWorkspaceUndo,
   disposeModel,
   editorFor,
   emptyState,
+  foldEffect,
   fromDiskText,
   gutterHost,
   lineTop,
   lineText,
   minimapGutters,
   persistView,
+  registerWorkspaceUndo,
   replaceRange,
   restoreView,
   revealRange,
@@ -30,6 +33,8 @@ import {
   textReplacement,
   toDiskText,
   type EditorDoc,
+  unfoldEffect,
+  undoWorkspaceEdit,
 } from "../../src/lib/cmEditor";
 import { retainEditorModels } from "../../src/lib/modelRetention";
 import { stubTextLayout } from "../helpers/cmLayout";
@@ -72,6 +77,63 @@ function teardown(view: EditorView, ...paths: string[]): void {
   view.destroy();
   for (const path of paths) disposeModel(path);
 }
+
+describe("WorkspaceEdit 撤销栈", () => {
+  it("后注册的先撤：连按 Ctrl+Z 逐级回放", async () => {
+    clearWorkspaceUndo();
+    const ran: string[] = [];
+    registerWorkspaceUndo(async () => {
+      ran.push("first");
+    });
+    registerWorkspaceUndo(async () => {
+      ran.push("second");
+    });
+    expect(undoWorkspaceEdit()).toBe(true);
+    expect(ran).toEqual(["second"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(undoWorkspaceEdit()).toBe(true);
+    expect(ran).toEqual(["second", "first"]);
+    expect(undoWorkspaceEdit()).toBe(false);
+  });
+
+  it("上一级回放还没落地时吞掉连按，落地后下一级才继续", async () => {
+    clearWorkspaceUndo();
+    const ran: number[] = [];
+    const resolvers: Array<() => void> = [];
+    const hang = () => new Promise<void>((resolve) => resolvers.push(resolve));
+    registerWorkspaceUndo(async () => {
+      ran.push(0);
+      await hang();
+    });
+    registerWorkspaceUndo(async () => {
+      ran.push(1);
+      await hang();
+    });
+    expect(undoWorkspaceEdit()).toBe(true);
+    expect(ran).toEqual([1]);
+    expect(undoWorkspaceEdit()).toBe(true);
+    expect(ran).toEqual([1]);
+    resolvers[0]();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(undoWorkspaceEdit()).toBe(true);
+    expect(ran).toEqual([1, 0]);
+    resolvers[1]();
+  });
+
+  it("普通用户输入清空整栈，旧事务不能撤", () => {
+    clearWorkspaceUndo();
+    const ran: string[] = [];
+    registerWorkspaceUndo(async () => {
+      ran.push("first");
+    });
+    registerWorkspaceUndo(async () => {
+      ran.push("second");
+    });
+    clearWorkspaceUndo();
+    expect(undoWorkspaceEdit()).toBe(false);
+    expect(ran).toEqual([]);
+  });
+});
 
 describe("常驻 state", () => {
   it("同一篇文档拿到同一份 state；打字之后表里那份跟着走", () => {
@@ -329,6 +391,37 @@ describe("读写、定位与标记", () => {
     // 文档坐标：不含滚动量，翻了页也不会变。
     view.scrollDOM.scrollTop = 40;
     expect(lineTop(view, 1)).toBe(first);
+    teardown(view, record.path);
+  });
+
+  it("行落点：被代码折叠隐藏在折叠区间内部的行返回 null", () => {
+    // 模拟 package.json 的 scripts 块折叠场景：第 2 行是 scripts 块头，第 3、4 行折叠在里面
+    const record = docOf({
+      path: "D:/proj/package.json",
+      contents: '{\n  "scripts": {\n    "dev": "vite",\n    "build": "vite build"\n  }\n}',
+    });
+    const view = mount(record);
+    // 折叠 "scripts": { ... } 区域（从第 2 行末尾大括号到第 5 行开始）
+    const line2 = view.state.doc.line(2);
+    const line5 = view.state.doc.line(5);
+    view.dispatch({
+      effects: foldEffect.of({ from: line2.from + 12, to: line5.from }),
+    });
+
+    // 第 2 行折叠起始可见行正常计算坐标，而折叠包含在内部的第 3、4 行被过滤为 null
+    expect(lineTop(view, 2)).toBeTypeOf("number");
+    expect(lineTop(view, 3)).toBeNull();
+    expect(lineTop(view, 4)).toBeNull();
+
+    // 展开 "scripts": { ... } 区域后，原本折叠隐藏的第 3、4 行应恢复正常计算有效坐标
+    view.dispatch({
+      effects: unfoldEffect.of({ from: line2.from + 12, to: line5.from }),
+    });
+    const unfoldedLine3 = lineTop(view, 3);
+    const unfoldedLine4 = lineTop(view, 4);
+    expect(unfoldedLine3).toBeTypeOf("number");
+    expect(unfoldedLine4).toBeTypeOf("number");
+    expect(unfoldedLine4).toBeGreaterThan(unfoldedLine3!);
     teardown(view, record.path);
   });
 

@@ -12,5 +12,7 @@ export interface ForgeCommand {
   label: string;
   /** 展示用的组合键（如 "Ctrl+Shift+F"）；上下文动作可能没有。 */
   shortcut?: string;
+  /** 当前上下文不可执行时不进入动作结果和最近动作，默认可用。 */
+  enabled?: boolean;
   run: () => void;
 }

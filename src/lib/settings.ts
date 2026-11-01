@@ -21,8 +21,10 @@ export type HttpResponseLayout = "split" | "tab";
 
 /** 编辑器偏好，对应 Rust `EditorSettings`。 */
 export interface EditorSettings {
-  /** 括号按嵌套深度上色（openidea 默认关）。 */
+  /** 括号按嵌套深度上色（对标 IDEA 默认关）。 */
   rainbowBrackets: boolean;
+  /** 正文字体族；空串跟随 `--font-mono`。 */
+  fontFamily: string;
   /** 字号（px），编辑器与两个控制台共用。 */
   fontSize: number;
   /** 制表宽度。 */
@@ -35,6 +37,18 @@ export interface EditorSettings {
   savePolicy: SavePolicy;
   /** 退出前是否把没保存的改动写回磁盘。 */
   saveOnExit: boolean;
+  /** 手动保存、失焦保存和退出保存前请求语言服务格式化。 */
+  formatOnSave: boolean;
+  /** 保存时删除行尾空格和制表符。 */
+  trimTrailingWhitespace: boolean;
+  /** 保存时保证非空文本以换行结束。 */
+  insertFinalNewline: boolean;
+  /** 软换行（IDEA 默认关）。 */
+  softWrap: boolean;
+  /** 显示空白符（IDEA 默认关）。 */
+  showWhitespace: boolean;
+  /** 行高（px）；0 表示自动按字号 1.69 倍推导。 */
+  lineHeight: number;
 }
 
 /** 终端光标形状。 */
@@ -158,6 +172,49 @@ export interface CommitSettings {
   commitAllWhenNothingStaged: boolean;
 }
 
+/** 事务工单规则项（对齐 IntelliJ IDEA Issue Navigation 规范） */
+export interface IssueNavigationPattern {
+  id: string;
+  issueId: string;
+  issueLink: string;
+}
+
+/** 版本控制完整配置，1:1 对标 IntelliJ IDEA VCS 设置规范 */
+export interface VcsSettings {
+  /** 提交设置 Commit Settings */
+  nonModalCommit: boolean;
+  clearInitialCommitMessage: boolean;
+  blankLineAfterSubject: boolean;
+  limitSubjectLine: boolean;
+  subjectLineLimit: number;
+  limitBodyLine: boolean;
+  bodyLineLimit: number;
+  showRightMargin: boolean;
+  wrapRightMargin: boolean;
+  /** 提交前检查 Commit Checks */
+  checkAnalyzeCode: boolean;
+  checkTodo: boolean;
+  checkReformatCode: boolean;
+  checkOptimizeImports: boolean;
+  checkCleanup: boolean;
+  /** 确认与操作行为 Confirmation Settings */
+  showUpdateOptions: boolean;
+  highlightDirtyDirectories: boolean;
+  onPatchCreated: "open" | "clipboard" | "file";
+  limitHistoryRows: number;
+  /** Git 行为与警告 */
+  warnCrlf: boolean;
+  warnDetachedHead: boolean;
+  signOffCommit: boolean;
+  warnLargeFiles: boolean;
+  largeFilesLimitMb: number;
+  warnBadFileNames: boolean;
+  showPushDialog: "always" | "protected" | "never";
+  protectedBranches: string;
+  /** 事务工单导航 Issue Navigation */
+  issueNavigationPatterns: IssueNavigationPattern[];
+}
+
 /** 点一下分支树里某条引用做什么。 */
 export type SingleClickAction = "none" | "filter";
 
@@ -237,7 +294,7 @@ export const DEFAULT_NOTIFICATION_GROUPS: Record<string, NotificationGroupRule> 
  * 最近分支、用过的提交说明）住在 `history.json`，见 `lib/history.ts`。
  */
 export interface Settings {
-  /** AI 编程助手总开关，默认关闭。关闭后不再探测 CLI、加载会话或接受运行请求。 */
+  /** AI 编程助手总开关，默认关闭。只决定菜单与侧栏入口显不显示，不拦截任何功能。 */
   aiAssistantsEnabled: boolean;
   /** 浏览器和截图默认启用；文件上传和任意脚本必须手动授权。 */
   browser: { enabled: boolean; renderedPixels: boolean; unsafeEvaluate: boolean; fileUpload: boolean; elementContent: "code" | "screenshot" | "both" };
@@ -262,9 +319,9 @@ export interface Settings {
   notificationPosition: NotificationPosition;
   /** 通知勿扰模式：开启后静默所有浮动气泡，仅静默记录到工具窗口。 */
   notificationDoNotDisturb: boolean;
-  /** 通知气泡总开关（对齐 openidea「Display balloon notifications」）。 */
+  /** 通知气泡总开关（对标 IDEA「Display balloon notifications」）。 */
   notificationBalloons: boolean;
-  /** 通知提示音（对齐 openidea「Play sound」）。 */
+  /** 通知提示音（对标 IDEA「Play sound」）。 */
   notificationSound: boolean;
   /** 按通知组配置的弹出模式与归档策略。 */
   notificationGroups: Record<string, NotificationGroupRule>;
@@ -274,7 +331,41 @@ export interface Settings {
   run: RunSettings;
   /** 按项目根隔离的目录角色；相对路径值为 source/test/resources/testResources/excluded。 */
   projectDirectoryRoles: ProjectDirectoryRoles;
+  /** 版本控制与 Git 设置（1:1 对标 IntelliJ IDEA VCS 设置中心） */
+  vcs: VcsSettings;
 }
+
+export const DEFAULT_VCS_SETTINGS: VcsSettings = {
+  nonModalCommit: true,
+  clearInitialCommitMessage: false,
+  blankLineAfterSubject: true,
+  limitSubjectLine: true,
+  subjectLineLimit: 72,
+  limitBodyLine: true,
+  bodyLineLimit: 72,
+  showRightMargin: true,
+  wrapRightMargin: false,
+  checkAnalyzeCode: false,
+  checkTodo: true,
+  checkReformatCode: false,
+  checkOptimizeImports: false,
+  checkCleanup: false,
+  showUpdateOptions: true,
+  highlightDirtyDirectories: true,
+  onPatchCreated: "clipboard",
+  limitHistoryRows: 1000,
+  warnCrlf: true,
+  warnDetachedHead: true,
+  signOffCommit: false,
+  warnLargeFiles: true,
+  largeFilesLimitMb: 50,
+  warnBadFileNames: true,
+  showPushDialog: "protected",
+  protectedBranches: "master;main;release/*",
+  issueNavigationPatterns: [
+    { id: "1", issueId: "([A-Z]+-\\d+)", issueLink: "https://jira.example.com/browse/$1" },
+  ],
+};
 
 /** 浏览器权限逐项保存，避免旧窗口顺带恢复已撤销的上传或脚本授权。 */
 export type SettingsPatch = Omit<Partial<Settings>, "browser"> & { browser?: Partial<Settings["browser"]> };
@@ -289,12 +380,19 @@ export const DEFAULT_SETTINGS: Settings = {
   closeBehavior: "tray",
   editor: {
     rainbowBrackets: false,
+    fontFamily: "",
     fontSize: 13,
     tabSize: 2,
     minimap: true,
     keymap: "default",
     savePolicy: "blur",
     saveOnExit: true,
+    formatOnSave: false,
+    trimTrailingWhitespace: false,
+    insertFinalNewline: false,
+    softWrap: false,
+    showWhitespace: false,
+    lineHeight: 0,
   },
   terminal: {
     shell: "",
@@ -330,6 +428,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   run: { timestamps: true },
   projectDirectoryRoles: {},
+  vcs: DEFAULT_VCS_SETTINGS,
 };
 
 /** 翻一条引用的收藏标记：名单按引用全名存，日志的分支树和顶栏的分支弹层共用这一份。 */
@@ -366,6 +465,7 @@ function merge(raw: Partial<Settings> | null): Settings {
       ...raw?.editor,
       // 只认列出来的那两档，文件里写了别的值就退回默认。
       savePolicy: raw?.editor?.savePolicy === "manual" ? "manual" : "blur",
+      fontFamily: typeof raw?.editor?.fontFamily === "string" ? raw.editor.fontFamily.trim() : "",
     },
     terminal: normalizeTerminal(raw?.terminal),
     commit: { ...DEFAULT_SETTINGS.commit, ...raw?.commit },
@@ -381,6 +481,7 @@ function merge(raw: Partial<Settings> | null): Settings {
     updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },
     run: { ...DEFAULT_SETTINGS.run, ...raw?.run },
     projectDirectoryRoles: normalizeProjectDirectoryRoles(raw?.projectDirectoryRoles),
+    vcs: { ...DEFAULT_VCS_SETTINGS, ...raw?.vcs },
     notificationPosition:
       raw?.notificationPosition === "top-right" ||
       raw?.notificationPosition === "bottom-left" ||

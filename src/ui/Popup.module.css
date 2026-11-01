@@ -1,6 +1,9 @@
 .popup {
   z-index: var(--z-popup, 1000);
   overflow: auto;
+  /* 未定位帧必须整层不可见：opacity 会被外层动画（如 layer-in）的 keyframes 盖掉，
+     visibility 不会——否则弹层会在 (0,0) 处闪现一帧再跳回锚点。 */
+  visibility: hidden;
   opacity: 0;
   box-sizing: border-box;
 }
@@ -10,6 +13,7 @@
 }
 
 .popup[data-positioned] {
+  visibility: visible;
   opacity: 1;
   animation: popIn var(--dur-fast, 80ms) ease;
 }

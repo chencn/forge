@@ -48,7 +48,6 @@ function subscribe(listener: () => void) {
 }
 
 /** 功能关闭时的固定快照。用常量保证引用稳定，避免无谓重渲染。 */
-const DISABLED_SNAPSHOT: Snapshot = { state: parseAiSessions(null), storageError: false };
 
 /**
  * 某个工作区下的会话列表。
@@ -56,13 +55,14 @@ const DISABLED_SNAPSHOT: Snapshot = { state: parseAiSessions(null), storageError
  * 数据有两个来源：本地存储（用户建过、改过名的会话）和后端持久化记录。
  * 启动时先读本地，再把后端里有、本地没有的补进来——这样换机器或清过缓存后仍能看到历史，
  * 而用户主动删掉的记录靠 `deleted` 集合挡住，不会被重新导入。
- * `enabled` 为假时返回空快照且不注册任何副作用，功能关闭后不该再访问后端。
+ * 会话数据只跟工程走，不受 AI 总开关约束：开关只藏菜单与侧栏入口，
+ * 已渲染出来的会话面板必须照常拿到数据（多开窗口共享设置时尤其如此）。
  */
-export function useAiSessions(root: string | null, enabled = true) {
+export function useAiSessions(root: string | null) {
   const key = aiSessionStorageKey(root);
-  const snapshot = useSyncExternalStore(subscribe, () => enabled ? get(key) : DISABLED_SNAPSHOT);
+  const snapshot = useSyncExternalStore(subscribe, () => get(key));
   useEffect(() => {
-    if (!enabled || !root || !isTauri()) return;
+    if (!root || !isTauri()) return;
     activityWorkspaces.set(key, root);
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -79,9 +79,9 @@ export function useAiSessions(root: string | null, enabled = true) {
       // 切换前台工程不等于关闭该工程：保留登记，让新工程的轮询继续覆盖所有已打开过的项目。
       // 后端队列另有进程级监控，因此 WebView 刷新期间也不会冻结 waitingExternal。
     };
-  }, [key, root, enabled]);
+  }, [key, root]);
   useEffect(() => {
-    if (!enabled || !root || !isTauri()) return;
+    if (!root || !isTauri()) return;
     let cancelled = false;
     let pending: Promise<void> | null = null;
     let refreshAgain = false;
@@ -126,10 +126,9 @@ export function useAiSessions(root: string | null, enabled = true) {
     // 首次发送改变持久化标题，不能等窗口重新聚焦才刷新标签。
     window.addEventListener("ai-session-metadata", refresh);
     return () => { cancelled = true; refreshers.delete(refresh); window.removeEventListener("focus", refresh); window.removeEventListener("ai-session-metadata", refresh); };
-  }, [key, root, enabled]);
+  }, [key, root]);
   /** 写回 localStorage 并通知订阅者。写失败只降级成「本次不持久化」，不阻断界面。 */
   const dispatch = useCallback((action: AiSessionAction): boolean => {
-    if (!enabled) return false;
     // 删会话带走全部会话级缓存；发送历史和引擎默认项按工程/引擎共享，继续保留。
     if (action.type === "delete") {
       // 子代理的记录与草稿跟着父一起清：后端已经把它们的目录删了，本地留着就是没人认的死键。
@@ -150,6 +149,6 @@ export function useAiSessions(root: string | null, enabled = true) {
     stores.set(key, { state, storageError });
     listeners.forEach((listener) => listener());
     return true;
-  }, [key, root, enabled]);
+  }, [key, root]);
   return { ...snapshot.state, storageError: snapshot.storageError, dispatch };
 }

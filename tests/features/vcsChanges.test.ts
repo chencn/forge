@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitChange } from "../../src/lib/git";
+import { parseIssueTokens } from "../../src/features/vcs/IssueNavigation";
 import {
   aggregateCheck,
   buildChangeTree,
@@ -109,7 +110,47 @@ describe("vcs changes 核心逻辑", () => {
 
       const plan = planCommit([c1], checks);
       expect(plan.included).toHaveLength(0);
-      expect(plan.paths).toHaveLength(0);
+      expect(plan.stage).toHaveLength(0);
+      expect(plan.unstage).toHaveLength(0);
+    });
+  });
+
+  describe("Issue Navigation 工单超链接解析 parseIssueTokens", () => {
+    const patterns = [
+      { id: "1", issueId: "([A-Z]+-\\d+)", issueLink: "https://jira.example.com/browse/$1" },
+      { id: "2", issueId: "#(\\d+)", issueLink: "https://github.com/org/repo/issues/$1" },
+    ];
+
+    it("无匹配规则或纯文本时返回单个 text token", () => {
+      const tokens = parseIssueTokens("feat: normal commit message", []);
+      expect(tokens).toEqual([{ type: "text", value: "feat: normal commit message" }]);
+    });
+
+    it("正确匹配 JIRA 工单并安全替换 $1", () => {
+      const tokens = parseIssueTokens("fix(core): resolve PROJ-1024 crash", patterns);
+      expect(tokens).toEqual([
+        { type: "text", value: "fix(core): resolve " },
+        { type: "link", value: "PROJ-1024", url: "https://jira.example.com/browse/PROJ-1024" },
+        { type: "text", value: " crash" },
+      ]);
+    });
+
+    it("支持混合多个不同工单规范（如 JIRA 与 GitHub #ID）", () => {
+      const tokens = parseIssueTokens("fix: resolve PROJ-123 and close #456", patterns);
+      expect(tokens).toEqual([
+        { type: "text", value: "fix: resolve " },
+        { type: "link", value: "PROJ-123", url: "https://jira.example.com/browse/PROJ-123" },
+        { type: "text", value: " and close " },
+        { type: "link", value: "#456", url: "https://github.com/org/repo/issues/456" },
+      ]);
+    });
+
+    it("容错处理：跳过非法正则表达式，不抛出异常", () => {
+      const invalidPatterns = [
+        { id: "bad", issueId: "([unclosed-regex", issueLink: "https://example.com" },
+      ];
+      const tokens = parseIssueTokens("fix: some message", invalidPatterns);
+      expect(tokens).toEqual([{ type: "text", value: "fix: some message" }]);
     });
   });
 });

@@ -70,7 +70,13 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
   useEffect(() => {
     if (!open) return;
     popover.current?.focus();
-    const dismiss = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    // 弹层经 Popover portal 到 body,不在 root 子树里;放行弹层内的 pointerdown,
+    // 否则压缩按钮等点击会先关弹层、click 随之丢失。
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (root.current?.contains(target) || popover.current?.contains(target)) return;
+      setOpen(false);
+    };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();

@@ -4,6 +4,7 @@ import { ensureFileIcons } from "./lib/fileIcons";
 import { loadHistory } from "./lib/history";
 import { loadLspConfig } from "./lib/lspConfig";
 import { loadSettings } from "./lib/settings";
+import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./themes/tokens.css";
 import "./styles.css";

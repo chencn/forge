@@ -1,5 +1,5 @@
 /**
- * 侧栏 Git 面板模块化样式：1:1 还原 OpenIdea / IntelliJ IDEA 像素规格
+ * 侧栏 Git 面板模块化样式：1:1 还原 IDEA / IntelliJ IDEA 像素规格
  * 包含 32px 规范工具栏、14px 三态复选框、平铺式等宽输入框、72ch 渐变参考线与提交选项弹层
  */
 
@@ -343,7 +343,7 @@
   white-space: nowrap;
 }
 
-/* 主提交按钮（1:1 对齐 IntelliJ IDEA / OpenIdea 实心蓝底白字） */
+/* 主提交按钮（1:1 对齐 IntelliJ IDEA / IDEA 实心蓝底白字） */
 .commitButton {
   background: var(--bg-button-primary, var(--button-solid, var(--accent, #3574f0))) !important;
   color: var(--fg-button-primary, var(--button-solid-text, #ffffff)) !important;
@@ -449,4 +449,101 @@
 .optField > :last-child {
   flex: 1;
   min-width: 0;
+}
+
+/* ---- Stash 列表区（变更树与提交区之间，有贮藏才显示） ---- */
+
+.stashBox {
+  flex: none;
+  max-height: 35%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 100%;
+  border-top: 1px solid var(--border, var(--border-color));
+}
+
+.stashHead {
+  flex: none;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim, var(--text-secondary));
+  letter-spacing: 0.04em;
+}
+
+.stashCount {
+  min-width: 16px;
+  height: 14px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--bg-tertiary, var(--bg-secondary));
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.stashList {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.stashRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 10px;
+}
+
+.stashRow:hover {
+  background: var(--bg-hover, var(--bg-hover));
+}
+
+.stashMsg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg, var(--text-primary));
+}
+
+.stashTime {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-dim, var(--text-secondary));
+}
+
+.stashAction {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--fg-dim, var(--text-secondary));
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.stashRow:hover .stashAction {
+  visibility: visible;
+}
+
+.stashAction:hover {
+  background: var(--bg-tertiary, var(--bg-secondary));
+  color: var(--fg, var(--text-primary));
+}
+
+.stashDrop:hover {
+  color: var(--danger, #e05555);
 }

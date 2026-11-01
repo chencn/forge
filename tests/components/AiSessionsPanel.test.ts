@@ -122,7 +122,9 @@ describe("AI 功能总开关", () => {
       let click = () => {};
       function Harness() {
         const toggle = AiAssistantsToggle();
-        click = toggle.props.children[0].props.onClick;
+        // 弹层删除后 div 只剩开关一个子节点，React 对单子节点不再包数组。
+        const children = toggle.props.children;
+        click = (Array.isArray(children) ? children[0] : children).props.onClick;
         return toggle;
       }
       renderToStaticMarkup(createElement(Harness));

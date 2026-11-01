@@ -1223,7 +1223,8 @@ export default function AiSessionPane({
       y: event.clientY,
       items: [
         { label: t("action.copy"), onSelect: () => void navigator.clipboard.writeText(text) },
-        aiInputMenu({ kind: "text", text, source: session.title || t("ai.untitledSession") }),
+        // 会话内选区只投递内容本身；标题是会话私有信息，不发到别的会话输入框。
+        aiInputMenu({ kind: "text", text }),
       ],
     });
   };

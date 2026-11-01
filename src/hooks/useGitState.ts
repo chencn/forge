@@ -10,6 +10,7 @@ import {
   gitCherryPickAbort,
   gitCherryPickContinue,
   gitCommit,
+  type CommitRequestOptions,
   gitCreateBranch,
   gitCreateTag,
   gitDeleteBranch,
@@ -36,6 +37,10 @@ import {
   gitRevert,
   gitRevertAbort,
   gitRevertContinue,
+  gitStashApply,
+  gitStashDrop,
+  gitStashList,
+  gitStashPush,
   gitStage,
   gitStatus,
   gitTags,
@@ -50,6 +55,7 @@ import type {
   GitCommit,
   GitProbe,
   GitStatus,
+  GitStash,
   GitTag,
 } from "../lib/git";
 
@@ -82,6 +88,8 @@ export function useGitState(
   const [tags, setTags] = useState<GitTag[]>([]);
   /** HEAD 上那一条，提交框的「上次提交」用。 */
   const [lastCommit, setLastCommit] = useState<GitCommit | null>(null);
+  /** stash 列表，最新在前；跟着每轮刷新走，单独 effect 拉（见下）。 */
+  const [stashes, setStashes] = useState<GitStash[]>([]);
   const [loading, setLoading] = useState(false);
   /** 当前是否有向远端推送的操作正在进行 */
   const [pushing, setPushing] = useState(false);
@@ -345,9 +353,9 @@ export function useGitState(
    * 原样保留（复选框勾选语义）。
    */
   const commit = useCallback(
-    async (message: string, amend: boolean, paths?: string[]) => {
+    async (message: string, amend: boolean, paths?: string[], options?: CommitRequestOptions) => {
       if (!root) return false;
-      return run(() => gitCommit(root, message, amend, paths));
+      return run(() => gitCommit(root, message, amend, paths, options));
     },
     [root, run]
   );
@@ -462,6 +470,44 @@ export function useGitState(
     [root, run]
   );
 
+  // --- Stash：列表跟随每轮刷新，写动作走 run（成功自动整轮刷新） ---
+
+  /** stash 写动作不动 status 对象之外的缓存，紧跟一次全量刷新即可。 */
+  const stashPush = useCallback(
+    (message: string, includeUntracked: boolean, keepIndex: boolean) =>
+      root ? run(() => gitStashPush(root, message, includeUntracked, keepIndex)) : Promise.resolve(false),
+    [root, run]
+  );
+  const stashApply = useCallback(
+    (index: number, pop: boolean) =>
+      root ? run(() => gitStashApply(root, index, pop, false)) : Promise.resolve(false),
+    [root, run]
+  );
+  const stashDrop = useCallback(
+    (index: number) => (root ? run(() => gitStashDrop(root, index)) : Promise.resolve(false)),
+    [root, run]
+  );
+
+  // stash 列表挂在 status 的引用上：每轮刷新 status 都换成新对象，这里就跟着拉一次。
+  // 不进三条刷新路径里——那要把四个 Promise.all 各改一遍，换来的只是同一条读命令。
+  useEffect(() => {
+    if (!root) {
+      setStashes([]);
+      return;
+    }
+    let cancelled = false;
+    gitStashList(root)
+      .then((list) => {
+        if (!cancelled) setStashes(list);
+      })
+      .catch(() => {
+        if (!cancelled) setStashes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root, status]);
+
   /**
    * 停在哪个动作中间，以及「继续 / 中止」那两颗落到哪一对命令。
    * 提交面板的横幅和顶栏的微工具条都读这一份，不各写各的判断链。
@@ -520,13 +566,19 @@ export function useGitState(
    * 哪怕后面的推送失败——那段文字已经写进提交里了。
    */
   const commitAndPush = useCallback(
-    async (message: string, amend: boolean, setUpstream = false, paths?: string[]) => {
+    async (
+      message: string,
+      amend: boolean,
+      setUpstream = false,
+      paths?: string[],
+      options?: CommitRequestOptions
+    ) => {
       if (!root) return false;
       pushingCountRef.current += 1;
       setPushing(true);
       let committed = false;
       try {
-        await gitCommit(root, message, amend, paths);
+        await gitCommit(root, message, amend, paths, options);
         committed = true;
         await gitPush(root, setUpstream);
         return true;
@@ -636,6 +688,10 @@ export function useGitState(
       revertContinue,
       revertAbort,
       reset,
+      stashes,
+      stashPush,
+      stashApply,
+      stashDrop,
       fetch,
       pull,
       push,
@@ -691,6 +747,10 @@ export function useGitState(
       revertContinue,
       revertAbort,
       reset,
+      stashes,
+      stashPush,
+      stashApply,
+      stashDrop,
       fetch,
       pull,
       push,

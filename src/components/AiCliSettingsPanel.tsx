@@ -81,11 +81,10 @@ import type { CodexCatalogIntent, CodexCatalogView, ModelProvider } from "../lib
 import CodexCatalogSection from "./CodexCatalogSection";
 import Select from "./Select";
 import AiActionDialog from "./AiActionDialog";
-import { hasAiRuns, stopAllAiRuns } from "../lib/aiRuntime";
 import AiProviderIcon from "./AiProviderIcon";
 import type { TranslationKey } from "../i18n/lang/zh";
 
-/** AI 助手页标题栏只负责重新检测；总开关属于应用级设置，放在「通用」。 */
+/** AI 助手页标题栏只负责重新检测；总开关属于应用级设置，放在「外观与行为 → 系统设置」。 */
 export function AiCliSettingsControls() {
   const { t } = useI18n();
   const { settings } = useSettings();
@@ -100,40 +99,21 @@ export function AiCliSettingsControls() {
   </div>;
 }
 
-/**
- * 「通用」里的 AI 总开关。关闭时若仍有会话运行，必须先停止进程再落设置，
- * 不能只把导航和活动栏藏掉后留下后台任务。
- */
+/** 「通用」里的 AI 总开关：只负责菜单与侧栏入口的显隐，不停任何在跑的任务。 */
 export function AiAssistantsToggle() {
   const { t } = useI18n();
   const { settings, patch } = useSettings();
   const cli = useAiCli();
-  const [confirmDisable, setConfirmDisable] = useState(false);
-  const [disabling, setDisabling] = useState(false);
-  const [disableError, setDisableError] = useState<string | null>(null);
-  const disable = async () => {
-    setDisabling(true); setDisableError(null);
-    try { await stopAllAiRuns(); patch({ aiAssistantsEnabled: false }); setConfirmDisable(false); }
-    catch (error) { setDisableError(String(error)); }
-    finally { setDisabling(false); }
-  };
+  // 开关只负责藏入口，不停任务：多开窗口共享设置，这颗开关落下时
+  // 别的窗口可能正跑着会话，杀任务属于功能影响，不在开关的职责内。
   return <div className="ai-settings-controls">
     <button type="button" role="switch" className="ai-enable-switch"
       aria-checked={settings.aiAssistantsEnabled} aria-label={t("ai.enable")}
       title={t(cli.operation ? "ai.operationRunning" : "ai.enable")}
-      disabled={cli.operation !== null || disabling}
-      onClick={() => {
-        if (settings.aiAssistantsEnabled && hasAiRuns()) { setConfirmDisable(true); return; }
-        patch({ aiAssistantsEnabled: !settings.aiAssistantsEnabled });
-      }}>
+      disabled={cli.operation !== null}
+      onClick={() => patch({ aiAssistantsEnabled: !settings.aiAssistantsEnabled })}>
       <span />
     </button>
-    {confirmDisable ? <AiActionDialog title={t("ai.lifecycle.disableTitle")} confirm={t("ai.lifecycle.stopDisable")} danger
-      onCancel={() => { if (!disabling) setConfirmDisable(false); }} onConfirm={() => { if (!disabling) void disable(); }}>
-      <p className="dialog-body">{t("ai.lifecycle.disableHint")}</p>
-      {disableError ? <p className="ai-error" role="alert">{disableError}</p> : null}
-      {disabling ? <p role="status">{t("ai.lifecycle.stopping")}</p> : null}
-    </AiActionDialog> : null}
   </div>;
 }
 

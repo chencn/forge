@@ -1,5 +1,5 @@
 /**
- * 桌面右键守卫（1:1 抄 openidea browserGuards 语义）：
+ * 桌面右键守卫（1:1 抄 IDEA browserGuards 语义）：
  * - WebView2 原生右键菜单（刷新/打印/检查）在桌面应用里一律禁用；
  * - 组件自己接手的右键（弹了自绘菜单）不重复兜底；
  * - 未接手的右键落在可读文本（显式放开选中的区域，如通知标题/正文）上时，
@@ -87,12 +87,12 @@ export const contextMenuGuard = {
   },
 };
 
-/** 浏览器专属快捷键：桌面应用里没有意义，拦掉（对齐 openidea BLOCKED）。 */
+/** 浏览器专属快捷键：桌面应用里没有意义，拦掉（对齐 IDEA BLOCKED）。 */
 const BLOCKED = new Set([
   "Meta+P", "Ctrl+P", "Meta+S", "Meta+Shift+S", "Meta+O", "Meta+G", "Meta+Shift+G",
   "Meta+[", "Meta+]", "Meta+Alt+I", "Meta+U",
 ]);
-/** 刷新/硬刷新：WebView2 的 F5 会重载整个应用（对齐 openidea RELOAD，PROD 拦截）。 */
+/** 刷新/硬刷新：WebView2 的 F5 会重载整个应用（对齐 IDEA RELOAD，PROD 拦截）。 */
 const RELOAD = new Set(["Meta+R", "Meta+Shift+R", "Ctrl+R", "Ctrl+Shift+R", "F5", "Shift+F5"]);
 
 function keyId(e: KeyboardEvent): string {

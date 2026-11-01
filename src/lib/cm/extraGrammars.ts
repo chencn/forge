@@ -10,7 +10,7 @@
  */
 import { LanguageSupport, StreamLanguage } from "@codemirror/language";
 import { simpleMode } from "@codemirror/legacy-modes/mode/simple-mode";
-// 官方 legacy 模式里现成的几门：直接包一层补齐 openidea 有而 language-data 没有的语言。
+// 官方 legacy 模式里现成的几门：直接包一层补齐 IDEA 有而 language-data 没有的语言。
 import { diff } from "@codemirror/legacy-modes/mode/diff";
 import { erlang } from "@codemirror/legacy-modes/mode/erlang";
 import { haskell } from "@codemirror/legacy-modes/mode/haskell";
@@ -297,6 +297,7 @@ const EXTRA: Record<string, () => LanguageSupport> = {
   tex: () => legacy(stex),
   sass: () => legacy(sass),
   gomod: () => GOMOD,
+  gowork: () => GOMOD,
   "pip-requirements": () => PIP_REQUIREMENTS,
   makefile: () => MAKEFILE,
   hcl: () => HCL,

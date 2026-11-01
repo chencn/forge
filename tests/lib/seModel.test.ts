@@ -128,6 +128,11 @@ describe("matchActions 动作档", () => {
   it("带快捷键的动作把 shortcut 带上", () => {
     expect(matchActions([cmd("app.settings", "Open Settings", "Ctrl+,")], "open", [])[0]?.shortcut).toBe("Ctrl+,");
   });
+
+  it("上下文不可用的动作不进入搜索结果", () => {
+    expect(matchActions([{ ...cmd("code.rename", "Rename Symbol"), enabled: false }, cmd("code.format", "Reformat Code")], "code", [])).toHaveLength(1);
+    expect(matchActions([{ ...cmd("code.rename", "Rename Symbol"), enabled: false }, cmd("code.format", "Reformat Code")], "code", [])[0]?.id).toBe("code.format");
+  });
 });
 
 describe("textItem 正文行", () => {

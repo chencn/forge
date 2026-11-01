@@ -1,6 +1,6 @@
 /**
  * VCS 提交工具窗口核心模型：变更分组、目录树构建、纳入复选框聚合与提交计划。
- * 1:1 对标 IntelliJ IDEA / OpenIdea 的变更树模型，同时保留目录聚合圆点与行尾状态字母。
+ * 1:1 对标 IntelliJ IDEA / IDEA 的变更树模型，同时保留目录聚合圆点与行尾状态字母。
  */
 import type { GitChange } from "../../lib/git";
 import { changeMark, folderMarks, isDeletedMark } from "../../lib/git";
@@ -250,7 +250,7 @@ function tagChangelist(nodes: ChangeNode[], changelistId: string): ChangeNode[] 
 }
 
 /**
- * 构建完整的变更树（1:1 对标 OpenIdea，支持 Merge Conflicts、多 Changelist 拆分及 Unversioned Files）
+ * 构建完整的变更树（1:1 对标 IDEA，支持 Merge Conflicts、多 Changelist 拆分及 Unversioned Files）
  */
 export function buildChangeTree(
   changes: GitChange[],
@@ -395,8 +395,6 @@ export interface CommitPlan {
   stage: string[];
   /** 需要取消暂存的路径 */
   unstage: string[];
-  /** 用于 git commit --only 的路径 */
-  paths: string[];
 }
 
 /**
@@ -406,7 +404,7 @@ export function planCommit(
   changes: readonly GitChange[],
   checks: ReadonlyMap<string, CheckState>
 ): CommitPlan {
-  const plan: CommitPlan = { included: [], stage: [], unstage: [], paths: [] };
+  const plan: CommitPlan = { included: [], stage: [], unstage: [] };
   for (const c of changes) {
     const check = checkOf(c, checks);
     const staged = isStaged(c);
@@ -417,7 +415,6 @@ export function planCommit(
       continue;
     }
     plan.included.push(c);
-    plan.paths.push(c.path);
     if (check === "all" && !staged) {
       plan.stage.push(c.path);
     }

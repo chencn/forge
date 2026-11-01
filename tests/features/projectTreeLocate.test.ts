@@ -6,7 +6,7 @@
  * 2. 单击文件行应经 onPick 回流后呈现选中态。
  * 路径形态按真实后端返回（反斜杠 + 大写盘符）构造。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { FsEntry } from "../../src/lib/fs";
@@ -76,6 +76,8 @@ function entry(name: string, path: string, kind: "file" | "directory"): FsEntry 
     modifiedMs: 0,
     isSymlink: false,
     isHidden: false,
+    isIgnored: false,
+    isExcluded: false,
     isReadonly: false,
   };
 }
@@ -169,6 +171,11 @@ beforeEach(() => {
   seedTree();
 });
 
+afterEach(() => {
+  // 单击行为测试往 localStorage 种的视图选项不能漏到后面的用例
+  localStorage.removeItem("forge:tree:options:d:/proj");
+});
+
 describe("ProjectTree 选中回归", () => {
   it("树全折叠时点击「选择已打开的文件」：展开祖先并选中目标文件行", { timeout: 15000 }, async () => {
     await mountTree();
@@ -194,7 +201,13 @@ describe("ProjectTree 选中回归", () => {
   });
 
   it("单击文件行：选中高亮随 onPick 回流生效", { timeout: 15000 }, async () => {
-    await mountTree();
+    // 默认值已对齐 IDEA（单击不开文件）；这条测的是「开着 singleClickOpen 时单击即开」的行为
+    localStorage.setItem(
+      "forge:tree:options:d:/proj",
+      JSON.stringify({ _v: 4, singleClickOpen: true })
+    );
+    const onOpenFile = vi.fn();
+    await mountTree({ onOpenFile });
 
     const row = findRow("README.md");
     expect(row).not.toBeNull();
@@ -207,6 +220,43 @@ describe("ProjectTree 选中回归", () => {
 
     expect(row!.getAttribute("aria-selected")).toBe("true");
     expect(pickCalls.some((entries) => entries.some((e) => e.name === "README.md"))).toBe(true);
+
+    // 对标 IDEA：单击文件内容区域即触发 onOpenFile 打开文件，无需双击
+    const content = row!.querySelector<HTMLElement>("[data-project-path]");
+    expect(content).not.toBeNull();
+    await act(async () => {
+      content!.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    expect(onOpenFile).toHaveBeenCalledTimes(1);
+    expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ name: "README.md" }));
+  });
+
+  it("单击目录行：开着 singleClickExpand 时单击即展开", { timeout: 15000 }, async () => {
+    // 默认值已对齐 IDEA（单击不展开）；这条测的是「开着 singleClickExpand 时单击即展开」的行为
+    localStorage.setItem(
+      "forge:tree:options:d:/proj",
+      JSON.stringify({ _v: 4, singleClickExpand: true })
+    );
+    await mountTree();
+
+    const dirRow = findRow("src");
+    expect(dirRow).not.toBeNull();
+    // 初始状态未展开
+    expect(dirRow!.getAttribute("aria-expanded")).toBe("false");
+    expect(findRow("App.tsx")).toBeNull();
+
+    // 对标 IDEA：单击目录内容区域即触发展开
+    const dirContent = dirRow!.querySelector<HTMLElement>("[data-project-path]");
+    expect(dirContent).not.toBeNull();
+    await act(async () => {
+      dirContent!.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    // 等待子目录加载完成
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(findRow("App.tsx")).not.toBeNull();
   });
 
   it("小写盘符 + 反斜杠的文档路径（真实后端污染形态）也能定位选中", { timeout: 15000 }, async () => {

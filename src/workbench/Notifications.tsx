@@ -50,7 +50,7 @@ function useWindowActive(): boolean {
 }
 
 /**
- * 通知自身动作之后追加「不再显示」（对齐 openidea notificationActions/canSuppress）：
+ * 通知自身动作之后追加「不再显示」（对齐 IDEA notificationActions/canSuppress）：
  * 错误级不可抑制——错误本来就必须让用户看见。
  */
 function notificationActions(n: IdeNotification): NonNullable<IdeNotification["actions"]> {

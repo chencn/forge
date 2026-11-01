@@ -20,7 +20,7 @@ import { extraGrammar } from "./extraGrammars";
 /** 显式声明"这就是纯文本"的围栏标记：不去猜语法，也别浪费一次加载。 */
 
 /**
- * 注释符补全（对齐 openidea 的后端 commentTokens 注入）：官方 lang-* 包多数自带
+ * 注释符补全（对齐 IDEA 的后端 commentTokens 注入）：官方 lang-* 包多数自带
  * commentTokens，但 language-data 里那批 legacy 模式（shell/lua/perl/erlang…）
  * 和 extraGrammars 的 simpleMode 全都没有——缺了它们 Ctrl+/ 就是死键。
  * 表只列「确认官方没带」的；官方已带的（js/ts/css/html/python/rust/java/c…）不要重复注入。
@@ -51,7 +51,7 @@ const COMMENT_TOKENS: Record<string, { line?: string; block?: [string, string] }
 };
 
 /**
- * 语法配色补丁（1:1 抄 openidea cm/languages.ts EXTRA_TAGS/patchSupport）：
+ * 语法配色补丁（1:1 抄 IDEA cm/languages.ts EXTRA_TAGS/patchSupport）：
  * Java 注解、CSS/SCSS/Sass 的 tag↔attribute 互换、YAML 键染关键字——官方语法包的
  * 缺口，IntelliJ 里这些是别的颜色。键是 LanguageDescription.name，走 LRLanguage.configure。
  */
@@ -81,7 +81,7 @@ function withCommentTokens(support: LanguageSupport, lang: string): LanguageSupp
   ]);
 }
 
-/** 配色补丁：只对 LR 语法生效（对齐 openidea patchSupport）。键用 LanguageDescription.name。 */
+/** 配色补丁：只对 LR 语法生效（对齐 IDEA patchSupport）。键用 LanguageDescription.name。 */
 function patchSyntaxTags(support: LanguageSupport, name: string): LanguageSupport {
   const extra = EXTRA_TAGS[name];
   if (!extra || !(support.language instanceof LRLanguage)) return support;
@@ -95,12 +95,29 @@ const PLAIN = new Set(["", "text", "txt", "plaintext", "plain", "none", "log", "
  * `restructuredtext` → LaTeX（`r` 那一串后缀撞上了），`javascriptreact` → Java。
  * 两者都是编辑器侧的 id（围栏里没人这么写），但同一条解析路径两份都要走，所以放这里。
  */
-const WRONG = new Set(["javascriptreact", "typescriptreact"]);
+const WRONG = new Set<string>();
 
 /** id 与 Lezer 那张表叫法不一致的那些，以及正文/围栏里常见的简写。 */
 const SPELLINGS: Record<string, string> = {
   proto: "protobuf",
   gradle: "groovy",
+  // 语言目录把 JSX 算成独立语言（对标 IDE 的 id），语法上它们就是 TSX/JSX 两套。
+  typescriptreact: "TSX",
+  javascriptreact: "JSX",
+  // 语言目录改用对标 IDE 的 id 后，这几门在 CM 里叫别的名字（或走最近的亲戚染色）。
+  shellscript: "shell",
+  "ocaml-interface": "ocaml",
+  "objective-cpp": "objective-c",
+  terraform: "hcl",
+  "terraform-vars": "hcl",
+  dotenv: "properties",
+  ignore: "properties",
+  gitattributes: "properties",
+  "godot-resource": "properties",
+  gdscript: "python",
+  gdshader: "cpp",
+  vue: "html",
+  svelte: "html",
   // 自家补的那批（cm/extraGrammars.ts）的简写与别名。
   kt: "kotlin",
   kts: "kotlin",

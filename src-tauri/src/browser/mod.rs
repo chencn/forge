@@ -162,7 +162,7 @@ fn start(app: &AppHandle) -> Result<(), String> {
         let mut state = host(app).lock();
         state.endpoint = endpoint.clone();
         state.stopped = false;
-        state.enabled = settings.ai_assistants_enabled && settings.browser.enabled;
+        state.enabled = settings.browser.enabled;
         state.appearance = (settings.language, settings.theme);
     }
     let app = app.clone();
@@ -278,7 +278,7 @@ fn changed(app: &AppHandle) {
 /// 顺带把语言与主题也存进镜像：批注浮层在 UI 线程上呈现，不能为这两个字段读磁盘。
 fn sync_capability(app: &AppHandle) -> bool {
     let settings = crate::settings::read(app);
-    let enabled = settings.ai_assistants_enabled && settings.browser.enabled;
+    let enabled = settings.browser.enabled;
     let mut state = host(app).lock();
     state.enabled = enabled;
     state.appearance = (settings.language, settings.theme);
@@ -289,7 +289,7 @@ fn sync_capability(app: &AppHandle) -> bool {
 /// 保存发生在阻塞线程上，之后 UI 线程只管读镜像，不再为一次浮层呈现读文件。
 pub fn settings_saved(app: &AppHandle, settings: &crate::settings::Settings) {
     let mut state = host(app).lock();
-    state.enabled = settings.ai_assistants_enabled && settings.browser.enabled;
+    state.enabled = settings.browser.enabled;
     state.appearance = (settings.language.clone(), settings.theme.clone());
 }
 
@@ -670,9 +670,6 @@ pub struct Bounds {
 }
 #[tauri::command]
 pub async fn browser_panel_state(app: AppHandle, workspace: String) -> Result<Value, String> {
-    if !crate::settings::read(&app).ai_assistants_enabled {
-        return Err(crate::error::err("BROWSER_DISABLED", "AI assistants are off"));
-    }
     let workspace = crate::ai_runtime::browser_workspace(&workspace)?;
     let state = host(&app).lock();
     let mut tabs = state.tabs.values().filter(|tab| tab.workspace == workspace).collect::<Vec<_>>();

@@ -15,6 +15,10 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EditorSettings {
+    /// 括号按嵌套深度上色（对标 IDEA 默认关）。
+    pub rainbow_brackets: bool,
+    /// 正文字体族；空串跟随 `--font-mono`。
+    pub font_family: String,
     /// 字号（px）。
     pub font_size: u32,
     /// 制表宽度。
@@ -27,17 +31,37 @@ pub struct EditorSettings {
     pub save_policy: String,
     /// 退出前是否把没保存的改动写回磁盘。
     pub save_on_exit: bool,
+    /// 手动保存、失焦保存和退出保存前请求语言服务格式化。
+    pub format_on_save: bool,
+    /// 保存时删除行尾空格和制表符。
+    pub trim_trailing_whitespace: bool,
+    /// 保存时保证非空文本以换行结束。
+    pub insert_final_newline: bool,
+    /// 软换行（IDEA 默认关）。
+    pub soft_wrap: bool,
+    /// 显示空白符（IDEA 默认关）。
+    pub show_whitespace: bool,
+    /// 行高（px）；0 表示自动按字号 1.69 倍推导。
+    pub line_height: u32,
 }
 
 impl Default for EditorSettings {
     fn default() -> Self {
         Self {
+            rainbow_brackets: false,
+            font_family: String::new(),
             font_size: 13,
             tab_size: 2,
             minimap: true,
             keymap: "default".to_string(),
             save_policy: "blur".to_string(),
             save_on_exit: true,
+            format_on_save: false,
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            soft_wrap: false,
+            show_whitespace: false,
+            line_height: 0,
         }
     }
 }
@@ -238,6 +262,95 @@ impl Default for ShellSettings {
     }
 }
 
+/// 事务工单规则项（对标 IDEA Issue Navigation 规范）
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IssueNavigationPattern {
+    pub id: String,
+    pub issue_id: String,
+    pub issue_link: String,
+}
+
+/// 版本控制完整配置，1:1 对标 IDEA VCS 设置规范
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VcsSettings {
+    pub non_modal_commit: bool,
+    pub clear_initial_commit_message: bool,
+    pub blank_line_after_subject: bool,
+    pub limit_subject_line: bool,
+    pub subject_line_limit: u32,
+    pub limit_body_line: bool,
+    pub body_line_limit: u32,
+    pub show_right_margin: bool,
+    pub wrap_right_margin: bool,
+    pub check_analyze_code: bool,
+    pub check_todo: bool,
+    pub check_reformat_code: bool,
+    pub check_optimize_imports: bool,
+    pub check_cleanup: bool,
+    pub show_update_options: bool,
+    pub highlight_dirty_directories: bool,
+    pub on_patch_created: String,
+    pub limit_history_rows: u32,
+    pub warn_crlf: bool,
+    pub warn_detached_head: bool,
+    pub sign_off_commit: bool,
+    pub warn_large_files: bool,
+    pub large_files_limit_mb: u32,
+    pub warn_bad_file_names: bool,
+    pub show_push_dialog: String,
+    pub protected_branches: String,
+    pub issue_navigation_patterns: Vec<IssueNavigationPattern>,
+}
+
+impl Default for VcsSettings {
+    fn default() -> Self {
+        Self {
+            non_modal_commit: true,
+            clear_initial_commit_message: false,
+            blank_line_after_subject: true,
+            limit_subject_line: true,
+            subject_line_limit: 72,
+            limit_body_line: true,
+            body_line_limit: 72,
+            show_right_margin: true,
+            wrap_right_margin: false,
+            check_analyze_code: false,
+            check_todo: true,
+            check_reformat_code: false,
+            check_optimize_imports: false,
+            check_cleanup: false,
+            show_update_options: true,
+            highlight_dirty_directories: true,
+            on_patch_created: "clipboard".to_string(),
+            limit_history_rows: 1000,
+            warn_crlf: true,
+            warn_detached_head: true,
+            sign_off_commit: false,
+            warn_large_files: true,
+            large_files_limit_mb: 50,
+            warn_bad_file_names: true,
+            show_push_dialog: "protected".to_string(),
+            protected_branches: "master;main;release/*".to_string(),
+            issue_navigation_patterns: vec![IssueNavigationPattern {
+                id: "1".to_string(),
+                issue_id: "([A-Z]+-\\d+)".to_string(),
+                issue_link: "https://jira.example.com/browse/$1".to_string(),
+            }],
+        }
+    }
+}
+
+/// 通知规则项
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotificationGroupRule {
+    pub display_type: String,
+    pub log: bool,
+    pub system: bool,
+}
+
 /// 一份全局设置。缺字段时按 Default 补，改结构不用迁移旧文件。
 ///
 /// 这里只放偏好：主题、字号这类几个月不动一次的选择。用户做过的流水（上次开的项目、
@@ -246,9 +359,9 @@ impl Default for ShellSettings {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// AI 编程助手总开关，默认关闭。
+    /// AI 编程助手总开关，默认关闭。只决定菜单与侧栏入口显不显示，不拦截任何功能。
     pub ai_assistants_enabled: bool,
-    /// Browser access is subordinate to the AI master switch; unsafe features need explicit opt-in.
+/// Browser access has its own enable switch; unsafe features need explicit opt-in.
     pub browser: crate::browser::BrowserSettings,
     /// 外观：light / dark / system。
     pub theme: String,
@@ -276,6 +389,16 @@ pub struct Settings {
     pub run: RunSettings,
     /// 按项目根保存的目录角色；相对路径到角色名的映射。
     pub project_directory_roles: HashMap<String, HashMap<String, String>>,
+    /// 版本控制完整配置
+    pub vcs: VcsSettings,
+    /// 通知勿扰模式
+    pub notification_do_not_disturb: bool,
+    /// 通知气泡总开关
+    pub notification_balloons: bool,
+    /// 通知声音
+    pub notification_sound: bool,
+    /// 按组通知规则
+    pub notification_groups: HashMap<String, NotificationGroupRule>,
 }
 
 impl Default for Settings {
@@ -298,6 +421,11 @@ impl Default for Settings {
             updates: UpdateSettings::default(),
             run: RunSettings::default(),
             project_directory_roles: HashMap::new(),
+            vcs: VcsSettings::default(),
+            notification_do_not_disturb: false,
+            notification_balloons: true,
+            notification_sound: false,
+            notification_groups: HashMap::new(),
         }
     }
 }
@@ -381,37 +509,24 @@ fn apply_patch(document: serde_json::Value, patch: &serde_json::Value) -> Result
 /// 写的是合并后的文档而不是结构体，所以文件里我们不认识的段落（例如搬去 `lsp.json`
 /// 之前残留的 `lsp`）会原样留着——读不懂的东西不该顺手删掉。
 ///
-/// 关闭 AI 助手仍然要先把在跑的 CLI 停掉并等它们退出，但只在**这次合并把它从开变成关**
-/// 时停：否则一次无关的保存（改个字号）也会把正在跑的任务全杀掉。
-/// `lifecycle_lock` 与启动路径共用同一把锁，防止「保存的同时又发起新运行」这种交叉。
+/// AI 总开关只决定菜单与侧边栏入口显不显示，不在保存路径上停任务、不动浏览器授权：
+/// 多开窗口共享同一份设置，一个窗口把开关关掉，不该杀掉别的窗口里正在跑的会话，
+/// 也不该把已经渲染出来的功能面板锁死。开关落盘即可，其余状态各归各的开关管。
 #[tauri::command]
 pub async fn settings_save(app: AppHandle, patch: serde_json::Value) -> Result<Settings, String> {
     block(move || {
-        let (merged, stopping) = {
-            let _lifecycle = crate::ai_runtime::lifecycle_lock();
-            let _guard = SETTINGS_LOCK.lock().map_err(|error| error.to_string())?;
-            let path = settings_path(&app)?;
-            let dir = path.parent().ok_or_else(|| err("CONFIG_DIR", "设置路径没有父目录"))?;
-            fs::create_dir_all(dir).map_err(|error| err_parts("IO", &[dir.display().to_string(), error.to_string()]))?;
-            let _file_guard = crate::sys::ExclusiveFileLock::acquire(&dir.join("settings.lock"))?;
-            let before = read(&app);
-            let (document, merged) = apply_patch(read_document(&app)?, &patch)?;
-            // 锁内只清队列、置停止位并保存开关；真正等进程退出必须等三把锁都释放。
-            let stopping = if before.ai_assistants_enabled && !merged.ai_assistants_enabled {
-                Some(crate::ai_runtime::stop_for_disable(&app)?)
-            } else {
-                None
-            };
-            save_document(&app, &document)?;
-            // Revoke synchronously after persistence and before returning to any UI caller.
-            crate::browser::settings_saved(&app, &merged);
-            if before.browser != merged.browser || !merged.ai_assistants_enabled {
-                crate::browser::permissions_changed(&app,!merged.ai_assistants_enabled || !merged.browser.enabled);
-            }
-            (merged, stopping)
-        };
-        if let Some(stopping) = stopping {
-            crate::ai_runtime::wait_for_disable(stopping)?;
+        let _guard = SETTINGS_LOCK.lock().map_err(|error| error.to_string())?;
+        let path = settings_path(&app)?;
+        let dir = path.parent().ok_or_else(|| err("CONFIG_DIR", "设置路径没有父目录"))?;
+        fs::create_dir_all(dir).map_err(|error| err_parts("IO", &[dir.display().to_string(), error.to_string()]))?;
+        let _file_guard = crate::sys::ExclusiveFileLock::acquire(&dir.join("settings.lock"))?;
+        let before = read(&app);
+        let (document, merged) = apply_patch(read_document(&app)?, &patch)?;
+        save_document(&app, &document)?;
+        // Revoke synchronously after persistence and before returning to any UI caller.
+        crate::browser::settings_saved(&app, &merged);
+        if before.browser != merged.browser {
+            crate::browser::permissions_changed(&app, !merged.browser.enabled);
         }
         Ok(merged)
     })

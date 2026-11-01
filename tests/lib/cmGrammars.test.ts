@@ -8,14 +8,21 @@ import { describeGrammar, highlightCodeHtml, loadGrammar, pathExtension } from "
  */
 describe("语法判定", () => {
   it("tsx / jsx 按文档后缀纠到 TSX / JSX", () => {
-    // editorEnv 给的语言 id 只有 typescript / javascript（那是 tsserver 的口径）。
+    // 旧目录给的语言 id 只有 typescript / javascript（那是 tsserver 的口径）。
     expect(describeGrammar("typescript", "tsx")?.name).toBe("TSX");
     expect(describeGrammar("javascript", "jsx")?.name).toBe("JSX");
     expect(describeGrammar("typescript")?.name).toBe("TypeScript");
   });
 
+  it("语言目录把 JSX 算成独立语言后，这两个 id 直接认到 TSX / JSX", () => {
+    // 新目录对标 IDE：.tsx → typescriptreact、.jsx → javascriptreact。
+    // 映射断了会整门掉高亮（matchLanguageName 会把 react 认成 Java）。
+    expect(describeGrammar("typescriptreact")?.name).toBe("TSX");
+    expect(describeGrammar("javascriptreact")?.name).toBe("JSX");
+    expect(describeGrammar("typescriptreact", "tsx")?.name).toBe("TSX");
+  });
+
   it("会认错成别的语言的那些 id 不上错语法", () => {
-    expect(describeGrammar("javascriptreact")).toBeNull();
     // reST 不再被模糊匹配拉去 LaTeX（那会把整篇串色），改按 Markdown 近似。
     expect(describeGrammar("restructuredtext")?.name).toBe("Markdown");
   });

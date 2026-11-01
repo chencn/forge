@@ -59,6 +59,72 @@ export function EditorGeneralPage() {
           />
         </div>
 
+        <div className="settings-row">
+          <span className="settings-label">{t("settings.formatOnSave")}</span>
+          <Select
+            label={t("settings.formatOnSave")}
+            placeholder="—"
+            value={settings.editor.formatOnSave ? "yes" : "no"}
+            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+            onChange={(next) => patch({ editor: { ...settings.editor, formatOnSave: next === "yes" } })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <span className="settings-label">{t("settings.rainbowBrackets")}</span>
+          <Select
+            label={t("settings.rainbowBrackets")}
+            placeholder="—"
+            value={settings.editor.rainbowBrackets ? "yes" : "no"}
+            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+            onChange={(next) => patch({ editor: { ...settings.editor, rainbowBrackets: next === "yes" } })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <span className="settings-label">{t("settings.softWrap")}</span>
+          <Select
+            label={t("settings.softWrap")}
+            placeholder="—"
+            value={settings.editor.softWrap ? "yes" : "no"}
+            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+            onChange={(next) => patch({ editor: { ...settings.editor, softWrap: next === "yes" } })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <span className="settings-label">{t("settings.showWhitespace")}</span>
+          <Select
+            label={t("settings.showWhitespace")}
+            placeholder="—"
+            value={settings.editor.showWhitespace ? "yes" : "no"}
+            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+            onChange={(next) => patch({ editor: { ...settings.editor, showWhitespace: next === "yes" } })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <span className="settings-label">{t("settings.trimTrailingWhitespace")}</span>
+          <Select
+            label={t("settings.trimTrailingWhitespace")}
+            placeholder="—"
+            value={settings.editor.trimTrailingWhitespace ? "yes" : "no"}
+            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+            onChange={(next) => patch({ editor: { ...settings.editor, trimTrailingWhitespace: next === "yes" } })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <span className="settings-label">{t("settings.insertFinalNewline")}</span>
+          <Select
+            label={t("settings.insertFinalNewline")}
+            placeholder="—"
+            value={settings.editor.insertFinalNewline ? "yes" : "no"}
+            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
+            onChange={(next) => patch({ editor: { ...settings.editor, insertFinalNewline: next === "yes" } })}
+          />
+        </div>
+
       </div>
     </div>
   );
@@ -77,9 +143,9 @@ export function EditorFontPage() {
           <input
             type="text"
             className="text-input"
-            value={settings.terminal.fontFamily || "JetBrains Mono"}
+            value={settings.editor.fontFamily}
             placeholder="JetBrains Mono, Menlo, monospace"
-            onChange={(e) => patch({ terminal: { ...settings.terminal, fontFamily: e.target.value } })}
+            onChange={(e) => patch({ editor: { ...settings.editor, fontFamily: e.target.value } })}
           />
         </div>
         <div className="settings-row">
@@ -93,6 +159,23 @@ export function EditorFontPage() {
             onChange={(e) => {
               const val = Number(e.target.value);
               if (!Number.isNaN(val)) patch({ editor: { ...settings.editor, fontSize: val } });
+            }}
+          />
+          <span className="settings-unit">px</span>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label" title="0 = auto">
+            {t("settings.lineHeight")}
+          </span>
+          <input
+            type="number"
+            className="text-input"
+            min={0}
+            max={64}
+            value={settings.editor.lineHeight || 0}
+            onChange={(e) => {
+              const val = Number(e.target.value);
+              if (!Number.isNaN(val)) patch({ editor: { ...settings.editor, lineHeight: val } });
             }}
           />
           <span className="settings-unit">px</span>

@@ -227,7 +227,7 @@ export class SeController {
           const items: SeItem[] = this.deps
             .recentActions()
             .map((actionId) => byId.get(actionId))
-            .filter((command): command is ForgeCommand => !!command)
+            .filter((command): command is ForgeCommand => !!command && command.enabled !== false)
             .slice(0, limit)
             .map((command) => ({
               kind: "action",

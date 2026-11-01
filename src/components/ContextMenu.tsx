@@ -73,12 +73,15 @@ export default function ContextMenu({
   onClose: () => void;
 }) {
   const uiItems = useMemo(() => anchor.items.map(toUiMenuItem), [anchor.items]);
+  // 锚点坐标对象要按值稳定：调用方常在渲染里现拼 MenuAnchor，对象引用每次都变，
+  // 会让 Popup 的层级栈 effect 跟着每次父渲染重跑（释放又重开、监听器重装）。
+  const point = useMemo(() => ({ x: anchor.x, y: anchor.y }), [anchor.x, anchor.y]);
 
   return (
     <UiMenu
       open={true}
       onClose={onClose}
-      anchor={{ x: anchor.x, y: anchor.y }}
+      anchor={point}
       items={uiItems}
       placement="bottom-start"
     />

@@ -28,8 +28,7 @@ import {
 import { useI18n } from "../../i18n";
 import type { FsEntry } from "../../lib/fs";
 import type { GitChange } from "../../lib/git";
-import { changeMark, folderMarks, ignoredRoots, markClass } from "../../lib/git";
-import { loadIgnored, subscribeIgnored } from "../../lib/ignoredCache";
+import { changeMark, folderMarks, markClass } from "../../lib/git";
 import { basenameOf, samePath } from "../../lib/format";
 import EntryIcon from "../../components/EntryIcon";
 import { Icon } from "../../ui/Icon";
@@ -58,8 +57,6 @@ import {
   ScratchesIcon,
 } from "../../ui/icons/ProjectIcons";
 import {
-  isIgnoredName,
-  isExcludedFolder,
   tildify,
   type ProjectTreeNode,
   type EditingState,
@@ -73,7 +70,15 @@ import {
   isGroupKey,
 } from "./model";
 import { InlineEditor } from "./InlineEditor";
-import { loadExpanded, loadViewMode, loadViewOptions, saveExpanded, saveViewMode, saveViewOptions } from "./viewState";
+import {
+  hasSavedViewOptions,
+  loadExpanded,
+  loadViewMode,
+  loadViewOptions,
+  saveExpanded,
+  saveViewMode,
+  saveViewOptions,
+} from "./viewState";
 import styles from "./ProjectTree.module.css";
 import { roleAtPath, type ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
 
@@ -96,6 +101,11 @@ export interface ProjectTreeProps {
   readonly showIgnored: boolean;
   /** 是否显示系统隐藏/点开头文件 */
   readonly showHidden: boolean;
+  /** 由 App 统一持有的文件树剪贴板；不再在树组件内部另起一份。 */
+  readonly clipboard?: ClipboardState | null;
+  readonly onClipboardChange?: (next: ClipboardState | null) => void;
+  /** 在项目目录树中高亮显示包含已修改文件的父目录 (对标 IDEA VCS 规范) */
+  readonly highlightDirtyDirectories?: boolean;
   /** 当前项目内持久化的显式目录角色。 */
   readonly directoryRoles?: Readonly<Record<string, ProjectDirectoryRole>>;
   /** 当前仍打开着的工作区根列表（用于常驻工程缓存垃圾回收） */
@@ -135,6 +145,15 @@ export interface ProjectTreeProps {
 }
 
 const pathKey = normalizePathKey;
+
+/** 没有项目级旧数据时沿用全局设置；一旦保存过，项目自己的视图选项优先。 */
+function initialViewOptions(root: string, showHidden: boolean, showIgnored: boolean): ViewOptions {
+  const key = pathKey(root);
+  const saved = loadViewOptions(key);
+  return hasSavedViewOptions(key)
+    ? saved
+    : { ...saved, showHidden, showExcluded: showIgnored };
+}
 
 function parentOfPath(path: string): string {
   const norm = path.replaceAll("\\", "/").replace(/\/+$/, "");
@@ -191,6 +210,8 @@ function makeVirtualDirectoryEntry(name: string, path: string): FsEntry {
     modifiedMs: 0,
     isSymlink: false,
     isHidden: false,
+    isIgnored: false,
+    isExcluded: false,
     isReadonly: true,
   };
 }
@@ -231,7 +252,8 @@ function isVirtualPath(path: string): boolean {
 
 /** 惰性目录缓存 Hook */
 function useLazyChildren(
-  refresh: { paths: string[] | null; seq: number }
+  refresh: { paths: string[] | null; seq: number },
+  expanded: ReadonlySet<string>
 ) {
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map());
   const childrenRef = useRef(children);
@@ -239,6 +261,11 @@ function useLazyChildren(
   // 小写缓存 key → 首次登记的原文形态路径。expanded/行 key 都是小写契约，
   // 若按 key 还原出的小写路径去 listDirectory，后端拼出的子条目 path 会带上小写前缀。
   const rawPathByKey = useRef<Map<string, string>>(new Map());
+  // 已作废但尚未重读的目录：展开时 load 必须重读，不能拿旧缓存交差。
+  const staleKeysRef = useRef<Set<string>>(new Set());
+  // effect 里只读 ref：把 expanded 放进依赖会让每次展开/折叠都重跑一遍作废逻辑。
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
 
   const reloadDir = useCallback(
     (dir: string) => {
@@ -252,7 +279,7 @@ function useLazyChildren(
         })
         .catch(() => {
           // 首次读取失败（不存在/受限）：置空列表显示空目录，不触发红色横条；
-          // 已有缓存时刷新失败：保留旧内容（对齐 openidea loadDir 的错误分级）。
+          // 已有缓存时刷新失败：保留旧内容（对齐 IDEA loadDir 的错误分级）。
           setChildren((prev) => (prev.has(key) ? prev : new Map(prev).set(key, [])));
         });
     },
@@ -263,7 +290,8 @@ function useLazyChildren(
     (dir: string) => {
       if (!dir || isVirtualPath(dir)) return;
       const key = pathKey(dir);
-      if (childrenRef.current.has(key)) return;
+      // 作废过的目录即使有缓存也要重读；其余命中缓存直接用。
+      if (!staleKeysRef.current.delete(key) && childrenRef.current.has(key)) return;
       // 优先还原原文形态（调用方可能只拿得到小写化的行 key）
       reloadDir(rawPathByKey.current.get(key) ?? dir);
     },
@@ -275,24 +303,34 @@ function useLazyChildren(
     const { paths } = refresh;
 
     if (paths === null) {
-      setChildren(new Map());
+      // 全量作废不清缓存：清空会让整棵树闪空白再逐目录回来。展开中的目录后台重读，
+      // 旧内容保留到新内容到达；折叠目录只标 stale，等展开时经 load 重读——
+      // 变动落在折叠目录里时树完全不动。
+      for (const key of childrenRef.current.keys()) staleKeysRef.current.add(key);
+      for (const key of expandedRef.current) {
+        if (isVirtualPath(key)) continue;
+        const rawPath = pathOfKey(key);
+        if (isVirtualPath(rawPath)) continue;
+        const cacheKey = pathKey(rawPath);
+        if (!childrenRef.current.has(cacheKey)) continue;
+        staleKeysRef.current.delete(cacheKey);
+        reloadDir(rawPathByKey.current.get(cacheKey) ?? rawPath);
+      }
       return;
     }
 
-    setChildren((prev) => {
-      let changed = false;
-      const next = new Map(prev);
-      for (const p of paths) {
-        for (const k of next.keys()) {
-          if (touched(k, p)) {
-            next.delete(k);
-            changed = true;
-          }
-        }
+    // 精确作废同样保留旧内容后台重读：删缓存会让该目录闪空再回来。
+    const dirs = new Set<string>();
+    for (const changed of paths) {
+      for (const key of childrenRef.current.keys()) {
+        if (touched(key, changed)) dirs.add(key);
       }
-      return changed ? next : prev;
-    });
-  }, [refresh]);
+    }
+    for (const key of dirs) {
+      staleKeysRef.current.delete(key);
+      reloadDir(rawPathByKey.current.get(key) ?? pathOfKey(key));
+    }
+  }, [refresh, reloadDir]);
 
   return { children, load, reloadDir };
 }
@@ -306,6 +344,9 @@ export function ProjectTree({
   reveal,
   showIgnored: propShowIgnored,
   showHidden: propShowHidden,
+  clipboard: propsClipboard,
+  onClipboardChange,
+  highlightDirtyDirectories = true,
   directoryRoles,
   openRoots: _openRoots,
   activeFile,
@@ -326,13 +367,11 @@ export function ProjectTree({
   const { t } = useI18n();
 
   // 1. 顶部 Header 状态（视图模式 + 选项）
-  // 视图选项/模式/展开状态按工程根持久化（对齐 openidea store 的 localStorage 层）
+  // 视图选项/模式/展开状态按工程根持久化（对齐 IDEA store 的 localStorage 层）
   const [viewMode, setViewModeRaw] = useState<ProjectViewMode>(() => loadViewMode(pathKey(root)));
-  const [options, setOptionsRaw] = useState<ViewOptions>(() => ({
-    ...loadViewOptions(pathKey(root)),
-    showHidden: propShowHidden,
-    showExcluded: propShowIgnored,
-  }));
+  const [options, setOptionsRaw] = useState<ViewOptions>(() =>
+    initialViewOptions(root, propShowHidden, propShowIgnored)
+  );
 
   const setViewMode = useCallback((mode: ProjectViewMode) => {
     setViewModeRaw(mode);
@@ -353,7 +392,9 @@ export function ProjectTree({
   const [editing, setEditing] = useState<EditingState | null>(null);
 
   // 4. 剪贴板状态 (Ctrl+X 剪切 / Ctrl+C 复制)
-  const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
+  const [localClipboard, setLocalClipboard] = useState<ClipboardState | null>(null);
+  const clipboard = propsClipboard ?? localClipboard;
+  const updateClipboard = onClipboardChange ?? setLocalClipboard;
 
   // 5. 拖拽交互状态 (Drag & Drop)
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -377,6 +418,21 @@ export function ProjectTree({
       return next;
     });
   }, [root]);
+
+  const mountedRootKey = useRef(pathKey(root));
+  useEffect(() => {
+    const nextRootKey = pathKey(root);
+    if (mountedRootKey.current === nextRootKey) return;
+    mountedRootKey.current = nextRootKey;
+    // 根目录切换时旧工程的异步落盘计时器不能覆盖新工程的展开状态。
+    if (expandedSaveTimer.current !== null) {
+      window.clearTimeout(expandedSaveTimer.current);
+      expandedSaveTimer.current = null;
+    }
+    setViewModeRaw(loadViewMode(nextRootKey));
+    setOptionsRaw(initialViewOptions(root, propShowHidden, propShowIgnored));
+    setExpandedRaw(loadExpanded(nextRootKey) ?? new Set([normalizeNodeKey(root)]));
+  }, [propShowHidden, propShowIgnored, root]);
   // 待执行的滚动/聚焦定位请求引用 (1:1 对标 IntelliJ IDEA revealRequest)
   const pendingRevealRef = useRef<{
     path: string;
@@ -406,22 +462,20 @@ export function ProjectTree({
     };
   }, []);
 
-  const { children, load, reloadDir } = useLazyChildren(refresh);
+  const { children, load, reloadDir } = useLazyChildren(refresh, expanded);
 
   // 初始加载工作区物理根
   useEffect(() => {
     load(root);
   }, [root, load]);
 
-  // 展开集合状态驱动加载真实目录
+  // 展开集合状态驱动加载真实目录：是否真读盘由 load 决定（有缓存且未作废就跳过），
+  // 这里无条件调它，作废过的目录重新展开时才能拿到新内容。
   useEffect(() => {
     for (const key of expanded) {
-      if (!isVirtualPath(key)) {
-        const rawPath = pathOfKey(key);
-        if (!isVirtualPath(rawPath) && !children.has(pathKey(rawPath))) {
-          load(rawPath);
-        }
-      }
+      if (isVirtualPath(key)) continue;
+      const rawPath = pathOfKey(key);
+      if (!isVirtualPath(rawPath)) load(rawPath);
     }
   }, [expanded, children, load]);
 
@@ -445,36 +499,6 @@ export function ProjectTree({
     }
   }, [collapseSignal, root]);
 
-  // 订阅被 .gitignore 忽略的文件/目录
-  const [ignoredPatterns, setIgnoredPatterns] = useState<string[]>([]);
-  useEffect(() => {
-    if (!repoRoot || options.showExcluded) {
-      setIgnoredPatterns([]);
-      return;
-    }
-    let stale = false;
-    const unsubscribe = subscribeIgnored(repoRoot, (list) => {
-      if (!stale) setIgnoredPatterns(list);
-    });
-    void loadIgnored(repoRoot).then((list) => {
-      if (!stale) setIgnoredPatterns(list);
-    });
-    return () => {
-      stale = true;
-      unsubscribe();
-    };
-  }, [repoRoot, options.showExcluded]);
-
-  const isIgnored = useCallback(
-    (path: string) => {
-      if (options.showExcluded || !repoRoot || ignoredPatterns.length === 0) return false;
-      const roots = ignoredRoots(repoRoot, ignoredPatterns);
-      const key = pathKey(path);
-      return roots.some((dir) => key === dir || key.startsWith(`${dir}/`));
-    },
-    [repoRoot, ignoredPatterns, options.showExcluded]
-  );
-
   const { markOf, dotOf } = useMemo(() => {
     const files = new Map<string, string>();
     const dirs = new Map<string, string>();
@@ -482,10 +506,12 @@ export function ProjectTree({
     const prefix = repoRoot.replace(/[\\/]+$/, "");
     const key = (rel: string) => `${prefix}/${rel}`.replaceAll("\\", "/").toLowerCase();
     for (const c of changes) files.set(key(c.path), changeMark(c));
-    const dm = folderMarks([...changes]);
-    for (const [rel, kind] of dm) dirs.set(key(rel), kind);
+    if (highlightDirtyDirectories) {
+      const dm = folderMarks([...changes]);
+      for (const [rel, kind] of dm) dirs.set(key(rel), kind);
+    }
     return { markOf: files, dotOf: dirs };
-  }, [changes, repoRoot]);
+  }, [changes, repoRoot, highlightDirtyDirectories]);
 
   /**
    * 1:1 对标 IntelliJ IDEA revealPath 规范：展开祖先目录、异步加载并在可见后滚动定位
@@ -541,7 +567,7 @@ export function ProjectTree({
         return false;
       }
 
-      // 2. 模式联动（对齐 openidea modeShows）：只有目标在主工程、而当前停在过滤视图时才切回 Project；
+      // 2. 模式联动（对齐 IDEA modeShows）：只有目标在主工程、而当前停在过滤视图时才切回 Project；
       // 在 Scratches 模式定位草稿文件不该被拉走。
       if (viewMode !== "project" && (inProject || inLibrary || (inScratches && viewMode !== "scratches"))) {
         setViewMode("project");
@@ -626,7 +652,7 @@ export function ProjectTree({
     }
     if (viewMode === "changedFiles") {
       const prefix = repoRoot ? repoRoot.replace(/[\\/]+$/, "") : root.replace(/[\\/]+$/, "");
-      // 已删除（D）的文件磁盘上不存在，树上只会展开成空壳，剔除掉（对齐 openidea localChangedPaths）。
+      // 已删除（D）的文件磁盘上不存在，树上只会展开成空壳，剔除掉（对齐 IDEA localChangedPaths）。
       return new Set(
         changes
           .filter((c) => c.workStatus !== "D" && c.indexStatus !== "D")
@@ -682,8 +708,8 @@ export function ProjectTree({
             if (!targetFiles.has(k)) return false;
           }
         }
-        if (!options.showHidden && isIgnoredName(e.name)) return false;
-        if (!options.showExcluded && isIgnored(e.path)) return false;
+        if (!options.showHidden && e.isHidden) return false;
+        if (!options.showExcluded && e.isIgnored) return false;
         return true;
       });
 
@@ -729,14 +755,14 @@ export function ProjectTree({
               const subList = children.get(pathKey(cur.path));
               if (!subList) break;
               const subVisible = subList.filter((e) => {
-                if (!options.showHidden && isIgnoredName(e.name)) return false;
-                if (!options.showExcluded && isIgnored(e.path)) return false;
+                if (!options.showHidden && e.isHidden) return false;
+                if (!options.showExcluded && e.isIgnored) return false;
                 return true;
               });
               if (subVisible.length === 1 && subVisible[0].kind === "directory") {
                 const only = subVisible[0];
-                const onlyEx = isExcludedFolder(only.name) || isIgnored(only.path);
-                const curEx = isExcludedFolder(cur.name) || isIgnored(cur.path);
+                const onlyEx = only.isExcluded;
+                const curEx = cur.isExcluded;
                 if (onlyEx === curEx) {
                   chainNames.push(only.name);
                   cur = only;
@@ -757,7 +783,7 @@ export function ProjectTree({
             : normalizeNodeKey(endEntry.path);
           const isExp = expanded.has(itemKey) || expanded.has(endKey);
           const folderRole = domain === "project" ? roleAtPath(root, endEntry.path, directoryRoles) : null;
-          const isExcluded = folderRole === "excluded" || isExcludedFolder(endEntry.name) || isIgnored(endEntry.path);
+          const isExcluded = folderRole === "excluded" || endEntry.isExcluded;
 
           const node: ProjectTreeNode = {
             key: itemKey,
@@ -784,7 +810,7 @@ export function ProjectTree({
           const fileKey = groupNamespace
             ? libKey(groupNamespace, entry.path)
             : normalizeNodeKey(entry.path);
-          const isExcluded = isIgnored(entry.path);
+          const isExcluded = entry.isExcluded;
           const node: ProjectTreeNode = {
             key: fileKey,
             displayName: entry.name,
@@ -952,7 +978,6 @@ export function ProjectTree({
     children,
     options,
     directoryRoles,
-    isIgnored,
     targetFiles,
     visibleAncestors,
     editing,
@@ -1000,6 +1025,8 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     modifiedMs: Date.now(),
     isSymlink: false,
     isHidden: false,
+    isIgnored: false,
+    isExcluded: false,
     isReadonly: false,
   };
 }
@@ -1027,12 +1054,12 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
             await createFolder(fullPath);
           } else {
             await createFile(fullPath);
-            // 新建文件随后在编辑器里打开（对齐 openidea commitEditing → openFile）
+            // 新建文件随后在编辑器里打开（对齐 IDEA commitEditing → openFile）
             onOpenFile(makeEntryFor(fullPath, value));
           }
           reloadDir(editing.parent);
           setEditing(null);
-          // 新条目露出来并定位（对齐 openidea refreshAfterCreate → revealPath）
+          // 新条目露出来并定位（对齐 IDEA refreshAfterCreate → revealPath）
           revealPath(fullPath, true);
           return true;
         } catch (err) {
@@ -1104,41 +1131,6 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     });
   }, [picked, treeModel.byKey]);
 
-  // 复制与剪切
-  const handleCopy = useCallback(
-    (cut: boolean) => {
-      if (picked.length === 0) return;
-      setClipboard({ paths: [...picked], cut });
-    },
-    [picked]
-  );
-
-  // 粘贴
-  const handlePaste = useCallback(async () => {
-    if (!clipboard || clipboard.paths.length === 0) return;
-    const targetDir = getSelectedTargetFolder();
-    const isCut = clipboard.cut;
-    for (const src of clipboard.paths) {
-      const name = nameOfPath(src);
-      const dest = `${targetDir.replace(/[/\\]+$/, "")}/${name}`;
-      try {
-        if (isCut) {
-          await moveEntry(src, dest);
-          reloadDir(parentOfPath(src));
-        } else {
-          await copyEntry(src, dest);
-        }
-      } catch (err) {
-        // 粘贴移动/复制失败发布通知气泡
-        notify({ level: "error", title: "Paste Failed", body: errorText(err) });
-      }
-    }
-    reloadDir(targetDir);
-    if (isCut) {
-      setClipboard(null);
-    }
-  }, [clipboard, getSelectedTargetFolder, reloadDir]);
-
   // 快捷键映射拦截
   const handleContainerKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (editing) return;
@@ -1160,27 +1152,6 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     if (e.shiftKey && e.key === "F6") {
       e.preventDefault();
       startRenameItem();
-      return;
-    }
-
-    // Ctrl+C / Cmd+C: 复制
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "c") {
-      e.preventDefault();
-      handleCopy(false);
-      return;
-    }
-
-    // Ctrl+X / Cmd+X: 剪切
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "x") {
-      e.preventDefault();
-      handleCopy(true);
-      return;
-    }
-
-    // Ctrl+V / Cmd+V: 粘贴
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
-      e.preventDefault();
-      void handlePaste();
       return;
     }
 
@@ -1228,7 +1199,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
 
     // Esc: 取消剪贴板剪切态与进行中的拖拽
     if (e.key === "Escape") {
-      if (clipboard?.cut) setClipboard(null);
+      if (clipboard?.cut) updateClipboard(null);
       if (dragActiveRef.current) {
         dragActiveRef.current = false;
         setDrag(null);
@@ -1279,11 +1250,13 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
       if (editing) return;
 
       if (node.hasChildren) {
-        if (options.singleClickExpand) {
+        // 对标 IDEA 规范：单击目录即展开/折叠（默认开启）
+        if (options.singleClickExpand ?? true) {
           toggleNodeExpanded(node);
         }
       } else {
-        if (options.singleClickOpen || options.previewTab) {
+        // 对标 IDEA 规范：侧边资源管理器中单击文件立即在编辑器中打开（默认开启）
+        if (options.singleClickOpen ?? true) {
           onOpenFile(node.entry);
         }
       }
@@ -1424,8 +1397,8 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
   const handleActivate = useCallback(
     (node: ProjectTreeNode) => {
       if (node.hasChildren) {
-        // 「单击展开」开启时，双击的第一段单击已经切过一次，这里再切就等于没变（对齐 openidea 的 stopPropagation 语义）。
-        if (options.singleClickExpand) return;
+        // 「单击展开」开启时，双击的第一段单击已经切过一次，这里再切就等于没变（对齐 IDEA 的 stopPropagation 语义）。
+        if (options.singleClickExpand ?? true) return;
         toggleNodeExpanded(node);
       } else {
         onOpenFile(node.entry);
@@ -1671,7 +1644,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         locateDisabled={!activeFile && openFiles.length === 0}
         onExpandAll={() => {
           // BFS 逐层展开：深层目录还没读到 childrenMap 里，只收已加载层会漏；
-          // 按队列加载（上限 400 个目录，对齐 openidea expandAll），加载完的下一轮补进展开集。
+          // 按队列加载（上限 400 个目录，对齐 IDEA expandAll），加载完的下一轮补进展开集。
           const all = new Set<string>([normalizeNodeKey(root)]);
           for (const k of treeModel.childrenMap.keys()) {
             all.add(k);

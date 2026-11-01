@@ -20,6 +20,8 @@ describe("Project Tree Context Menu", () => {
       modifiedMs: Date.now(),
       isSymlink: false,
       isHidden: false,
+      isIgnored: false,
+      isExcluded: false,
       isReadonly: false,
     },
     displayName: "main.tsx",
@@ -54,7 +56,7 @@ describe("Project Tree Context Menu", () => {
     expect(labels).toContain("Find Usages");
     const git = items.find((item) => item.label === "Git");
     expect(git?.children?.map((item) => item.label)).toContain("Fetch remotes");
-    expect(git?.children?.map((item) => item.label)).toContain("Put Label…");
+    expect(git?.children?.map((item) => item.label)).toContain("New tag");
   });
 
   it("wires file actions and keeps Compare With behind a Git repository", () => {
@@ -62,7 +64,7 @@ describe("Project Tree Context Menu", () => {
     const items = buildProjectContextMenu({
       selection: [dummyFileNode],
       workspaceRoot: "D:/app/code/forge",
-      git: { root: "D:/app/code/forge", changes: [], putLabel: () => calls.push("label") },
+      git: { root: "D:/app/code/forge", changes: [], newTag: () => calls.push("tag") },
       onCompareWith: () => calls.push("compare"),
       onReformatCode: () => calls.push("format"),
       onOptimizeImports: () => calls.push("organize-imports"),
@@ -73,8 +75,8 @@ describe("Project Tree Context Menu", () => {
     items.find((item) => item.label === "Reformat code")?.onSelect?.();
     items.find((item) => item.label === "Optimize Imports")?.onSelect?.();
     items.find((item) => item.label === "Find Usages")?.onSelect?.();
-    items.find((item) => item.label === "Git")?.children?.find((item) => item.label === "Put Label…")?.onSelect?.();
-    expect(calls).toEqual(["compare", "format", "organize-imports", "usages", "label"]);
+    items.find((item) => item.label === "Git")?.children?.find((item) => item.label === "New tag")?.onSelect?.();
+    expect(calls).toEqual(["compare", "format", "organize-imports", "usages", "tag"]);
 
     const withoutGit = buildProjectContextMenu({
       selection: [dummyFileNode],
@@ -121,6 +123,8 @@ describe("Project Tree Context Menu", () => {
         modifiedMs: Date.now(),
         isSymlink: false,
         isHidden: false,
+        isIgnored: false,
+        isExcluded: false,
         isReadonly: true,
       },
       displayName: "react",
@@ -155,6 +159,8 @@ describe("Project Tree Context Menu", () => {
         modifiedMs: Date.now(),
         isSymlink: false,
         isHidden: false,
+        isIgnored: false,
+        isExcluded: false,
         isReadonly: false,
       },
       displayName: "scratch_1.sql",

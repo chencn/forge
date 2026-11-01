@@ -122,6 +122,16 @@ export function lspInstall(server: string): Promise<LspInstallResult> {
   return invoke<LspInstallResult>("lsp_install", { server });
 }
 
+/** 跑配置里那条卸载命令。没配的回 `LSP_NO_UNINSTALL`。 */
+export function lspUninstall(server: string): Promise<LspInstallResult> {
+  return invoke<LspInstallResult>("lsp_uninstall", { server });
+}
+
+/** 后端种子表：设置页「恢复默认」从这取各项的出厂值，与 lsp.json 解耦。 */
+export function lspConfigDefaults(): Promise<LspConfig> {
+  return invoke<LspConfig>("lsp_config_defaults");
+}
+
 /**
  * 解析某门语言在这个工程里的真实根。
  *

@@ -16,8 +16,13 @@ vi.mock("../../src/lib/cm/lsp", () => ({
   findUsages: () => false,
   formatDocument: () => false,
   gotoDefinition: () => false,
+  gotoDeclaration: () => false,
   gotoImplementation: () => false,
+  gotoTypeDefinition: () => false,
+  renameSymbol: () => false,
+  showCodeActions: () => false,
   showDocumentation: () => false,
+  showSignatureHelp: () => false,
 }));
 
 /**

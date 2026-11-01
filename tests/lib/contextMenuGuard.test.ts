@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 全局右键兜底守卫（抄 openidea browserGuards）行为回归：
+ * 全局右键兜底守卫（抄 IDEA browserGuards）行为回归：
  * - 可读文本（user-select: text，如通知内容）右键给「复制」菜单；
  * - 有选区时可复制并写入剪贴板，无选区时菜单置灰；
  * - 普通 UI（user-select: none）与输入框不给菜单；

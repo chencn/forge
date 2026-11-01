@@ -505,14 +505,6 @@ fn base(app: &AppHandle) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     Ok(path)
 }
-fn enabled(app: &AppHandle) -> Result<(), String> {
-    if crate::settings::read(app).ai_assistants_enabled {
-        Ok(())
-    } else {
-        Err("AI 助手已关闭".into())
-    }
-}
-
 /// Browser capabilities follow the actual runtime cancellation bit, including queued/failed runs.
 pub(crate) fn browser_run_active(run_id: &str) -> bool {
     registry::get(run_id).is_some_and(|run| !run.cancelled.load(Ordering::Acquire))
@@ -682,7 +674,6 @@ fn validated_dirs(request: &SendRequest, root: &str) -> Result<Vec<String>, Stri
 pub async fn ai_runtime_save_pasted_image(app: AppHandle, data_url: String) -> Result<Value, String> {
     // 与其他 AI 命令一致：总开关关掉时不写盘。否则关闭状态仍能借这个入口往缓存里堆文件。
     block(move || {
-        enabled(&app)?;
         // 保存成功后前端立刻拿沙箱路径经 asset 协议回显（欢迎页不经过 ai_runtime_load，
         // 那里的授权不会顺带建立），这里先授一次；重复授权是幂等的。
         images::allow_assets(&app)?;
@@ -695,7 +686,6 @@ pub async fn ai_runtime_save_pasted_image(app: AppHandle, data_url: String) -> R
 #[tauri::command]
 pub async fn ai_runtime_save_image_file(app: AppHandle, path: String) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         images::allow_assets(&app)?;
         images::save_file(&app, &path)
     })
@@ -737,9 +727,8 @@ fn save_text_attachment_to(directory: PathBuf, text: &str) -> Result<Value, Stri
 }
 
 #[tauri::command]
-pub async fn ai_runtime_save_text_attachment(app: AppHandle, text: String) -> Result<Value, String> {
+pub async fn ai_runtime_save_text_attachment(_app: AppHandle, text: String) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         save_text_attachment_to(std::env::temp_dir().join("forge-ai-context"), &text)
     })
     .await
@@ -785,9 +774,8 @@ fn file_line_count(path: &str) -> Result<u64, String> {
 }
 
 #[tauri::command]
-pub async fn ai_runtime_file_line_count(app: AppHandle, path: String) -> Result<u64, String> {
+pub async fn ai_runtime_file_line_count(_app: AppHandle, path: String) -> Result<u64, String> {
     block(move || {
-        enabled(&app)?;
         file_line_count(&path)
     })
     .await
@@ -797,7 +785,6 @@ pub async fn ai_runtime_file_line_count(app: AppHandle, path: String) -> Result<
 #[tauri::command]
 pub async fn ai_runtime_read_image(app: AppHandle, path: String) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         images::read_for_clipboard(&app, &path)
     })
     .await
@@ -807,7 +794,6 @@ pub async fn ai_runtime_read_image(app: AppHandle, path: String) -> Result<Value
 #[tauri::command]
 pub async fn ai_runtime_delete_image(app: AppHandle, path: String) -> Result<(), String> {
     block(move || {
-        enabled(&app)?;
         images::delete(&app, &path)
     })
     .await
@@ -817,7 +803,6 @@ pub async fn ai_runtime_delete_image(app: AppHandle, path: String) -> Result<(),
 #[tauri::command]
 pub async fn ai_runtime_image_limits(app: AppHandle) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         // 欢迎页挂载时只调这一个命令；顺手把回显要用的授权建好。
         images::allow_assets(&app)?;
         Ok(images::limits())
@@ -828,9 +813,8 @@ pub async fn ai_runtime_image_limits(app: AppHandle) -> Result<Value, String> {
 /// 权限拒绝通常指向一个文件；`--add-dir` 要的是目录。由后端判断真实类型，
 /// 前端不靠扩展名猜「这是文件还是文件夹」。
 #[tauri::command]
-pub async fn ai_runtime_directory_for_path(app: AppHandle, path: String) -> Result<String, String> {
+pub async fn ai_runtime_directory_for_path(_app: AppHandle, path: String) -> Result<String, String> {
     block(move || {
-        enabled(&app)?;
         let candidate = PathBuf::from(path.trim());
         if !candidate.is_absolute() || path.len() > 1024 {
             return Err("需要绝对路径才能授权目录".into());
@@ -846,14 +830,13 @@ pub async fn ai_runtime_directory_for_path(app: AppHandle, path: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn ai_runtime_project_config(app: AppHandle, workspace: String) -> Result<Value, String> {
-    block(move || { enabled(&app)?; options::codex_project_config(&store::workspace(&workspace)?) }).await
+pub async fn ai_runtime_project_config(_app: AppHandle, workspace: String) -> Result<Value, String> {
+    block(move || { options::codex_project_config(&store::workspace(&workspace)?) }).await
 }
 
 #[tauri::command]
-pub async fn ai_runtime_update_project_config(app: AppHandle, workspace: String, patch: Value) -> Result<Value, String> {
+pub async fn ai_runtime_update_project_config(_app: AppHandle, workspace: String, patch: Value) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         if ai_cli::management_busy() { return Err("CLI 管理进行中，无法修改项目配置".into()); }
         options::update_codex_project_config(&store::workspace(&workspace)?, &patch)
     }).await
@@ -871,7 +854,6 @@ pub async fn ai_runtime_models(
     workspace: String,
 ) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         let catalog = options::cached_models(&models_path(&app)?, provider);
         if provider == Provider::Claude {
             return Ok(options::claude_configured_models(catalog, &store::workspace(&workspace)?));
@@ -903,7 +885,6 @@ pub async fn ai_runtime_refresh_models(app: AppHandle, provider: Provider, works
     let mut attempted = MODEL_REFRESH.lock().await;
     let key = (provider, version);
     if !force && (current || attempted.contains(&key)) { return ai_runtime_models(app, provider, workspace).await; }
-    enabled(&app)?;
     if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后刷新模型".into()); }
     if !attempted.contains(&key) { attempted.push(key); }
     block(move || {
@@ -919,7 +900,6 @@ pub async fn ai_runtime_refresh_models(app: AppHandle, provider: Provider, works
 #[tauri::command]
 pub async fn ai_runtime_save_model(app: AppHandle, provider: Provider, model: String) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         options::save_models(&models_path(&app)?, provider, None, Some(model.trim()))
     }).await
 }
@@ -928,7 +908,6 @@ pub async fn ai_runtime_save_model(app: AppHandle, provider: Provider, model: St
 #[tauri::command]
 pub async fn ai_runtime_custom_models(app: AppHandle, provider: Provider) -> Result<Vec<String>, String> {
     block(move || {
-        enabled(&app)?;
         let catalog = options::cached_models(&models_path(&app)?, provider);
         Ok(catalog["customModels"].as_array().map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default())
     })
@@ -937,7 +916,7 @@ pub async fn ai_runtime_custom_models(app: AppHandle, provider: Provider) -> Res
 
 #[tauri::command]
 pub async fn ai_runtime_remove_model(app: AppHandle, provider: Provider, model: String) -> Result<(), String> {
-    block(move || { enabled(&app)?; options::remove_model(&models_path(&app)?, provider, &model) }).await
+    block(move || { options::remove_model(&models_path(&app)?, provider, &model) }).await
 }
 /// 新建会话：只建记录，不起名也不碰 CLI。标题等首条用户消息发出后由 `title_first_message`
 /// 自动取；占位名一旦落成 custom-title / thread name，就把真正的自动标题永久压掉了。
@@ -950,7 +929,6 @@ pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: St
         let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
         let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后创建会话")?;
         if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后创建会话".into()); }
-        enabled(&app)?;
         if !ai_cli::settings::enabled(&app, provider) { return Err("该 CLI 已在设置中停用，请先在设置中启用".into()); }
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
@@ -963,7 +941,6 @@ pub async fn ai_runtime_create(app: AppHandle, provider: Provider, workspace: St
 #[tauri::command]
 pub async fn ai_runtime_activity(app: AppHandle, workspace: String, session_ids: Vec<String>) -> Result<Vec<Value>, String> {
     block(move || {
-        enabled(&app)?;
         if session_ids.len() > 2000 { return Err("会话数量超过单次检查上限".into()); }
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
@@ -993,7 +970,6 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
         // 附件复核最多读 8 张 ×8 MiB 并重算魔数，先做完再拿跨会话锁：握着锁读盘会把
         // 其他会话的发送、队列调度和停止一起按住。开关在锁外先快速失败，锁内再判一次，
         // 因为「是否还允许入队」必须和取锁原子。
-        enabled(&app)?;
         request.images = images::validate_paths(&app, &request.images)?
             .into_iter()
             .map(|path| path.to_string_lossy().into_owned())
@@ -1001,7 +977,6 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
         let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
         let _cli_gate = ai_cli::runtime_gate(&app).map_err(|_| "CLI 管理进行中，请稍后发送")?;
         if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后发送".into()); }
-        enabled(&app)?;
         let root = store::workspace(&request.workspace)?;
         request.additional_dirs = validated_dirs(&request, &root)?;
         // 进入队列前冻结规范化路径；后续切换工程或页面刷新不会丢失附件。
@@ -1132,7 +1107,6 @@ fn emit_plan_record(app: &AppHandle, request: &SendRequest, root: &str, base: &s
 #[tauri::command]
 pub async fn ai_runtime_plan_defer(app: AppHandle, session_id: String, workspace: String, plan_id: String, revision: i64) -> Result<(), String> {
     block(move || {
-        enabled(&app)?;
         if !store::valid_id(&session_id) || plan_id.trim().is_empty() {
             return Err("无效会话或计划标识".into());
         }
@@ -2272,13 +2246,12 @@ pub async fn ai_runtime_stop_all(app: AppHandle) -> Result<(), String> {
 }
 #[tauri::command]
 pub async fn ai_runtime_respond(
-    app: AppHandle,
+    _app: AppHandle,
     run_id: String,
     request_id: String,
     answer: Value,
 ) -> Result<(), String> {
     block(move || {
-        enabled(&app)?;
         let run = registry::get(&run_id).ok_or("运行已结束")?;
         if run.cancelled.load(Ordering::Acquire) {
             return Err("任务正在停止".into());
@@ -2308,7 +2281,6 @@ static FORWARD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 #[tauri::command]
 pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, workspace: String, prompt: String) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         let prompt = prompt.trim().to_owned();
         if prompt.is_empty() || prompt.len() > 64 * 1024 {
             return Err("消息不能为空，且不能超过 64 KiB".into());
@@ -2379,7 +2351,6 @@ pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, worksp
 #[tauri::command]
 pub async fn ai_runtime_agent_stop(app: AppHandle, session_id: String, workspace: String) -> Result<(), String> {
     block(move || {
-        enabled(&app)?;
         if !store::valid_id(&session_id) {
             return Err("无效会话 ID".into());
         }
@@ -2413,7 +2384,6 @@ pub async fn ai_runtime_set_goal_status(
     status: String,
 ) -> Result<(), String> {
     block(move || {
-        enabled(&app)?;
         if !store::valid_id(&session_id) || !matches!(status.as_str(), "active" | "paused") {
             return Err("无效的 Goal 状态请求".into());
         }
@@ -2464,7 +2434,6 @@ pub async fn ai_runtime_load(
     limit: Option<usize>,
 ) -> Result<Page, String> {
     block(move || {
-        enabled(&app)?;
         images::allow_assets(&app)?;
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
@@ -2557,7 +2526,6 @@ pub async fn ai_runtime_outline(
     workspace: String,
 ) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         if !store::valid_id(&session_id) {
             return Err("无效会话 ID".into());
         }
@@ -2734,7 +2702,6 @@ pub async fn ai_runtime_delete_archived(
     provider: Option<Provider>,
 ) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
         let mut groups = Vec::new();
@@ -2785,7 +2752,6 @@ pub async fn ai_session_checkpoint_save(
     paths: Vec<String>,
 ) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         if !store::valid_id(&session_id) { return Err("无效会话 ID".into()); }
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
@@ -2805,7 +2771,6 @@ pub async fn ai_session_checkpoint_restore(
     checkpoint_id: String,
 ) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         if !store::valid_id(&session_id) { return Err("无效会话 ID".into()); }
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
@@ -2818,7 +2783,7 @@ pub async fn ai_session_checkpoint_restore(
 #[tauri::command]
 pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Value>, String> {
     block(move || {
-        enabled(&app)?; let root=store::workspace(&workspace)?; let base=base(&app)?;
+        let root=store::workspace(&workspace)?; let base=base(&app)?;
         { let _io=store::IO_LOCK.lock().map_err(|e|e.to_string())?; history::discover(&base, &root)?; }
         // thread/list 与 Codex /resume 同源；失败时保留磁盘镜像，不能连带阻塞 Claude。
         let codex = options::codex_threads(&root).unwrap_or_default();
@@ -2911,7 +2876,6 @@ pub async fn ai_runtime_archive(
     archived: bool,
 ) -> Result<bool, String> {
     block(move || {
-        enabled(&app)?;
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
         store::Store::set_archived(&base, &session_id, &root, archived)
@@ -2928,7 +2892,6 @@ pub async fn ai_runtime_set_pinned(
     pinned: bool,
 ) -> Result<bool, String> {
     block(move || {
-        enabled(&app)?;
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
         store::Store::set_pinned(&base, &session_id, &root, pinned)
@@ -2949,7 +2912,6 @@ pub async fn ai_runtime_search(
     include_archived: Option<bool>,
 ) -> Result<Value, String> {
     block(move || {
-        enabled(&app)?;
         let root = store::workspace(&workspace)?;
         let base = base(&app)?;
         search::search(
@@ -3007,16 +2969,6 @@ pub fn lifecycle_lock() -> std::sync::MutexGuard<'static, ()> {
     registry::LIFECYCLE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-}
-/// 设置保存锁内只携带这些句柄出去，registry 的具体类型不泄漏给设置模块。
-pub struct StoppingRuns(Vec<Arc<Run>>);
-pub fn stop_for_disable(app: &AppHandle) -> Result<StoppingRuns, String> {
-    // 先清队列：否则 worker 收尾可能在设置尚未落盘前调度下一项。
-    cancel_queued(app, |_| true)?;
-    Ok(StoppingRuns(stop_registered()))
-}
-pub fn wait_for_disable(stopping: StoppingRuns) -> Result<(), String> {
-    registry::wait_stopped(stopping.0)
 }
 pub fn has_runs() -> bool {
     !registry::all().is_empty() || queued().lock().unwrap_or_else(|e| e.into_inner()).values().any(|items| !items.is_empty())

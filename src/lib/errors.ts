@@ -47,7 +47,7 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
     t(p[1] === "image" ? "error.noDiffImage" : "error.noDiffBinary", { path: p[0] ?? "" }),
   TARGET_DIR: (p, t) => t("error.targetDir", { path: p[0] ?? "" }),
   TARGET_EXISTS: (p, t) => t("error.targetExists", { path: p[0] ?? "" }),
-  // 把目录粘进它自己的子目录里：递归复制会无限循环，后端直接拒绝（对齐 openidea "cannot copy into itself"）。
+  // 把目录粘进它自己的子目录里：递归复制会无限循环，后端直接拒绝（对齐 IDEA "cannot copy into itself"）。
   CANNOT_COPY_INTO_ITSELF: (p, t) => t("error.copyIntoItself", { path: p[0] ?? "" }),
   // 跨盘挪动时复制成了、源没删掉：盘上留着两份，得说清楚是哪两份。
   MOVED_WITH_SOURCE: (p, t) => t("error.moveCopied", { to: p[0] ?? "", from: p[1] ?? "" }),
@@ -172,4 +172,10 @@ export function parseSaveConflict(text: string): SaveConflict | null {
   const baseMs = Number(base);
   if (!Number.isFinite(diskMs) || !Number.isFinite(baseMs)) return null;
   return { path, diskMs, baseMs };
+}
+
+/** 认出一条带码错误属于哪个码；不带码（git stderr 原文之类）回 null。 */
+export function errorCodeOf(text: string): string | null {
+  const code = text.split(SEP)[0] ?? "";
+  return code && CODES[code] ? code : null;
 }

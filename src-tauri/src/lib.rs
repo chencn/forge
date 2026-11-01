@@ -8,6 +8,10 @@ mod fs;
 mod git;
 mod history;
 mod lsp;
+#[cfg(feature = "lsp-smoke")]
+mod lsp_smoke;
+#[cfg(feature = "lsp-ui-smoke")]
+mod lsp_ui_smoke;
 mod maven;
 mod lsp_config;
 mod lsp_detect;
@@ -33,6 +37,9 @@ use tauri::Manager;
 
 #[cfg(feature = "browser-smoke")]
 pub fn run_browser_smoke() { browser::smoke::run(); }
+
+#[cfg(feature = "lsp-smoke")]
+pub fn run_lsp_smoke() { lsp_smoke::run(); }
 
 pub fn run() {
     #[cfg(windows)]
@@ -76,9 +83,18 @@ pub fn run() {
             ai_runtime::start_queue_monitor(app.handle().clone())?;
             single_instance::start_server(app.handle().clone());
             // 首次启动若带有路径参数，由主实例窗口打开
+            #[cfg(feature = "lsp-ui-smoke")]
+            {
+                let root = std::env::var("FORGE_LSP_UI_SMOKE_ROOT")
+                    .map_err(|_| "FORGE_LSP_UI_SMOKE_ROOT 未设置".to_string())?;
+                lsp_ui_smoke::prepare(app.handle(), &root)?;
+            }
             shell_open::deliver(app.handle(), &args_for_setup);
             Ok(())
-        })
+        });
+    #[cfg(feature = "lsp-ui-smoke")]
+    let app = app.on_page_load(lsp_ui_smoke::on_page_load);
+    let app = app
         // 关闭按钮归关闭按钮管，托盘还是退出，看设置里那一项怎么选。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -115,6 +131,7 @@ pub fn run() {
             local_history::local_history_restore,
             fs::fs_allow_asset,
             fs::open_external,
+            fs::clipboard_files,
             watch::fs_watch_start,
             watch::fs_watch_stop,
             git::git_probe,
@@ -141,6 +158,11 @@ pub fn run() {
             git::git_checkout,
             git::git_create_branch,
             git::git_merge,
+            git::git_stash_list,
+            git::git_stash_push,
+            git::git_stash_apply,
+            git::git_stash_branch,
+            git::git_stash_drop,
             git::git_rebase,
             git::git_rename_branch,
             git::git_delete_branch,
@@ -194,9 +216,11 @@ pub fn run() {
             lsp::lsp_retry,
             lsp_config::lsp_config_load,
             lsp_config::lsp_config_save,
+            lsp_config::lsp_config_defaults,
             lsp_detect::lsp_resolve_root,
             lsp_probe::lsp_probe,
             lsp_probe::lsp_install,
+            lsp_probe::lsp_uninstall,
             history::history_load,
             history::history_save,
             settings::settings_load,

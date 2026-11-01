@@ -130,7 +130,7 @@ export function pathToUri(path: string): string {
  */
 export function uriToPath(uri: string): string {
   const match = /^(([^:/?#]+?):)?(\/\/([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?/.exec(uri);
-  if (!match || match[2] !== "file") return "";
+  if (!match || match[2]?.toLowerCase() !== "file") return "";
   const authority = decode(match[4] ?? "");
   let path = decode(match[5] ?? "");
   if (authority !== "" && path.length > 1) return `//${authority}${path}`;

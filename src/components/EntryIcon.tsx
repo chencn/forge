@@ -1,5 +1,4 @@
 import { useEffect, useSyncExternalStore } from "react";
-import { File } from "lucide-react";
 import MavenIcon from "./MavenIcon";
 import SpringIcon from "./SpringIcon";
 import { useMavenProject } from "../hooks/useMavenProject";
@@ -42,6 +41,18 @@ interface EntryIconProps {
   byteSize?: number;
   size?: number;
 }
+
+/**
+ * 数据未就绪时的占位：expui 的 text.svg（四条横线），单色走 currentColor
+ * 继承文字色，与 IDEA 的单色图标渲染规则一致；不再是 lucide 的描边纸张。
+ */
+const PLACEHOLDER_FILE =
+  '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+  '<rect x="2" y="3" width="12" height="1" rx="0.5" fill="currentColor"/>' +
+  '<rect x="2" y="6" width="8" height="1" rx="0.5" fill="currentColor"/>' +
+  '<rect x="2" y="9" width="12" height="1" rx="0.5" fill="currentColor"/>' +
+  '<rect x="2" y="12" width="8" height="1" rx="0.5" fill="currentColor"/>' +
+  "</svg>";
 
 /**
  * 文件 / 目录图标。图标数据懒加载，未就绪时先给一枚单色占位，
@@ -165,6 +176,12 @@ export default function EntryIcon({
     }
   }
 
-  const Placeholder = File;
-  return <Placeholder size={size} className={className} aria-hidden="true" />;
+  return (
+    <span
+      className={className}
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+      dangerouslySetInnerHTML={{ __html: PLACEHOLDER_FILE }}
+    />
+  );
 }

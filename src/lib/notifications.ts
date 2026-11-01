@@ -31,7 +31,7 @@ export interface NotificationAction {
 
 export interface AppNotification {
   id: string;
-  /** 业务去重键：同一条件的通知（如同一类 git 错误连发）按 key 替换而非堆叠（对齐 openidea）。 */
+  /** 业务去重键：同一条件的通知（如同一类 git 错误连发）按 key 替换而非堆叠（对齐 IDEA）。 */
   key?: string;
   groupId: string;
   groupTitle?: string;
@@ -73,7 +73,7 @@ export interface NotifyOptions {
 }
 
 /**
- * 气泡淡出节奏（1:1 对齐 openidea）：普通气泡 10 秒；错误与显式常驻 5 分钟后
+ * 气泡淡出节奏（1:1 对齐 IDEA）：普通气泡 10 秒；错误与显式常驻 5 分钟后
  * 淡出（前提是已记录进历史——没记录的常驻气泡只能手动关）；返回 null 表示不自动淡出。
  */
 export const STICKY_BALLOON_TIMEOUT = 5 * 60 * 1000;
@@ -85,7 +85,7 @@ export function balloonTimeout(n: Pick<AppNotification, "level" | "sticky" | "lo
   return 10000;
 }
 
-/** 通知提示音（对齐 openidea playSound：880Hz 短促一声）。 */
+/** 通知提示音（对齐 IDEA playSound：880Hz 短促一声）。 */
 let audio: AudioContext | null = null;
 export function playSound(): void {
   try {
@@ -297,7 +297,7 @@ export const notificationCenter = {
     const root = opts.projectRoot ?? state.projectRoot ?? "";
     const level = opts.level ?? "info";
     const groupId = opts.groupId ?? "system";
-    // 组配置在 store 里统一消费（1:1 对齐 openidea 的 notificationPrefs）——
+    // 组配置在 store 里统一消费（1:1 对齐 IDEA 的 notificationPrefs）——
     // 之前只有 App 的两条调用路径手动换算，其余调用全绕过设置页的开关。
     const groupRule = activeSettings?.notificationGroups?.[groupId];
     const displayType = groupRule?.displayType ?? "balloon";
@@ -331,12 +331,12 @@ export const notificationCenter = {
     };
 
     updateState((prev) => {
-      // 同 key 替换而非堆叠（对齐 openidea notify 的 key 去重）
+      // 同 key 替换而非堆叠（对齐 IDEA notify 的 key 去重）
       const rest = opts.key
         ? prev.history.filter((x) => x.key !== opts.key)
         : prev.history;
       const nextHistory = isLogged ? [notif, ...rest].slice(0, MAX_HISTORY_ITEMS) : prev.history;
-      // 气泡队列存全量：第 4 条起排队，关掉一条补位（对齐 openidea Balloons 的 slice 语义）
+      // 气泡队列存全量：第 4 条起排队，关掉一条补位（对齐 IDEA Balloons 的 slice 语义）
       const restToasts = opts.key
         ? prev.toasts.filter((x) => x.key !== opts.key)
         : prev.toasts;
@@ -352,7 +352,7 @@ export const notificationCenter = {
       };
     });
 
-    // 气泡 + 声音开关（对齐 openidea：balloon && prefs.sound）
+    // 气泡 + 声音开关（对齐 IDEA：balloon && prefs.sound）
     if (isBalloon && activeSettings?.notificationSound === true) {
       playSound();
     }
@@ -386,7 +386,7 @@ export const notificationCenter = {
     }));
   },
 
-  /** 标记全部通知已读（1:1 对齐 openidea：面板被看过，已记录条目的浮动气泡随之撤下） */
+  /** 标记全部通知已读（1:1 对齐 IDEA：面板被看过，已记录条目的浮动气泡随之撤下） */
   markAllAsRead: () => {
     updateState((prev) => {
       const nextHistory = prev.history.map((it) => ({ ...it, read: true, balloon: false }));
@@ -395,7 +395,7 @@ export const notificationCenter = {
         ...prev,
         history: nextHistory,
         items: nextHistory,
-        // 面板被看过，气泡一并收走（1:1 对齐 openidea markAllNotificationsRead）
+        // 面板被看过，气泡一并收走（1:1 对齐 IDEA markAllNotificationsRead）
         toasts: [],
       };
     });
@@ -414,7 +414,7 @@ export const notificationCenter = {
     });
   },
 
-  /** 撤下某个业务键的气泡：条件不再成立时由调用方收掉（对齐 openidea expireNotification）。 */
+  /** 撤下某个业务键的气泡：条件不再成立时由调用方收掉（对齐 IDEA expireNotification）。 */
   expireNotification: (key: string) => {
     updateState((prev) => ({
       ...prev,
@@ -447,7 +447,7 @@ export function registerSettingsWriter(fn: (patch: Partial<import("./settings").
 }
 
 /**
- * 「不再显示」（对齐 openidea suppressGroup）：把该组的弹出形态改成 none——
+ * 「不再显示」（对齐 IDEA suppressGroup）：把该组的弹出形态改成 none——
  * 气泡立即收下、历史照记，写回设置持久化。
  */
 export function suppressGroup(group: string): void {

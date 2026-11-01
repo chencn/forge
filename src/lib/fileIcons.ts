@@ -61,6 +61,33 @@ export function fileIconsReady(): boolean {
 /** JVM 包节点用的图标（对齐 IDEA 的 package.svg）。 */
 export const PACKAGE_ICON = "expui/nodes/package.svg";
 
+/** *ignore 忽略规则文件的图标（对齐 IDEA 的 ignored file type）。 */
+export const IGNORED_FILE = "expui/fileTypes/ignored.svg";
+
+/**
+ * 忽略规则文件名（小写）。对齐 openidea 的 file-ignored 组：这些文件统一用
+ * 「灰圆加斜杠」的 ignored 图标，不再按工具 logo 走 material 映射。
+ * `.gitignore` 不在其中——它有专属的 gitignore 图标（expui/fileTypes/gitignore.svg）。
+ */
+export const IGNORED_FILE_NAMES = new Set([
+  ".dockerignore",
+  ".npmignore",
+  ".prettierignore",
+  ".eslintignore",
+  ".stylelintignore",
+  ".hgignore",
+  ".ignore",
+  ".rgignore",
+  ".fdignore",
+  ".helmignore",
+  ".vscodeignore",
+  ".gcloudignore",
+  ".slugignore",
+  ".cfignore",
+  ".bzrignore",
+  ".containerignore",
+]);
+
 /**
  * 解析条目对应的图标相对路径。
  * @param name 文件名或目录名
@@ -94,6 +121,10 @@ function resolveIconPathInner(name: string, isDirectory: boolean, isPackage: boo
     if (isPackage) return data.ICONS_LIGHT[PACKAGE_ICON] ? PACKAGE_ICON : data.DEFAULT_FOLDER;
     return data.FOLDER_ICONS[lower] ?? data.DEFAULT_FOLDER;
   }
+
+  // 忽略规则文件最先判：.npmignore 这类在 material 表里挂着工具 logo，
+  // IDEA 的语义是 ignored file type 优先，统一走「灰圆加斜杠」。
+  if (IGNORED_FILE_NAMES.has(lower)) return IGNORED_FILE;
 
   const byName = data.FILE_NAME_ICONS[lower];
   if (byName) return byName;

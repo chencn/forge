@@ -86,9 +86,10 @@ export const SETTINGS_TREE: SettingsTreeNode[] = [
     id: "vcs",
     title: "版本控制",
     children: [
-      { id: "vcs.general", pageId: "vcs.general", title: "版本控制", keywords: ["Git", "VCS", "版本管理", "仓库"] },
-      { id: "vcs.git", pageId: "vcs.git", title: "Git", keywords: ["Git 路径", "提交", "Commit", "Push", "分支"] },
-      { id: "vcs.confirmation", pageId: "vcs.confirmation", title: "确认与回滚", keywords: ["危险操作", "回滚", "Rollback", "二次确认", "Discard"] },
+      { id: "vcs.commit", pageId: "vcs.commit", title: "提交", keywords: ["Commit", "提交前检查", "Commit Checks", "提交信息规范", "Message Inspections", "TODO", "Reformat"] },
+      { id: "vcs.git", pageId: "vcs.git", title: "Git", keywords: ["Git 路径", "可执行文件", "Executable", "Push", "Update", "Protected branches", "受保护分支", "CRLF", "大文件"] },
+      { id: "vcs.confirmation", pageId: "vcs.confirmation", title: "确认与变更", keywords: ["确认", "Confirmation", "创建文件", "删除文件", "补丁", "Patch", "历史行数", "Limit history"] },
+      { id: "vcs.issueNavigation", pageId: "vcs.issueNavigation", title: "事务导航", keywords: ["Issue Navigation", "JIRA", "GitHub", "YouTrack", "工单", "正则表达式"] },
     ],
   },
   {
@@ -140,6 +141,40 @@ export const SETTINGS_TREE: SettingsTreeNode[] = [
     ],
   },
 ];
+
+/**
+ * 受「启用 AI 助手」总开关门控的 AI 设置页。
+ * 智能 Git 提交（tools.ai.commit）不依赖会话运行时，开关关闭时仍然可用。
+ */
+const AI_GATED_PAGE_IDS: ReadonlySet<string> = new Set([
+  "tools.ai.cli",
+  "tools.ai.providers",
+  "tools.ai.skills",
+  "tools.ai.mcp",
+  "tools.ai.hooks",
+  "tools.ai.archived",
+]);
+
+/** 总开关关闭时页面是否仍可访问 */
+export function isSettingsPageAccessible(pageId: string, aiAssistantsEnabled: boolean): boolean {
+  return aiAssistantsEnabled || !AI_GATED_PAGE_IDS.has(pageId);
+}
+
+/**
+ * 总开关关闭时从导航树剔除受门控的 AI 子页，避免出现点进去没有内容的空页。
+ * 智能 Git 提交（tools.ai.commit）不受开关控制，始终保留。
+ */
+export function visibleSettingsTree(aiAssistantsEnabled: boolean, nodes: SettingsTreeNode[] = SETTINGS_TREE): SettingsTreeNode[] {
+  if (aiAssistantsEnabled) return nodes;
+  function prune(node: SettingsTreeNode): SettingsTreeNode | null {
+    if (node.pageId && AI_GATED_PAGE_IDS.has(node.pageId)) return null;
+    if (!node.children) return node;
+    const children = node.children.map(prune).filter((c): c is SettingsTreeNode => c !== null);
+    if (children.length === 0) return null;
+    return { ...node, children };
+  }
+  return nodes.map(prune).filter((n): n is SettingsTreeNode => n !== null);
+}
 
 /**
  * 将树展开为列表，方便平铺搜索

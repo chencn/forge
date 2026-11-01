@@ -9,7 +9,7 @@ import clsx from "clsx";
 import { ChevronDown, ChevronRight, Check } from "lucide-react";
 import { SearchField, Button } from "../../../ui";
 import {
-  SETTINGS_TREE,
+  visibleSettingsTree,
   filterSettingsTree,
   getPageBreadcrumb,
   type SettingsTreeNode,
@@ -24,6 +24,8 @@ export interface SettingsLayoutProps {
   onApply?: () => void;
   hasDirtySettings?: boolean;
   headerActions?: ReactNode;
+  /** 「启用 AI 助手」总开关；关闭时导航树剔除受门控的 AI 子页（智能 Git 提交除外） */
+  aiAssistantsEnabled?: boolean;
   children: ReactNode;
 }
 
@@ -39,6 +41,7 @@ export function SettingsLayout({
   onApply,
   hasDirtySettings = false,
   headerActions,
+  aiAssistantsEnabled = true,
   children,
 }: SettingsLayoutProps) {
   const [query, setQuery] = useState("");
@@ -52,8 +55,8 @@ export function SettingsLayout({
 
   // 搜索树节点过滤
   const filteredTree = useMemo(() => {
-    return filterSettingsTree(SETTINGS_TREE, query);
-  }, [query]);
+    return filterSettingsTree(visibleSettingsTree(aiAssistantsEnabled), query);
+  }, [query, aiAssistantsEnabled]);
 
   // 当搜索有内容时，自动展开所有匹配的分支
   useEffect(() => {

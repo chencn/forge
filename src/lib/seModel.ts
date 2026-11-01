@@ -186,6 +186,7 @@ export function matchActions(
   const out: ActionItem[] = [];
   const recentRank = new Map(recent.map((id, i) => [id, i]));
   for (const c of commands) {
+    if (c.enabled === false) continue;
     let score: number;
     let indices: number[] = [];
     const title = matchText(c.label, q, { wordAligned: true });

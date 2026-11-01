@@ -1,23 +1,22 @@
 # 外挂语言服务
 
-语义能力有两个来源：Monaco 自带的 worker 语言服务，和这一层拉起的外部语言服务进程。同一门语言只能留一个。
-这一份管进程、协议帧、配置与会话生命周期；配置栏的界面见 [../settings/](../settings/)，底部状态条那一格见
-[../shell-layout/](../shell-layout/)，内置语义在哪里让位见 [../code-editor/](../code-editor/)，
-十二条命令的参数与返回见 [../../backend/commands.md](../../backend/commands.md) 的「语言服务」一节。
+语义能力有两个来源：CodeMirror 编辑器侧的基础语言支持，和这一层拉起的外部语言服务进程。同一门语言只能留一个
+语义来源。这一份管进程、协议帧、配置与会话生命周期；编辑器适配见 `src/lib/cm/lsp.ts`，配置栏的界面见
+[../settings/](../settings/)，底部状态条那一格见 [../shell-layout/](../shell-layout/)，十二条后端命令的参数与返回见
+[../../backend/commands.md](../../backend/commands.md) 的「语言服务」一节。
 
 ## 为什么要有这一层
 
-Monaco 的 worker 跑在 Web Worker 里，没有文件系统：看不见磁盘上的 `node_modules`、`@types`、`tsconfig.json`，
-也看不见同工程的其它文件，`import` 一律解析不到。命令行 `tsc --noEmit` 走项目本地的 TS 与真实 `node_modules`
-是零错误，编辑器里却整片报红，根因只有这一个。内置语义另外只覆盖 `css` / `html` / `json` / `typescript`
-四门，其余语言只有 tokenizer 的高亮与括号匹配。
+编辑器侧的基础语言支持只掌握当前文档，不能直接读取项目里的 `node_modules`、`@types`、`tsconfig.json` 和其它源文件。
+命令行 `tsc --noEmit` 走项目本地的 TS 与真实 `node_modules`，编辑器侧却可能无法解析同一份 `import`。外部进程拥有
+完整文件系统和项目索引，因此能补上跨文件语义；没有启用外部服务的语言仍只提供编辑器侧已有的高亮、括号和基础编辑行为。
 
-独立进程有完整文件系统，能解析整个工程。代价是接了外部服务的语言必须把内置语义关掉：Monaco 的 provider 是并列
-注册的，两套并存时 hover 弹两个框、诊断红线两个来源。
+独立进程有完整文件系统，能解析整个工程。代价是接了外部服务的语言必须关闭同类内置语义：两套 provider 并列时会
+重复弹出 hover、重复提供补全或产生两份诊断。
 
 ## 档位：三态收敛成一个枚举
 
-配置的键是 **server**，不是语言 id。`.ts` / `.tsx` / `.js` / `.jsx` 在 Monaco 里分属 `typescript` 和
+配置的键是 **server**，不是语言 id。`.ts` / `.tsx` / `.js` / `.jsx` 在编辑器里分属 `typescript` 和
 `javascript` 两个语言 id，却共用一个 `typescript-language-server`；按语言 id 配置会出现「TypeScript 已启用、
 JavaScript 未启用」这种无法成立的组合。挂到 server 上之后 Rust / Go / Python / Java 是 1:1，只有 TS 系是 1:2。
 
@@ -48,10 +47,10 @@ JavaScript 未启用」这种无法成立的组合。挂到 server 上之后 Rus
 - 写盘是原子的：同目录 `lsp.json.tmp` 再 rename（`sys.rs::write_atomic`），`settings_save` 共用这一条。
 - 档位合法性与空字段兜底在 `normalize` / `clamp` 里做，读写两侧各过一遍；非法 `mode` 退回该 server 的种子档位，
   前端拿到的值已经是可用的。文件损坏同样回退为种子并补齐一份完整配置。
-- 不存 `extensions`：扩展名到语言 id 的映射只在 `monacoEnv.ts` 那张表里，两处存就会对不上。
+- 不存 `extensions`：扩展名到语言 id 的映射只在 `src/lib/editorEnv.ts`，两处存就会对不上。
 
 字段：`mode`、`program`、`path`（空串表示用探测到的那条）、`args`（一行文本，拆分在后端）、`languages`
-（Monaco 语言 id）、`rootMarkers`、`installCommand`、`startupTimeoutMs`、`initOptions`、`supportsBuiltin`，
+（编辑器语言 id）、`rootMarkers`、`installCommand`、`startupTimeoutMs`、`initOptions`、`supportsBuiltin`，
 外加全局的 `maxSessions` 与 `idleTimeoutMin`。serde 一律 `rename_all = "camelCase"` 配 `#[serde(default)]`。
 `program` 这类键名不参与 `rename_all` 的改写，所以 `rust-analyzer` 这种带连字符的键能原样落地。
 
@@ -176,64 +175,51 @@ Node 写的 server 加载 bootloader 后会连 `inspectorIpc` 那个管道，然
 第三条引入一个前提：语义能力依赖本机已装好对应的语言工具链。这与「不依赖 CDN」不冲突，它不联网、不下载，
 只是用本机已有的。
 
-前端客户端自己写，只做握手、文档同步与 provider 分发三件事。`monaco-languageclient` 排除：11.x 依赖
-`@codingame/monaco-vscode-api@^37`，是替换整个 Monaco 接入层的重型方案。`monaco.lsp.MonacoLspClient` 也排除：
-它只提供 `WebSocketTransport` 与到 worker 的传输，没有 stdio 传输，公开面只有构造器，做不了文档同步与
-provider 注册。
+前端客户端自己写，只做握手、文档同步、请求路由和编辑器适配。`src/lib/lspManager.ts` 是唯一公开 seam，调用方
+不直接操作 JSON-RPC、Tauri command 或 session 表；底层 `src/lib/lspClient.ts` 负责进程会话、文档同步、能力和诊断缓存。
 
-## Monaco 那一侧
+## CodeMirror 适配
 
-`src/lib/lspClient.ts` 是模块级单例，不认识文档模型，只收 `{ path, language, text }` 的快照。
+`src/lib/cm/lsp.ts` 把 LSP 结果映射到当前编辑器，不持有进程状态：
 
-- 主入口 `reconcileLsp(root, settings, documents)` 幂等：算出该起哪些 server、不该留的停掉、文档按增删发改
-  发 didOpen / didChange / didClose、内置语义开关跟着档位走。App 在文档列表、工作区或配置变动时调一次。
-- 调用方每次击键都触发，而它又是异步的，外面套一层「最新优先」的合并队列：正在跑时再来的调用只更新待办参数。
-  少了这层，两次对档会交叉执行，同一份文档可能被并发 didOpen。
-- `opened` / `sent` 一律以规范化 URI 串为键，与请求侧 `model.uri.toString()` 一致。一处存原始路径、一处存
-  `Uri.file()` 的输出时，Windows 上盘符大小写与分隔符不一致，请求会被「该文件未打开过」拦下，
-  hover / 补全 / 跳转定义全部静默失效。
-- `publishDiagnostics` 落成 `setModelMarkers`（owner 用固定串）。按 URI 直查 model 之外还要按归一化 fsPath
-  再扫一次：server 回来的 URI 常带编码（`file:///c%3A/...`，盘符小写、冒号被编码），与 `Uri.file` 创建的不逐
-  字节相同，只查一次会遗漏。
-- provider 注册五样：hover、completion（触发字符 `. : < / @ " '`）、definition、references、documentSymbol，
-  只对已经 didOpen 的 `file://` 文档发请求；比对面板那两份 `inmemory://` 模型排除在外。
-- 诊断落盘时要把该语言所有 model 上 owner 为 `typescript` / `javascript` 的 marker 清空一次：
-  `setModeConfiguration` 只关后续 worker 诊断，已经画在屏幕上的旧错误不会自己消失。
-- 枚举映射：`SymbolKind` 两边顺序一致，减一即可；`CompletionItemKind` 两边顺序**不同**（LSP 的 Text=1、Class=7，
-  Monaco 的 Method=0、Class=5），必须走显式映射表。
-- 关内置语义走 `monaco.typescript.typescriptDefaults.setModeConfiguration(...)` 逐项关（0.57 里
-  `monaco.languages.typescript` 已废弃，入口在顶层）。关的十项是 completionItems、hovers、definitions、
-  references、rename、diagnostics、documentSymbols、signatureHelp、documentHighlights、codeActions；
-  开内置时这十项整份恢复。判定是 `mode === "builtin"` 才开，`off` 与 `lsp` 都关，所以「只高亮不报错」
-  对应的是 `off` 档。状态带缓存，档位没变不重设，重设会触发语言服务重算。
-- 语法高亮不在这层，走主线程 tokenizer，关掉这些不影响高亮。
-- 本地改动进 150ms 防抖窗口：窗口内每次对档只刷新待发文本并重置计时，到期才用最新那份发一条 `didChange`，
-  版本号自增。少这一层，每次击键的全文与 server 重解析开销全花在中间态上，诊断反而更慢。
-- 请求超时 60 秒。`initialize` 另按各项自己的 `startupTimeoutMs` 计（JVM 那两个 120 秒）。
-- 发给 server 的 languageId 要规范化：`.tsx` 传 `typescriptreact`、`.jsx` 传 `javascriptreact`，
-  否则 tsserver 按纯 ts/js 语法解析，把 JSX 报成一片语法错误。
+- `reconcileLsp(root, config, documents)` 幂等计算会话、文档生命周期和内置语义档位；调用方通过 `lspManager` 进入。
+- completion、hover、diagnostics、definition、declaration、type definition、implementation、references、formatting、
+  signature help、code action 和 rename 均先检查 capability，再通过 Manager 请求。
+- 位置结果按用途分流：定义 / 声明 / 类型定义 / 实现多处命中时，锚在发起跳转的光标位置弹「选择声明」弹层
+  （`src/lib/cm/lspChooser.ts`，候选行 = 符号名 + 行预览 + 文件:行号，上下键换候选、回车跳转、Escape 收起；
+  异文件候选的正文与符号名读盘后异步补全），一处命中直接跳；「查找用法」与符号 / 层级类结果仍进位置结果面板。
+  Code Action 和 Rename 的所有写入统一进入 `lspManager.applyWorkspaceEdit`，server command 统一走
+  `workspace/executeCommand`，UI 不直接写文件。
+- Inlay Hints 在 `src/lib/cm/lspDecorations.ts` 中只请求可见区，视口、正文或 ready 状态变化会取消旧请求；结果同时校验
+  文档身份、路径和序号，只生成只读 widget，不改变正文、不进入撤销栈。
+- Semantic Tokens 在 `src/lib/cm/lspSemanticTokens.ts` 中按服务端 legend 解码相对 token 流，使用协商的位置编码生成只读标记；
+  CodeLens 在代码行上方展示可点击 command，Inline Completion 使用只读 ghost text，Tab 接受时才写入正文。
+- Document Symbols、Workspace Symbols、Incoming/Outgoing Calls、Supertypes/Subtypes 统一转换为位置结果面板；
+  `workspace/symbol` 与层级后续请求使用 `LspManager.requestRaw`，不错误附加 `textDocument`。
+- Document Link 使用独立适配层请求 `textDocument/documentLink`；只有有效 `file:` 目标才会显示为可点击链接，悬停显示目标提示，Ctrl/⌘ 点击通过 App 的文档入口打开。未知 scheme、非法范围和过期正文结果都会丢弃。
+- 虚拟文档使用 `virtual:lsp/...` 内部键承载非磁盘 URI，原始 URI 只保存在文档元数据中；它们固定只读、不可保存、不进入语言服务的磁盘文档同步，关闭页签即清理。
+- 文档同步使用规范化 `file://` URI 和 UTF-16/8/32 位置编码；`didChange` 有 150ms 防抖，过期结果不能落到新正文。
+- 外部服务档位通过 `configureBuiltin` 关闭同类内置语义；`off` 只保留编辑器基础能力，`lsp` 只使用外部服务。
 
 ## 端到端跑通的样子
 
-对着真实 `typescript-language-server` 走完 initialize → initialized → didOpen：握手回完整 capabilities；
-server 日志显示它读到了磁盘上的 `node_modules/typescript`（`Using Typescript version (workspace) 5.9.3`），
-这正是 worker 做不到的；打开一个含 `const bad: string = n` 的文件，收到 `publishDiagnostics`，诊断为
-`Type 'number' is not assignable to type 'string'`。
+真实探针已对 `rust-analyzer 1.99.0` 和 `gopls v0.23.0` 验证 initialize、didOpen、completion、definition、formatting
+和 shutdown；gopls 还返回了 diagnostics 与 Rename 的 WorkspaceEdit。探针脚本放在用户 Temp，不进入仓库。
+`typescript-language-server`、`pyright` 和 `jdtls` 当前未安装，因此只记录为环境跳过，不把它们写成通过。
 
 ## 已知边界
 
 - 首次切入 `lsp` 档的启动延迟与内存没有实测过（rust-analyzer 首次索引尤其重）。是否需要更显眼的
   「正在启动语言服务」状态，等实测再定。
-- `lsp` 档下重命名、签名帮助、高亮同项与 quick fix 不可用：内置那十项一起关了，外挂这侧只接了五个 provider。
+- Document Link 当前只打开本地 `file:` 目标；非文件 URI 没有通用内容读取协议，因此只提供安全的虚拟文档容器，不自动拉取未知协议内容。
 - 改动仍然每次发整篇正文（`contentChanges: [{ text }]`），只有 150ms 防抖压住了频率。协议上合法，
   大文件改一行也要把全文送一遍；换成增量 range 变更没做。
-- 项目级覆盖不做。forge 的定位是全局设置，要按工程换 server 得先决定配置往哪儿放。
+- 项目级覆盖只读取项目根 `.forge/lsp.json` 的候选顺序和 server patch，不反写用户配置；其它编辑器的配置文件不读取。
 - 界面上添加与删除条目没做。`lsp.json` 是「种子表 + 用户改过的那几项」，`normalize` 会把种子里缺的键补回来，
   删掉一项会在下一次写盘时复活。自填 server 仍然能加：手改文件写一个新键，`normalize` 认它
   （单测 `custom_server_keys_are_kept` 钉着），编辑弹窗那套字段全都用得上。
-- 本机的 Tauri 测试二进制受 `0xc0000139` 限制（见 [../../backend/toolchain.md](../../backend/toolchain.md)），
-  `npm run test:rs` 跑不起来；语言服务这 23 条单测（配置 10、探测 6、根解析 7）已在独立工程执行通过。
-  退避、淘汰、状态合成与安装取尾、单向校正这几段需要真起进程才能覆盖，没有单测，靠人工验收兜。
+- Rust 库测试在当前环境可运行并通过；仍有 Windows linker 的既有 manifest warning。退避、淘汰、状态合成与安装取尾、
+  单向校正已由实现和配置测试覆盖，真实桌面进程崩溃恢复仍需在带 Tauri bridge 的桌面流程补验。
 
 ## 代码
 
@@ -244,15 +230,20 @@ server 日志显示它读到了磁盘上的 `node_modules/typescript`（`Using T
 | `src-tauri/src/lsp_probe.rs` | `PROBE_TTL` `:21`、`OUTPUT_TAIL` `:24`、`candidates` 与 `search_dirs`、`augmented_path` `:150`、`is_functional`、`resolve_command` `:190`、`run_install`、`lsp_probe` `:310`、`lsp_install` `:316`、`probe_and_reconcile` |
 | `src-tauri/src/lsp_detect.rs` | `CACHE_TTL` `:16`、`MISS_TTL` `:19`、`CACHE_LIMIT` `:21`、`MAX_DEPTH` `:23`、`SKIP_DIRS` `:25`、`marker_matches` / `hit_in` / `search_up` / `search_down`、`resolve` `:146`、`cached`、`lsp_resolve_root` `:215` |
 | `src/lib/lspClient.ts` | `rememberSkip` `:71`、`emitStatus` / `watchLspStatus` `:114-119`、`toUri` `:135`、`sessionKey` `:145`、`ROOTS_TTL` `:150`、`resolveRoot` `:158`、`initialize` `:231`、`startServer` `:291`、`launchSession` `:303`、`ensureSubscriptions` `:358`、日志的保留与并入 `:386-450`、`handleMessage` `:461`、`applyDiagnostics` `:544`、`findModelByUri` `:577`、`ensureProviders` `:609`、`completionsFromLsp` `:667`、`completionKind` `:761`、`reconcileLsp` 与 `reconcileOnce`、`syncDocuments`、`wakeLsp`、`configureBuiltin` |
+| `src/lib/cm/lspDocumentLinks.ts` | `textDocument/documentLink` 请求、`file:` 目标校验、悬停提示、Ctrl/⌘ 点击和正文快照失效 |
+| `src/lib/cm/lspChooser.ts` | 跳转目标选择器：`showDeclarationChooser`、候选态 StateField + `showTooltip`、高优先键位（上下/回车/Escape）、异文件预览异步补全 |
+| `tests/lib/cmChooser.test.ts` | 选择器行为：锚点弹层条目、点击跳转、键盘选择、Escape 收起 |
+| `src/lib/virtualDocuments.ts` | 非 `file:` URI 校验与 `virtual:lsp/...` 内部键生成 |
+| `src/hooks/useDocuments.ts` | 虚拟 URI 元数据、只读容器和 `openVirtualUri` 生命周期 |
 | `src/lib/lsp.ts` | 与 `lib/term.ts` 同构的 API 壳：十二条命令与状态 / 探测 / 根命中的镜像类型 |
 | `src/lib/lspConfig.ts` | 类型镜像、`modesFor`、`programOf`、`serverEntries` / `serverForLanguage`、读写两条封装 |
 | `src/hooks/useLspConfig.tsx` | 配置的唯一持有处：`config` / `patchServer` / `probes` / `reprobe` / `probing` 与会话状态；探测回来的那份走 `skipSave` 不再写盘 |
 | `src/hooks/useLspSessions.ts` | 一份轮询两处用（状态条与设置页）：`POLL_MS` 3 秒、序号丢旧快照、上一次落定之后再排下一次 |
 | `src/components/LspStatusBar.tsx` | 底部那一格与弹层；未打开项目或没有外部档时不绘制；只列当前窗口的会话 |
 | `src/components/LspDialogs.tsx` | 编辑弹窗（九个字段、`initOptions` 的 JSON 校验、超时夹区间）、安装确认弹窗（命令原文只在这里）、输出日志弹窗 |
-| `src/lib/monacoEnv.ts` | 语言显示名的唯一来源：`LANGUAGE_LABELS`、`languageLabel`、`languageNames`；设置页卡片、编辑弹窗标题行与状态条弹层三处共用 |
+| `src/lib/editorEnv.ts` | 语言显示名和扩展名映射的编辑器无关门面；设置页、编辑器和状态条不各自维护语言 id |
 | `src/lib/format.ts` | `normPath` / `samePath` / `pathWithin`：路径比较只有一份规则 |
 | `src/lib/window.ts` | `windowLabel`，会话身份的第一段 |
 | `src/lib/errors.ts` | LSP 那九条码的映射 |
 | `src/App.tsx` | 对档 effect、`wakeLspServer`、状态条挂点 |
-| `src/main.tsx` | 起手并读设置与语言服务配置；`termReap` 之后紧跟 `lspReap`，走 `lib/lsp` 那个薄壳，不引 `lib/lspClient`，否则启动路径上多打出一个几百模块的 monaco chunk |
+| `src/main.tsx` | 起手并读设置与语言服务配置；启动时回收遗留 LSP 会话，具体请求延迟到 `lspManager`，避免在启动路径提前加载编辑器 provider |

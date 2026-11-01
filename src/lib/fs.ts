@@ -21,6 +21,10 @@ export interface FsEntry {
   isSymlink: boolean;
   /** Windows 隐藏/系统属性，类 unix 下为点开头文件名。 */
   isHidden: boolean;
+  /** 是否命中当前 Git 仓库的忽略规则；非仓库目录为 false。 */
+  isIgnored: boolean;
+  /** 是否为默认排除目录；用户在设置中标记的排除目录由项目树叠加。 */
+  isExcluded: boolean;
   /** 只读属性。 */
   isReadonly: boolean;
 }
@@ -179,6 +183,11 @@ export function allowAssetDir(root: string): Promise<void> {
 /** 用系统默认浏览器打开链接。 */
 export function openExternal(url: string): Promise<void> {
   return invoke<void>("open_external", { url });
+}
+
+/** 读取系统文件剪贴板中的路径；浏览器环境或不支持的平台返回空数组。 */
+export function readClipboardFiles(): Promise<string[]> {
+  return invoke<string[]>("clipboard_files").catch(() => []);
 }
 
 /** 文件名搜索的一条结果，来自 Rust `FileHit`。 */

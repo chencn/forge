@@ -35,7 +35,7 @@ export interface GitMenuHandlers {
   readonly history?: (relative: string) => void;
   readonly commit?: () => void;
   readonly fetch?: () => void | Promise<void>;
-  readonly putLabel?: () => void;
+  readonly newTag?: () => void;
   readonly diff?: (paths: string[]) => void;
   readonly rollback?: (paths: string[]) => void;
   readonly push?: () => void;
@@ -150,35 +150,35 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     },
     { separator: true },
     {
-      label: "JavaScript File",
+      label: t("project.view.newJs"),
       onSelect: () => ctx.onNewFile?.(targetDir, "js"),
     },
     {
-      label: "TypeScript File",
+      label: t("project.view.newTs"),
       onSelect: () => ctx.onNewFile?.(targetDir, "ts"),
     },
     {
-      label: "Rust File",
+      label: t("project.view.newRs"),
       onSelect: () => ctx.onNewFile?.(targetDir, "rs"),
     },
     {
-      label: "Python File",
+      label: t("project.view.newPy"),
       onSelect: () => ctx.onNewFile?.(targetDir, "py"),
     },
     {
-      label: "Markdown Document",
+      label: t("project.view.newMd"),
       onSelect: () => ctx.onNewFile?.(targetDir, "md"),
     },
     {
-      label: "JSON File",
+      label: t("project.view.newJson"),
       onSelect: () => ctx.onNewFile?.(targetDir, "json"),
     },
     {
-      label: "HTML File",
+      label: t("project.view.newHtml"),
       onSelect: () => ctx.onNewFile?.(targetDir, "html"),
     },
     {
-      label: "CSS Stylesheet",
+      label: t("project.view.newCss"),
       onSelect: () => ctx.onNewFile?.(targetDir, "css"),
     },
   ];
@@ -320,8 +320,8 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         onSelect: () => git.commit?.(),
       },
       {
-        label: t("git.putLabel"),
-        onSelect: () => git.putLabel?.(),
+        label: t("git.newTag"),
+        onSelect: () => git.newTag?.(),
       },
       {
         label: t("git.fetch"),
@@ -335,7 +335,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
       },
       { separator: true },
       {
-        label: t("git.diff"),
+        label: t("git.viewDiff"),
         disabled: files.length === 0,
         onSelect: () => git.diff?.(files.map((f) => f.path)),
       },
@@ -353,7 +353,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
           ]
         : []),
       {
-        label: t("dialog.rollback"),
+        label: t("git.rollback"),
         disabled: files.length === 0,
         onSelect: () => git.rollback?.(files.map((f) => f.path)),
       },
@@ -372,7 +372,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         onSelect: () => git.branches?.(),
       },
     ];
-    groups.push([{ label: "Git", children: gitSubmenu }]);
+    groups.push([{ label: t("project.view.git"), children: gitSubmenu }]);
   }
 
   // Group 9: Compare With… / Compare Files
@@ -409,6 +409,10 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         onSelect: () => ctx.onMarkDirectory?.(singleDir.path, "resources"),
       },
       {
+        label: t("project.view.markTestResources"),
+        onSelect: () => ctx.onMarkDirectory?.(singleDir.path, "testResources"),
+      },
+      {
         label: t("project.view.markExcluded"),
         onSelect: () => ctx.onMarkDirectory?.(singleDir.path, "excluded"),
       },
@@ -443,7 +447,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   if (singleFile) {
     groups.push([
       {
-        label: "Send to AI Chat",
+        label: t("project.view.sendToAiChat"),
         shortcut: `${modKey}+L`,
         onSelect: () => ctx.onAiInput?.(singleFile),
       },

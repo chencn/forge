@@ -101,7 +101,8 @@ function DiffPane({
   /** 排法要活过重挂：换一篇文件会重建视图，创建参数得带着当前这一档。 */
   const sideBySideRef = useRef(true);
   const [highlight, setHighlight] = useState<DiffHighlight>("words");
-  const [collapse, setCollapse] = useState(true);
+  // 折叠未更改区域默认关闭
+  const [collapse, setCollapse] = useState(false);
   const highlightRef = useRef(highlight);
   const collapseRef = useRef(collapse);
   const [whitespace, setWhitespace] = useState<DiffWhitespace>("default");

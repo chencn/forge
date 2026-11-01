@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, Loader2, Plus, Save, Send, Server, Trash2 } from "lucide-react";
+import { Eye, EyeOff, ListPlus, Loader2, Plus, Save, Send, Server, Trash2 } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useUnsavedGuard } from "../hooks/useUnsavedGuard";
 import { refreshAiCliSettings } from "../lib/aiCli";
@@ -8,6 +8,7 @@ import {
   CLAUDE_MODEL_SLOTS,
   applyModelProvider,
   cliAdminAvailable,
+  codexCustomFromEndpoint,
   emptyModelProvider,
   loadModelProviders,
   normalizeCodexCatalogIntent,
@@ -21,6 +22,7 @@ import { AI_NAMES } from "../lib/aiCli";
 import type { AiProvider } from "../lib/aiCli";
 import Select from "./Select";
 import AiActionDialog from "./AiActionDialog";
+import ProviderModelPickerDialog from "./ProviderModelPickerDialog";
 import CodexCatalogSection from "./CodexCatalogSection";
 import type { TranslationKey } from "../i18n/lang/zh";
 
@@ -53,6 +55,10 @@ const CUSTOM_PLACEHOLDER: Record<ClaudeCustomSlot, string> = {
   customOptionName: "Gateway Opus",
   customOptionDescription: "Routed via custom gateway",
 };
+
+/** 「从端点获取」对话框里每行的填入目标：六个模型槽位 + 自定义选项的 ID。 */
+const FILL_TARGETS: string[] = [...CLAUDE_MODEL_SLOTS, "customOption"];
+const FILL_LABEL: Record<string, TranslationKey> = { ...SLOT_LABEL, customOption: "providers.customOption" };
 
 /**
  * 比较用的快照：后端保存时会 trim 并丢掉空槽位，这里先归一化，
@@ -142,6 +148,23 @@ export default function ModelProvidersPanel() {
   }, [desktop]);
 
   const edit = (patch: Partial<ModelProvider>) => setDraft((current) => current ? { ...current, ...patch } : current);
+
+  /** 「从端点获取模型」选择器：两个渠道共用一个对话框，行尾动作随 draft.kind 分叉。 */
+  const [picking, setPicking] = useState(false);
+  /** Claude：把选中的模型 ID 填进槽位。main 走 model 快捷字段，其余写 models 表。 */
+  const fillSlot = (slot: string, modelId: string) => {
+    if (!draft) return;
+    if (slot === "main") edit({ model: modelId });
+    else edit({ models: { ...draft.models, [slot]: modelId } });
+  };
+  /** Codex：端点模型追加为 OpenAI 兼容自定义条目；同 slug 已存在时不重复加。 */
+  const addEndpointCustom = (modelId: string) => {
+    if (!draft) return;
+    const current = parseCodexCatalogIntent(draft.model);
+    if (current.customs.some((item) => item.slug === modelId)) return;
+    const item = codexCustomFromEndpoint(modelId, catalog?.models?.[0]);
+    edit({ model: serializeCodexCatalogIntent({ ...current, customs: [...current.customs, item] }) });
+  };
 
   // Codex 的模型清单来自 CLI 自己的模型清单，只在编辑 Codex 供应商时按需读取。
   useEffect(() => {
@@ -294,6 +317,11 @@ export default function ModelProvidersPanel() {
 
               {draft.kind === "claude" ? (
                 <>
+                  <button type="button" className="lsp-action" disabled={busy || !draft.apiUrl.trim()}
+                    title={draft.apiUrl.trim() ? t("providers.fetchModels") : t("providers.fetchModelsNeedUrl")}
+                    onClick={() => setPicking(true)}>
+                    <ListPlus size={13} />{t("providers.fetchModels")}
+                  </button>
                   <div className="ai-cli-grid">
                     {CLAUDE_MODEL_SLOTS.map((slot) => (
                       <label className="ai-cli-field" key={slot}>
@@ -331,6 +359,11 @@ export default function ModelProvidersPanel() {
                 </>
               ) : (
                 <div className="ai-cli-field">
+                  <button type="button" className="lsp-action" disabled={busy || !draft.apiUrl.trim()}
+                    title={draft.apiUrl.trim() ? t("providers.fetchModels") : t("providers.fetchModelsNeedUrl")}
+                    onClick={() => setPicking(true)}>
+                    <ListPlus size={13} />{t("providers.fetchModels")}
+                  </button>
                   <CodexCatalogSection
                     embedded
                     view={catalog ?? null}
@@ -363,6 +396,22 @@ export default function ModelProvidersPanel() {
           </div>
         </> : <p className="ai-cli-empty">{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("providers.selectHint")) : t("ai.desktopOnly")}</p>}
       </section>
+
+      {picking && draft ? (
+        <ProviderModelPickerDialog kind={draft.kind} apiUrl={draft.apiUrl} apiKey={draft.apiKey}
+          onClose={() => setPicking(false)}
+          renderAction={(modelId) => draft.kind === "claude" ? (
+            <span className="provider-model-fill">
+              <Select value="" label={t("providers.fetchModelsFill")} placeholder={t("providers.fetchModelsFill")}
+                options={FILL_TARGETS.map((slot) => ({ value: slot, label: t(FILL_LABEL[slot]) }))}
+                onChange={(slot) => fillSlot(slot, modelId)} />
+            </span>
+          ) : (
+            <button type="button" className="lsp-action" onClick={() => addEndpointCustom(modelId)}>
+              {t("providers.fetchModelsAdd")}
+            </button>
+          )} />
+      ) : null}
 
       {pendingDelete ? <AiActionDialog title={t("providers.deleteConfirmTitle")} confirm={t("dialog.delete")} danger
         onCancel={() => setPendingDelete(null)} onConfirm={() => void remove(pendingDelete)}>

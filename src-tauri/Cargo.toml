@@ -15,11 +15,20 @@ rust-version = "1.80"
 [features]
 # Explicitly opt in to the model-free native verification executable; never bundled.
 browser-smoke = []
+# 只构建本机 LSP IPC 验收程序；使用用户 Temp 隔离配置和测试 server，永不随产品打包。
+lsp-smoke = []
+# 只构建真实主 WebView 的 LSP UI 验收入口；使用用户 Temp 隔离配置和测试 server，永不随产品打包。
+lsp-ui-smoke = []
 
 [[bin]]
 name = "forge-browser-smoke"
 path = "src/bin/browser_smoke.rs"
 required-features = ["browser-smoke"]
+
+[[bin]]
+name = "lsp-smoke"
+path = "src/bin/lsp_smoke.rs"
+required-features = ["lsp-smoke"]
 
 [lib]
 name = "forge_lib"

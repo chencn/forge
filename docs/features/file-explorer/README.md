@@ -8,12 +8,12 @@
 
 排序在后端一次做完：目录优先，同级按名字小写升序，前端不再排。
 
-`list_directory` 把隐藏项照实返回，过滤在树这一层：`visible()` 按两个设置项判断，
+`list_directory` 在后端为每个条目填充 `isHidden`、`isIgnored`、`isExcluded`，过滤在树这一层只消费这份契约：
 `explorer.showHidden` 管隐藏项、默认关，`explorer.showIgnored` 管被 git 忽略的项、默认开。两个都存在 `settings.explorer`，
-存盘和读回缺字段时按同一套默认值补。
-Windows 的隐藏位读 `GetFileAttributesW` 的 HIDDEN|SYSTEM，类 unix 认文件名以点开头。
+存盘和读回缺字段时按同一套默认值补。Windows 的隐藏位读 `GetFileAttributesW` 的 HIDDEN|SYSTEM，类 unix 认文件名以点开头。
 显示出来时隐藏项的字色压到 `--text-muted`，图标附加 50% 半透明度（对齐 IDEA 的 `IconLoader.getTransparentIcon(icon, 0.5f)`），选中或激活时回到常规色。被过滤掉的目录连整棵子树一起藏。
-被忽略、又不是点开头的目录（`dist`、`node_modules`）按 IDEA 的排除根画：橙色文件夹（`excludeRoot.svg`）加浅黄底 `--vcs-excluded-bg`。点开头的忽略目录（`.idea`）仍走隐藏态，不换这枚图标。`node_modules` 名字后面再跟一行灰色的 `library root`。
+Git 忽略项由后端 `git check-ignore` 批量判断，不再由前端扫描整仓库后做路径前缀推断；默认排除目录（`dist`、`node_modules`）由 `isExcluded` 单独标记，按 IDEA 的排除根画橙色文件夹（`excludeRoot.svg`）加浅黄底 `--vcs-excluded-bg`。
+用户在项目树中持久化标记的 `excluded` 目录由前端叠加到同一显示状态，`source`、`test`、`resources` 和 `testResources` 仍只影响项目设置语义。`node_modules` 名字后面再跟一行灰色的 `library root`。
 这两个开关也管搜索：全局搜索按同一份 `settings.explorer` 在后端扫描层剪枝，见 `../search/`。
 
 单条 stat 失败进 `unreadable` 数组，不影响同一目录其余条目。
@@ -31,7 +31,9 @@ Windows 的隐藏位读 `GetFileAttributesW` 的 HIDDEN|SYSTEM，类 unix 认文
 - 展开过的目录才读盘，条目按目录存进 Map。折叠不清缓存，再展开不重新读。
 - 读失败的目录另记一份，错误文案画在该目录那一行下面，不占状态条。
 - `refreshSignal` 递增时两个 Map 一起作废。留着旧条目会看见已经删掉的文件。
-- 「折叠全部」只清 `expanded`，缓存不动；换工作区根目录同样清空 `expanded`。
+- 视图模式、9 个视图选项和 `expanded` 按规范化后的工程根分别存进 `localStorage`；重挂载或切换工作区根目录会读回各自状态。
+  展开键最多保存 3000 项，写入防抖 300ms；损坏的模式、选项或展开列表回退到默认值。
+- 「折叠全部」只清 `expanded`，缓存不动；换工作区根目录切换到新工程自己的展开集合，不串用旧工程状态。
 - 图标是 IDEA 彩色那套。数据约 200KB，单独一个 chunk 懒加载；首屏先用单色 `Folder` / `File` 占位，装入后由
   `useSyncExternalStore` 的订阅整体换成真图标。
 - 解析规则对齐 IntelliJ 的 `extension ?: name`：普通文件取最后一个点之后，`.gitignore` 取点之后，完全没有点的
@@ -106,9 +108,14 @@ IDEA 那份菜单里后端不支持的项不摆出来（查找用法、替换、
 
 - 新建文件走 `create_new`（`O_CREAT | O_EXCL`），撞名报 `TARGET_EXISTS`，不把已有文件截成空的：`File::create`
   是截断语义，那等于一次静默数据丢失。前后端都不查重，判据只在后端这一处。新建文件夹只建单层，父目录不在报 `IO`。
-- 粘贴撞名不覆盖，后端的 `TARGET_EXISTS` 原样报回界面，换名由人决定。覆盖之后找不回来，这里不猜。
-- 剪切后贴回它自己所在的目录时整条跳过。剪切那批贴完即清空 `clipboard`；真的挪动过条目时连选中集一起清空，那
-  几条已经在别处，留着会让下一次删除或粘贴落在已经不存在的旧路径上。攒下的批只在 React state 里，不落盘。
+- 粘贴撞名不覆盖，后端用 `TARGET_EXISTS` 拒绝写盘，前端进入 Copy 对话框处理换名。覆盖之后找不回来，这里不猜。
+- 粘贴撞名打开 Copy 对话框，默认名由 `uniqueName` 生成：大小写不敏感查重，`notes.txt` 依次得到 `notes copy.txt`、
+  `notes copy 2.txt`，`.env` 不会把首个点误判为扩展名。确认后继续处理同一批的剩余项，后续撞名仍逐项询问。
+- 剪切后贴回它自己所在的目录时整条跳过。剪切那批全部贴完即清空 `clipboard`；普通复制完成后保留内部剪贴板，
+  允许再次粘贴。真的挪动过条目时连选中集一起清空，那几条已经在别处，留着会让下一次删除或粘贴落在已经不存在的旧路径上。
+  攒下的批只在 React state 里，不落盘。
+- 内部剪贴板为空时，Windows 激活窗口会读取系统 `CF_HDROP` 文件剪贴板，因此可直接把资源管理器复制的文件或目录粘贴到项目树。
+  该读取只取路径，不触碰文本剪贴板；非 Windows 后端返回空数组。一次 Paste 只使用一个来源，避免内部和系统剪贴板重复执行。
 - 同盘挪动是一次 rename。跨盘时整份复制完再删源，删不掉就报 `MOVED_WITH_SOURCE`，把复制到的目标和没删掉的源
   两条路径一起说清楚。
 - 复制目录连内容一起递归。
@@ -139,12 +146,15 @@ IDEA 那份菜单里后端不支持的项不摆出来（查找用法、替换、
 | --- | --- |
 | `src/components/ExplorerTree.tsx` | 属性与选中集约定 `:13-38`；`pathKey` `:41-43`；`useLazyChildren` 两个 Map 与代次作废 `:46-71`；忽略项判定 `:78-110`；`visible()` 的两个开关 `:168-172`；`collapseChain` 与 `rows` / `walk` `:179-210`；预读包链 `:214-240`；`resolve` `:243-248`；`pick` `:254-274`；`toggle` 与 `openDir` `:277-289`；跟着搜索定位那条 effect `:291-347`；空白处右键 `:361-368`；行渲染、缩进、字母与圆点 `:371-430`；单击开文件 `:398-404`；行右键落点 `:405-411`；目录读失败的行下提示 `:431-435` |
 | `src/App.tsx` | 错误写成通知气泡 `:205-235`；选中集与 `clipboard` `:189-196`；asset 授权 `:286-289`；WebView2 菜单拦截 `:340-346`；`refreshTree` 与磁盘改动 `:348-363`；打开文件 `:464-470`；`.gitignore` 追加 `:783-807`；`copyPicked` 与 `targetDirOf` `:809-825`；粘贴 `:827-856`；比较文件 `:857-879`；删除与重命名确认 `:881-905`；`requestMenu` `:967-1129`；「在目录中查找」落在 Git 组之后，作用层取 `targetDirOf`；键位 `:1131-1180`；重命名与删除落盘 `:1274-1292`；头部按钮 `:1872-1914`；收起侧栏 `:1981-1989`；树挂载 `:1993-2006` |
+| `src/features/project-tree/viewState.ts` | 工程级模式、选项、展开集合的 localStorage 契约；版本迁移、损坏值回退、展开上限 |
+| `src/features/project-tree/ProjectTree.tsx` | 工程根切换时重新读取模式、选项与展开集合；300ms 防抖写入展开状态 |
 | `src/lib/settings.ts` | `ExplorerSettings` 两个开关与默认值 `:66-72`、`:171` |
 | `src-tauri/src/settings.rs` | `ExplorerSettings` 的 `Default`（`show_ignored: true`、`show_hidden: false`） `:100-117` |
-| `src/lib/fs.ts` | `FsEntry` 与 `DirectoryListing` `:6-38`；`listDirectory` `:80-83`；新建 / 改名 / 复制 / 挪动 / 删除 / 显示 `:85-114`；`assetUrl` `:126-135`；`openExternal` `:142-145` |
-| `src-tauri/src/fs/mod.rs` | `list_directory` 与排序、`unreadable` `:149-192`；`create_folder` / `create_file` / `rename_entry` `:266-285`；`copy_tree` 与 `copy_entry` `:286-311`；`move_entry` 与 `MOVED_WITH_SOURCE` `:313-326`；`delete_entry` `:328-340`；`reveal_entry` `:342-345` |
-| `src-tauri/src/fs/windows.rs` | HIDDEN\|SYSTEM 位 `:46-61`；`explorer /select` `:63-69` |
-| `src-tauri/src/fs/unix.rs` | 点开头文件名判隐藏 `:5-20` |
+| `src/lib/fs.ts` | `FsEntry` / `DirectoryListing` 契约（含 `isHidden`、`isIgnored`、`isExcluded`）；`listDirectory`；新建 / 改名 / 复制 / 挪动 / 删除 / 显示；`assetUrl`；`openExternal`；`readClipboardFiles` |
+| `src-tauri/src/fs/mod.rs` | `FsEntry` 标记组装；`list_directory` 批量计算 Git 忽略、默认排除和排序；`unreadable`；新建 / 改名 / 复制 / 挪动 / 删除 / 显示 |
+| `src-tauri/src/git/mod.rs` | `ignored_names_in_dir`：单目录内通过一次 `git check-ignore --stdin -z` 返回命中项 |
+| `src-tauri/src/fs/windows.rs` | HIDDEN\|SYSTEM 位 `:46-61`；`explorer /select`；`CF_HDROP` 读取系统文件剪贴板 |
+| `src-tauri/src/fs/unix.rs` | 点开头文件名判隐藏 `:5-20`；非 Windows 文件剪贴板空实现 |
 | `src/components/ContextMenu.tsx` | `MenuItem` 形状与键位注释 `:5-32`；`MENU_WIDTH` / `ITEM_HEIGHT` / `SEP_HEIGHT` / `SUBMENU_GRACE_MS` `:34-41`；`flatMenu` `:43-48`；定位夹回 `:97-105`；子层展开与宽限期 `:136-154`、`:170-180`；Esc 与遮罩 `:186-204` |
 | `src/lib/git.ts` | `changeMark` `:406-414`；`markClass` `:416-419`；`aggregateMark` 与 `folderMarks` `:421-459` |
 | `src/lib/fileIcons.ts` | 懒加载与订阅 `:18-46`；扩展名解析 `:54-65`；深色换算与回退 `:120-127` |

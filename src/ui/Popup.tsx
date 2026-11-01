@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -182,12 +183,19 @@ function PopupInner({
     target.focus({ preventScroll: true });
   }, [autoFocus]);
 
+  // ref 回调必须引用稳定：内联箭头每次渲染都会被 React detach(null)/attach(node)，
+  // floating 元素闪断成 null 会把弹层打回 (0,0) 一帧——"晃到左上角"就来自这里。
+  const setFloatingNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      elRef.current = node;
+      refs.setFloating(node);
+    },
+    [refs]
+  );
+
   const content = (
     <div
-      ref={(node) => {
-        elRef.current = node;
-        refs.setFloating(node);
-      }}
+      ref={setFloatingNode}
       data-popup=""
       role={role}
       aria-label={aria["aria-label"]}

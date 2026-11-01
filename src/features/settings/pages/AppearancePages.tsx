@@ -1,6 +1,7 @@
 import { useSettings } from "../../../hooks/useSettings";
 import { useI18n, type Lang } from "../../../i18n";
 import Select from "../../../components/Select";
+import { AiAssistantsToggle } from "../../../components/AiCliSettingsPanel";
 import { requestNativeNotificationPermission } from "../../../lib/notifications";
 import type {
   CloseBehavior,
@@ -137,6 +138,12 @@ export function AppearanceSystemPage() {
   return (
     <div className="settings-rows">
       <div className="settings-rows-limit">
+        {/* AI 助手是应用级总开关，关闭时 AI 相关设置页整块隐藏，所以必须挂在非 AI 页里才能重新打开 */}
+        <div className="settings-row">
+          <span className="settings-label">{t("ai.enable")}</span>
+          <AiAssistantsToggle />
+        </div>
+
         <div className="settings-row">
           <span className="settings-label">{t("settings.workspaceMode")}</span>
           <Select
@@ -246,7 +253,7 @@ export function AppearanceNotificationsPage() {
           全局弹窗与重要事件提示的出现停靠角落。
         </p>
 
-        {/* 1b. 气泡总开关（对齐 openidea「Display balloon notifications」） */}
+        {/* 1b. 气泡总开关（对齐 IDEA「Display balloon notifications」） */}
         <div style={{ marginBottom: 12 }}>
           <label className="settings-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
@@ -258,7 +265,7 @@ export function AppearanceNotificationsPage() {
           </label>
         </div>
 
-        {/* 1c. 通知提示音（对齐 openidea「Play sound」） */}
+        {/* 1c. 通知提示音（对齐 IDEA「Play sound」） */}
         <div style={{ marginBottom: 12 }}>
           <label className="settings-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
@@ -297,14 +304,14 @@ export function AppearanceNotificationsPage() {
               width: "100%",
               borderCollapse: "collapse",
               fontSize: 12,
-              background: "var(--color-bg-base)",
-              border: "1px solid var(--color-border-subtle)",
+              background: "var(--surface-island)",
+              border: "1px solid var(--border-subtle)",
               borderRadius: 4,
               overflow: "hidden",
             }}
           >
             <thead>
-              <tr style={{ background: "var(--color-bg-hover)", borderBottom: "1px solid var(--color-border-subtle)", textAlign: "left" }}>
+              <tr style={{ background: "var(--bg-hover)", borderBottom: "1px solid var(--border-subtle)", textAlign: "left" }}>
                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>功能组</th>
                 <th style={{ padding: "8px 12px", fontWeight: 600, width: 170 }}>弹出形态 (Popup)</th>
                 <th style={{ padding: "8px 12px", fontWeight: 600, width: 80, textAlign: "center" }}>记入日志</th>
@@ -322,7 +329,7 @@ export function AppearanceNotificationsPage() {
                   <tr
                     key={groupId}
                     style={{
-                      borderBottom: "1px solid var(--color-border-subtle)",
+                      borderBottom: "1px solid var(--border-subtle)",
                     }}
                   >
                     <td style={{ padding: "8px 12px" }}>
@@ -335,9 +342,9 @@ export function AppearanceNotificationsPage() {
                           width: "100%",
                           padding: "4px 8px",
                           borderRadius: 3,
-                          background: "var(--color-bg-input)",
-                          color: "var(--color-text-main)",
-                          border: "1px solid var(--color-border-subtle)",
+                          background: "var(--bg-tertiary)",
+                          color: "var(--text-primary)",
+                          border: "1px solid var(--border-subtle)",
                           fontSize: 12,
                         }}
                         onChange={(e) =>

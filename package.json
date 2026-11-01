@@ -16,6 +16,8 @@
     "check:rs": "node scripts/run-rust.mjs check",
     "browser:prepare": "node scripts/prepare-browser.mjs",
     "test:browser": "node scripts/test-browser.mjs",
+    "test:lsp-native": "node scripts/test-lsp-native.mjs",
+    "test:lsp-ui-native": "node scripts/test-lsp-ui-native.mjs",
     "browser:dev": "node scripts/prepare-browser.mjs --vite",
     "desktop:prepare": "node scripts/prepare-browser.mjs --release --frontend",
     "test:front": "vitest run"
@@ -32,6 +34,7 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
     "@floating-ui/react-dom": "^2.1.9",
+    "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@lezer/highlight": "^1.2.5",
     "@replit/codemirror-minimap": "^0.5.2",

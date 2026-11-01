@@ -30,14 +30,14 @@ export const forgeTheme = EditorView.theme({
   ".cm-scroller": {
     // 工作台整体用箭头光标，只有正文区要 I 型光标（末行之后也算正文）。
     cursor: "text",
-    fontFamily: "var(--font-mono)",
+    fontFamily: "var(--editor-font-family, var(--font-mono))",
     fontSize: "var(--editor-font-size, 13px)",
     lineHeight: "var(--editor-line-height, 22px)",
     fontVariantLigatures: "none",
     overscrollBehavior: "contain",
   },
   ".cm-content": {
-    // 上下留白对齐 openidea（padding top 4 / bottom 8）；lineTop 已按 documentPadding 动态取，无联动断点。
+    // 上下留白对齐 IDEA（padding top 4 / bottom 8）；lineTop 已按 documentPadding 动态取，无联动断点。
     padding: "4px 0 8px 0",
     caretColor: "var(--caret, var(--text-primary))",
   },
@@ -156,7 +156,7 @@ export const forgeTheme = EditorView.theme({
     boxShadow: "var(--island-shadow)",
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul": {
-    fontFamily: "var(--font-mono)",
+    fontFamily: "var(--editor-font-family, var(--font-mono))",
   },
   ".cm-tooltip-autocomplete ul li[aria-selected]": {
     backgroundColor: "var(--accent-blue-bg)",
@@ -186,7 +186,7 @@ export const forgeTheme = EditorView.theme({
   },
   ".cm-panel button:hover": { backgroundColor: "var(--bg-hover)" },
 
-  // 查找命中：非当前项 --bg-search-match，当前项 --bg-search-match-current 且描边（对齐 openidea theme）。
+  // 查找命中：非当前项 --bg-search-match，当前项 --bg-search-match-current 且描边（对齐 IDEA theme）。
   ".cm-searchMatch": {
     backgroundColor: "var(--bg-search-match, var(--editor-search))",
     borderRadius: "2px",

@@ -29,6 +29,12 @@ const MAX_READ_BUFFER: usize = 16 * 1024 * 1024;
 /// 超限不杀会话（和 `MAX_READ_BUFFER` 的止损语义区分开）。
 const MAX_STDERR_LINE: usize = 1024 * 1024;
 
+/// 停会话时等 server 自己走完 `shutdown` + `exit` 的上限。参照 openidea 给 3 秒；
+/// 这里短一点：重启/关工程是交互路径，等太久比丢一次索引缓存更烦人。
+const STOP_GRACE: Duration = Duration::from_millis(1500);
+/// 等退出的轮询间隔。进程退出是靠 `try_wait` 值出来的，只能轮。
+const STOP_POLL: Duration = Duration::from_millis(20);
+
 /// 单条日志发往前端的长度上限。面板按条数封顶、不看单条大小，超长行先切短再进门。
 const MAX_EMITTED_LOG_LINE: usize = 64 * 1024;
 
@@ -390,9 +396,11 @@ fn spawn_session(
 ) -> Result<String, String> {
     sweep(app);
     let Some(resolved) = resolve_program(program) else {
-        let message = format!("没找到 {program}");
+        // 稳定码贯穿：record_failure 与返回值用同一条 LSP_NOT_FOUND，
+        // 前端按码判「未安装」，不再嗅探中文文案。
+        let message = err("LSP_NOT_FOUND", program);
         record_failure(id, &message);
-        return Err(err("LSP_NOT_FOUND", program));
+        return Err(message);
     };
 
     let mut command = build_command(&resolved, &parse_args(args));
@@ -609,9 +617,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
 
-/// 发一条消息给 server。`body` 是 JSON 文本，这里补上 `Content-Length` 头再写。
-///
-/// 分帧放后端做，是因为 `Content-Length` 要的是字节数，前端算 UTF-8 字节长度容易错。
+/// 发一条消息给 server。`body` 是 JSON 文本，分帧交给 `write_frame`。
 #[tauri::command]
 pub async fn lsp_write(id: String, body: String) -> Result<(), String> {
     block(move || {
@@ -623,16 +629,21 @@ pub async fn lsp_write(id: String, body: String) -> Result<(), String> {
             .ok_or_else(|| err("LSP_GONE", &id))?;
         // 每条发出去的消息都算「用过」，空闲回收与上限淘汰读的就是这个时刻。
         session.last_used_ms.store(now_ms(), Ordering::Relaxed);
-        let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-        let written = lock(&session.stdin)
-            .write_all(frame.as_bytes())
-            .map_err(|error| err("LSP_IO", error));
-        written
+        write_frame(&session, &body).map_err(|error| err("LSP_IO", error))
     })
     .await
 }
 
-/// 先杀进程再摘会话；读线程随后补发退出事件。
+/// 按 `Content-Length` 头把一条消息写进 server 的 stdin。
+///
+/// 分帧放后端做，是因为 `Content-Length` 要的是字节数，前端算 UTF-8 字节长度容易错。
+/// 停会话时的道别也走这一条，所以单独抽出来。
+fn write_frame(session: &Session, body: &str) -> std::io::Result<()> {
+    let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+    lock(&session.stdin).write_all(frame.as_bytes())
+}
+
+/// 先道别、再摘会话；读线程随后补发退出事件。
 #[tauri::command]
 pub async fn lsp_stop(id: String) -> Result<(), String> {
     block(move || {
@@ -642,28 +653,70 @@ pub async fn lsp_stop(id: String) -> Result<(), String> {
     .await
 }
 
-fn stop_one(id: &str) {
-    if let Some(session) = lock(sessions()).remove(id) {
-        let _ = session.stop.send(());
-        let pid = lock(&session.child).id();
-        // 语言服务常带子进程（rust-analyzer 起 rustc、gopls 起编译器），杀壳不管用，要杀整棵树。
-        #[cfg(windows)]
-        {
-            let mut killer = Command::new("taskkill");
-            killer.args(["/F", "/T", "/PID", pid.to_string().as_str()]);
-            hide_console(&mut killer);
-            let _ = killer.output();
+/// 停止前的一次道别：按协议发 `shutdown` 请求 + `exit` 通知，等它自己退出。
+///
+/// 直接 `taskkill /F` 会让 server 来不及落盘索引缓存、删临时文件，下次起来重头索引一遍。
+/// 返回 `true` 表示进程已经走了——写不进去也算：管道断了就是进程没了。
+fn goodbye(session: &Session, grace: Duration) -> bool {
+    // 请求 id 用字符串带前缀，和前端那批数字 id 不会撞。
+    const SHUTDOWN: &str = r#"{"jsonrpc":"2.0","id":"forge/shutdown","method":"shutdown","params":null}"#;
+    const EXIT: &str = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
+    if write_frame(session, SHUTDOWN)
+        .and_then(|()| write_frame(session, EXIT))
+        .is_err()
+    {
+        return true;
+    }
+    let deadline = Instant::now() + grace;
+    loop {
+        match lock(&session.child).try_wait() {
+            // 退出了要顺手收尸，留下的是僵尸句柄。
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            // 取不到状态（句柄坏了）就当它走了，下面的强杀兜底。
+            Err(_) => return true,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(STOP_POLL);
+    }
+}
+
+/// 整树强杀：语言服务常带子进程（rust-analyzer 起 rustc、gopls 起编译器），杀壳不管用。
+fn kill_tree(session: &Session) {
+    let pid = lock(&session.child).id();
+    #[cfg(windows)]
+    {
+        let mut killer = Command::new("taskkill");
+        killer.args(["/F", "/T", "/PID", pid.to_string().as_str()]);
+        hide_console(&mut killer);
+        let _ = killer.output();
+        let _ = lock(&session.child).kill();
+    }
+    #[cfg(not(windows))]
+    {
+        // spawn 时建了独立进程组，按组发 SIGKILL 才收得到子进程；
+        // 组没了（已整体退出或建组失败）再兜底杀直接子进程。
+        if !crate::sys::kill_process_group(pid) {
             let _ = lock(&session.child).kill();
         }
-        #[cfg(not(windows))]
-        {
-            // spawn 时建了独立进程组，按组发 SIGKILL 才收得到子进程；
-            // 组没了（已整体退出或建组失败）再兜底杀直接子进程。
-            if !crate::sys::kill_process_group(pid) {
-                let _ = lock(&session.child).kill();
-            }
-        }
     }
+}
+
+fn stop_one(id: &str) {
+    let Some(session) = lock(sessions()).remove(id) else {
+        return;
+    };
+    let exited = goodbye(&session, STOP_GRACE);
+    let _ = session.stop.send(());
+    if exited {
+        // 进程自己走了，句柄上再收一次就够。这时按 pid 整树杀反而危险：
+        // pid 可能已经被系统分给别人了。
+        let _ = lock(&session.child).kill();
+        return;
+    }
+    kill_tree(&session);
 }
 
 /// 页面重载时来不及发 `lsp_stop`，旧进程就这么留在表里。新页面一开头调一次，把上一回剩的全收掉。

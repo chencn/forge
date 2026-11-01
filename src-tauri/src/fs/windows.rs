@@ -28,7 +28,17 @@ extern "system" {
         show: i32,
     ) -> *mut std::ffi::c_void;
     fn SHFileOperationW(lpFileOp: *mut SHFILEOPSTRUCTW) -> i32;
+    fn DragQueryFileW(hdrop: *mut std::ffi::c_void, index: u32, file: *mut u16, cch: u32) -> u32;
 }
+
+#[link(name = "user32")]
+extern "system" {
+    fn OpenClipboard(owner: *mut std::ffi::c_void) -> i32;
+    fn GetClipboardData(format: u32) -> *mut std::ffi::c_void;
+    fn CloseClipboard() -> i32;
+}
+
+const CF_HDROP: u32 = 15;
 
 /// SHFileOperationW 操作常量与标志位
 const FO_DELETE: u32 = 0x0003;
@@ -142,6 +152,32 @@ pub fn open_external(url: &str) -> Result<(), String> {
         return Err(io_err(url, format!("ShellExecute 返回 {}", result as isize)));
     }
     Ok(())
+}
+
+/// 读取 Windows 资源管理器复制到剪贴板的文件路径（CF_HDROP）。只读，不触碰文本剪贴板。
+pub fn clipboard_files() -> Result<Vec<String>, String> {
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return Err("无法打开系统剪贴板".to_string());
+    }
+
+    let result = (|| {
+        let data = unsafe { GetClipboardData(CF_HDROP) };
+        if data.is_null() {
+            return Ok(Vec::new());
+        }
+        let count = unsafe { DragQueryFileW(data, u32::MAX, std::ptr::null_mut(), 0) };
+        let mut paths = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let length = unsafe { DragQueryFileW(data, index, std::ptr::null_mut(), 0) };
+            let mut buffer = vec![0u16; length as usize + 1];
+            let written = unsafe { DragQueryFileW(data, index, buffer.as_mut_ptr(), buffer.len() as u32) };
+            paths.push(String::from_utf16_lossy(&buffer[..written as usize]));
+        }
+        Ok(paths)
+    })();
+
+    let _ = unsafe { CloseClipboard() };
+    result
 }
 
 /// 将文件或目录安全移入 Windows 回收站（Recycle Bin），支持系统级一键“放回原处”。

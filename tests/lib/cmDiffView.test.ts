@@ -252,3 +252,99 @@ describe("createDiffView 换排法与收摊", () => {
     expect(plain.host.childNodes.length).toBe(0);
   });
 });
+
+describe("对标 IntelliJ IDEA 比对视图连线带与块提交复选框", () => {
+  it("并排模式下左右两栏之间挂载连线分栏区与 SVG 梯形色带（左右高度严格一致）", async () => {
+    const { host } = mount({
+      original: ORIGINAL,
+      modified: MODIFIED,
+      language: "",
+      mode: "side",
+    });
+    const splitter = host.querySelector(".forge-diff-splitter");
+    expect(splitter).not.toBeNull();
+    const svg = splitter?.querySelector(".forge-diff-ribbon-svg");
+    expect(svg).not.toBeNull();
+
+    // 等待 requestAnimationFrame 异步连线绘制
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const paths = splitter?.querySelectorAll(".forge-diff-ribbon-path");
+    expect(paths?.length).toBe(2);
+    const borders = splitter?.querySelectorAll(".forge-diff-ribbon-border");
+    // 每个改动块有独立的顶底 2 条过渡线（无左右竖直描边）
+    expect(borders?.length).toBe(4);
+  });
+
+  it("当提供 onChunkOp 时，在连线区左侧渲染 > 回滚按钮并能触发补丁派发", async () => {
+    const onChunkOp = vi.fn();
+    const { host } = mount({
+      original: ORIGINAL,
+      modified: MODIFIED,
+      language: "",
+      mode: "side",
+      path: "src/sample.ts",
+      onChunkOp,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const revertButtons = host.querySelectorAll<HTMLButtonElement>(".forge-diff-revert-btn");
+    expect(revertButtons.length).toBe(2);
+
+    // 点击第 1 个 > 按钮回滚第 1 块
+    revertButtons[0].click();
+    expect(onChunkOp).toHaveBeenCalledTimes(1);
+    expect(onChunkOp).toHaveBeenCalledWith("revert", expect.stringContaining("src/sample.ts"));
+  });
+
+  it("修改侧（右栏）行号右侧挂载块级提交复选框 [✓]，且支持点击切换", async () => {
+    const onChunkCheck = vi.fn();
+    const { host } = mount({
+      original: ORIGINAL,
+      modified: MODIFIED,
+      language: "",
+      mode: "side",
+      onChunkCheck,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const checkboxes = host.querySelectorAll<HTMLElement>(".cm-diff-chunk-checkbox");
+    expect(checkboxes.length).toBe(2);
+
+    // 默认全选（与 IntelliJ IDEA 一致）
+    expect(checkboxes[0].classList.contains("is-checked")).toBe(true);
+    expect(checkboxes[1].classList.contains("is-checked")).toBe(true);
+
+    // 点击第 1 个复选框取消勾选（CodeMirror gutter 重新挂载新 DOM 节点）
+    checkboxes[0].click();
+    const afterFirstClick = host.querySelectorAll<HTMLElement>(".cm-diff-chunk-checkbox");
+    expect(afterFirstClick[0].classList.contains("is-checked")).toBe(false);
+    expect(onChunkCheck).toHaveBeenCalledWith(0, false, expect.anything());
+
+    // 再次点击恢复勾选
+    afterFirstClick[0].click();
+    const afterSecondClick = host.querySelectorAll<HTMLElement>(".cm-diff-chunk-checkbox");
+    expect(afterSecondClick[0].classList.contains("is-checked")).toBe(true);
+    expect(onChunkCheck).toHaveBeenCalledWith(0, true, expect.anything());
+  });
+
+  it("当发生 wheel 滚轮事件时正确驱动 mergeView 滚动", () => {
+    const { host } = mount({
+      original: ORIGINAL,
+      modified: MODIFIED,
+      language: "",
+      mode: "side",
+    });
+    const mergeEl = host.querySelector<HTMLElement>(".cm-mergeView");
+    expect(mergeEl).not.toBeNull();
+
+    // 模拟存在可滚动内容
+    Object.defineProperty(mergeEl, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(mergeEl, "clientHeight", { value: 300, configurable: true });
+    mergeEl!.scrollTop = 0;
+
+    const event = new WheelEvent("wheel", { deltaY: 100, bubbles: true, cancelable: true });
+    mergeEl!.dispatchEvent(event);
+
+    expect(mergeEl!.scrollTop).toBe(100);
+  });
+});

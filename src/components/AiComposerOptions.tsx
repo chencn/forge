@@ -149,7 +149,13 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     if (workspace) void loadAiCapabilities(provider, workspace)
       .then((data) => { if (alive.current && revision === catalogRevision.current) setCapabilities(data); })
       .catch(() => { /* 保留当前列表 */ });
-    const dismiss = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    // 弹层经 Popover portal 到 body,不在 root 子树里;放行弹层内的 pointerdown,
+    // 否则列表项点击会先关弹层、click 随之丢失,模型永远选不上。
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (root.current?.contains(target) || popover.current?.contains(target)) return;
+      setOpen(false);
+    };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || (event.target as HTMLElement)?.closest?.('[role="listbox"]')) return;
       event.preventDefault(); close();
@@ -160,6 +166,8 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   }, [open, provider, workspace]);
 
   const pickModel = async (nextId: string | undefined, targetModel = capabilities?.models.find((item) => nextId ? item.id === nextId : item.isDefault)) => {
+    // 选完即收起面板（对齐 IDEA 模型选择）；斜杠命令路径弹层没开，不抢焦点。
+    if (open) close();
     onChange({
       ...value, model: nextId || undefined,
       // Claude 的强度属于会话，切换模型不清掉；Codex 的强度是模型能力，换到不支持的模型才清。

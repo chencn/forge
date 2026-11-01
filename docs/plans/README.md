@@ -30,6 +30,7 @@
 | [ref-actions-gap/](./ref-actions-gap/README.md) | 引用侧四样：打开工作树、远端分支 Pull into Selected、「在修订版中显示仓库」、推送标签的逐远端子项 | 待做 | `git worktree list` 与 `git remote get-url` 都没有；远端网页地址认不出托管方 |
 | [run-and-debug/](./run-and-debug/README.md) | 运行配置与 IDEA 的对账，以及 Debug(DAP) | 方案一已落地 | Debug 那半边的 DAP 适配层完全没有；adapter 可执行文件从哪来没定 |
 | [global-search/](./global-search/README.md) | 搜索剩下的几件：替换、扫描中断、历史与作用域记忆、多趟结果并存、文件名高亮 | 进行中 | 替换要一条能写盘的后端命令，而写盘和「编辑器那份赢」这条规矩正面冲突，取舍未拍 |
+| [lsp-migration/](./lsp-migration/README.md) | IDEA `ide-lsp` 能力迁移到 Forge | 已完成 | T01–T40 全部闭环：核心 server、Manager、WorkspaceEdit、编辑器基础与高级能力、符号/层级入口、Document Links、虚拟文档、Auto Import、Save Actions、动态注册派生、多级撤销、真实 Tauri UI 与编辑器工作流桌面验收均完成；结论并入 features 后删除本目录（待确认） |
 
 ## 不进这里的那些
 

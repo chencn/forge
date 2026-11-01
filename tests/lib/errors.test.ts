@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { codedError, describeError } from "../../src/lib/errors";
+import { codedError, describeError, errorCodeOf } from "../../src/lib/errors";
 
 /**
  * 错误通道的行为测试：后端只发「代码 + 原文片段」（\u0001 分隔），怎么说由前端定。
@@ -46,5 +46,14 @@ describe("describeError 翻译", () => {
   it("对不上的代码退回原文片段", () => {
     // 多半是新旧两端没同时更新，把话说全比猜一句有用。
     expect(describeError(codedError("FUTURE_CODE", "detail here"), t)).toBe("detail here");
+  });
+});
+
+describe("errorCodeOf", () => {
+  it("认得出已知错误码，不认识的回 null", () => {
+    expect(errorCodeOf(`BINARYa.png`)).toBe("BINARY");
+    expect(errorCodeOf(`TOO_LARGE10050`)).toBe("TOO_LARGE");
+    expect(errorCodeOf("git: not a git repository")).toBeNull();
+    expect(errorCodeOf(`UNKNOWN_CODEx`)).toBeNull();
   });
 });

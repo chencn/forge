@@ -345,6 +345,54 @@ export function emptyCodexCatalogIntent(): CodexCatalogIntent {
   return { excluded: [], overrides: {}, customs: [] };
 }
 
+/**
+ * 从端点模型 ID 构造一条自定义条目：协议预设与「添加 OpenAI 兼容模型」一致，
+ * base 用清单里的官方条目当模板（拿不到就留空，后端生成时会兜底选 priority 最小的）。
+ */
+export function codexCustomFromEndpoint(id: string, baseModel: Record<string, unknown> | undefined): CodexCustomModel {
+  const item: CodexCustomModel = {
+    slug: id,
+    displayName: "",
+    contextWindow: undefined,
+    description: "",
+    base: baseModel ? String(baseModel.slug ?? "") : "",
+    overrides: emptyCodexModelOverride(),
+  };
+  return { ...item, overrides: applyCodexCompatPreset(item, baseModel, true) };
+}
+
+/**
+ * 拉取供应商端点的可用模型清单（`GET {base}/v1/models`）。
+ * Claude 走 Anthropic 鉴权头，Codex 走标准 Bearer；两家响应都是 `data[].id`。
+ * 页面 CSP 只放行自家地址，浏览器 fetch 到不了任意端点，所以请求交给后端 `http_exchange`。
+ */
+export async function listProviderModels(kind: AiProvider, apiUrl: string, apiKey: string): Promise<string[]> {
+  const base = apiUrl.trim().replace(/\/+$/, "");
+  const url = base.endsWith("/v1/models") ? base
+    : base.endsWith("/v1") ? `${base}/models`
+    : `${base}/v1/models`;
+  const headers = kind === "claude"
+    ? [
+        { name: "x-api-key", value: apiKey.trim() },
+        { name: "anthropic-version", value: "2023-06-01" },
+      ]
+    : [{ name: "Authorization", value: `Bearer ${apiKey.trim()}` }];
+  const result = await invoke<{ status: number; reason: string; body: string; binary: boolean }>("http_exchange", {
+    request: { method: "GET", url, headers, body: [] },
+  });
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`HTTP ${result.status} ${result.reason}`.trim());
+  }
+  if (result.binary) throw new Error("响应不是文本");
+  const parsed = JSON.parse(result.body) as { data?: unknown; models?: unknown };
+  const list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed.models) ? parsed.models : [];
+  const ids = list
+    .map((item) => (typeof item === "string" ? item : (item as { id?: unknown })?.id))
+    .filter((id): id is string => typeof id === "string" && id.trim() !== "")
+    .map((id) => id.trim());
+  return Array.from(new Set(ids)).sort((left, right) => left.localeCompare(right));
+}
+
 /** 意图是否有改动：先归一化再比，避免 `{flags:{}}` 与缺字段造成假“未保存”。 */
 export function normalizeCodexCatalogIntent(intent: CodexCatalogIntent): string {
   const override = (item: CodexModelOverride | undefined) => {

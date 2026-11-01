@@ -60,6 +60,7 @@ describe("uriToPath 兜回同一条路径", () => {
     expect(canonicalPath(uriToPath("file:///D%3A/app/x.ts"))).toBe("d:/app/x.ts");
     expect(canonicalPath(uriToPath("file:///d:/app/x.ts"))).toBe("d:/app/x.ts");
     expect(canonicalPath(uriToPath("file:///D:/app/X.ts"))).toBe("d:/app/x.ts");
+    expect(canonicalPath(uriToPath("FILE:///D:/app/X.ts"))).toBe("d:/app/x.ts");
     expect(canonicalPath(uriToPath("file://nas/share/x.rs"))).toBe("//nas/share/x.rs");
   });
 

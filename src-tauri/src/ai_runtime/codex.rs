@@ -561,7 +561,9 @@ impl Protocol for Codex {
         // dynamicTools 是实验字段；所有 Forge 对话都依赖任务工具，因此握手必须声明实验能力。
         let experimental = true;
         Ok(vec![Action::Write(
-            json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":experimental}}}),
+            // clientInfo.name 会被 app-server 拼进上游请求的 User-Agent（实测 "forge/…" 会被
+            // 网关按前缀归因为 agent=forge）；对话必须始终以 codex 的名义请求上游。
+            json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex","title":"Forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":experimental}}}),
         )])
     }
     fn receive(&mut self, message: Value) -> Result<Vec<Action>, String> {

@@ -22,6 +22,8 @@ import {
   lineText,
   loadLanguage,
   minimapConfigOf,
+  foldEffect,
+  unfoldEffect,
   minimapExtension,
   minimapGutters,
   pathOf,
@@ -41,7 +43,10 @@ import {
   setKeymap,
   setEditorCommandHandlers,
   setRainbowBrackets,
+  setSoftWrap,
+  setShowWhitespace,
   stateFor,
+  reportCaretOf,
   textOf,
   textReplacement,
   toDiskText,
@@ -228,6 +233,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     if (view) {
       setKeymap(view, forgeKeymap(optionsRef.current.keymap));
       setRainbowBrackets(view, optionsRef.current.rainbowBrackets);
+      setSoftWrap(view, optionsRef.current.softWrap);
+      setShowWhitespace(view, optionsRef.current.showWhitespace);
     }
   }, []);
 
@@ -310,8 +317,11 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
           }
           return;
         }
-        // ▶ 按文档坐标摆，滚动不用重算；只有行高变了（字号、折行）才需要重新落点。
-        if (update.geometryChanged) measureRef.current();
+        // ▶ 按文档坐标摆，滚动不用重算；行高变了（字号、折行、初次测量完毕）或代码折叠/展开时重新落点。
+        const isFoldChange = update.transactions.some((tr) =>
+          tr.effects.some((e) => e.is(foldEffect) || e.is(unfoldEffect))
+        );
+        if (update.geometryChanged || update.heightChanged || isFoldChange) measureRef.current();
         // 行号槽整层被换掉（`setState`、开关小地图）时，portal 得跟着换宿主，否则 ▶ 全没。
         ensurePinHost(update.view);
         const top = update.view.scrollDOM.scrollTop;
@@ -351,6 +361,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         restoreView(path, view);
         swapping.current = false;
       }
+      // setState 不触发 updateListener：没有视图存档的文档（首开）不会有任何事务，
+      // 不在这里补一次汇报，状态栏的行列要等用户点击/打字才出现。
+      reportCaretOf(path, view.state);
       measureRef.current();
       syncMinimap();
       syncKeymap();
@@ -368,7 +381,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       parent: host,
     });
     viewRef.current = view;
-    applyFontMetrics(host, optionsRef.current.fontSize);
+    applyFontMetrics(host, optionsRef.current.fontSize, optionsRef.current.fontFamily);
     wiredRef.current = null;
     // ▶ 那一层挂进行号槽：槽是 sticky 的、高度跟着整篇内容，挂进去就跟着内容一起滚。
     ensurePinHost(view);
@@ -419,8 +432,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
 
   useEffect(() => {
     const host = hostRef.current;
-    if (host) applyFontMetrics(host, settings.editor.fontSize);
-  }, [settings.editor.fontSize]);
+    if (host)
+      applyFontMetrics(host, settings.editor.fontSize, settings.editor.fontFamily, settings.editor.lineHeight);
+  }, [settings.editor.fontSize, settings.editor.fontFamily, settings.editor.lineHeight]);
 
   useEffect(() => {
     syncMinimap();
@@ -428,7 +442,13 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
 
   useEffect(() => {
     syncKeymap();
-  }, [syncKeymap, settings.editor.keymap]);
+  }, [
+    syncKeymap,
+    settings.editor.keymap,
+    settings.editor.rainbowBrackets,
+    settings.editor.softWrap,
+    settings.editor.showWhitespace,
+  ]);
 
   // ---------------------------------------------------------------- 挂文档
 
@@ -611,14 +631,10 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   httpTargetsRef.current = httpTargets;
 
   /**
-   * 把行号换算成**文档坐标**，摆到「行号与代码之间」那条带上——IDEA 那颗就画在那儿。
-   *
-   * 这一栏是自己叠的：CodeMirror 的折叠扣槽占着行号右边，顺序改不动。整层挂进行号槽
-   * 里，跟内容一起滚——早先按视口坐标摆，滚动时它一动不动，只能靠滚动事件重算。
+   * 计算装订线运行标记落点的纯读取函数。
+   * 必须在 CodeMirror 的 DOM 测量稳定期（HeightMap 已经完成真实 DOM 测量）内读取坐标。
    */
-  const measure = useCallback(() => {
-    const view = viewRef.current;
-    if (!view) return;
+  const computePins = useCallback((view: EditorView) => {
     ensurePinHost(view);
     const left = gutterWidth(view) - PIN_WIDTH - 3;
     const next: GutterPin[] = [];
@@ -637,15 +653,13 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
             : translateRef.current("run.gutter.many", { name: first.name, count: target.configs.length }),
       });
     }
-    setPins(next);
 
     const path = scriptPathRef.current;
     const head = path ? lineTop(view, 1) : null;
-    setScriptPin(
+    const nextScriptPin =
       path && head !== null
         ? { line: 1, top: head, left, tip: translateRef.current("run.gutter.runInTerminal", { name: basenameOf(path) }) }
-        : null
-    );
+        : null;
 
     const httpNext: GutterPin[] = [];
     for (const target of httpTargetsRef.current) {
@@ -653,13 +667,45 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       if (top === null) continue;
       httpNext.push({ line: target.line, top, left, tip: translateRef.current("run.gutter.runHttp", { name: target.name }) });
     }
-    setHttpPins(httpNext);
-  }, []);
-  measureRef.current = measure;
+
+    return { pins: next, scriptPin: nextScriptPin, httpPins: httpNext };
+  }, [ensurePinHost]);
+
+  /**
+   * 将装订线标记测量任务调度到 CodeMirror 的测量周期中。
+   *
+   * 核心根因与修复：
+   * CodeMirror 在初始化、换文档或代码折叠/展开（fold/unfold）事务派发时，DOM 尚未完成 reflow 与 HeightMap 测量，
+   * 内部行高仍处于 14px 的默认回退值（HeightOracle.lineHeight = 14）。
+   * 若同步读取 lineTop，将读到按 14px 行高计算出的假坐标（例如 16 个脚本全被压缩至前 13 行，整体上偏 3 行）。
+   *
+   * 接入 CodeMirror 官方的 view.requestMeasure({ key, read, write })：
+   * 1. 确保在 viewState.measure() 测量完 DOM 真实行高（如 22px/24px）后再执行 read；
+   * 2. 利用相同的 key 自动在同帧内去重，避免重复重绘；
+   * 3. 在 write 阶段更新 React state，确保图钉与真实代码行完全咬合。
+   */
+  const scheduleMeasure = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.requestMeasure({
+      key: "run-gutter-measure",
+      read(v) {
+        return computePins(v);
+      },
+      write(result) {
+        if (!result) return;
+        setPins(result.pins);
+        setScriptPin(result.scriptPin);
+        setHttpPins(result.httpPins);
+      },
+    });
+  }, [computePins]);
+
+  measureRef.current = scheduleMeasure;
 
   useEffect(() => {
-    measure();
-  }, [measure, targets, t, scriptPath, httpTargets]);
+    scheduleMeasure();
+  }, [scheduleMeasure, targets, t, scriptPath, httpTargets]);
 
   // ---------------------------------------------------------------- 搜索命中
 

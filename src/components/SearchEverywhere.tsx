@@ -104,14 +104,16 @@ export interface SearchEverywhereProps {
   onClose: () => void;
   /** 打开一个文件；目录也走这一条，`isDir` 告诉外面它没有正文可开。`side` 要新的拆分。 */
   onOpenFile: (path: string, isDir: boolean, side?: boolean) => void;
-  /** 打开一处正文命中，并把这一整页结果交给底部的查找窗口。`side` 要新的拆分。 */
-  onOpenHit: (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean) => void;
+  /** 打开一处正文命中，并把这一整页结果交给底部的查找窗口。`side` 要新的拆分；`replaceWith` 非空表示这趟来自替换模式。 */
+  onOpenHit: (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean, replaceWith?: string) => void;
   /** 打开一处符号定义：落到那一行并把名字选住。 */
   onOpenSymbol: (path: string, line: number, column: number, length: number, side?: boolean) => void;
   /** 打开时停在哪个页签。IDEA 的 Goto File 不是另一个框，是同一弹层落在 Files 页签上。 */
   initialTab?: SearchTab;
   /** 预填的搜索词，取的是编辑器选区，对应 IDEA 的 `PREDEFINED_TEXT`。 */
   initialQuery?: string;
+  /** 替换模式（IDEA 的 Replace in Files）：Text 页签多出「替换为」输入，结果交给底部窗口执行。 */
+  initialReplace?: boolean;
   /** 可执行动作表（命令面板的数据源）；「动作」档与最近动作都从它取。 */
   commands?: ForgeCommand[];
 }
@@ -263,6 +265,7 @@ export default function SearchEverywhere({
   onOpenSymbol,
   initialTab,
   initialQuery,
+  initialReplace,
   commands
 }: SearchEverywhereProps) {
   const { t } = useI18n();
@@ -271,6 +274,8 @@ export default function SearchEverywhere({
   const [debounced, setDebounced] = useState(initialQuery ?? "");
   const [includeIgnored, setIncludeIgnored] = useState(false);
   const [preview, setPreview] = useState(false);
+  const replaceMode = initialReplace ?? false;
+  const [replaceWith, setReplaceWith] = useState("");
 
   // 针对多项目多目录：当前生效的搜索目录（默认取外部传入的精确选中目录 root）
   const [activeRoot, setActiveRoot] = useState<string>(root);
@@ -300,6 +305,7 @@ export default function SearchEverywhere({
   const [sel, setSel] = useState<Selection>({ key: null, index: -1, moved: false });
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const history = useRef({ pos: -1, draft: "" });
   const pendingEnter = useRef<{ side: boolean } | null>(null);
@@ -478,7 +484,15 @@ export default function SearchEverywhere({
       case "text": {
         const page = snap?.textPage;
         if (!page) return;
-        closeThen(() => onOpenHit(row.hit, page, { caseSensitive: false, wholeWords: false, regex: false }, side));
+        closeThen(() =>
+          onOpenHit(
+            row.hit,
+            page,
+            { caseSensitive: false, wholeWords: false, regex: false },
+            side,
+            replaceMode ? replaceWith : undefined
+          )
+        );
         return;
       }
       case "action": {
@@ -675,19 +689,23 @@ export default function SearchEverywhere({
               title="在查找工具窗口中打开 (Ctrl+Enter)"
               onClick={() => {
                 if (snap?.textPage) {
+                  const handoffHit =
+                    snap.textPage!.hits[0] ?? {
+                      path: "",
+                      name: "",
+                      container: "",
+                      line: 1,
+                      snippetFrom: 1,
+                      snippet: "",
+                      ranges: []
+                    };
                   closeThen(() =>
                     onOpenHit(
-                      snap.textPage!.hits[0] ?? {
-                        path: "",
-                        name: "",
-                        container: "",
-                        line: 1,
-                        snippetFrom: 1,
-                        snippet: "",
-                        ranges: []
-                      },
+                      handoffHit,
                       snap.textPage!,
-                      { caseSensitive: false, wholeWords: false, regex: false }
+                      { caseSensitive: false, wholeWords: false, regex: false },
+                      false,
+                      replaceMode ? replaceWith : undefined
                     )
                   );
                 } else {
@@ -743,6 +761,26 @@ export default function SearchEverywhere({
             </span>
           </div>
         </div>
+
+        {/* 替换模式（IDEA 的 Replace in Files）：检索行下面多一条「替换为」 */}
+        {replaceMode && tab === "text" && (
+          <div className={styles.queryRow}>
+            <div className={styles.field}>
+              <input
+                ref={replaceInputRef}
+                className={styles.query}
+                value={replaceWith}
+                spellCheck={false}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                aria-label="替换为"
+                placeholder="替换为（留空即删除命中）"
+                onChange={(e) => setReplaceWith(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
 
         {/* 搜索历史浮层 */}
         {historyMenuOpen && (

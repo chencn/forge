@@ -62,12 +62,18 @@ pub struct LspServerConfig {
     pub root_markers: Vec<String>,
     /// 一键安装要跑的那行命令；空串表示没有（跟着语言工具链一起装，比如 sourcekit-lsp）。
     pub install_command: String,
+    /// 一键卸载要跑的那行命令；空串表示没有可靠的卸载路径（brew/apt/go install 装的不在这条链里）。
+    pub uninstall_command: String,
     /// initialize 握手的超时（毫秒）。JVM 系那两个给到 120000，其余 30000。
     pub startup_timeout_ms: u64,
     /// 交给 server 的 initializationOptions；null 表示不传。
     pub init_options: serde_json::Value,
     /// 是否允许 `builtin` 档。只有 ts 系有这一档可退（起的仍是本机装的 typescript-language-server）。
     pub supports_builtin: bool,
+    /// 服务主页；设置页详情头部展示。
+    pub homepage: String,
+    /// 没有受管安装命令时的官方安装提示；空串表示没有（有 installCommand 就不需要）。
+    pub install_hint: String,
 }
 
 /// 整份语言服务配置。
@@ -103,35 +109,24 @@ fn install(windows: &str, macos: &str, linux: &str) -> String {
     }
 }
 
-fn server(
-    program: &str,
-    args: &str,
-    mode: &str,
-    languages: &[&str],
-    root_markers: &[&str],
-    install_command: String,
-    startup_timeout_ms: u64,
-    supports_builtin: bool,
-) -> LspServerConfig {
+fn base_server() -> LspServerConfig {
     LspServerConfig {
-        mode: mode.to_string(),
-        program: program.to_string(),
-        path: String::new(),
-        args: args.to_string(),
-        languages: languages.iter().map(|item| item.to_string()).collect(),
-        root_markers: root_markers.iter().map(|item| item.to_string()).collect(),
-        install_command,
-        startup_timeout_ms,
-        init_options: serde_json::Value::Null,
-        supports_builtin,
+        mode: "off".to_string(),
+        startup_timeout_ms: 30_000,
+        ..LspServerConfig::default()
     }
 }
 
-/// 认识的语言服务。加一个语言就往这里加一行。
+/// 认识的语言服务。整表是对标 IDE 语言目录（`languages/*.toml` 的
+/// `[[language-servers]]` 并集）的 1:1 抄本：program、args、root markers 与
+/// initialization options 逐字取自各语言 toml；安装命令由对标 IDE 受管安装方式
+/// （其 tools registry）渲染成三平台命令，没有受管安装的服务留空 `install_command`，
+/// 把官方提示写进 `install_hint`。
 ///
-/// typescript 缺省走 `builtin`。编辑器换成 CodeMirror 之后，这一档起的也是表里预置的
-/// `typescript-language-server`（Monaco 那份渲染进程里的 tsserver 不再是智能来源），
-/// 所以它和 `lsp` 一样要求本机真装着，没装会被探测回退成 `off`。其余语言缺省 `off`。
+/// 档位：toml 里非 fallback 的主服务缺省 `lsp`，fallback 服务缺省 `off`——Forge
+/// 还没有运行时 fallback 机制，两项同开会在同一门语言上双起进程。`godot` 走 TCP
+/// connect、`powershell-editor-services` 需要环境变量注入，两条 Forge 暂时起不来，
+/// 目录保留但缺省 `off`（偏差记录见 docs/plans/lsp-tools-parity/README.md）。
 fn seed() -> BTreeMap<String, LspServerConfig> {
     let mut servers = BTreeMap::new();
     let mut put = |id: &str, config: LspServerConfig| {
@@ -139,219 +134,1059 @@ fn seed() -> BTreeMap<String, LspServerConfig> {
     };
 
     put(
-        "clangd",
-        server(
-            "clangd",
-            "--background-index",
-            "off",
-            &["c", "cpp"],
-            &["compile_commands.json", "CMakeLists.txt", "meson.build"],
-            install(
-                "winget install LLVM.LLVM || scoop install llvm || choco install llvm",
-                "brew install llvm",
-                "apt install -y clangd || dnf install -y clang-tools-extra || pacman -S --noconfirm clang",
+        "basedpyright",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "basedpyright-langserver".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["python".to_string()],
+            root_markers: vec![
+                "pyproject.toml".to_string(),
+                "setup.py".to_string(),
+                "setup.cfg".to_string(),
+                "requirements.txt".to_string(),
+                "Pipfile".to_string(),
+                "pyrightconfig.json".to_string(),
+            ],
+            install_command: install(
+                "pip install basedpyright || pipx install basedpyright",
+                "pip install basedpyright || pipx install basedpyright",
+                "pip install basedpyright || pipx install basedpyright",
             ),
-            30_000,
-            false,
-        ),
-    );
-    put(
-        "csharp-ls",
-        server(
-            "csharp-ls",
-            "",
-            "off",
-            &["csharp"],
-            &["*.csproj", "*.sln", "*.fsproj"],
-            install(
-                "dotnet tool install --global csharp-ls || dotnet tool update --global csharp-ls",
-                "dotnet tool install --global csharp-ls || dotnet tool update --global csharp-ls",
-                "dotnet tool install --global csharp-ls || dotnet tool update --global csharp-ls",
-            ),
-            30_000,
-            false,
-        ),
-    );
-    put(
-        "gopls",
-        server(
-            "gopls",
-            "",
-            "off",
-            &["go"],
-            &["go.mod", "go.work"],
-            install(
-                "(go env -w GOPROXY=https://goproxy.cn,direct) && go install golang.org/x/tools/gopls@latest",
-                "brew install gopls || go install golang.org/x/tools/gopls@latest",
-                "go install golang.org/x/tools/gopls@latest || apt install -y gopls",
-            ),
-            30_000,
-            false,
-        ),
-    );
-    put(
-        "intelephense",
-        server(
-            "intelephense",
-            "--stdio",
-            "off",
-            &["php"],
-            &["composer.json"],
-            install(
-                "npm install -g intelephense || pnpm add -g intelephense || yarn global add intelephense",
-                "npm install -g intelephense || pnpm add -g intelephense || brew install intelephense",
-                "npm install -g intelephense || pnpm add -g intelephense",
-            ),
-            30_000,
-            false,
-        ),
-    );
-    put(
-        "jdtls",
-        server(
-            "jdtls",
-            "",
-            "off",
-            &["java"],
-            &["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle.kts"],
-            install(
-                "scoop install jdtls || choco install eclipse-jdtls",
-                "brew install jdtls",
-                "apt install -y eclipse-jdtls || pacman -S --noconfirm jdtls",
-            ),
-            120_000,
-            false,
-        ),
-    );
-    put(
-        "kotlin-lsp",
-        server(
-            "kotlin-language-server",
-            "--stdio",
-            "off",
-            &["kotlin"],
-            &["build.gradle.kts", "*.kt"],
-            install(
-                "scoop install kotlin-language-server || choco install kotlin-language-server",
-                "brew install kotlin-language-server",
-                "pacman -S --noconfirm kotlin-language-server || snap install kotlin-language-server --classic",
-            ),
-            120_000,
-            false,
-        ),
-    );
-    put(
-        "lua-language-server",
-        server(
-            "lua-language-server",
-            "",
-            "off",
-            &["lua"],
-            &[".luarc.json", ".luacheckrc"],
-            install(
-                "winget install lua-language-server || scoop install lua-language-server",
-                "brew install lua-language-server",
-                "apt install -y lua-language-server || pacman -S --noconfirm lua-language-server",
-            ),
-            30_000,
-            false,
-        ),
+            homepage: "https://docs.basedpyright.com".to_string(),
+            init_options: serde_json::json!({
+                "settings": {
+                    "basedpyright": {
+                        "analysis": { "typeCheckingMode": "standard", "autoSearchPaths": true }
+                    }
+                }
+            }),
+            ..base_server()
+        },
     );
     put(
         "pyright",
-        server(
-            "pyright-langserver",
-            "--stdio",
-            "off",
-            &["python"],
-            &[
-                "pyproject.toml",
-                "setup.py",
-                "setup.cfg",
-                "requirements.txt",
-                "Pipfile",
+        LspServerConfig {
+            program: "pyright-langserver".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["python".to_string()],
+            root_markers: vec![
+                "pyproject.toml".to_string(),
+                "setup.py".to_string(),
+                "setup.cfg".to_string(),
+                "requirements.txt".to_string(),
+                "Pipfile".to_string(),
+                "pyrightconfig.json".to_string(),
             ],
-            install(
+            install_command: install(
                 "npm install -g pyright || pip install pyright",
                 "brew install pyright || npm install -g pyright",
                 "npm install -g pyright || pipx install pyright",
             ),
-            30_000,
-            false,
-        ),
+            homepage: "https://github.com/microsoft/pyright".to_string(),
+            ..base_server()
+        },
     );
     put(
-        "ruby-lsp",
-        server(
-            "ruby-lsp",
-            "--stdio",
-            "off",
-            &["ruby"],
-            &["Gemfile", "*.gemspec"],
-            install(
-                "gem install ruby-lsp || gem install --user-install ruby-lsp",
-                "gem install ruby-lsp || brew install ruby-lsp",
-                "gem install ruby-lsp || apt install -y ruby-lsp",
+        "ty",
+        LspServerConfig {
+            program: "ty".to_string(),
+            args: "server".to_string(),
+            languages: vec!["python".to_string()],
+            root_markers: vec![
+                "ty.toml".to_string(),
+                "pyproject.toml".to_string(),
+                "setup.py".to_string(),
+                "setup.cfg".to_string(),
+                "requirements.txt".to_string(),
+                "Pipfile".to_string(),
+            ],
+            install_command: install(
+                "uv tool install ty || pip install ty",
+                "uv tool install ty || pip install ty",
+                "uv tool install ty || pip install ty",
             ),
-            30_000,
-            false,
-        ),
+            homepage: "https://docs.astral.sh/ty/".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "vtsls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "vtsls".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec![
+                "typescript".to_string(),
+                "typescriptreact".to_string(),
+                "javascript".to_string(),
+                "javascriptreact".to_string(),
+            ],
+            root_markers: vec![
+                "tsconfig.json".to_string(),
+                "jsconfig.json".to_string(),
+                "package.json".to_string(),
+            ],
+            install_command: install(
+                "npm install -g @vtsls/language-server || pnpm add -g @vtsls/language-server",
+                "npm install -g @vtsls/language-server || pnpm add -g @vtsls/language-server",
+                "npm install -g @vtsls/language-server || pnpm add -g @vtsls/language-server",
+            ),
+            homepage: "https://github.com/yioneko/vtsls".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "typescript-language-server",
+        LspServerConfig {
+            program: "typescript-language-server".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec![
+                "typescript".to_string(),
+                "typescriptreact".to_string(),
+                "javascript".to_string(),
+                "javascriptreact".to_string(),
+            ],
+            root_markers: vec![
+                "tsconfig.json".to_string(),
+                "jsconfig.json".to_string(),
+                "package.json".to_string(),
+            ],
+            install_command: install(
+                "npm install -g typescript-language-server typescript || pnpm add -g typescript-language-server typescript",
+                "npm install -g typescript-language-server typescript || pnpm add -g typescript-language-server typescript",
+                "npm install -g typescript-language-server typescript || pnpm add -g typescript-language-server typescript",
+            ),
+            homepage: "https://github.com/typescript-language-server/typescript-language-server".to_string(),
+            supports_builtin: true,
+            ..base_server()
+        },
+    );    put(
+        "vscode-json-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "vscode-json-language-server".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["json".to_string(), "jsonc".to_string()],
+            install_command: install(
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+            ),
+            homepage: "https://github.com/hrsh7th/vscode-langservers-extracted".to_string(),
+            init_options: serde_json::json!({ "provideFormatter": true }),
+            ..base_server()
+        },
+    );
+    put(
+        "vscode-css-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "vscode-css-language-server".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["css".to_string(), "scss".to_string(), "less".to_string()],
+            install_command: install(
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+            ),
+            homepage: "https://github.com/hrsh7th/vscode-langservers-extracted".to_string(),
+            init_options: serde_json::json!({
+                "provideFormatter": true, "css": {}, "scss": {}, "less": {}
+            }),
+            ..base_server()
+        },
+    );
+    put(
+        "vscode-html-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "vscode-html-language-server".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["html".to_string()],
+            install_command: install(
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+                "npm install -g vscode-langservers-extracted || pnpm add -g vscode-langservers-extracted",
+            ),
+            homepage: "https://github.com/hrsh7th/vscode-langservers-extracted".to_string(),
+            init_options: serde_json::json!({
+                "provideFormatter": true,
+                "embeddedLanguages": { "css": true, "javascript": true }
+            }),
+            ..base_server()
+        },
+    );
+    put(
+        "bash-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "bash-language-server".to_string(),
+            args: "start".to_string(),
+            languages: vec!["shellscript".to_string()],
+            install_command: install(
+                "npm install -g bash-language-server || pnpm add -g bash-language-server",
+                "npm install -g bash-language-server || pnpm add -g bash-language-server",
+                "npm install -g bash-language-server || pnpm add -g bash-language-server",
+            ),
+            homepage: "https://github.com/bash-lsp/bash-language-server".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "yaml-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "yaml-language-server".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["yaml".to_string()],
+            install_command: install(
+                "npm install -g yaml-language-server || pnpm add -g yaml-language-server",
+                "npm install -g yaml-language-server || pnpm add -g yaml-language-server",
+                "npm install -g yaml-language-server || pnpm add -g yaml-language-server",
+            ),
+            homepage: "https://github.com/redhat-developer/yaml-language-server".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "dockerfile-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "docker-langserver".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["dockerfile".to_string()],
+            install_command: install(
+                "npm install -g dockerfile-language-server-nodejs || pnpm add -g dockerfile-language-server-nodejs",
+                "npm install -g dockerfile-language-server-nodejs || pnpm add -g dockerfile-language-server-nodejs",
+                "npm install -g dockerfile-language-server-nodejs || pnpm add -g dockerfile-language-server-nodejs",
+            ),
+            homepage: "https://github.com/rcjsuen/dockerfile-language-server".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "svelte-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "svelteserver".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["svelte".to_string()],
+            root_markers: vec![
+                "svelte.config.js".to_string(),
+                "svelte.config.mjs".to_string(),
+                "svelte.config.ts".to_string(),
+                "package.json".to_string(),
+            ],
+            install_command: install(
+                "npm install -g svelte-language-server typescript || pnpm add -g svelte-language-server typescript",
+                "npm install -g svelte-language-server typescript || pnpm add -g svelte-language-server typescript",
+                "npm install -g svelte-language-server typescript || pnpm add -g svelte-language-server typescript",
+            ),
+            homepage: "https://github.com/sveltejs/language-tools".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "vue-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "vue-language-server".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["vue".to_string()],
+            root_markers: vec![
+                "package.json".to_string(),
+                "vite.config.ts".to_string(),
+                "vite.config.js".to_string(),
+                "nuxt.config.ts".to_string(),
+                "tsconfig.json".to_string(),
+            ],
+            install_command: install(
+                "npm install -g @vue/language-server typescript || pnpm add -g @vue/language-server typescript",
+                "npm install -g @vue/language-server typescript || pnpm add -g @vue/language-server typescript",
+                "npm install -g @vue/language-server typescript || pnpm add -g @vue/language-server typescript",
+            ),
+            homepage: "https://github.com/vuejs/language-tools".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "graphql-lsp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "graphql-lsp".to_string(),
+            args: "server -m stream".to_string(),
+            languages: vec!["graphql".to_string()],
+            root_markers: vec![
+                ".graphqlrc".to_string(),
+                ".graphqlrc.yml".to_string(),
+                ".graphqlrc.yaml".to_string(),
+                ".graphqlrc.json".to_string(),
+                "graphql.config.js".to_string(),
+                "graphql.config.ts".to_string(),
+                "graphql.config.yml".to_string(),
+            ],
+            install_command: install(
+                "npm install -g graphql-language-service-cli || pnpm add -g graphql-language-service-cli",
+                "npm install -g graphql-language-service-cli || pnpm add -g graphql-language-service-cli",
+                "npm install -g graphql-language-service-cli || pnpm add -g graphql-language-service-cli",
+            ),
+            homepage: "https://github.com/graphql/graphiql".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "intelephense",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "intelephense".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["php".to_string()],
+            root_markers: vec![
+                "composer.json".to_string(),
+                ".phpactor.json".to_string(),
+                "index.php".to_string(),
+            ],
+            install_command: install(
+                "npm install -g intelephense || pnpm add -g intelephense",
+                "npm install -g intelephense || pnpm add -g intelephense",
+                "npm install -g intelephense || pnpm add -g intelephense",
+            ),
+            homepage: "https://intelephense.com".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "phpactor",
+        LspServerConfig {
+            program: "phpactor".to_string(),
+            args: "language-server".to_string(),
+            languages: vec!["php".to_string()],
+            root_markers: vec!["composer.json".to_string(), ".phpactor.json".to_string()],
+            homepage: "https://github.com/phpactor/phpactor".to_string(),
+            install_hint: "Install phpactor (https://phpactor.readthedocs.io/en/master/usage/standalone.html)".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "clangd",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "clangd".to_string(),
+            args: "--background-index --header-insertion=never".to_string(),
+            languages: vec![
+                "c".to_string(),
+                "cpp".to_string(),
+                "objective-c".to_string(),
+                "objective-cpp".to_string(),
+            ],
+            root_markers: vec![
+                "compile_commands.json".to_string(),
+                "compile_flags.txt".to_string(),
+                ".clangd".to_string(),
+                "CMakeLists.txt".to_string(),
+                "meson.build".to_string(),
+                "Makefile".to_string(),
+            ],
+            install_command: install(
+                "winget install LLVM.LLVM || scoop install llvm || choco install llvm",
+                "brew install llvm",
+                "apt install -y clangd || dnf install -y clang-tools-extra || pacman -S --noconfirm clang",
+            ),
+            homepage: "https://clangd.llvm.org".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "gopls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "gopls".to_string(),
+            languages: vec![
+                "go".to_string(),
+                "go.mod".to_string(),
+                "go.work".to_string(),
+            ],
+            root_markers: vec!["go.work".to_string(), "go.mod".to_string()],
+            install_command: install(
+                "go install golang.org/x/tools/gopls@latest",
+                "brew install gopls || go install golang.org/x/tools/gopls@latest",
+                "go install golang.org/x/tools/gopls@latest || apt install -y gopls",
+            ),
+            homepage: "https://pkg.go.dev/golang.org/x/tools/gopls".to_string(),
+            ..base_server()
+        },
     );
     put(
         "rust-analyzer",
-        server(
-            "rust-analyzer",
-            "",
-            "off",
-            &["rust"],
-            &["Cargo.toml"],
-            install(
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "rust-analyzer".to_string(),
+            languages: vec!["rust".to_string()],
+            root_markers: vec!["Cargo.toml".to_string(), "rust-project.json".to_string()],
+            install_command: install(
                 "rustup component add rust-analyzer || cargo install --locked rust-analyzer || winget install Rustlang.Rustup",
                 "rustup component add rust-analyzer || brew install rust-analyzer",
                 "rustup component add rust-analyzer || apt install -y rust-analyzer || dnf install -y rust-analyzer",
             ),
-            30_000,
-            false,
-        ),
+            homepage: "https://rust-analyzer.github.io".to_string(),
+            ..base_server()
+        },
+    );    put(
+        "jdtls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "jdtls".to_string(),
+            languages: vec!["java".to_string()],
+            root_markers: vec![
+                "pom.xml".to_string(),
+                "build.gradle".to_string(),
+                "build.gradle.kts".to_string(),
+                "settings.gradle".to_string(),
+                "settings.gradle.kts".to_string(),
+                "build.xml".to_string(),
+                ".project".to_string(),
+            ],
+            install_command: install(
+                "scoop install jdtls || choco install eclipse-jdtls",
+                "brew install jdtls",
+                "apt install -y eclipse-jdtls || pacman -S --noconfirm jdtls",
+            ),
+            homepage: "https://github.com/eclipse-jdtls/eclipse.jdt.ls".to_string(),
+            startup_timeout_ms: 120_000,
+            init_options: serde_json::json!({
+                "bundles": [],
+                "extendedClientCapabilities": {
+                    "classFileContentsSupport": true,
+                    "resolveAdditionalTextEditsSupport": true
+                },
+                "settings": {
+                    "java": {
+                        "autobuild": { "enabled": true },
+                        "contentProvider": { "preferred": "fernflower" },
+                        "maven": { "downloadSources": true, "updateSnapshots": false },
+                        "eclipse": { "downloadSources": true },
+                        "references": { "includeDecompiledSources": true },
+                        "signatureHelp": { "enabled": true },
+                        "configuration": { "updateBuildConfiguration": "automatic" },
+                        "format": { "insertSpaces": true, "tabSize": 4 },
+                        "completion": {
+                            "guessMethodArguments": "off",
+                            "filteredTypes": [
+                                "java.awt.List", "com.sun.*", "sun.*", "jdk.*",
+                                "org.graalvm.*", "io.micrometer.shaded.*"
+                            ]
+                        },
+                        "import": {
+                            "generatesMetadataFilesAtProjectRoot": false,
+                            "exclusions": [
+                                "**/node_modules/**", "**/.metadata/**",
+                                "**/archetype-resources/**", "**/META-INF/maven/**"
+                            ],
+                            "maven": { "enabled": true },
+                            "gradle": { "enabled": true, "wrapper": { "enabled": true } }
+                        }
+                    }
+                }
+            }),
+            ..base_server()
+        },
     );
     put(
-        "typescript",
-        server(
-            "typescript-language-server",
-            "--stdio",
-            "builtin",
-            &["typescript", "javascript"],
-            &["tsconfig.json", "jsconfig.json", "package.json"],
-            install(
-                "npm install -g typescript-language-server typescript || pnpm add -g typescript-language-server typescript || yarn global add typescript-language-server typescript",
-                "npm install -g typescript-language-server typescript || pnpm add -g typescript-language-server typescript",
-                "npm install -g typescript-language-server typescript || pnpm add -g typescript-language-server typescript",
-            ),
-            30_000,
-            true,
-        ),
+        "kotlin-lsp",
+        LspServerConfig {
+            program: "kotlin-lsp".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["kotlin".to_string()],
+            root_markers: vec![
+                "settings.gradle.kts".to_string(),
+                "settings.gradle".to_string(),
+                "build.gradle.kts".to_string(),
+                "build.gradle".to_string(),
+                "pom.xml".to_string(),
+            ],
+            homepage: "https://github.com/Kotlin/kotlin-lsp".to_string(),
+            startup_timeout_ms: 120_000,
+            install_hint: "Install JetBrains Kotlin LSP: brew install JetBrains/utils/kotlin-lsp (https://github.com/Kotlin/kotlin-lsp)".to_string(),
+            ..base_server()
+        },
     );
-
-    // Windows 上不列 sourcekit-lsp：附录 B 那句 Windows 支持不成熟在这里落地。
-    if !cfg!(windows) {
-        put(
-            "sourcekit-lsp",
-            server(
-                "sourcekit-lsp",
-                "",
-                "off",
-                &["swift"],
-                &["Package.swift", "*.xcodeproj"],
-                String::new(),
-                30_000,
-                false,
+    put(
+        "kotlin-language-server",
+        LspServerConfig {
+            program: "kotlin-language-server".to_string(),
+            languages: vec!["kotlin".to_string()],
+            root_markers: vec![
+                "settings.gradle.kts".to_string(),
+                "settings.gradle".to_string(),
+                "build.gradle.kts".to_string(),
+                "build.gradle".to_string(),
+                "pom.xml".to_string(),
+            ],
+            install_command: install(
+                "scoop install kotlin-language-server || choco install kotlin-language-server",
+                "brew install kotlin-language-server",
+                "pacman -S --noconfirm kotlin-language-server || snap install kotlin-language-server --classic",
             ),
-        );
-    }
+            homepage: "https://github.com/fwcd/kotlin-language-server".to_string(),
+            startup_timeout_ms: 120_000,
+            ..base_server()
+        },
+    );
+    put(
+        "dart",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "dart".to_string(),
+            args: "language-server --protocol=lsp".to_string(),
+            languages: vec!["dart".to_string()],
+            root_markers: vec!["pubspec.yaml".to_string(), "analysis_options.yaml".to_string()],
+            homepage: "https://dart.dev/get-dart".to_string(),
+            install_hint: "Install the Dart SDK (https://dart.dev/get-dart) or Flutter".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "lua-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "lua-language-server".to_string(),
+            languages: vec!["lua".to_string()],
+            root_markers: vec![
+                ".luarc.json".to_string(),
+                ".luarc.jsonc".to_string(),
+                ".luacheckrc".to_string(),
+                ".stylua.toml".to_string(),
+                "stylua.toml".to_string(),
+            ],
+            install_command: install(
+                "winget install lua-language-server || scoop install lua-language-server",
+                "brew install lua-language-server",
+                "apt install -y lua-language-server || pacman -S --noconfirm lua-language-server",
+            ),
+            homepage: "https://luals.github.io".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "clojure-lsp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "clojure-lsp".to_string(),
+            languages: vec!["clojure".to_string()],
+            root_markers: vec![
+                "deps.edn".to_string(),
+                "project.clj".to_string(),
+                "shadow-cljs.edn".to_string(),
+                "bb.edn".to_string(),
+                "build.boot".to_string(),
+            ],
+            install_command: install(
+                "scoop install clojure-lsp || choco install clojure-lsp",
+                "brew install clojure-lsp/brew/clojure-lsp",
+                "bash -c \"$(curl -fsSL https://raw.githubusercontent.com/clojure-lsp/clojure-lsp/master/cli/install)\"",
+            ),
+            homepage: "https://clojure-lsp.io".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "neocmakelsp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "neocmakelsp".to_string(),
+            args: "stdio".to_string(),
+            languages: vec!["cmake".to_string()],
+            root_markers: vec!["CMakeLists.txt".to_string(), "CMakePresets.json".to_string()],
+            install_command: install(
+                "cargo install neocmakelsp",
+                "cargo install neocmakelsp || brew install neocmakelsp",
+                "cargo install neocmakelsp",
+            ),
+            homepage: "https://github.com/Decodetalkers/neocmakelsp".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "cmake-language-server",
+        LspServerConfig {
+            program: "cmake-language-server".to_string(),
+            languages: vec!["cmake".to_string()],
+            root_markers: vec!["CMakeLists.txt".to_string(), "CMakePresets.json".to_string()],
+            install_command: install(
+                "pip install cmake-language-server || pipx install cmake-language-server",
+                "pip install cmake-language-server || pipx install cmake-language-server",
+                "pip install cmake-language-server || pipx install cmake-language-server",
+            ),
+            homepage: "https://github.com/regen100/cmake-language-server".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "marksman",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "marksman".to_string(),
+            args: "server".to_string(),
+            languages: vec!["markdown".to_string()],
+            root_markers: vec![".marksman.toml".to_string()],
+            install_command: install(
+                "winget install ArtemPyanykh.Marksman || scoop install marksman",
+                "brew install marksman",
+                "mkdir -p ~/.local/bin && curl -fsSL https://github.com/artempyanykh/marksman/releases/latest/download/marksman-linux-x64 -o ~/.local/bin/marksman && chmod +x ~/.local/bin/marksman",
+            ),
+            homepage: "https://github.com/artempyanykh/marksman".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "texlab",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "texlab".to_string(),
+            languages: vec!["latex".to_string()],
+            root_markers: vec![
+                ".latexmkrc".to_string(),
+                "latexmkrc".to_string(),
+                ".texlabroot".to_string(),
+                "texlabroot".to_string(),
+                "Tectonic.toml".to_string(),
+            ],
+            install_command: install(
+                "cargo install --locked texlab",
+                "cargo install --locked texlab || brew install texlab",
+                "cargo install --locked texlab",
+            ),
+            homepage: "https://github.com/latex-lsp/texlab".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "haskell-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "haskell-language-server-wrapper".to_string(),
+            args: "--lsp".to_string(),
+            languages: vec!["haskell".to_string()],
+            root_markers: vec![
+                "hie.yaml".to_string(),
+                "stack.yaml".to_string(),
+                "cabal.project".to_string(),
+                "*.cabal".to_string(),
+                "package.yaml".to_string(),
+            ],
+            homepage: "https://github.com/haskell/haskell-language-server".to_string(),
+            startup_timeout_ms: 120_000,
+            install_hint: "ghcup install hls".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "elixir-ls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "elixir-ls".to_string(),
+            languages: vec!["elixir".to_string()],
+            root_markers: vec!["mix.exs".to_string()],
+            homepage: "https://github.com/elixir-lsp/elixir-ls".to_string(),
+            install_hint: "Install ElixirLS (https://github.com/elixir-lsp/elixir-ls/releases) and expose language_server.sh as `elixir-ls`".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "elp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "elp".to_string(),
+            args: "server".to_string(),
+            languages: vec!["erlang".to_string()],
+            root_markers: vec![
+                "rebar.config".to_string(),
+                "erlang.mk".to_string(),
+                ".elp.toml".to_string(),
+            ],
+            homepage: "https://github.com/WhatsApp/erlang-language-platform".to_string(),
+            install_hint: "Install Erlang Language Platform (https://github.com/WhatsApp/erlang-language-platform/releases)".to_string(),
+            ..base_server()
+        },
+    );    put(
+        "fsautocomplete",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "fsautocomplete".to_string(),
+            languages: vec!["fsharp".to_string()],
+            root_markers: vec!["*.sln".to_string(), "*.fsproj".to_string(), "global.json".to_string()],
+            install_command: install(
+                "dotnet tool install --global fsautocomplete || dotnet tool update --global fsautocomplete",
+                "dotnet tool install --global fsautocomplete || dotnet tool update --global fsautocomplete",
+                "dotnet tool install --global fsautocomplete || dotnet tool update --global fsautocomplete",
+            ),
+            homepage: "https://github.com/ionide/FsAutoComplete".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "csharp-ls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "csharp-ls".to_string(),
+            languages: vec!["csharp".to_string()],
+            root_markers: vec![
+                "*.sln".to_string(),
+                "*.slnx".to_string(),
+                "*.csproj".to_string(),
+                "global.json".to_string(),
+                "Directory.Build.props".to_string(),
+            ],
+            install_command: install(
+                "dotnet tool install --global csharp-ls || dotnet tool update --global csharp-ls",
+                "dotnet tool install --global csharp-ls || dotnet tool update --global csharp-ls",
+                "dotnet tool install --global csharp-ls || dotnet tool update --global csharp-ls",
+            ),
+            homepage: "https://github.com/razzmatazz/csharp-language-server".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "julia-languageserver",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "julia".to_string(),
+            args: "--startup-file=no --history-file=no --quiet -e \"using LanguageServer; runserver()\"".to_string(),
+            languages: vec!["julia".to_string()],
+            root_markers: vec!["Project.toml".to_string(), "JuliaProject.toml".to_string()],
+            homepage: "https://github.com/julia-vscode/LanguageServer.jl".to_string(),
+            install_hint: "In Julia: ] add LanguageServer".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "groovy-language-server",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "groovy-language-server".to_string(),
+            languages: vec!["groovy".to_string()],
+            root_markers: vec![
+                "build.gradle".to_string(),
+                "settings.gradle".to_string(),
+                "pom.xml".to_string(),
+            ],
+            homepage: "https://github.com/GroovyLanguageServer/groovy-language-server".to_string(),
+            install_hint: "Build the Groovy Language Server (https://github.com/GroovyLanguageServer/groovy-language-server) and expose it as `groovy-language-server`".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "metals",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "metals".to_string(),
+            languages: vec!["scala".to_string()],
+            root_markers: vec![
+                "build.sbt".to_string(),
+                "build.sc".to_string(),
+                "build.mill".to_string(),
+                "project.scala".to_string(),
+                "pom.xml".to_string(),
+                "build.gradle".to_string(),
+            ],
+            homepage: "https://scalameta.org/metals/".to_string(),
+            startup_timeout_ms: 120_000,
+            install_hint: "cs install metals (Coursier: https://get-coursier.io)".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "nil",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "nil".to_string(),
+            languages: vec!["nix".to_string()],
+            root_markers: vec![
+                "flake.nix".to_string(),
+                "default.nix".to_string(),
+                "shell.nix".to_string(),
+            ],
+            homepage: "https://github.com/oxalica/nil".to_string(),
+            install_hint: "nix profile install github:oxalica/nil".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "nixd",
+        LspServerConfig {
+            program: "nixd".to_string(),
+            languages: vec!["nix".to_string()],
+            root_markers: vec![
+                "flake.nix".to_string(),
+                "default.nix".to_string(),
+                "shell.nix".to_string(),
+            ],
+            homepage: "https://github.com/nix-community/nixd".to_string(),
+            install_hint: "nix profile install nixpkgs#nixd".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "ocamllsp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "ocamllsp".to_string(),
+            languages: vec!["ocaml".to_string(), "ocaml.interface".to_string()],
+            root_markers: vec![
+                "dune-project".to_string(),
+                "dune-workspace".to_string(),
+                "*.opam".to_string(),
+                "esy.json".to_string(),
+                "package.json".to_string(),
+            ],
+            homepage: "https://github.com/ocaml/ocaml-lsp".to_string(),
+            install_hint: "opam install ocaml-lsp-server".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "perlnavigator",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "perlnavigator".to_string(),
+            args: "--stdio".to_string(),
+            languages: vec!["perl".to_string()],
+            install_command: install(
+                "npm install -g perlnavigator-server || pnpm add -g perlnavigator-server",
+                "npm install -g perlnavigator-server || pnpm add -g perlnavigator-server",
+                "npm install -g perlnavigator-server || pnpm add -g perlnavigator-server",
+            ),
+            homepage: "https://github.com/bscan/PerlNavigator".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "powershell-editor-services",
+        LspServerConfig {
+            program: "pwsh".to_string(),
+            args: "-NoLogo -NoProfile -NonInteractive -Command \"& \\\"$env:PSES_BUNDLE_PATH/PowerShellEditorServices/Start-EditorServices.ps1\\\" -BundledModulesPath $env:PSES_BUNDLE_PATH -LogPath ([IO.Path]::Combine([IO.Path]::GetTempPath(), 'forge-pses.log')) -SessionDetailsPath ([IO.Path]::Combine([IO.Path]::GetTempPath(), 'forge-pses.json')) -FeatureFlags @() -AdditionalModules @() -HostName forge -HostProfileId forge -HostVersion 1.0.0 -Stdio -LogLevel Normal\"".to_string(),
+            languages: vec!["powershell".to_string()],
+            homepage: "https://github.com/PowerShell/PowerShellEditorServices".to_string(),
+            install_hint: "Install PowerShell 7 (pwsh), unzip PowerShellEditorServices.zip (https://github.com/PowerShell/PowerShellEditorServices/releases) and set PSES_BUNDLE_PATH to that folder".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "godot",
+        LspServerConfig {
+            program: "godot".to_string(),
+            args: "--headless --editor --path ${root} --lsp-port ${port}".to_string(),
+            languages: vec!["gdscript".to_string()],
+            root_markers: vec!["project.godot".to_string()],
+            homepage: "https://godotengine.org".to_string(),
+            install_hint: "Open the project in the Godot editor; its language server speaks LSP over TCP (127.0.0.1:6005) and is not launched by Forge yet".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "r-languageserver",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "R".to_string(),
+            args: "--no-echo -e \"languageserver::run()\"".to_string(),
+            languages: vec!["r".to_string()],
+            root_markers: vec![
+                "DESCRIPTION".to_string(),
+                ".Rproj.user".to_string(),
+                "renv.lock".to_string(),
+            ],
+            homepage: "https://github.com/REditorSupport/languageserver".to_string(),
+            install_hint: "In R: install.packages(\"languageserver\")".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "ruby-lsp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "ruby-lsp".to_string(),
+            languages: vec!["ruby".to_string()],
+            root_markers: vec![
+                "Gemfile".to_string(),
+                ".ruby-version".to_string(),
+                ".rubocop.yml".to_string(),
+            ],
+            install_command: install(
+                "gem install ruby-lsp || gem install --user-install ruby-lsp",
+                "gem install ruby-lsp || brew install ruby-lsp",
+                "gem install ruby-lsp || apt install -y ruby-lsp",
+            ),
+            homepage: "https://shopify.github.io/ruby-lsp".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "solargraph",
+        LspServerConfig {
+            program: "solargraph".to_string(),
+            args: "stdio".to_string(),
+            languages: vec!["ruby".to_string()],
+            root_markers: vec!["Gemfile".to_string(), ".solargraph.yml".to_string()],
+            install_command: install(
+                "gem install solargraph || gem install --user-install solargraph",
+                "gem install solargraph || brew install solargraph",
+                "gem install solargraph || apt install -y solargraph",
+            ),
+            homepage: "https://solargraph.org".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "sqls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "sqls".to_string(),
+            languages: vec!["sql".to_string()],
+            install_command: install(
+                "go install github.com/sqls-server/sqls@latest",
+                "go install github.com/sqls-server/sqls@latest",
+                "go install github.com/sqls-server/sqls@latest",
+            ),
+            homepage: "https://github.com/sqls-server/sqls".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "buf",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "buf".to_string(),
+            args: "lsp serve".to_string(),
+            languages: vec!["proto".to_string()],
+            root_markers: vec![
+                "buf.yaml".to_string(),
+                "buf.work.yaml".to_string(),
+                "buf.gen.yaml".to_string(),
+            ],
+            install_command: install(
+                "scoop install buf || go install github.com/bufbuild/buf/cmd/buf@latest",
+                "brew install bufbuild/buf/buf",
+                "curl -fsSL https://buf.build/install.sh | bash",
+            ),
+            homepage: "https://buf.build".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "terraform-ls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "terraform-ls".to_string(),
+            args: "serve".to_string(),
+            languages: vec!["terraform".to_string(), "terraform-vars".to_string()],
+            root_markers: vec![
+                ".terraform".to_string(),
+                ".terraform.lock.hcl".to_string(),
+            ],
+            install_command: install(
+                "scoop install terraform-ls",
+                "brew install hashicorp/tap/terraform-ls",
+                "snap install terraform-ls",
+            ),
+            homepage: "https://github.com/hashicorp/terraform-ls".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "taplo",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "taplo".to_string(),
+            args: "lsp stdio".to_string(),
+            languages: vec!["toml".to_string()],
+            install_command: install(
+                "cargo install taplo-cli --locked --features lsp || npm install -g @taplo/cli",
+                "cargo install taplo-cli --locked --features lsp || brew install taplo",
+                "cargo install taplo-cli --locked --features lsp || npm install -g @taplo/cli",
+            ),
+            homepage: "https://taplo.tamasfe.dev".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "lemminx",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "lemminx".to_string(),
+            languages: vec!["xml".to_string()],
+            homepage: "https://github.com/eclipse/lemminx".to_string(),
+            install_hint: "Install LemMinX (https://github.com/redhat-developer/vscode-xml/releases, binary `lemminx`)".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "zls",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "zls".to_string(),
+            languages: vec!["zig".to_string()],
+            root_markers: vec!["build.zig".to_string(), "build.zig.zon".to_string()],
+            homepage: "https://github.com/zigtools/zls".to_string(),
+            install_hint: "Install ZLS matching your Zig version (https://github.com/zigtools/zls/releases)".to_string(),
+            ..base_server()
+        },
+    );
+    put(
+        "sourcekit-lsp",
+        LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "sourcekit-lsp".to_string(),
+            languages: vec!["swift".to_string()],
+            root_markers: vec![
+                "Package.swift".to_string(),
+                "buildServer.json".to_string(),
+                "compile_commands.json".to_string(),
+                ".sourcekit-lsp".to_string(),
+            ],
+            homepage: "https://www.swift.org/install".to_string(),
+            install_hint: "Ships with the Swift toolchain / Xcode (xcrun sourcekit-lsp); https://www.swift.org/install".to_string(),
+            ..base_server()
+        },
+    );
 
     servers
 }
 
+/// 从规整的安装命令推导卸载命令；认不出的包管理器（winget/brew/apt/go/scoop/snap/curl）
+/// 返回空串——没有可靠卸载路径就如实不给按钮，不猜。
+fn derive_uninstall(install: &str) -> String {
+    let line = install.trim();
+    let first = line.split(" || ").next().unwrap_or("").trim();
+    let package = first
+        .strip_prefix("npm install -g ")
+        .or_else(|| first.strip_prefix("pip install "))
+        .or_else(|| first.strip_prefix("gem install "))
+        .or_else(|| first.strip_prefix("dotnet tool install --global "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string);
+    if let Some(package) = package {
+        return if let Some(component) = first.strip_prefix("rustup component add ") {
+            format!("rustup component remove {}", component.split_whitespace().next().unwrap_or(""))
+        } else if let Some(crate_name) = first.strip_prefix("cargo install") {
+            let name = crate_name
+                .split_whitespace()
+                .filter(|token| !token.starts_with('-'))
+                .next_back()
+                .unwrap_or("");
+            if name.is_empty() { String::new() } else { format!("cargo uninstall {name}") }
+        } else if first.starts_with("dotnet tool install") {
+            format!("dotnet tool uninstall --global {package}")
+        } else if first.starts_with("npm install") {
+            format!("npm uninstall -g {package}")
+        } else if first.starts_with("gem install") {
+            format!("gem uninstall -x {package}")
+        } else {
+            format!("pip uninstall -y {package} || pipx uninstall {package}")
+        };
+    }
+    String::new()
+}
 /// 进程总数上限的缺省。rust-analyzer 单进程实测 500MB 到 1GB，这条是内存兜底。
 const DEFAULT_MAX_SESSIONS: usize = 5;
 /// 空闲回收阈值的缺省（分钟）。调太小会让重服务器反复付冷启动与重建索引的成本。
@@ -375,13 +1210,36 @@ pub fn default_config() -> LspConfig {
         version: 1,
         max_sessions: DEFAULT_MAX_SESSIONS,
         idle_timeout_min: DEFAULT_IDLE_TIMEOUT_MIN,
-        servers: seed(),
+        servers: {
+            let mut servers = seed();
+            for entry in servers.values_mut() {
+                entry.uninstall_command = derive_uninstall(&entry.install_command);
+            }
+            servers
+        },
+    }
+}
+
+/// 目录 1:1 对齐后的旧 id 处置：改名把用户改过的档位/路径带到新 id 下。
+/// 旧版曾下架过的 dart、metals 等服务随 1:1 目录回归种子表，不再删除。
+const RENAMED_SERVERS: &[(&str, &str)] = &[
+    ("typescript", "typescript-language-server"),
+    ("kotlin-lsp", "kotlin-language-server"),
+    ("docker-langserver", "dockerfile-language-server"),
+];
+
+fn migrate_legacy_ids(config: &mut LspConfig) {
+    for (old, new) in RENAMED_SERVERS {
+        if let Some(entry) = config.servers.remove(*old) {
+            config.servers.entry((*new).to_string()).or_insert(entry);
+        }
     }
 }
 
 /// 把读来的配置对着种子修一遍：缺的 server 用种子补，非法档位与空字段退回种子那一项。
 /// 用户自己加的 server（种子里没有的键）保留。
 fn normalize(mut config: LspConfig) -> LspConfig {
+    migrate_legacy_ids(&mut config);
     let seeds = seed();
     let mut merged: BTreeMap<String, LspServerConfig> = BTreeMap::new();
     for (id, fallback) in &seeds {
@@ -433,6 +1291,11 @@ fn clamp(entry: LspServerConfig, fallback: &LspServerConfig) -> LspServerConfig 
             entry.root_markers
         },
         install_command: non_blank(entry.install_command, &fallback.install_command),
+        uninstall_command: if entry.uninstall_command.trim().is_empty() {
+            fallback.uninstall_command.clone()
+        } else {
+            entry.uninstall_command.trim().to_string()
+        },
         startup_timeout_ms: if entry.startup_timeout_ms == 0 {
             fallback.startup_timeout_ms
         } else {
@@ -440,6 +1303,8 @@ fn clamp(entry: LspServerConfig, fallback: &LspServerConfig) -> LspServerConfig 
         },
         init_options: entry.init_options,
         supports_builtin: entry.supports_builtin || fallback.supports_builtin,
+        homepage: non_blank(entry.homepage, &fallback.homepage),
+        install_hint: non_blank(entry.install_hint, &fallback.install_hint),
     }
 }
 
@@ -574,6 +1439,12 @@ pub struct LspProbeReport {
 }
 
 /// 读语言服务配置。
+/// 整份缺省配置；设置页「恢复默认」从这取种子，与 lsp.json 解耦。
+#[tauri::command]
+pub async fn lsp_config_defaults() -> LspConfig {
+    default_config()
+}
+
 #[tauri::command]
 pub async fn lsp_config_load(app: AppHandle) -> LspConfig {
     block_value(move || load(&app), default_config).await
@@ -599,7 +1470,7 @@ mod tests {
 
         let back: LspConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back.servers["rust-analyzer"].program, "rust-analyzer");
-        assert_eq!(back.servers["typescript"].mode, "builtin");
+        assert_eq!(back.servers["vtsls"].mode, "lsp");
     }
 
     /// 手改文件把不支持内置语义的 server 写成 builtin，要退回它自己的缺省档位。
@@ -608,7 +1479,8 @@ mod tests {
         let mut config = default_config();
         config.servers.get_mut("gopls").unwrap().mode = "builtin".to_string();
         let fixed = normalize(config);
-        assert_eq!(fixed.servers["gopls"].mode, "off");
+        // gopls 是目录 1:1 后的主服务，种子缺省档位是 `lsp`：非法档位退回种子值。
+        assert_eq!(fixed.servers["gopls"].mode, "lsp");
     }
 
     /// 只填了档位、别的都空着，其余字段要按种子补回来（`args` 是 server 自己必需的）。
@@ -648,6 +1520,66 @@ mod tests {
         assert_eq!(fixed.servers.len(), before);
     }
 
+    /// 目录 1:1 对齐后的旧 id：改名的把用户改动带到新 id；曾下架的服务随 1:1
+    /// 目录回归种子表，档位按种子补齐，不会以幽灵空条目的形式复活。
+    #[test]
+    fn legacy_ids_are_renamed_or_dropped() {
+        let mut config = default_config();
+        // 旧版落盘的文件里有旧键、没有新键：正是改名迁移要接管的场景。
+        config.servers.remove("vtsls");
+        config.servers.insert("typescript".to_string(), LspServerConfig {
+            mode: "off".to_string(),
+            startup_timeout_ms: 30_000,
+            ..LspServerConfig::default()
+        });
+        config.servers.insert("my-lsp".to_string(), LspServerConfig {
+            mode: "lsp".to_string(),
+            program: "my-lsp".to_string(),
+            languages: vec!["mylang".to_string()],
+            startup_timeout_ms: 30_000,
+            ..LspServerConfig::default()
+        });
+        let fixed = normalize(config);
+        assert_eq!(fixed.servers["typescript-language-server"].mode, "off");
+        assert!(fixed.servers.get("typescript").is_none(), "旧键不该残留");
+        assert_eq!(fixed.servers["metals"].mode, "lsp", "回归种子的服务要有缺省档位");
+        assert_eq!(fixed.servers["dart"].mode, "lsp");
+        assert_eq!(fixed.servers["my-lsp"].program, "my-lsp", "真正自填的不受影响");
+    }
+
+    /// 目录 1:1：种子就是对标 IDE 语言目录的服务并集；关键字一个都不能少。
+    #[test]
+    fn seed_matches_reference_catalog() {
+        let servers = default_config().servers;
+        assert_eq!(servers.len(), 53, "服务并集应当有 53 项");
+        for id in [
+            "basedpyright", "pyright", "ty", "vtsls", "typescript-language-server",
+            "vscode-json-language-server", "vscode-css-language-server", "vscode-html-language-server",
+            "bash-language-server", "yaml-language-server", "dockerfile-language-server",
+            "svelte-language-server", "vue-language-server", "graphql-lsp", "intelephense",
+            "phpactor", "clangd", "gopls", "rust-analyzer", "jdtls", "kotlin-lsp",
+            "kotlin-language-server", "dart", "lua-language-server", "clojure-lsp",
+            "neocmakelsp", "cmake-language-server", "marksman", "texlab",
+            "haskell-language-server", "elixir-ls", "elp", "fsautocomplete", "csharp-ls",
+            "julia-languageserver", "groovy-language-server", "metals", "nil", "nixd",
+            "ocamllsp", "perlnavigator", "powershell-editor-services", "godot",
+            "r-languageserver", "ruby-lsp", "solargraph", "sqls", "buf", "terraform-ls",
+            "taplo", "lemminx", "zls", "sourcekit-lsp",
+        ] {
+            assert!(servers.contains_key(id), "种子缺 {id}");
+        }
+    }
+
+    /// 没有受管安装命令的服务必须带官方安装提示，UI 的手动安装提示才有内容。
+    #[test]
+    fn manual_servers_have_install_hint() {
+        for (id, entry) in default_config().servers {
+            if entry.install_command.is_empty() {
+                assert!(!entry.install_hint.is_empty(), "{id} 没有安装提示");
+            }
+        }
+    }
+
     /// 旧 `settings.json` 里那一段读进种子表；读不懂就原样退回种子。
     #[test]
     fn migrate_reads_old_lsp_section() {
@@ -661,7 +1593,7 @@ mod tests {
         let gopls = &migrated.servers["gopls"];
         assert_eq!(gopls.mode, "lsp");
         assert_eq!(gopls.path, "C:\\gopls");
-        assert_eq!(migrated.servers["typescript"].mode, "builtin");
+        assert_eq!(migrated.servers["vtsls"].mode, "lsp");
 
         let broken = dir.join("settings-broken.json");
         fs::write(&broken, "{ not json").unwrap();
@@ -717,7 +1649,7 @@ mod tests {
         let config = load_in(&dir);
         assert_eq!(config.servers["gopls"].mode, "lsp");
         assert_eq!(config.servers["gopls"].path, "C:\\gopls.exe");
-        assert_eq!(config.servers["typescript"].mode, "builtin");
+        assert_eq!(config.servers["vtsls"].mode, "lsp");
         assert!(dir.join(LSP_FILE).is_file());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -731,7 +1663,7 @@ mod tests {
         let config = load_in(&dir);
         assert_eq!(config.servers, default_config().servers);
         let back: LspConfig = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(back.servers["typescript"].mode, "builtin");
+        assert_eq!(back.servers["vtsls"].mode, "lsp");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -743,7 +1675,7 @@ mod tests {
         config.servers.get_mut("jdtls").unwrap().mode = "builtin".to_string();
         save_in(&dir, config).unwrap();
         let back = load_in(&dir);
-        assert_eq!(back.servers["jdtls"].mode, "off");
+        assert_eq!(back.servers["jdtls"].mode, "lsp");
         let _ = fs::remove_dir_all(&dir);
     }
 }

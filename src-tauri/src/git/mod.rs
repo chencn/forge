@@ -265,18 +265,18 @@ fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOut
     // 都要自己新建一个控制台，启动那十几个进程就是十几个一闪而过的黑框。
     hide_console(&mut command);
     let mut child = command.spawn().map_err(|error| err("GIT_SPAWN", error))?;
-    if let Some(input) = stdin {
-        // 先写完再关管道（drop），git 读完才会退出，不会死锁。
+    // 写 stdin 不能在主线程一次写完再读 stdout：git 的输出超过管道缓冲时，
+    // 它卡在写 stdout、我们卡在写 stdin，两头互等就是死锁（文件树批量 check-ignore
+    // 大目录必现）。写管道挪去线程，与 stdout/stderr 的抽干并发跑。
+    let stdin_task = stdin.map(|input| {
         use std::io::Write;
-        // 上面 match 的 Some 分支已把 stdin 置 piped，take() 必有值；真碎了会 panic，
-        // 由 block() 折成 GIT_SPAWN 回前端，这里不编后端文案。
-        child
-            .stdin
-            .take()
-            .expect("git stdin piped")
-            .write_all(input.as_bytes())
-            .map_err(|error| err("GIT_SPAWN", error))?;
-    }
+        let input = input.to_string();
+        let mut pipe = child.stdin.take().expect("git stdin piped");
+        std::thread::spawn(move || {
+            // 写失败（git 提前退出关了管道）不算错：命令的成败以退出码为准。
+            let _ = pipe.write_all(input.as_bytes());
+        })
+    });
     let mut stdout_pipe = child.stdout.take().expect("git stdout piped");
     let mut stderr_pipe = child.stderr.take().expect("git stderr piped");
     // 两条管道都要有人抽干，git 才不会塞满管道卡死在写操作上；stderr 挪去线程，
@@ -287,6 +287,11 @@ fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOut
         Ok(pair) => pair,
         Err(_) => return Err(err("GIT_SPAWN", "git stderr reader panicked")),
     };
+    if let Some(task) = stdin_task {
+        if task.join().is_err() {
+            return Err(err("GIT_SPAWN", "git stdin writer panicked"));
+        }
+    }
     let status = child.wait().map_err(|error| err("GIT_SPAWN", error))?;
     if stdout_over || stderr_over {
         let stream = if stdout_over { "stdout" } else { "stderr" };
@@ -677,6 +682,11 @@ fn git_show_impl(root: String, revision: String, path: String) -> Result<String,
         }
         return Err(fail(&output));
     }
+    // git 对二进制 blob 一样往外吐字节：按内容实际探测（前 8KB 有 NUL 即二进制），
+    // 别把乱码当正文端给比对视图。无扩展名、.gitattributes 标记的二进制都靠这里拦住。
+    if output.stdout.as_bytes()[..output.stdout.len().min(8192)].contains(&0) {
+        return Err(err("BINARY", &path));
+    }
     Ok(output.stdout)
 }
 
@@ -700,6 +710,10 @@ fn git_index_show_impl(root: String, path: String) -> Result<String, String> {
             return Ok(String::new());
         }
         return Err(fail(&output));
+    }
+    // 同 git_show：二进制 blob 按内容探测（前 8KB 有 NUL），不给比对视图端乱码。
+    if output.stdout.as_bytes()[..output.stdout.len().min(8192)].contains(&0) {
+        return Err(err("BINARY", &path));
     }
     Ok(output.stdout)
 }
@@ -768,15 +782,42 @@ fn git_unstage_impl(root: String, paths: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn git_commit(root: String, message: String, amend: bool, paths: Option<Vec<String>>) -> Result<String, String> {
-    block(move || git_commit_impl(root, message, amend, paths)).await
+#[allow(clippy::too_many_arguments)]
+pub async fn git_commit(
+    root: String,
+    message: String,
+    amend: bool,
+    paths: Option<Vec<String>>,
+    signoff: Option<bool>,
+    author: Option<String>,
+    no_verify: Option<bool>,
+    cleanup: Option<String>,
+) -> Result<String, String> {
+    block(move || {
+        git_commit_impl(
+            root,
+            message,
+            amend,
+            paths,
+            signoff.unwrap_or(false),
+            author,
+            no_verify.unwrap_or(false),
+            cleanup,
+        )
+    })
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 fn git_commit_impl(
     root: String,
     message: String,
     amend: bool,
     paths: Option<Vec<String>>,
+    signoff: bool,
+    author: Option<String>,
+    no_verify: bool,
+    cleanup: Option<String>,
 ) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let message = message.trim();
@@ -784,41 +825,58 @@ fn git_commit_impl(
     if message.is_empty() && !amend {
         return Err(err("EMPTY_MESSAGE", ""));
     }
-    let mut args: Vec<&str> = if message.is_empty() {
-        vec!["commit", "--amend", "--no-edit"]
+    let mut args: Vec<String> = if message.is_empty() {
+        vec!["commit".into(), "--amend".into(), "--no-edit".into()]
     } else if amend {
         // 少了这个 -m，git 会把说明当成 pathspec 报「did not match any file(s)」。
-        vec!["commit", "--amend", "-m", message]
+        vec!["commit".into(), "--amend".into(), "-m".into(), message.to_string()]
     } else {
-        vec!["commit", "-m", message]
+        vec!["commit".into(), "-m".into(), message.to_string()]
     };
+    // 提交选项：签名、作者、跳过 hooks、清洗说明——此前这些只在前端拼文本/未接线，没落到 git。
+    if signoff {
+        args.push("--signoff".into());
+    }
+    if let Some(author) = author.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        args.push(format!("--author={author}"));
+    }
+    if no_verify {
+        args.push("--no-verify".into());
+    }
+    if let Some(cleanup) = cleanup.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        args.push(format!("--cleanup={cleanup}"));
+    }
     // --only：只提交点名的那几条路径（取工作区内容），索引里其它文件的已暂存块不动——
     // 提交面板的复选框勾选语义就是它：勾了的提交，没勾的连索引都不碰。
     let relatives: Vec<String>;
     if let Some(paths) = paths.filter(|list| !list.is_empty()) {
-        args.push("--only");
+        args.push("--only".into());
         relatives = paths
             .iter()
             .map(|path| relative_path(&root, path))
             .collect::<Result<_, _>>()?;
         if relatives.len() > PATHSPEC_ARGV_LIMIT {
-            args.push("--pathspec-from-file=-");
-            args.push("--pathspec-file-nul");
+            args.push("--pathspec-from-file=-".into());
+            args.push("--pathspec-file-nul".into());
             let mut payload = String::new();
             for relative in &relatives {
                 payload.push_str(relative);
                 payload.push('\0');
             }
-            let output = run_git_stdin(&root, &args, &payload)?;
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let output = run_git_stdin(&root, &refs, &payload)?;
             if !output.ok {
                 return Err(fail(&output));
             }
             return Ok(trim_line(&output.stdout));
         }
-        args.push("--");
-        args.extend(relatives.iter().map(String::as_str));
+        args.push("--".into());
+        for relative in &relatives {
+            args.push(relative.clone());
+        }
     }
-    let output = run_git(&root, &args)?;
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_git(&root, &refs)?;
     if !output.ok {
         return Err(fail(&output));
     }
@@ -842,7 +900,9 @@ fn git_apply_patch_impl(root: String, patch: String, cached: bool, reverse: bool
     if patch.trim().is_empty() {
         return Ok(());
     }
-    let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn"];
+    // 按块补丁是零上下文的（见 src/lib/cm/chunkPatch.ts）：没有上下文行时 git 的模糊
+    // 定位会失效并报 "patch does not apply"，必须显式声明 `--unidiff-zero`。
+    let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn", "--unidiff-zero"];
     if cached {
         args.push("--cached");
     }
@@ -1132,6 +1192,32 @@ fn git_ignored_impl(root: String) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// 批量判断一个目录下的直接子项是否命中 Git 忽略规则。
+///
+/// 文件树只需要一趟目录读取的结果，不应该再把整仓库的 `status --ignored` 清单搬到前端
+/// 做前缀匹配。这里用同一个 git 进程接收所有名字；非仓库目录和无匹配都按空集处理，
+/// 这样外部库、用户目录等普通文件树不需要知道 Git 的存在。
+pub(crate) fn ignored_names_in_dir(dir: &Path, names: &[String]) -> HashSet<String> {
+    if names.is_empty() {
+        return HashSet::new();
+    }
+
+    let input = format!("{}\0", names.join("\0"));
+    let Ok(output) = run_git_stdin(dir, &["check-ignore", "--stdin", "-z"], &input) else {
+        return HashSet::new();
+    };
+    if !output.ok {
+        return HashSet::new();
+    }
+
+    output
+        .stdout
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// 分支名字符集校验：只放常见写法，且不能以 - 或 . 开头被当成选项或非法 ref。
 fn valid_branch_name(name: &str) -> bool {
     !name.is_empty()
@@ -1234,6 +1320,152 @@ fn git_rebase_impl(root: String, onto: String) -> Result<String, String> {
         return Err(fail(&output));
     }
     Ok(trim_line(&output.stdout))
+}
+
+/// Stash 列表，最新在前（stash@{0}）。对齐 openidea `refs.rs:148 stashes`：
+/// 一条 reflog 读出来拆字段，消息里自带的分隔符用单元分隔符（%x1f）隔开不受干扰。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStash {
+    /// 序号，即 `stash@{index}` 里的 index。
+    pub index: u32,
+    /// reflog subject，git 自己的「WIP on main: 1a2b3c4 …」或用户消息。
+    pub message: String,
+    /// 入栈时间（Unix 秒）。
+    pub time_ms: i64,
+}
+
+fn git_stash_list_impl(root: String) -> Result<Vec<GitStash>, String> {
+    let root = ensure_root(&root)?;
+    let output = run_git(&root, &["stash", "list", "--format=%gd%x1f%gs%x1f%ct"])?;
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    let mut out = Vec::new();
+    for line in output.stdout.lines() {
+        let mut parts = line.split('\u{1f}');
+        let (Some(rev), Some(message), Some(time)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        // rev 形如 stash@{3}：只留花括号里的序号。
+        let index: u32 = rev
+            .split_once('{')
+            .and_then(|(_, tail)| tail.trim_end_matches('}').parse().ok())
+            .unwrap_or(out.len() as u32);
+        out.push(GitStash {
+            index,
+            message: message.to_string(),
+            time_ms: time.trim().parse::<i64>().unwrap_or(0) * 1000,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn git_stash_list(root: String) -> Result<Vec<GitStash>, String> {
+    block(move || git_stash_list_impl(root)).await
+}
+
+/// 存 stash。参数对齐 openidea `write.rs:601 stash_push`。
+fn git_stash_push_impl(
+    root: String,
+    message: String,
+    include_untracked: bool,
+    keep_index: bool,
+) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    let mut args = vec!["stash", "push", "-q"];
+    if include_untracked {
+        args.push("--include-untracked");
+    }
+    if keep_index {
+        args.push("--keep-index");
+    }
+    let message = message.trim().to_string();
+    let extra: Vec<&str> = if message.is_empty() {
+        Vec::new()
+    } else {
+        vec!["-m", message.as_str()]
+    };
+    args.extend(extra);
+    let output = run_git(&root, &args)?;
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(String::new())
+}
+
+#[tauri::command]
+pub async fn git_stash_push(
+    root: String,
+    message: String,
+    include_untracked: bool,
+    keep_index: bool,
+) -> Result<String, String> {
+    block(move || git_stash_push_impl(root, message, include_untracked, keep_index)).await
+}
+
+/// 取 stash。`pop` 为真取完即删（git stash pop），否则留着（apply）；
+/// `reinstate_index` 同时恢复当时的暂存状态。对齐 openidea `write.rs:616 stash_apply`。
+fn git_stash_apply_impl(root: String, index: u32, pop: bool, reinstate_index: bool) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    let spec = format!("stash@{{{index}}}");
+    let mut args = vec!["stash", if pop { "pop" } else { "apply" }, "-q"];
+    if reinstate_index {
+        args.push("--index");
+    }
+    args.push(spec.as_str());
+    let output = run_git(&root, &args)?;
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(String::new())
+}
+
+#[tauri::command]
+pub async fn git_stash_apply(
+    root: String,
+    index: u32,
+    pop: bool,
+    reinstate_index: bool,
+) -> Result<String, String> {
+    block(move || git_stash_apply_impl(root, index, pop, reinstate_index)).await
+}
+
+/// 从某条 stash 上开出新分支并应用它。对齐 openidea `write.rs:626 stash_branch`。
+fn git_stash_branch_impl(root: String, index: u32, branch: String) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    if !valid_branch_name(&branch) {
+        return Err(err("BAD_BRANCH", &branch));
+    }
+    let spec = format!("stash@{{{index}}}");
+    let output = run_git(&root, &["stash", "branch", branch.as_str(), spec.as_str()])?;
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(String::new())
+}
+
+#[tauri::command]
+pub async fn git_stash_branch(root: String, index: u32, branch: String) -> Result<String, String> {
+    block(move || git_stash_branch_impl(root, index, branch)).await
+}
+
+/// 丢弃一条 stash。不可恢复，确认由前端负责。
+fn git_stash_drop_impl(root: String, index: u32) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    let spec = format!("stash@{{{index}}}");
+    let output = run_git(&root, &["stash", "drop", "-q", spec.as_str()])?;
+    if !output.ok {
+        return Err(fail(&output));
+    }
+    Ok(String::new())
+}
+
+#[tauri::command]
+pub async fn git_stash_drop(root: String, index: u32) -> Result<String, String> {
+    block(move || git_stash_drop_impl(root, index)).await
 }
 
 /// 重命名分支。
@@ -1477,8 +1709,9 @@ pub async fn git_diff_text(
     left: String,
     right: String,
     path: String,
+    old_path: Option<String>,
 ) -> Result<String, String> {
-    block(move || git_diff_text_impl(root, left, right, path)).await
+    block(move || git_diff_text_impl(root, left, right, path, old_path)).await
 }
 
 fn git_diff_text_impl(
@@ -1486,25 +1719,37 @@ fn git_diff_text_impl(
     left: String,
     right: String,
     path: String,
+    old_path: Option<String>,
 ) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_rev(&left) || (!right.is_empty() && !valid_rev(&right)) {
         return Err(err("BAD_REV", &left));
     }
     // 空 path 表示整条提交，不加路径限定；其余照旧。
-    let relative = if path.is_empty() {
-        String::new()
-    } else {
-        relative_path(&root, &path)?
-    };
+    // 重命名/复制要带上旧路径，`git diff` 才能在两侧都做重命名检测，否则只会显示成整份新增。
+    let mut relatives: Vec<String> = Vec::new();
+    if !path.is_empty() {
+        relatives.push(relative_path(&root, &path)?);
+    }
+    if let Some(old) = old_path.as_deref() {
+        let old = old.trim();
+        if !old.is_empty() {
+            let relative = relative_path(&root, old)?;
+            if !relatives.contains(&relative) {
+                relatives.push(relative);
+            }
+        }
+    }
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff"];
     args.push(left.as_str());
     if !right.is_empty() {
         args.push(right.as_str());
     }
-    if !relative.is_empty() {
+    if !relatives.is_empty() {
         args.push("--");
-        args.push(relative.as_str());
+        for relative in &relatives {
+            args.push(relative.as_str());
+        }
     }
     let output = run_git(&root, &args)?;
     if !output.ok {
@@ -1822,6 +2067,9 @@ pub struct GitLogQuery {
     pub since_ms: i64,
     /// 限定改到该路径（仓库相对）的提交；空串表示不限。文件历史用。
     pub path: String,
+    /// 跳过前 N 条（「加载更多」分页用）。
+    #[serde(default)]
+    pub skip: u32,
     /// 条数上限。
     pub limit: u32,
 }
@@ -1891,6 +2139,9 @@ fn git_log_impl(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>, Stri
     }
     if let Some(since) = bound(query.since_ms) {
         args.push(format!("--since={since}"));
+    }
+    if query.skip > 0 {
+        args.push(format!("--skip={}", query.skip));
     }
     if !query.reference.is_empty() {
         args.push(query.reference.clone());
@@ -2227,14 +2478,16 @@ pub async fn git_commit_file(
     root: String,
     revision: String,
     path: String,
+    old_path: Option<String>,
 ) -> Result<GitFileSides, String> {
-    block(move || git_commit_file_impl(root, revision, path)).await
+    block(move || git_commit_file_impl(root, revision, path, old_path)).await
 }
 
 fn git_commit_file_impl(
     root: String,
     revision: String,
     path: String,
+    old_path: Option<String>,
 ) -> Result<GitFileSides, String> {
     if !valid_rev(&revision) {
         return Err(err("BAD_REV", &revision));
@@ -2242,6 +2495,12 @@ fn git_commit_file_impl(
     if !valid_relative(&path) {
         return Err(err("BAD_REPO_PATH", &path));
     }
+    // 重命名/复制时父版本在旧路径下、右侧才是新路径；拿不到旧路径时两侧同路径。
+    let old_path = old_path.unwrap_or_default();
+    if !old_path.is_empty() && !valid_relative(&old_path) {
+        return Err(err("BAD_REPO_PATH", &old_path));
+    }
+    let parent_path = if old_path.is_empty() { path.clone() } else { old_path };
     let root_path = ensure_root(&root)?;
     let blob = |spec: String| -> String {
         run_git(&root_path, &["show", "--textconv", spec.as_str()])
@@ -2249,7 +2508,7 @@ fn git_commit_file_impl(
             .unwrap_or_default()
     };
     Ok(GitFileSides {
-        original: blob(format!("{revision}^:{path}")),
+        original: blob(format!("{revision}^:{parent_path}")),
         modified: blob(format!("{revision}:{path}")),
     })
 }
@@ -2297,6 +2556,7 @@ mod tests {
                 regex: false,
                 since_ms: 0,
                 path: String::new(),
+                skip: 0,
                 limit: 10,
             },
         )

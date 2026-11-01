@@ -15,10 +15,10 @@ import {
   type Extension,
 } from "@codemirror/state";
 import {
-  Decoration,
   EditorView,
-  WidgetType,
   drawSelection,
+  gutter,
+  GutterMarker,
   highlightActiveLine,
   highlightActiveLineGutter,
   highlightSpecialChars,
@@ -37,7 +37,7 @@ import { indentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
 import { diffConfigFor, type DiffWhitespace } from "./lineDiff";
 export type { DiffWhitespace };
-import { buildChunkPatch, type ChunkCoords } from "./chunkPatch";
+import { buildChunkPatch } from "./chunkPatch";
 import { forgeTheme } from "./theme";
 
 /** 两种排法：并排两栏，或者一栏里上下摆改动。 */
@@ -70,19 +70,24 @@ export interface DiffViewOptions {
   mode: DiffMode;
   /** 词级 / 整行 / 不高亮；缺省 words。 */
   highlight?: DiffHighlight;
-  /** 折叠未更改区；缺省开（改动上下各留 3 行，≥6 行的没改区折成一条）。 */
+  /** 折叠未更改区；缺省关。 */
   collapse?: boolean;
   /** 空白口径：default 严格比，trim 首尾、ignore 全部空白，ignoreEmptyLines 连空行一起扔。 */
   whitespace?: DiffWhitespace;
   /** 双栏滚动是否同步；缺省同步。 */
   syncScroll?: boolean;
   /**
-   * 每块行内控件（‹ ›）的落点：stage 把块打进索引，revert 把块从工作区撤掉。
-   * 给了才在每块首行行尾画那对箭头；补丁由这里生成，回调只管落地。
+   * 每块行内控件的落点：stage 把块打进索引，revert 把块从工作区撤掉。
+   * 补丁由这里按块生成，回调只管落地。
    */
   onChunkOp?: (op: "stage" | "revert", patch: string) => void;
   /** 块控件的悬停文案（调用方翻好）。 */
   chunkLabels?: { stage: string; revert: string };
+  /**
+   * 块级勾选框状态变化回调（对标 IntelliJ IDEA 提交比对复选框）。
+   * 缺省已自动在内部维护勾选状态并重绘。
+   */
+  onChunkCheck?: (chunkIndex: number, checked: boolean, chunk: Chunk) => void;
   /**
    * 行号怎么显示。补丁预览里模型是从 1 起数的，真实文件行号得由外面给——
    * hunk 之间跳过的区间不占号，不是简单的加一个偏移。
@@ -119,82 +124,65 @@ export interface DiffView {
 /** 折起来的没改区：改动上下各留 3 行，≥6 行的没改区才折（IDEA 的比对窗口口径）。 */
 const COLLAPSE = { margin: 3, minSize: 6 };
 
-/** 每块行内控件（‹ ›）的档位：build 完按 chunk 现算，换档/换篇时整组重发。 */
-const setChunkControls = StateEffect.define<RangeSet<Decoration>>();
-
-const chunkControlsField = StateField.define<RangeSet<Decoration>>({
-  create: () => Decoration.none,
-  update(value, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(setChunkControls)) return effect.value;
-    }
-    return value;
-  },
-  provide: (field) => EditorView.decorations.from(field),
-});
-
-/** 一块改动行尾的 ‹ › 对：‹ 把块拷去左侧（暂存），› 拷去右侧（还原）。 */
-class ChunkControlsWidget extends WidgetType {
+/** 块级勾选框装订线标记：对标 IntelliJ IDEA 提交比对复选框 [✓] */
+class ChunkCheckboxMarker extends GutterMarker {
   constructor(
-    readonly chunk: ChunkCoords,
-    readonly ops: { stage: boolean; revert: boolean },
-    readonly labels: { stage: string; revert: string },
-    readonly build: (op: "stage" | "revert", chunk: ChunkCoords) => void
+    readonly chunkIndex: number,
+    readonly checked: boolean,
+    readonly onToggle: (index: number) => void
   ) {
     super();
   }
 
-  override eq(other: WidgetType): boolean {
+  override eq(other: GutterMarker): boolean {
     return (
-      other instanceof ChunkControlsWidget &&
-      other.chunk.fromA === this.chunk.fromA &&
-      other.chunk.toA === this.chunk.toA &&
-      other.chunk.fromB === this.chunk.fromB &&
-      other.chunk.toB === this.chunk.toB
+      other instanceof ChunkCheckboxMarker &&
+      other.chunkIndex === this.chunkIndex &&
+      other.checked === this.checked
     );
   }
 
-  override toDOM(): HTMLElement {
-    const box = document.createElement("span");
-    box.className = "cm-diff-arrows";
-    const make = (glyph: string, title: string, op: "stage" | "revert", on: boolean) => {
-      if (!on) return null;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "cm-diff-arrow";
-      button.textContent = glyph;
-      button.title = title;
-      button.addEventListener("click", () => {
-        this.build(op, this.chunk);
-      });
-      box.appendChild(button);
-      return button;
-    };
-    make("‹", this.labels.stage, "stage", this.ops.stage);
-    make("›", this.labels.revert, "revert", this.ops.revert);
+  override toDOM(): Node {
+    const box = document.createElement("div");
+    box.className = `cm-diff-chunk-checkbox${this.checked ? " is-checked" : ""}`;
+    box.title = this.checked ? "已勾选提交此块（点击取消）" : "未勾选此块（点击包含）";
+    if (this.checked) {
+      box.innerHTML = `<svg viewBox="0 0 12 12" width="9" height="9"><path d="M2.5 6.5 L4.8 8.8 L9.5 3.5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    }
+    box.addEventListener("mousedown", (e) => e.stopPropagation());
+    box.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.onToggle(this.chunkIndex);
+    });
     return box;
-  }
-
-  override ignoreEvent(): boolean {
-    // 按钮自己接 click；不给 CM 拦走，光标也别被它牵动。
-    return true;
   }
 }
 
-/**
- * 一栏的扩展。
- *
- * 只读、不挂小地图、不挂 LSP、没有撤销栈——比对的两侧都是内存里的正文。
- * 语法、色板、主题与正文编辑器同一套，两处观感必须一致。
- *
- * `forge-diff` 这个类是样式的作用域：库自带的改动色权重不低，而单栏那一档根本没有
- * `.cm-mergeView` 外框，靠它圈不住——所以两种排法都在编辑器元素上盖一个自己的章。
- */
+const setCheckboxMarkers = StateEffect.define<RangeSet<GutterMarker>>();
+
+const checkboxGutterField = StateField.define<RangeSet<GutterMarker>>({
+  create: () => RangeSet.empty,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setCheckboxMarkers)) return effect.value;
+    }
+    return value;
+  },
+});
+
+const diffCheckboxGutter = gutter({
+  class: "cm-diff-checkbox-gutter",
+  markers: (view) => view.state.field(checkboxGutterField, false) ?? RangeSet.empty,
+});
+
+/** 一栏的扩展。 */
 function sideExtensions(
   options: DiffViewOptions,
   format: ((line: number) => string) | undefined,
   language: Compartment,
-  onCaret?: () => void
+  onCaret?: () => void,
+  isRightSide = false,
+  onGeometryChange?: () => void
 ): Extension[] {
   const support = grammarSupport(options.language, pathExtension(options.path ?? ""));
   const stepKeys: Extension[] = options.onStep
@@ -214,6 +202,8 @@ function sideExtensions(
     EditorView.editable.of(false),
     EditorView.editorAttributes.of({ class: "forge-diff" }),
     lineNumbers(format ? { formatNumber: (line) => format(line) } : undefined),
+    // 右栏（工作副本修改栏）挂载对标 IntelliJ IDEA 的复选框装订槽 [✓]
+    ...(isRightSide ? [checkboxGutterField, diffCheckboxGutter] : []),
     highlightActiveLine(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -228,12 +218,13 @@ function sideExtensions(
     forgeTheme,
     // 改动色带：比对的每一处改动画在装订线上（同 IDEA 的比对窗口；右侧概览条比对不挂）。
     changeMarksField,
-    // 每块行尾的 ‹ › 控件槽位（build 完按 chunk 发装饰）。
-    chunkControlsField,
-    // 光标只认读侧那一栏：左栏是基线，上下箭头的「还剩几处」不该跟着它走。
-    ...(onCaret
-      ? [EditorView.updateListener.of((update) => { if (update.selectionSet) onCaret(); })]
-      : []),
+    // 监听视图更新（几何变动、滚动、选区等）
+    EditorView.updateListener.of((update) => {
+      if (update.selectionSet && onCaret) onCaret();
+      if ((update.geometryChanged || update.docChanged) && onGeometryChange) {
+        onGeometryChange();
+      }
+    }),
     language.of(support ? [support] : []),
   ];
 }
@@ -273,7 +264,7 @@ function marksOf(chunks: readonly Chunk[], side: "a" | "b", doc: Text): ChangeMa
 export function createDiffView(options: DiffViewOptions): DiffView {
   let mode = options.mode;
   let highlight: DiffHighlight = options.highlight ?? "words";
-  let collapse = options.collapse ?? true;
+  let collapse = options.collapse ?? false;
   let whitespace: DiffWhitespace = options.whitespace ?? "default";
   let syncScroll = options.syncScroll ?? true;
   /** 并排那台；单栏排法下是 null。 */
@@ -285,6 +276,142 @@ export function createDiffView(options: DiffViewOptions): DiffView {
   /** 本轮建出来的那几栏：语法包迟到时要往它们身上补发。 */
   let panes: EditorView[] = [];
   let languageSlot: Compartment | null = null;
+  /** 并排比对中间的分栏与连线色带元素（对标 IntelliJ IDEA Diff Splitter Ribbon） */
+  let splitterEl: HTMLElement | null = null;
+  let svgEl: SVGSVGElement | null = null;
+  let buttonsBoxEl: HTMLElement | null = null;
+  let scrollCleanup: (() => void) | null = null;
+  let checkedChunks = new Set<number>();
+  let renderScheduled = false;
+
+  function scheduleRibbonRender(): void {
+    if (renderScheduled || destroyed) return;
+    renderScheduled = true;
+    requestAnimationFrame(() => {
+      renderScheduled = false;
+      if (destroyed) return;
+      renderRibbons();
+    });
+  }
+
+  /** 更新右栏行号旁的块级勾选框（对标 IntelliJ IDEA [✓] 复选框装订槽） */
+  function updateCheckboxMarkers(): void {
+    if (!read || destroyed) return;
+    const builder = new RangeSetBuilder<GutterMarker>();
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const at = Math.min(chunk.fromB, read.state.doc.length);
+      const line = read.state.doc.lineAt(at);
+      const checked = checkedChunks.has(i);
+      builder.add(
+        line.from,
+        line.from,
+        new ChunkCheckboxMarker(i, checked, (idx) => {
+          if (checkedChunks.has(idx)) {
+            checkedChunks.delete(idx);
+          } else {
+            checkedChunks.add(idx);
+          }
+          updateCheckboxMarkers();
+          options.onChunkCheck?.(idx, checkedChunks.has(idx), chunks[idx]);
+        })
+      );
+    }
+    read.dispatch({ effects: setCheckboxMarkers.of(builder.finish()) });
+  }
+
+  /** 在两栏中间的分栏区实时绘制平滑连线色带与 > 回退按钮（对标 IntelliJ IDEA 规范：左右高度严格一致） */
+  function renderRibbons(): void {
+    if (!merge || !splitterEl || !svgEl || !buttonsBoxEl || destroyed) return;
+
+    svgEl.innerHTML = "";
+    buttonsBoxEl.innerHTML = "";
+    if (chunks.length === 0) return;
+
+    const width = splitterEl.clientWidth || 30;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+
+      const hasContentA = chunk.fromA < chunk.toA;
+      const hasContentB = chunk.fromB < chunk.toB;
+
+      const posA = Math.min(chunk.fromA, merge.a.state.doc.length);
+      const posB = Math.min(chunk.fromB, merge.b.state.doc.length);
+      const startBlockA = merge.a.lineBlockAt(posA);
+      const startBlockB = merge.b.lineBlockAt(posB);
+
+      // 起始高度：在 Spacer 对齐下，左右栏改动块的起始顶线平直对齐
+      const topA = startBlockA.top;
+      const topB = startBlockB.top;
+      const chunkTop = Math.min(topA, topB);
+
+      // 终止高度：包含改动块本身及两栏内部已插入的 Spacer 物理空间，确保左右两侧高度完全一致
+      let bottomA = startBlockA.bottom;
+      if (hasContentA) {
+        bottomA = merge.a.lineBlockAt(Math.max(chunk.fromA, chunk.toA - 1)).bottom;
+      }
+      if (chunk.toA < merge.a.state.doc.length) {
+        bottomA = Math.max(bottomA, merge.a.lineBlockAt(chunk.toA).top);
+      }
+
+      let bottomB = startBlockB.bottom;
+      if (hasContentB) {
+        bottomB = merge.b.lineBlockAt(Math.max(chunk.fromB, chunk.toB - 1)).bottom;
+      }
+      if (chunk.toB < merge.b.state.doc.length) {
+        bottomB = Math.max(bottomB, merge.b.lineBlockAt(chunk.toB).top);
+      }
+
+      // 左右物理高度严格对齐一致（消除左矮右高的喇叭口畸变）
+      const chunkBottom = Math.max(bottomA, bottomB, chunkTop + 22);
+
+      const cp1x = width * 0.38;
+      const cp2x = width * 0.62;
+
+      // 绘制填充色带
+      const dFill = `M 0 ${chunkTop} C ${cp1x} ${chunkTop}, ${cp2x} ${chunkTop}, ${width} ${chunkTop} L ${width} ${chunkBottom} C ${cp2x} ${chunkBottom}, ${cp1x} ${chunkBottom}, 0 ${chunkBottom} Z`;
+      const fillPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      fillPath.setAttribute("class", "forge-diff-ribbon-path");
+      fillPath.setAttribute("d", dFill);
+      svgEl.appendChild(fillPath);
+
+      // 绘制顶线与底线平滑轮廓（左右两端无多余竖线）
+      const dTop = `M 0 ${chunkTop} C ${cp1x} ${chunkTop}, ${cp2x} ${chunkTop}, ${width} ${chunkTop}`;
+      const topLine = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      topLine.setAttribute("class", "forge-diff-ribbon-border");
+      topLine.setAttribute("d", dTop);
+      svgEl.appendChild(topLine);
+
+      const dBottom = `M 0 ${chunkBottom} C ${cp1x} ${chunkBottom}, ${cp2x} ${chunkBottom}, ${width} ${chunkBottom}`;
+      const bottomLine = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      bottomLine.setAttribute("class", "forge-diff-ribbon-border");
+      bottomLine.setAttribute("d", dBottom);
+      svgEl.appendChild(bottomLine);
+
+      // 挂载对标 IntelliJ IDEA 的白底微立体阴影卡片 > 回滚按钮（居左贴靠，垂直居中于首行中心线）
+      if (options.onChunkOp) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "forge-diff-revert-btn";
+        btn.title = options.chunkLabels?.revert ?? "回滚此改动块";
+        const lineH = Math.max(18, startBlockA.height || 22);
+        btn.style.top = `${Math.max(0, chunkTop + (lineH - 15) / 2)}px`;
+        btn.innerHTML = `<svg viewBox="0 0 12 12" width="7" height="7"><path d="M4 2.5 L7.5 6 L4 9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const patch = buildChunkPatch(
+            options.path ?? "",
+            options.original,
+            options.modified,
+            chunk
+          );
+          options.onChunkOp?.("revert", patch);
+        });
+        buttonsBoxEl.appendChild(btn);
+      }
+    }
+  }
 
   const lineOf = (pos: number) => read.state.doc.lineAt(Math.min(pos, read.state.doc.length)).number;
 
@@ -380,11 +507,11 @@ export function createDiffView(options: DiffViewOptions): DiffView {
       merge = new MergeView({
         a: {
           doc: options.original,
-          extensions: sideExtensions(options, options.numbers?.original, slot),
+          extensions: sideExtensions(options, options.numbers?.original, slot, undefined, false, scheduleRibbonRender),
         },
         b: {
           doc: options.modified,
-          extensions: sideExtensions(options, options.numbers?.modified, slot, reportNav),
+          extensions: sideExtensions(options, options.numbers?.modified, slot, reportNav, true, scheduleRibbonRender),
         },
         parent: options.parent,
         collapseUnchanged,
@@ -396,12 +523,55 @@ export function createDiffView(options: DiffViewOptions): DiffView {
       panes = [merge.a, merge.b];
       applyChangeMarks(merge.a, marksOf(chunks, "a", merge.a.state.doc));
       applyChangeMarks(merge.b, marksOf(chunks, "b", merge.b.state.doc));
+
+      // 在并排左右两栏之间挂载对标 IntelliJ IDEA 的 Splitter Gutter
+      const wrapA = merge.a.dom.parentElement;
+      const wrapB = merge.b.dom.parentElement;
+      const editorsParent = wrapA?.parentElement;
+      if (editorsParent && wrapB) {
+        splitterEl = document.createElement("div");
+        splitterEl.className = "forge-diff-splitter";
+
+        svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svgEl.setAttribute("class", "forge-diff-ribbon-svg");
+        splitterEl.appendChild(svgEl);
+
+        buttonsBoxEl = document.createElement("div");
+        buttonsBoxEl.className = "forge-diff-buttons";
+        splitterEl.appendChild(buttonsBoxEl);
+
+        editorsParent.insertBefore(splitterEl, wrapB);
+      }
+
+      const onScroll = () => scheduleRibbonRender();
+      merge.dom.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("resize", onScroll, { passive: true });
+
+      // 确保鼠标悬停在两栏代码、装订线或中缝任意区域滑动滚轮时，均能顺畅驱动外层滚动
+      const onWheel = (e: WheelEvent) => {
+        if (!merge || e.deltaY === 0) return;
+        const maxScroll = merge.dom.scrollHeight - merge.dom.clientHeight;
+        if (maxScroll > 0) {
+          const next = Math.max(0, Math.min(maxScroll, merge.dom.scrollTop + e.deltaY));
+          if (next !== merge.dom.scrollTop) {
+            merge.dom.scrollTop = next;
+            e.preventDefault();
+          }
+        }
+      };
+      merge.dom.addEventListener("wheel", onWheel, { passive: false });
+
+      scrollCleanup = () => {
+        merge?.dom.removeEventListener("scroll", onScroll);
+        merge?.dom.removeEventListener("wheel", onWheel);
+        window.removeEventListener("resize", onScroll);
+      };
     } else {
       merge = null;
       const state = EditorState.create({
         doc: options.modified,
         extensions: [
-          ...sideExtensions(options, options.numbers?.modified, slot, reportNav),
+          ...sideExtensions(options, options.numbers?.modified, slot, reportNav, true),
           unifiedMergeView({
             original: options.original,
             // 只读视图不给接受 / 拒绝那两颗按钮；改动色块与左侧那条缝照旧。
@@ -434,32 +604,11 @@ export function createDiffView(options: DiffViewOptions): DiffView {
     });
   }
 
-  /** 每块行尾的 ‹ › 控件：给了 onChunkOp 才画，挂在读侧每块首行上。 */
+  /** 更新块级控件：右栏复选框与中间连线多边形 */
   function applyChunkControls(): void {
-    if (!options.onChunkOp) return;
-    const builder = new RangeSetBuilder<Decoration>();
-    const labels = options.chunkLabels ?? { stage: "‹", revert: "›" };
-    for (const chunk of chunks) {
-      const at = Math.min(chunk.fromB, read.state.doc.length);
-      builder.add(
-        at,
-        at,
-        Decoration.widget({
-          widget: new ChunkControlsWidget(
-            chunk,
-            { stage: true, revert: true },
-            labels,
-            (op, target) =>
-              options.onChunkOp?.(
-                op,
-                buildChunkPatch(options.path ?? "", options.original, options.modified, target)
-              )
-          ),
-          side: 1,
-        })
-      );
-    }
-    read.dispatch({ effects: setChunkControls.of(builder.finish()) });
+    checkedChunks = new Set(chunks.map((_, i) => i));
+    updateCheckboxMarkers();
+    scheduleRibbonRender();
   }
 
   /**
@@ -469,6 +618,16 @@ export function createDiffView(options: DiffViewOptions): DiffView {
    * destroy 读侧——读侧就是它手上的 `merge.b`。
    */
   function teardown(): void {
+    if (scrollCleanup) {
+      scrollCleanup();
+      scrollCleanup = null;
+    }
+    if (splitterEl) {
+      splitterEl.remove();
+      splitterEl = null;
+      svgEl = null;
+      buttonsBoxEl = null;
+    }
     if (merge) {
       merge.destroy();
       merge = null;

@@ -63,6 +63,8 @@ describe("SearchEverywhere 多项目与多目录作用域解析", () => {
     modifiedMs: Date.now(),
     isSymlink: false,
     isHidden: false,
+    isIgnored: false,
+    isExcluded: false,
     isReadonly: false,
   });
 

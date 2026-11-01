@@ -167,6 +167,8 @@ export interface GitLogQuery {
   sinceMs?: number;
   /** 限定改到该路径（仓库相对）的提交；空串表示不限。 */
   path?: string;
+  /** 跳过前 N 条（「加载更多」分页用）。 */
+  skip?: number;
   /** 条数上限。 */
   limit?: number;
 }
@@ -204,17 +206,36 @@ export function gitUnstage(root: string, absolutePaths: string[]): Promise<void>
   return invoke<void>("git_unstage", { root, paths: absolutePaths });
 }
 
+/** 提交时透传给 `git commit` 的选项：签名、作者、跳过 hooks、说明清洗。 */
+export interface CommitRequestOptions {
+  signoff?: boolean;
+  author?: string;
+  noVerify?: boolean;
+  cleanup?: string;
+}
+
 /**
  * 提交。`paths` 非空时走 `--only`：只提交点名的那几条（取工作区内容），
  * 索引里其它文件的已暂存块原样保留——提交面板复选框的勾选语义就落在这条上。
+ * 签名/作者/跳过 hooks/说明清洗由 options 透传到 `git commit` 的命令行参数。
  */
 export function gitCommit(
   root: string,
   message: string,
   amend: boolean,
-  paths?: string[]
+  paths?: string[],
+  options?: CommitRequestOptions
 ): Promise<string> {
-  return invoke<string>("git_commit", { root, message, amend, paths: paths ?? [] });
+  return invoke<string>("git_commit", {
+    root,
+    message,
+    amend,
+    paths: paths ?? [],
+    signoff: options?.signoff ?? false,
+    author: options?.author ?? "",
+    noVerify: options?.noVerify ?? false,
+    cleanup: options?.cleanup ?? "",
+  });
 }
 
 /** 把一份统一差异打进去：cached=true 只动索引（按块暂存），false 落到工作区；reverse=true 反着打。 */
@@ -309,6 +330,47 @@ export function gitRenameBranch(root: string, name: string, to: string): Promise
   return invoke<string>("git_rename_branch", { root, name, to });
 }
 
+/** 一条 stash，来自 Rust `GitStash`。列表最新在前，index 即 `stash@{index}`。 */
+export interface GitStash {
+  index: number;
+  message: string;
+  timeMs: number;
+}
+
+export function gitStashList(root: string): Promise<GitStash[]> {
+  return invoke<GitStash[]>("git_stash_list", { root });
+}
+
+/** 存 stash；message 为空时用 git 默认的「WIP on …」。 */
+export function gitStashPush(
+  root: string,
+  message: string,
+  includeUntracked: boolean,
+  keepIndex: boolean,
+): Promise<string> {
+  return invoke<string>("git_stash_push", { root, message, includeUntracked, keepIndex });
+}
+
+/** 取 stash；pop 为真取完即删。 */
+export function gitStashApply(
+  root: string,
+  index: number,
+  pop: boolean,
+  reinstateIndex: boolean,
+): Promise<string> {
+  return invoke<string>("git_stash_apply", { root, index, pop, reinstateIndex });
+}
+
+/** 从 stash@{index} 上开出新分支并应用它。 */
+export function gitStashBranch(root: string, index: number, branch: string): Promise<string> {
+  return invoke<string>("git_stash_branch", { root, index, branch });
+}
+
+/** 丢弃一条 stash。不可恢复，确认由调用方负责。 */
+export function gitStashDrop(root: string, index: number): Promise<string> {
+  return invoke<string>("git_stash_drop", { root, index });
+}
+
 /** 后端用 `branch -d`，还没合并的分支 git 自己会拦。 */
 export function gitDeleteBranch(root: string, name: string): Promise<string> {
   return invoke<string>("git_delete_branch", { root, name });
@@ -359,9 +421,10 @@ export function gitDiffText(
   root: string,
   left: string,
   right: string,
-  path: string
+  path: string,
+  oldPath?: string
 ): Promise<string> {
-  return invoke<string>("git_diff_text", { root, left, right, path });
+  return invoke<string>("git_diff_text", { root, left, right, path, oldPath: oldPath ?? "" });
 }
 
 /** 引用与工作树之间改到的文件清单。 */
@@ -448,13 +511,14 @@ export function gitCommitDetail(root: string, revision: string): Promise<GitComm
   return invoke<GitCommitDetail>("git_commit_detail", { root, revision });
 }
 
-/** 提交里某个文件的两侧内容；`path` 用仓库相对路径。 */
+/** 提交里某个文件的两侧内容；`path` 用仓库相对路径，重命名/复制时父版本走 `oldPath`。 */
 export function gitCommitFile(
   root: string,
   revision: string,
-  path: string
+  path: string,
+  oldPath?: string
 ): Promise<GitFileSides> {
-  return invoke<GitFileSides>("git_commit_file", { root, revision, path });
+  return invoke<GitFileSides>("git_commit_file", { root, revision, path, oldPath: oldPath ?? "" });
 }
 
 /**

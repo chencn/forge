@@ -3,11 +3,15 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import {
   AlertTriangle,
+  ArrowDownToLine,
+  ArrowRightLeft,
   Check,
   ChevronDown,
   ChevronRight,
   ClipboardCopy,
+  Copy,
   ExternalLink,
+  Eye,
   FileDiff,
   FolderOpen,
   GitMerge,
@@ -15,7 +19,9 @@ import {
   Loader2,
   Minus,
   Plus,
+  Settings,
   Sparkles,
+  Trash2,
   Undo2,
 } from "lucide-react";
 
@@ -29,6 +35,7 @@ import Popover from "./Popover";
 import type { GitChange, GitCommitDetail, GitCommitFile } from "../lib/git";
 import {
   gitCommitDetail,
+  gitDiffText,
   markClass,
 } from "../lib/git";
 import { loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
@@ -45,7 +52,17 @@ import { RECOVERY_MESSAGE } from "../lib/recovery";
 import { MOD_LABEL } from "../lib/sys";
 import { isUnderJvmSourceRoot } from "../lib/jvm";
 import { useI18n } from "../i18n";
-import { loadChangelists, type ChangelistsState } from "../lib/changelists";
+import { useSettings } from "../hooks/useSettings";
+import { IssueText } from "../features/vcs/IssueNavigation";
+import { fileStamp, revealEntry, writeFile } from "../lib/fs";
+import {
+  loadChangelists,
+  saveChangelists,
+  newChangelistId,
+  moveTo,
+  DEFAULT_LIST_ID,
+  type ChangelistsState,
+} from "../lib/changelists";
 
 import type { ChangeNode, CheckState } from "../features/vcs/changes";
 import {
@@ -121,7 +138,56 @@ interface GitPanelProps {
   onOpenAiSettings?: () => void;
 }
 
-/** 14px 三态复选框组件（1:1 对标 OpenIdea / IntelliJ IDEA） */
+/** 提交信息规范问题检查 (对齐 IntelliJ IDEA / IDEA Commit Inspections) */
+export function messageProblems(
+  message: string,
+  c: {
+    blankLineAfterSubject: boolean;
+    limitSubject: boolean;
+    subjectLimit: number;
+    limitBody: boolean;
+    bodyLimit: number;
+  }
+): string[] {
+  const lines = message.split("\n");
+  const out: string[] = [];
+  if (c.blankLineAfterSubject && lines.length > 1 && lines[1]!.trim() !== "") {
+    out.push("主题行与正文之间需保留空行");
+  }
+  if (c.limitBody) {
+    const long = lines.slice(1).findIndex((l) => l.length > c.bodyLimit);
+    if (long >= 0) {
+      out.push(`正文第 ${long + 2} 行超过了 ${c.bodyLimit} 个字符限制`);
+    }
+  }
+  return out;
+}
+
+/** 达到右边界自动换行 */
+export function wrapAtMargin(text: string, caret: number, limit: number): { text: string; caret: number } | null {
+  const start = text.lastIndexOf("\n", caret - 1) + 1;
+  const end = text.indexOf("\n", caret);
+  const line = text.slice(start, end < 0 ? text.length : end);
+  if (start === 0 || line.length <= limit) return null; // 主题行不自动折行
+  const cut = line.lastIndexOf(" ", limit);
+  if (cut <= 0) return null;
+  const at = start + cut;
+  return { text: `${text.slice(0, at)}\n${text.slice(at + 1)}`, caret };
+}
+
+/** 检查分支是否匹配受保护分支模式 */
+export function isProtectedBranch(branch: string, patterns: string): boolean {
+  if (!branch || !patterns) return false;
+  const parts = patterns.split(";").map((p) => p.trim()).filter(Boolean);
+  return parts.some((p) => {
+    const regex = new RegExp(
+      "^" + p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$"
+    );
+    return regex.test(branch);
+  });
+}
+
+/** 14px 三态复选框组件（1:1 对标 IDEA / IntelliJ IDEA） */
 function CheckMark({
   checked,
   indeterminate,
@@ -187,15 +253,43 @@ function GitPanel({
   const viewRef = useRef<HTMLButtonElement>(null);
   const [viewAnchor, setViewAnchor] = useState<HTMLElement | null>(null);
 
-  // 提交选项 Commit Options Popup 状态（1:1 移植自 OpenIdea）
+  // 获取全局版本控制设置
+  const { settings } = useSettings();
+  const vcs = settings.vcs;
+
+  // 提交选项 Commit Options Popup 状态（1:1 移植自 IDEA，默认同步全局 VCS 设置）
   const commitOptionsRef = useRef<HTMLButtonElement>(null);
   const [commitOptionsOpen, setCommitOptionsOpen] = useState(false);
-  const [commitOptions, setCommitOptions] = useState<CommitOptionsState>(() => loadCommitOptions());
+  const [commitOptions, setCommitOptions] = useState<CommitOptionsState>(() => {
+    const loaded = loadCommitOptions();
+    return {
+      ...loaded,
+      signOff: loaded.signOff || vcs.signOffCommit,
+      reformat: loaded.reformat || vcs.checkReformatCode,
+      optimizeImports: loaded.optimizeImports || vcs.checkOptimizeImports,
+      cleanup: loaded.cleanup || vcs.checkCleanup,
+      analyzeCode: loaded.analyzeCode || vcs.checkAnalyzeCode,
+      checkTodo: loaded.checkTodo || vcs.checkTodo,
+    };
+  });
 
   // 提交输入框状态
   const [message, setMessage] = useState("");
   const [emptyError, setEmptyError] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // 提交规范计算 (Commit Message Inspections)
+  const firstLine = message.split("\n")[0] ?? "";
+  const isSubjectTooLong = vcs.limitSubjectLine && firstLine.length > vcs.subjectLineLimit;
+  const commitProblems = useMemo(() => {
+    return messageProblems(message, {
+      blankLineAfterSubject: vcs.blankLineAfterSubject,
+      limitSubject: vcs.limitSubjectLine,
+      subjectLimit: vcs.subjectLineLimit,
+      limitBody: vcs.limitBodyLine,
+      bodyLimit: vcs.bodyLineLimit,
+    });
+  }, [message, vcs.blankLineAfterSubject, vcs.limitSubjectLine, vcs.subjectLineLimit, vcs.limitBodyLine, vcs.bodyLineLimit]);
 
   // 提交区收起与自定义高度状态【保留项 2 & 4】
   const [commitCollapsed, setCommitCollapsed] = useState(false);
@@ -245,6 +339,10 @@ function GitPanel({
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
+  // Stash Changes… 对话框：消息默认留空走 git 的「WIP on …」，未跟踪文件默认包含（IDEA 默认勾选）。
+  const [stashDialog, setStashDialog] = useState(false);
+  const [stashMessage, setStashMessage] = useState("");
+  const [stashUntracked, setStashUntracked] = useState(true);
   const generationIdRef = useRef<string | null>(null);
 
   // 当前正在执行的动作
@@ -347,7 +445,7 @@ function GitPanel({
     });
   }, [rawChanges]);
 
-  // 构建变更树（1:1 对标 OpenIdea）
+  // 构建变更树（1:1 对标 IDEA）
   const treeRoots = useMemo(() => {
     return buildChangeTree(rawChanges, groupByDir, changelists);
   }, [rawChanges, groupByDir, changelists]);
@@ -435,13 +533,275 @@ function GitPanel({
     [git]
   );
 
-  // 右键菜单
+  // 变更列表弹窗状态（新建 / 编辑 / 移动到其他列表 / 删除确认）
+  const [clDialog, setClDialog] = useState<
+    | { mode: "new" }
+    | { mode: "edit"; id: string; name: string; comment: string; active: boolean }
+    | { mode: "move"; paths: string[] }
+    | { mode: "delete"; id: string; name: string; count: number }
+    | null
+  >(null);
+
+  // 变更列表持久化与状态更新
+  const updateChangelists = useCallback(
+    (next: ChangelistsState) => {
+      setChangelists(next);
+      if (git.root) {
+        saveChangelists(git.root, next);
+      }
+    },
+    [git.root]
+  );
+
+  const handleNewChangelist = useCallback(
+    (name: string, comment = "", makeActive = false) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const id = newChangelistId();
+      const next: ChangelistsState = {
+        ...changelists,
+        lists: [...changelists.lists, { id, name: trimmed, comment: comment.trim() }],
+        activeId: makeActive ? id : changelists.activeId,
+      };
+      updateChangelists(next);
+    },
+    [changelists, updateChangelists]
+  );
+
+  const handleEditChangelist = useCallback(
+    (id: string, name: string, comment: string, makeActive: boolean) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const next: ChangelistsState = {
+        ...changelists,
+        lists: changelists.lists.map((l) =>
+          l.id === id ? { ...l, name: trimmed, comment: comment.trim() } : l
+        ),
+        activeId: makeActive ? id : changelists.activeId,
+      };
+      updateChangelists(next);
+    },
+    [changelists, updateChangelists]
+  );
+
+  const handleSetActiveChangelist = useCallback(
+    (id: string) => {
+      const next: ChangelistsState = {
+        ...changelists,
+        activeId: id,
+      };
+      updateChangelists(next);
+    },
+    [changelists, updateChangelists]
+  );
+
+  const handleDeleteChangelist = useCallback(
+    (id: string) => {
+      const newMoves = { ...changelists.moves };
+      for (const [p, lId] of Object.entries(newMoves)) {
+        if (lId === id) delete newMoves[p];
+      }
+      const next: ChangelistsState = {
+        ...changelists,
+        lists: changelists.lists.filter((l) => l.id !== id),
+        moves: newMoves,
+        activeId: changelists.activeId === id ? DEFAULT_LIST_ID : changelists.activeId,
+      };
+      updateChangelists(next);
+    },
+    [changelists, updateChangelists]
+  );
+
+  const handleMoveToChangelist = useCallback(
+    (paths: string[], targetListId: string) => {
+      const next = moveTo(changelists, paths, targetListId);
+      updateChangelists(next);
+    },
+    [changelists, updateChangelists]
+  );
+
+  // 提交特定变更列表
+  const handleCommitChangelist = useCallback(
+    (node: ChangeNode) => {
+      // 勾选该节点的所有文件，并聚焦到提交框
+      setChecks((prev) => {
+        const next = new Map(prev);
+        for (const file of node.files) {
+          next.set(file.path, "all");
+        }
+        return next;
+      });
+      inputRef.current?.focus();
+    },
+    []
+  );
+
+  // 搁置所选改动（通过暂存并复制补丁至剪贴板）
+  const handleShelveFiles = useCallback(
+    async (files: GitChange[]) => {
+      if (!git.root || files.length === 0) return;
+      try {
+        const diffs: string[] = [];
+        for (const f of files) {
+          const text = await gitDiffText(git.root, "HEAD", "", absolute(f.path));
+          if (text) diffs.push(text);
+        }
+        if (diffs.length > 0) {
+          await navigator.clipboard.writeText(diffs.join("\n\n"));
+        }
+        // 暂存文件以保护工作区
+        await git.stage(files.map((f) => absolute(f.path)));
+      } catch (err) {
+        console.error("Shelve changes failed:", err);
+      }
+    },
+    [absolute, git]
+  );
+
+  // 创建补丁文件并按设置分流处理 (对标 IDEA VCS onPatchCreated 规范)
+  const handleCreatePatchFiles = useCallback(
+    async (files: GitChange[]) => {
+      if (!git.root || files.length === 0) return;
+      try {
+        const diffs: string[] = [];
+        for (const f of files) {
+          const text = await gitDiffText(git.root, "HEAD", "", absolute(f.path));
+          if (text) diffs.push(text);
+        }
+        if (diffs.length === 0) return;
+        const patchContent = diffs.join("\n\n");
+
+        if (vcs.onPatchCreated === "file" || vcs.onPatchCreated === "open") {
+          // 在项目工作区生成标准 patch 文件
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          const patchName = `patch-${timestamp}.patch`;
+          const patchPath = `${git.root.replace(/[\\/]+$/, "")}/${patchName}`;
+          await writeFile(patchPath, patchContent, "lf", false);
+
+          if (vcs.onPatchCreated === "file") {
+            // 在系统文件管理器中高亮定位该补丁
+            await revealEntry(patchPath);
+          } else {
+            // 在编辑器中打开该补丁源码
+            onFileAction("editSource", patchPath, false, false);
+          }
+        } else {
+          // 默认写入系统剪贴板 (clipboard)
+          await navigator.clipboard.writeText(patchContent);
+        }
+      } catch (err) {
+        console.error("Create patch failed:", err);
+      }
+    },
+    [absolute, git, vcs.onPatchCreated, onFileAction]
+  );
+
+  // 右键菜单唤起
   const openContextMenu = (event: ReactMouseEvent, items: MenuItem[]) => {
     event.preventDefault();
     setMenu({ x: event.clientX, y: event.clientY, items });
   };
 
-  // 生成节点的右键菜单（1:1 对标 OpenIdea 规范顺序）
+  /**
+   * 变更列表组节点（Changelist Header）右键菜单（1:1 对标 IDEA 的 listMenu 规范）
+   */
+  const getListMenu = (node: ChangeNode): MenuItem[] => {
+    const listId = node.changelist ?? DEFAULT_LIST_ID;
+    const isDefault = listId === DEFAULT_LIST_ID;
+    const isActive = changelists.activeId === listId;
+    const count = node.files.length;
+    const foundList = changelists.lists.find((l) => l.id === listId);
+    const listName = isDefault
+      ? (t("git.defaultChangelist") ?? "Default Changelist")
+      : (foundList?.name ?? listId);
+
+    const items: MenuItem[] = [];
+
+    // 1. 提交该变更列表 (Ctrl+K)
+    if (count > 0) {
+      items.push({
+        label: t("git.commitList") ?? "Commit Changelist…",
+        icon: Check,
+        shortcut: "Ctrl+K",
+        onSelect: () => handleCommitChangelist(node),
+      });
+      items.push({ separator: true });
+    }
+
+    // 2. 新建变更列表
+    items.push({
+      label: `${t("git.newChangelist") ?? "New Changelist"}…`,
+      icon: Plus,
+      onSelect: () => setClDialog({ mode: "new" }),
+    });
+
+    // 3. 编辑变更列表（非默认列表允许编辑）
+    if (!isDefault && foundList) {
+      items.push({
+        label: `${t("git.editChangelist") ?? "Edit Changelist"}…`,
+        icon: Settings,
+        onSelect: () =>
+          setClDialog({
+            mode: "edit",
+            id: foundList.id,
+            name: foundList.name,
+            comment: foundList.comment,
+            active: isActive,
+          }),
+      });
+    }
+
+    // 4. 设为活动列表（当前已激活则不提供）
+    if (!isActive) {
+      items.push({
+        label: t("git.setActiveChangelist") ?? "Set as Active Changelist",
+        icon: Check,
+        onSelect: () => handleSetActiveChangelist(listId),
+      });
+    }
+
+    // 5. 删除变更列表（非默认且非活动列表允许删除）
+    if (!isDefault && !isActive) {
+      items.push({
+        label: t("git.deleteChangelist") ?? "Delete Changelist",
+        icon: Trash2,
+        onSelect: () =>
+          setClDialog({
+            mode: "delete",
+            id: listId,
+            name: listName,
+            count,
+          }),
+      });
+    }
+
+    // 6. 分组下有文件时提供回滚、搁置与补丁
+    if (count > 0) {
+      items.push({ separator: true });
+      items.push({
+        label: `${t("git.rollback") ?? "Rollback"}…`,
+        icon: Undo2,
+        shortcut: "Ctrl+Alt+Z",
+        onSelect: () => onFileAction("rollback", "", false, true),
+      });
+      items.push({
+        label: `${t("git.shelve") ?? "Shelve Changes"}…`,
+        icon: ArrowDownToLine,
+        onSelect: () => void handleShelveFiles(node.files),
+      });
+      items.push({
+        label: `${t("git.patchToClipboard") ?? "Create Patch"}…`,
+        icon: ClipboardCopy,
+        onSelect: () => void handleCreatePatchFiles(node.files),
+      });
+    }
+
+    return items;
+  };
+
+  /**
+   * 变更文件与目录节点右键菜单（1:1 对标 IDEA 的 nodeMenu 规范）
+   */
   const getNodeMenu = (node: ChangeNode): MenuItem[] => {
     const files = filesOf([node]);
     const paths = files.map((f) => f.path);
@@ -450,17 +810,21 @@ function GitPanel({
     const isDeleted = firstChange
       ? firstChange.indexStatus === "D" || firstChange.workStatus === "D"
       : false;
+    const untracked = files.filter((f) => f.untracked);
+    const conflicted = files.filter((f) => f.conflicted);
 
     const items: MenuItem[] = [];
 
+    // 1. 差异比较与源码跳转
     if (firstChange) {
       items.push({
-        label: t("log.diffShow"),
+        label: t("log.diffShow") ?? "Show Diff",
         icon: FileDiff,
+        shortcut: "Ctrl+D",
         onSelect: () => onOpenChange(firstChange, itemStaged, rawChanges),
       });
       items.push({
-        label: t("diff.jumpToSource"),
+        label: t("diff.jumpToSource") ?? "Jump to Source",
         icon: ExternalLink,
         shortcut: "F4",
         disabled: !firstChange.path || isDeleted,
@@ -475,54 +839,94 @@ function GitPanel({
       items.push({ separator: true });
     }
 
-    if (node.group === "conflicts" || files.some((f) => f.conflicted)) {
+    // 2. 冲突解决
+    if (node.group === "conflicts" || conflicted.length > 0) {
       items.push({
-        label: t("git.resolveConflicts"),
+        label: `${t("git.resolveConflicts") ?? "Resolve Conflicts"}…`,
         icon: GitMerge,
         onSelect: onOpenResolve,
       });
       items.push({ separator: true });
     }
 
-    // 回滚
+    // 3. 版本回滚 (Ctrl+Alt+Z)
     items.push({
-      label: t("git.rollback"),
+      label: `${t("git.rollback") ?? "Rollback"}…`,
       icon: Undo2,
+      shortcut: "Ctrl+Alt+Z",
       onSelect: () => onFileAction("rollback", node.path ?? "", itemStaged, node.type === "dir"),
     });
 
-    // 暂存与取消暂存
+    // 4. 加入版本控制 (未跟踪文件专用)
+    if (untracked.length > 0) {
+      items.push({
+        label: t("git.addVcs") ?? "Add to VCS",
+        icon: Plus,
+        onSelect: () => void git.stage(untracked.map((f) => absolute(f.path))),
+      });
+    }
+
+    // 5. 暂存与取消暂存
     items.push({
-      label: t("git.stage"),
+      label: t("git.stage") ?? "Stage",
       icon: Plus,
+      disabled: !files.some((f) => !isStaged(f)),
       onSelect: () => void git.stage(paths.map(absolute)),
     });
     items.push({
-      label: t("git.unstage"),
+      label: t("git.unstage") ?? "Unstage",
       icon: Minus,
+      disabled: !files.some((f) => isStaged(f)),
       onSelect: () => void git.unstage(paths.map(absolute)),
     });
 
-    items.push({ separator: true });
+    // 6. 移动到其他变更列表 (Alt+Shift+M)
+    if (node.group === "changes" || node.changelist) {
+      items.push({ separator: true });
+      items.push({
+        label: `${t("git.moveToList") ?? "Move to Another Changelist"}…`,
+        icon: ArrowRightLeft,
+        shortcut: "Alt+Shift+M",
+        onSelect: () => setClDialog({ mode: "move", paths }),
+      });
+    }
+
+    // 7. 搁置与创建补丁
     items.push({
-      label: t("git.patchToClipboard"),
-      icon: ClipboardCopy,
-      onSelect: () => onFileAction("patchClipboard", node.path ?? "", itemStaged, node.type === "dir"),
+      label: `${t("git.shelve") ?? "Shelve Changes"}…`,
+      icon: ArrowDownToLine,
+      onSelect: () => void handleShelveFiles(files),
     });
     items.push({
-      label: t("menu.copyPath"),
+      label: `${t("git.patchToClipboard") ?? "Create Patch"}…`,
       icon: ClipboardCopy,
-      onSelect: () => void navigator.clipboard.writeText(paths.map(absolute).join("\n")),
+      onSelect: () => void handleCreatePatchFiles(files),
     });
 
+    // 8. 文件历史与 Git Blame 注解追溯
     if (firstChange) {
       items.push({ separator: true });
       items.push({
-        label: t("git.history"),
+        label: t("git.history") ?? "Show History",
         icon: History,
+        disabled: !firstChange.path,
         onSelect: () => onFileAction("history", firstChange.path, itemStaged, node.type === "dir"),
       });
+      items.push({
+        label: t("git.annotate") ?? "Annotate with Git Blame",
+        icon: Eye,
+        disabled: !firstChange.path || isDeleted,
+        onSelect: () => onFileAction("editSource", firstChange.path, itemStaged),
+      });
     }
+
+    // 9. 复制路径
+    items.push({ separator: true });
+    items.push({
+      label: t("menu.copyPath") ?? "Copy Path",
+      icon: Copy,
+      onSelect: () => void navigator.clipboard.writeText(paths.map(absolute).join("\n")),
+    });
 
     return items;
   };
@@ -597,7 +1001,7 @@ function GitPanel({
     }
   };
 
-  // 提交执行逻辑（支持复选框勾选与 --only 语义提交）
+  // 提交执行逻辑（支持复选框勾选与 --only 语义提交，联动 VCS 安全策略与推送保护）
   const executeCommit = async (andPush: boolean) => {
     if (committingAction !== null) return;
     const text = message.trim();
@@ -607,32 +1011,137 @@ function GitPanel({
       return;
     }
 
+    // 1. 游离 HEAD 安全拦截 (warnDetachedHead)
+    if (vcs.warnDetachedHead && (git.status?.detached || git.status?.branch === "(detached)")) {
+      const confirmed = window.confirm(
+        "警告：当前仓库处于游离 HEAD (Detached HEAD) 状态，提交不会关联到任何本地分支。\n确定继续提交吗？"
+      );
+      if (!confirmed) return;
+    }
+
+    // 2. 受保护分支与推送确认 (protectedBranches & showPushDialog)
+    if (andPush) {
+      const branch = git.status?.branch ?? "";
+      const isProtected = isProtectedBranch(branch, vcs.protectedBranches);
+      if (isProtected) {
+        const confirmed = window.confirm(
+          `警告：分支「${branch}」属于受保护分支模式 (${vcs.protectedBranches})。\n确定要向受保护分支推送提交吗？`
+        );
+        if (!confirmed) return;
+      } else if (vcs.showPushDialog === "always") {
+        const confirmed = window.confirm(`确定向分支「${branch}」推送本次提交吗？`);
+        if (!confirmed) return;
+      }
+    }
+
     // 计算提交目标路径
     let includedPaths = plan.included.map((f) => f.path);
+    // 「什么都没勾也要提交」时纳入全部已跟踪变更，并强制全部暂存（此路径没有部分暂存语义）。
+    let stageAll = false;
     if (includedPaths.length === 0 && commitAllWhenNothingStaged) {
       includedPaths = rawChanges.filter((c) => !c.untracked && !c.conflicted).map((c) => c.path);
+      stageAll = true;
     }
     if (includedPaths.length === 0 && !amend && git.recovery !== "merge") {
       return;
     }
 
+    // 3. 超大文件安全拦截 (warnLargeFiles & largeFilesLimitMb 对标 IDEA)
+    if (vcs.warnLargeFiles && git.root && includedPaths.length > 0) {
+      const limitBytes = (vcs.largeFilesLimitMb || 50) * 1024 * 1024;
+      const oversizedFiles: { path: string; sizeMb: number }[] = [];
+      for (const p of includedPaths) {
+        try {
+          const stamp = await fileStamp(absolute(p));
+          if (stamp && stamp.size > limitBytes) {
+            oversizedFiles.push({ path: p, sizeMb: +(stamp.size / (1024 * 1024)).toFixed(1) });
+          }
+        } catch {
+          // 忽略已删除文件等 stat 异常
+        }
+      }
+      if (oversizedFiles.length > 0) {
+        const fileList = oversizedFiles.map((f) => `• ${f.path} (${f.sizeMb} MB)`).join("\n");
+        const confirmed = window.confirm(
+          `警告：检测到待提交变动中包含超大文件（阈值 ${vcs.largeFilesLimitMb} MB）：\n${fileList}\n\n提交大文件可能导致 Git 仓库急剧膨胀。确定继续提交吗？`
+        );
+        if (!confirmed) return;
+      }
+    }
+
+    // 4. 提交前检查：扫描待提交文件中的 TODO/FIXME (checkTodo 对标 IDEA Commit Checks)
+    const shouldCheckTodo = commitOptions.checkTodo || vcs.checkTodo;
+    if (shouldCheckTodo && git.root && includedPaths.length > 0) {
+      const filesWithTodo: string[] = [];
+      for (const p of includedPaths) {
+        try {
+          const diff = await gitDiffText(git.root, "HEAD", "", absolute(p));
+          if (diff) {
+            const addedLines = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+            if (addedLines.some((l) => /\b(TODO|FIXME)\b/i.test(l))) {
+              filesWithTodo.push(p);
+            }
+          }
+        } catch {
+          // 忽略单文件 diff 读取异常
+        }
+      }
+      if (filesWithTodo.length > 0) {
+        const confirmed = window.confirm(
+          `提交前检查：在待提交文件的变更中检测到新增的 TODO / FIXME 标记：\n${filesWithTodo.map((p) => `• ${p}`).join("\n")}\n\n是否仍要继续提交？`
+        );
+        if (!confirmed) return;
+      }
+    }
+
+    // 5. 非法文件名检查 (warnBadFileNames 对标 IDEA)
+    if (vcs.warnBadFileNames && includedPaths.length > 0) {
+      const badFiles = includedPaths.filter((p) => {
+        const name = p.split(/[\\/]/).pop() ?? "";
+        return /[<>:"|?*\x00-\x1F]/.test(name);
+      });
+      if (badFiles.length > 0) {
+        const confirmed = window.confirm(
+          `警告：检测到待提交文件名包含跨平台/系统非法字符（如 < > : " | ? *）：\n${badFiles.map((p) => `• ${p}`).join("\n")}\n\n在某些操作系统（如 Windows）下签出可能会损坏。确定继续提交吗？`
+        );
+        if (!confirmed) return;
+      }
+    }
+
+    // 6. 签名/作者/跳过 hooks/说明清洗都交给 `git commit` 的命令行参数，不再前端手拼 Signed-off-by。
+    const commitText = text;
+    const commitOpts = {
+      signoff: commitOptions.signOff || vcs.signOffCommit,
+      author: commitOptions.author,
+      noVerify: !commitOptions.runHooks,
+      cleanup: commitOptions.cleanup ? "whitespace" : undefined,
+    };
+
     setCommittingAction(andPush ? "commitAndPush" : "commit");
     try {
-      // 如果指定了勾选路径，传递给 commit
-      const pathsToCommit = includedPaths.length < rawChanges.length ? includedPaths : undefined;
+      // 按勾选整理索引后再提交索引本身：勾了但未暂存的先 add，取消勾选的已暂存文件先 unstage。
+      // 这样未暂存的块不会被 `git commit --only`（取的是工作区内容）顺手带上，部分暂存语义得以保留。
+      if (git.root) {
+        const toStage = (stageAll ? includedPaths : plan.stage).map((p) => absolute(p));
+        if (toStage.length > 0) await git.stage(toStage);
+        const toUnstage = (stageAll ? [] : plan.unstage).map((p) => absolute(p));
+        if (toUnstage.length > 0) await git.unstage(toUnstage);
+      }
 
       if (andPush) {
-        const committed = await git.commitAndPush(text, amend, false, pathsToCommit);
+        const committed = await git.commitAndPush(commitText, amend, false, undefined, commitOpts);
         if (!committed) return;
       } else {
-        const done = await git.commit(text, amend, pathsToCommit);
+        const done = await git.commit(commitText, amend, undefined, commitOpts);
         if (!done) return;
       }
 
       amendSeq.current += 1;
       messageBeforeAmend.current = "";
-      onCommitted(text);
-      setMessage("");
+      onCommitted(commitText);
+      if (vcs.clearInitialCommitMessage !== false) {
+        setMessage("");
+      }
       setAmend(false);
       setAmendDetail(null);
       setEmptyError(false);
@@ -641,7 +1150,7 @@ function GitPanel({
     }
   };
 
-  // 渲染单行树节点（1:1 对标 OpenIdea，并严格保留目录聚合圆点与行尾状态字母）
+  // 渲染单行树节点（1:1 对标 IDEA，并严格保留目录聚合圆点与行尾状态字母）
   const renderRow = (node: ChangeNode, depth: number) => {
     const isGroup = node.type === "group";
     const isDir = node.type === "dir";
@@ -683,7 +1192,13 @@ function GitPanel({
               onOpenChange(node.files[0], isStaged(node.files[0]), rawChanges);
             }
           }}
-          onContextMenu={(e) => openContextMenu(e, getNodeMenu(node))}
+          onContextMenu={(e) => {
+            if (isGroup && node.changelist) {
+              openContextMenu(e, getListMenu(node));
+            } else {
+              openContextMenu(e, getNodeMenu(node));
+            }
+          }}
         >
           {/* 折叠箭头 */}
           {!isFile ? (
@@ -817,9 +1332,6 @@ function GitPanel({
     committingAction === null &&
     !isGenerating;
 
-  const firstSubjectLine = message.split("\n")[0] ?? "";
-  const isSubjectTooLong = firstSubjectLine.length > 72;
-
   void repoName;
   void onUnignore;
   void onOpenCommitFile;
@@ -848,7 +1360,7 @@ function GitPanel({
         </button>
       </Popover>
 
-      {/* 1:1 对标 OpenIdea 的 32px 规范工具栏 */}
+      {/* 1:1 对标 IDEA 的 32px 规范工具栏 */}
       <div className={styles.toolbar} role="toolbar" aria-label={t("git.changes")}>
         <IconButton
           icon="refresh"
@@ -862,6 +1374,13 @@ function GitPanel({
           size="small"
           disabled={rawChanges.length === 0}
           onClick={() => onFileAction("rollback", "", false, true)}
+        />
+        <IconButton
+          icon="stash"
+          title={t("git.stash")}
+          size="small"
+          disabled={rawChanges.length === 0}
+          onClick={() => setStashDialog(true)}
         />
         <IconButton
           icon="arrow-down-to-line"
@@ -951,6 +1470,59 @@ function GitPanel({
         </div>
       </div>
 
+      {/* Stash 列表：有贮藏才占地方，空仓库不留一行标题。操作对齐 IDEA 的 Apply / Pop / Drop。 */}
+      {git.stashes.length > 0 && (
+        <div className={styles.stashBox}>
+          <div className={styles.stashHead}>
+            <span>{t("git.stashTitle")}</span>
+            <span className={styles.stashCount}>{git.stashes.length}</span>
+          </div>
+          <div className={styles.stashList}>
+            {git.stashes.map((entry) => (
+              <div key={entry.index} className={styles.stashRow}>
+                <span className={styles.stashMsg} title={entry.message}>
+                  {entry.message}
+                </span>
+                <span className={styles.stashTime}>
+                  {new Date(entry.timeMs).toLocaleString([], {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <button
+                  type="button"
+                  className={styles.stashAction}
+                  onClick={() => void git.stashApply(entry.index, false)}
+                >
+                  {t("git.stashApply")}
+                </button>
+                <button
+                  type="button"
+                  className={styles.stashAction}
+                  onClick={() => void git.stashApply(entry.index, true)}
+                >
+                  {t("git.stashPop")}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(styles.stashAction, styles.stashDrop)}
+                  onClick={() => {
+                    if (window.confirm(t("git.stashDropConfirm"))) {
+                      void git.stashDrop(entry.index);
+                    }
+                  }}
+                >
+                  {t("git.stashDrop")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 【保留项 4】：提交区可拖拽自定义高度分隔条 */}
       {!commitCollapsed && (
         <div
@@ -977,7 +1549,7 @@ function GitPanel({
         />
       )}
 
-      {/* 提交面板区（1:1 对标 OpenIdea，支持折叠与自定义高度） */}
+      {/* 提交面板区（1:1 对标 IDEA，支持折叠与自定义高度） */}
       <div
         ref={commitBoxRef}
         className={clsx(styles.commit, commitCollapsed && styles.isCollapsed)}
@@ -1003,10 +1575,13 @@ function GitPanel({
 
           <span className={styles.grow} />
 
-          {/* 主题行长度计数 */}
-          {isSubjectTooLong && (
-            <span className={clsx(styles.lineLen, styles.lineLenWarn)} title={t("git.subjectLineLength")}>
-              {firstSubjectLine.length}/72
+          {/* 主题行长度与右边界指示器 (showRightMargin & limitSubjectLine 对标 IDEA) */}
+          {(vcs.limitSubjectLine || vcs.showRightMargin) && firstLine.length > 0 && (
+            <span
+              className={clsx(styles.lineLen, isSubjectTooLong && styles.lineLenWarn)}
+              title={t("git.subjectLineLength") ?? `主题行字数 (上限 ${vcs.subjectLineLimit})`}
+            >
+              {firstLine.length}/{vcs.subjectLineLimit}
             </span>
           )}
 
@@ -1022,19 +1597,20 @@ function GitPanel({
         {/* 提交输入框及操作按钮（折叠时隐藏） */}
         {!commitCollapsed && (
           <>
-            {/* 修正上次提交详情提示 */}
+            {/* 修正上次提交详情提示 (联动 Issue Navigation 工单超链接) */}
             {amend && amendDetail && (
               <div
                 className={styles.inspections}
                 style={{ color: "var(--fg-secondary, var(--text-muted))" }}
               >
                 <span>
-                  {t("git.amendHeader", { short: amendDetail.short, subject: amendDetail.subject })}
+                  [{amendDetail.short}]{" "}
+                  <IssueText text={amendDetail.subject} patterns={vcs.issueNavigationPatterns} />
                 </span>
               </div>
             )}
 
-            {/* 平铺式等宽 Mono 输入框（1:1 对标 OpenIdea） */}
+            {/* 平铺式等宽 Mono 输入框（1:1 对标 IDEA） */}
             <textarea
               ref={inputRef}
               className={clsx(styles.message, emptyError && styles.messageError)}
@@ -1043,7 +1619,16 @@ function GitPanel({
               aria-label={t("git.messagePlaceholder")}
               spellCheck
               onChange={(e) => {
-                setMessage(e.target.value);
+                const val = e.target.value;
+                if (vcs.wrapRightMargin && vcs.limitBodyLine && e.target.selectionStart != null) {
+                  const wrapped = wrapAtMargin(val, e.target.selectionStart, vcs.bodyLineLimit);
+                  if (wrapped) {
+                    setMessage(wrapped.text);
+                    if (emptyError) setEmptyError(false);
+                    return;
+                  }
+                }
+                setMessage(val);
                 if (emptyError) setEmptyError(false);
               }}
               onKeyDown={(e) => {
@@ -1063,6 +1648,17 @@ function GitPanel({
               </div>
             )}
 
+            {/* 提交规范检查警告 (Commit Message Inspections 对标 IDEA) */}
+            {commitProblems.length > 0 && !emptyError && (
+              <div className={styles.inspections} role="status">
+                {commitProblems.map((prob, idx) => (
+                  <div key={idx} style={{ color: "var(--warning, #e5a824)", fontSize: 11, marginTop: 2 }}>
+                    <span>⚠ {prob}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* AI 错误提示 */}
             {aiCommitEnabled && aiError && (
               <div className={styles.inspections} style={{ display: "flex", justifyContent: "space-between" }}>
@@ -1075,7 +1671,7 @@ function GitPanel({
               </div>
             )}
 
-            {/* 底部按钮栏（1:1 对齐 OpenIdea 布局规范） */}
+            {/* 底部按钮栏（1:1 对齐 IDEA 布局规范） */}
             <div className={styles.commitActions}>
               <Button
                 variant="primary"
@@ -1123,7 +1719,7 @@ function GitPanel({
                 </Button>
               )}
 
-              {/* 【核心改造项】：设置齿轮替换为 OpenIdea 的 CommitOptionsPopup */}
+              {/* 【核心改造项】：设置齿轮替换为 IDEA 的 CommitOptionsPopup */}
               <IconButton
                 ref={commitOptionsRef}
                 icon="settings"
@@ -1147,13 +1743,13 @@ function GitPanel({
         )}
       </div>
 
-      {/* 历史提交说明菜单 */}
+      {/* 历史提交说明菜单 (联动 limitHistoryRows 与 Issue Navigation 工单超链接) */}
       <Popover anchor={historyAnchor} onClose={() => setHistoryAnchor(null)} minWidth={280}>
         <p className="popover-label">{t("git.messageHistory")}</p>
         {history.length === 0 ? (
           <p className="popover-note">{t("git.noHistory")}</p>
         ) : (
-          history.map((item) => (
+          history.slice(0, vcs.limitHistoryRows || 1000).map((item) => (
             <button
               key={item}
               type="button"
@@ -1165,11 +1761,56 @@ function GitPanel({
               }}
             >
               <Check size={13} aria-hidden="true" />
-              <span className="popover-item-label">{item}</span>
+              <span className="popover-item-label">
+                <IssueText text={item} patterns={vcs.issueNavigationPatterns} />
+              </span>
             </button>
           ))
         )}
       </Popover>
+
+      {/* Stash Changes… 对话框（对齐 IDEA：消息 + 未跟踪文件开关） */}
+      {stashDialog && (
+        <div className="dialog-backdrop" onClick={() => setStashDialog(false)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <h3 className="dialog-title">{t("git.stash")}</h3>
+            <div className="dialog-body">
+              <input
+                type="text"
+                className="text-input"
+                style={{ width: "100%" }}
+                placeholder={t("git.stashMessage")}
+                aria-label={t("git.stashMessage")}
+                value={stashMessage}
+                autoFocus
+                onChange={(e) => setStashMessage(e.target.value)}
+              />
+              <div style={{ marginTop: 8 }}>
+                <Checkbox
+                  checked={stashUntracked}
+                  onChange={setStashUntracked}
+                  label={t("git.stashIncludeUntracked")}
+                />
+              </div>
+            </div>
+            <div className="dialog-actions">
+              <button type="button" className="button" onClick={() => setStashDialog(false)}>
+                {t("dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                className="button is-primary"
+                onClick={() => {
+                  setStashDialog(false);
+                  void git.stashPush(stashMessage, stashUntracked, false);
+                }}
+              >
+                {t("git.stashPushAction")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 右键上下文菜单 */}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
@@ -1203,6 +1844,191 @@ function GitPanel({
           </div>
         </div>
       )}
+
+      {/* 变更列表管理弹窗（新建 / 编辑 / 移动 / 删除） */}
+      {clDialog !== null && (
+        <ChangelistModal
+          dialog={clDialog}
+          changelists={changelists}
+          onClose={() => setClDialog(null)}
+          onNew={handleNewChangelist}
+          onEdit={handleEditChangelist}
+          onMove={handleMoveToChangelist}
+          onDelete={handleDeleteChangelist}
+        />
+      )}
+    </div>
+  );
+}
+
+interface ChangelistModalProps {
+  dialog:
+    | { mode: "new" }
+    | { mode: "edit"; id: string; name: string; comment: string; active: boolean }
+    | { mode: "move"; paths: string[] }
+    | { mode: "delete"; id: string; name: string; count: number };
+  changelists: ChangelistsState;
+  onClose: () => void;
+  onNew: (name: string, comment: string, makeActive: boolean) => void;
+  onEdit: (id: string, name: string, comment: string, makeActive: boolean) => void;
+  onMove: (paths: string[], targetListId: string) => void;
+  onDelete: (id: string) => void;
+}
+
+function ChangelistModal({
+  dialog,
+  changelists,
+  onClose,
+  onNew,
+  onEdit,
+  onMove,
+  onDelete,
+}: ChangelistModalProps) {
+  const { t } = useI18n();
+  const [name, setName] = useState(() => (dialog.mode === "edit" ? dialog.name : ""));
+  const [comment, setComment] = useState(() => (dialog.mode === "edit" ? dialog.comment : ""));
+  const [makeActive, setMakeActive] = useState(() =>
+    dialog.mode === "edit" ? dialog.active : true
+  );
+  const [selectedTarget, setSelectedTarget] = useState<string>(() => DEFAULT_LIST_ID);
+
+  const isNew = dialog.mode === "new";
+  const isEdit = dialog.mode === "edit";
+  const isMove = dialog.mode === "move";
+  const isDelete = dialog.mode === "delete";
+
+  const allLists = useMemo(() => {
+    return [
+      { id: DEFAULT_LIST_ID, name: t("git.defaultChangelist") ?? "Default Changelist" },
+      ...changelists.lists,
+    ];
+  }, [changelists.lists, t]);
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (isNew) {
+      if (!name.trim()) return;
+      onNew(name.trim(), comment, makeActive);
+    } else if (isEdit) {
+      if (!name.trim()) return;
+      onEdit(dialog.id, name.trim(), comment, makeActive);
+    } else if (isMove) {
+      onMove(dialog.paths, selectedTarget);
+    } else if (isDelete) {
+      onDelete(dialog.id);
+    }
+    onClose();
+  };
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div
+        className="dialog"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: 440, minWidth: 360 }}
+      >
+        <h3 className="dialog-title">
+          {isNew && (t("git.newChangelist") ?? "新建变更列表")}
+          {isEdit && (t("git.editChangelist") ?? "编辑变更列表")}
+          {isMove && (t("git.moveToList") ?? "移到其他变更列表")}
+          {isDelete && (t("git.deleteChangelist") ?? "删除变更列表")}
+        </h3>
+
+        <form onSubmit={handleSubmit}>
+          <div className="dialog-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {(isNew || isEdit) && (
+              <>
+                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                  <span style={{ color: "var(--fg-secondary, var(--text-muted))" }}>
+                    {t("git.changelistName") ?? "名称"}:
+                  </span>
+                  <input
+                    type="text"
+                    className="text-input"
+                    autoFocus
+                    value={name}
+                    placeholder="New Changelist"
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </label>
+                <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                  <span style={{ color: "var(--fg-secondary, var(--text-muted))" }}>
+                    {t("git.changelistComment") ?? "说明（可选）"}:
+                  </span>
+                  <input
+                    type="text"
+                    className="text-input"
+                    value={comment}
+                    placeholder="Comment"
+                    onChange={(e) => setComment(e.target.value)}
+                  />
+                </label>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 12,
+                    cursor: "pointer",
+                    marginTop: 4,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={makeActive}
+                    onChange={(e) => setMakeActive(e.target.checked)}
+                  />
+                  <span>{t("git.setActiveChangelist") ?? "设为活动变更列表"}</span>
+                </label>
+              </>
+            )}
+
+            {isMove && (
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+                <span style={{ color: "var(--fg-secondary, var(--text-muted))" }}>
+                  {t("git.selectTargetList") ?? "选择目标变更列表"}:
+                </span>
+                <select
+                  className="select-input"
+                  value={selectedTarget}
+                  onChange={(e) => setSelectedTarget(e.target.value)}
+                  style={{ padding: "4px 8px", borderRadius: 4, height: 28 }}
+                >
+                  {allLists.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {isDelete && (
+              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>
+                {t("git.deleteChangelistBody", {
+                  name: dialog.name,
+                  count: dialog.count,
+                }) ?? `确定要删除变更列表「${dialog.name}」吗？其中的文件将回到默认变更列表。`}
+              </p>
+            )}
+          </div>
+
+          <div className="dialog-actions" style={{ marginTop: 16 }}>
+            <button type="button" className="button" onClick={onClose}>
+              {t("dialog.cancel") ?? "取消"}
+            </button>
+            <button
+              type="submit"
+              className={clsx("button", isDelete ? "is-danger" : "is-primary")}
+              disabled={(isNew || isEdit) && !name.trim()}
+            >
+              {isDelete
+                ? t("dialog.delete") ?? "删除"
+                : t("dialog.ok") ?? "确定"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

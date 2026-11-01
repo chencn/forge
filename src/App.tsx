@@ -38,6 +38,7 @@ import { installContextMenuGuard } from "./lib/contextMenuGuard";
 import type { MenuAnchor, MenuItem } from "./components/ContextMenu";
 import ErrorBoundary from "./components/ErrorBoundary";
 import PromptDialog from "./components/PromptDialog";
+import BlockMergeDialog from "./components/BlockMergeDialog";
 import ResolveConflictsDialog from "./components/ResolveConflictsDialog";
 import type { DialogRequest } from "./components/PromptDialog";
 import {
@@ -46,6 +47,7 @@ import {
   createScratchFile,
   type ProjectTreeNode,
 } from "./features/project-tree";
+import type { ClipboardState } from "./features/project-tree/model";
 import EntryIcon from "./components/EntryIcon";
 import EditorTabs from "./components/EditorTabs";
 import BrowserPanel from "./components/BrowserPanel";
@@ -54,6 +56,7 @@ import AiSessionTabMenu from "./components/AiSessionTabMenu";
 import { createEditorSplit, partitionEditorTabs, relocateEditorTab, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
 import type { AiFilePreview } from "./lib/aiFilePreview";
 import LspStatusBar from "./components/LspStatusBar";
+import { CaretStatus, IndentStatus } from "./workbench/StatusWidgets";
 import type { CommitFileAction } from "./components/GitPanel";
 import type { CommitAction, FileAction, RefAction, RefTarget } from "./components/GitLogPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
@@ -180,7 +183,9 @@ import {
   createFolder,
   deleteEntry,
   errorText,
+  listDirectory,
   moveEntry,
+  readClipboardFiles,
   readFile,
   renameEntry,
   revealEntry,
@@ -188,8 +193,9 @@ import {
   writeFile,
 } from "./lib/fs";
 import { dropHintKey, splitDrop } from "./lib/dropIn";
+import { uniqueName } from "./lib/fileNames";
 import { dispatchDrop, dropPosition } from "./lib/dropOwner";
-import { codedError, describeError } from "./lib/errors";
+import { codedError, describeError, errorCodeOf } from "./lib/errors";
 import { invalidateJavaIcons } from "./lib/javaKindIcons";
 import { pushRecentFile } from "./lib/seStore";
 import { IS_WINDOWS, MOD_LABEL } from "./lib/sys";
@@ -282,6 +288,12 @@ type PendingDialog = DialogRequest & {
   restore?: string;
   /** 多选文件回滚时逐条恢复，避免把未选中的改动一起还原。 */
   restoreMany?: string[];
+  /** 「移动到目录」一次作用的一批条目：路径与名字都要（名字决定落点文件名）。 */
+  moveFrom?: Array<{ path: string; name: string }>;
+  /** 粘贴重名时待复制的源路径与剩余批次；用户确认新名称后继续走同一写盘命令。 */
+  copySource?: string;
+  copyCut?: boolean;
+  copyRemaining?: string[];
 };
 
 /** 标签页里的一份比对：来源可以是工作区改动，也可以是某次提交里的文件。 */
@@ -390,12 +402,15 @@ interface FindState {
   query: string;
   options: SearchOptions;
   page: TextPage | null;
+  /** 非空时这趟结果来自「在文件中替换」：底部窗口展示替换栏并可执行全部替换。 */
+  replaceWith: string | null;
 }
 
 const EMPTY_FIND: FindState = {
   query: "",
   options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
   page: null,
+  replaceWith: null,
 };
 const EMPTY_DIFFS: DiffTab[] = [];
 const EMPTY_PICK: FsEntry[] = [];
@@ -839,9 +854,7 @@ export default function App() {
     async (serverId: string) => {
       if (!workspaceRoot) return { state: "off" } as const;
       const { lspManager } = await import("./lib/lspManager");
-      const result = await lspManager.wake(workspaceRoot, lspConfig, serverId, lspDocuments());
-      setLspKick((value) => value + 1);
-      return result;
+      return lspManager.wake(workspaceRoot, lspConfig, serverId, lspDocuments());
     },
     [lspConfig, lspDocuments, workspaceRoot]
   );
@@ -910,7 +923,15 @@ export default function App() {
     [explorerPick]
   );
   /** 剪切 / 复制攒下的那一批，连同它是挪走还是留下。 */
-  const [clipboard, setClipboard] = useState<{ entries: FsEntry[]; cut: boolean } | null>(null);
+  const [clipboard, setClipboard] = useState<ClipboardState | null>(null);
+  /** 最近一次窗口激活时从系统剪贴板读到的资源管理器文件路径。 */
+  const [systemClipboardPaths, setSystemClipboardPaths] = useState<string[]>([]);
+  const refreshSystemClipboard = useCallback(() => {
+    void readClipboardFiles().then(setSystemClipboardPaths);
+  }, []);
+  useEffect(() => {
+    refreshSystemClipboard();
+  }, [refreshSystemClipboard]);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const { toggleMaximize } = useWindowControls();
@@ -973,7 +994,8 @@ export default function App() {
   /** 页签栏当前选中的那一项，按根隔离，null 表示当前根编辑区是空的。 */
   const [activeTabByRoot, setActiveTabByRoot] = useState<Record<string, string | null>>({});
   const activeTab = activeTabByRoot[rootKey] ?? null;
-  const aiSessions = useAiSessions(workspaceRoot, settings.aiAssistantsEnabled);
+  // 会话快照不再受总开关约束：开关只藏入口，已渲染的会话面板必须照常拿到数据。
+  const aiSessions = useAiSessions(workspaceRoot);
   const aiActiveProjects = useAiActiveProjects();
   const dispatchAiSession = aiSessions.dispatch;
   const aiLifecycle = useAiRunLifecycle(reportError);
@@ -1016,13 +1038,13 @@ export default function App() {
   }, [workspaceRoot, reportError, t]);
   // 事件监听是全局单例，这里只保证「启用后一定挂上」；重复调用由 lib 内部去重。
   useEffect(() => {
-    if (settings.aiAssistantsEnabled && isTauri()) void ensureAiRuntimeListener().catch((error) => reportError(String(error)));
-  }, [settings.aiAssistantsEnabled, reportError]);
+    if (isTauri()) void ensureAiRuntimeListener().catch((error) => reportError(String(error)));
+  }, [reportError]);
   useEffect(() => {
-    if (!settings.aiAssistantsEnabled || !workspaceRoot || !isTauri()) return;
+    if (!workspaceRoot || !isTauri()) return;
     // 项目一激活就读取 Codex 的有效配置；会话输入区随后直接复用，不要求用户重新设置。
     void refreshAiProjectConfig(workspaceRoot).catch(() => {});
-  }, [settings.aiAssistantsEnabled, workspaceRoot]);
+  }, [workspaceRoot]);
   const setActiveTab = useCallback((next: string | null) => {
     setActiveTabByRoot((prev) => ({ ...prev, [rootKeyRef.current]: next }));
   }, []);
@@ -1037,15 +1059,7 @@ export default function App() {
     restoredAiTabRoots.current.add(rootKey);
     setActiveTab(`ai|${aiSessions.activeId}`);
   }, [activeTab, aiSessions.activeId, rootKey, setActiveTab]);
-  useEffect(() => {
-    if (settings.aiAssistantsEnabled) return;
-    setAiDraftOpen({});
-    setActiveTabByRoot((current) => Object.fromEntries(
-      Object.entries(current).map(([root, tab]) => [root, tab?.startsWith("ai|") ? null : tab]),
-    ));
-  }, [settings.aiAssistantsEnabled]);
   const openAiSession = useCallback((id: string) => {
-    if (!settings.aiAssistantsEnabled) return;
     const openRoot = rootKey;
     const activate = () => {
       // 运行中的子代理可能刚落盘、尚未进入前端目录；未知 ID 绝不能先切出一个空标签。
@@ -1054,14 +1068,13 @@ export default function App() {
       return true;
     };
     if (!activate()) void refreshAiSessionHistory().then(activate);
-  }, [dispatchAiSession, rootKey, settings.aiAssistantsEnabled]);
+  }, [dispatchAiSession, rootKey]);
   /** 「新建会话」草稿标签是否打开，按根隔离；真正的会话在首条消息发出时才创建。 */
   const [aiDraftOpen, setAiDraftOpen] = useState<Record<string, boolean>>({});
   const openAiDraft = useCallback(() => {
-    if (!settings.aiAssistantsEnabled) return;
     setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: true }));
     setActiveTab("ai|draft");
-  }, [setActiveTab, settings.aiAssistantsEnabled]);
+  }, [setActiveTab]);
   // 浏览器留在侧栏时，优先投递正在编辑的会话，其次是最近活动会话。
   const browserChatId = activeTab === "ai|draft" ? "draft"
     : aiInputTargets.find((target) => activeTab === `ai|${target.id}`)?.id
@@ -1069,7 +1082,9 @@ export default function App() {
       ?? "draft";
   const browserChatLabel = aiInputTargets.find((target) => target.id === browserChatId)?.title ?? t("browser.newConversation");
   const addBrowserToChat = async (payload: AiInputPayload) => {
-    if (!settings.aiAssistantsEnabled || !workspaceRoot) throw new Error(t("browser.chatUnavailable"));
+    // AI 总开关只管入口显不显示；浏览器面板已经渲染出来，投递到会话就必须能用
+    //（多开窗口共享设置，另一边关掉开关不该把这边锁死）。
+    if (!workspaceRoot) throw new Error(t("browser.chatUnavailable"));
     // 先成功追加草稿再切标签；保存失败时仍保留浏览器内的备注。
     await deliverAiInput(workspaceRoot, { id: browserChatId, title: browserChatLabel }, payload);
     if (rootKeyRef.current !== rootKey) return;
@@ -1081,7 +1096,7 @@ export default function App() {
    * 文本与附件，然后切到会话标签——会话页挂载后自动把这条消息发出去。
    */
   const launchAiDraft = async (provider: AiProvider, text: string, images: string[]) => {
-    if (!settings.aiAssistantsEnabled || !workspaceRoot) return;
+    if (!workspaceRoot) return;
     // 异步创建完成时用户可能已切换项目；后续状态必须仍写回发起创建的工程。
     const launchWorkspace = workspaceRoot;
     const launchRootKey = rootKey;
@@ -1161,18 +1176,6 @@ export default function App() {
       setRightPanel(null); setPanel(rightPanel); setSidebarOpen(true);
     }
   }, [panel, rightPanel, sidebarOpen, toolRailLayout]);
-  useEffect(() => {
-    if (settings.aiAssistantsEnabled) return;
-    if (rightPanel === "ai" || rightPanel === "browser") setRightPanel(null);
-    if (panel !== "ai" && panel !== "browser") return;
-    setSidebarOpen(false);
-    setPanel("explorer");
-    if (sideOfTool(toolRailLayout, "explorer") === "left") {
-      setSidebarOpen(true);
-    } else {
-      setRightPanel("explorer");
-    }
-  }, [panel, rightPanel, settings.aiAssistantsEnabled, toolRailLayout]);
   // Maven 面板依赖扫描结果才会出现，因此扫描必须由常驻的 App 工作区生命周期启动。
   useMavenDetection(workspaceRoot);
   const maven = useMavenProject();
@@ -1187,6 +1190,8 @@ export default function App() {
   const [commitGearAnchor, setCommitGearAnchor] = useState<HTMLElement | null>(null);
   /** 未合并那一节的 Resolve 链接与冲突行菜单开的是同一层弹层。 */
   const [resolveOpen, setResolveOpen] = useState(false);
+  /** 块级冲突解决开着的那个文件（绝对路径）；null 表示没开。 */
+  const [blockMergePath, setBlockMergePath] = useState<string | null>(null);
   /** 分组按工作区隔离，切换项目后不能把另一个项目的标签挂进副栏。 */
   const [editorSplits, setEditorSplits] = useState<Record<string, EditorSplitState | null>>({});
   const editorSplit = editorSplits[rootKey] ?? null;
@@ -1232,6 +1237,8 @@ export default function App() {
     tab: SearchTab;
     query: string;
     scope: string | null;
+    /** 替换模式（IDEA 的 Replace in Files）：同一弹层多一条「替换为」输入。 */
+    replace: boolean;
   } | null>(null);
   /** 每开一次换一个序号当 key：同一份状态里再按一次 Ctrl+Shift+N 也要重置页签与词。 */
   const searchSeq = useRef(0);
@@ -1508,8 +1515,9 @@ export default function App() {
       if (workspaceRoot) {
         void gitRef.current.refresh();
       }
+      refreshSystemClipboard();
     });
-  }, [workspaceRoot]);
+  }, [refreshSystemClipboard, workspaceRoot]);
 
   // 当 Git 侧边栏打开或 Git Log 面板展开时，设置 30 秒低频防饥饿兜底轮询，
   // 避免在外部执行 Git 操作后、未切窗口时副屏长达半小时不刷新。
@@ -1533,7 +1541,7 @@ export default function App() {
   // 并通知已打开的文档去重载。事件里只带项目相对/绝对路径，这里统一过滤掉
   // 逃出工作区的路径，避免被诱导去读工作区外的文件。
   useEffect(() => {
-    if (!settings.aiAssistantsEnabled || !isTauri()) return;
+    if (!isTauri()) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<AiRuntimeEvent[]>("ai-runtime://events", ({ payload }) => {
@@ -1555,7 +1563,7 @@ export default function App() {
       }
     }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch((error) => reportError(String(error)));
     return () => { disposed = true; unlisten?.(); };
-  }, [settings.aiAssistantsEnabled, workspaceRoot, refreshTree, reportError]);
+  }, [workspaceRoot, refreshTree, reportError]);
 
   /** 磁盘事件报得来的是具体哪几条路径变了，缓存就只作废与它们相干的那些目录。 */
   const refreshPaths = useCallback(
@@ -2162,10 +2170,10 @@ export default function App() {
    * 没选东西就留空；`scope` 为空时自动推导当前活跃的目录或工程，非空就是显式指定。
    */
   const openEverywhere = useCallback(
-    (tab: SearchTab = "all", query = "", scope: string | null = null) => {
+    (tab: SearchTab = "all", query = "", scope: string | null = null, replace = false) => {
       searchSeq.current += 1;
       const targetScope = resolveActiveDirectory(scope);
-      setEverywhere({ tab, query, scope: targetScope });
+      setEverywhere({ tab, query, scope: targetScope, replace });
     },
     [resolveActiveDirectory]
   );
@@ -2243,8 +2251,8 @@ export default function App() {
    * IDEA 那边 Enter 之后弹层关掉、结果还摆在 Find 窗口，这边一样。
    */
   const openSearchHit = useCallback(
-    (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean) => {
-      setFind({ query: page.query, options, page });
+    (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean, replaceWith?: string) => {
+      setFind({ query: page.query, options, page, replaceWith: replaceWith ?? null });
       dockPane("find");
       if (side) pendingSplit.current = `doc|${hit.path}`;
       revealHit(hit);
@@ -2531,6 +2539,19 @@ export default function App() {
   /** 切换或添加文件夹：多工作区模式下常驻并秒切；单工作区模式下替换当前激活根。 */
   const switchOrAddFolder = useCallback(
     async (picked: string) => {
+      // 最近列表里的项目可能已被删除或挪走：先确认目录还在再切，否则拿到幽灵根整屏崩掉。
+      const stats = await statEntries([picked]).catch(() => []);
+      if (!stats.some((item) => item.kind === "directory" && samePath(item.path, picked))) {
+        notificationCenter.notify({
+          groupId: "system",
+          groupTitle: "系统",
+          title: t("error.pathGone", { path: picked }),
+          content: t("project.recentRemoved"),
+          level: "warn",
+        });
+        forget("recentFolders", picked);
+        return;
+      }
       if (settings.editor.savePolicy === "blur") {
         void saveAllRef.current("focusOut");
       }
@@ -2571,9 +2592,11 @@ export default function App() {
       performCloseRoot,
       openSideTool,
       remember,
+      forget,
       settings.editor.savePolicy,
       settings.workspaceMode,
       settingsTab,
+      t,
       workspaceRoot,
     ]
   );
@@ -2937,8 +2960,20 @@ export default function App() {
         const sides = await load();
         putDiff({ ...base, original: sides.original, modified: sides.modified }, false, targetKey);
       } catch (cause) {
+        const text = errorText(cause);
+        // 「本来就没得比」的后端判定（无扩展名二进制、超限、编码不对）不收回标签——
+        // 把理由摆进正文，跟扩展名预判那一条走同一个展示通道。
+        const blocked = errorCodeOf(text);
+        if (blocked === "BINARY" || blocked === "TOO_LARGE" || blocked === "NOT_UTF8" || blocked === "IS_DIR") {
+          putDiff(
+            { ...base, original: "", modified: "", notice: text },
+            true,
+            targetKey
+          );
+          return;
+        }
         closeDiff(base.id, targetKey);
-        reportError(errorText(cause));
+        reportError(text);
       }
     },
     [closeDiff, putDiff, reportError]
@@ -3105,7 +3140,7 @@ export default function App() {
           chain,
           landOn: step?.land,
         },
-        () => gitCommitFile(root, commit.hash, file.path)
+        () => gitCommitFile(root, commit.hash, file.path, file.oldPath)
       );
     },
     [getDiffChains, git.root, openDiffTab]
@@ -3329,7 +3364,7 @@ export default function App() {
   /** 剪切 / 复制攒下这一批，连同它是挪走还是留下。 */
   const copyPicked = useCallback((entries: FsEntry[], cut: boolean) => {
     if (entries.length === 0) return;
-    setClipboard({ entries, cut });
+    setClipboard({ paths: entries.map((entry) => entry.path), cut });
   }, []);
 
   /** 新建与粘贴的落点：单选一个目录就落在它里面，否则落在主行的上一层；空白处右键落在工程根。 */
@@ -3343,36 +3378,73 @@ export default function App() {
     [workspaceRoot]
   );
 
-  /**
-   * 把攒下的那一批落进 `dir`。撞名不覆盖，直接把后端的错报回去——覆盖是找回不来的事，这里不猜。
-   * 剪切那批粘完就清空；跨盘挪动时源删不掉，后端会连「两份都在盘上」一起报出来。
-   */
-  const pasteInto = useCallback(
-    async (dir: string | null) => {
-      if (!clipboard || !dir) return;
-      let done = 0;
-      for (const entry of clipboard.entries) {
-        const target = joinPath(dir, entry.name);
-        // 原地粘贴（剪切后贴回它自己所在的目录）什么也不做。
-        if (samePath(target, entry.path)) continue;
-        try {
-          if (clipboard.cut) await moveEntry(entry.path, target);
-          else await copyEntry(entry.path, target);
-          done += 1;
-        } catch (cause) {
-          reportError(errorText(cause));
-        }
-      }
-      if (clipboard.cut) setClipboard(null);
+  /** 批量粘贴的收尾：只有剪切全部完成后才清空内部剪贴板。 */
+  const finishPaste = useCallback(
+    (done: number, cut: boolean, clearClipboard: boolean) => {
+      if (clearClipboard && cut) setClipboard(null);
       if (done > 0) {
-        // 选中集里那几条已经换到别处去了，留着只会让下一次 Delete / 粘贴落在不存在的路上。
         setExplorerPick([]);
         refreshTree();
         suppressGitEcho();
         void git.refreshChanges();
       }
     },
-    [clipboard, git, refreshTree, reportError, suppressGitEcho]
+    [git, refreshTree, suppressGitEcho]
+  );
+
+  /**
+   * 把指定批次落进 `dir`。撞名不覆盖，交给 Copy 对话框换名后继续；覆盖是找不回来的事，这里不猜。
+   * 普通复制保留在剪贴板，剪切全部粘完才清空。
+   */
+  const pastePathsInto = useCallback(
+    async (dir: string, paths: string[], cut: boolean) => {
+      if (paths.length === 0) return;
+      let done = 0;
+      for (let index = 0; index < paths.length; index += 1) {
+        const source = paths[index];
+        const target = joinPath(dir, basenameOf(source));
+        // 原地粘贴（剪切后贴回它自己所在的目录）什么也不做。
+        if (samePath(target, source)) continue;
+        try {
+          if (cut) await moveEntry(source, target);
+          else await copyEntry(source, target);
+          done += 1;
+        } catch (cause) {
+          if (errorText(cause).startsWith("TARGET_EXISTS")) {
+            const siblings = await listDirectory(dir)
+              .then((listing) => listing.entries.map((entry) => entry.name))
+              .catch(() => [] as string[]);
+            setDialog({
+              kind: "copy",
+              name: uniqueName(basenameOf(source), siblings),
+              path: source,
+              dir,
+              entry: null,
+              copySource: source,
+              copyCut: cut,
+              copyRemaining: paths.slice(index + 1),
+            });
+            finishPaste(done, cut, false);
+            return;
+          }
+          reportError(errorText(cause));
+        }
+      }
+      finishPaste(done, cut, true);
+    },
+    [finishPaste, reportError]
+  );
+
+  /** 内部剪贴板优先，内部没有内容时读取 Windows 资源管理器的文件剪贴板。 */
+  const pasteInto = useCallback(
+    async (dir: string | null) => {
+      if (!dir) return;
+      const systemPaths = clipboard ? [] : await readClipboardFiles();
+      const paths = clipboard?.paths ?? systemPaths;
+      if (paths.length === 0) return;
+      await pastePathsInto(dir, paths, clipboard?.cut ?? false);
+    },
+    [clipboard, pastePathsInto]
   );
 
   /** 恰好选中两个文件才比对，开的是这两份现在的文本。 */
@@ -3505,9 +3577,9 @@ export default function App() {
     });
   }, []);
 
-  /** 目录树 F6/拖拽的落点执行：逐条移动，收尾与粘贴同款（清选中、刷树、同步 Git）。 */
+  /** 目录树 F6/拖拽/「Move…」对话框的落点执行：逐条移动，收尾与粘贴同款（清选中、刷树、同步 Git）。 */
   const moveTreeEntries = useCallback(
-    async (entries: FsEntry[], targetDir: string) => {
+    async (entries: readonly { path: string; name: string }[], targetDir: string) => {
       let done = 0;
       for (const entry of entries) {
         const target = joinPath(targetDir, entry.name);
@@ -3741,7 +3813,7 @@ export default function App() {
         selection: nodes,
         workspaceRoot: workspaceRoot ?? "",
         modKey: MOD_LABEL,
-        hasClipboard: Boolean(clipboard),
+        hasClipboard: Boolean(clipboard) || systemClipboardPaths.length > 0,
         t,
         git: git.root
           ? {
@@ -3751,7 +3823,7 @@ export default function App() {
               stage: (paths) => void git.stage(paths),
               history: (rel) => showFileHistory(rel),
               commit: () => openSideTool("git"),
-              putLabel: () => setDialog({ kind: "newTag", name: "", dir: null, entry: null }),
+              newTag: () => setDialog({ kind: "newTag", name: "", dir: null, entry: null }),
               diff: (paths) => {
                 if (paths.length > 0) {
                   const targetPath = paths[0];
@@ -3815,8 +3887,18 @@ export default function App() {
         onPaste: (targetDir) => void pasteInto(targetDir),
         onOpenFile: (entry) => openFile(entry),
         onRename: (entry) => confirmRename(entry),
+        // IDEA 的 Move 问的是「移到哪个目录」，不是新名字：这里收目标目录，名字保持不变
+        // （要改名走 Rename）。默认落在当前工程根。
         onMove: (entries) => {
-          if (entries.length > 0) confirmRename(entries[0]);
+          if (entries.length === 0) return;
+          setDialog({
+            kind: "move",
+            name: workspaceRoot ?? parentPath(entries[0].path) ?? entries[0].path,
+            path: "",
+            dir: null,
+            entry: null,
+            moveFrom: entries.map((item) => ({ path: item.path, name: item.name })),
+          });
         },
         onDelete: (entries) => confirmDelete(entries),
         onReveal: (path) => void revealEntry(path),
@@ -3824,7 +3906,7 @@ export default function App() {
         onFindInFiles: (targetDir) =>
           openEverywhere("text", selectedText(), targetDir),
         onReplaceInFiles: (targetDir) =>
-          openEverywhere("text", selectedText(), targetDir),
+          openEverywhere("text", selectedText(), targetDir, true),
         onLocalHistory: (path) => showLocalHistory(path),
         onReload: () => {
           refreshTree();
@@ -3870,6 +3952,7 @@ export default function App() {
       selectedText,
       showFileHistory,
       showLocalHistory,
+      systemClipboardPaths,
       t,
       workspaceRoot,
     ]
@@ -4104,7 +4187,18 @@ export default function App() {
   const submitDialog = useCallback(
     async (name: string, extra: string) => {
       if (!dialog) return;
-      const { kind, entry, dir, path, name: currentName, revision, refKind } = dialog;
+      const {
+        kind,
+        entry,
+        dir,
+        path,
+        name: currentName,
+        revision,
+        refKind,
+        copySource,
+        copyCut,
+        copyRemaining,
+      } = dialog;
       setDialog(null);
       try {
         if (kind === "newFolder" && dir) {
@@ -4117,6 +4211,17 @@ export default function App() {
           // 新建文件后立即切到新文件的页签并打开。
           setActiveTab(`doc|${created.path}`);
           void docs.open(created.path);
+        }
+        if (kind === "copy" && copySource && dir) {
+          const target = joinPath(dir, name);
+          if (copyCut) await moveEntry(copySource, target);
+          else await copyEntry(copySource, target);
+          if (copyRemaining && copyRemaining.length > 0) {
+            // 对话框确认的是当前冲突项；剩余项继续走同一批次，后续冲突仍可逐个改名。
+            await pastePathsInto(dir, copyRemaining, Boolean(copyCut));
+          } else {
+            finishPaste(1, Boolean(copyCut), true);
+          }
         }
         if (kind === "newBranch") {
           const done = await git.createBranch(name, dialog.from ?? "", true);
@@ -4170,6 +4275,9 @@ export default function App() {
           await renameEntry(entry.path, target);
           dropDocument(entry.path);
           refreshTree();
+        }
+        if (kind === "move" && dialog.moveFrom) {
+          await moveTreeEntries(dialog.moveFrom, name);
         }
         if (kind === "delete") {
           // 目录树可以多选一起删，提交树那边只给一条绝对路径。
@@ -4238,8 +4346,10 @@ export default function App() {
       dialog,
       docs,
       dropDocument,
+      finishPaste,
       git,
       performCloseRoot,
+      pastePathsInto,
       refreshTree,
       remember,
       reportError,
@@ -4306,7 +4416,7 @@ export default function App() {
         icon: <AiTabProviderIcon sessionId={session.id} provider={session.provider} />,
       };
     }),
-    ...(aiDraftOpen[rootKey] && settings.aiAssistantsEnabled
+    ...(aiDraftOpen[rootKey]
       ? [
           {
             id: "ai|draft",
@@ -4343,7 +4453,7 @@ export default function App() {
         ]
       : []),
     ],
-    [agentOrderVersion, aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], settings.aiAssistantsEnabled, diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
+    [agentOrderVersion, aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
   );
 
   // 栏上有哪些标签由上面那份目录说，排在哪儿由 tabOrder 说：新开一颗落在当前这颗右边，拖动改这个数组。
@@ -4472,13 +4582,12 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!settings.aiAssistantsEnabled) return;
     const stop = listen<{ workspace: string; tabId: string }>("forge-browser-open", ({ payload }) => {
       if (!samePath(payload.workspace, workspaceRoot ?? "")) return;
       setBrowserTarget(payload.tabId); openSideTool("browser");
     });
     return () => { void stop.then((unlisten) => unlisten()); };
-  }, [settings.aiAssistantsEnabled, workspaceRoot, openSideTool]);
+  }, [workspaceRoot, openSideTool]);
 
   /**
    * 关一颗标签：文档先问没保存的改动，面板那颗只是最小化，比对和整页那两类直接收。
@@ -4552,7 +4661,8 @@ export default function App() {
   /** 页签栏右侧自定义操作区：当激活的标签是 AI 会话时，提供三点管理菜单。 */
   const renderTabActions = useCallback(
     (tabId: string | null) => {
-      if (!tabId || !settings.aiAssistantsEnabled || !tabId.startsWith("ai|") || tabId === "ai|draft") {
+      // 已渲染的 AI 页签，它的管理菜单跟开关无关（开关只藏入口，不锁已开的功能）。
+      if (!tabId || !tabId.startsWith("ai|") || tabId === "ai|draft") {
         return null;
       }
       const session = aiSessions.sessions.find((s) => s.id === tabId.slice(3));
@@ -4566,13 +4676,13 @@ export default function App() {
         />
       );
     },
-    [settings.aiAssistantsEnabled, aiSessions.sessions, workspaceRoot, aiLifecycle, dispatchAiSession, openAiDraft, openSettingsTab]
+    [aiSessions.sessions, workspaceRoot, aiLifecycle, dispatchAiSession, openAiDraft, openSettingsTab]
   );
 
   /** AI 会话标签右键菜单提供复制 ID、发送 ID 和归档操作。 */
   const renderTabContextMenuItems = useCallback(
     (tab: TabItem): MenuItem[] => {
-      if (tab.kind !== "ai" || tab.id === "ai|draft" || !settings.aiAssistantsEnabled) {
+      if (tab.kind !== "ai" || tab.id === "ai|draft") {
         return [];
       }
       const sessionId = tab.id.slice(3);
@@ -4603,7 +4713,7 @@ export default function App() {
           : { icon: Archive, label: t("ai.archived.button"), onSelect: () => void aiLifecycle.act({ type: "archive", id: session.id, archived: true }, workspaceRoot, dispatchAiSession) },
       ];
     },
-    [settings.aiAssistantsEnabled, aiSessions.sessions, aiSessions.openIds, activeTab, workspaceRoot, openAiSession, t, aiLifecycle, dispatchAiSession]
+    [aiSessions.sessions, aiSessions.openIds, activeTab, workspaceRoot, openAiSession, t, aiLifecycle, dispatchAiSession]
   );
 
   /**
@@ -4971,9 +5081,11 @@ export default function App() {
       <RunPane run={run} dark={resolved === "dark"} onOpenFile={terminalOpenFile} />
     ) : key === "find" ? (
       <FindPane
+        root={workspaceRoot}
         query={find.query}
         options={find.options}
         page={find.page}
+        replaceWith={find.replaceWith}
         running={false}
         error={null}
         onOpen={revealHit}
@@ -5087,7 +5199,7 @@ export default function App() {
     const activeDiffTab = id?.startsWith("diff|") ? diffs.find((tab) => tab.id === id.slice(5)) : null;
     const activeDoc = id?.startsWith("doc|") ? visibleDocs.find((doc) => samePath(doc.path, id.slice(4))) : null;
     const activePane = id?.startsWith("pane|") ? id.slice(5) as BottomPane : null;
-    const activeAiSession = settings.aiAssistantsEnabled && id?.startsWith("ai|")
+    const activeAiSession = id?.startsWith("ai|")
       ? aiSessions.sessions.find((session) => session.id === id.slice(3)) : null;
     const baselineRequest = activeDoc && git.root ? lineChangeBaseline(git.root, activeDoc.path, git.status?.changes ?? []) : null;
     const surfaceBaseline = id === activeTab ? changeBaseline : baselineRequest && git.root ? {
@@ -5468,7 +5580,6 @@ export default function App() {
   });
   /** 子代理和文件预览都向右拆分，点开它的会话留在主栏。子代理默认左 7 右 3，文件预览各占一半。 */
   const openAiSubagent = useStable((id: string, sourceTab: string) => {
-    if (!settings.aiAssistantsEnabled) return;
     const openRoot = rootKeyRef.current;
     const place = () => {
       if (!dispatchAiSession({ type: "open", id })) return false;
@@ -5694,7 +5805,7 @@ export default function App() {
     : tool === "maven" && maven.project ? `${t("maven.title")} · ${maven.project.artifactId}`
     : t(RAIL_LABEL[tool]);
   const sidePanelActions = (tool: Panel) => <>
-    {tool === "ai" && settings.aiAssistantsEnabled ? <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} /> : null}
+    {tool === "ai" ? <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} /> : null}
     {tool === "explorer" && workspaceRoot ? <>
       <button type="button" className="icon-button is-inline is-hover" onClick={() => setDialog({ kind: "newFile", name: "untitled.txt", dir: workspaceRoot, entry: null })} title={t("action.newFile")}><FilePlus size={16} /></button>
       <button type="button" className="icon-button is-inline is-hover" onClick={() => setDialog({ kind: "newFolder", name: t("dialog.newFolderDefault"), dir: workspaceRoot, entry: null })} title={t("action.newFolder")}><FolderPlus size={16} /></button>
@@ -5784,7 +5895,8 @@ export default function App() {
       : tool === "explorer" ? workspaceRoot ? <ProjectTree
         root={workspaceRoot} repoRoot={git.root} changes={git.status?.changes ?? EMPTY_CHANGES}
         collapseSignal={collapseSignal} refresh={treeRefresh} reveal={treeReveal}
-        showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden} directoryRoles={directoryRoles}
+        showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden}
+        clipboard={clipboard} onClipboardChange={setClipboard} directoryRoles={directoryRoles}
         /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
         highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
         openRoots={watchedRoots} activeFile={locatePath} openFiles={visibleDocs.map((doc) => doc.path)} picked={explorerPickedPaths} onPick={setExplorerPick}
@@ -6036,6 +6148,8 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      clipboard={clipboard}
+                      onClipboardChange={setClipboard}
                       /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
                       highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
                       directoryRoles={directoryRoles}
@@ -6406,6 +6520,8 @@ export default function App() {
                       reveal={treeReveal}
                       showIgnored={settings.explorer.showIgnored}
                       showHidden={settings.explorer.showHidden}
+                      clipboard={clipboard}
+                      onClipboardChange={setClipboard}
                       /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
                       highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
                       directoryRoles={directoryRoles}
@@ -6510,6 +6626,11 @@ export default function App() {
         )}
         {activeDoc ? (
           <>
+            <CaretStatus path={activeDoc.path} />
+            <IndentStatus
+              tabSize={settings.editor.tabSize}
+              onOpenSettings={() => openSettingsTab("editor.codeStyle")}
+            />
             <span>{languageLabel(activeDoc.language)}</span>
             {/* 图片没有行尾这回事，那一格换成它的类型名。 */}
             {activeDoc.kind === "image" ? (
@@ -6537,8 +6658,8 @@ export default function App() {
         ) : null}
         <LspStatusBar
           workspace={workspaceRoot}
+          activeDocument={activeDoc ? { path: activeDoc.path, language: activeDoc.language } : null}
           onKicked={() => setLspKick((value) => value + 1)}
-          onOpenSettings={openSettingsTab}
           onError={reportError}
         />
         <UpdateStatusBar
@@ -6571,7 +6692,7 @@ export default function App() {
         position={settings.notificationPosition}
       />
       {depSync.items.length > 0 ? (
-        <div style={{ position: "fixed", right: 78, bottom: "calc(var(--h-statusbar, 24px) + 16px)", zIndex: 899 }}>
+        <div style={{ position: "fixed", right: 78, bottom: "calc(var(--h-statusbar, 24px) + 16px)", zIndex: "calc(var(--z-dialog, 900) - 1)" }}>
           <DepSyncToast
             items={depSync.items}
             inline
@@ -6593,6 +6714,7 @@ export default function App() {
             showIgnored={settings.explorer.showIgnored}
             initialTab={everywhere.tab}
             initialQuery={everywhere.query}
+            initialReplace={everywhere.replace}
             commands={paletteCommands}
             onClose={() => setEverywhere(null)}
             onOpenFile={openSearchFile}
@@ -6664,8 +6786,24 @@ export default function App() {
         <ResolveConflictsDialog
           files={git.conflictChanges}
           onAccept={(change, side) => void git.resolveConflict(git.absoluteOf(change.path), side)}
+          onMerge={(change) => {
+            setResolveOpen(false);
+            setBlockMergePath(git.absoluteOf(change.path));
+          }}
           onOpen={(change) => editSource(change.path)}
           onClose={() => setResolveOpen(false)}
+        />
+      ) : null}
+      {blockMergePath ? (
+        <BlockMergeDialog
+          path={blockMergePath}
+          onApplied={() => {
+            setBlockMergePath(null);
+            // 写回后把文件暂存进索引，让它从未合并那一组里消失（同按一边了结的收尾）。
+            void git.stage([blockMergePath]);
+          }}
+          onClose={() => setBlockMergePath(null)}
+          reportError={reportError}
         />
       ) : null}
       {/* 保存撞上「磁盘被别处改过」时开这一层：本地 / 磁盘两份对着共同祖先摆，底下结果格可编辑。 */}

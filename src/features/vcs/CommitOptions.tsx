@@ -1,5 +1,5 @@
 /**
- * 提交选项弹层（Commit Options Popup）：1:1 对齐 IntelliJ IDEA / OpenIdea
+ * 提交选项弹层（Commit Options Popup）：1:1 对齐 IntelliJ IDEA / IDEA
  * 包含 Git Author、Sign-off 签名、提交前检查（Reformat、Optimize Imports、Run Git hooks、Analyze Code 等）
  */
 import type { ReactNode, RefObject } from "react";

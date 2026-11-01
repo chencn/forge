@@ -1,11 +1,16 @@
 import { useState, useEffect } from "react";
+import { RefreshCw } from "lucide-react";
 import { useI18n } from "../i18n";
+import { Button } from "../ui";
 import { hasUnsavedSettings } from "../hooks/useUnsavedGuard";
-import type { WakeResult } from "../lib/lspClient";
+import { useSettings } from "../hooks/useSettings";
+import { useLspConfig } from "../hooks/useLspConfig";
+import type { LspWakeResult as WakeResult } from "../lib/lspTypes";
 import AiActionDialog from "./AiActionDialog";
 import ShortcutSettingsPanel from "./ShortcutSettingsPanel";
 import SettingsLayout from "../features/settings/components/SettingsLayout";
 import { resolvePageId } from "../features/settings/model/legacyAdapter";
+import { isSettingsPageAccessible } from "../features/settings/model/settingsModel";
 import {
   AppearanceNotificationsPage,
   AppearanceSystemPage,
@@ -20,9 +25,10 @@ import {
   EditorMinimapPage,
 } from "../features/settings/pages/EditorPages";
 import {
+  VcsCommitPage,
   VcsConfirmationPage,
-  VcsGeneralPage,
   VcsGitPage,
+  VcsIssueNavigationPage,
 } from "../features/settings/pages/VcsPages";
 import {
   ProjectRootsPage,
@@ -87,20 +93,32 @@ export default function SettingsPage({
   onClose,
 }: Props) {
   const { t } = useI18n();
+  const { settings } = useSettings();
+  const { reprobe, probing } = useLspConfig();
 
-  const [selectedPageId, setSelectedPageId] = useState<string>(() =>
-    resolvePageId(initialModule || "general")
-  );
+  const [selectedPageId, setSelectedPageId] = useState<string>(() => {
+    const pageId = resolvePageId(initialModule || "general");
+    return isSettingsPageAccessible(pageId, settings.aiAssistantsEnabled) ? pageId : "appearance.system";
+  });
   const [pendingPageId, setPendingPageId] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialModule) {
-      setSelectedPageId(resolvePageId(initialModule));
+      const pageId = resolvePageId(initialModule);
+      setSelectedPageId(isSettingsPageAccessible(pageId, settings.aiAssistantsEnabled) ? pageId : "appearance.system");
     }
-  }, [initialModule]);
+  }, [initialModule, settings.aiAssistantsEnabled]);
+
+  // 总开关关闭时若正停在受门控的 AI 页，跳回开关所在的「系统设置」页
+  useEffect(() => {
+    if (!isSettingsPageAccessible(selectedPageId, settings.aiAssistantsEnabled)) {
+      setSelectedPageId("appearance.system");
+    }
+  }, [settings.aiAssistantsEnabled, selectedPageId]);
 
   // 当外部导航切换时，如有未保存草稿弹出拦截确认框
   const handleSelectPage = (nextId: string) => {
+    if (!isSettingsPageAccessible(nextId, settings.aiAssistantsEnabled)) return;
     if (nextId !== selectedPageId && hasUnsavedSettings()) {
       setPendingPageId(nextId);
     } else {
@@ -141,12 +159,14 @@ export default function SettingsPage({
 
       // 4. 版本控制
       case "vcs":
-      case "vcs.general":
-        return <VcsGeneralPage />;
+      case "vcs.commit":
+        return <VcsCommitPage />;
       case "vcs.git":
-        return <VcsGitPage />;
+        return <VcsGitPage workspace={workspace} />;
       case "vcs.confirmation":
         return <VcsConfirmationPage />;
+      case "vcs.issueNavigation":
+        return <VcsIssueNavigationPage />;
 
       // 5. 项目结构
       case "project":
@@ -212,6 +232,21 @@ export default function SettingsPage({
         activePageId={selectedPageId}
         onSelectPage={handleSelectPage}
         onClose={onClose}
+        aiAssistantsEnabled={settings.aiAssistantsEnabled}
+        headerActions={
+          selectedPageId === "languages" || selectedPageId === "languages.lsp" ? (
+            <Button
+              variant="ghost"
+              size="small"
+              icon={<RefreshCw size={14} className={probing ? "is-spinning" : undefined} />}
+              disabled={probing}
+              title={t(probing ? "lsp.probe.probing" : "lsp.probe.refresh")}
+              onClick={() => void reprobe()}
+            >
+              {t(probing ? "lsp.probe.probing" : "lsp.probe.refresh")}
+            </Button>
+          ) : null
+        }
         onApply={() => {
           // 当前设置项均已实时自动 patch 并保存至本地 store
         }}

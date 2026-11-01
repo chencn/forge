@@ -2,11 +2,13 @@
 @import "./ideaTokens.css";
 
 :root {
-  /* 桥接 IntelliJ IDEA 设计系统 Tokens，使得 Forge 原有组件能无缝吸收 IntelliJ IDEA 多主题色板 */
+  /* 桥接 IntelliJ IDEA 设计系统 Tokens，使得 Forge 原有组件能无缝吸收 IntelliJ IDEA 多主题色板。
+     这里只允许写 var() 桥接，禁止同规则内再给硬值——同选择器后写的硬值会把桥接压成死代码，
+     dark-hc 就是这样失效的（见缺陷 D-37/D-38）。`--bg-hover` 不在此桥接：ideaTokens 同名直供，
+     且自引用 var(--bg-hover) 是非法环。 */
   --bg-primary: var(--bg-island, #ffffff);
   --bg-secondary: var(--bg-elev, #f9fafb);
   --bg-tertiary: var(--bg-control, #f3f4f6);
-  --bg-hover: var(--bg-hover, #f3f4f6);
   --chrome-bg: var(--bg-frame, #f8fafc);
   --app-bg: var(--bg-app, #eef2f7);
   --surface-island: var(--bg-island, #ffffff);
@@ -22,26 +24,11 @@
   --button-solid-text: var(--fg-on-accent, #ffffff);
 
   color-scheme: light;
-  --bg-primary: #ffffff;
-  --bg-secondary: #f9fafb;
-  --bg-tertiary: #f3f4f6;
-  --bg-hover: #f3f4f6;
   --bg-active: #e5e7eb;
-  --chrome-bg: #f8fafc;
-  --app-bg: #eef2f7;
   /* 浮层、菜单与弹出框一律采用 IDEA 风格的实心不透明背景，禁止透出底层文字。 */
-  --surface-island: #ffffff;
-  --surface-island-strong: #ffffff;
   --surface-island-muted: rgba(248, 250, 252, 0.72);
   --island-shadow:
     0 14px 34px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  --border-color: #e5e7eb;
-  --border-light: #d1d2d4;
-  --border-subtle: #d1d5db;
-  --text-primary: #111827;
-  --text-secondary: #374151;
-  --text-tertiary: #6b7280;
-  --text-muted: #9ca3af;
   --accent-green: #22c55e;
   --accent-green-bg: #dcfce7;
   --accent-green-text: #166534;
@@ -59,9 +46,7 @@
   --accent-blue: #3b82f6;
   --accent-blue-bg: #dbeafe;
   --accent-blue-text: #1d4ed8;
-  /* 实心主按钮那档蓝，深浅两套都用白字；和上面那档用于选中态的蓝不是一回事。 */
-  --button-solid: #3574f0;
-  --button-solid-text: #ffffff;
+  /* 实心主按钮那档蓝由桥接供色（--accent），深浅两套都用白字；和上面那档用于选中态的蓝不是一回事。 */
   --accent-color: var(--text-primary);
   --accent-amber-bg: #fef3c7;
   --accent-amber-text: #92400e;
@@ -94,9 +79,11 @@
   --scrollbar-thumb-active: rgba(100, 116, 139, 0.58);
   --selection-bg: rgba(59, 130, 246, 0.2);
   --on-solid: #ffffff;
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
-  --radius-lg: 12px;
+  /* 弹层/对话框这一档对齐 IDEA 的 radius-dialog / radius-popup-large（10px）。 */
+  --radius-lg: 10px;
   --radius-xl: 16px;
   --radius-pill: 999px;
   /* 所有普通单行菜单共用这一档；多行内容只把它当最小高度。 */
@@ -104,7 +91,8 @@
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 0px;
   --header-height: 2.5rem;
-  --footer-height: 24px;
+  /* 底部状态栏高度：对齐 openidea StatusBar 的 30px + 4px = 34px（原 24px 与参照双高度并存）。 */
+  --footer-height: 34px;
   --island-radius: 10px;
   --workbench-gap: 6px;
   --rail-width: 38px;
@@ -119,9 +107,11 @@
   --sidebar-border: #dddfe4;
   --sidebar-stripe: #3871e1;
   --sidebar-stripe-fg: #ffffff;
+  /* UI 字体：IDEA New UI 同款 Inter（@fontsource-variable 随包打进），回退系统栈。
+     注音等价性交给后面的系统栈：Inter 没有全角 CJK 字形，中文自动落到下一档。 */
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, sans-serif;
+    "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
   /* JetBrains Mono 随包打进来自 @fontsource-variable，注册名是 "JetBrains Mono Variable"。
      排在最前，机器上没装也拿得到。末尾那两层 CJK 等宽回退是必须的：拉丁等宽字体没有全角
      括号和引号，量不到字形就画方框——原来这层是 monoFont() 在 JS 里补的，收进变量只留一处来源。 */
@@ -197,12 +187,13 @@
   --maven-checkbox-bg: #ffffff;
 }
 
-:root[data-theme="dark"] {
-  /* 深色及多主题调色板桥接 */
+:root[data-theme="dark"],
+:root[data-theme="dark-hc"] {
+  /* 深色及多主题调色板桥接。dark-hc 与 dark 共享本块的 forge 侧色板，
+     桥接源（--bg-island 等）由 ideaTokens 的 dark-hc 块给出真正的高对比度值。 */
   --bg-primary: var(--bg-island, #0a0a0a);
   --bg-secondary: var(--bg-elev, #111111);
   --bg-tertiary: var(--bg-control, #1a1a1a);
-  --bg-hover: var(--bg-hover, #1f1f1f);
   --chrome-bg: var(--bg-frame, #141414);
   --app-bg: var(--bg-app, #050505);
   --surface-island: var(--bg-island, #181818);
@@ -218,26 +209,11 @@
   --button-solid-text: var(--fg-on-accent, #ffffff);
 
   color-scheme: dark;
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #111111;
-  --bg-tertiary: #1a1a1a;
-  --bg-hover: #1f1f1f;
   --bg-active: #2a2a2a;
-  --chrome-bg: #141414;
-  --app-bg: #050505;
   /* 深色档浮层同样使用实心不透明底色。 */
-  --surface-island: #181818;
-  --surface-island-strong: #181818;
   --surface-island-muted: rgba(20, 20, 20, 0.68);
   --island-shadow:
     0 16px 40px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  --border-color: #2b2b2b;
-  --border-light: #202020;
-  --border-subtle: #3a3a3a;
-  --text-primary: #f5f5f5;
-  --text-secondary: #d4d4d4;
-  --text-tertiary: #a3a3a3;
-  --text-muted: #737373;
   --accent-green: #4ade80;
   --accent-green-bg: rgba(34, 197, 94, 0.18);
   --accent-green-text: #86efac;
@@ -254,8 +230,6 @@
   --accent-blue: #58a6ff;
   --accent-blue-bg: rgba(59, 130, 246, 0.18);
   --accent-blue-text: #93c5fd;
-  --button-solid: #548af7;
-  --button-solid-text: #ffffff;
   --accent-color: var(--text-primary);
   --accent-amber-bg: rgba(245, 158, 11, 0.18);
   --accent-amber-text: #fcd34d;

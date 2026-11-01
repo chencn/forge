@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { samePath } from "./format";
+import { statEntries } from "./fs";
 
 /**
  * 用户做过的那些事，落在系统配置目录的 history.json。
@@ -56,10 +57,40 @@ function merge(raw: Partial<History> | null): History {
   };
 }
 
+/**
+ * 剔除磁盘上已不存在的目录：历史文件是跨启动的，项目被删掉或挪走后照单恢复，
+ * 工作区根会指向一个幽灵路径，界面直接白屏。首帧渲染前跑，顺手把最近列表也清干净。
+ */
+async function pruneMissing(history: History): Promise<History> {
+  const candidates = Array.from(new Set([
+    history.lastFolder,
+    history.activeFolder,
+    ...history.openFolders,
+    ...history.recentFolders,
+  ].filter(Boolean)));
+  if (candidates.length === 0) return history;
+  try {
+    const alive = (await statEntries(candidates))
+      .filter((item) => item.kind === "directory")
+      .map((item) => item.path);
+    const exists = (path: string) => alive.some((dir) => samePath(dir, path));
+    return {
+      ...history,
+      lastFolder: exists(history.lastFolder) ? history.lastFolder : "",
+      activeFolder: exists(history.activeFolder) ? history.activeFolder : "",
+      openFolders: history.openFolders.filter(exists),
+      recentFolders: history.recentFolders.filter(exists),
+    };
+  } catch {
+    // 校验失败（如纯浏览器环境没有 Tauri 命令）时按原样返回，别把启动卡死在历史清洗上。
+    return history;
+  }
+}
+
 /** 读历史记录；没有 Tauri 注入（纯浏览器跑前端）时退回空表。 */
 export async function loadHistory(): Promise<History> {
   try {
-    return merge(await invoke<Partial<History>>("history_load"));
+    return await pruneMissing(merge(await invoke<Partial<History>>("history_load")));
   } catch {
     return DEFAULT_HISTORY;
   }

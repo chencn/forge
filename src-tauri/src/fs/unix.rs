@@ -67,6 +67,11 @@ pub fn open_external(url: &str) -> Result<(), String> {
         .map_err(|e| io_err(url, e))
 }
 
+/// 非 Windows 平台的文件剪贴板由桌面环境决定，暂不伪造读取结果。
+pub fn clipboard_files() -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
 /// 将文件或目录安全移入类 Unix 系统废纸篓。
 /// macOS 优先尝试 `trash` CLI（基于 Cocoa API），无此工具时通过 `osascript` 走 Finder（采用 argv 传参防注入）；
 /// Linux 优先尝试 `gio trash`（GNOME/KDE/XFCE 等默认桌面工具）与 `trash-put`。

@@ -2,12 +2,37 @@ import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { lspFailed, lspResolveRoot, lspStart, lspStop, lspWrite } from "./lsp";
 import type { LspExit, LspLog, LspMessage } from "./lsp";
-import { programOf, serverEnabled, serverEntries, serverForLanguage } from "./lspConfig";
+import {
+  loadProjectLspConfig,
+  mergeProjectLspConfig,
+  programOf,
+  serverEnabled,
+  serverCandidates,
+  serverEntries,
+} from "./lspConfig";
 import type { LspConfig, LspServerEntry } from "./lspConfig";
 import { canonicalPath, parentPath, pathWithin } from "./format";
 import { translate } from "../i18n";
 import { windowLabel } from "./window";
 import { pathToUri, uriToPath } from "./lspUri";
+import { parseLspMessage, positionEncodingOf } from "./lspProtocol";
+import type {
+  LspDiagnostic,
+  LspDocument,
+  LspPositionEncoding,
+  LspRequestOptions,
+  LspServerCapabilities,
+  LspStatus,
+  LspWakeResult,
+  LspApplyEditResult,
+  LspWorkspaceEdit,
+  LspWorkspaceEditContext,
+  LspWorkspaceEditHandler,
+  LspSaveReason,
+  LspRouteInfo,
+} from "./lspTypes";
+
+export type { LspDiagnostic, LspDocument } from "./lspTypes";
 
 /**
  * 一份要交给语言服务的文档快照。
@@ -15,15 +40,6 @@ import { pathToUri, uriToPath } from "./lspUri";
  * 由调用方（App）每次从文档列表里挑出「已加载、可编辑、语言归某个 server 管」的那些喂进来，
  * 客户端不认识文档模型本身的其它字段。
  */
-export interface LspDocument {
-  /** 文件绝对路径，同时是 LSP 的 URI 键。 */
-  path: string;
-  /** 语言 id，用来选 server。 */
-  language: string;
-  /** 当前文本（含未保存改动）。 */
-  text: string;
-}
-
 /**
  * 一个运行中的语言服务：后端会话、它对应的配置项，以及它使用的项目根。
  *
@@ -45,9 +61,19 @@ interface RunningServer {
   pendingChanges: Map<string, { timer: ReturnType<typeof setTimeout>; text: string }>;
   /** 下一个要用的文档版本号，LSP 只要求它单调递增。 */
   version: number;
+  /** initialize 返回的能力，供编辑器和 Action 判断可用性。 */
+  capabilities: LspServerCapabilities;
+  /** initialize 的静态能力；动态注册变化时从这份基线重新派生公开快照。 */
+  staticCapabilities: LspServerCapabilities;
+  /** server 通过 client/registerCapability 注册的能力，键是注册 id。 */
+  dynamicRegistrations: Map<string, { method: string; registerOptions?: unknown }>;
+  /** initialize 协商出的文档位置编码。未返回时按 LSP 规范使用 UTF-16。 */
+  positionEncoding: LspPositionEncoding;
 }
 
 const running = new Map<string, RunningServer>();
+/** 手动「启动」拉起的会话：reconcile 不因当前没有该语言的打开文档就把它们收掉。 */
+const manualSessions = new WeakSet<RunningServer>();
 /**
  * 最近一次 reconcile 用到的那份配置。
  * 编辑器那侧的调用只交语言 id（补全、悬停、跳转都是），语言归哪个 server 管要按当前配置查。
@@ -93,22 +119,222 @@ const KEY_SEP = String.fromCharCode(1);
 /** 待发出的请求 id，用来把响应配回请求。 */
 let nextId = 1;
 /** 还没收到响应的请求：id → 回调解法。 */
-const inflight = new Map<number, (result: unknown) => void>();
+const inflight = new Map<
+  number,
+  {
+    resolve: (result: unknown) => void;
+    reject: (cause: unknown) => void;
+    timer: ReturnType<typeof setTimeout>;
+    cleanup: () => void;
+  }
+>();
 /**
- * 普通请求的超时。initialize 有自己的握手超时（更短，先落地），这里管其余请求：
- * server 半死（活着但不回话）时 hover / 补全 / 跳定义不能永远挂着不落。
+ * 普通请求的超时，按方法分档（对齐 openidea `lib.rs:56-58` 的 5 / 10 / 30 秒）：
+ * 打字路径上的补全只给 5 秒——超过这时间再弹出来也没人用了；引用、重命名、执行命令
+ * 要遍历整个工程，给 30 秒；其余 10 秒。
+ *
+ * 原来一刀 60 秒：server 半死（活着但不回话）时 hover / 补全 / 跳定义会挂满一分钟，
+ * 期间界面什么都不动。initialize 有自己的握手超时，不受这里影响。
  */
-const REQUEST_TIMEOUT_MS = 60_000;
+const FAST_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
+const LONG_TIMEOUT_MS = 30_000;
+
+/** 打字路径上的请求，晚到就没意义了。 */
+const FAST_METHODS = new Set(["textDocument/completion", "textDocument/inlineCompletion"]);
+/** 全工程级别的请求，慢是正常的。 */
+const LONG_METHODS = new Set([
+  "textDocument/references",
+  "textDocument/rename",
+  "workspace/executeCommand",
+  "workspace/willRenameFiles",
+]);
+
+function timeoutOf(method: string): number {
+  if (FAST_METHODS.has(method)) return FAST_TIMEOUT_MS;
+  if (LONG_METHODS.has(method)) return LONG_TIMEOUT_MS;
+  return DEFAULT_TIMEOUT_MS;
+}
 /** didChange 的防抖窗口：把每次击键触发的 reconcile 合并成窗口尾部的一次发送。 */
 const CHANGE_DEBOUNCE_MS = 150;
 
+/**
+ * LSP 动态注册的方法到公开 capability 字段的映射。
+ *
+ * 表里只留真的有消费点的能力：没有消费点的那种（fold 折叠、selectionRange、颜色选择、
+ * pull diagnostics、文档高亮、按类型格式化等）一律不映射——塞进去只会让能力表出现
+ * 「界面以为有、点下去没人应」的假字段。未知方法仍然应答，只是不伪造能力。
+ */
+const DYNAMIC_CAPABILITY_BY_METHOD: Record<string, keyof LspServerCapabilities> = {
+  "textDocument/completion": "completionProvider",
+  "textDocument/hover": "hoverProvider",
+  "textDocument/signatureHelp": "signatureHelpProvider",
+  "textDocument/declaration": "declarationProvider",
+  "textDocument/definition": "definitionProvider",
+  "textDocument/typeDefinition": "typeDefinitionProvider",
+  "textDocument/implementation": "implementationProvider",
+  "textDocument/references": "referencesProvider",
+  "textDocument/rename": "renameProvider",
+  "textDocument/codeAction": "codeActionProvider",
+  "textDocument/documentFormatting": "documentFormattingProvider",
+  "textDocument/documentSymbol": "documentSymbolProvider",
+  "textDocument/semanticTokens": "semanticTokensProvider",
+  "textDocument/codeLens": "codeLensProvider",
+  "textDocument/inlineCompletion": "inlineCompletionProvider",
+  "textDocument/documentLink": "documentLinkProvider",
+  "workspace/symbol": "workspaceSymbolProvider",
+  "callHierarchy/incomingCalls": "callHierarchyProvider",
+  "callHierarchy/outgoingCalls": "callHierarchyProvider",
+  "textDocument/prepareCallHierarchy": "callHierarchyProvider",
+  "typeHierarchy/supertypes": "typeHierarchyProvider",
+  "typeHierarchy/subtypes": "typeHierarchyProvider",
+  "typeHierarchy/prepare": "typeHierarchyProvider",
+  "workspace/executeCommand": "executeCommandProvider",
+};
+
 /** 语言服务状态变化的通知，界面据此显示「正在启动 / 未找到」。 */
-export type LspStatus = "starting" | "ready" | "missing";
 type StatusWatcher = (serverId: string, status: LspStatus, detail?: string) => void;
 const statusWatchers = new Set<StatusWatcher>();
+let workspaceEditHandler: LspWorkspaceEditHandler | null = null;
+
+/** 注册 WorkspaceEdit 执行器；返回的函数只撤销本次注册。 */
+export function setWorkspaceEditHandler(handler: LspWorkspaceEditHandler | null): () => void {
+  workspaceEditHandler = handler;
+  return () => {
+    if (workspaceEditHandler === handler) workspaceEditHandler = null;
+  };
+}
+
+export function applyWorkspaceEdit(
+  edit: LspWorkspaceEdit,
+  context?: LspWorkspaceEditContext
+): Promise<LspApplyEditResult> {
+  return workspaceEditHandler
+    ? workspaceEditHandler(edit, context)
+    : Promise.resolve({ applied: false, failureReason: "WorkspaceEdit 执行器未注册" });
+}
 
 function emitStatus(serverId: string, status: LspStatus, detail = "") {
   for (const watch of statusWatchers) watch(serverId, status, detail);
+}
+
+/**
+ * 每个会话上还没结束的 `$/progress` 令牌。有令牌就说明它在索引 / 分析，
+ * 状态栏据此把「运行中」画成「索引中」——不靠猜时间，服务说忙才是忙。
+ */
+const activeProgress = new Map<string, Set<string>>();
+const busyListeners = new Set<() => void>();
+/** 快照：只在忙闲真的变了时换新对象，React 那边据此判断要不要重渲染。 */
+let busySnapshot: ReadonlySet<string> = new Set();
+
+function publishBusy(sessionId: string): void {
+  const busy = (activeProgress.get(sessionId)?.size ?? 0) > 0;
+  if (!busy) activeProgress.delete(sessionId);
+  if (busy === busySnapshot.has(sessionId)) return;
+  const next = new Set(busySnapshot);
+  if (busy) next.add(sessionId);
+  else next.delete(sessionId);
+  busySnapshot = next;
+  for (const listener of busyListeners) listener();
+}
+
+/** 跟踪 `$/progress`：`begin` 记下令牌、`end` 划掉，令牌清空就是不忙了（对齐 openidea `handler.rs:30-60`）。 */
+function trackProgress(sessionId: string, params: unknown): void {
+  const { token, kind } = progressOf(params);
+  if (token === null || kind === null) return;
+  if (kind === "end") {
+    activeProgress.get(sessionId)?.delete(token);
+    publishBusy(sessionId);
+    return;
+  }
+  // `report` 不改忙闲：没有对应 `begin` 的孤零零 report（有的服务会这么发）不该让它永远显示忙。
+  if (kind !== "begin") return;
+  const tokens = activeProgress.get(sessionId) ?? new Set<string>();
+  tokens.add(token);
+  activeProgress.set(sessionId, tokens);
+  publishBusy(sessionId);
+}
+
+/** `$/progress` 的令牌与阶段；形状不对的一律当没看见。 */
+function progressOf(params: unknown): { token: string | null; kind: "begin" | "report" | "end" | null } {
+  if (!params || typeof params !== "object") return { token: null, kind: null };
+  const token = (params as { token?: unknown }).token;
+  const kind = (params as { value?: { kind?: unknown } }).value?.kind;
+  return {
+    token:
+      typeof token === "string" || typeof token === "number"
+        ? String(token)
+        : null,
+    kind: kind === "begin" || kind === "report" || kind === "end" ? kind : null,
+  };
+}
+
+/** 会话没了：把它从忙表里划掉，别让 id 越攒越多。 */
+export function forgetBusy(sessionId: string): void {
+  if (!activeProgress.delete(sessionId)) return;
+  publishBusy(sessionId);
+}
+
+/** 正在索引 / 分析的会话 id。 */
+export function busySessionIds(): ReadonlySet<string> {
+  return busySnapshot;
+}
+
+/** 订阅忙闲变化；返回退订函数。 */
+export function subscribeBusy(listener: () => void): () => void {
+  busyListeners.add(listener);
+  return () => {
+    busyListeners.delete(listener);
+  };
+}
+
+/** 从 initialize 基线和当前动态注册重建 capability，注销后不会残留幽灵能力。 */
+function rebuildCapabilities(server: RunningServer): void {
+  const capabilities: LspServerCapabilities = { ...server.staticCapabilities };
+  for (const registration of server.dynamicRegistrations.values()) {
+    const key = DYNAMIC_CAPABILITY_BY_METHOD[registration.method];
+    if (!key) continue;
+    capabilities[key] = registration.registerOptions ?? {};
+  }
+  server.capabilities = capabilities;
+}
+
+function dynamicRegistrationError(params: unknown, unregister: boolean): string | null {
+  const key = unregister ? "unregisterations" : "registrations";
+  const registrations = (params as Record<string, unknown> | null)?.[key];
+  if (!Array.isArray(registrations)) return "registrations 必须是数组";
+  for (const registration of registrations) {
+    if (
+      !registration ||
+      typeof registration !== "object" ||
+      typeof (registration as { id?: unknown }).id !== "string" ||
+      typeof (registration as { method?: unknown }).method !== "string"
+    ) {
+      return "动态注册项缺少 id 或 method";
+    }
+  }
+  return null;
+}
+
+/** 应用一批动态注册/注销，并让已有编辑器通过 ready 状态回调重新读取 capability。 */
+function applyDynamicRegistration(server: RunningServer, params: unknown, unregister: boolean): string | null {
+  const error = dynamicRegistrationError(params, unregister);
+  if (error) return error;
+  const key = unregister ? "unregisterations" : "registrations";
+  const registrations = (params as Record<string, Array<{ id: string; method: string; registerOptions?: unknown }>>)[key]!;
+  for (const registration of registrations) {
+    if (unregister) {
+      server.dynamicRegistrations.delete(registration.id);
+    } else {
+      server.dynamicRegistrations.set(registration.id, {
+        method: registration.method,
+        registerOptions: registration.registerOptions,
+      });
+    }
+  }
+  rebuildCapabilities(server);
+  emitStatus(server.entry.id, "ready");
+  return null;
 }
 
 /** 订阅语言服务状态；立刻回放一遍当前所有已知状态。 */
@@ -195,25 +421,52 @@ function notify(server: RunningServer, method: string, params: unknown): void {
 }
 
 /** 发一条 JSON-RPC 请求，返回一个等响应的 Promise。 */
-function request(server: RunningServer, method: string, params: unknown): Promise<unknown> {
+function request(
+  server: RunningServer,
+  method: string,
+  params: unknown,
+  options?: LspRequestOptions
+): Promise<unknown> {
   const id = nextId++;
   const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
   return new Promise((resolve, reject) => {
-    // 到点不落就从 inflight 摘掉并报超时：不然 server 半死时每个 hover / 补全都挂满 60 秒
-    // 之后也没人清理，inflight 只涨不落。迟到的响应会因条目已删被 handleMessage 丢弃。
+    let cleanup = () => {};
+    // 到点不落就从 inflight 摘掉并报超时：不然 server 半死时每个 hover / 补全都会一直
+    // 占着条目，inflight 只涨不落。迟到的响应会因条目已删被 handleMessage 丢弃。
+    const timeout = timeoutOf(method);
     const timer = setTimeout(() => {
       inflight.delete(id);
-      reject(new Error(`${method} 超时（${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒无响应）`));
-    }, REQUEST_TIMEOUT_MS);
-    inflight.set(id, (result) => {
+      cleanup();
+      reject(new Error(`${method} 超时（${Math.round(timeout / 1000)} 秒无响应）`));
+    }, timeout);
+    const cancel = () => {
+      if (!inflight.has(id)) return;
+      inflight.delete(id);
       clearTimeout(timer);
-      resolve(result);
-    });
+      cleanup();
+      void lspWrite(
+        server.id,
+        JSON.stringify({ jsonrpc: "2.0", method: "$/cancelRequest", params: { id } })
+      ).catch(() => {});
+      const error = new Error(`${method} 已取消`);
+      Object.assign(error, { code: "cancelled" });
+      reject(error);
+    };
+    if (options?.signal) {
+      options.signal.addEventListener("abort", cancel, { once: true });
+      cleanup = () => options.signal?.removeEventListener("abort", cancel);
+      if (options.signal.aborted) {
+        cancel();
+        return;
+      }
+    }
+    inflight.set(id, { resolve, reject, timer, cleanup });
     void lspWrite(server.id, body).catch(() => {
       // 写不进去说明会话已经没了：不等超时，立刻按「没有结果」落地，调用方各自兜底。
       clearTimeout(timer);
       inflight.delete(id);
-      resolve(null);
+      cleanup();
+      reject(new Error(`${method} 写入失败`));
     });
   });
 }
@@ -231,30 +484,94 @@ async function initialize(server: RunningServer): Promise<void> {
         ? {}
         : { initializationOptions: entry.initOptions }),
       capabilities: {
-        textDocument: {
-          synchronization: { didSave: false, dynamicRegistration: false },
+          textDocument: {
+            // 保存生命周期是客户端主动提供的能力；是否实际调用由服务端的 textDocumentSync 决定。
+            synchronization: { willSave: true, willSaveWaitUntil: true, didSave: true, dynamicRegistration: false },
           hover: { contentFormat: ["markdown", "plaintext"] },
-          completion: { completionItem: { snippetSupport: false } },
-          definition: {},
+          // 参数 label 允许用 [start, end] 偏移（gopls / clangd 的默认形态），声明后才会收到偏移版。
+          signatureHelp: {
+            signatureInformation: {
+              documentationFormat: ["markdown", "plaintext"],
+              parameterInformation: { labelOffsetSupport: true },
+            },
+          },
+          completion: {
+            completionItem: {
+              snippetSupport: true,
+              // 允许 server 把 detail / 文档 / 自动 import 的附加编辑推迟到 completionItem/resolve 再给。
+              resolveSupport: { properties: ["documentation", "detail", "additionalTextEdits"] },
+              labelDetailsSupport: true,
+            },
+          },
+          inlayHint: { dynamicRegistration: false },
+          semanticTokens: {
+            dynamicRegistration: false,
+            requests: { range: true, full: { delta: false } },
+            tokenTypes: [
+              "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter",
+              "variable", "property", "enumMember", "event", "function", "method", "macro", "label",
+              "comment", "string", "keyword", "number", "regexp", "operator", "decorator",
+            ],
+            tokenModifiers: [
+              "declaration", "definition", "readonly", "static", "deprecated", "abstract", "async",
+              "modification", "documentation", "defaultLibrary",
+            ],
+            formats: ["relative"],
+            overlappingTokenSupport: true,
+            multilineTokenSupport: true,
+          },
+          codeLens: { dynamicRegistration: false },
+          inlineCompletion: { dynamicRegistration: false },
+          documentLink: { dynamicRegistration: false },
+          definition: { linkSupport: true },
           references: {},
           rename: {},
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
-          publishDiagnostics: {},
+          // 声明版本支持，服务端才会在 publishDiagnostics 里带上 `version`；
+          // 收下之后确实按它滤掉过期批次（见 `applyDiagnostics`）。
+          publishDiagnostics: { versionSupport: true },
         },
-        workspace: { workspaceFolders: false },
+        // 这三条决定服务端怎么拿设置与文件变动，必须如实声明（参照 openidea `caps.rs:38-40`）：
+        // `configuration: true` 才收得到 `workspace/configuration`（本客户端的应答见
+        // `configurationForSection`）；`didChangeWatchedFiles` 声明 false 是「不接动态注册」，
+        // 服务端据此用自己的监听，不是承诺我们会推事件。
+        workspace: {
+          workspaceFolders: false,
+          configuration: true,
+          didChangeConfiguration: { dynamicRegistration: false },
+          didChangeWatchedFiles: { dynamicRegistration: false, relativePatternSupport: false },
+        },
       },
       workspaceFolders: null,
     })
-      .then((result) => ({ result, timedOut: false }))
+      .then((result) => ({ result, timedOut: false, error: undefined }))
       // 握手时限先落地后，这条迟到 60s 的超时 reject 没人听了——不加 catch 就是
       // 一个 unhandled rejection（server 半死时每次启动都刷一条）。
-      .catch(() => ({ result: null, timedOut: true })),
-    new Promise<{ result: unknown; timedOut: boolean }>((resolve) => {
+      .catch((error: unknown) => ({ result: null, timedOut: false, error })),
+    new Promise<{ result: unknown; timedOut: boolean; error?: unknown }>((resolve) => {
       setTimeout(() => resolve({ result: null, timedOut: true }), timeout);
     }),
   ]);
   if (settled.timedOut) throw new Error(`initialize 握手超时（${Math.round(timeout / 1000)} 秒）`);
+  if (settled.error) throw settled.error;
+  const result = settled.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("initialize 响应缺少 capabilities");
+  }
+  const capabilities = (result as { capabilities?: unknown }).capabilities;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    throw new Error("initialize 响应缺少 capabilities");
+  }
+  server.staticCapabilities = capabilities as LspServerCapabilities;
+  server.dynamicRegistrations.clear();
+  rebuildCapabilities(server);
+  server.positionEncoding = positionEncodingOf(server.capabilities);
   notify(server, "initialized", {});
+  // 不问 `workspace/configuration` 的服务只认这一条：把 initializationOptions 当设置再送一遍，
+  // 对齐参照（openidea `lib.rs:456-462`）。没配就什么都不发，别拿空对象去覆盖它自己的默认值。
+  if (server.entry.initOptions !== undefined && server.entry.initOptions !== null) {
+    notify(server, "workspace/didChangeConfiguration", { settings: server.entry.initOptions });
+  }
 }
 
 /** 该会话使用的命令与参数。二者变化后需要重试一次：退避与「未安装」的判断都是按修改前的值得出的。 */
@@ -318,6 +635,10 @@ async function launchSession(
     sent: new Map(),
     pendingChanges: new Map(),
     version: 0,
+    capabilities: {},
+    staticCapabilities: {},
+    dynamicRegistrations: new Map(),
+    positionEncoding: "utf-16",
   };
   running.set(key, server);
   skipped.delete(key);
@@ -333,6 +654,7 @@ async function launchSession(
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : "initialize 失败";
     running.delete(key);
+    forgetBusy(id);
     // 握手失败时也不能把进程留在内存里：上报后端记录退避，随后回收。
     void lspFailed(id, detail).catch(() => {});
     await lspStop(id).catch(() => {});
@@ -353,7 +675,7 @@ function ensureSubscriptions(): void {
   subscribed = true;
   void listen<LspMessage>("lsp://message", (event) => {
     const server = findById(event.payload.id);
-    if (server) handleMessage(server, event.payload.body);
+    if (server) void handleMessage(server, event.payload.body);
   }).then((off) => {
     detachMessage = off;
   });
@@ -448,47 +770,106 @@ function findById(id: string): RunningServer | null {
 }
 
 /** 一条消息：有 id 是响应，配回 pending；没 id 是通知（诊断等），直接处理。 */
-function handleMessage(server: RunningServer, body: string): void {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return;
+/**
+ * `workspace/configuration` 按 section 取配置：从会话的 initializationOptions 沿点分路径逐级查。
+ * 取不到就回空对象——协议要求每项都是对象，但不能再一律回 `{}` 让 vtsls / eslint 的配置静默失效。
+ */
+function configurationForSection(server: RunningServer, item: unknown): unknown {
+  const section = (item as { section?: unknown } | null)?.section;
+  if (typeof section !== "string" || !section) return {};
+  let current: unknown = server.entry.initOptions;
+  for (const part of section.split(".")) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return {};
+    current = (current as Record<string, unknown>)[part];
   }
-  const message = parsed as {
-    id?: number | string;
-    method?: string;
-    params?: unknown;
-    result?: unknown;
-    error?: unknown;
-  };
-  if (message.id !== undefined && message.method === undefined) {
+  return current && typeof current === "object" && !Array.isArray(current) ? current : {};
+}
+
+async function handleMessage(server: RunningServer, body: string): Promise<void> {
+  const message = parseLspMessage(body);
+  if (!message) return;
+  if (message.kind === "response") {
     const numericId = typeof message.id === "number" ? message.id : Number(message.id);
-    const resolve = Number.isFinite(numericId) ? inflight.get(numericId) : undefined;
-    if (resolve) {
+    const pending = Number.isFinite(numericId) ? inflight.get(numericId) : undefined;
+    if (pending) {
       inflight.delete(numericId);
-      resolve(message.result ?? null);
+      clearTimeout(pending.timer);
+      pending.cleanup();
+      if (message.error) {
+        pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
+      } else {
+        pending.resolve(message.result ?? null);
+      }
     }
     return;
   }
+  if (message.method === "$/progress") {
+    trackProgress(server.id, message.params);
+    return;
+  }
   if (message.method === "textDocument/publishDiagnostics") {
-    applyDiagnostics(message.params as { uri: string; diagnostics: LspDiagnostic[] });
+    const params = message.params as { uri?: unknown; diagnostics?: unknown; version?: unknown };
+    if (typeof params?.uri === "string" && Array.isArray(params.diagnostics)) {
+      applyDiagnostics(server, {
+        uri: params.uri,
+        diagnostics: params.diagnostics as LspDiagnostic[],
+        version: typeof params.version === "number" ? params.version : null,
+      });
+    }
     return;
   }
   // 少数 server 会发请求回来（`window/workDoneProgress/create`、`workspace/configuration` 等），按协议回复。
   // 允许数字与字符串类型的 id。
-  if (message.id !== undefined && message.method) {
-    let result: unknown = null;
+  if (message.kind === "request") {
+    let result: unknown;
+    let error: { code: number; message: string } | undefined;
     if (message.method === "workspace/configuration") {
-      // 规范要求返回与请求项长度一致的配置数组，返回 null 会导致 TypeScript / ESLint 等服务端抛 TypeError 崩溃
+      // 规范要求返回与请求项长度一致的配置数组，返回 null 会让 server 抛 TypeError。
+      // 按 section 从该会话的 initializationOptions 逐级取值；取不到回空对象，不能一律回 [{}] 让配置静默失效。
       const items = (message.params as { items?: unknown[] })?.items;
-      result = Array.isArray(items) ? items.map(() => ({})) : [{}];
+      result = Array.isArray(items) ? items.map((item) => configurationForSection(server, item)) : [];
+    } else if (message.method === "window/workDoneProgress/create") {
+      result = null;
+    } else if (message.method === "client/registerCapability" || message.method === "client/unregisterCapability") {
+      const registrationError = applyDynamicRegistration(
+        server,
+        message.params,
+        message.method === "client/unregisterCapability",
+      );
+      if (registrationError) {
+        error = { code: -32602, message: registrationError };
+      } else {
+        result = null;
+      }
+    } else if (message.method === "workspace/applyEdit") {
+      const params = message.params as { edit?: unknown } | undefined;
+      if (!params?.edit || typeof params.edit !== "object" || Array.isArray(params.edit)) {
+        result = { applied: false, failureReason: "WorkspaceEdit 参数无效" };
+      } else {
+        result = await awaitWorkspaceEdit(server, params.edit as LspWorkspaceEdit);
+      }
+    } else {
+      error = { code: -32601, message: `未实现的 LSP 请求：${message.method}` };
     }
+    const response = error
+      ? { jsonrpc: "2.0", id: message.id, error }
+      : { jsonrpc: "2.0", id: message.id, result };
     void lspWrite(
       server.id,
-      JSON.stringify({ jsonrpc: "2.0", id: message.id, result })
+      JSON.stringify(response)
     ).catch(() => {});
   }
+}
+
+/** server request 必须在异步执行器完成后回复，不能先回失败再让编辑落地。 */
+function awaitWorkspaceEdit(server: RunningServer, edit: LspWorkspaceEdit): Promise<LspApplyEditResult> {
+  const task = workspaceEditHandler
+    ? workspaceEditHandler(edit, { positionEncoding: server.positionEncoding, source: server.entry.id })
+    : Promise.resolve({ applied: false, failureReason: "WorkspaceEdit 执行器未注册" });
+  return task.catch((cause) => ({
+    applied: false,
+    failureReason: cause instanceof Error ? cause.message : String(cause),
+  }));
 }
 
 /**
@@ -505,18 +886,8 @@ function handleExit(payload: LspExit): void {
   running.delete(server.key);
   cancelAllChanges(server);
   forgetDiagnostics(server);
+  forgetBusy(server.id);
   emitStatus(server.entry.id, "missing", detail);
-}
-
-/** 一条 LSP 诊断，字段按协议给的最小子集。 */
-export interface LspDiagnostic {
-  range: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
-  severity?: number;
-  message: string;
-  source?: string;
 }
 
 /**
@@ -536,12 +907,27 @@ function diagnosticsKey(raw: string): string | null {
  * 视图随时可能没挂上（后台页签、比对面板），所以原文按路径留一份，编辑器挂载时自己取，
  * 推送时通知订阅者，两条路共用同一份事实，不会出现「server 说了但界面没收到」。
  */
-const rawDiagnosticsByPath = new Map<string, LspDiagnostic[]>();
+// 路径 → 会话 id → 该会话发布的诊断。一门语言可挂多个 server（tsserver + eslint），
+// 各按自己的会话 id 存一份、读取时合并，避免后写的把先写的整体顶掉。
+const rawDiagnosticsByPath = new Map<string, Map<string, LspDiagnostic[]>>();
 const diagnosticsListeners = new Set<(path: string) => void>();
 
-/** 某文件当前的诊断（LSP 原样，行列都从 0 起）。 */
+/** 某文件当前的诊断（LSP 原样，行列都从 0 起）；多 server 的结果合并返回。 */
 export function diagnosticsFor(path: string): LspDiagnostic[] {
-  return rawDiagnosticsByPath.get(canonicalPath(path)) ?? [];
+  const byServer = rawDiagnosticsByPath.get(canonicalPath(path));
+  if (!byServer) return [];
+  const merged: LspDiagnostic[] = [];
+  for (const items of byServer.values()) merged.push(...items);
+  return merged;
+}
+
+/** 抹掉某会话在某文件上的诊断；该文件已无任何会话诊断时连键一起收走，并通知订阅者。 */
+function clearDiagnosticsForKey(key: string, serverId: string): void {
+  const byServer = rawDiagnosticsByPath.get(key);
+  if (!byServer) return;
+  byServer.delete(serverId);
+  if (byServer.size === 0) rawDiagnosticsByPath.delete(key);
+  notifyDiagnostics(key);
 }
 
 /** 订阅诊断变化，回调带文件路径；返回退订。 */
@@ -552,11 +938,146 @@ export function onDiagnosticsChange(listener: (path: string) => void): () => voi
   };
 }
 
-function rememberDiagnostics(uri: string, diagnostics: LspDiagnostic[]): string | null {
+/** 按当前文件选择最深 root 的活动会话，所有编辑器请求和能力查询共用这一规则。 */
+function serverForPath(path: string, language: string): RunningServer | null {
+  for (const entry of serverCandidates(current, language)) {
+    const owners = [...running.values()].filter(
+      (item) => item.entry.id === entry.id && pathWithin(item.root, path)
+    );
+    if (owners.length > 0) {
+      return owners.reduce((best, item) => (item.root.length > best.root.length ? item : best));
+    }
+  }
+  return null;
+}
+
+export function positionEncodingFor(path: string, language: string): LspPositionEncoding {
+  return serverForPath(path, language)?.positionEncoding ?? "utf-16";
+}
+
+export function documentVersionFor(path: string, language: string): number | undefined {
+  const server = serverForPath(path, language);
+  return server?.opened.get(pathToUri(path));
+}
+
+export function capabilitiesFor(path: string, language: string): LspServerCapabilities | undefined {
+  return serverForPath(path, language)?.capabilities;
+}
+
+/**
+ * 返回当前文档的实际路由状态。
+ *
+ * 这条查询只读 `current`、`running` 和 `skipped` 三张内存表，不解析项目文件、
+ * 不启动进程，也不改变配置；状态栏可以因此展示与编辑器请求相同的自动识别结果。
+ */
+export function routeFor(path: string, language: string): LspRouteInfo {
+  const active = serverForPath(path, language);
+  if (active) {
+    return {
+      language,
+      serverId: active.entry.id,
+      root: active.root,
+      status: "running",
+    };
+  }
+
+  const candidates = serverCandidates(current, language);
+  if (candidates.length === 0) {
+    return { language, serverId: null, root: null, status: "unconfigured" };
+  }
+
+  const first = candidates[0]!;
+  const prefix = `${first.id}${KEY_SEP}`;
+  const failure = [...skipped.entries()].find(([key]) => {
+    if (!key.startsWith(prefix)) return false;
+    // skipped 的尾部可能是真实 root，也可能是「工作区 root + 目录」的缺根标记；
+    // 两种都只在其 root 覆盖当前文件时生效，不能把另一个工程的失败状态串过来。
+    const encodedRoot = key.slice(prefix.length);
+    const root = encodedRoot.split(KEY_SEP, 1)[0];
+    return Boolean(root) && pathWithin(root, path);
+  })?.[1];
+  return {
+    language,
+    serverId: first.id,
+    root: null,
+    status: failure ? "missing" : "starting",
+    detail: failure?.detail,
+  };
+}
+
+function textDocumentSyncOf(server: RunningServer): Record<string, unknown> | null {
+  const sync = server.capabilities.textDocumentSync;
+  return sync && typeof sync === "object" && !Array.isArray(sync) ? sync as Record<string, unknown> : null;
+}
+
+function saveCapabilityOf(server: RunningServer): { willSave: boolean; willSaveWaitUntil: boolean; didSave: boolean; includeText: boolean } {
+  const sync = textDocumentSyncOf(server);
+  if (!sync) return { willSave: false, willSaveWaitUntil: false, didSave: false, includeText: false };
+  const save = sync.save;
+  const saveOptions = save && typeof save === "object" && !Array.isArray(save) ? save as Record<string, unknown> : null;
+  return {
+    willSave: sync.willSave === true,
+    willSaveWaitUntil: sync.willSaveWaitUntil === true,
+    didSave: save === true || saveOptions !== null,
+    includeText: saveOptions?.includeText === true,
+  };
+}
+
+function saveReasonCode(reason: LspSaveReason): 1 | 2 | 3 {
+  return reason === "afterDelay" ? 2 : reason === "focusOut" ? 3 : 1;
+}
+
+/** 按服务端声明发送保存前生命周期；等待编辑不会绕过文档版本校验。 */
+export async function willSave(
+  path: string,
+  language: string,
+  reason: LspSaveReason
+): Promise<import("./lspTypes").LspTextEdit[] | null> {
+  const server = serverForPath(path, language);
+  if (!server || !server.opened.has(pathToUri(path))) return null;
+  const capability = saveCapabilityOf(server);
+  const textDocument = { uri: pathToUri(path) };
+  // 保存前格式化返回的 edits 坐标基于 server 那份文本，先把排定中的改动冲刷出去才不会错位。
+  flushPendingChange(server, path);
+  if (capability.willSave || capability.willSaveWaitUntil) {
+    notify(server, "textDocument/willSave", { textDocument, reason: saveReasonCode(reason) });
+  }
+  if (!capability.willSaveWaitUntil) return null;
+  const result = await request(server, "textDocument/willSaveWaitUntil", {
+    textDocument,
+    reason: saveReasonCode(reason),
+  });
+  return Array.isArray(result) ? result as import("./lspTypes").LspTextEdit[] : null;
+}
+
+/** 写盘成功后发送 didSave；仅在服务端声明 save 时发送，避免伪造保存事件。 */
+export function didSave(path: string, language: string, text: string): void {
+  const server = serverForPath(path, language);
+  if (!server || !server.opened.has(pathToUri(path))) return;
+  const capability = saveCapabilityOf(server);
+  if (!capability.didSave) return;
+  const params: { textDocument: { uri: string }; text?: string } = { textDocument: { uri: pathToUri(path) } };
+  if (capability.includeText) params.text = text;
+  notify(server, "textDocument/didSave", params);
+}
+
+function rememberDiagnostics(serverId: string, uri: string, diagnostics: LspDiagnostic[]): string | null {
   const key = diagnosticsKey(uri);
   if (!key) return null;
-  if (diagnostics.length) rawDiagnosticsByPath.set(key, diagnostics);
-  else rawDiagnosticsByPath.delete(key);
+  if (diagnostics.length) {
+    let byServer = rawDiagnosticsByPath.get(key);
+    if (!byServer) {
+      byServer = new Map();
+      rawDiagnosticsByPath.set(key, byServer);
+    }
+    byServer.set(serverId, diagnostics);
+  } else {
+    const byServer = rawDiagnosticsByPath.get(key);
+    if (byServer) {
+      byServer.delete(serverId);
+      if (byServer.size === 0) rawDiagnosticsByPath.delete(key);
+    }
+  }
   return key;
 }
 
@@ -565,8 +1086,17 @@ function notifyDiagnostics(key: string | null): void {
   for (const listener of diagnosticsListeners) listener(key);
 }
 
-function applyDiagnostics(params: { uri: string; diagnostics: LspDiagnostic[] }): void {
-  notifyDiagnostics(rememberDiagnostics(params.uri, params.diagnostics));
+function applyDiagnostics(
+  server: RunningServer,
+  params: { uri: string; diagnostics: LspDiagnostic[]; version: number | null }
+): void {
+  // 批次比手上这份文档旧就别用：那些行列是按旧正文算的，映射到新正文上会标错地方。
+  // 改动之后服务会再推一批新的，这一批丢掉不丢信息。
+  if (params.version !== null) {
+    const current = server.opened.get(params.uri);
+    if (current !== undefined && params.version < current) return;
+  }
+  notifyDiagnostics(rememberDiagnostics(server.id, params.uri, params.diagnostics));
 }
 
 /**
@@ -579,23 +1109,47 @@ export async function lspRequest(
   path: string,
   language: string,
   method: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  options?: LspRequestOptions
 ): Promise<unknown> {
-  const entry = serverForLanguage(current, language);
-  if (!entry) return null;
-  // 同一个 server 可能有多条会话（monorepo 每个子根一条），按这份文件落在哪个根里挑，
-  // 嵌套命中时取最深的那条。
-  const owners = [...running.values()].filter(
-    (item) => item.entry.id === entry.id && pathWithin(item.root, path)
-  );
-  if (owners.length === 0) return null;
-  const server = owners.reduce((best, item) =>
-    item.root.length > best.root.length ? item : best
-  );
+  const server = serverForPath(path, language);
+  if (!server) return null;
   // 键一律用 pathToUri(path)：它就是 didOpen 时发出去的那条串，两边天然对得上。
   const uri = pathToUri(path);
   if (!server.opened.has(uri)) return null;
-  return request(server, method, { textDocument: { uri }, ...params });
+  // 编辑后立刻发起的请求要基于最新文本：先把排定中的 didChange 冲刷出去（对齐 IDEA 的 whenAllSynced）。
+  flushPendingChange(server, path);
+  return request(server, method, { textDocument: { uri }, ...params }, options);
+}
+
+/** workspace/symbol、层级后续请求等非 textDocument 请求的统一入口。 */
+export async function lspRawRequest(
+  path: string,
+  language: string,
+  method: string,
+  params: Record<string, unknown>,
+  options?: LspRequestOptions
+): Promise<unknown> {
+  const server = serverForPath(path, language);
+  if (!server) return null;
+  flushPendingChange(server, path);
+  return request(server, method, params, options);
+}
+
+/** 执行 Code Action 返回的 workspace/executeCommand；它不是 textDocument 请求，不能复用上面的包装。 */
+export async function executeLspCommand(
+  path: string,
+  language: string,
+  command: string,
+  arguments_: unknown[] = []
+): Promise<unknown> {
+  const server = serverForPath(path, language);
+  if (!server) return null;
+  // 服务没声明 executeCommandProvider 就没有命令能执行，发出去只会换回一条 MethodNotFound。
+  if (!server.capabilities.executeCommandProvider) return null;
+  const uri = pathToUri(path);
+  if (!server.opened.has(uri)) return null;
+  return request(server, "workspace/executeCommand", { command, arguments: arguments_ });
 }
 
 /**
@@ -630,7 +1184,8 @@ async function drain(): Promise<void> {
   while (pending) {
     const todo = pending;
     pending = null;
-    await reconcileOnce(todo.root, todo.config, todo.documents);
+    const project = await loadProjectLspConfig(todo.root);
+    await reconcileOnce(todo.root, mergeProjectLspConfig(todo.config, project), todo.documents);
   }
 }
 
@@ -642,40 +1197,24 @@ async function reconcileOnce(
   // `lspRequest` 那边按这份查语言归属，先落地再算会话。
   current = config;
 
-  // 该跑的会话按 (server, 根) 分组：一份文档归它自己那个根管。
+  // 每份文档先按候选顺序选出一条活动会话，再按 (server, 根) 聚合，避免同一 session 重复启动。
   const groups = new Map<string, { entry: LspServerEntry; root: string; docs: LspDocument[] }>();
   for (const document of documents) {
-    const entry = serverForLanguage(config, document.language);
-    if (!entry || !serverEnabled(entry)) continue;
-    const found = await resolveRoot(entry, root, document.path);
-    if (!found) {
-      // 工程该子目录里没有这门语言的技术栈：按文件所在目录记跳过，TTL 与根解析一致，不锁死整个工作区。
-      const dir = parentPath(document.path) ?? document.path;
-      const miss = sessionKey(entry, `${root ?? ""}${KEY_SEP}${dir}`);
-      const held = skipped.get(miss);
-      if (!held || Date.now() >= held.retryAt || held.signature !== signature(entry)) {
-        rememberSkip(miss, {
-          detail: `未在项目「${root ?? ""}」中找到该语言的标志文件（${entry.rootMarkers.join(
-            " / "
-          )}）`,
-          retryAt: Date.now() + ROOTS_TTL,
-          signature: signature(entry),
-        });
-      }
-      continue;
-    }
-    const key = sessionKey(entry, found);
-    const group = groups.get(key) ?? { entry, root: found, docs: [] };
+    const selected = await activateDocument(config, root, document);
+    if (!selected) continue;
+    const key = sessionKey(selected.entry, selected.root);
+    const group = groups.get(key) ?? { entry: selected.entry, root: selected.root, docs: [] };
     group.docs.push(document);
     groups.set(key, group);
   }
 
-  // 不再需要的会话收掉。
+  // 不再需要的会话收掉；手动「启动」拉起的会话保留（对应状态栏启动按钮的语义）。
   for (const [key, server] of [...running]) {
-    if (!groups.has(key)) {
+    if (!groups.has(key) && !manualSessions.has(server)) {
       running.delete(key);
       cancelAllChanges(server);
       forgetDiagnostics(server);
+      forgetBusy(server.id);
       await lspStop(server.id).catch(() => {});
     }
   }
@@ -699,20 +1238,62 @@ async function reconcileOnce(
 }
 
 /**
- * 把编辑器那侧的语言 id（`languageForPath` 给的）规范成 LSP 协议的 languageId。
- * .tsx 必须传 "typescriptreact"、.jsx 必须传 "javascriptreact"，
- * 否则外部 tsserver 会以纯 ts/js 语法解析，将 JSX 解析为大量语法错误。
+ * 为一份文档选择活动候选：先复用已有会话，再按顺序启动候选。
+ * 启动失败只影响这份文档的候选链；调用方仍会按 session key 聚合其它文档。
  */
-function lspLanguageId(filePath: string, language: string): string {
-  const lower = filePath.toLowerCase();
-  if (language === "typescript") {
-    if (lower.endsWith(".tsx")) return "typescriptreact";
-    return "typescript";
+async function activateDocument(
+  config: LspConfig,
+  workspaceRoot: string | null,
+  document: LspDocument
+): Promise<{ entry: LspServerEntry; root: string } | null> {
+  const resolved: Array<{ entry: LspServerEntry; root: string; key: string }> = [];
+  for (const entry of serverCandidates(config, document.language)) {
+    const found = await resolveRoot(entry, workspaceRoot, document.path);
+    if (!found) {
+      rememberMissingRoot(entry, workspaceRoot, document.path);
+      continue;
+    }
+    resolved.push({ entry, root: found, key: sessionKey(entry, found) });
   }
-  if (language === "javascript") {
-    if (lower.endsWith(".jsx")) return "javascriptreact";
-    return "javascript";
+
+  // fallback 已经在运行时，不再额外启动主候选；这样配置刷新不会短暂产生两个语义来源。
+  const existing = resolved.find((item) => running.has(item.key));
+  if (existing) return existing;
+
+  for (const item of resolved) {
+    const held = skipped.get(item.key);
+    if (held && held.signature === signature(item.entry) && Date.now() < held.retryAt) continue;
+    const failure = await startServer(item.entry, item.root);
+    if (failure === null && running.has(item.key)) return item;
   }
+  return null;
+}
+
+/** 根 marker 缺失不应在每次击键时重复探测和报错，沿用现有 TTL 跳过记录。 */
+function rememberMissingRoot(
+  entry: LspServerEntry,
+  workspaceRoot: string | null,
+  file: string
+): void {
+  const dir = parentPath(file) ?? file;
+  const miss = sessionKey(entry, `${workspaceRoot ?? ""}${KEY_SEP}${dir}`);
+  const held = skipped.get(miss);
+  if (held && Date.now() < held.retryAt && held.signature === signature(entry)) return;
+  rememberSkip(miss, {
+    detail: `未在项目「${workspaceRoot ?? ""}」中找到该语言的标志文件（${entry.rootMarkers.join(
+      " / "
+    )}）`,
+    retryAt: Date.now() + ROOTS_TTL,
+    signature: signature(entry),
+  });
+}
+
+/**
+ * 编辑器那侧的语言 id（`languageForPath` 给的）就是对标 IDE 的目录 id，
+ * 与 LSP 协议的 languageId 同名（tsx/jsx 已经是独立的 typescriptreact/javascriptreact），
+ * 无需再翻译；留这一层是为了协议侧将来单独调整时不牵动识别表。
+ */
+function lspLanguageId(_filePath: string, language: string): string {
   return language;
 }
 
@@ -725,6 +1306,31 @@ function lspLanguageId(filePath: string, language: string): string {
  * didOpen 仍立即发全文，请求类消息（hover / 补全）不经过这里。
  * 版本号在真正发送时才分配，发出的序列保持连续递增。
  */
+/** 实发一条 didChange（版本号在此分配）；防抖到期与请求前冲刷共用同一份发送逻辑。 */
+function sendDidChange(server: RunningServer, uri: string, text: string): void {
+  const version = ++server.version;
+  notify(server, "textDocument/didChange", {
+    textDocument: { uri, version },
+    contentChanges: [{ text }],
+  });
+  server.opened.set(uri, version);
+  server.sent.set(uri, text);
+}
+
+/**
+ * 立刻把某文档排定中的 didChange 发出去。
+ * 请求前（补全 / hover / 跳转 / 保存前格式化）必须先冲刷，否则 server 拿到的文本比编辑器旧，
+ * 落点与诊断都会错位——对齐 IDEA 的 `whenAllSynced`。
+ */
+function flushPendingChange(server: RunningServer, path: string): void {
+  const uri = pathToUri(path);
+  const held = server.pendingChanges.get(uri);
+  if (!held) return;
+  clearTimeout(held.timer);
+  server.pendingChanges.delete(uri);
+  sendDidChange(server, uri, held.text);
+}
+
 function scheduleChange(server: RunningServer, uri: string, text: string): void {
   const held = server.pendingChanges.get(uri);
   if (held) clearTimeout(held.timer);
@@ -732,13 +1338,7 @@ function scheduleChange(server: RunningServer, uri: string, text: string): void 
     const pending = server.pendingChanges.get(uri);
     if (!pending) return;
     server.pendingChanges.delete(uri);
-    const version = ++server.version;
-    notify(server, "textDocument/didChange", {
-      textDocument: { uri, version },
-      contentChanges: [{ text: pending.text }],
-    });
-    server.opened.set(uri, version);
-    server.sent.set(uri, pending.text);
+    sendDidChange(server, uri, pending.text);
   }, CHANGE_DEBOUNCE_MS);
   server.pendingChanges.set(uri, { timer, text });
 }
@@ -765,9 +1365,7 @@ function cancelAllChanges(server: RunningServer): void {
 function forgetDiagnostics(server: RunningServer): void {
   for (const uri of server.opened.keys()) {
     const key = diagnosticsKey(uri);
-    if (!key) continue;
-    rawDiagnosticsByPath.delete(key);
-    notifyDiagnostics(key);
+    if (key) clearDiagnosticsForKey(key, server.id);
   }
 }
 
@@ -787,10 +1385,7 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
     server.opened.delete(uri);
     server.sent.delete(uri);
     const cached = diagnosticsKey(uri);
-    if (cached) {
-      rawDiagnosticsByPath.delete(cached);
-      notifyDiagnostics(cached);
-    }
+    if (cached) clearDiagnosticsForKey(cached, server.id);
   }
 
   for (const document of mine) {
@@ -822,22 +1417,13 @@ function syncDocuments(server: RunningServer, mine: LspDocument[]): void {
 }
 
 /** 「启动」按钮的结果：失败时把原始原因带回去，界面上要能照着排查，不能只说一句「无法启动」。 */
-export interface WakeResult {
-  /** started 已启动；running 已在运行；off 该项没启用外部档；no-root 项目里没有该语言的标志文件；failed 后端或握手报错。 */
-  state: "started" | "running" | "off" | "no-root" | "failed";
-  /** 使用或本拟使用的项目根。 */
-  root?: string;
-  /** no-root 时列出找过的标志文件名。 */
-  markers?: string[];
-  /** failed 时是后端原始错误串（错误码 + 分隔符 + 明细），界面按码翻译并原样可复制。 */
-  detail?: string;
-}
+export type WakeResult = LspWakeResult;
 
 /**
  * 让某个 server 立刻在项目里跑起来，不等用户打开它管理的语言。
  *
  * 必须走 `startServer`：绕过它自行 spawn 的会话不在 `running` 表里，没人发 initialize 也没人发 didOpen，
- * 会成为无人回收的孤儿进程。启动完成后再执行一次文档对档，握手结束即可工作。
+ * 会成为无人回收的孤儿进程。握手完成后只同步当前 server 能管理的文档，保留手动启动的会话。
  */
 export async function wakeLsp(
   workspaceRoot: string,
@@ -847,8 +1433,6 @@ export async function wakeLsp(
 ): Promise<WakeResult> {
   const entry = serverEntries(config).find((item) => item.id === serverId);
   if (!entry || !serverEnabled(entry)) return { state: "off" };
-  if ([...running.values()].some((server) => server.entry.id === entry.id))
-    return { state: "running" };
   // 没有文件可依据，就按「这个项目里有没有这门语言」问一次：从工作区根向下扫描标志文件。
   // 这条命令本身失败也要报出来，不能和被「没有标志文件」混成同一种说法。
   const hit = await lspResolveRoot(entry.id, workspaceRoot, null).catch((cause: unknown) => {
@@ -865,9 +1449,24 @@ export async function wakeLsp(
   if ("error" in hit) return { state: "failed", detail: hit.error, root: workspaceRoot };
   // 同 resolveRoot：后端回的根要归一化，否则和文档路径那条算出的根不是同一个会话键。
   const root = canonicalPath(hit.root);
+  // 同一个 server 可以同时服务多个项目；只按 server id 判断会把其它项目的会话
+  // 错当成当前项目已启动，状态栏随后也找不到当前文件对应的会话。
+  if ([...running.values()].some((server) => server.entry.id === entry.id && server.root === root))
+    return { state: "running", root };
   const failure = await startServer(entry, root);
   if (failure) return { state: "failed", detail: failure, root };
-  await reconcileLsp(workspaceRoot, config, documents);
+  // 手动启动不是一次普通对档：即使当前没有该语言的打开文件，也应保留这条会话，
+  // 不能启动后立刻用空文档集合把它收掉。已有文档只同步属于该 server 且落在当前根内的部分。
+  const started = running.get(sessionKey(entry, root));
+  if (started) {
+    manualSessions.add(started);
+    syncDocuments(
+      started,
+      documents.filter(
+        (document) => entry.languages.includes(document.language) && pathWithin(root, document.path),
+      ),
+    );
+  }
   return { state: "started", root };
 }
 

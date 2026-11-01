@@ -260,8 +260,19 @@ fn run_install(line: &str) -> Result<InstallResult, String> {
         ("/bin/sh".to_string(), vec!["-c".to_string(), line.to_string()])
     };
     let mut command = Command::new(&program);
+    if cfg!(windows) {
+        // `cmd /C` 的最后一段不是普通 argv：让 Rust 为它转义会破坏命令自身的引号，
+        // 例如 `node -e "process.exit(7)"` 会被错误地当成成功命令。原样追加 shell
+        // 命令，才能保留配置中包管理器参数和引号的语义。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.args(&args[..2]).raw_arg(format!(" {}", line));
+        }
+    } else {
+        command.args(&args);
+    }
     command
-        .args(&args)
         .env("PATH", augmented_path())
         // npm / pnpm / yarn 都是 Node 程序，从 VS Code 系编辑器终端启动时会继承 Node 调试注入
         // （`NODE_OPTIONS` 挂 js-debug bootloader、`VSCODE_INSPECTOR_OPTIONS`），装上后挂在调试
@@ -302,7 +313,9 @@ fn run_install(line: &str) -> Result<InstallResult, String> {
     })
 }
 
-/// 探一批 server 装没装，并把「开着外部档但没装」的那几项档位落回 `off`。
+/// 探一批 server 装没装。档位是用户的意图，探测不下手改：对标 IDE 的语义是
+/// 「missing 也保持启用」，开文件时路由报 missing、右下角提醒安装；降级落盘会把
+/// 缺省启用的整表悄悄关光，安装提醒从此没有触发条件。
 ///
 /// 只做单向校正：没装才关档，装上了不自动打开——用户可能故意留着关着的那一项。
 /// 这条只在界面主动要探测时跑，不在应用启动时跑，免得每次开应用都改写配置。
@@ -318,6 +331,15 @@ pub async fn lsp_install(
     server: String,
 ) -> Result<InstallResult, String> {
     block(move || lsp_install_impl(app, server)).await
+}
+
+/// 跑配置里那条 `uninstallCommand`。没配的回 `LSP_NO_INSTALL`。
+#[tauri::command]
+pub async fn lsp_uninstall(
+    app: tauri::AppHandle,
+    server: String,
+) -> Result<InstallResult, String> {
+    block(move || lsp_uninstall_impl(&app, server)).await
 }
 
 fn lsp_install_impl(app: tauri::AppHandle, server: String) -> Result<InstallResult, String> {
@@ -342,29 +364,39 @@ fn lsp_install_impl(app: tauri::AppHandle, server: String) -> Result<InstallResu
     done
 }
 
+fn lsp_uninstall_impl(app: &tauri::AppHandle, server: String) -> Result<InstallResult, String> {
+    let trimmed = server.trim();
+    if trimmed.is_empty() {
+        return Err(err("LSP_NO_SERVER", ""));
+    }
+    let config = crate::lsp_config::load(app);
+    let Some(entry) = config.servers.get(trimmed) else {
+        return Err(err("LSP_NO_SERVER", trimmed));
+    };
+    let line = entry.uninstall_command.trim();
+    if line.is_empty() {
+        return Err(err("LSP_NO_UNINSTALL", trimmed));
+    }
+    let done = run_install(line);
+    if done.is_ok() {
+        lock(cache()).clear();
+    }
+    done
+}
+
 /// 探测并校正的那段，命令壳只做 `AppHandle` 解析。
 fn probe_and_reconcile(app: &tauri::AppHandle) -> crate::lsp_config::LspProbeReport {
     let mut config = crate::lsp_config::load(app);
     let mut servers = Vec::new();
-    let mut changed = false;
     for (id, entry) in &mut config.servers {
         let probe = resolve_command(&entry.effective_program());
         let installed = probe.is_some();
-        // `builtin` 与 `lsp` 都得真起一条进程（编辑器换成 CodeMirror 之后没有「渲染进程里的
-        // 内置语义」可退），所以两档都要求本机装着那个程序。
-        if !installed && entry.mode != "off" {
-            entry.mode = "off".to_string();
-            changed = true;
-        }
         servers.push(crate::lsp_config::LspServerProbe {
             id: id.clone(),
             program: entry.effective_program(),
             installed,
             path: probe.unwrap_or_default(),
         });
-    }
-    if changed {
-        let _ = crate::lsp_config::save(app, &config);
     }
     crate::lsp_config::LspProbeReport { config, servers }
 }

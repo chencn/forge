@@ -16,7 +16,8 @@ import {
   type CompletionResult,
 } from "@codemirror/autocomplete";
 import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
-import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { indentUnit } from "@codemirror/language";
 import {
   EditorView,
   hoverTooltip,
@@ -46,6 +47,7 @@ import { samePath } from "../format";
 import { pathToUri, uriToPath } from "../lspUri";
 import { cmSnippet, plainSnippetText } from "./snippet";
 import { locationsExtensions, showLocations, type LocationItem } from "./locations";
+import { chooserExtensions, showDeclarationChooser } from "./lspChooser";
 import { inlayHintsExtension } from "./lspDecorations";
 import { semanticTokensExtension } from "./lspSemanticTokens";
 import { codeLensExtension } from "./lspCodeLens";
@@ -81,8 +83,17 @@ const CM_COMPLETION_TYPES = [
   "typeParameter",
 ];
 
-/** 与原来 Monaco provider 用的是同一批触发字符：少一个就会少一次补全弹出。 */
-const TRIGGER_CHARACTERS = [".", ":", "<", "/", "@", '"', "'"];
+/**
+ * 补全触发字符取自当前路由到的服务声明（`completionProvider.triggerCharacters`）。
+ *
+ * 原来那张写死的表是 Monaco 那版留下的：服务没声明的字符（`:`、`<`、`@` 之类）会白弹一次
+ * 补全，服务声明了的（`-`、`>`）又接不上。服务没声明就不认触发字符，靠打字本身触发即可。
+ */
+function triggerCharactersOf(path: string, language: string): string[] {
+  const provider = lspManager.capabilities(path, language)?.completionProvider;
+  if (!provider || typeof provider !== "object") return [];
+  return provider.triggerCharacters ?? [];
+}
 
 /** LSP `TextEdit` 换成 CodeMirror 的一处改动（按当前这份 state 的坐标）。 */
 function changeOf(
@@ -113,6 +124,45 @@ function positionOf(
  * 附加编辑与主插入按「接受前」的坐标一起派发，CodeMirror 允许一次改动里放多段，
  * 所以不重排就会互相错位。
  */
+/** `textDocument/completion` 返回的候选（只声明读取的字段）。 */
+interface RawCompletionItem {
+  label?: unknown;
+  kind?: number;
+  detail?: string;
+  documentation?: unknown;
+  insertText?: string;
+  insertTextFormat?: number;
+  additionalTextEdits?: LspTextEdit[];
+  textEdit?: { newText?: string; range?: LspRange; insert?: LspRange };
+  filterText?: string;
+  sortText?: string;
+  labelDetails?: { detail?: string; description?: string };
+}
+
+/** resolve 之后候选的最终形态（请求时那份 + resolve 补全的字段）。 */
+interface ResolvedCompletion {
+  detail?: string;
+  info?: string;
+  extras: LspTextEdit[];
+  inserted: string;
+  isSnippet: boolean;
+}
+
+/** documentation 归一成纯文本：字符串直接用，MarkupContent 取 value，再拼 labelDetails.description。 */
+function completionDoc(node: RawCompletionItem): string | undefined {
+  const documentation = node.documentation;
+  const text =
+    typeof documentation === "string"
+      ? documentation
+      : documentation && typeof documentation === "object" && typeof (documentation as { value?: unknown }).value === "string"
+        ? (documentation as { value: string }).value
+        : undefined;
+  if (node.labelDetails?.description) {
+    return text ? `${text}\n\n${node.labelDetails.description}` : node.labelDetails.description;
+  }
+  return text;
+}
+
 async function lspCompletions(context: CompletionContext): Promise<CompletionResult | null> {
   const state = context.state;
   const path = pathOf(state);
@@ -121,7 +171,10 @@ async function lspCompletions(context: CompletionContext): Promise<CompletionRes
   const encoding = lspManager.positionEncoding(path, language);
   // 打字触发的补全要有「正在输入的词」；点 Ctrl+Space 或刚敲下触发字符时没有词也要发。
   const word = context.matchBefore(/[\w$]*/);
-  const typed = context.matchBefore(new RegExp(`[${TRIGGER_CHARACTERS.map(escapeRegExpChar).join("")}]$`));
+  const triggers = triggerCharactersOf(path, language);
+  const typed = triggers.length
+    ? context.matchBefore(new RegExp(`[${triggers.map(escapeRegExpChar).join("")}]$`))
+    : null;
   if (!context.explicit && !word?.text && !typed) return null;
   // server 不回话（半死、超时）时按「这一路没有候选」落地：这条 await 抛出去没人接，
   // 会变成 CodeMirror 那边一个未处理的 rejection。
@@ -129,6 +182,12 @@ async function lspCompletions(context: CompletionContext): Promise<CompletionRes
   try {
     result = await lspManager.request(path, language, "textDocument/completion", {
       position: positionOf(state, context.pos, encoding),
+      // 只有服务声明过的触发字符才报 triggerKind 2：它据此决定要不要先按前缀过滤一轮。
+      // 显式呼出（Ctrl+Space）永远算 kind 1。
+      context:
+        !context.explicit && typed
+          ? { triggerKind: 2, triggerCharacter: typed.text }
+          : { triggerKind: 1 },
     });
   } catch {
     return null;
@@ -136,42 +195,82 @@ async function lspCompletions(context: CompletionContext): Promise<CompletionRes
   const items = Array.isArray(result) ? result : ((result as { items?: unknown[] })?.items ?? []);
   if (!items.length) return null;
   const fallbackFrom = word ? word.from : context.pos;
+  const doc = state.doc.toString();
+  // completionItem/resolve 的结果按 label 缓存：`info` 懒加载（选中项时）触发一次，
+  // `apply` 取回 resolve 后才有的 detail / 文档 / additionalTextEdits（自动 import）。
+  const resolvedByLabel = new Map<string, ResolvedCompletion>();
+  const resolveCompletion = (node: RawCompletionItem, label: string): Promise<ResolvedCompletion> => {
+    const cached = resolvedByLabel.get(label);
+    if (cached) return Promise.resolve(cached);
+    const value: ResolvedCompletion = {
+      detail: node.detail ?? node.labelDetails?.detail,
+      info: completionDoc(node),
+      extras: node.additionalTextEdits ?? [],
+      inserted: node.textEdit?.newText ?? node.insertText ?? label,
+      isSnippet: node.insertTextFormat === 2,
+    };
+    // 请求时若需要的字段都已带齐，就不必再问 server 一遍。
+    if (node.documentation !== undefined && node.detail !== undefined && node.additionalTextEdits !== undefined) {
+      resolvedByLabel.set(label, value);
+      return Promise.resolve(value);
+    }
+    return lspManager
+      .requestRaw(path, language, "completionItem/resolve", node as unknown as Record<string, unknown>)
+      .then((full) => {
+        const item = full as RawCompletionItem | null;
+        if (item) {
+          value.detail = item.detail ?? value.detail;
+          value.info = completionDoc(item) ?? value.info;
+          value.extras = item.additionalTextEdits ?? value.extras;
+          value.inserted = item.textEdit?.newText ?? item.insertText ?? value.inserted;
+          value.isSnippet = (item.insertTextFormat ?? node.insertTextFormat) === 2;
+        }
+        resolvedByLabel.set(label, value);
+        return value;
+      })
+      .catch(() => {
+        // resolve 失败就按请求时那份落地，不让补全整条消失。
+        resolvedByLabel.set(label, value);
+        return value;
+      });
+  };
   const options = [];
   for (const item of items) {
-    const node = item as {
-      label?: unknown;
-      kind?: number;
-      detail?: string;
-      documentation?: unknown;
-      insertText?: string;
-      insertTextFormat?: number;
-      additionalTextEdits?: LspTextEdit[];
-      textEdit?: { newText?: string; range?: LspRange; insert?: LspRange };
-      filterText?: string;
-      sortText?: string;
-      labelDetails?: { detail?: string; description?: string };
-    };
+    const node = item as RawCompletionItem;
     const label = typeof node.label === "string" ? node.label : (node.label as { label?: string })?.label;
     if (!label) continue;
     const range = node.textEdit?.range ?? node.textEdit?.insert;
-    const inserted = node.textEdit?.newText ?? node.insertText ?? label;
-    const isSnippet = node.insertTextFormat === 2;
-    const extras = node.additionalTextEdits ?? [];
     options.push({
       label,
       type: CM_COMPLETION_TYPES[Math.max((node.kind ?? 1) - 1, 0)] ?? "text",
       detail: node.detail ?? node.labelDetails?.detail,
-      info: node.labelDetails?.description
-        ? `${typeof node.documentation === "string" ? node.documentation + "\n\n" : ""}${node.labelDetails.description}`
-        : typeof node.documentation === "string"
-          ? node.documentation
-          : undefined,
-      apply: (view: EditorView, picked: Completion, from: number, to: number) =>
-        applyCompletion(view, picked, from, to, inserted, isSnippet, extras, encoding, state, path, language),
+      info: async () => document.createTextNode((await resolveCompletion(node, label)).info ?? ""),
+      apply: (view: EditorView, picked: Completion, from: number, to: number) => {
+        // 选中项若已 resolve 就用 resolve 后的内容（自动 import 的附加编辑只在 resolve 里给）。
+        const value = resolvedByLabel.get(label);
+        if (value) {
+          applyCompletion(view, picked, from, to, value.inserted, value.isSnippet, value.extras, encoding, state, path, language);
+        } else {
+          const inserted = node.textEdit?.newText ?? node.insertText ?? label;
+          applyCompletion(
+            view,
+            picked,
+            from,
+            to,
+            inserted,
+            node.insertTextFormat === 2,
+            node.additionalTextEdits ?? [],
+            encoding,
+            state,
+            path,
+            language
+          );
+        }
+      },
       filterText: node.filterText,
       sortText: node.sortText,
-      from: range ? offsetAtPosition(state.doc.toString(), range.start, encoding) : fallbackFrom,
-      to: range ? offsetAtPosition(state.doc.toString(), range.end, encoding) : context.pos,
+      from: range ? offsetAtPosition(doc, range.start, encoding) : fallbackFrom,
+      to: range ? offsetAtPosition(doc, range.end, encoding) : context.pos,
     });
   }
   return { from: fallbackFrom, options, validFor: /^[\w$]*$/ };
@@ -277,14 +376,21 @@ export function signatureHelpViewOf(result: unknown): SignatureHelpView | null {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [];
     const signature = item as { label?: unknown; documentation?: unknown; parameters?: unknown };
     if (typeof signature.label !== "string" || !signature.label) return [];
+    const signatureLabel = signature.label;
     const parameters = Array.isArray(signature.parameters)
       ? signature.parameters.flatMap((parameter) => {
           if (!parameter || typeof parameter !== "object" || Array.isArray(parameter)) return [];
           const label = (parameter as { label?: unknown }).label;
-          return typeof label === "string" ? [label] : [];
+          // label 可以是字符串，也可以是 [start, end] 偏移（gopls / clangd 用后者），按偏移从签名行切出参数名。
+          if (typeof label === "string") return [label];
+          if (Array.isArray(label) && typeof label[0] === "number" && typeof label[1] === "number") {
+            const slice = signatureLabel.slice(label[0] as number, label[1] as number);
+            return slice ? [slice] : [];
+          }
+          return [];
         })
       : [];
-    return [{ label: signature.label, documentation: markupToText(signature.documentation), parameters }];
+    return [{ label: signatureLabel, documentation: markupToText(signature.documentation), parameters }];
   });
   if (!signatures.length) return null;
   return {
@@ -348,11 +454,13 @@ function rangeOf(state: EditorState, encoding: LspPositionEncoding): LspRange {
 async function hoverTip(view: EditorView, pos: number): Promise<Tooltip | null> {
   const state = view.state;
   const path = pathOf(state);
-  if (!path) return null;
-  const encoding = lspManager.positionEncoding(path, languageIdOf(state));
+  const language = languageIdOf(state);
+  // 服务没这一档就别问：鼠标划过去每次都要发一条请求，换回来的只会是空。
+  if (!path || !capabilityEnabled(path, language, "hoverProvider")) return null;
+  const encoding = lspManager.positionEncoding(path, language);
   let result: unknown;
   try {
-    result = await lspManager.request(path, languageIdOf(state), "textDocument/hover", {
+    result = await lspManager.request(path, language, "textDocument/hover", {
       position: positionOf(state, pos, encoding),
     });
   } catch {
@@ -547,6 +655,44 @@ function closeRename(view: EditorView): boolean {
   view.dispatch({ effects: setRename.of(null) });
   view.focus();
   return true;
+}
+
+/** `textDocument/prepareRename` 的应答：新规范给 `{ range, placeholder }`，旧规范直接给 Range。 */
+interface PrepareRenameAnswer {
+  start?: unknown;
+  end?: unknown;
+  range?: { start?: unknown; end?: unknown };
+  placeholder?: unknown;
+  defaultBehavior?: unknown;
+}
+
+/**
+ * 问服务「这个位置能改名吗、这个名字叫什么」。
+ *
+ * 服务没声明 `renameProvider.prepareProvider` 就不问：它多半没实现这个方法，问了只换回一条
+ * MethodNotFound。`allowed: false` 表示这个位置不能改名，调用方当场说明白，别让人打完新名字才失败。
+ */
+async function prepareRename(
+  path: string,
+  language: string,
+  position: LspPosition
+): Promise<{ allowed: boolean; placeholder?: string }> {
+  const provider = lspManager.capabilities(path, language)?.renameProvider;
+  if (!provider || typeof provider !== "object" || !provider.prepareProvider) {
+    return { allowed: true };
+  }
+  const answer = (await lspManager.request(path, language, "textDocument/prepareRename", {
+    position,
+  })) as PrepareRenameAnswer | null;
+  // 规范里的 null 就是「这个位置不能改名」。
+  if (answer === null || answer === undefined) return { allowed: false };
+  if (typeof answer !== "object" || Array.isArray(answer)) return { allowed: true };
+  const placeholder = typeof answer.placeholder === "string" ? answer.placeholder : undefined;
+  if (answer.range) return { allowed: true, placeholder };
+  // 旧规范直接回 Range（有 start / end 两个字段）。
+  if (answer.start && answer.end) return { allowed: true };
+  // 新规范的 `defaultBehavior: false` 同样是「不改名」。
+  return { allowed: answer.defaultBehavior !== false };
 }
 
 function renameWord(state: EditorState): string {
@@ -752,6 +898,24 @@ export const renameSymbol: Command = (view) => {
     }
   });
   view.dispatch({ effects: setRename.of({ pos, end: pos, create: () => ({ dom, mount: () => { input.focus(); input.select(); } }) }) });
+  // 先问服务一句能不能改名，并把它的 placeholder 当初值：本地词边界猜出来的名字
+  // 在 `foo_bar` 这种位置上只会取到半截。这一问失败不挡改名，真正的失败由下面那次报。
+  prepareRename(path, language, positionOf(state, pos, encoding))
+    .then((prepared) => {
+      if (view.state.doc !== snapshot || pathOf(view.state) !== path || submitting) return;
+      if (!prepared.allowed) {
+        status.textContent = translate("editor.lsp.renameUnavailable");
+        input.disabled = true;
+        return;
+      }
+      if (prepared.placeholder) {
+        input.value = prepared.placeholder;
+        input.select();
+      }
+    })
+    .catch(() => {
+      // 服务半死 / 不支持时按「可以改名」继续，改名那一步会给出真正的错误。
+    });
   return true;
 };
 
@@ -778,8 +942,15 @@ function toDiagnostics(
   const out: Diagnostic[] = [];
   for (const item of diagnostics) {
     const severity = SEVERITY_BY_LSP[Math.min(Math.max((item.severity ?? 4) - 1, 0), 3)];
-    const from = offsetAtPosition(state.doc.toString(), item.range.start, encoding);
-    const to = Math.max(from, offsetAtPosition(state.doc.toString(), item.range.end, encoding));
+    let from = offsetAtPosition(state.doc.toString(), item.range.start, encoding);
+    let to = Math.max(from, offsetAtPosition(state.doc.toString(), item.range.end, encoding));
+    // 空 range 画不出波浪线（这类诊断指的是「光标这一处」，比如多余的分号）：
+    // 往右扩一个字符，已经在行尾就往左扩（对齐参照 `diagnostics.ts:126-131`）。
+    if (from === to) {
+      const line = state.doc.lineAt(from);
+      if (to < line.to) to += 1;
+      else if (from > line.from) from -= 1;
+    }
     out.push({ from, to, severity, message: item.message, source: item.source });
   }
   return out;
@@ -835,6 +1006,47 @@ interface LspLocationLike {
   targetSelectionRange?: LspRange;
 }
 
+/** 每台编辑器最后一次改正文的时刻（`performance.now()`）：空结果重试靠它判断「刚改过」。 */
+const editedAt = new WeakMap<EditorView, number>();
+
+/** 空结果重试的窗口、次数与间隔。 */
+const EDIT_RETRY_WINDOW_MS = 1500;
+const EDIT_RETRIES = 3;
+const EDIT_RETRY_DELAY_MS = 250;
+
+const trackEdits = ViewPlugin.fromClass(
+  class {
+    update(update: ViewUpdate): void {
+      if (update.docChanged) editedAt.set(update.view, performance.now());
+    }
+  }
+);
+
+/** 空结果：null / undefined / 空数组。 */
+function isEmptyLocations(answer: unknown): boolean {
+  return answer === null || answer === undefined || (Array.isArray(answer) && answer.length === 0);
+}
+
+/**
+ * 有些服务拿上一版正文在答（kotlin-language-server 在打字后约 300ms 内回空，
+ * 对齐参照 `navigation.ts` 的 `gotoAfterEdits`）：结果是空的、而且这篇刚改过，就再问几次。
+ */
+async function retryEmpty<T>(view: EditorView, request: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    const answer = await request();
+    const justEdited = performance.now() - (editedAt.get(view) ?? -Infinity) <= EDIT_RETRY_WINDOW_MS;
+    if (!isEmptyLocations(answer) || attempt >= EDIT_RETRIES || !justEdited) return answer;
+    await new Promise((resolve) => setTimeout(resolve, EDIT_RETRY_DELAY_MS));
+  }
+}
+
+/** 这一处结果是不是就落在光标所在位置（同行同列）。 */
+function pointsAtCaret(item: LocationItem, path: string, pos: number, state: EditorState): boolean {
+  if (!samePath(item.path, path)) return false;
+  const line = state.doc.lineAt(pos);
+  return item.line === line.number && item.column === pos - line.from + 1;
+}
+
 /**
  * 请求一组位置并按结果分支：定义只有一处就直接跳，多处开列表。
  *
@@ -848,20 +1060,38 @@ function openLocations(view: EditorView, method: LspLocationMethod, pos: number)
   const language = languageIdOf(state);
   if (!path || !capabilityEnabled(path, language, CAPABILITY_BY_METHOD[method])) return false;
   const snapshot = state.doc;
-  void lspManager.request(path, languageIdOf(state), `textDocument/${method}`, {
-    position: positionOf(state, pos, lspManager.positionEncoding(path, languageIdOf(state))),
-    ...(method === "references" ? { context: { includeDeclaration: true } } : {}),
-  })
+  const encoding = lspManager.positionEncoding(path, language);
+  void retryEmpty(view, () =>
+    lspManager.request(path, language, `textDocument/${method}`, {
+      position: positionOf(state, pos, encoding),
+      // 用法列表不要把声明本身算进去（参照的用法面板同样是 false）：光标停在声明上时
+      // 下面会转成找用法，带着声明的话第一条就是它自己。
+      ...(method === "references" ? { context: { includeDeclaration: false } } : {}),
+    })
+  )
     .then((result) => {
       // 整台编辑器只有一台，切页签是换 state 不是换视图：等回来时手上这篇可能已经换成
       // 另一份文件了，那一份结果与它无关，直接丢。
       const live = pathOf(view.state);
       if (!live || !samePath(live, path) || view.state.doc !== snapshot) return;
       const items = locationItems(view, Array.isArray(result) ? result : result ? [result] : []);
+      // 光标本来就停在声明上：定义跳转在这里等于原地不动，转去找用法（IDEA 的规矩）。
+      if (method === "definition" && items.length === 1 && pointsAtCaret(items[0], path, pos, state)) {
+        if (openLocations(view, "references", pos)) return;
+      }
       // 「查找用法」哪怕只有一处也列出来：那条命令要的是「都看看」，直接跳反而少了确认。
       if (items.length === 1 && method !== "references") {
         openTargetInEditor(items[0].path, items[0].line, items[0].column);
         view.focus();
+        return;
+      }
+      // 定义一类导航多处命中：锚在发起跳转的位置弹选择器，光标处挑完就走，
+      // 不用把视线甩到底部面板再甩回来。没有选择器的（用法）仍开面板。
+      const chooserTitle = CHOOSER_TITLE_BY_METHOD[method];
+      if (chooserTitle && items.length > 1) {
+        const word = view.state.wordAt(pos);
+        const name = word ? view.state.sliceDoc(word.from, word.to) : "";
+        showDeclarationChooser(view, pos, translate(chooserTitle, { name, count: items.length }), items);
         return;
       }
       showLocations(view, translate(TITLE_BY_METHOD[method]), items);
@@ -891,7 +1121,18 @@ const TITLE_BY_METHOD: Record<LspLocationMethod, TranslationKey> = {
   references: "editor.usages.title",
 };
 
-/** 结果去重、排序，并把当前文档里的那些行的正文就地取出来。 */
+/**
+ * 多处命中时锚在光标处的选择器标题（对标 IDE 的 Choose Declaration 弹层）。
+ * 「查找用法」不走这里：它要的是通览，仍开底部面板。
+ */
+const CHOOSER_TITLE_BY_METHOD: Partial<Record<LspLocationMethod, TranslationKey>> = {
+  declaration: "editor.chooser.declaration",
+  definition: "editor.chooser.definition",
+  typeDefinition: "editor.chooser.typeDefinition",
+  implementation: "editor.chooser.implementation",
+};
+
+/** 结果去重，并把当前文档里的那些行的正文就地取出来；顺序按服务给的来。 */
 function locationItems(view: EditorView, locations: LspLocationLike[]): LocationItem[] {
   const state = view.state;
   const here = pathOf(state);
@@ -899,7 +1140,8 @@ function locationItems(view: EditorView, locations: LspLocationLike[]): Location
   const items: LocationItem[] = [];
   for (const location of locations) {
     const uri = location.uri ?? location.targetUri;
-    const range = location.range ?? location.targetRange ?? location.targetSelectionRange;
+    // LocationLink 要取 targetSelectionRange（要选中的符号名）；退化到 range，最后才是 targetRange。
+    const range = location.targetSelectionRange ?? location.range ?? location.targetRange;
     if (!uri || !range) continue;
     // 只认 `file:` 这一种：`untitled:`、`inmemory:` 这类虚拟文档跳过去也打不开，
     // 列在结果里只会让人点了没反应。
@@ -912,10 +1154,9 @@ function locationItems(view: EditorView, locations: LspLocationLike[]): Location
     seen.add(key);
     items.push({ path: itemPath, line, column, text: here && samePath(here, itemPath) ? lineText(state, line).trim() : "" });
   }
-  return items.sort((a, b) => {
-    const byPath = a.path.localeCompare(b.path, undefined, { sensitivity: "base" });
-    return byPath !== 0 ? byPath : a.line - b.line || a.column - b.column;
-  });
+  // 不重排：这份列表也拿来放符号树和调用层级，顺序本身就是服务给的层级顺序；
+  // 按路径字母序一排，符号树就成了乱序。
+  return items;
 }
 
 /**
@@ -938,6 +1179,7 @@ export const findUsages = goTo("references");
 
 interface StructuralSymbol {
   name?: unknown;
+  kind?: unknown;
   range?: unknown;
   selectionRange?: unknown;
   location?: unknown;
@@ -983,6 +1225,59 @@ export const showDocumentSymbols = (view: EditorView): boolean => {
     .then((result) => {
       if (pathOf(view.state) !== path || view.state.doc !== snapshot) return;
       showLocations(view, "Document Symbols", symbolsToLocations(view, result));
+    }).catch(() => {});
+  return true;
+};
+
+/** 方法级符号：IDEA 的 Alt+↑↓ 只在方法边界停靠（Method/Function/Constructor）。 */
+const METHOD_KINDS = new Set([6, 9, 12]);
+
+/** 拉平符号树，取方法级符号的落点偏移（selectionRange 起点优先，退回 range/location 起点）。 */
+function methodStops(result: unknown, docText: string): number[] {
+  const stops: number[] = [];
+  const visit = (item: StructuralSymbol) => {
+    const kind = typeof item.kind === "number" ? item.kind : -1;
+    const range = validLspRange(item.selectionRange) ? item.selectionRange
+      : validLspRange(item.range) ? item.range
+        : (item.location && typeof item.location === "object" && validLspRange((item.location as LspLocationLike).range))
+          ? (item.location as LspLocationLike).range
+          : null;
+    if (METHOD_KINDS.has(kind) && range) {
+      const offset = offsetAtPosition(docText, range.start);
+      if (offset >= 0 && offset <= docText.length) stops.push(offset);
+    }
+    if (Array.isArray(item.children)) {
+      for (const child of item.children) if (child && typeof child === "object" && !Array.isArray(child)) visit(child as StructuralSymbol);
+    }
+  };
+  if (Array.isArray(result)) for (const item of result) if (item && typeof item === "object" && !Array.isArray(item)) visit(item as StructuralSymbol);
+  return stops.sort((a, b) => a - b);
+}
+
+/**
+ * Alt+↑/↓：光标跳到上一个/下一个方法头（IDEA 的 navigate.previousMethod / nextMethod，
+ * 对齐 openidea navigation/index.ts:55 gotoMethod——LSP outline，方法边界停靠）。
+ * 服务没给 outline 时返回 false，让按键落空而不是误跳。
+ */
+export const gotoMethod = (view: EditorView, dir: 1 | -1): boolean => {
+  const path = pathOf(view.state);
+  const language = languageIdOf(view.state);
+  if (!path || !capabilityEnabled(path, language, "documentSymbolProvider")) return false;
+  const snapshot = view.state.doc;
+  const caret = view.state.selection.main.head;
+  void lspManager.request(path, language, "textDocument/documentSymbol", {})
+    .then((result) => {
+      if (pathOf(view.state) !== path || view.state.doc !== snapshot) return;
+      const stops = methodStops(result, snapshot.toString());
+      const target = dir === 1
+        ? stops.find((offset) => offset > caret)
+        : stops.slice().reverse().find((offset) => offset < caret);
+      if (target === undefined) return;
+      view.dispatch({
+        selection: EditorSelection.cursor(target),
+        scrollIntoView: true,
+        userEvent: "select.navigate",
+      });
     }).catch(() => {});
   return true;
 };
@@ -1086,12 +1381,23 @@ const ctrlClick = EditorView.domEventHandlers({
  * 每处替换的行列都是按格式化前的正文给的，CodeMirror 一次事务里的多段改动正是按这个
  * 口径算坐标，所以不用像原来那样从后往前排。
  */
+/**
+ * 格式化参数：制表宽度照编辑器当前值给；缩进风格看 indentUnit 这一档是空格还是制表符，
+ * 不能一律说「用空格」——Tab 缩进的项目会被服务整篇回改成空格。
+ */
+function formattingOptionsOf(state: EditorState): { tabSize: number; insertSpaces: boolean } {
+  return { tabSize: state.tabSize, insertSpaces: !state.facet(indentUnit).includes("\t") };
+}
+
 export const formatDocument = (view: EditorView): boolean => {
   const state = view.state;
   const path = pathOf(state);
-  if (!path) return false;
-  void lspManager.request(path, languageIdOf(state), "textDocument/formatting", {
-    options: { tabSize: state.tabSize, insertSpaces: true },
+  const language = languageIdOf(state);
+  // 服务没报 `documentFormattingProvider` 就直接不发：发出去只会换回一条
+  // MethodNotFound，撤销栈上还白留一条「格式化」。菜单项的灰显也认这一档。
+  if (!path || !capabilityEnabled(path, language, "documentFormattingProvider")) return false;
+  void lspManager.request(path, language, "textDocument/formatting", {
+    options: formattingOptionsOf(state),
   })
     .then((result) => {
       // 等回来时正文已经变了就放弃这一次：那些行列是按发出去那一份算的，
@@ -1100,9 +1406,7 @@ export const formatDocument = (view: EditorView): boolean => {
       const edits = Array.isArray(result) ? (result as LspTextEdit[]) : [];
       if (!edits.length) return;
       view.dispatch({
-        changes: edits.map((edit) =>
-          changeOf(state, edit, lspManager.positionEncoding(path, languageIdOf(state)))
-        ),
+        changes: edits.map((edit) => changeOf(state, edit, lspManager.positionEncoding(path, language))),
         userEvent: "format",
       });
     })
@@ -1129,9 +1433,12 @@ export const lspExtensions: Extension[] = [
   documentLinksExtension,
   signatureHelpPlugin,
   signatureHelpField,
+  // 记录最后一次改正文的时刻，跳转的空结果重试要用。
+  trackEdits,
   codeActionsField,
   renameField,
   locationsExtensions,
+  chooserExtensions,
   manualHoverField,
   ctrlClick,
   keymap.of([

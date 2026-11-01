@@ -89,20 +89,29 @@ fn hit_in(dir: &Path, markers: &[String]) -> Option<RootHit> {
     None
 }
 
-/// 从一个目录向上找，到 `stop`（含）为止。
+/// 从一个目录向上找，到 `stop`（含）为止，**取最外层的那个命中**。
+///
+/// Cargo / npm 工作区就该只起一条会话：成员目录里也有 `Cargo.toml` 时，拿成员的根去起
+/// 服务会退成单包模式，跨成员跳转和类型解析都会缺；参照实现（openidea `launch.rs:227`）
+/// 同样是往上走到底、取最外层。向下扫取最浅层，两边口径一致。
 fn search_up(start: &Path, stop: &Path, markers: &[String]) -> Option<RootHit> {
+    // 起点不在工程内（比如刚被移走的文件）不做约束外的向上探测。
+    if !start.starts_with(stop) {
+        return None;
+    }
+    let mut best: Option<RootHit> = None;
     let mut current = Some(start.to_path_buf());
     while let Some(dir) = current {
         if let Some(hit) = hit_in(&dir, markers) {
-            return Some(hit);
+            best = Some(hit);
         }
         // 越出工程范围就停：上层的 Cargo.toml 不是这个工程的。
-        if dir == stop || !dir.starts_with(stop) {
-            return None;
+        if dir == stop {
+            break;
         }
         current = dir.parent().map(|parent| parent.to_path_buf());
     }
-    None
+    best
 }
 
 /// 从根向下扫，一层层来，取最浅的那个命中。
@@ -140,7 +149,8 @@ fn search_down(root: &Path, markers: &[String]) -> Option<RootHit> {
 
 /// 找出这条文件（或这个工程）真正的语言服务器根。
 ///
-/// 有文件先按文件所在目录向上找，找不到再从工程根向下扫；没有文件直接向下扫。
+/// 有文件先按文件所在目录向上找（取最外层的命中，即最靠近工程根的那个），找不到再从工程根
+/// 向下扫（取最浅的一层）；没有文件直接向下扫。
 /// 两处都没命中返回 `None`，调用方据此不启进程。`markers` 是空的（用户自填的 server 没标标志）
 /// 就不做约束，工程根原样返回。
 pub fn resolve(markers: &[String], workspace_root: &Path, file: Option<&Path>) -> Option<RootHit> {
@@ -269,10 +279,26 @@ mod tests {
         assert!(!marker_matches("Cargo.toml", ""));
     }
 
-    /// 文件在子目录里时，向上找到那个子目录而不是工程根。
+    /// 嵌套工作区向上取最外层：根上也有标志时用根，别给每个成员各起一条会话。
     #[test]
-    fn finds_nearest_stack_root_upwards() {
-        let dir = temp_project("up");
+    fn picks_outermost_stack_root_upwards() {
+        let dir = temp_project("up-outer");
+        touch(&dir, "Cargo.toml");
+        touch(&dir.join("native"), "Cargo.toml");
+        let file = dir.join("native").join("src").join("main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}").unwrap();
+
+        let hit = resolve(&markers(&["Cargo.toml"]), &dir, Some(&file)).unwrap();
+        assert_eq!(Path::new(&hit.root), dir);
+        assert_eq!(hit.marker, "Cargo.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只有成员目录带标志时，向上落到那个成员目录。
+    #[test]
+    fn falls_back_to_inner_root_when_outer_has_no_marker() {
+        let dir = temp_project("up-inner");
         touch(&dir.join("native"), "Cargo.toml");
         let file = dir.join("native").join("src").join("main.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();

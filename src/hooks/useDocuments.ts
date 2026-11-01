@@ -5,6 +5,8 @@ import { recordSnapshot } from "../lib/localHistory";
 import { canonicalPath, pathWithin, samePath } from "../lib/format";
 import { languageForPath } from "../lib/editorEnv";
 import { docKindOf, hasTextContent, previewsFromDisk } from "../lib/docKind";
+import { isVirtualUri, virtualDocumentKey } from "../lib/virtualDocuments";
+import { loadEditorConfig, type EditorConfig } from "../lib/editorConfig";
 import type { DocKind } from "../lib/docKind";
 
 /** 文档的展示视图：源码、渲染后的预览、或分栏（左编辑右预览）。 */
@@ -52,6 +54,8 @@ export interface OpenDocument {
   encoding: "utf-8" | "gb18030";
   /** 语言 id（`languageForPath` 那张表给的）。 */
   language: string;
+  /** 当前文件匹配到的 `.editorconfig`；未配置的字段回退到全局设置。 */
+  editorConfig?: EditorConfig;
   /** 只读预览：二进制、超大或带只读属性的文件。 */
   readOnly: boolean;
   /** 读取中：此时 contents 还是空的，编辑器要等加载完再建 model。 */
@@ -69,6 +73,8 @@ export interface OpenDocument {
    * 图片预览没法用 asset 协议去取，只能看源码。
    */
   onDisk: boolean;
+  /** 非磁盘文档对应的原始 URI；仅作身份展示与生命周期绑定，绝不作为本地路径使用。 */
+  virtualUri?: string;
 }
 
 /**
@@ -213,11 +219,15 @@ export function useDocuments(
         const freshLanguage = languageForPath(targetPath, existing.contents);
         const shouldUpdateLang = freshLanguage !== existing.language;
         const shouldUpdateRoot = ownerRoot && !samePath(existing.root, ownerRoot);
-        if (shouldUpdateLang || shouldUpdateRoot) {
+        if (shouldUpdateLang || shouldUpdateRoot || existing.editorConfig === undefined) {
+          const editorConfig = existing.editorConfig === undefined || shouldUpdateRoot
+            ? await loadEditorConfig(ownerRoot, targetPath)
+            : existing.editorConfig;
           upsert({
             ...existing,
             language: freshLanguage,
             root: shouldUpdateRoot ? ownerRoot : existing.root,
+            editorConfig,
           });
         }
         return;
@@ -251,6 +261,7 @@ export function useDocuments(
           return;
         }
         const content = await readFile(targetPath);
+        const editorConfig = await loadEditorConfig(ownerRoot, targetPath);
         // svg 两样都要：正文给源码视图，指纹给图片视图做缓存失效。
         const stamp = previewsFromDisk(kind)
           ? await fileStamp(targetPath).catch(() => null)
@@ -268,6 +279,7 @@ export function useDocuments(
           hasBom: content.hasBom,
           encoding: content.encoding,
           language: languageForPath(targetPath, content.contents),
+          editorConfig,
           readOnly: false,
           loading: false,
           error: null,
@@ -340,11 +352,44 @@ export function useDocuments(
     [write]
   );
 
+  /** 资源重命名后迁移打开文档的路径索引，保留正文与未保存状态。 */
+  const renamePath = useCallback(
+    (oldPath: string, newPath: string) => {
+      const current = listRef.current;
+      const source = current.find((item) => samePath(item.path, oldPath));
+      if (!source) return;
+      if (current.some((item) => !samePath(item.path, oldPath) && samePath(item.path, newPath))) {
+        throw new Error(`目标文档已打开：${newPath}`);
+      }
+      const nextPath = newPath;
+      write(
+        current.map((item) =>
+          samePath(item.path, oldPath)
+            ? {
+                ...item,
+                path: nextPath,
+                name: nameOf(nextPath),
+                kind: docKindOf(nextPath),
+                language: languageForPath(nextPath, item.contents),
+                view: defaultView(docKindOf(nextPath)),
+              }
+            : item
+        )
+      );
+      const savedAt = savedAtRef.current.get(canonicalPath(oldPath));
+      savedAtRef.current.delete(canonicalPath(oldPath));
+      if (savedAt !== undefined) savedAtRef.current.set(canonicalPath(nextPath), savedAt);
+      if (activeRef.current !== null && samePath(activeRef.current, oldPath)) activate(nextPath);
+    },
+    [activate, write]
+  );
+
   /** 把一份不在磁盘上的文本（某个版本下的文件）当只读文档开出来。 */
   const openVirtual = useCallback(
-    (path: string, contents: string, language: string) => {
+    (path: string, contents: string, language: string, virtualUri?: string): string => {
       const ownerRoot = rootRef.current;
       const targetPath = listRef.current.find((item) => samePath(item.path, path))?.path ?? path;
+      const safeVirtualUri = virtualUri && isVirtualUri(virtualUri) ? virtualUri : undefined;
       activate(targetPath);
       upsert({
         path: targetPath,
@@ -365,9 +410,27 @@ export function useDocuments(
         error: null,
         diskMs: 0,
         stamp: 0,
+        ...(safeVirtualUri ? { virtualUri: safeVirtualUri } : {}),
       });
+      return targetPath;
     },
     [activate, upsert]
+  );
+
+  /**
+   * 打开由 URI 标识的虚拟文档。
+   *
+   * 先生成内部键再进入文档列表；调用方永远不能把未知 scheme 原样当成路径交给
+   * `readFile`、`writeFile` 或 `samePath` 的磁盘流程。普通 Git/HTTP 响应仍可继续使用
+   * `openVirtual`，它们没有 LSP URI 元数据。
+   */
+  const openVirtualUri = useCallback(
+    (uri: string, contents: string, language: string): string | null => {
+      const key = virtualDocumentKey(uri);
+      if (!key) return null;
+      return openVirtual(key, contents, language, uri);
+    },
+    [openVirtual]
   );
 
   /**
@@ -404,7 +467,7 @@ export function useDocuments(
           const written = await writeFile(
             path,
             doc.contents,
-            doc.lineEnding,
+            doc.editorConfig?.lineEnding ?? doc.lineEnding,
             doc.hasBom,
             doc.encoding,
             doc.diskMs
@@ -739,12 +802,45 @@ export function useDocuments(
 
   const revealDone = useCallback(() => setReveal(null), []);
 
+  /**
+   * 外部 `.editorconfig` 变化后的轻量刷新：只替换打开文档的有效配置，
+   * 保留正文、baseline、光标相关状态和 dirty 状态，不借机重读磁盘正文。
+   */
+  const refreshEditorConfigs = useCallback(
+    async (root: string): Promise<void> => {
+      const candidates = listRef.current.filter(
+        (doc) => doc.onDisk && belongsToRoot(doc, root)
+      );
+      if (candidates.length === 0) return;
+      const refreshed = await Promise.all(
+        candidates.map(async (doc) => ({
+          path: doc.path,
+          editorConfig: await loadEditorConfig(root, doc.path),
+        }))
+      );
+      const next = listRef.current.map((doc) => {
+        const update = refreshed.find((item) => samePath(item.path, doc.path));
+        return update && belongsToRoot(doc, root)
+          ? { ...doc, editorConfig: update.editorConfig }
+          : doc;
+      });
+      if (next.some((doc, index) => doc !== listRef.current[index])) write(next);
+    },
+    [write]
+  );
+
   const dirty = useCallback(
     (path: string) => {
       const doc = documents.find((item) => samePath(item.path, path));
       return Boolean(doc && doc.contents !== doc.baseline);
     },
     [documents]
+  );
+
+  /** 保存动作在异步请求后必须读取这份 ref，不能使用旧渲染闭包里的文档快照。 */
+  const get = useCallback(
+    (path: string) => listRef.current.find((item) => samePath(item.path, path)),
+    []
   );
 
   /** 当前是否仍有可写的脏文档；从 ref 同步读取，供退出保存完成后立即判定。 */
@@ -773,9 +869,12 @@ export function useDocuments(
       openHit,
       reveal,
       revealDone,
+      refreshEditorConfigs,
       openVirtual,
+      openVirtualUri,
       openNotice,
       update,
+      renamePath,
       setView,
       save,
       saveAll,
@@ -786,6 +885,7 @@ export function useDocuments(
       closeForRoot,
       closeAll,
       dirty,
+      get,
       hasDirty,
       hasDirtyForRoot,
       conflict,
@@ -803,6 +903,7 @@ export function useDocuments(
       closeMany,
       conflict,
       dirty,
+      get,
       dismissConflict,
       documents,
       hasDirty,
@@ -812,14 +913,17 @@ export function useDocuments(
       openHit,
       openNotice,
       openVirtual,
+      openVirtualUri,
       resolveConflict,
       reveal,
       revealDone,
+      refreshEditorConfigs,
       save,
       saveAll,
       saveAllForRoot,
       setView,
       update,
+      renamePath,
     ]
   );
 }
@@ -839,6 +943,7 @@ function placeholder(path: string, root: string): OpenDocument {
     hasBom: false,
     encoding: "utf-8",
     language: languageForPath(path),
+    editorConfig: {},
     readOnly: true,
     loading: true,
     error: null,

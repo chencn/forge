@@ -65,6 +65,27 @@ fn interesting(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Other | EventKind::Access(_))
 }
 
+/// 事件路径落在默认排除目录之下就不上报：`node_modules` / `dist` / `target` 这类目录
+/// 里的批量翻动（install、构建）只会造成无意义的刷新风暴。目录名单与文件树默认
+/// 排除共用一张表（`fs::is_default_excluded`）——树里看不见的目录，监听里也不报。
+///
+/// 只看非末段：末段可能是恰好叫 `build` / `dist` 的普通文件而不是目录，按目录名排除
+/// 会把树里看得见的文件静默丢掉。目录自己的事件总以非末段出现在其内部文件的路径里
+/// （`build/foo.o` 的 `build`），所以目录排除不漏。
+fn under_default_excluded(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut names: Vec<_> = rel
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect();
+    names.pop();
+    names
+        .iter()
+        .any(|name| crate::fs::is_default_excluded(name, true))
+}
+
 /// 这一条事件会不会改变「目录里有什么」。
 ///
 /// 只认新增、删除和改名（含跨目录移动，两头各报一次）：这三种才换得出构建标志文件。
@@ -207,6 +228,7 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
     }
 
     let (sender, receiver) = mpsc::channel::<Vec<std::path::PathBuf>>();
+    let filter_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if let Ok(event) = event {
             if !interesting(&event.kind) {
@@ -214,10 +236,12 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
             }
             // 关键的 Git 指针（如 HEAD、refs、index 等）与普通工作区文件均予放行，
             // 过滤无意义的内部对象（objects/）、提交日志（logs/）与未决的临时锁（*.lock）。
+            // 默认排除目录（node_modules、构建产物等）之下的事件一并丢弃。
             let paths: Vec<std::path::PathBuf> = event
                 .paths
                 .into_iter()
                 .filter(|path| !ignorable_git_internal(path))
+                .filter(|path| !under_default_excluded(Path::new(&filter_root), path))
                 .collect();
             if !paths.is_empty() {
                 // 动到目录内容的那些事件顺手作废构建清单缓存：识别与依赖探测共用那一份，
@@ -395,6 +419,41 @@ mod tests {
         let json = serde_json::to_string(&change).unwrap();
         assert!(json.contains(r#""root":"D:/repo-a""#));
         assert!(json.contains(r#""paths":["D:/repo-a/src/main.rs"]"#));
+    }
+
+    #[test]
+    fn events_under_default_excluded_dirs_are_dropped() {
+        let root = Path::new("/repo");
+        // node_modules / 构建产物下的翻动（install、构建）不上报。
+        // 路径全部走 Unix 风格：Windows 上 `C:\repo\...` 带 Prefix 组件，
+        // strip_prefix("/repo") 匹配不上，断言测的就成了「前缀剥不动」而不是排除逻辑。
+        assert!(super::under_default_excluded(
+            root,
+            Path::new("/repo/node_modules/vite/esbuild.exe")
+        ));
+        assert!(super::under_default_excluded(
+            root,
+            Path::new("/repo/target/debug/forge.exe")
+        ));
+        assert!(super::under_default_excluded(
+            root,
+            Path::new("/repo/dist/bundle.js")
+        ));
+        // 根下恰好叫 build / dist 的普通文件不是目录，不能按目录名排除掉：
+        // 树里看得见，监听里也得报。
+        assert!(!super::under_default_excluded(root, Path::new("/repo/build")));
+        assert!(!super::under_default_excluded(
+            root,
+            Path::new("/repo/src/dist")
+        ));
+        // 排除目录本身被创建/删除同样过滤（树里看不见它）。
+        assert!(super::under_default_excluded(root, Path::new("/repo/.cache")));
+        // 正常源码路径放行；`src` 不在排除表里，与文件树行为一致。
+        assert!(!super::under_default_excluded(
+            root,
+            Path::new("/repo/src/main.rs")
+        ));
+        assert!(!super::under_default_excluded(root, Path::new("/repo")));
     }
 
     #[test]

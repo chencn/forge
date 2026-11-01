@@ -9,6 +9,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { useI18n } from "../../i18n";
 import { Popup } from "../../ui/Popup";
 import {
   splitExtension,
@@ -35,6 +36,7 @@ export function InlineEditor({
   onCommit,
   onCancel,
 }: InlineEditorProps) {
+  const { t } = useI18n();
   const initialValue =
     editing.kind === "rename" ? editing.currentName : editing.initial ?? "";
   const [value, setValue] = useState(initialValue);
@@ -100,10 +102,10 @@ export function InlineEditor({
         autoCapitalize="off"
         aria-label={
           editing.kind === "rename"
-            ? "New name"
+            ? t("project.rename.a11y")
             : editing.nodeKind === "dir"
-            ? "New folder name"
-            : "New file name"
+            ? t("project.newFolder.a11y")
+            : t("project.newFile.a11y")
         }
         aria-invalid={showError ? true : undefined}
         onChange={(e) => setValue(e.target.value)}

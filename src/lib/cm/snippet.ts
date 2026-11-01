@@ -37,3 +37,12 @@ export function cmSnippet(template: string): string {
     return mirror && !UNSHAREABLE.test(mirror) ? `\${${index}:${mirror}}` : `\${${index}}`;
   });
 }
+
+/**
+ * WorkspaceEdit 没有占位符状态时使用的安全降级文本。
+ * 只在必须和 additionalTextEdits 原子提交的补全中使用，普通 snippet 仍走 cmSnippet。
+ */
+export function plainSnippetText(template: string): string {
+  const normalized = template.replace(CHOICE, (_all, _index: string, choices: string) => choices.split(",")[0]);
+  return normalized.replace(STOP, (_all, _braced?: string, text?: string) => text ?? "");
+}

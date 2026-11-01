@@ -58,7 +58,7 @@
 - **T-10（低）**：loadDir 失败一律缓存空列表 vs IDEA 区分 notFound 与其他错误。
 
 ### 交互/键位
-- **T-17（P1）**：粘贴无 Copy 对话框/uniqueName/**OS 剪贴板集成**（从 Explorer 复制后 Paste 恒灰）；重名直接报错 vs IDEA 的 copy 重命名。
+- **T-17（P1，已完成）**：粘贴冲突改为 Copy 对话框并生成唯一名称；App、项目树和 Windows `CF_HDROP` 文件剪贴板统一接线。
 - **T-24（P1，当前契约已完成）**：本轮收口右键菜单的 Fetch、Reformat、Find Usages、Optimize Imports、Put Label，以及 rollback、Compare With、Terminal、Mark Directory 的接线。Package、Annotate、Stash 等更宽的菜单扩展不属于本轮契约，另行排期。
 - **T-16（P2）**：开启「单击展开」后双击目录 toggle 两次（净效果未变）。
 - **T-11（P2）**：reveal 单槽覆盖（连续两次定位丢第一次）；scratches 模式定位被误切回 project。
@@ -73,7 +73,7 @@
 - **T-29/T-30/T-31（低）**：忽略名单缺 5 项、图标 15 vs 16、「正在加载...」硬编码、JVM 包链分隔符 `/` vs `.`。
 
 ### 结构
-- **T-32（P1）**：展开状态/视图选项/模式全不持久化（IDEA localStorage 按 key 存，含 expanded 上限 3000、每模式独立记忆）；过滤模式目录被强制展开无法折叠。
+- **T-32（P1，已完成）**：展开状态、视图选项和模式按工程根持久化；展开集合上限 3000，根目录切换不会串状态。
 - **T-33（P2）**：changedFiles 视图包含已删除文件（磁盘上不存在）。
 - **T-34（P2）**：i18n：revealLabel 应按 OS（Finder/Explorer/Files）、Move 动态标签、Unmark 动态、快捷键标签硬编码不读键位。
 
@@ -144,17 +144,17 @@
 用户拍板：T-27 不改，其余全改，方向决策由执行方定。
 方向决策记录：通知持久化保留（已剥离 actions/body）；声音+气泡总开关补齐；previewTab 默认 false（preview 标签机制未实现，开启选项时单击仍打开）；留白 4/8、行高 22px、tabSize 维持 2（IDEA 的 4 + 缩进探测列为待续，避免改变现有全部文件的行为）；forge 独有增强全保留。
 
-### 本批已完成（32 项，tsc 干净，1103 用例全绿）
+### 本批已完成（含 T-01、T-17、T-32；全量验证结果见各轮记录）
 
 - P0：T-15、T-14、T-13、E-16、E-31、E-38
 - 后端 fs：T-03（嵌套建目录+TARGET_EXISTS）、T-05（copy into-itself 防护+symlink 语义）、T-04（create_file ensure_parent；删除快照按内容去重已覆盖，跳过）
 - 通知：N-01、N-02/03（组配置下沉）、N-04、N-05、N-06（剥离 actions/body）、N-07（key 去重+expireNotification）、N-08（suppressGroup+不再显示）、N-09、N-10（排队补位）、N-13、N-14、N-15、N-16、N-18（Balloons 消费 position）、N-19、N-24（guard 补键盘/拖放拦截）、N-26（i18n）、N-28（删死代码+闲置 CSS）
 - 编辑器像素：E-01、E-02、E-03、E-04、E-05、E-06、E-07、E-08、E-15（rainbow 开关默认关）、E-30（diff/haskell/erlang/ocaml/latex/sass 六门）、E-32
-- 树：T-16、T-29、T-30、T-33
+- 树：T-01、T-16、T-17、T-29、T-30、T-32、T-33
 
 ### 待续清单（按优先级）
 
-1. **P1**：T-01（后端 ignore/excluded 计算——涉及 FsEntry 契约，需与并行改动协调）、T-17（粘贴对话框+OS 剪贴板）、T-32（树 store 持久化）
+1. **P1**：已清空；下一批按优先级进入 E-23/E-19/E-20/E-33/E-35/E-39
 2. **P2**：T-06、T-10、T-11、T-12、T-18、T-19、T-20、T-21、T-22、T-25、T-26、T-31、T-34、T-35、E-19、E-20、E-23、E-33、E-35、E-39、N-21、N-27
 3. **L 级大件**：E-17（smartKeys）、E-18（行操作命令面）、E-21（折叠增强）、E-22（自研 FindBar）、E-25（stickyScroll）、E-26（codeLens）、E-29（剪贴板历史）、E-34（LSP rename/Alt+Enter/签名/inlay）、E-09（概览条汇聚）、E-11~14（折行悬挂/空白符/硬换行参考线/外观开关组）、E-30 剩余语言（zig/nix/gdscript/dotenv/gitattributes/gowork/godot-resource/terraform-vars/objective-c++——legacy-modes 无源，需自写语法或补 toml 包）、T-04 删除快照（目录级）
 
@@ -165,4 +165,37 @@
 - `Put Label…` 复用 App 已有的 `newTag` 对话框和 `git.createTag`，没有新增 Git 状态模型。
 - Review 核实 rollback 后端使用 `git restore --worktree`：空 revision 从 index 恢复，未跟踪文件经确认后移入回收站；因此不是 `unstage`。
 - Review 核实 Compare With 固定打开 HEAD/工作区差异，Terminal 使用选中目标目录，Mark Directory 的 source/test/resources/excluded 角色写入设置。
-- 定向测试 11 项、TypeScript 检查通过；全量前端测试、生产构建和 diff 检查见本轮交付记录。
+
+### T-01 实施、Review 与下一轮重梳理（2026-10-30）
+
+**实施**：`FsEntry` 统一增加 `isIgnored` 与 `isExcluded`，原有 `isHidden` 继续由后端文件属性组装；`list_directory` 对当前目录的直接子项一次性调用 Git `check-ignore --stdin -z`，不再把全仓库忽略清单交给项目树做前缀匹配。默认排除目录只按目录名计算，用户持久化的项目目录角色仍由项目树叠加，避免把 Git ignored 与 IDEA excluded 混为一谈。项目树过滤和紧凑包链判断均直接消费条目字段。
+
+**Review**：检查了非仓库目录、无匹配、Git 忽略文件、忽略目录、默认 `dist` 排除目录和普通源码文件的边界；确认一次目录读取只启动一个 Git 检查进程，Git 不可用时降级为空忽略集，不影响普通文件树。发现并修复了前端测试 fixture 因契约扩展缺字段的问题；Windows 测试二进制在当前环境启动时报 `STATUS_ENTRYPOINT_NOT_FOUND`，属于测试运行时环境问题，Rust 定向测试已完成编译但未能执行断言。
+
+**重梳理**：T-01 的代码和稳定契约已收口；下一轮优先处理 T-17 粘贴重名/系统剪贴板边界，完成后仍按“实施 → 定向测试 → Review → 修复 → 下一轮”推进。T-02 的悬空链接 `targetKind` 不在本轮扩大范围。
+
+**当前验证**：项目树相关前端定向测试 30 项通过，TypeScript 检查和 `cargo check -p forge` 通过；Rust 定向测试已编译，但 Windows 测试进程因 `STATUS_ENTRYPOINT_NOT_FOUND` 未能启动。全量前端测试、生产构建和最终 diff review 在本轮结束前继续执行。
+
+### T-17 实施、Review 与下一轮重梳理（2026-10-30）
+
+**实施**：App 统一持有 `ClipboardState`，项目树通过 props 接入，移除树内第二套 Ctrl+C/Ctrl+X/Ctrl+V 处理，避免同一次按键执行两份逻辑。新增 `uniqueName`，按大小写不敏感规则生成 `copy` / `copy N` 名称；后端复制仍以 `TARGET_EXISTS` 拒绝覆盖，前端在冲突时打开 Copy 对话框。Windows 后端通过 `CF_HDROP` 只读获取资源管理器复制的文件路径，窗口激活时刷新；内部剪贴板优先，系统文件剪贴板作为无内部状态时的来源。
+
+**Review**：首轮审查发现多项复制中首个条目冲突后，确认对话框只保存剩余路径、没有继续执行；同时普通复制在冲突确认后被错误清空。已抽出批量粘贴函数：确认当前名称后继续剩余批次，后续冲突逐项打开对话框；普通复制保留、剪切整批完成后清空。还核对了点文件命名、同目录剪切自粘贴跳过、系统剪贴板与内部剪贴板互斥、非 Windows 空实现和剪贴板关闭清理。
+
+**验收**：`npm run check:ts` 通过；前端全量 **140 个测试文件、1441 项通过**；`npm run build` 通过；`src-tauri` 下 `cargo check -p forge` 通过；`git diff --check` 通过。生产构建仍报告既有的大 chunk 与无效动态导入警告，不影响构建成功。Rust 测试运行环境此前存在 `STATUS_ENTRYPOINT_NOT_FOUND`，本轮未将该环境问题误判成断言失败。
+
+**已知边界**：Unix 桌面剪贴板协议未统一，当前只提供空结果；文本剪贴板不参与文件粘贴；系统文件剪贴板不携带剪切/复制意图，因此按复制处理；用户在 Copy 对话框确认后若后端再次返回非重名错误，只报告错误，不自动覆盖或重试。
+
+**下一轮重梳理**：T-17 已收口，下一任务切换到 P1 的 T-32（树展开状态、视图选项和模式按工程持久化）；完成后回到 E-23/E-19/E-20/E-33/E-35/E-39 的键位、编辑器行为和保存卫生批次。T-17 的 `targetKind`、Unix 原生文件剪贴板和剪贴板剪切意图不在本轮扩大范围。
+
+### T-32 实施、Review 与下一轮重梳理（2026-10-30）
+
+**实施**：项目树将视图模式、9 个视图选项和展开键按规范化工程根分别保存到 `localStorage`；展开集合写入上限 3000 项并防抖 300ms。补充工程根切换同步：同一组件切换到另一个工作区时，重新读取该工程自己的模式、选项和展开集合，清理旧工程的未完成展开写入计时器，避免状态串工程。首次没有项目级选项时继续沿用全局隐藏/忽略设置，项目自己保存过选项后以项目状态为准。
+
+**Review**：持久化边界增加了模式白名单、展开键类型过滤和损坏 JSON 回退；修复 `_v` 版本字段泄漏到 `ViewOptions` 的问题。测试覆盖工程隔离、模式回退、3000 项上限、非字符串展开键过滤，以及“无项目数据/已有项目数据”的迁移判定。
+
+**验收**：`tests/lib/projectTreeViewState.test.ts`、项目树定向测试共 **3 个文件、20 项通过**；`npm run check:ts` 通过。T-17 已完成的全量前端 140 个测试文件、1441 项通过、生产构建和 `cargo check -p forge` 结果继续有效；本轮文档修改后另行执行 `git diff --check`。
+
+**已知边界**：localStorage 不可用或满时静默回退内存默认值；当前只持久化项目树自身状态，不把树内选项反向写回设置页的全局 `settings.explorer`。外部库和 Scratches 的节点展开键沿用同一工程命名空间。
+
+**下一轮重梳理**：T-32 收口，进入 E-23/E-19/E-20/E-33/E-35/E-39；每轮仍按实施、定向测试、Review、修复、全量验证和文档归档执行。T-32 不扩大到全局动作注册层（对应 T-35）。
