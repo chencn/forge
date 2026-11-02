@@ -1,6 +1,5 @@
 /**
- * 提交选项弹层（Commit Options Popup）：1:1 对齐 IntelliJ IDEA / IDEA
- * 包含 Git Author、Sign-off 签名、提交前检查（Reformat、Optimize Imports、Run Git hooks、Analyze Code 等）
+ * 提交选项弹层：仅保留已接通的作者、Sign-off、Git 钩子和 TODO 检查。
  */
 import type { ReactNode, RefObject } from "react";
 import { Checkbox } from "../../ui/Checkbox";
@@ -13,10 +12,6 @@ export interface CommitOptionsState {
   author: string;
   signOff: boolean;
   runHooks: boolean;
-  reformat: boolean;
-  optimizeImports: boolean;
-  cleanup: boolean;
-  analyzeCode: boolean;
   checkTodo: boolean;
 }
 
@@ -26,10 +21,6 @@ export const DEFAULT_COMMIT_OPTIONS: CommitOptionsState = {
   author: "",
   signOff: false,
   runHooks: true,
-  reformat: false,
-  optimizeImports: false,
-  cleanup: false,
-  analyzeCode: false,
   checkTodo: false,
 };
 
@@ -37,7 +28,14 @@ export function loadCommitOptions(): CommitOptionsState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_COMMIT_OPTIONS;
-    return { ...DEFAULT_COMMIT_OPTIONS, ...JSON.parse(raw) };
+    const saved = JSON.parse(raw);
+    // 显式读取仍支持的字段，避免旧存储中的已移除选项再次进入状态和保存结果。
+    return {
+      author: typeof saved.author === "string" ? saved.author : DEFAULT_COMMIT_OPTIONS.author,
+      signOff: typeof saved.signOff === "boolean" ? saved.signOff : DEFAULT_COMMIT_OPTIONS.signOff,
+      runHooks: typeof saved.runHooks === "boolean" ? saved.runHooks : DEFAULT_COMMIT_OPTIONS.runHooks,
+      checkTodo: typeof saved.checkTodo === "boolean" ? saved.checkTodo : DEFAULT_COMMIT_OPTIONS.checkTodo,
+    };
   } catch {
     return DEFAULT_COMMIT_OPTIONS;
   }
@@ -99,40 +97,9 @@ export function CommitOptionsBody({ options, onChange }: CommitOptionsBodyProps)
       <Section title={t("git.commitChecks")}>
         <div className={styles.optRow}>
           <Checkbox
-            checked={options.reformat}
-            onChange={(v) => update({ reformat: v })}
-            label={t("git.reformatCode")}
-          />
-        </div>
-        <div className={styles.optRow}>
-          <Checkbox
-            checked={options.optimizeImports}
-            onChange={(v) => update({ optimizeImports: v })}
-            label={t("git.optimizeImports")}
-          />
-        </div>
-        <div className={styles.optRow}>
-          <Checkbox
-            checked={options.cleanup}
-            onChange={(v) => update({ cleanup: v })}
-            label={t("git.cleanup")}
-          />
-        </div>
-        <div className={styles.optRow}>
-          <Checkbox
             checked={options.runHooks}
             onChange={(v) => update({ runHooks: v })}
             label={t("git.runHooks")}
-          />
-        </div>
-      </Section>
-
-      <Section title={t("git.advancedChecks")}>
-        <div className={styles.optRow}>
-          <Checkbox
-            checked={options.analyzeCode}
-            onChange={(v) => update({ analyzeCode: v })}
-            label={t("git.analyzeCode")}
           />
         </div>
         <div className={styles.optRow}>

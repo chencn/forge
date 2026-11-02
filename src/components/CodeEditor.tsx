@@ -29,6 +29,7 @@ import {
   minimapExtension,
   minimapGutters,
   pathOf,
+  outlineExtension,
   persistView,
   primeMinimap,
   replaceRange,
@@ -66,6 +67,7 @@ import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
 import type { OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import ContextMenu from "./ContextMenu";
+import CodeBreadcrumbs from "./CodeBreadcrumbs";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useAiInputMenu } from "./AiInputContext";
 import { changeBaselineKey, gutterChanges, headFile, type ChangeBaseline } from "../lib/lineChanges";
@@ -280,6 +282,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
    */
   const permanentExtensions = useMemo(
     () => [
+      outlineExtension(pathOf),
       // 小地图得在建 state 时就带上：库的行表只在那一刻算（见 minimapExtension）。
       // 这里给的是空色带，真色带由 syncMinimap 之后补上。
       minimapExtension(minimapConfig([])),
@@ -759,6 +762,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   return (
     <div className="code-host">
       <div ref={hostRef} className="code-editor" onContextMenuCapture={menuAt} />
+      {doc && !doc.loading && !doc.error ? <CodeBreadcrumbs path={doc.path} /> : null}
       {pinHost
         ? createPortal(
             <div className="run-gutter-layer">

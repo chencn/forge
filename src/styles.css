@@ -6509,6 +6509,9 @@ body.is-editor-tab-dragging * {
   align-items: center;
   gap: 14px;
   height: var(--footer-height);
+  box-sizing: border-box;
+  flex: none;
+  min-width: 0;
   padding: 0 8px;
   background-color: var(--app-bg);
   color: var(--text-muted);
@@ -6533,6 +6536,27 @@ body.is-editor-tab-dragging * {
   display: none;
 }
 
+/* 编辑器内独立符号链，对齐 OpenIDEA 的 26px 底部条；不增加装饰竖边。 */
+.code-crumbs {
+  display: flex;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border-top: 1px solid var(--border-editor-tabs, var(--border-color));
+  background: var(--bg-editor, var(--bg-primary));
+  color: var(--text-muted);
+  font: 12px var(--font-ui);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.code-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
 .status-crumb-pair {
   display: inline-flex;
   align-items: center;
@@ -6548,7 +6572,9 @@ body.is-editor-tab-dragging * {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 20px;
+  min-width: 0;
+  max-width: 240px;
+  height: 22px;
   padding: 0 4px;
   border: 0;
   border-radius: var(--radius-sm);
@@ -6561,12 +6587,28 @@ body.is-editor-tab-dragging * {
   cursor: pointer;
 }
 
+.status-crumb > svg,
+.status-crumb > .entry-icon {
+  flex: none;
+}
+
+.status-crumb-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .status-crumb.is-current {
   color: var(--text-primary);
   font-weight: 500;
 }
 
 .status-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.status-crumb[aria-expanded="true"] {
   background: var(--bg-hover);
   color: var(--text-primary);
 }

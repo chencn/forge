@@ -828,7 +828,6 @@ fn git_unstage_impl(root: String, paths: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn git_commit(
     root: String,
     message: String,
@@ -837,7 +836,6 @@ pub async fn git_commit(
     signoff: Option<bool>,
     author: Option<String>,
     no_verify: Option<bool>,
-    cleanup: Option<String>,
 ) -> Result<String, String> {
     block(move || {
         git_commit_impl(
@@ -848,13 +846,11 @@ pub async fn git_commit(
             signoff.unwrap_or(false),
             author,
             no_verify.unwrap_or(false),
-            cleanup,
         )
     })
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 fn git_commit_impl(
     root: String,
     message: String,
@@ -863,7 +859,6 @@ fn git_commit_impl(
     signoff: bool,
     author: Option<String>,
     no_verify: bool,
-    cleanup: Option<String>,
 ) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let message = message.trim();
@@ -879,7 +874,7 @@ fn git_commit_impl(
     } else {
         vec!["commit".into(), "-m".into(), message.to_string()]
     };
-    // 提交选项：签名、作者、跳过 hooks、清洗说明——此前这些只在前端拼文本/未接线，没落到 git。
+    // 只透传 Sign-off、作者与跳过 hooks；提交说明清洗沿用 Git 配置。
     if signoff {
         args.push("--signoff".into());
     }
@@ -888,9 +883,6 @@ fn git_commit_impl(
     }
     if no_verify {
         args.push("--no-verify".into());
-    }
-    if let Some(cleanup) = cleanup.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-        args.push(format!("--cleanup={cleanup}"));
     }
     // --only：只提交点名的那几条路径（取工作区内容），索引里其它文件的已暂存块不动——
     // 提交面板的复选框勾选语义就是它：勾了的提交，没勾的连索引都不碰。

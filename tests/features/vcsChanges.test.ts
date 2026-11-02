@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitChange } from "../../src/lib/git";
 import { parseIssueTokens } from "../../src/features/vcs/IssueNavigation";
+import { DEFAULT_COMMIT_OPTIONS, loadCommitOptions, saveCommitOptions } from "../../src/features/vcs/CommitOptions";
 import {
   aggregateCheck,
   buildChangeTree,
@@ -11,6 +12,38 @@ import {
   isStaged,
   planCommit,
 } from "../../src/features/vcs/changes";
+
+describe("提交选项持久化", () => {
+  const storage = new Map<string, string>();
+  beforeEach(() => {
+    storage.clear();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+    });
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("旧选项加载后仅保存作者、Sign-off、Git 钩子和 TODO，保留明确关闭的值", () => {
+    const expected = { author: "作者 <author@example.com>", signOff: false, runHooks: false, checkTodo: false };
+    storage.set("forge:vcs:commitOptions:v1", JSON.stringify({
+      ...expected, reformat: true, optimizeImports: true, cleanup: true, analyzeCode: true,
+    }));
+    const options = loadCommitOptions();
+    expect(options).toEqual(expected);
+    saveCommitOptions(options);
+    expect(JSON.parse(storage.get("forge:vcs:commitOptions:v1")!)).toEqual(expected);
+    expect(loadCommitOptions()).toEqual(expected);
+  });
+
+  it("缺失、损坏或字段类型无效时使用默认值", () => {
+    for (const raw of [null, "invalid", "null", JSON.stringify({ author: 1, signOff: "true", runHooks: 0, checkTodo: "false" })]) {
+      storage.clear();
+      if (raw !== null) storage.set("forge:vcs:commitOptions:v1", raw);
+      expect(loadCommitOptions()).toEqual(DEFAULT_COMMIT_OPTIONS);
+    }
+  });
+});
 
 function change(partial: Partial<GitChange>): GitChange {
   return {

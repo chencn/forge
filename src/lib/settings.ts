@@ -198,11 +198,7 @@ export interface VcsSettings {
   showRightMargin: boolean;
   wrapRightMargin: boolean;
   /** 提交前检查 Commit Checks */
-  checkAnalyzeCode: boolean;
   checkTodo: boolean;
-  checkReformatCode: boolean;
-  checkOptimizeImports: boolean;
-  checkCleanup: boolean;
   /** 确认与操作行为 Confirmation Settings */
   showUpdateOptions: boolean;
   highlightDirtyDirectories: boolean;
@@ -334,11 +330,7 @@ export const DEFAULT_VCS_SETTINGS: VcsSettings = {
   bodyLineLimit: 72,
   showRightMargin: true,
   wrapRightMargin: false,
-  checkAnalyzeCode: false,
   checkTodo: true,
-  checkReformatCode: false,
-  checkOptimizeImports: false,
-  checkCleanup: false,
   showUpdateOptions: true,
   highlightDirtyDirectories: true,
   onPatchCreated: "clipboard",
@@ -468,7 +460,11 @@ function merge(raw: Partial<Settings> | null): Settings {
     updates: { ...DEFAULT_SETTINGS.updates, ...raw?.updates },
     run: { ...DEFAULT_SETTINGS.run, ...raw?.run },
     projectDirectoryRoles: normalizeProjectDirectoryRoles(raw?.projectDirectoryRoles),
-    vcs: { ...DEFAULT_VCS_SETTINGS, ...raw?.vcs },
+    // 仅保留当前支持的 VCS 字段，已移除的提交检查不再传回界面或随设置保存。
+    vcs: {
+      ...DEFAULT_VCS_SETTINGS,
+      ...Object.fromEntries(Object.entries(raw?.vcs ?? {}).filter(([key]) => Object.hasOwn(DEFAULT_VCS_SETTINGS, key))),
+    },
   };
 }
 

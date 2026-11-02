@@ -32,10 +32,10 @@
 - 问题：勾选未跟踪文件后提交，路径未被 `git add`，`--only` 会报 pathspec 不匹配而失败；被取消勾选的已暂存文件也不会被 unstage。
 - 修法：提交前按 `plan.stage`/`plan.unstage` 真正调用 `git add` / `git restore --staged`，或改走 D-02 的临时索引方案统一处理。
 
-### D-04 提交签名/作者/提交前检查是空壳 ｜ 状态：已修（参数透传；三项代码检查待续）
+### D-04 提交签名/作者/提交前检查是空壳 ｜ 状态：已修（有效参数已接通，四项代码检查已移除）
 - 位置：`src/features/vcs/CommitOptions.tsx:12-34`；`src/components/GitPanel.tsx:1104-1111`（手拼 `Signed-off-by:`）；`src-tauri/src/git/mod.rs:776-831 git_commit`（仅支持 `message/amend/paths`）
-- 问题：`author` 从不传 `--author`；`runHooks` 未映射 `--no-verify`；`reformat/optimizeImports/analyzeCode` 仅 UI 无实现；提交无 `--cleanup=whitespace`。
-- 修法：后端 `git_commit` 增 `signoff/author/noVerify/cleanup` 参数并透传；前端去掉手拼文本，改走参数。
+- 问题：`author` 从不传 `--author`；`runHooks` 未映射 `--no-verify`；格式化、优化导入和分析代码仅有 UI，清理代码误接为提交说明清洗。
+- 修法：`signoff/author/noVerify` 透传 Git 参数；按当前范围移除格式化、优化导入、清理代码和分析代码的 UI、设置、文案及 `cleanup` 提交参数，提交说明清洗沿用 Git 配置。保留 TODO 检查，其最终提交内容检查边界仍需单独修复。
 
 ### D-05 提交里查看重命名文件 diff 显示为整份新增 ｜ 状态：已修
 - 位置：`src/App.tsx:3115/3120 openCommitFile`、`src/components/GitLogPane.tsx:483`、`src-tauri/src/git/mod.rs:2257-2285 git_commit_file_impl`
@@ -316,7 +316,7 @@ epo\...` 带 Prefix 组件，`strip_prefix("/repo")` 匹配失败，断言从未
 
 - **D-02 / D-03 已修（2026-10-31）**（同源，一并修复）：`src/components/GitPanel.tsx:1034` 增 `stageAll` 标记；`:1113` 提交前按 `plan.stage`/`plan.unstage` 真正 `git add` / `git restore --staged` 整理索引，再 `git commit` 提交索引本身（弃用 `--only`，未暂存块不再被带上）；删除死字段 `CommitPlan.paths`（`src/features/vcs/changes.ts:391-399`、`:407`、`:420`）并同步测试断言。验证：`check:ts` 通过；`tests/features/vcsChanges.test.ts` 12/12 通过；临时仓库实测——块1 暂存、块2 未暂存时提交只含块1，块2 保留在工作区（旧 `--only` 逻辑会整份提交）。
 
-- **D-04 已修（2026-10-31，参数透传部分）**：后端 `git_commit` 增 `signoff`/`author`/`no_verify`/`cleanup` 参数并落到 `git commit` 命令行（`src-tauri/src/git/mod.rs`：`args` 改 `Vec<String>`）；前端 `src/lib/git.ts` 增 `CommitRequestOptions`，`src/hooks/useGitState.ts` 的 `commit`/`commitAndPush` 透传，`src/components/GitPanel.tsx` 去掉手拼 `Signed-off-by`（改由 `--signoff`/`--author` 生成）、`runHooks`→`--no-verify`、`cleanup`→`--cleanup=whitespace`。验证：`check:ts`、`cargo check -p forge` 通过。**遗留**：提交前检查 `reformat`/`optimizeImports`/`analyzeCode` 三项仍无实现（UI 保留），需另立待办。
+- **D-04 已修（2026-10-31 参数透传；2026-11-02 收缩功能范围）**：`git_commit` 保留 `signoff`/`author`/`no_verify` 参数，前端 `CommitRequestOptions` 和 `commit`/`commitAndPush` 透传，不再手拼 `Signed-off-by`。按用户要求移除四项代码检查的弹层、全局设置、配置字段和翻译；移除误接的 `cleanup` 参数，读取设置时过滤旧字段。TODO 检查保留，其工作区与最终提交内容不一致的问题仍需单独修复。
 
 - **D-05 已修（2026-10-31）**：后端 `git_commit_file` 增 `old_path`（父侧取 `"<rev>^:<oldPath>"`）、`git_diff_text` 增 `old_path`（补第二路径，让 `git diff` 双侧重命名检测）（`src-tauri/src/git/mod.rs`）；前端 `src/lib/git.ts` 两函数增可选 `oldPath`，`src/App.tsx` 的 `openCommitFile` 与 `src/components/GitLogPane.tsx` 预览均传 `oldPath`。验证：`check:ts`、`cargo check -p forge` 通过；临时仓库实测——旧路径取到父版本内容（新路径报 `exists on disk, but not in 'HEAD^'`），双路径 diff 显示 `rename from/to` + `similarity index 60%`（旧单路径显示 `new file`）。
 

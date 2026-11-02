@@ -6,6 +6,22 @@ import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../../src/lib/sett
 
 beforeEach(() => { invoke.mockReset(); });
 
+describe("VCS 设置", () => {
+  it("读取及保存结果丢弃已移除的检查字段，并保留现有设置", async () => {
+    const vcs = {
+      checkAnalyzeCode: true, checkReformatCode: true, checkOptimizeImports: true, checkCleanup: true,
+      checkTodo: false, signOffCommit: true, subjectLineLimit: 60,
+    };
+    invoke.mockResolvedValue({ vcs });
+    const expected = { ...DEFAULT_SETTINGS.vcs, checkTodo: false, signOffCommit: true, subjectLineLimit: 60 };
+    const loaded = await loadSettings();
+    expect(loaded.vcs).toEqual(expected);
+    const saved = await saveSettings({ vcs: loaded.vcs });
+    expect(invoke).toHaveBeenLastCalledWith("settings_save", { patch: { vcs: expected } });
+    expect(saved.vcs).toEqual(expected);
+  });
+});
+
 describe("AI 编程助手设置", () => {
   it("浏览器和截图默认启用，上传和任意脚本必须显式授权", async () => {
     invoke.mockResolvedValue({ aiAssistantsEnabled: true });

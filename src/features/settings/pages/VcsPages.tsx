@@ -113,38 +113,11 @@ export function VcsCommitPage() {
           {t("vcs.commitChecksTitle")}
         </h4>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 24px" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <Checkbox
-              checked={v.checkAnalyzeCode}
-              onChange={(val) => update({ checkAnalyzeCode: val })}
-              label={t("git.analyzeCode")}
-            />
-            <Checkbox
-              checked={v.checkTodo}
-              onChange={(val) => update({ checkTodo: val })}
-              label={t("git.checkTodo")}
-            />
-            <Checkbox
-              checked={v.checkCleanup}
-              onChange={(val) => update({ checkCleanup: val })}
-              label={t("git.cleanup")}
-            />
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <Checkbox
-              checked={v.checkReformatCode}
-              onChange={(val) => update({ checkReformatCode: val })}
-              label={t("git.reformatCode")}
-            />
-            <Checkbox
-              checked={v.checkOptimizeImports}
-              onChange={(val) => update({ checkOptimizeImports: val })}
-              label={t("git.optimizeImports")}
-            />
-          </div>
-        </div>
+        <Checkbox
+          checked={v.checkTodo}
+          onChange={(val) => update({ checkTodo: val })}
+          label={t("git.checkTodo")}
+        />
       </div>
     </div>
   );

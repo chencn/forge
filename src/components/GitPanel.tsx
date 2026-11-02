@@ -259,7 +259,7 @@ function GitPanel({
   const { settings } = useSettings();
   const vcs = settings.vcs;
 
-  // 提交选项 Commit Options Popup 状态（1:1 移植自 IDEA，默认同步全局 VCS 设置）
+  // 提交选项仅包含已接通的 Git 参数与 TODO 检查，默认同步全局 VCS 设置。
   const commitOptionsRef = useRef<HTMLButtonElement>(null);
   const [commitOptionsOpen, setCommitOptionsOpen] = useState(false);
   const [commitOptions, setCommitOptions] = useState<CommitOptionsState>(() => {
@@ -267,10 +267,6 @@ function GitPanel({
     return {
       ...loaded,
       signOff: loaded.signOff || vcs.signOffCommit,
-      reformat: loaded.reformat || vcs.checkReformatCode,
-      optimizeImports: loaded.optimizeImports || vcs.checkOptimizeImports,
-      cleanup: loaded.cleanup || vcs.checkCleanup,
-      analyzeCode: loaded.analyzeCode || vcs.checkAnalyzeCode,
       checkTodo: loaded.checkTodo || vcs.checkTodo,
     };
   });
@@ -972,13 +968,12 @@ function GitPanel({
       }
     }
 
-    // 6. 签名/作者/跳过 hooks/说明清洗都交给 `git commit` 的命令行参数，不再前端手拼 Signed-off-by。
+    // 6. Sign-off、作者与跳过 hooks 交给 Git 参数；提交说明按 Git 配置处理。
     const commitText = text;
     const commitOpts = {
       signoff: commitOptions.signOff || vcs.signOffCommit,
       author: commitOptions.author,
       noVerify: !commitOptions.runHooks,
-      cleanup: commitOptions.cleanup ? "whitespace" : undefined,
     };
 
     setCommittingAction(andPush ? "commitAndPush" : "commit");

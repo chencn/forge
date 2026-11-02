@@ -4,6 +4,7 @@ import { ensureFileIcons } from "./lib/fileIcons";
 import { loadHistory } from "./lib/history";
 import { loadSettings } from "./lib/settings";
 import { ensureLang, resolveLang } from "./i18n";
+import { TooltipHost } from "./ui/Tooltip";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./themes/tokens.css";
@@ -35,6 +36,8 @@ async function bootstrap() {
       <SettingsProvider initial={settings}>
         <HistoryProvider initial={history}>
           <App />
+          {/* 工具栏按钮通过 data-tooltip 提供文案，由全局单例统一显示。 */}
+          <TooltipHost />
         </HistoryProvider>
       </SettingsProvider>
     </React.StrictMode>

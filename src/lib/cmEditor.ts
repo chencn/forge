@@ -59,6 +59,7 @@ import { indentGuides } from "./cm/indentGuides";
 import { rainbowBrackets } from "./cm/rainbowBrackets";
 import { caretRowHighlight } from "./cm/caretRow";
 import { clearCaret, reportCaret } from "./caretStatus";
+import { clearOutline } from "./editorOutline";
 import { stickyScroll } from "./cm/stickyScroll";
 import { forgeTheme } from "./cm/theme";
 import { forgeSearch } from "./cm/find";
@@ -66,6 +67,7 @@ import { changeMarksField } from "./cm/changeMarks";
 import { overviewLane } from "./cm/overview";
 
 export { EditorState, EditorView, foldEffect, unfoldEffect };
+export { outlineExtension } from "./cm/outline";
 export type { Extension, Transaction };
 
 /** WorkspaceEdit 的跨文档撤销按时间序留一小组：太长没意义，无界栈反而招旧事务回放。 */
@@ -337,7 +339,8 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     syntaxHighlighting(forgeHighlightStyle),
     // 光标/选区汇报：状态栏的 Line:Column 段从这里拿数字（外部 store，不经 React 树）。
     EditorView.updateListener.of((update) => {
-      if (!update.selectionSet && !update.docChanged) return;
+      // 面包屑先设置选区再把焦点交回编辑器；重新聚焦也要同步行列。
+      if (!update.selectionSet && !update.docChanged && !update.focusChanged) return;
       // 只让持有焦点的视图汇报：分屏打开同一文档时，非焦点视图的编程性事务
       // （外部重载）不能拿自己的旧选区覆盖状态栏数字。
       if (!update.view.hasFocus) return;
@@ -622,6 +625,7 @@ export function disposeModel(path: string): void {
     if (samePath(key, path)) viewByPath.delete(key);
   }
   clearCaret(path);
+  clearOutline(path);
 }
 
 /**

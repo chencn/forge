@@ -16,8 +16,11 @@ import {
   highlightRange,
   lineTop,
   lineText,
+  loadLanguage,
   minimapGutters,
   persistView,
+  pathOf,
+  outlineExtension,
   registerWorkspaceUndo,
   replaceRange,
   restoreView,
@@ -40,6 +43,10 @@ import {
 } from "../../src/lib/cmEditor";
 import { retainEditorModels } from "../../src/lib/modelRetention";
 import { stubTextLayout } from "../helpers/cmLayout";
+import { extractOutline } from "../../src/lib/cm/outline";
+import { outlineSnapshot, symbolChain } from "../../src/lib/editorOutline";
+import { openOutlineSymbol } from "../../src/components/CodeBreadcrumbs";
+import { caretSnapshot } from "../../src/lib/caretStatus";
 
 /**
  * 编辑器引擎那一层的测试：整层是新写的，屏幕上那台编辑器全骑在它上面。
@@ -92,6 +99,59 @@ describe("AI 读取文件预览", () => {
       revealRange(view, Math.min(start, state.doc.lines), 0, 0);
       expect(view.state.doc.lineAt(view.state.selection.main.head).number).toBe(Math.min(start, state.doc.lines));
     } finally { view?.destroy(); }
+  });
+});
+
+describe("编辑器导航大纲", () => {
+  it("TSX 的当前函数、变量和嵌套回调按真实范围组成链，点击可定位声明", async () => {
+    const record = docOf({ path: "D:/proj/outline.tsx", language: "typescriptreact", contents:
+      "export function Panel() {\n const archived = useMemo(() => sessions.filter((item) => item.done), []);\n return <div/>;\n}" });
+    await loadLanguage(record.language, record.path);
+    const view = new EditorView({ state: stateFor(record, [outlineExtension(pathOf)]), parent: document.body });
+    setMounted(record.path, view);
+    try {
+      const position = record.contents.indexOf("item.done") + 2;
+      view.dispatch({ selection: { anchor: position } });
+      const snapshot = outlineSnapshot(record.path);
+      const chain = symbolChain(snapshot.items, snapshot.position);
+      expect(chain.map((item) => item.name)).toEqual(["Panel", "archived", "useMemo() callback", "sessions.filter() callback"]);
+      await openOutlineSymbol(record.path, chain[1]);
+      expect(view.state.selection.main.head).toBe(record.contents.indexOf("archived"));
+      expect(view.hasFocus).toBe(true);
+      expect(caretSnapshot()).toMatchObject({ path: record.path, line: 2, col: 8 });
+      // 尚未保存的插入也要更新跳转偏移，不能落回磁盘上的旧位置。
+      view.dispatch({ changes: { from: 0, insert: "// edited\n" } });
+      const moved = outlineSnapshot(record.path).items[0].children[0];
+      await openOutlineSymbol(record.path, moved);
+      expect(view.state.selection.main.head).toBe(record.contents.indexOf("archived") + 10);
+    } finally { teardown(view, record.path); }
+    expect(outlineSnapshot(record.path).items).toEqual([]);
+  });
+
+  it("同一次声明的多个变量互不吞并，光标离开函数后清掉作用域链", async () => {
+    const record = docOf({ path: "D:/proj/bindings.ts", language: "typescript", contents: "function run() { const first = 1, second = 2; return second; }\n// outside" });
+    await loadLanguage(record.language, record.path);
+    const state = detachedState(record);
+    const items = extractOutline(state);
+    const children = items[0].children;
+    expect(children.map((item) => item.name)).toEqual(["first", "second"]);
+    expect(symbolChain(items, record.contents.indexOf("second =") + 2).map((item) => item.name)).toEqual(["run", "second"]);
+    expect(symbolChain(items, record.contents.indexOf("outside"))).toEqual([]);
+  });
+
+  it.each([
+    { language: "python", path: "D:/proj/outline.py", contents: "class Demo:\n def run(self):\n  def inner():\n   return 1\n  return inner()\n", needle: "return 1", names: ["Demo", "run", "inner"] },
+    { language: "java", path: "D:/proj/Demo.java", contents: 'class Demo { String run() { int count = 1; return ""; } }', needle: "count", names: ["Demo", "run", "count"] },
+  ])("$language 复用语法树声明范围", async ({ language, path, contents, needle, names }) => {
+    await loadLanguage(language, path);
+    const state = detachedState(docOf({ language, path, contents }));
+    const items = extractOutline(state);
+    expect(symbolChain(items, contents.indexOf(needle) + 1).map((item) => item.name)).toEqual(names);
+    expect(items[0].children[0].selectionFrom).toBe(contents.indexOf("run"));
+  });
+
+  it("没有结构化语法的正文不伪造符号", () => {
+    expect(extractOutline(detachedState(docOf({ contents: "function imaginary() {}" })))).toEqual([]);
   });
 });
 

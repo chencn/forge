@@ -206,18 +206,17 @@ export function gitUnstage(root: string, absolutePaths: string[]): Promise<void>
   return invoke<void>("git_unstage", { root, paths: absolutePaths });
 }
 
-/** 提交时透传给 `git commit` 的选项：签名、作者、跳过 hooks、说明清洗。 */
+/** 提交时透传给 `git commit` 的选项：Sign-off、作者、跳过 hooks。 */
 export interface CommitRequestOptions {
   signoff?: boolean;
   author?: string;
   noVerify?: boolean;
-  cleanup?: string;
 }
 
 /**
  * 提交。`paths` 非空时走 `--only`：只提交点名的那几条（取工作区内容），
  * 索引里其它文件的已暂存块原样保留——提交面板复选框的勾选语义就落在这条上。
- * 签名/作者/跳过 hooks/说明清洗由 options 透传到 `git commit` 的命令行参数。
+ * Sign-off、作者与跳过 hooks 由 options 透传到 `git commit` 的命令行参数。
  */
 export function gitCommit(
   root: string,
@@ -234,7 +233,6 @@ export function gitCommit(
     signoff: options?.signoff ?? false,
     author: options?.author ?? "",
     noVerify: options?.noVerify ?? false,
-    cleanup: options?.cleanup ?? "",
   });
 }
 

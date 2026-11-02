@@ -91,8 +91,8 @@
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 0px;
   --header-height: 2.5rem;
-  /* 底部状态栏高度：对齐 openidea StatusBar 的 30px + 4px = 34px（原 24px 与参照双高度并存）。 */
-  --footer-height: 34px;
+  /* 对齐 OpenIDEA：默认 34px，紧凑模式 28px，跟随主题尺寸而非独立硬编码。 */
+  --footer-height: calc(var(--h-statusbar) + 4px);
   --island-radius: 10px;
   --workbench-gap: 6px;
   --rail-width: 38px;

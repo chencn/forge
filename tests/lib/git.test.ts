@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import {
   aggregateMark,
   changeMark,
   folderDeletePaths,
   folderMarks,
+  gitCommit,
   ignoredRoots,
   isDeletedMark,
   markClass,
@@ -17,6 +19,35 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("Git 提交 IPC 契约", () => {
+  it("只发送当前支持的提交参数，并返回提交结果", async () => {
+    vi.mocked(invoke).mockResolvedValue("提交成功");
+    await expect(gitCommit("D:/repo", "修复问题", true, ["D:/repo/a.ts"], {
+      signoff: true,
+      author: "作者 <author@example.com>",
+      noVerify: true,
+    })).resolves.toBe("提交成功");
+    expect(invoke).toHaveBeenCalledWith("git_commit", {
+      root: "D:/repo",
+      message: "修复问题",
+      amend: true,
+      paths: ["D:/repo/a.ts"],
+      signoff: true,
+      author: "作者 <author@example.com>",
+      noVerify: true,
+    });
+  });
+
+  it("未指定选项时提交索引，并使用默认 Git 参数", async () => {
+    vi.mocked(invoke).mockResolvedValue("提交成功");
+    await gitCommit("D:/repo", "更新代码", false);
+    expect(invoke).toHaveBeenCalledWith("git_commit", {
+      root: "D:/repo", message: "更新代码", amend: false, paths: [],
+      signoff: false, author: "", noVerify: false,
+    });
+  });
 });
 
 function change(partial: Partial<GitChange>): GitChange {

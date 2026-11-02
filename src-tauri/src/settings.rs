@@ -289,11 +289,8 @@ pub struct VcsSettings {
     pub body_line_limit: u32,
     pub show_right_margin: bool,
     pub wrap_right_margin: bool,
-    pub check_analyze_code: bool,
+    // 提交代码检查已移除；这里只保留不依赖语言服务的 TODO 检查。
     pub check_todo: bool,
-    pub check_reformat_code: bool,
-    pub check_optimize_imports: bool,
-    pub check_cleanup: bool,
     pub show_update_options: bool,
     pub highlight_dirty_directories: bool,
     pub on_patch_created: String,
@@ -321,11 +318,7 @@ impl Default for VcsSettings {
             body_line_limit: 72,
             show_right_margin: true,
             wrap_right_margin: false,
-            check_analyze_code: false,
             check_todo: true,
-            check_reformat_code: false,
-            check_optimize_imports: false,
-            check_cleanup: false,
             show_update_options: true,
             highlight_dirty_directories: true,
             on_patch_created: "clipboard".to_string(),
@@ -530,6 +523,22 @@ fn save_document(app: &AppHandle, document: &serde_json::Value) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 旧检查字段不进入运行时设置和 IPC 返回值，其余 VCS 偏好保持原值。
+    #[test]
+    fn vcs_ignores_removed_commit_checks() {
+        let raw = serde_json::json!({
+            "checkAnalyzeCode": true, "checkReformatCode": true,
+            "checkOptimizeImports": true, "checkCleanup": true,
+            "checkTodo": false, "signOffCommit": true, "subjectLineLimit": 60,
+        });
+        let settings: VcsSettings = serde_json::from_value(raw).unwrap();
+        let expected = VcsSettings {
+            check_todo: false, sign_off_commit: true, subject_line_limit: 60,
+            ..VcsSettings::default()
+        };
+        assert_eq!(serde_json::to_value(settings).unwrap(), serde_json::to_value(expected).unwrap());
+    }
 
     #[test]
     fn ai_assistants_default_off_and_round_trip() {
