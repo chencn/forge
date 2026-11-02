@@ -8,7 +8,7 @@
 
 const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const WINDOWS_PATH = /^[A-Za-z]:[\\/]/;
-const VIRTUAL_PREFIX = "virtual:lsp/";
+const VIRTUAL_PREFIX = "virtual:doc/";
 
 /** 返回 URI 的 scheme；无 scheme 的值不是可注册的虚拟 URI。 */
 export function uriScheme(uri: string): string | null {

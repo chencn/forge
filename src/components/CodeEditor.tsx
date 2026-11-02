@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -20,6 +21,7 @@ import {
   gutterWidth,
   lineTop,
   lineText,
+  languageOf,
   loadLanguage,
   minimapConfigOf,
   foldEffect,
@@ -41,7 +43,6 @@ import {
   setMounted,
   setScrollRatio,
   setKeymap,
-  setEditorCommandHandlers,
   setRainbowBrackets,
   setSoftWrap,
   setShowWhitespace,
@@ -53,28 +54,10 @@ import {
   type ChangeMark,
   type LineEnding,
 } from "../lib/cmEditor";
-import {
-  findUsages,
-  formatDocument,
-  gotoDeclaration,
-  gotoDefinition,
-  gotoImplementation,
-  gotoTypeDefinition,
-  lspExtensions,
-  organizeImports,
-  renameSymbol,
-  showCodeActions,
-  showDocumentSymbols,
-  showIncomingCalls,
-  showOutgoingCalls,
-  showSignatureHelp,
-  showSubTypes,
-  showSuperTypes,
-  showWorkspaceSymbols,
-} from "../lib/cm/lsp";
 import { attachMinimapPointer } from "../lib/cm/minimapPointer";
 import { forgeKeymap } from "../lib/cm/keymap";
 import { basenameOf, samePath } from "../lib/format";
+import { indentOverrideOf, indentRevision, subscribeIndent } from "../lib/indentOverride";
 import { gutterTargets } from "../lib/runMarkers";
 import { scriptKindOf } from "../lib/scriptRun";
 import { httpRequestLabel, isHttpFile, parseHttpFile } from "../lib/httpFile";
@@ -160,7 +143,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   const swapping = useRef(false);
   const pathRef = useRef<string | null>(null);
   /** 这篇 state 是按哪几样条件配的；没变就只换正文，不重配。 */
-  const wiredRef = useRef<{ language: string; tabSize: number; readOnly: boolean; failed: boolean } | null>(null);
+  const wiredRef = useRef<{ language: string; tabSize: number; useTabs: boolean; readOnly: boolean; failed: boolean } | null>(null);
+  // 每文件缩进覆盖的版本号：菜单里换一档，这里跳一格，装配 effect 跟着重跑。
+  const indentRev = useSyncExternalStore(subscribeIndent, indentRevision);
 
   const changeRef = useRef(onChange);
   const saveRef = useRef(onSave);
@@ -291,11 +276,10 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
    *
    * 单独提出来是因为它要同时喂给两处：空态（没开任何文件）建 state 时喂一次，
    * 挂上真文档时再喂一次——常驻 state 只在**建**的时候吃 `extra`，两处漏一处，
-   * 那篇文档就没有正文监听（打字不回写、改没改过看不出来）、没有 Ctrl+S，整组 LSP 也不在。
+   * 那篇文档就没有正文监听（打字不回写、改没改过看不出来）、没有 Ctrl+S。
    */
   const permanentExtensions = useMemo(
     () => [
-      ...lspExtensions,
       // 小地图得在建 state 时就带上：库的行表只在那一刻算（见 minimapExtension）。
       // 这里给的是空色带，真色带由 syncMinimap 之后补上。
       minimapExtension(minimapConfig([])),
@@ -343,18 +327,18 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
    * 光标就该留在原位，把上次存的落点贴回去会把光标弹走。
    */
   const attach = useCallback(
-    (view: EditorView, path: string, contents: string, language: string, readOnly: boolean, tabSize: number, restore = true) => {
+    (view: EditorView, path: string, contents: string, language: string, readOnly: boolean, tabSize: number, restore = true, useTabs = false) => {
       swapping.current = true;
       view.setState(
         stateFor(
-          { path, contents, language, readOnly, tabSize },
+          { path, contents, language, readOnly, tabSize, useTabs },
           permanentExtensions
         )
       );
       swapping.current = false;
       pathRef.current = path;
       setMounted(path, view);
-      wiredRef.current = { language, tabSize, readOnly, failed: false };
+      wiredRef.current = { language, tabSize, useTabs, readOnly, failed: false };
       if (restore) {
         // 恢复光标与滚动位置不算外部改动：不压住这一次回调，上一篇的内容会被写进这篇文档。
         swapping.current = true;
@@ -409,28 +393,6 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   }, [ensurePinHost]);
 
   useEffect(() => {
-    setEditorCommandHandlers({
-      formatDocument,
-      findUsages,
-      organizeImports,
-      gotoDefinition,
-      gotoDeclaration,
-      gotoTypeDefinition,
-      gotoImplementation,
-      showCodeActions,
-      renameSymbol,
-      showSignatureHelp,
-      showDocumentSymbols,
-      showWorkspaceSymbols,
-      showIncomingCalls,
-      showOutgoingCalls,
-      showSuperTypes,
-      showSubTypes,
-    });
-    return () => setEditorCommandHandlers(null);
-  }, []);
-
-  useEffect(() => {
     const host = hostRef.current;
     if (host)
       applyFontMetrics(host, settings.editor.fontSize, settings.editor.fontFamily, settings.editor.lineHeight);
@@ -479,7 +441,10 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     }
 
     const readOnly = doc.readOnly || doc.error !== null;
-    const tabSize = doc.editorConfig?.tabSize ?? settings.editor.tabSize;
+    // 缩进三档优先：状态栏菜单的每文件覆盖 > .editorconfig > 全局设置。
+    const override = indentOverrideOf(doc.path);
+    const useTabs = override?.useTabs ?? false;
+    const tabSize = override?.spaces ?? doc.editorConfig?.tabSize ?? settings.editor.tabSize;
     const wired = wiredRef.current;
     const sameWiring =
       wired !== null &&
@@ -487,6 +452,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       samePath(pathRef.current, doc.path) &&
       wired.language === doc.language &&
       wired.tabSize === tabSize &&
+      wired.useTabs === useTabs &&
       wired.readOnly === readOnly &&
       wired.failed === (doc.error !== null);
 
@@ -505,18 +471,21 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       persistView(previous, view);
       setMounted(previous, null);
     }
-    attach(view, doc.path, doc.contents, doc.language, readOnly, tabSize);
+    attach(view, doc.path, doc.contents, doc.language, readOnly, tabSize, true, useTabs);
 
     // 语法包是异步装进来的：落定后重配一次，语言 id 没变但 `languageOf` 有值了。
     // 这一趟不换正文、也不贴回旧光标：这篇可能已经打了几个字，贴回去会把光标弹到上次的位置。
+    // 语法包早已装好（`languageOf` 此刻就非空）时，上面那次 attach 已经把语法挂上了，
+    // 再 setState 一遍等于把整篇正文连同撤销栈重建一次——纯浪费，直接跳过。
     const wanted = doc.language;
     const forPath = doc.path;
-    void loadLanguage(wanted, forPath).then(() => {
+    if (!languageOf(wanted, forPath)) void loadLanguage(wanted, forPath).then(() => {
       const live = viewRef.current;
       if (!live || pathRef.current !== forPath) return;
-      attach(live, forPath, textOf(live), wanted, live.state.readOnly, tabSize, false);
+      attach(live, forPath, textOf(live), wanted, live.state.readOnly, tabSize, false, useTabs);
     });
-  }, [doc, settings.editor.tabSize, attach, syncMinimap]);
+    // indentRev：状态栏的每文件缩进菜单改了覆盖值，这里重跑一次装配让新缩进生效。
+  }, [doc, settings.editor.tabSize, attach, syncMinimap, indentRev]);
 
   // ---------------------------------------------------------------- 改动色条
 

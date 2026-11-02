@@ -8,7 +8,7 @@
  * 时效折中：条目 `FRESH_MS` 内不再重扫，新被忽略的文件最晚下一次过期后的加载
  * 才会出现；`.gitignore` / exclude 变动走显式 invalidate，立刻重扫并广播。
  */
-import { gitIgnored } from "./git";
+import { forgetIgnored, gitIgnored } from "./git";
 
 /** 起进程前的合并窗口：风暴期间多次请求只落一趟扫描。 */
 const REFRESH_DEBOUNCE_MS = 800;
@@ -104,6 +104,8 @@ export function subscribeIgnored(
 
 /** 忽略规则文件变了：作废条目并重扫，结果广播给所有订阅者。 */
 export function invalidateIgnored(repoRoot: string): void {
+  // 后端那份清单是 `gitStatus` 顺带扫的，同样读的是旧规则，先让它作废再重扫。
+  void forgetIgnored(repoRoot);
   const key = slotKey(repoRoot);
   const slot = getSlot(key);
   slot.list = null;

@@ -306,6 +306,45 @@ pub(crate) fn environment(provider: Provider) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// 模型目录的来源指纹：同一版 CLI 在不同供应商路由下会报出不同模型，
+/// 所以「CLI 版本没变」不能证明磁盘缓存还是当前的。
+///
+/// 只取会改变模型发现的两部分：根 `model_provider` 选中的那张 provider 表，
+/// 以及启动 CLI 时注入的环境变量（`OPENAI_BASE_URL` 等）。指纹是哈希，
+/// 环境变量里的密钥不会被原文写进缓存文件。
+pub(crate) fn model_source_key(provider: Provider) -> String {
+    // Claude 的模型是内置别名 + settings.json 每轮实时合并，缓存里只有别名表，
+    // 供应商切换不影响这份缓存，空指纹即可。
+    if provider == Provider::Claude { return String::new(); }
+    let env = environment(provider).into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>().join("\n");
+    let route = config_path(Provider::Codex).ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|text| codex_route_fingerprint(&text))
+        .unwrap_or_default();
+    format!("{:016x}", fnv1a(&format!("env\n{env}\nroute\n{route}")))
+}
+
+/// 只取根 `model_provider` 和被它选中的 provider 表：`[projects]`、MCP、TUI
+/// 这些改动与模型发现无关，不该让模型缓存反复失效。
+fn codex_route_fingerprint(config: &str) -> String {
+    let Ok(value) = config.parse::<toml::Value>() else { return config.to_string(); };
+    let provider = value.get("model_provider").and_then(toml::Value::as_str).unwrap_or("").trim();
+    let table = value.get("model_providers").and_then(|items| items.get(provider));
+    format!("{provider}\n{}", table.map(|value| value.to_string()).unwrap_or_default())
+}
+
+/// FNV-1a 64：只需要跨进程稳定，用来把配置压成一个短指纹，不用于安全场景。
+fn fnv1a(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
 /// 该 CLI 是否启用。读失败按启用处理，宁可多一个入口也不让设置故障挡住会话。
 pub(crate) fn enabled(app: &AppHandle, provider: Provider) -> bool {
     load(app).ok().and_then(|settings| settings.agents.get(provider.key()).map(|item| item.enabled)).unwrap_or(true)
@@ -1181,6 +1220,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("forge-ai-cli-{name}-{}-{stamp}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir.join("config.toml")
+    }
+
+    #[test]
+    fn model_source_key_tracks_only_the_route_that_changes_model_discovery() {
+        let base = "model_provider = \"gw\"\n\
+            [model_providers.gw]\nname = \"gw\"\nbase_url = \"https://a.example.com/v1\"\n\
+            [projects.'d:\\app']\ntrust_level = \"trusted\"\n";
+        // 无关配置（projects）改动不影响模型发现，指纹必须稳定。
+        let moved = base.replace("[projects.'d:\\app']", "[projects.'d:\\other']");
+        assert_eq!(codex_route_fingerprint(base), codex_route_fingerprint(&moved));
+        // 换网关或换 provider 才会让同一版 CLI 报出不同模型。
+        let other_url = base.replace("a.example.com", "b.example.com");
+        assert_ne!(codex_route_fingerprint(base), codex_route_fingerprint(&other_url));
+        let other_provider = base.replace("model_provider = \"gw\"", "model_provider = \"hf\"")
+            .replace("model_providers.gw", "model_providers.hf");
+        assert_ne!(codex_route_fingerprint(base), codex_route_fingerprint(&other_provider));
+        // 指纹必须是短哈希，环境变量里的密钥不能原文落盘。
+        assert_eq!(format!("{:016x}", fnv1a("abc")).len(), 16);
+        assert_ne!(fnv1a("abc"), fnv1a("abd"));
     }
 
     #[test]

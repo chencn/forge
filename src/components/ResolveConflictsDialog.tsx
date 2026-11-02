@@ -9,7 +9,7 @@ interface ResolveConflictsDialogProps {
   files: GitChange[];
   /** 按一边了结：本地取 stage 2，对方取 stage 3，取完顺带记为已解决。 */
   onAccept: (change: GitChange, side: "ours" | "theirs") => void;
-  /** 逐块解决：开块级合并层。 */
+  /** 开三栏合并编辑器：Yours | Result | Theirs，逐块取舍或手动改。 */
   onMerge: (change: GitChange) => void;
   /** 打开源文件自己改冲突标记。 */
   onOpen: (change: GitChange) => void;
@@ -68,7 +68,7 @@ export default function ResolveConflictsDialog({
                 className="button is-tiny"
                 onClick={() => onMerge(change)}
               >
-                {t("git.blockMergeOpen")}
+                {t("git.triMergeOpen")}
               </button>
               <button
                 type="button"

@@ -88,6 +88,12 @@ function touchesGitRef(gitPaths: readonly string[]): boolean {
 /** 一批磁盘事件的分类输入：监听来的批次和安装会话收尾攒下的那批都长成这样。 */
 export interface WorkspaceFlush {
   workspacePaths: string[];
+  /**
+   * `workspacePaths` 里真正改了目录清单的那一部分（后端按事件类型分好：新增/删除/改名，
+   * 外加忽略规则文件）。文件树只按它决定要不要重列目录——把保存也算进去，等于每按一次
+   * Ctrl+S 就把相关目录链重读一遍，而树上既不显示大小也不显示修改时间。
+   */
+  structuralPaths: string[];
   /** 同一批里 `.git` 下面那些路径：决定 Git 是只重取清单，还是连分支与提交记录一起重取。 */
   gitPaths: string[];
   bulk: boolean;
@@ -107,11 +113,12 @@ export interface FlushDecision extends WorkspaceFlush {
  * Git 与顶栏配置只该由当前激活根触发，但那道归属判断留给调用方（只有它知道是不是激活根）。
  */
 export function planWorkspaceFlush(input: FlushDecision): FlushPlan {
-  const { workspacePaths, gitPaths, bulk } = input;
+  const { workspacePaths, structuralPaths, gitPaths, bulk } = input;
   const finishedInstall = input.finishedInstall ?? false;
+  // 树只认清单变动：内容修改（保存、构建覆盖写）不改目录里有什么，一次都不该重列。
   const tree =
-    workspacePaths.length > 0
-      ? needsFullTreeRefresh(workspacePaths, bulk)
+    structuralPaths.length > 0
+      ? needsFullTreeRefresh(structuralPaths, bulk)
         ? "full"
         : "precise"
       : finishedInstall

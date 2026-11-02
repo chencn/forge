@@ -2,46 +2,39 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { ensureFileIcons } from "./lib/fileIcons";
 import { loadHistory } from "./lib/history";
-import { loadLspConfig } from "./lib/lspConfig";
 import { loadSettings } from "./lib/settings";
+import { ensureLang, resolveLang } from "./i18n";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./themes/tokens.css";
 import "./styles.css";
 
 /**
- * 界面整体延后到三份配置读回来之后再 import：读回之前渲染首帧，会先闪一下空态，
- * 语言服务还会多起一次进程。
+ * 界面整体延后到两份配置读回来之后再 import：读回之前渲染首帧，会先闪一下空态。
  */
 async function bootstrap() {
-  // 三份配置一起读：语言服务那份首帧的 reconcile 就要用，晚一步会多起一次进程；
-  // 历史记录决定首帧打开哪个工程，晚一步会先闪一下空态。
-  const [settings, history, lspConfig] = await Promise.all([
-    loadSettings(),
-    loadHistory(),
-    loadLspConfig(),
+  // 两份配置一起读：历史记录决定首帧打开哪个工程，晚一步会先闪一下空态。
+  const [settings, history] = await Promise.all([loadSettings(), loadHistory()]);
+  // 词典按语言拆成了独立 chunk（见 i18n/index.tsx）：首帧前只把当前语言那一份装上，
+  // 另外两种语言不必为一次打开付解析成本。
+  await ensureLang(resolveLang(settings.language || null));
+  // 上一回页面留下的 shell 先收干净：一挂载就会起新进程，晚了就来不及了。
+  // 清理与 App chunk 的加载互不依赖：模块加载与清理全部一起发，最后只等清理落地。
+  const [term, appModule, settingsModule, historyModule] = await Promise.all([
+    import("./lib/term"),
+    import("./App"),
+    import("./hooks/useSettings"),
+    import("./hooks/useHistory"),
   ]);
-  // 上一回页面留下的 shell 与语言服务先收干净：两者一挂载就会起新进程，晚了就来不及了。
-  // 这两条各自只走 `lib/term` 与 `lib/lsp`（只有 Tauri 壳的那一层），别换成 `lspClient`——
-  // 那条会连带把编辑器与 i18n 整串模块都拉进启动路径上。
-  const { termReap } = await import("./lib/term");
-  await termReap().catch(() => {});
-  const { lspReap } = await import("./lib/lsp");
-  await lspReap().catch(() => {});
-  const [{ default: App }, { SettingsProvider }, { HistoryProvider }, { LspConfigProvider }] =
-    await Promise.all([
-      import("./App"),
-      import("./hooks/useSettings"),
-      import("./hooks/useHistory"),
-      import("./hooks/useLspConfig"),
-    ]);
+  await term.termReap().catch(() => {});
+  const { default: App } = appModule;
+  const { SettingsProvider } = settingsModule;
+  const { HistoryProvider } = historyModule;
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <SettingsProvider initial={settings}>
         <HistoryProvider initial={history}>
-          <LspConfigProvider initial={lspConfig}>
-            <App />
-          </LspConfigProvider>
+          <App />
         </HistoryProvider>
       </SettingsProvider>
     </React.StrictMode>

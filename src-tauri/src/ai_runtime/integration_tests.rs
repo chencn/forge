@@ -25,7 +25,7 @@ impl Drop for Fixture {
     }
 }
 fn node() -> String {
-    crate::lsp_probe::resolve_command("node").expect("mock CLI tests require Node.js")
+    crate::sys::resolve_command("node").expect("mock CLI tests require Node.js")
 }
 fn process(fixture: &Fixture, provider: &str, scenario: &str) -> Process {
     let mut cmd = Command::new(node());

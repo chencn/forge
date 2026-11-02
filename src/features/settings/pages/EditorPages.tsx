@@ -60,17 +60,6 @@ export function EditorGeneralPage() {
         </div>
 
         <div className="settings-row">
-          <span className="settings-label">{t("settings.formatOnSave")}</span>
-          <Select
-            label={t("settings.formatOnSave")}
-            placeholder="—"
-            value={settings.editor.formatOnSave ? "yes" : "no"}
-            options={SWITCHES.map((option) => ({ value: option, label: t(SWITCH_LABEL[option]) }))}
-            onChange={(next) => patch({ editor: { ...settings.editor, formatOnSave: next === "yes" } })}
-          />
-        </div>
-
-        <div className="settings-row">
           <span className="settings-label">{t("settings.rainbowBrackets")}</span>
           <Select
             label={t("settings.rainbowBrackets")}
@@ -139,7 +128,7 @@ export function EditorFontPage() {
     <div className="settings-rows">
       <div className="settings-rows-limit">
         <div className="settings-row">
-          <span className="settings-label">字体族 (Font Family)</span>
+          <span className="settings-label">{t("settings.fontFamily")}</span>
           <input
             type="text"
             className="text-input"
@@ -187,11 +176,12 @@ export function EditorFontPage() {
 
 /** 配色方案页 */
 export function EditorColorSchemePage() {
+  const { t } = useI18n();
   return (
     <div className="settings-rows">
       <div className="settings-rows-limit">
         <p className="settings-hint">
-          编辑器语法高亮直接适配当前主题与多色彩模式。可在“外观与行为 › 外观”中选择对应主题方案。
+          {t("settings.colorSchemeHint")}
         </p>
       </div>
     </div>

@@ -8,9 +8,9 @@
  * （盘上没有 state 可读），要么退回本模块的静态表。
  *
  * 语言目录是对标 IDE 语言表（`languages/*.toml`，71 门）的 1:1 抄本：id、显示名、
- * 扩展名与文件名逐字对齐，语言服务种子（`lsp_config.rs`）按同一套 id 路由。
+ * 扩展名与文件名逐字对齐，供编辑器识别与显示。
  * 目录之外的少数语言（batch、nsis、solidity 这类编辑器还有语法但目录里没有的）
- * 放在 `EDITOR_EXTRA`，只参与识别与显示，不进语言服务目录。
+ * 放在 `EDITOR_EXTRA`，只参与识别与显示。
  */
 
 /** 语言目录里的一项；`filenames` 是扩展名覆盖不到的特例，支持 `*` 通配。 */
@@ -298,28 +298,6 @@ export function languageLabel(id: string): string {
   return LANGUAGE_LABELS[id] ?? id;
 }
 
-/**
- * 一项语言服务所管的那几门语言的显示名，多种语言并列。
- *
- * 设置页与状态条显示它，不显示服务名：`csharp-ls`、`intelephense` 是进程的名字，
- * 对应 C# 与 PHP 两门语言，两者混着写会让人以为列表里多了几个看不懂的语言。
- */
-export function languageNames(ids: string[]): string {
-  return ids.map(languageLabel).join(" / ");
-}
-
-/**
- * 语言目录全量：id 与显示名，按显示名排序。
- *
- * 设置页「新增语言服务」的语言勾选表、状态栏的过滤建议都从这里取，
- * 只含目录内 71 门（编辑器专用补充表不参与语言服务路由）。
- */
-export function languageCatalog(): Array<{ id: string; label: string }> {
-  return CATALOG.map((language) => ({ id: language.id, label: language.name })).sort((a, b) =>
-    a.label.localeCompare(b.label)
-  );
-}
-
 function cssToken(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -340,22 +318,6 @@ export function monoFont(): string {
 interface EditorBridge {
   disposeModel(path: string): void;
   selectedText(limit: number): string;
-  formatDocument(path: string): boolean;
-  findUsages(path: string): boolean;
-  organizeImports(path: string): boolean;
-  gotoDefinition(path: string): boolean;
-  gotoDeclaration(path: string): boolean;
-  gotoTypeDefinition(path: string): boolean;
-  gotoImplementation(path: string): boolean;
-  showCodeActions(path: string): boolean;
-  renameSymbol(path: string): boolean;
-  showSignatureHelp(path: string): boolean;
-  showDocumentSymbols(path: string): boolean;
-  showWorkspaceSymbols(path: string): boolean;
-  showIncomingCalls(path: string): boolean;
-  showOutgoingCalls(path: string): boolean;
-  showSuperTypes(path: string): boolean;
-  showSubTypes(path: string): boolean;
 }
 
 let bridge: EditorBridge | null = null;
@@ -366,25 +328,6 @@ export function attachEditorBridge(next: EditorBridge): () => void {
   return () => {
     if (bridge === next) bridge = null;
   };
-}
-
-/**
- * 跳到别的文件时的落点处理，由 App 注入。
- *
- * 语言服务的「跳转到定义」要打开的是另一份文件，编辑器只对「自己那份文档」有概念，
- * 所以必须在编辑器模块里注册 opener；而真正把文件读进来、开标签、定位是文档那一层的事，
- * 编辑器模块拿不到，只能留一个门面让 App 接上。
- */
-type OpenTargetHandler = (path: string, line: number, column: number) => boolean;
-let openTarget: OpenTargetHandler | null = null;
-
-export function setOpenTargetHandler(handler: OpenTargetHandler | null): void {
-  openTarget = handler;
-}
-
-/** 由编辑器的 opener 调用；没接上处理者时返回 false，交给调用方自己收尾。 */
-export function openTargetInEditor(path: string, line: number, column: number): boolean {
-  return openTarget ? openTarget(path, line, column) : false;
 }
 
 /** 关闭标签时释放那篇文档的常驻 state，否则切回来还是旧内容。编辑器没加载过时无事可做。 */
@@ -400,69 +343,4 @@ export function disposeModel(path: string): void {
  */
 export function selectedText(limit = 10000): string {
   return bridge?.selectedText(limit) ?? "";
-}
-
-/** 右键菜单调用的编辑器命令；路径参数保证异步打开文件后不会误作用于另一篇文档。 */
-export function formatDocument(path: string): boolean {
-  return bridge?.formatDocument(path) ?? false;
-}
-
-export function findUsages(path: string): boolean {
-  return bridge?.findUsages(path) ?? false;
-}
-
-export function organizeImports(path: string): boolean {
-  return bridge?.organizeImports(path) ?? false;
-}
-
-export function gotoDefinition(path: string): boolean {
-  return bridge?.gotoDefinition(path) ?? false;
-}
-
-export function gotoDeclaration(path: string): boolean {
-  return bridge?.gotoDeclaration(path) ?? false;
-}
-
-export function gotoTypeDefinition(path: string): boolean {
-  return bridge?.gotoTypeDefinition(path) ?? false;
-}
-
-export function gotoImplementation(path: string): boolean {
-  return bridge?.gotoImplementation(path) ?? false;
-}
-
-export function showCodeActions(path: string): boolean {
-  return bridge?.showCodeActions(path) ?? false;
-}
-
-export function renameSymbol(path: string): boolean {
-  return bridge?.renameSymbol(path) ?? false;
-}
-
-export function showSignatureHelp(path: string): boolean {
-  return bridge?.showSignatureHelp(path) ?? false;
-}
-
-export function showDocumentSymbols(path: string): boolean {
-  return bridge?.showDocumentSymbols(path) ?? false;
-}
-
-export function showWorkspaceSymbols(path: string): boolean {
-  return bridge?.showWorkspaceSymbols(path) ?? false;
-}
-
-export function showIncomingCalls(path: string): boolean {
-  return bridge?.showIncomingCalls(path) ?? false;
-}
-
-export function showOutgoingCalls(path: string): boolean {
-  return bridge?.showOutgoingCalls(path) ?? false;
-}
-
-export function showSuperTypes(path: string): boolean {
-  return bridge?.showSuperTypes(path) ?? false;
-}
-
-export function showSubTypes(path: string): boolean {
-  return bridge?.showSubTypes(path) ?? false;
 }

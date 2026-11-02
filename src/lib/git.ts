@@ -248,12 +248,9 @@ export function gitApplyPatch(
   return invoke<void>("git_apply_patch", { root, patch, cached, reverse });
 }
 
-export function gitBranches(root: string): Promise<GitBranch[]> {
-  return invoke<GitBranch[]>("git_branches", { root });
-}
-
-export function gitTags(root: string): Promise<GitTag[]> {
-  return invoke<GitTag[]>("git_tags", { root });
+/** 分支与标签一趟取回：后端一条 `for-each-ref` 同时产出两份表。 */
+export function gitRefs(root: string): Promise<{ branches: GitBranch[]; tags: GitTag[] }> {
+  return invoke<{ branches: GitBranch[]; tags: GitTag[] }>("git_refs", { root });
 }
 
 export function gitRemotes(root: string): Promise<string[]> {
@@ -263,6 +260,16 @@ export function gitRemotes(root: string): Promise<string[]> {
 /** 被 .gitignore 忽略的路径，「显示忽略文件」开关用。 */
 export function gitIgnored(root: string): Promise<string[]> {
   return invoke<string[]>("git_ignored", { root });
+}
+
+/**
+ * 忽略规则文件变了：让后端把它那份忽略清单缓存作废，下次 `gitIgnored` 重新扫。
+ *
+ * 后端那份清单是 `gitStatus` 顺带扫出来的（同一趟目录遍历），不主动作废就会一直
+ * 拿旧规则。纯浏览器预览没有这条命令，失败就算了——后端 TTL 会兜底。
+ */
+export function forgetIgnored(root: string): Promise<void> {
+  return invoke<void>("git_forget_ignored", { root }).catch(() => {});
 }
 
 /**
@@ -369,6 +376,66 @@ export function gitStashBranch(root: string, index: number, branch: string): Pro
 /** 丢弃一条 stash。不可恢复，确认由调用方负责。 */
 export function gitStashDrop(root: string, index: number): Promise<string> {
   return invoke<string>("git_stash_drop", { root, index });
+}
+
+// --------------------------------------------------------------- shelf（搁置区）
+
+/** 一条搁置清单里的一个文件，来自 Rust `GitShelfFile`。 */
+export interface GitShelfFile {
+  path: string;
+  /** A / D / M / R / T 之一。 */
+  kind: string;
+  oldPath: string;
+}
+
+/** 一条搁置清单，来自 Rust `GitShelvedChangeList`。列表最新在前。 */
+export interface GitShelvedChangeList {
+  id: string;
+  name: string;
+  timeMs: number;
+  branch: string | null;
+  files: GitShelfFile[];
+}
+
+/** unshelve 的结果：干净落地的文件与带冲突标记留下的文件。 */
+export interface GitShelfApplyOutcome {
+  applied: string[];
+  conflicts: string[];
+}
+
+/** 冲突文件的三个版本，来自 Rust `GitConflictVersions`。`reversed`：两侧语义对调（变基/恢复 stash）。 */
+export interface GitConflictVersions {
+  ours: string;
+  theirs: string;
+  base: string | null;
+  reversed: boolean;
+}
+
+/** 取未合并文件的三方正文（index stage 2/3/1）。 */
+export function gitConflictVersions(root: string, path: string): Promise<GitConflictVersions> {
+  return invoke<GitConflictVersions>("git_conflict_versions", { root, path });
+}
+
+/** 搁置选中文件的未提交改动（存成命名补丁并恢复工作区到 HEAD）。 */
+export function gitShelve(root: string, name: string, paths: string[]): Promise<GitShelvedChangeList> {
+  return invoke<GitShelvedChangeList>("git_shelve", { root, name, paths });
+}
+
+export function gitShelves(root: string): Promise<GitShelvedChangeList[]> {
+  return invoke<GitShelvedChangeList[]>("git_shelves", { root });
+}
+
+/** 放回搁置的改动；remove 在无冲突时顺带删除条目。 */
+export function gitUnshelve(root: string, id: string, remove: boolean): Promise<GitShelfApplyOutcome> {
+  return invoke<GitShelfApplyOutcome>("git_unshelve", { root, id, remove });
+}
+
+export function gitShelfDelete(root: string, id: string): Promise<string> {
+  return invoke<string>("git_shelf_delete", { root, id });
+}
+
+export function gitShelfRename(root: string, id: string, name: string): Promise<string> {
+  return invoke<string>("git_shelf_rename", { root, id, name });
 }
 
 /** 后端用 `branch -d`，还没合并的分支 git 自己会拦。 */
@@ -646,12 +713,17 @@ export function rollbackTargets(
  * 目录聚合标记表：键为仓库相对路径（正斜杠），值为聚合字母，供目录名和圆点染色。
  * 每个变更沿祖先链向上累加，规则同 {@link aggregateMark}。
  * @param changes 变更清单
+ * @param markOf 每条变更取哪个字母；默认取 `changeMark`（工作区盖过暂存区）。
+ *   暂存分组时传入只读索引位的取法，圆点颜色才跟该组行尾字母一致。
  * @returns 目录相对路径 → 聚合字母；没有变更的目录不在表里
  */
-export function folderMarks(changes: GitChange[]): Map<string, string> {
+export function folderMarks(
+  changes: GitChange[],
+  markOf: (change: GitChange) => string = changeMark
+): Map<string, string> {
   const acc = new Map<string, { rank: number; mark: string }>();
   for (const change of changes) {
-    const mark = changeMark(change);
+    const mark = markOf(change);
     const rank = markRank(mark);
     if (rank === 0) continue;
     const parts = change.path.split("/");

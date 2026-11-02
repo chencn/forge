@@ -59,4 +59,14 @@ describe("项目树视图状态持久化", () => {
     saveViewOptions("d:/one", DEFAULT_VIEW_OPTIONS);
     expect(hasSavedViewOptions("d:/one")).toBe(true);
   });
+
+  it("没保存过时单击打开/单击展开默认勾选，用户保存的值优先", () => {
+    expect(loadViewOptions("d:/one").singleClickOpen).toBe(true);
+    expect(loadViewOptions("d:/one").singleClickExpand).toBe(true);
+
+    saveViewOptions("d:/one", { ...DEFAULT_VIEW_OPTIONS, singleClickOpen: false });
+    const saved = loadViewOptions("d:/one");
+    expect(saved.singleClickOpen).toBe(false);
+    expect(saved.singleClickExpand).toBe(true);
+  });
 });

@@ -107,9 +107,53 @@ export function stopWorkspaceWatch(root: string, generation: number): Promise<vo
   return invoke<void>("fs_watch_stop", { root, generation }).catch(() => {});
 }
 
-/** 列目录：后端已按「目录优先 + 名称升序」排好，隐藏项照实返回。 */
-export function listDirectory(path: string): Promise<DirectoryListing> {
-  return invoke<DirectoryListing>("list_directory", { path });
+/** 列目录单次调用的等待上限；超时按失败处理，树侧给出重试入口而不是无限转圈。 */
+const LIST_DIRECTORY_TIMEOUT_MS = 15_000;
+
+/**
+ * 列目录：后端已按「目录优先 + 名称升序」排好，隐藏项照实返回。
+ *
+ * 后端这条命令本身没有时限（read_dir + 每层一个 check-ignore 子进程），任何一环被
+ * 杀软/索引器偶发卡住都会让 promise 永不落定——前端必须自己掐表。超时只是放弃等待，
+ * 那趟 invoke 仍在飞：若它晚于重试的响应到达，后到者会覆盖同名目录的缓存，内容仍是
+ * 该目录的真实清单，可接受，不做请求代际管理。
+ */
+export async function listDirectory(path: string): Promise<DirectoryListing> {
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(
+      () => reject(new Error("LIST_DIRECTORY_TIMEOUT")),
+      LIST_DIRECTORY_TIMEOUT_MS
+    );
+  });
+  try {
+    return await Promise.race([invoke<DirectoryListing>("list_directory", { path }), timeout]);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** 一条链上的多层目录清单，来自 Rust `Vec<DirectoryListing>`；首层就是请求的目录。 */
+export type DirectoryListingChain = DirectoryListing[];
+
+/**
+ * 列目录并一次带回「往下延伸的单子目录链」所有层（对齐 IDEA Compact Directories 的
+ * 数据先于 UI）：树把唯一可见子目录并成链节点，逐层补加载会形成每层一次 IPC 的瀑布。
+ * 超时口径与 listDirectory 相同；链中某层读取失败时后端截断返回已收集的层。
+ */
+export async function listDirectoryChain(path: string): Promise<DirectoryListingChain> {
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(
+      () => reject(new Error("LIST_DIRECTORY_TIMEOUT")),
+      LIST_DIRECTORY_TIMEOUT_MS
+    );
+  });
+  try {
+    return await Promise.race([invoke<DirectoryListingChain>("list_directory_chain", { path }), timeout]);
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export function createFolder(path: string): Promise<FsEntry> {

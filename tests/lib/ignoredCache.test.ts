@@ -3,6 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 // 先挂 mock 再动态导入被测模块：断言与实现都不依赖 Tauri 运行时。
 vi.mock("../../src/lib/git", () => ({
   gitIgnored: vi.fn(() => Promise.resolve(["node_modules/"])),
+  // 后端那份清单是 `gitStatus` 顺带扫出来的，作废时也要一起打穿。
+  forgetIgnored: vi.fn(() => Promise.resolve()),
 }));
 
 async function loadModule() {
@@ -64,7 +66,7 @@ it("新鲜期内复用缓存，不再起进程", async () => {
 
 it("规则文件变动显式作废后重扫，并广播给订阅者", async () => {
   const { invalidateIgnored, loadIgnored, subscribeIgnored } = await loadModule();
-  const { gitIgnored } = await import("../../src/lib/git");
+  const { forgetIgnored, gitIgnored } = await import("../../src/lib/git");
   const root = "D:/repo/z";
   const first = loadIgnored(root);
   await vi.advanceTimersByTimeAsync(900);
@@ -75,6 +77,9 @@ it("规则文件变动显式作废后重扫，并广播给订阅者", async () =
   const seen: string[][] = [];
   const unsubscribe = subscribeIgnored(root, (list) => seen.push(list));
   invalidateIgnored(root);
+  // 前端这份名单和后端那份（gitStatus 顺带扫的）是两处缓存，作废要一起打穿，
+  // 只清一边的话下一次 loadIgnored 会从后端的旧清单原样读回来。
+  expect(vi.mocked(forgetIgnored)).toHaveBeenCalledWith(root);
   await vi.advanceTimersByTimeAsync(900);
   await expect(loadIgnored(root)).resolves.toEqual(["dist/"]);
   expect(vi.mocked(gitIgnored)).toHaveBeenCalledTimes(2);

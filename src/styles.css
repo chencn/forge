@@ -716,6 +716,13 @@ span.entry-icon > svg {
   color: var(--accent-red-text);
 }
 
+/* 状态栏缩进菜单：没有勾的条目用空位对齐，勾标记不把文字顶歪。 */
+.menu-check-gap {
+  display: inline-block;
+  width: 13px;
+  flex: none;
+}
+
 .menu-item svg {
   flex: none;
 }
@@ -1527,553 +1534,25 @@ span.entry-icon > svg {
   max-width: 840px;
 }
 
+/* 堆叠模块（通用/编辑器/版本控制）：一个模块一屏滚到底，节标题做分隔。 */
+.settings-stack {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-section-title {
+  margin: 0;
+  padding: 16px 18px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .settings-row {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-/* 语言服务设置页：左列 264px 列表（+/−/刷新/搜索 + 三段过滤 + 分组），右栏详情
-   （标题、状态徽章、动作、安装反馈、日志、设置表单）。尺寸与间距逐条对标 IDE。 */
-.lsps-page {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  min-height: 420px;
-}
-.lsps-intro {
-  margin: 0;
-  max-width: 680px;
-  color: var(--fg-secondary);
-}
-.lsps-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border);
-  overflow: hidden;
-}
-
-/* 列表 */
-.lsps-side {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  width: 264px;
-  min-height: 0;
-  border-right: 1px solid var(--border);
-}
-.lsps-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin: 8px 8px 6px;
-}
-.lsps-search {
-  flex: 1;
-  min-width: 0;
-}
-.lsps-toolbar-sep {
-  flex: none;
-  width: 1px;
-  height: 16px;
-  margin: 0 2px;
-  background: var(--border);
-}
-.lsps-segmented {
-  display: flex;
-  height: var(--h-control-small);
-  margin: 0 8px 6px;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-  overflow: hidden;
-}
-.lsps-segment {
-  flex: 1;
-  padding: 0 6px;
-  border: 0;
-  background: transparent;
-  color: var(--fg-secondary);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.lsps-segment:hover {
-  background: var(--bg-hover);
-}
-.lsps-segment:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.lsps-segment.is-on {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
-}
-.lsps-list {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 0 0 4px;
-  list-style: none;
-  overflow: auto;
-}
-.lsps-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: var(--h-row);
-  padding: 0 12px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-}
-.lsps-group-count {
-  font-variant-numeric: tabular-nums;
-}
-.lsps-row:hover {
-  background: var(--bg-hover);
-}
-.lsps-row-selected,
-.lsps-row-selected:hover {
-  background: var(--bg-selected);
-}
-.lsps-row-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: var(--h-row);
-  padding: 0 12px;
-  border: 0;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.lsps-row-main:focus-visible {
-  outline: none;
-  background: var(--bg-hover);
-}
-.lsps-row-off .lsps-row-name,
-.lsps-row-off .lsps-row-langs {
-  color: var(--fg-muted);
-}
-.lsps-row-name {
-  flex: none;
-  max-width: 60%;
-  overflow: hidden;
-  color: var(--fg-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.lsps-row-langs {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.lsps-kind-tag {
-  flex: none;
-  padding: 0 5px;
-  border-radius: var(--radius-small);
-  background: var(--bg-control);
-  color: var(--fg-muted);
-  font-size: var(--fs-tiny);
-  line-height: 16px;
-}
-.lsps-list-empty {
-  padding: 8px 12px;
-  color: var(--fg-muted);
-}
-
-/* 详情 */
-.lsps-details {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px 16px 16px;
-  overflow: auto;
-}
-.lsps-details-empty {
-  flex: 1;
-}
-.lsps-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-.lsps-header-text {
-  flex: 1;
-  min-width: 0;
-}
-.lsps-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--fg-strong);
-  font-size: var(--fs-input-large);
-  font-weight: 600;
-}
-.lsps-subtitle {
-  margin-top: 2px;
-  color: var(--fg-secondary);
-}
-.lsps-subtitle a {
-  color: var(--link);
-}
-.lsps-subtitle a:hover {
-  color: var(--link-hover);
-}
-.lsps-actions {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-}
-.lsps-link-button {
-  align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  font-size: var(--fs-small);
-  cursor: pointer;
-}
-.lsps-link-button:hover {
-  color: var(--link-hover);
-  text-decoration: underline;
-}
-.lsps-link-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.lsps-error {
-  margin: 0;
-  color: var(--danger);
-  overflow-wrap: anywhere;
-}
-.lsps-details .lsps-error {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-.lsps-notice {
-  padding: 6px 8px;
-  border-radius: var(--radius-small);
-  background: var(--bg-control);
-  color: var(--fg-secondary);
-  overflow-wrap: anywhere;
-  -webkit-user-select: text;
-  user-select: text;
-}
-.lsps-log {
-  margin: 4px 0 0;
-  padding: 6px 8px;
-  max-height: 240px;
-  overflow: auto;
-  background: var(--bg-app);
-  color: var(--fg-secondary);
-  border-radius: var(--radius-small);
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
-  white-space: pre-wrap;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-/* 设置表单：标题分隔线 + 标签在上的全宽控件（详情栏窄）。 */
-.lsps-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-.lsps-section {
-  min-width: 0;
-}
-.lsps-section-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 22px;
-  margin-bottom: 4px;
-  color: var(--fg-strong);
-}
-.lsps-section-rule {
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-.lsps-section-toggle {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.lsps-section-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.lsps-section-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 4px 0 0 12px;
-}
-.lsps-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.lsps-label {
-  color: var(--fg);
-}
-.lsps-label::after {
-  content: ":";
-}
-.lsps-control {
-  display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  min-width: 0;
-}
-.lsps-hint {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-.lsps-note {
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-}
-.lsps-code {
-  font-family: var(--font-mono);
-}
-.lsps-grow {
-  flex: 1;
-  min-width: 0;
-}
-.lsps-area {
-  flex: 1;
-  min-width: 0;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-  background: var(--bg-input);
-  color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
-  line-height: 1.45;
-  resize: vertical;
-}
-.lsps-area:focus {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
-.lsps-area::placeholder {
-  color: var(--fg-muted);
-}
-.lsps-invalid,
-.lsps-invalid:focus {
-  box-shadow: inset 0 0 0 2px var(--danger);
-}
-.lsps-picker {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  height: var(--h-control);
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-  background: var(--bg-input);
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.lsps-picker:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
-.lsps-picker-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.lsps-picker-text.is-placeholder {
-  color: var(--fg-muted);
-}
-.lsps-picker-popup {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 260px;
-  padding: 8px;
-}
-.lsps-picker-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 240px;
-  overflow: auto;
-}
-.lsps-link {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  cursor: pointer;
-}
-.lsps-link:hover {
-  color: var(--link-hover);
-  text-decoration: underline;
-}
-.lsps-link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* 新增服务对话框：够宽才能放下「标签：控件」两栏。 */
-.lsps-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px 4px;
-}
-.lsps-dialog-body .lsps-row {
-  display: grid;
-  grid-template-columns: 90px minmax(0, 1fr);
-  align-items: center;
-  column-gap: 8px;
-}
-.lsps-dialog-body .lsps-control {
-  align-items: center;
-}
-
-/* 编辑弹窗：一行两格，标签在上，说明在下。字段比一屏高，整块自己滚，按钮钉在底。 */
-.lsp-dialog {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
-}
-
-.lsp-dialog .dialog-actions {
-  position: sticky;
-  bottom: 0;
-  margin-top: auto;
-  padding: 10px 0 2px;
-  background: var(--surface-island-strong);
-}
-
-.lsp-dialog .dialog-field {
-  margin: 0;
-}
-
-.lsp-dialog-row {
-  display: flex;
-  gap: 12px;
-}
-
-.lsp-dialog-row .dialog-field {
-  flex: 1;
-  min-width: 0;
-}
-
-.lsp-dialog-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.lsp-dialog-json {
-  height: auto;
-  padding: 8px 10px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  resize: vertical;
-}
-
-.lsp-dialog-error {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--accent-red-text);
-}
-
-/* 安装确认里那行命令：只在动手前出现，允许换行看全，点一下就整段选中。 */
-.lsp-install-command {
-  margin: 0 0 4px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  word-break: break-all;
-  user-select: all;
-}
-
-/* 语言服务的输出日志：整段等宽、能滚、能选，复制给终端或 issue 用。 */
-.lsp-log {
-  max-height: min(340px, 45vh);
-  margin: 0 0 4px;
-  padding: 8px 10px;
-  overflow: auto;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  user-select: text;
-}
-
-.lsp-log.is-empty {
-  white-space: normal;
-  color: var(--text-muted);
-}
-
-/* 一小颗复制开关，跟在报错或日志行末尾，不抢正文的注意力。 */
-.copy-button {
-  flex: none;
-  display: inline-grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background 110ms ease-out, color 110ms ease-out;
 }
 
 .copy-button:hover {
@@ -2086,53 +1565,6 @@ span.entry-icon > svg {
   outline-offset: -1px;
 }
 
-/* 语言服务的运行状态：绿点示意在跑，黄点是启动中或没找到。 */
-.lsp-status {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-.lsp-status::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-.lsp-status.is-ready::before {
-  background: var(--accent-green);
-}
-.lsp-status.is-starting::before {
-  background: var(--accent-blue);
-}
-.lsp-status.is-missing::before {
-  background: var(--accent-red);
-}
-
-/* 底部状态条上那一格：一个图标加在跑服务摘要，点开是一列会话。 */
-.status-lsp {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  /* 悬停浮层放不下下方时按锚点上沿往上定位。这一格原本只有字面高、在 26px 的栏里居中，
-     锚点上沿就落在栏顶下方 5px 处，那 4px 间隙被吃掉，面板底边压进栏的描边 1px 多。
-     撑满栏高后间隙才是真的间隙。 */
-  align-self: stretch;
-}
-.status-lsp-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 3px;
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  font: inherit;
-  cursor: pointer;
-}
 
 /* ===== 右侧：活动栏 + 工具窗口，结构照左侧镜像。入口只给有内容的块，
    打开着的那块内容没了整条栏就退场。 ===== */
@@ -2437,102 +1869,6 @@ span.entry-icon > svg {
   flex: 1;
   min-width: 0;
 }
-/* ===== 语言服务状态格与弹层：结构、尺寸逐项照对标 IDE 的 ServerStatus 抄
-   （340px 面板、6px 状态点、行内 dot+名+状态词+spacer+动作、meta/message 缩进排版）。 ===== */
-.status-lsp-name {
-  font-size: 11px;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.lsp-dot {
-  display: inline-block;
-  flex: none;
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: var(--fg-faint);
-}
-.lsp-dot.is-ok {
-  background: var(--success);
-}
-.lsp-dot.is-busy {
-  background: var(--accent);
-  animation: lsp-dot-pulse 1.2s ease-in-out infinite alternate;
-}
-.lsp-dot.is-error {
-  background: var(--danger);
-}
-.lsp-dot.is-idle {
-  background: var(--fg-faint);
-}
-@keyframes lsp-dot-pulse {
-  to {
-    opacity: 0.35;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .lsp-dot.is-busy {
-    animation: none;
-  }
-}
-.lsp-panel {
-  width: 340px;
-  padding: 6px 0;
-  font-size: var(--fs-small);
-}
-.lsp-panel-header {
-  padding: 2px 12px 6px;
-  font-size: var(--fs-small);
-  color: var(--fg-subtle);
-}
-.lsp-server {
-  padding: 4px 12px;
-}
-.lsp-server + .lsp-server {
-  border-top: 1px solid var(--border-popup);
-}
-.lsp-line {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-height: 24px;
-}
-.lsp-name {
-  margin-right: 8px;
-  min-width: 0;
-  color: var(--fg-emphasis);
-}
-.lsp-status-text {
-  font-size: var(--fs-small);
-  color: var(--fg-subtle);
-}
-.lsp-spacer {
-  flex: 1;
-}
-.lsp-meta {
-  padding-left: 12px;
-  font-size: var(--fs-small);
-  color: var(--fg-subtle);
-}
-.lsp-message {
-  margin-top: 4px;
-  padding-left: 12px;
-  font-size: var(--fs-small);
-  color: var(--fg-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-/* 安装提示与失败原因要能整段复制进终端：等宽 + 可选中。 */
-.lsp-message.is-install {
-  font-family: var(--font-mono);
-  color: var(--fg);
-  -webkit-user-select: text;
-  user-select: text;
-}
-
 .settings-label {
   flex: none;
   width: 150px;
@@ -4867,86 +4203,17 @@ body.is-editor-tab-dragging * {
   min-height: 0;
 }
 
-/* 悬停文档浮层：排版与配色全套用聊天那组类名（见 lib/cm/lsp.ts），这里只管尺寸。
+/* 悬停文档浮层：排版与配色全套用聊天那组类名，这里只管尺寸。
    限高不然一段长文档会把整屏正文盖住；字号跟着编辑器走，读的是同一份代码。 */
-.cm-tooltip .lsp-hover {
-  max-width: min(520px, 60vw);
-  max-height: 320px;
-  overflow-y: auto;
-  padding: 8px 10px;
-  font-size: var(--editor-font-size, 13px);
-}
 
-.cm-tooltip .lsp-signature-help,
-.cm-tooltip .lsp-code-actions,
-.cm-tooltip .lsp-rename {
-  min-width: 220px;
-  max-width: min(560px, 70vw);
-  padding: 7px 9px;
-  font-size: var(--editor-font-size, 13px);
-}
 
-.lsp-signature-help code {
-  display: block;
-  white-space: pre-wrap;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-}
-
-.lsp-signature-parameter,
-.lsp-signature-documentation,
-.lsp-rename-status,
-.lsp-code-actions-empty,
-.lsp-action-error {
+.panel-action-error {
   margin-top: 5px;
   color: var(--text-secondary);
   white-space: pre-wrap;
 }
 
-.lsp-code-actions-title {
-  padding-bottom: 4px;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
 
-.lsp-code-action {
-  display: block;
-  width: 100%;
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  text-align: left;
-  cursor: pointer;
-}
-
-.lsp-code-action:hover,
-.lsp-code-action:focus-visible {
-  background: var(--bg-hover);
-  outline: none;
-}
-
-.lsp-rename-input {
-  width: 260px;
-  max-width: 60vw;
-  padding: 4px 6px;
-  border: 1px solid var(--accent-blue);
-  border-radius: 3px;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.cm-content .lsp-inlay-hint {
-  color: var(--text-muted);
-  opacity: 0.85;
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  pointer-events: none;
-  user-select: none;
-}
-
-/* 语义 token 是语言服务对语法树的补充；保持低特异度，让主题可覆盖具体语言颜色。 */
 /* Sticky scroll（IDEA 2023+ 默认开启）：作用域头部行钉在编辑区顶部（见 lib/cm/stickyScroll.ts）。 */
 .cm-forge-sticky {
   position: absolute;
@@ -5000,59 +4267,6 @@ body.is-editor-tab-dragging * {
   pointer-events: none;
 }
 
-.cm-editor .lsp-semantic-token {
-  color: var(--lsp-semantic-token, inherit);
-}
-.cm-editor .lsp-semantic-variable { color: var(--lsp-semantic-variable, inherit); }
-.cm-editor .lsp-semantic-function,
-.cm-editor .lsp-semantic-method { color: var(--lsp-semantic-function, inherit); }
-.cm-editor .lsp-semantic-type,
-.cm-editor .lsp-semantic-class,
-.cm-editor .lsp-semantic-interface,
-.cm-editor .lsp-semantic-struct { color: var(--lsp-semantic-type, inherit); }
-.cm-editor .lsp-semantic-property,
-.cm-editor .lsp-semantic-parameter { color: var(--lsp-semantic-property, inherit); }
-.cm-editor .lsp-semantic-mod-readonly { font-style: italic; }
-.cm-editor .lsp-semantic-mod-deprecated { text-decoration: line-through; }
-
-.cm-editor .lsp-code-lens {
-  display: block;
-  height: 1.35em;
-  line-height: 1.35em;
-  padding-left: 1em;
-  color: var(--text-muted);
-  font-size: 0.9em;
-  user-select: none;
-}
-.cm-editor .lsp-code-lens-button {
-  border: 0;
-  padding: 0;
-  color: inherit;
-  background: transparent;
-  cursor: pointer;
-  text-decoration: underline dotted;
-}
-.cm-editor .lsp-code-lens-button:hover { color: var(--text); }
-
-.cm-editor .lsp-document-link {
-  color: var(--accent);
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.cm-editor .lsp-document-link-tooltip {
-  max-width: min(560px, 70vw);
-  overflow-wrap: anywhere;
-}
-
-.cm-editor .lsp-inline-completion {
-  color: var(--text-muted);
-  opacity: 0.7;
-  pointer-events: none;
-  white-space: pre;
-}
 
 /* 小地图：它自己顶着 .cm-gutters 的类名，所以发丝线长在右边，这里翻到左边贴正文。
    选择器多带一层 .cm-editor 才压得过扩展自带的主题（它注入得比这份样式晚）。 */
@@ -5101,165 +4315,11 @@ body.is-editor-tab-dragging * {
 
 /* 跳转结果列表（多处定义、查找用法）。面板本体交给 CodeMirror 的 .cm-panel 摆，
    这里只管行、列与 hover。 */
-.cm-panel.lsp-locations {
-  display: flex;
-  flex-direction: column;
-  max-height: 40vh;
-  border-top: 1px solid var(--editor-gutter-border);
-  font-size: 12px;
-}
 
-.lsp-locations-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.lsp-locations-head span {
-  flex: 1;
-  font-weight: 600;
-}
-
-.lsp-locations-close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 6px;
-  cursor: pointer;
-}
-
-.lsp-locations-close:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-  border-radius: 4px;
-}
-
-.lsp-locations-list {
-  overflow-y: auto;
-  padding: 2px 0;
-}
-
-.lsp-locations-row {
-  display: grid;
-  grid-template-columns: minmax(140px, 28%) 1fr;
-  gap: 10px;
-  width: 100%;
-  padding: 2px 8px;
-  border: none;
-  background: none;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.lsp-locations-row:hover,
-.lsp-locations-row:focus-visible {
-  background: var(--bg-hover);
-  outline: none;
-}
-
-.lsp-locations-where {
-  color: var(--accent-blue-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lsp-locations-text {
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: pre;
-}
-
-.lsp-locations-empty {
-  padding: 8px;
-  color: var(--text-muted);
-}
 
 /* 跳转目标选择器：定义多处命中时锚在光标处的弹层（对标 IDE 的 Choose Declaration）。
    头部标题一行，候选行 = 符号名 + 行预览 + 右侧「文件:行号」。 */
-.cm-lsp-chooser {
-  display: flex;
-  flex-direction: column;
-  min-width: 360px;
-  max-width: min(720px, 90vw);
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-primary);
-  box-shadow: var(--island-shadow, 0 6px 18px rgb(0 0 0 / 0.18));
-}
 
-.cm-lsp-chooser-title {
-  flex: none;
-  padding: 5px 12px;
-  border-bottom: 1px solid var(--border-color);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cm-lsp-chooser-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 3px 12px;
-  border: none;
-  background: none;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.cm-lsp-chooser-row:hover,
-.cm-lsp-chooser-row.is-active {
-  background: var(--bg-hover);
-  outline: none;
-}
-
-.cm-lsp-chooser-label {
-  flex: none;
-  max-width: 40%;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cm-lsp-chooser-preview {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: pre;
-}
-
-.cm-lsp-chooser-where {
-  flex: none;
-  max-width: 40%;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .code-error {
   position: absolute;
@@ -7627,7 +6687,6 @@ body.is-editor-tab-dragging * {
 }
 
 .status-memory {
-  /* 与 `.status-lsp` 同理：这一格的浮层也是悬停往上翻，撑满栏高才不压底栏描边。 */
   align-self: stretch;
   display: inline-flex;
   align-items: center;
@@ -7637,7 +6696,6 @@ body.is-editor-tab-dragging * {
   cursor: default;
 }
 
-/* 这一格悬停出明细，静态读数得先看得出是个可看的东西。 */
 .status-memory:hover {
   color: var(--text-secondary);
 }
@@ -9113,6 +8171,99 @@ body.is-editor-tab-dragging * {
   white-space: nowrap;
 }
 
+/* Preserve Case 开关：小号「Aa」，开着高亮。 */
+.find-replace-case {
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.find-replace-case.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 逐处 Replace/Skip：悬停命中行才出现。 */
+.find-row-actions {
+  display: none;
+  gap: 4px;
+  margin-left: auto;
+  flex: none;
+}
+
+.find-row:hover .find-row-actions,
+.find-row:focus-within .find-row-actions {
+  display: inline-flex;
+}
+
+.find-row-action {
+  padding: 0 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.find-row.is-skipped .find-line-text {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+.find-row.is-replaced .find-line-text {
+  opacity: 0.55;
+}
+
+.find-row-done {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* 替换预览：受影响文件清单，可按文件排除。 */
+.find-preview {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.find-preview-head {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.find-preview-list {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.find-preview-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.find-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .find-replace-button {
   padding: 2px 12px;
   border: 1px solid var(--border-subtle);
@@ -9382,87 +8533,138 @@ body.is-editor-tab-dragging * {
 }
 
 
-/* ---- 块级冲突解决（BlockMergeDialog） ---- */
+/* ---- 三栏合并编辑器（TriMergeDialog）：Yours | Result | Theirs ---- */
 
-.block-merge-list {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-y: auto;
+.tri-merge {
+  height: min(720px, 86vh);
+  width: min(1280px, 94vw);
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.block-merge-item {
-  border: 1px solid var(--border, var(--border-color));
-  border-radius: var(--radius-xs, 4px);
-  overflow: hidden;
+.tri-merge-heads {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.block-merge-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  background: var(--bg-tertiary, var(--bg-secondary));
-}
-
-.block-merge-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tri-merge-head {
+  padding: 5px 10px;
   font-size: 11.5px;
-  color: var(--text-secondary);
+  font-weight: 600;
 }
 
-.block-merge-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.block-merge-sides {
-  display: flex;
-  align-items: stretch;
-}
-
-.block-merge-side {
-  flex: 1;
-  min-width: 0;
-  border-right: 1px solid var(--border, var(--border-color));
-  background: var(--bg-secondary, var(--bg-primary));
-}
-
-.block-merge-side:last-child {
-  border-right: none;
-}
-
-.block-merge-side pre {
-  margin: 0;
-  padding: 4px 8px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
+.tri-merge-head.is-ours {
   color: var(--text-primary);
 }
 
-.block-merge-side.is-ours pre {
-  background: var(--vcs-added-bg, transparent);
+.tri-merge-head.is-result {
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  color: var(--accent-blue-text);
 }
 
-.block-merge-side.is-theirs pre {
-  background: var(--vcs-modified-bg, transparent);
+.tri-merge-head.is-theirs {
+  color: var(--text-primary);
 }
 
-.block-merge-more {
-  margin: 0;
-  padding: 0 8px 4px;
-  font-size: 10.5px;
-  color: var(--text-muted, var(--text-secondary));
+.tri-merge-panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.tri-merge-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tri-merge-pane.is-result {
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+/* CodeMirror 撑满格子，滚动交给各栏自己的 scroller。 */
+.tri-merge-pane .cm-editor {
+  height: 100%;
+}
+
+.tri-merge-pane .cm-scroller {
+  overflow: auto;
+}
+
+/* 结果栏未解决冲突的行高亮与上方按钮条（对齐 openidea MergeEditor 的 baseTheme）。 */
+.tri-merge-marker {
+  background: color-mix(in srgb, var(--vcs-danger) 14%, transparent);
+}
+
+.tri-merge-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--vcs-danger);
+  background: var(--bg-secondary, var(--bg-primary));
+  border-top: 1px solid var(--border-color);
+}
+
+.tri-merge-actions button {
+  padding: 0 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xs, 4px);
+  background: var(--bg-secondary, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.tri-merge-actions button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.tri-merge-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px 0;
+}
+
+/* 磁盘被外部改过的选择条：重载还是强制应用，由用户挑，不替用户丢稿。 */
+.tri-merge-stale {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 16px 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--vcs-danger) 40%, transparent);
+  border-radius: var(--radius-xs, 4px);
+  background: color-mix(in srgb, var(--vcs-danger) 10%, transparent);
+  color: var(--text-primary);
+  font-size: 11.5px;
+}
+
+.tri-merge-stale span {
+  min-width: 0;
+}
+
+.tri-merge-stale > div {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.tri-merge-foot > span {
+  font-size: 11.5px;
+  color: var(--text-secondary);
 }

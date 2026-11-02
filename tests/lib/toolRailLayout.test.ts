@@ -50,18 +50,19 @@ describe("活动栏布局", () => {
     expect(loadToolRailLayout()).toEqual(layout);
   });
 
-  it("首次读取 v1 布局时把 AI 迁到右侧顶部第一位", () => {
+  it("读回布局时 notifications 强制回到右侧顶端第一位，其余照用户存的摆", () => {
     memory.set("forge:tool-rail-layout:v1", JSON.stringify({
-      left: { top: ["explorer", "ai", "git"], bottom: ["terminal", "run", "log"] },
+      left: { top: ["explorer", "ai", "git"], bottom: ["terminal", "run", "log", "notifications"] },
       right: { top: ["maven"], bottom: [] },
     }));
     const layout = loadToolRailLayout();
-    expect(layout.left.top).toEqual(["explorer", "git"]);
-    expect(layout.right.top).toEqual(["notifications", "ai", "maven", "browser"]);
+    expect(layout.left.top).toEqual(["explorer", "ai", "git"]);
+    expect(layout.left.bottom).toEqual(["terminal", "run", "log"]);
+    expect(layout.right.top).toEqual(["notifications", "maven", "browser"]);
   });
 
   it("已有布局补入右侧浏览器，并保留用户之后的移栏选择", () => {
-    memory.set("forge:tool-rail-layout:v2", JSON.stringify({
+    memory.set("forge:tool-rail-layout:v1", JSON.stringify({
       left: { top: ["explorer", "git"], bottom: ["terminal", "run", "log"] },
       right: { top: ["ai", "maven"], bottom: ["notifications"] },
     }));

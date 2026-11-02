@@ -37,8 +37,6 @@ export interface EditorSettings {
   savePolicy: SavePolicy;
   /** 退出前是否把没保存的改动写回磁盘。 */
   saveOnExit: boolean;
-  /** 手动保存、失焦保存和退出保存前请求语言服务格式化。 */
-  formatOnSave: boolean;
   /** 保存时删除行尾空格和制表符。 */
   trimTrailingWhitespace: boolean;
   /** 保存时保证非空文本以换行结束。 */
@@ -232,6 +230,10 @@ export interface BranchSettings {
   onSingleClick: SingleClickAction;
   /** 收藏的引用全名（本地分支不带前缀，远端带 `origin/`）；同层里排在前面。标签收藏不了。 */
   favorites: string[];
+  /** 提交图折叠线性链（Collapse Linear Branches），对齐 openidea logOptions 默认关。 */
+  collapseLinear: boolean;
+  /** 提交图画长边（Show Long Edges），IDEA 默认开。 */
+  showLongEdges: boolean;
 }
 
 /** 资源管理器右键「通过 Forge 打开」。两个都要用户自己打开。 */
@@ -280,7 +282,6 @@ export const DEFAULT_NOTIFICATION_GROUPS: Record<string, NotificationGroupRule> 
   git: { displayType: "balloon", log: true, system: false },
   maven: { displayType: "balloon", log: true, system: false },
   build: { displayType: "balloon", log: true, system: false },
-  lsp: { displayType: "balloon", log: true, system: false },
   ai: { displayType: "balloon", log: true, system: false },
   dependencies: { displayType: "balloon", log: true, system: false },
   terminal: { displayType: "balloon", log: true, system: false },
@@ -387,7 +388,6 @@ export const DEFAULT_SETTINGS: Settings = {
     keymap: "default",
     savePolicy: "blur",
     saveOnExit: true,
-    formatOnSave: false,
     trimTrailingWhitespace: false,
     insertFinalNewline: false,
     softWrap: false,
@@ -412,6 +412,8 @@ export const DEFAULT_SETTINGS: Settings = {
     groupByDirectory: true,
     onSingleClick: "none",
     favorites: [],
+    collapseLinear: false,
+    showLongEdges: true,
   },
   explorer: { showIgnored: true, showHidden: false },
   shell: { openFolder: false, openFile: false, defaultFile: false, extraExtensions: [] },

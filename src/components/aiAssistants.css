@@ -86,7 +86,7 @@
 .ai-cli-inline { position: relative; display: flex; align-items: center; width: 100%; min-width: 0; }
 .ai-cli-inline .text-input { width: 100%; padding-right: 32px; box-sizing: border-box; }
 .ai-cli-secret-toggle,
-.ai-cli-inline .lsp-action.ai-cli-secret-toggle {
+.ai-cli-inline .panel-action.ai-cli-secret-toggle {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px;
@@ -94,7 +94,7 @@
   transition: color 120ms ease;
 }
 .ai-cli-secret-toggle:hover,
-.ai-cli-inline .lsp-action.ai-cli-secret-toggle:hover {
+.ai-cli-inline .panel-action.ai-cli-secret-toggle:hover {
   color: var(--text-primary); background: transparent;
 }
 .ai-cli-row-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 9px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); }
@@ -125,7 +125,7 @@
 .ai-manage-toolbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 12px 18px 0; }
 .ai-manage-toolbar .select { width: 170px; flex: none; }
 .ai-manage-toolbar .text-input { flex: 1; min-width: 0; max-width: 300px; }
-.ai-manage-toolbar .lsp-action { margin-left: auto; }
+.ai-manage-toolbar .panel-action { margin-left: auto; }
 .ai-manage-path { flex: 1; min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .ai-manage-page { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(190px, 260px) minmax(0, 1fr); gap: 14px; padding: 12px 18px 18px; overflow: hidden; }
 .ai-manage-foot { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border-color); }
@@ -140,8 +140,8 @@
 .ai-cli-row.is-static { cursor: default; }
 .ai-cli-row.is-static:hover { background: var(--bg-secondary); }
 .ai-cli-row-meta { flex: none; color: var(--text-tertiary); font-size: 10.5px; }
-.lsp-action.is-danger { color: var(--accent-red-text); }
-.lsp-action.is-danger:hover:not(:disabled) { background: var(--accent-red-bg); }
+.panel-action.is-danger { color: var(--accent-red-text); }
+.panel-action.is-danger:hover:not(:disabled) { background: var(--accent-red-bg); }
 /* 这一页只有一条清单，没有可编辑的详情：左右两栏会把一半宽度留给空白，所以单列铺满。 */
 .ai-archived-list { flex: 1; margin: 0 18px 18px; }
 /* 窄窗口下三个页签加计数再加删除键会挤不下一行；宁可折行，也不能让按钮被裁掉一半。 */
@@ -524,8 +524,8 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 
 /* MCP 本地 / 市场切换 */
 .ai-manage-tabs { flex: none; display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); }
-.ai-manage-tabs .lsp-action { border-color: transparent; background: transparent; }
-.ai-manage-tabs .lsp-action[aria-pressed="true"] { background: var(--bg-primary); border-color: var(--border-color); color: var(--text-primary); }
+.ai-manage-tabs .panel-action { border-color: transparent; background: transparent; }
+.ai-manage-tabs .panel-action[aria-pressed="true"] { background: var(--bg-primary); border-color: var(--border-color); color: var(--text-primary); }
 .ai-manage-market { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
 .ai-manage-market .text-input { min-width: 0; }
 .ai-market-source { flex: none; padding: 8px 10px 0; }
@@ -562,7 +562,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 /* 覆盖面板的分组标题：Codex 目录字段本来就分「协议/行为/提示词」三类，混在一起没人能看懂。 */
 .ai-cli-group { margin: 2px 0 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
 .ai-catalog-presets { display: flex; gap: 6px; }
-.ai-catalog-presets .lsp-action[aria-pressed="true"] { color: var(--accent-blue-text); background: var(--accent-blue-bg); }
+.ai-catalog-presets .panel-action[aria-pressed="true"] { color: var(--accent-blue-text); background: var(--accent-blue-bg); }
 .ai-catalog-instructions { min-height: 96px; max-height: 220px; overflow-y: auto; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.5; }
 .ai-catalog-custom-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 @media (max-width: 1080px) {

@@ -54,7 +54,13 @@ import {
 } from "../lib/git";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
-import { computeGraph, laneColor, type GraphRow } from "../features/vcs/graph";
+import {
+  collapseLinear,
+  computeGraph,
+  hideLongEdges,
+  laneColor,
+  type GraphRow,
+} from "../features/vcs/graph";
 import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import Select from "./Select";
@@ -156,6 +162,16 @@ function segPath(fromX: number, fromY: number, toX: number, toY: number) {
   return `M${fromX} ${fromY}C${fromX} ${mid} ${toX} ${mid} ${toX} ${toY}`;
 }
 
+/** 虚线边的短划口径（折叠线性链的连线）。 */
+const DASH = "3 3";
+
+/** 箭头小三角：长边延出视野那一端。 */
+function ArrowTip({ x, y, dir, color }: { x: number; y: number; dir: "up" | "down"; color: string }) {
+  const dy = dir === "up" ? -4 : 4;
+  const points = dir === "up" ? `${x},${y + dy} ${x - 3},${y + dy + 5} ${x + 3},${y + dy + 5}` : `${x},${y + dy} ${x - 3},${y + dy - 5} ${x + 3},${y + dy - 5}`;
+  return <polygon points={points} fill={color} />;
+}
+
 function GraphCell({ row }: { row: GraphRow | undefined }) {
   if (!row) return <span className="log-dot" aria-hidden="true" />;
   const width = Math.min(row.width, 24) * GRAPH_LANE;
@@ -169,6 +185,7 @@ function GraphCell({ row }: { row: GraphRow | undefined }) {
           stroke={laneColor(s.color)}
           fill="none"
           strokeWidth={1.5}
+          strokeDasharray={s.dashed ? DASH : undefined}
         />
       ))}
       {row.down.map((s, i) => (
@@ -178,8 +195,19 @@ function GraphCell({ row }: { row: GraphRow | undefined }) {
           stroke={laneColor(s.color)}
           fill="none"
           strokeWidth={1.5}
+          strokeDasharray={s.dashed ? DASH : undefined}
         />
       ))}
+      {row.up.map((s, i) =>
+        s.arrow ? (
+          <ArrowTip key={`au${i}`} x={laneX(s.from)} y={0} dir="up" color={laneColor(s.color)} />
+        ) : null
+      )}
+      {row.down.map((s, i) =>
+        s.arrow ? (
+          <ArrowTip key={`ad${i}`} x={laneX(s.from)} y={GRAPH_ROW} dir="down" color={laneColor(s.color)} />
+        ) : null
+      )}
       <circle cx={laneX(row.lane)} cy={cy} r={3.2} fill={laneColor(row.color)} />
     </svg>
   );
@@ -279,8 +307,17 @@ function filesUnder(node: FileNode): TreeItem[] {
   return all;
 }
 
+/** 引用树缓存；攒够上限就整张重开，重开最坏是再建一次树，不会算错。 */
+const refTreeCache = new Map<string, RefNode>();
+const REF_TREE_CACHE_CAP = 32;
+
 /** 按斜杠把引用嵌成目录；返回的那层里 leaves 是不含斜杠的那一批。 */
 function buildRefTree(leaves: RefLeaf[]): RefNode {
+  // 调用方每次渲染都现 map 一份 leaves，按数组身份缓存命中不了，所以按标签内容缓存。
+  // 引用树只随分支变，而面板每次滚动、选中提交都要重渲染，这里省下的是一次建树加排序。
+  const cacheKey = leaves.map((leaf) => leaf.label).join("\n");
+  const cached = refTreeCache.get(cacheKey);
+  if (cached) return cached;
   const root: RefNode = { name: "", path: "", dirs: [], leaves: [] };
   for (const leaf of leaves) {
     const parts = leaf.label.split("/");
@@ -302,6 +339,8 @@ function buildRefTree(leaves: RefLeaf[]): RefNode {
     for (const dir of node.dirs) sortInto(dir);
   };
   sortInto(root);
+  if (refTreeCache.size >= REF_TREE_CACHE_CAP) refTreeCache.clear();
+  refTreeCache.set(cacheKey, root);
   return root;
 }
 
@@ -358,7 +397,8 @@ function GitLogPane({
   const [infoClosed, setInfoClosed] = useState(false);
   /** 提交信息区的固定高度（px）；null 表示还没拖过，按内容自适应、封顶六成列高。 */
   const [infoHeight, setInfoHeight] = useState<number | null>(null);
-  const infoDrag = useRef<{ startY: number; startHeight: number; max: number } | null>(null);
+  /** `next` 是拖拽中暂存的目标高度：拖动期间只改 DOM，松手才回填 state。 */
+  const infoDrag = useRef<{ startY: number; startHeight: number; max: number; next?: number } | null>(null);
   /** 第三栏文件树的四个视图开关，⋮ 眼睛弹层和快捷键都能翻。 */
   const [groupDir, setGroupDir] = useState(true);
   const [groupModule, setGroupModule] = useState(true);
@@ -378,14 +418,23 @@ function GitLogPane({
     span: number;
     sum: number;
     startLeft: number;
+    /** 拖拽中暂存的目标宽度：拖动期间只改 DOM，松手才回填 state。 */
+    grown?: number;
   } | null>(null);
 
   const [commits, setCommits] = useState<GitCommit[]>([]);
   // 提交图：从 parents 客户端算 lane（openidea graph.ts 同款状态机），行序与 commits 一一对应。
-  const graphRows = useMemo<GraphRow[]>(
-    () => computeGraph(commits.map((c) => ({ id: c.hash, parents: c.parents }))).rows,
-    [commits],
-  );
+  // 两个视图变换（折叠线性链、藏长边）和 openidea 一样排在铺 lane 之前/之后。
+  const graphRows = useMemo<GraphRow[]>(() => {
+    // refs 是自由文本标注（`HEAD -> main`），非空即视为带引用——折叠时这些提交不藏，
+    // HEAD tip 天然在内（keep 集合对齐 openidea 只放 HEAD 哈希，这里没有现成哈希，靠 refs 兜住）。
+    const source = commits.map((c) => ({ id: c.hash, parents: c.parents, refs: c.refs ? [c.refs] : [] }));
+    const collapsed = options.collapseLinear
+      ? collapseLinear(source, new Set<string>())
+      : { commits: source, graph: undefined };
+    const laid = computeGraph(collapsed.graph ?? collapsed.commits).rows;
+    return options.showLongEdges ? laid : hideLongEdges(laid);
+  }, [commits, options.collapseLinear, options.showLongEdges]);
   /** 已读到历史尽头（本页比页长还短）。 */
   const [logDone, setLogDone] = useState(false);
   /** 「用户」下拉的候选：最近这些条提交里出现过的人。 */
@@ -649,14 +698,21 @@ function GitLogPane({
         if (!drag || drag.span < 40) return;
         const shift = ((event.clientX - drag.startX) / drag.span) * drag.sum;
         const grown = Math.min(drag.sum - 0.6, Math.max(0.6, drag.startLeft + shift));
-        setWeights((current) => ({
-          ...current,
-          [drag.left]: grown,
-          [drag.right]: drag.sum - grown,
-        }));
+        drag.grown = grown;
+        // 拖动期间只改这两栏自己的 flex-grow，不走 setState：每帧 setState 会把 200 行提交、
+        // 提交图和引用树整体重渲染一遍，拖一次分隔条就是几百个组件跟着空跑。
+        // 收尾在 pointerup 落一次 state，把 React 树和这里直接改过的 DOM 重新对齐。
+        const left = event.currentTarget.previousElementSibling as HTMLElement | null;
+        const right = event.currentTarget.nextElementSibling as HTMLElement | null;
+        if (left) left.style.flexGrow = String(grown);
+        if (right) right.style.flexGrow = String(drag.sum - grown);
       }}
       onPointerUp={() => {
+        const drag = colDrag.current;
         colDrag.current = null;
+        const grown = drag?.grown;
+        if (!drag || grown === undefined) return;
+        setWeights((current) => ({ ...current, [drag.left]: grown, [drag.right]: drag.sum - grown }));
       }}
     />
   );
@@ -1120,6 +1176,8 @@ function GitLogPane({
       current: git.status?.branch ?? "",
       upstream: upstreamOf(git.branches, target),
       detached: git.status?.detached ?? false,
+      remotes: git.probe?.remotes.length ?? 0,
+      fresh: git.lastCommit === null,
       onAction: onRefAction,
       onCompareWith: (held) => setReference(`${git.status?.branch ?? ""}..${held.name}`),
       onDiffWithWorktree: (held) => setCompareRef(held.name),
@@ -1604,6 +1662,13 @@ function GitLogPane({
               {optionRow(t("git.showTags"), options.showTags, null, () =>
                 onOptions({ ...options, showTags: !options.showTags })
               )}
+              <div className="popover-sep" />
+              {optionRow(t("git.collapseLinear"), options.collapseLinear, null, () =>
+                onOptions({ ...options, collapseLinear: !options.collapseLinear })
+              )}
+              {optionRow(t("git.showLongEdges"), options.showLongEdges, null, () =>
+                onOptions({ ...options, showLongEdges: !options.showLongEdges })
+              )}
             </Popover>
           ) : null}
         </>
@@ -1889,12 +1954,20 @@ function GitLogPane({
                   const drag = infoDrag.current;
                   if (!drag) return;
                   // 往上拖信息区变高：位移取反加到起始高度上。
-                  setInfoHeight(
-                    Math.min(drag.max, Math.max(64, drag.startHeight + (drag.startY - event.clientY)))
-                  );
+                  const next = Math.min(drag.max, Math.max(64, drag.startHeight + (drag.startY - event.clientY)));
+                  drag.next = next;
+                  // 拖动期间只改这一块的 DOM 高度，不走 setState——理由同列宽拖拽。
+                  const pane = event.currentTarget.nextElementSibling as HTMLElement | null;
+                  if (pane) {
+                    pane.style.flex = "none";
+                    pane.style.height = `${next}px`;
+                    pane.style.maxHeight = "none";
+                  }
                 }}
                 onPointerUp={() => {
+                  const drag = infoDrag.current;
                   infoDrag.current = null;
+                  if (drag?.next !== undefined) setInfoHeight(drag.next);
                 }}
               />
             )}

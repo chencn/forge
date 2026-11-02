@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGraph } from "../../src/features/vcs/graph";
+import { collapseLinear, computeGraph, hideLongEdges } from "../../src/features/vcs/graph";
 
 describe("computeGraph 提交图 lane 状态机", () => {
   it("直线历史全走 lane 0，颜色不变", () => {
@@ -53,5 +53,37 @@ describe("computeGraph 提交图 lane 状态机", () => {
     // b 的 lane 0 通向 c；第二页里 c 应该落在 lane 0，颜色延续。
     expect(second.rows[0]!.lane).toBe(0);
     expect(second.rows[0]!.color).toBe(first.rows[0]!.color);
+  });
+
+  it("collapseLinear 折叠线性链，只留分叉/引用/端点，边标 dashed", () => {
+    // a -> mid1 -> mid2 -> b（线性链），另有 c 从 b 分叉；mid1/mid2 单父单子无引用，应被藏。
+    const all = [
+      { id: "a", parents: ["mid1"], refs: [] },
+      { id: "mid1", parents: ["mid2"], refs: [] },
+      { id: "mid2", parents: ["b"], refs: [] },
+      { id: "b", parents: [], refs: ["main"] },
+    ];
+    const { commits, graph } = collapseLinear(all, new Set<string>());
+    expect(commits.map((c) => c.id)).toEqual(["a", "b"]);
+    // a 的父链一路折叠到 b，且这条边是虚线。
+    expect(graph[0]!.parents).toEqual(["b"]);
+    expect(graph[0]!.dashed).toEqual([true]);
+  });
+
+  it("hideLongEdges 藏掉旁路 lane 笔直长边的中段，两端留箭头", () => {
+    // 主链 40 个提交走 lane 0；c10 另有第二父 c39，lane 1 从行 10 直穿到行 39。
+    const commits = Array.from({ length: 40 }, (_, i) => ({
+      id: `c${i}`,
+      parents: i === 10 ? ["c11", "c39"] : i < 39 ? [`c${i + 1}`] : [],
+    }));
+    const rows = computeGraph(commits).rows;
+    const trimmed = hideLongEdges(rows, 5);
+    // 主链 lane 0 每行都有节点，不算长边，不受影响。
+    expect(trimmed[20]!.up.some((s) => s.from === 0 && s.to === 0)).toBe(true);
+    // lane 1 的中段（stub 之外）被藏掉；紧贴 stub 的两行带箭头。
+    expect(trimmed[20]!.up.some((s) => s.from === 1)).toBe(false);
+    expect(trimmed[20]!.down.some((s) => s.from === 1)).toBe(false);
+    expect(trimmed[12]!.down.some((s) => s.arrow === "down")).toBe(true);
+    expect(trimmed[37]!.up.some((s) => s.arrow === "up")).toBe(true);
   });
 });

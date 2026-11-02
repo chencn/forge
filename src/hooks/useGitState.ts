@@ -4,7 +4,6 @@ import { createCoalescer, type Coalescer } from "../lib/coalesce";
 import { joinPath, nativeSeparators, separator } from "../lib/format";
 import {
   gitAmendTargets,
-  gitBranches,
   gitCheckout,
   gitCherryPick,
   gitCherryPickAbort,
@@ -30,6 +29,7 @@ import {
   gitRebase,
   gitRebaseAbort,
   gitRebaseContinue,
+  gitRefs,
   gitRenameBranch,
   gitReset,
   gitResolveConflict,
@@ -37,17 +37,22 @@ import {
   gitRevert,
   gitRevertAbort,
   gitRevertContinue,
+  gitShelve,
+  gitShelfDelete,
+  gitShelfRename,
+  gitShelves,
   gitStashApply,
+  gitStashBranch,
   gitStashDrop,
   gitStashList,
   gitStashPush,
+  gitUnshelve,
   gitStage,
   gitStatus,
-  gitTags,
   gitUnstage,
   gitWorktreeAdd,
 } from "../lib/git";
-import type { ResetMode } from "../lib/git";
+import type { GitShelfApplyOutcome, GitShelvedChangeList, ResetMode } from "../lib/git";
 import { recoveryOf } from "../lib/git";
 import type {
   GitBranch,
@@ -88,33 +93,18 @@ export function useGitState(
   const [tags, setTags] = useState<GitTag[]>([]);
   /** HEAD 上那一条，提交框的「上次提交」用。 */
   const [lastCommit, setLastCommit] = useState<GitCommit | null>(null);
-  /** stash 列表，最新在前；跟着每轮刷新走，单独 effect 拉（见下）。 */
+  /** stash 列表，最新在前；只在整轮刷新里拉（见 `refreshOnce`）。 */
   const [stashes, setStashes] = useState<GitStash[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [shelves, setShelves] = useState<GitShelvedChangeList[]>([]);
   /** 当前是否有向远端推送的操作正在进行 */
   const [pushing, setPushing] = useState(false);
   const pushingCountRef = useRef(0);
   /** 已经发起过几次刷新，用来认出「我这一轮已经被更新的刷新超过了」。 */
   const seqRef = useRef(0);
-  /**
-   * 在飞的刷新条数。转圈状态不能跟着 `seqRef` 走：全量刷新还在飞时一次暂存把票据抢走，
-   * 那一轮就永远收不到「我不是最新」之外的收尾信号，图标会一直转。
-   */
-  const pendingRef = useRef(0);
   /** 缓存已知已探明的仓库根，用于解除全量刷新时 gitProbe 的串行等待。 */
   const repoRootRef = useRef<string | null>(null);
   /** 记录上一次刷新的 workspaceRoot，切换工作区时立即清空旧项目的 Git 状态与缓存根。 */
   const lastWorkspaceRef = useRef<string | null>(workspaceRoot);
-
-  const beginRefresh = useCallback(() => {
-    pendingRef.current += 1;
-    setLoading(true);
-  }, []);
-
-  const endRefresh = useCallback(() => {
-    pendingRef.current = pendingRef.current > 1 ? pendingRef.current - 1 : 0;
-    if (pendingRef.current === 0) setLoading(false);
-  }, []);
 
   const root = probe?.repoRoot ?? null;
   // 同步根目录引用，供并发快速路径使用
@@ -142,6 +132,8 @@ export function useGitState(
       setBranches([]);
       setTags([]);
       setLastCommit(null);
+      setStashes([]);
+      setShelves([]);
     }
     if (!workspaceRoot) {
       repoRootRef.current = null;
@@ -150,9 +142,10 @@ export function useGitState(
       setBranches([]);
       setTags([]);
       setLastCommit(null);
+      setStashes([]);
+      setShelves([]);
       return;
     }
-    beginRefresh();
     try {
       const knownRoot = repoRootRef.current;
       // 快速并发路径：若已有已探明的仓库根目录，同时发起探根和状态/分支读取，
@@ -160,11 +153,15 @@ export function useGitState(
       if (knownRoot) {
         const [nextProbe, stateResult] = await Promise.all([
           gitProbe(workspaceRoot),
+          // 四条读命令一起发：分支与标签已由后端一趟 `for-each-ref` 取回，stash 也从
+          // 「status 一变就单独拉」挪进这里——轻量刷新只动索引，stash 不可能变，
+          // 而整轮刷新本来就在并发起进程，多这一条不增加墙钟时间。
           Promise.all([
             gitStatus(knownRoot),
-            gitBranches(knownRoot),
-            gitTags(knownRoot).catch(() => [] as GitTag[]),
+            gitRefs(knownRoot),
             gitLog(knownRoot, { limit: 1 }).catch(() => [] as GitCommit[]),
+            gitStashList(knownRoot).catch(() => [] as GitStash[]),
+            gitShelves(knownRoot).catch(() => [] as GitShelvedChangeList[]),
           ]).catch(() => null),
         ]);
         if (stale()) return;
@@ -178,11 +175,13 @@ export function useGitState(
 
         // 若探根结果与当前根目录一致且并发查询成功，直接提交数据（99.9% 的常规场景）
         if (normalizedNextRoot === knownRoot && stateResult) {
-          const [nextStatus, nextBranches, nextTags, nextLog] = stateResult;
+          const [nextStatus, refs, nextLog, nextStashes, nextShelves] = stateResult;
           setStatus(nextStatus);
-          setBranches(nextBranches);
-          setTags(nextTags);
+          setBranches(refs.branches);
+          setTags(refs.tags);
           setLastCommit(nextLog[0] ?? null);
+          setStashes(nextStashes);
+          setShelves(nextShelves);
           return;
         }
 
@@ -191,21 +190,26 @@ export function useGitState(
           setBranches([]);
           setTags([]);
           setLastCommit(null);
+          setStashes([]);
+          setShelves([]);
           return;
         }
 
         // 根目录发生迁移（如工作区内切换了子仓库），以新根为准补拉一次
-        const [nextStatus, nextBranches, nextTags, nextLog] = await Promise.all([
+        const [nextStatus, refs, nextLog, nextStashes, nextShelves] = await Promise.all([
           gitStatus(normalizedNextRoot),
-          gitBranches(normalizedNextRoot),
-          gitTags(normalizedNextRoot).catch(() => [] as GitTag[]),
+          gitRefs(normalizedNextRoot),
           gitLog(normalizedNextRoot, { limit: 1 }).catch(() => [] as GitCommit[]),
+          gitStashList(normalizedNextRoot).catch(() => [] as GitStash[]),
+          gitShelves(normalizedNextRoot).catch(() => [] as GitShelvedChangeList[]),
         ]);
         if (stale()) return;
         setStatus(nextStatus);
-        setBranches(nextBranches);
-        setTags(nextTags);
+        setBranches(refs.branches);
+        setTags(refs.tags);
         setLastCommit(nextLog[0] ?? null);
+        setStashes(nextStashes);
+        setShelves(nextShelves);
         return;
       }
 
@@ -224,26 +228,29 @@ export function useGitState(
         setBranches([]);
         setTags([]);
         setLastCommit(null);
+        setStashes([]);
+        setShelves([]);
         return;
       }
-      // 标签与最近一条提交拿不到不该让整块面板消失，各自退化成空值。
-      const [nextStatus, nextBranches, nextTags, nextLog] = await Promise.all([
+      // 最近一条提交、stash、shelved 清单拿不到不该让整块面板消失，各自退化成空值。
+      const [nextStatus, refs, nextLog, nextStashes, nextShelves] = await Promise.all([
         gitStatus(normalizedNextRoot),
-        gitBranches(normalizedNextRoot),
-        gitTags(normalizedNextRoot).catch(() => [] as GitTag[]),
+        gitRefs(normalizedNextRoot),
         gitLog(normalizedNextRoot, { limit: 1 }).catch(() => [] as GitCommit[]),
+        gitStashList(normalizedNextRoot).catch(() => [] as GitStash[]),
+        gitShelves(normalizedNextRoot).catch(() => [] as GitShelvedChangeList[]),
       ]);
       if (stale()) return;
       setStatus(nextStatus);
-      setBranches(nextBranches);
-      setTags(nextTags);
+      setBranches(refs.branches);
+      setTags(refs.tags);
       setLastCommit(nextLog[0] ?? null);
+      setStashes(nextStashes);
+      setShelves(nextShelves);
     } catch (cause) {
       if (!stale()) reportError(errorText(cause));
-    } finally {
-      endRefresh();
     }
-  }, [beginRefresh, endRefresh, reportError, workspaceRoot]);
+  }, [reportError, workspaceRoot]);
 
   /**
    * 整轮刷新排队：连着来五次，只跑第一次那趟，其余各次并成收尾的一次补跑。
@@ -266,17 +273,14 @@ export function useGitState(
     const ticket = (seqRef.current += 1);
     const stale = () => ticket !== seqRef.current;
     if (!root) return;
-    beginRefresh();
     try {
       const nextStatus = await gitStatus(root);
       if (stale()) return;
       setStatus(nextStatus);
     } catch (cause) {
       if (!stale()) reportError(errorText(cause));
-    } finally {
-      endRefresh();
     }
-  }, [beginRefresh, endRefresh, reportError, root]);
+  }, [reportError, root]);
 
   /** 轻量刷新也排队：连点五次暂存只起两次 `git status`（手头那趟 + 收尾补一趟）。 */
   const refreshChanges = useCallback(
@@ -313,6 +317,25 @@ export function useGitState(
     [afterRepoWrite, refresh, reportError]
   );
 
+  /**
+   * 只写、不读回状态的版本。给「紧接着还有一次全量刷新」的调用方用：
+   * 提交前整理索引（stage / unstage）之后马上就是 commit，中间那趟 `git status` 读回来的
+   * 状态立刻被提交后的全量刷新盖掉——白起一个进程，还让面板闪一下中间态。
+   */
+  const runSilent = useCallback(
+    async (action: () => Promise<unknown>) => {
+      try {
+        await action();
+        afterRepoWrite?.();
+        return true;
+      } catch (cause) {
+        reportError(errorText(cause));
+        return false;
+      }
+    },
+    [afterRepoWrite, reportError]
+  );
+
   /** 暂存 / 取消暂存只动索引：失败弹错，成功只重取变更清单，不碰分支标签日志。 */
   const runIndex = useCallback(
     async (action: () => Promise<unknown>) => {
@@ -339,13 +362,17 @@ export function useGitState(
   );
 
   const stage = useCallback(
-    (paths: string[]) => (root ? runIndex(() => gitStage(root, paths)) : Promise.resolve(false)),
-    [root, runIndex]
+    (paths: string[], silent = false) => (root
+      ? (silent ? runSilent(() => gitStage(root, paths)) : runIndex(() => gitStage(root, paths)))
+      : Promise.resolve(false)),
+    [root, runIndex, runSilent]
   );
 
   const unstage = useCallback(
-    (paths: string[]) => (root ? runIndex(() => gitUnstage(root, paths)) : Promise.resolve(false)),
-    [root, runIndex]
+    (paths: string[], silent = false) => (root
+      ? (silent ? runSilent(() => gitUnstage(root, paths)) : runIndex(() => gitUnstage(root, paths)))
+      : Promise.resolve(false)),
+    [root, runIndex, runSilent]
   );
 
   /**
@@ -487,26 +514,44 @@ export function useGitState(
     (index: number) => (root ? run(() => gitStashDrop(root, index)) : Promise.resolve(false)),
     [root, run]
   );
+  const stashBranch = useCallback(
+    (index: number, name: string) =>
+      root ? run(() => gitStashBranch(root, index, name)) : Promise.resolve(false),
+    [root, run]
+  );
 
-  // stash 列表挂在 status 的引用上：每轮刷新 status 都换成新对象，这里就跟着拉一次。
-  // 不进三条刷新路径里——那要把四个 Promise.all 各改一遍，换来的只是同一条读命令。
-  useEffect(() => {
-    if (!root) {
-      setStashes([]);
-      return;
-    }
-    let cancelled = false;
-    gitStashList(root)
-      .then((list) => {
-        if (!cancelled) setStashes(list);
-      })
-      .catch(() => {
-        if (!cancelled) setStashes([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [root, status]);
+  // --- Shelf：同 stash 的模式。shelve/unshelve 的回调结果交给调用方弹提示。 ---
+
+  const shelve = useCallback(
+    (name: string, paths: string[]) =>
+      root ? run(() => gitShelve(root, name, paths)) : Promise.resolve(false),
+    [root, run]
+  );
+  // unshelve 不走 run：调用方要看 conflicts 清单（有冲突时条目保留、提示用户）。
+  const unshelve = useCallback(
+    async (id: string, remove: boolean): Promise<GitShelfApplyOutcome | null> => {
+      if (!root) return null;
+      try {
+        const outcome = await gitUnshelve(root, id, remove);
+        afterRepoWrite?.();
+        await refresh();
+        return outcome;
+      } catch (cause) {
+        reportError(errorText(cause));
+        return null;
+      }
+    },
+    [root, afterRepoWrite, refresh, reportError]
+  );
+  const shelfDelete = useCallback(
+    (id: string) => (root ? run(() => gitShelfDelete(root, id)) : Promise.resolve(false)),
+    [root, run]
+  );
+  const shelfRename = useCallback(
+    (id: string, name: string) =>
+      root ? run(() => gitShelfRename(root, id, name)) : Promise.resolve(false),
+    [root, run]
+  );
 
   /**
    * 停在哪个动作中间，以及「继续 / 中止」那两颗落到哪一对命令。
@@ -652,7 +697,6 @@ export function useGitState(
       tags,
       lastCommit,
       root,
-      loading,
       pushing,
       refresh,
       refreshChanges,
@@ -692,6 +736,12 @@ export function useGitState(
       stashPush,
       stashApply,
       stashDrop,
+      stashBranch,
+      shelves,
+      shelve,
+      unshelve,
+      shelfDelete,
+      shelfRename,
       fetch,
       pull,
       push,
@@ -711,7 +761,6 @@ export function useGitState(
       tags,
       lastCommit,
       root,
-      loading,
       pushing,
       refresh,
       refreshChanges,
@@ -751,6 +800,12 @@ export function useGitState(
       stashPush,
       stashApply,
       stashDrop,
+      stashBranch,
+      shelves,
+      shelve,
+      unshelve,
+      shelfDelete,
+      shelfRename,
       fetch,
       pull,
       push,

@@ -1,7 +1,7 @@
 /**
  * 随处搜索的结果模型：条目类型、各分节的合并与排序、弹窗渲染的那张平表
  * （分节标题 + 「更多」行 + 条目）。抄 IntelliJ IDEA 的 everywhere/model.ts，
- * 去掉了这边没有数据源的两块：LSP workspace/symbol 合并与设置页条目。
+ * 去掉了这边没有数据源的一块：设置页条目。
  */
 import type { FileHit, SymbolHit, TextHit } from "./fs";
 import type { ForgeCommand } from "./commands";

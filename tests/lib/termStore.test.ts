@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * termStore 的监听生命周期测试。
+ * termStore 的监听与分发测试。
  *
- * `listen` 要一次 IPC 往返才 resolve；「起会话 → 立刻关掉」落在往返窗口里时，
- * resolve 回来的 unlisten 必须当场被调（closed 哨兵），否则监听器永远解不绑，
- * 之后每条 term://output 都还会走进它的闭包。修复前正是这个泄漏。
+ * `listen` 要一次 IPC 往返才 resolve，慢一步最多漏掉这期间的第一包输出；
+ * 订阅常驻之后不再有解绑函数收不回来的问题——会话关掉后按 id 查不到事件就丢掉。
  *
  * 集中放在 tests/lib/，目录与 src/lib 镜像（团队约定的集中式测试布局）。
- * 模块级状态（sessions / closed）跨测试会串，每个用例用 vi.resetModules +
+ * 模块级状态（sessions / wired）跨测试会串，每个用例用 vi.resetModules +
  * 动态 import 拿一份全新的 store。
  */
 
@@ -67,53 +66,40 @@ function emitOutput(id: string, text = "hi") {
 }
 
 describe("termStore 监听生命周期", () => {
-  it("起会话后立刻关掉：listen 往返途中关闭，resolve 时监听当场解绑", async () => {
+  it("输出与退出在进程里各只订阅一次，不随会话数增长", async () => {
     const store = await import("../../src/lib/termStore");
-    const created = await store.openTerm(null, "cmd", 80, 24);
-    // 两个订阅（output / exit）此刻都还挂在往返途中，off 一个都没 resolve 回来。
+    await store.openTerm("D:/repo-a", "cmd", 80, 24);
+    await store.openTerm("D:/repo-a", "pwsh", 80, 24);
+    await store.openTerm("D:/repo-b", "cmd", 80, 24);
+
+    expect(handlers.filter((entry) => entry.name === "term://output")).toHaveLength(1);
+    expect(handlers.filter((entry) => entry.name === "term://exit")).toHaveLength(1);
+    // 挂着的两条往返就是这一对订阅，开三条会话也只有它们。
     expect(pendingListens).toHaveLength(2);
-
-    // 先关会话（closed 登记发生在这里），往返这时才完成。
-    await store.closeTerm(created.id);
-    const offs = pendingListens.map((entry) => entry.off);
-    settleListens();
-    await flush();
-
-    expect(offs).toHaveLength(2);
-    for (const off of offs) {
-      expect(off).toHaveBeenCalledTimes(1);
-    }
-    expect(invokes.some((call) => call.cmd === "term_close")).toBe(true);
   });
 
-  it("正常路径：往返完成后关闭会话，unlisten 全部被调", async () => {
+  it("事件按会话 id 分发；已关掉的会话再来事件也不复活", async () => {
     const store = await import("../../src/lib/termStore");
-    const created = await store.openTerm(null, "cmd", 80, 24);
-    const offs = pendingListens.map((entry) => entry.off);
-    expect(offs).toHaveLength(2);
+    const a = await store.openTerm("D:/repo-a", "cmd", 80, 24);
+    const b = await store.openTerm("D:/repo-a", "cmd", 80, 24);
+    store.setActiveTermFor("D:/repo-a", b.id);
 
-    settleListens();
-    await flush();
-    await store.closeTerm(created.id);
-    await flush();
+    // 输出落到 a 头上就只动 a：b 是前台那条，不该被别人的输出改动。
+    emitOutput(a.id, "for-a");
+    expect(store.termSessionById(a.id)?.unread).toBe(true);
+    expect(store.termSessionById(b.id)?.unread).toBe(false);
 
-    for (const off of offs) {
-      expect(off).toHaveBeenCalledTimes(1);
+    await store.closeTerm(a.id);
+    emitOutput(a.id, "late");
+    for (const handler of handlers.filter((entry) => entry.name === "term://exit")) {
+      handler.callback({ payload: { id: a.id, code: 0 } });
     }
-  });
-
-  it("dropTermSession 同样先登记再解绑：往返中的订阅 resolve 时当场解绑", async () => {
-    const store = await import("../../src/lib/termStore");
-    await store.openTerm(null, "cmd", 80, 24);
-    const offs = pendingListens.map((entry) => entry.off);
-
-    await store.dropTermSession();
-    settleListens();
     await flush();
 
-    for (const off of offs) {
-      expect(off).toHaveBeenCalledTimes(1);
-    }
+    expect(store.termSessionById(a.id)).toBeNull();
+    expect(store.termSessionsFor("D:/repo-a").sessions.map((s) => s.id)).toEqual([b.id]);
+    // 迟到的事件只被丢掉，不会再触发一次关闭。
+    expect(invokes.filter((call) => call.cmd === "term_close")).toHaveLength(1);
   });
 
   it("多工作区按根隔离终端列表与激活项，关闭单根不影响后台根的终端", async () => {

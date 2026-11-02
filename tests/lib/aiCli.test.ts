@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke, isTauri: () => h.desk
 const status: AiCliStatus = {
   provider: "claude", installed: false, version: null, path: null, source: null,
   latestVersion: "2.1.0", latestSource: "official", updateAvailable: false, canInstall: true, canUpdate: false,
-  canUninstall: false, prerequisiteError: null, probeError: null, latestError: null,
+  canUninstall: false, launcherCount: 1, prerequisiteError: null, probeError: null, latestError: null,
 };
 
 beforeEach(() => { vi.resetModules(); h.invoke.mockReset(); h.desktop = true; });

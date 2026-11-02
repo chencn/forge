@@ -1,6 +1,6 @@
 import { Marked, Parser, Renderer } from "marked";
 import { parseFileLink } from "./fileLinks";
-import { escapeHtml, highlightCodeHtml } from "./cm/grammars";
+import { fenceLanguages, grammarSupport, highlightCodeHtml, escapeHtml } from "./cm/grammars";
 
 /**
  * 聊天 markdown 的 DOM 无关核心：marked 实例、代码高亮、流式围栏修补、
@@ -152,15 +152,42 @@ export function blockKey(raw: string, copyLabel: string, openBlocks: boolean): s
  * `await prepareHighlight(fenceLanguages(source))` 把这篇用过的语言装进内存再进来，
  * 否则第一次遇到某门语言的那一帧，代码块会是素文本。
  */
+/**
+ * 逐块解析结果的 LRU。
+ *
+ * `blockKey` 本就是 token 原文的指纹，拿它当键复用整块 HTML：流式刷新时只有最后
+ * 那一块还在长，前面每一块都原样取回上次的结果——代码块里的 Lezer 高亮是这条链上
+ * 最贵的活，不该每帧对每个历史块重来一遍。
+ */
+const blockHtmlCache = new Map<string, string>();
+const BLOCK_HTML_LIMIT = 2000;
+
 export function renderChatTokenBlocks(source: string, copyLabel: string, openBlocks: boolean): Array<{ key: string; html: string }> {
   activeChatCopyLabel = copyLabel;
   const tokens = chatParser.lexer(source);
   const out: Array<{ key: string; html: string }> = [];
   for (const token of tokens) {
     if (token.type === "space") continue;
+    const key = blockKey(token.raw, copyLabel, openBlocks);
+    // 语法包是异步懒加载的：同一段正文在语法装上前后出的是两份 HTML（素文本 / 带 tok-*
+    // 的 span）。所以只有「这块用到的语法都已就绪」时才认指纹——没就绪那一帧记进去，
+    // 之后语法装好了也会被这份缓存挡住，代码块就永远停在素文本上。
+    const ready = fenceLanguages(token.raw).every((lang) => grammarSupport(lang) !== null);
+    const cached = ready ? blockHtmlCache.get(key) : undefined;
+    if (cached !== undefined) {
+      out.push({ key, html: cached });
+      continue;
+    }
     const html = blockParser.parse([token]);
     if (!html) continue;
-    out.push({ key: blockKey(token.raw, copyLabel, openBlocks), html });
+    if (ready) {
+      if (blockHtmlCache.size >= BLOCK_HTML_LIMIT) {
+        const first = blockHtmlCache.keys().next().value;
+        if (first) blockHtmlCache.delete(first);
+      }
+      blockHtmlCache.set(key, html);
+    }
+    out.push({ key, html });
   }
   return out;
 }

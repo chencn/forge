@@ -166,11 +166,15 @@ pub fn apply_picker_patch(catalog: Value, patch: Option<Value>) -> Value {
     catalog
 }
 
-/// 缓存目录是否就是当前这版 CLI 报的：版本一变即失效，升级带出的新模型不必等用户手动刷新。
-pub fn is_current(path: &Path, provider: Provider, version: &str) -> bool {
+/// 缓存目录是否就是当前这版 CLI、当前这份来源报的：版本或模型来源一变即失效，
+/// 升级/切换供应商带出的新模型不必等用户手动刷新。
+/// `source` 由 `ai_cli::model_source_key` 给出，来源对不上同样按过期处理。
+pub fn is_current(path: &Path, provider: Provider, version: &str, source: &str) -> bool {
     let _guard = CATALOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
     let catalog = catalog_from(&read_document(path), provider);
-    catalog["authoritative"].as_bool() == Some(true) && catalog["cliVersion"].as_str() == Some(version)
+    catalog["authoritative"].as_bool() == Some(true)
+        && catalog["cliVersion"].as_str() == Some(version)
+        && catalog["sourceKey"].as_str() == Some(source)
 }
 /// 读缓存不探测 CLI，也不依赖当前工程。
 pub fn cached_models(path: &Path, provider: Provider) -> Value {
@@ -941,23 +945,25 @@ mod tests {
         let path = dir.join("ai-models.json");
         // 内置别名表不是 CLI 报的，绝不顶着 authoritative。
         assert_eq!(defaults(Provider::Claude)["authoritative"], json!(false));
-        assert!(!is_current(&path, Provider::Codex, "1.2.3"));
-        let probed = json!({"models":[{"id":"gpt-9","name":"GPT-9","efforts":[]}],"efforts":[],"customModel":true,"authoritative":true,"cliVersion":"1.2.3"});
+        assert!(!is_current(&path, Provider::Codex, "1.2.3", "route-a"));
+        let probed = json!({"models":[{"id":"gpt-9","name":"GPT-9","efforts":[]}],"efforts":[],"customModel":true,"authoritative":true,"cliVersion":"1.2.3","sourceKey":"route-a"});
         save_models(&path, Provider::Codex, Some(probed), None).unwrap();
         let cached = cached_models(&path, Provider::Codex);
         assert_eq!(cached["authoritative"], json!(true));
         assert_eq!(cached["cliVersion"], json!("1.2.3"));
         // 从磁盘读回的不是「现问 CLI」，remote 必须归位 false。
         assert_eq!(cached["remote"], json!(false));
-        assert!(is_current(&path, Provider::Codex, "1.2.3"));
+        assert!(is_current(&path, Provider::Codex, "1.2.3", "route-a"));
         // CLI 一升级旧目录就失效，不必等用户手动刷新。
-        assert!(!is_current(&path, Provider::Codex, "1.3.0"));
+        assert!(!is_current(&path, Provider::Codex, "1.3.0", "route-a"));
+        // 同一版 CLI 换了供应商路由，模型列表也会变：来源对不上同样失效。
+        assert!(!is_current(&path, Provider::Codex, "1.2.3", "route-b"));
         // 老缓存没有来源字段时按未核实处理，不能凭空当成 CLI 实测。
         std::fs::write(&path, r#"{"catalogs":{"codex":{"models":[{"id":"legacy","name":"Legacy","efforts":[]}],"efforts":[],"customModel":true}}}"#).unwrap();
         let legacy = cached_models(&path, Provider::Codex);
         assert_eq!(legacy["authoritative"], json!(false));
         assert_eq!(legacy["cliVersion"], json!(null));
-        assert!(!is_current(&path, Provider::Codex, "1.2.3"));
+        assert!(!is_current(&path, Provider::Codex, "1.2.3", ""));
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

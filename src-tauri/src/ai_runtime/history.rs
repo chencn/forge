@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// 单行上限，与事件存储保持一致；原生历史里也可能混入超长行。
 const MAX_LINE: u64 = 2 * 1024 * 1024;
@@ -36,6 +37,7 @@ pub struct Source {
 }
 
 /// 扫描时的一条候选历史，带上展示与排序所需的附加信息。
+#[derive(Clone)]
 struct Candidate {
     /// 定位信息本体。
     source: Source,
@@ -221,11 +223,67 @@ fn codex_thread_names(codex_home: &Path) -> HashMap<String, String> {
     }
     names
 }
+/// 候选结果能活多久。指纹（长度 + mtime）本就认得出内容变动，这个 TTL 只兜
+/// 「同步工具把内容换掉却原样保留 mtime」那种指纹认不出的情形，取长一点。
+const CANDIDATE_TTL: Duration = Duration::from_secs(60);
+/// 缓存最多记多少份历史；撑破就整表重开，重开最坏是重读一遍。
+const MAX_CANDIDATE_CACHE: usize = 4096;
+
+fn cache_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `inspect` 的结果按（文件、长度、mtime、归属工程）缓存。
+fn candidate_cache(
+) -> &'static Mutex<HashMap<(PathBuf, Provider, String, (u64, u64)), (Instant, Option<Candidate>)>>
+{
+    static CACHE: OnceLock<
+        Mutex<HashMap<(PathBuf, Provider, String, (u64, u64)), (Instant, Option<Candidate>)>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candidate>, String> {
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
     if metadata.len() > MAX_FILE {
         return Ok(None);
     }
+    // 一次列表刷新会把同一份原生历史问好几遍——发现、归属校验、补采摘要各问一次——
+    // 而每一遍都要开文件往后读。长度加 mtime 就是这份文件的内容指纹：CLI 只有追加
+    // 时它才变。指纹没变就直接复用上一遍的结论，「不属于本工程」这个否定结论也一起复用。
+    let stamp = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|delta| (metadata.len(), delta.as_nanos() as u64));
+    let key = stamp.map(|stamp| (path.to_path_buf(), provider, root.to_owned(), stamp));
+    if let Some(key) = &key {
+        let hit = cache_lock(candidate_cache())
+            .get(key)
+            .filter(|(at, _)| at.elapsed() < CANDIDATE_TTL)
+            .map(|(_, candidate)| candidate.clone());
+        if let Some(candidate) = hit {
+            return Ok(candidate);
+        }
+    }
+    let found = inspect_uncached(path, provider, root, &metadata)?;
+    if let Some(key) = key {
+        let mut cache = cache_lock(candidate_cache());
+        if cache.len() >= MAX_CANDIDATE_CACHE {
+            cache.clear();
+        }
+        cache.insert(key, (Instant::now(), found.clone()));
+    }
+    Ok(found)
+}
+
+/// 真正开文件读的那一趟；缓存层见上面的 `inspect`。
+fn inspect_uncached(
+    path: &Path,
+    provider: Provider,
+    root: &str,
+    metadata: &fs::Metadata,
+) -> Result<Option<Candidate>, String> {
     let mut reader = BufReader::new(
         File::open(path)
             .map_err(|e| e.to_string())?
@@ -262,15 +320,28 @@ fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candida
                 title = human_text(&text(&value["payload"]["content"]));
             }
         } else {
+            // 父会话主线之外的行一律跳过，但不否决整份历史——末尾的 `belongs` 才是
+            // 「整份都不属于本工程」的兜底。原来这两类行都直接 `return Ok(None)`，
+            // 结果是「用过子代理的会话」「resume 续接过的会话」历史再也扫不出来。
             if value["isSidechain"] == true {
-                return Ok(None);
+                // 子代理的对话，父会话文件里夹着它们（子代理独立的 agent-*.jsonl 不在这条扫描路径上）。
+                continue;
             }
             if let Some(cwd) = value["cwd"].as_str() {
                 if !same_root(cwd, root) {
-                    return Ok(None);
+                    continue;
                 }
                 belongs = true;
-                native = value["sessionId"].as_str().map(str::to_owned).or(native);
+                if let Some(id) = value["sessionId"].as_str() {
+                    // 首个定下来的 id 说了算：续接混进来的别的会话的行既不采信它的 id，
+                    // 也不拿它当标题素材——否则标题会变成别的会话的第一句话。
+                    if native.as_deref().is_some_and(|known| known != id) {
+                        continue;
+                    }
+                    if native.is_none() {
+                        native = Some(id.to_owned());
+                    }
+                }
             }
             if value["type"] == "user" && value["isMeta"] != true && title.is_none() {
                 // 压缩续篇摘要（isCompactSummary）是机器生成的上下文说明，任务通知也一样：
@@ -488,10 +559,44 @@ fn delete_claude_transcript(source: &Source, projects: &Path) -> Result<(), Stri
     Ok(())
 }
 /// 登记惰性镜像，并复用已有的 provider/native-id 绑定。不发提示词、不起进程。
+///
+/// 内部自己持 `IO_LOCK`，而且只在写回镜像的那一段持有：外部 CLI 的目录扫描与日志解析
+/// 都在锁外。调用方不得再在外面套一层——普通 Mutex 不可重入，会直接死锁。
 pub fn discover(base: &Path, root: &str) -> Result<(), String> {
     discover_in(base, root, roots()?)
 }
 fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Result<(), String> {
+    // 先把外部 CLI 那侧整段读完：递归扫到 3 万条目、逐个解析 jsonl，是整条发现流程里
+    // 最贵的部分，而它碰的全是 ~/.claude / ~/.codex 下的文件，与 store 目录毫无关系。
+    // 这一段若压在 IO_LOCK 里，聚焦一次窗口就把正在落盘的运行中会话堵在门口——事件推不
+    // 出去，界面看着像卡住。锁里只留真正要改 store 的那一小段。
+    let mut scanned: Vec<(Provider, PathBuf, Option<Candidate>)> = Vec::new();
+    let mut thread_names: HashMap<Provider, HashMap<String, String>> = HashMap::new();
+    let mut budget = 30000;
+    for (provider, directory) in roots {
+        let mut paths = vec![];
+        files(
+            &directory,
+            if provider == Provider::Claude { 1 } else { 4 },
+            &mut budget,
+            &mut paths,
+        )?;
+        // 索引在 CODEX_HOME 根下，两个 sessions 目录共享同一份，读一次就够。
+        if provider == Provider::Codex {
+            thread_names.insert(
+                provider,
+                directory.parent().map(codex_thread_names).unwrap_or_default(),
+            );
+        }
+        for path in paths {
+            // 某一份历史损坏不该连累其他历史：跳过它，继续扫下一个。
+            let candidate = inspect(&path, provider, root).ok().flatten();
+            scanned.push((provider, path, candidate));
+        }
+    }
+
+    // 读镜像现状与写回都在锁内：只有这一段真的要动 store 目录。
+    let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
     let mut known = std::collections::HashMap::new();
     let mut known_subagents = std::collections::HashMap::new();
     for entry in fs::read_dir(base)
@@ -522,34 +627,14 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
             }
         }
     }
-    let mut budget = 30000;
-    for (provider, directory) in roots {
-        let mut paths = vec![];
-        files(
-            &directory,
-            if provider == Provider::Claude { 1 } else { 4 },
-            &mut budget,
-            &mut paths,
-        )?;
-        // 索引在 CODEX_HOME 根下，两个 sessions 目录共享同一份，读一次就够。
-        let codex_names = if provider == Provider::Codex {
-            directory.parent().map(codex_thread_names).unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        for path in paths {
-            // 某一份历史损坏不该连累其他历史：跳过它，继续扫下一个。
-            let Ok(Some(mut candidate)) = inspect(&path, provider, root) else {
-                // Codex 的子代理 rollout（source.subagent）会被 inspect 跳过；
-                // 父镜像存在时把它导入成子会话。
-                if provider == Provider::Codex {
-                    import_codex_subagent(base, &path, root, &known, &known_subagents);
-                }
-                continue;
-            };
+    for (provider, path, candidate) in scanned {
+        if let Some(mut candidate) = candidate {
             // 标题到底出自线程名，决定已有镜像跟不跟着改（下面 follows 用）。
             let mut title_from_thread_name = false;
-            if let Some(name) = codex_names.get(&candidate.source.native_id) {
+            if let Some(name) = thread_names
+                .get(&provider)
+                .and_then(|names| names.get(&candidate.source.native_id))
+            {
                 // 早期 Forge 把整条首条消息原样写成了线程名，这种名字按 auto_title 收窄就行；
                 // 从首条消息标题起不来的（用户在 CLI 里自己改的）原样保留，一个字不动。
                 if candidate.title.is_empty() || !name.starts_with(&candidate.title) {
@@ -629,6 +714,10 @@ fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Resu
             if provider == Provider::Claude {
                 import_claude_subagents(base, &key, &source.path, &source.native_id, root);
             }
+        } else if provider == Provider::Codex {
+            // Codex 的子代理 rollout（source.subagent）会被 inspect 跳过；
+            // 父镜像存在时把它导入成子会话。
+            import_codex_subagent(base, &path, root, &known, &known_subagents);
         }
     }
     Ok(())
@@ -1474,14 +1563,21 @@ fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Res
     let start = offset;
     let mut batch = vec![];
     while let Some((value, count)) = bounded_line(&mut reader)? {
-        if source.provider == Provider::Claude && (value["sessionId"].as_str().is_some_and(|s| s != source.native_id)
-            || value["cwd"].as_str().is_some_and(|s| !same_root(s, &target.meta.workspace))) {
-            return Err("原生摘要记录归属不一致".into());
-        }
-        if source.provider == Provider::Codex && matches!(value["type"].as_str(), Some("session_meta" | "turn_context"))
-            && (value["payload"]["cwd"].as_str().is_some_and(|s| !same_root(s, &target.meta.workspace))
-                || value["type"] == "session_meta" && value["payload"]["id"].as_str() != Some(source.native_id.as_str())) {
-            return Err("原生摘要记录归属不一致".into());
+        // 原生日志是 append-only 容器：外部 resume/continue 续接后会出现别的
+        // sessionId / cwd 的行。整体报错只会让游标永远卡在同一行、每个回合
+        // 收尾重复弹同一条错；跳过外来行、游标照常推进，摘要靠 summaryId
+        // 与正文去重，天然幂等。
+        let foreign = if source.provider == Provider::Claude {
+            value["sessionId"].as_str().is_some_and(|s| s != source.native_id)
+                || value["cwd"].as_str().is_some_and(|s| !same_root(s, &target.meta.workspace))
+        } else {
+            matches!(value["type"].as_str(), Some("session_meta" | "turn_context"))
+                && (value["payload"]["cwd"].as_str().is_some_and(|s| !same_root(s, &target.meta.workspace))
+                    || value["type"] == "session_meta" && value["payload"]["id"].as_str() != Some(source.native_id.as_str()))
+        };
+        if foreign {
+            offset += count;
+            continue;
         }
         for (kind, mut data) in project(source.provider, &value, offset) {
             if kind == "compaction" && data["text"].as_str().is_some_and(|s| !s.is_empty()) {
@@ -2125,6 +2221,34 @@ mod tests {
         target.append("native", vec![("summary_checkpoint".into(), json!({"offset":old_offset}))]).unwrap();
         let events = mark_current(&mut target, &base).unwrap();
         assert_eq!(events.iter().filter(|event| event.kind == "compaction").count(), 129);
+        assert!(!mark_current(&mut target, &base).unwrap().iter().any(|event| event.kind == "compaction"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn summary_scan_skips_foreign_lines_instead_of_failing() {
+        let temp = std::env::temp_dir().join(format!("forge-summary-foreign-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("native");
+        for path in [&root, &base, &native] { fs::create_dir_all(path).unwrap(); }
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        // 外部 resume/continue 续接后，窗口里会混进别的 sessionId / cwd 的行：
+        // 补采要跳过它们照常推进，而不是整体报错把游标永远卡死。
+        let mut content = format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"summary-session","message":{"content":"hello"}}));
+        content.push_str(&format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"summary-session","isCompactSummary":true,"isMeta":true,"message":{"content":"summary-1"}})));
+        content.push_str(&format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"resumed-session","message":{"content":"from resume"}})));
+        content.push_str(&format!("{}\n", json!({"type":"user","cwd":temp.join("elsewhere"),"sessionId":"summary-session","message":{"content":"other root"}})));
+        content.push_str(&format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"summary-session","isCompactSummary":true,"isMeta":true,"message":{"content":"summary-2"}})));
+        fs::write(native.join("session.jsonl"), content).unwrap();
+        discover_in(&base, &workspace, vec![(Provider::Claude, native)]).unwrap();
+        let mut target = Store::open(&base, "summary-session", &workspace, Provider::Claude, "test", "").unwrap();
+        let events = mark_current(&mut target, &base).unwrap();
+        let summaries: Vec<_> = events.iter().filter(|event| event.kind == "compaction").collect();
+        assert_eq!(summaries.len(), 2, "外来行要跳过，两条摘要都要采到");
+        assert_eq!(summaries[0].data["text"], json!("summary-1"));
+        assert_eq!(summaries[1].data["text"], json!("summary-2"));
+        // 游标推进越过外来行：重扫不再有新摘要，也不再报错。
         assert!(!mark_current(&mut target, &base).unwrap().iter().any(|event| event.kind == "compaction"));
         fs::remove_dir_all(temp).unwrap();
     }

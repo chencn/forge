@@ -426,8 +426,12 @@ impl Store {
         } else if !dir.is_dir() {
             return Err("会话不存在".into());
         }
+        // 记住这份元数据是不是刚从磁盘读出来的：只有新建会话（根本没有 meta.json）或
+        // CLI 版本确实变了才需要落盘。秒级轮询会反复打开同一会话，每次都无条件重写这份
+        // 原子文件纯属写放大，还会让防抖的文件监听白响一轮。
+        let meta_existed = dir.join("meta.json").exists();
         // 已有标题以持久化记录为准，旧标签页发送时不能覆盖重命名结果。
-        let meta = if dir.join("meta.json").exists() {
+        let meta = if meta_existed {
             Self::metadata(&dir, root)?
         } else {
             Metadata {
@@ -477,10 +481,13 @@ impl Store {
             seq: scan.seq,
             poisoned: false,
         };
-        if !version.is_empty() {
+        let version_changed = !version.is_empty() && store.meta.cli_version != version;
+        if version_changed {
             store.meta.cli_version = version.into();
         }
-        store.save_meta()?;
+        if !meta_existed || version_changed {
+            store.save_meta()?;
+        }
         Ok((store, scan))
     }
     /// 共享日志尾部是序号权威来源；非空日志读不出时禁止沿用实例缓存继续写。

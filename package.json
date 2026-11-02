@@ -16,8 +16,6 @@
     "check:rs": "node scripts/run-rust.mjs check",
     "browser:prepare": "node scripts/prepare-browser.mjs",
     "test:browser": "node scripts/test-browser.mjs",
-    "test:lsp-native": "node scripts/test-lsp-native.mjs",
-    "test:lsp-ui-native": "node scripts/test-lsp-ui-native.mjs",
     "browser:dev": "node scripts/prepare-browser.mjs --vite",
     "desktop:prepare": "node scripts/prepare-browser.mjs --release --frontend",
     "test:front": "vitest run"

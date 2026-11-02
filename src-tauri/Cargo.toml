@@ -15,20 +15,11 @@ rust-version = "1.80"
 [features]
 # Explicitly opt in to the model-free native verification executable; never bundled.
 browser-smoke = []
-# 只构建本机 LSP IPC 验收程序；使用用户 Temp 隔离配置和测试 server，永不随产品打包。
-lsp-smoke = []
-# 只构建真实主 WebView 的 LSP UI 验收入口；使用用户 Temp 隔离配置和测试 server，永不随产品打包。
-lsp-ui-smoke = []
 
 [[bin]]
 name = "forge-browser-smoke"
 path = "src/bin/browser_smoke.rs"
 required-features = ["browser-smoke"]
-
-[[bin]]
-name = "lsp-smoke"
-path = "src/bin/lsp_smoke.rs"
-required-features = ["lsp-smoke"]
 
 [lib]
 name = "forge_lib"
@@ -67,6 +58,10 @@ notify = "8"
 # 全文搜索：正则走 regex，遍历目录走 walkdir（两者都已锁在依赖树里，不额外下载）。
 regex = "1"
 walkdir = "2"
+# .gitignore 匹配搬进进程：旧实现每列一层目录就 spawn 一次 `git check-ignore`，
+# Windows 上实测约 104ms/次，链式预取最多 24 层，展开深目录要数秒。ignore 与
+# ripgrep 同源、纯 Rust，单次列表变成纯内存匹配。
+ignore = "0.4"
 # 非 UTF-8 文本（中文老项目的 GBK/GB18030）读写：读时按标签解码，写时按原编码回写。
 encoding_rs = "0.8"
 # AI 提交生成：直接使用依赖树里已有的 reqwest 与 tokio，不额外下载新库。
@@ -102,7 +97,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# proc.rs / lsp.rs 停会话时按进程组整树收（libc::kill 给负 pid 发 SIGKILL）；
+# proc.rs 停会话时按进程组整树收（libc::kill 给负 pid 发 SIGKILL）；
 # tauri 树里已锁这一份，显式声明不额外下载。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

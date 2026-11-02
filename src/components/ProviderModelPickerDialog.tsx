@@ -50,7 +50,7 @@ export default function ProviderModelPickerDialog({ kind, apiUrl, apiKey, onClos
         <>
           <p className="ai-error" role="alert">{error}</p>
           <div className="dialog-actions">
-            <button type="button" className="lsp-action" onClick={fetchList}>
+            <button type="button" className="panel-action" onClick={fetchList}>
               <RefreshCw size={13} />{t("ai.catalog.reload")}
             </button>
           </div>

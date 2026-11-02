@@ -19,9 +19,7 @@ import {
   Loader2,
   Minus,
   Plus,
-  Settings,
   Sparkles,
-  Trash2,
   Undo2,
 } from "lucide-react";
 
@@ -38,7 +36,6 @@ import {
   gitDiffText,
   markClass,
 } from "../lib/git";
-import { loadIgnored, subscribeIgnored } from "../lib/ignoredCache";
 import {
   cancelAiCommit,
   collectFilesDiff,
@@ -64,16 +61,15 @@ import {
   type ChangelistsState,
 } from "../lib/changelists";
 
-import type { ChangeNode, CheckState } from "../features/vcs/changes";
+import type { ChangeNode, ChangeSide } from "../features/vcs/changes";
 import {
   aggregateCheck,
   buildChangeTree,
-  checkOf,
+  checkKey,
   filesOf,
   isPartiallyStaged,
   isStaged,
   planCommit,
-  toggledCheck,
 } from "../features/vcs/changes";
 import {
   CommitOptionsPopup,
@@ -82,6 +78,12 @@ import {
 } from "../features/vcs/CommitOptions";
 
 import styles from "../features/vcs/CommitView.module.css";
+
+/**
+ * 无仓库或状态未就绪时的共享空数组。必须是模块级常量：
+ * `git.status?.changes ?? []` 每次渲染都会造一个新数组，把依赖它的清理 effect 每渲染都重跑一遍。
+ */
+const EMPTY_CHANGES: GitChange[] = [];
 
 /** 提交树里要交给 App 落地的动作：开文件、写补丁、回滚、加忽略、看历史。 */
 export type CommitFileAction =
@@ -321,8 +323,9 @@ function GitPanel({
     }
   }, [git.root]);
 
-  // 勾选状态（文件路径 -> CheckState）
-  const [checks, setChecks] = useState<Map<string, CheckState>>(new Map());
+  // 勾选状态：按侧独立存储（`s:<path>` 管已暂存那条，`w:<path>` 管未暂存那条），
+  // 同一文件（部分暂存的）在两组的复选框互不联动
+  const [checks, setChecks] = useState<Map<string, boolean>>(new Map());
 
   // 树折叠状态：默认 Unversioned Files 折叠
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(
@@ -331,9 +334,6 @@ function GitPanel({
   // 选中的节点 key 集合
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
-  // 忽略文件列表
-  const [ignored, setIgnored] = useState<string[]>([]);
-
   // AI 提交相关状态【保留项 3】
   const aiCommitEnabled = useAiCommitEnabled();
   const [isGenerating, setIsGenerating] = useState(false);
@@ -341,6 +341,12 @@ function GitPanel({
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
   // Stash Changes… 对话框：消息默认留空走 git 的「WIP on …」，未跟踪文件默认包含（IDEA 默认勾选）。
   const [stashDialog, setStashDialog] = useState(false);
+  const [shelfDialog, setShelfDialog] = useState(false);
+  const [shelfName, setShelfName] = useState("");
+  /** unshelve 有冲突时的一条内联提示；下次动作或关闭清掉。 */
+  const [shelfNotice, setShelfNotice] = useState<string | null>(null);
+  /** 待搁置的文件相对路径；null 表示工具栏按钮（存全部变更）。 */
+  const [shelfPaths, setShelfPaths] = useState<string[] | null>(null);
   const [stashMessage, setStashMessage] = useState("");
   const [stashUntracked, setStashUntracked] = useState(true);
   const generationIdRef = useRef<string | null>(null);
@@ -384,25 +390,6 @@ function GitPanel({
     }
   }, [aiCommitEnabled]);
 
-  // 订阅忽略文件
-  useEffect(() => {
-    if (!showIgnored || !git.root) {
-      setIgnored([]);
-      return;
-    }
-    let stale = false;
-    const unsubscribe = subscribeIgnored(git.root, (list) => {
-      if (!stale) setIgnored(list);
-    });
-    void loadIgnored(git.root).then((list) => {
-      if (!stale) setIgnored(list);
-    });
-    return () => {
-      stale = true;
-      unsubscribe();
-    };
-  }, [showIgnored, git.root]);
-
   // 修正上次提交切换
   const switchAmend = (on: boolean) => {
     const seq = (amendSeq.current += 1);
@@ -427,16 +414,16 @@ function GitPanel({
       });
   };
 
-  const rawChanges = git.status?.changes ?? [];
+  const rawChanges = git.status?.changes ?? EMPTY_CHANGES;
 
-  // 清除失效文件的勾选记录
+  // 清除失效文件的勾选记录（键带侧前缀 `s:`/`w:`，截掉前两字符才是路径）
   useEffect(() => {
     const live = new Set(rawChanges.map((c) => c.path));
     setChecks((prev) => {
       let changed = false;
       const next = new Map(prev);
       for (const k of next.keys()) {
-        if (!live.has(k)) {
+        if (!live.has(k.slice(2))) {
           next.delete(k);
           changed = true;
         }
@@ -445,10 +432,10 @@ function GitPanel({
     });
   }, [rawChanges]);
 
-  // 构建变更树（1:1 对标 IDEA）
+  // 构建变更树（git 暂存区那套分组：已暂存 / 未暂存分开摆，部分暂存两边各一条）
   const treeRoots = useMemo(() => {
-    return buildChangeTree(rawChanges, groupByDir, changelists);
-  }, [rawChanges, groupByDir, changelists]);
+    return buildChangeTree(rawChanges, groupByDir);
+  }, [rawChanges, groupByDir]);
 
   // 扁平化映射表与父级索引
   const [nodesByKey, parentKeyMap] = useMemo(() => {
@@ -469,16 +456,20 @@ function GitPanel({
   const plan = useMemo(() => planCommit(rawChanges, checks), [rawChanges, checks]);
   const includedCount = plan.included.length;
 
-  // 切换节点的勾选状态
+  // 切换节点的勾选状态：写入哪一侧由节点所在组决定，两组各管各的那一半
   const toggleCheck = useCallback((nodes: ChangeNode[]) => {
+    const first = nodes[0];
+    if (!first) return;
+    const side: ChangeSide = first.group === "staged" ? "staged" : "worktree";
     const targets = filesOf(nodes);
     if (targets.length === 0) return;
     setChecks((prev) => {
-      const agg = aggregateCheck(targets, prev);
-      const nextState: CheckState = agg.checked && !agg.indeterminate ? "none" : "all";
+      const agg = aggregateCheck(targets, side, prev);
+      // 全勾点一下全清空，其余（含横线）一律全勾上
+      const turnOn = !agg.checked;
       const next = new Map(prev);
       for (const f of targets) {
-        next.set(f.path, targets.length === 1 ? toggledCheck(checkOf(f, prev)) : nextState);
+        next.set(checkKey(side, f.path), turnOn);
       }
       return next;
     });
@@ -584,17 +575,6 @@ function GitPanel({
     [changelists, updateChangelists]
   );
 
-  const handleSetActiveChangelist = useCallback(
-    (id: string) => {
-      const next: ChangelistsState = {
-        ...changelists,
-        activeId: id,
-      };
-      updateChangelists(next);
-    },
-    [changelists, updateChangelists]
-  );
-
   const handleDeleteChangelist = useCallback(
     (id: string) => {
       const newMoves = { ...changelists.moves };
@@ -620,42 +600,17 @@ function GitPanel({
     [changelists, updateChangelists]
   );
 
-  // 提交特定变更列表
-  const handleCommitChangelist = useCallback(
-    (node: ChangeNode) => {
-      // 勾选该节点的所有文件，并聚焦到提交框
-      setChecks((prev) => {
-        const next = new Map(prev);
-        for (const file of node.files) {
-          next.set(file.path, "all");
-        }
-        return next;
-      });
-      inputRef.current?.focus();
-    },
-    []
-  );
-
   // 搁置所选改动（通过暂存并复制补丁至剪贴板）
+  // 搁置选中文件：只负责开对话框记下路径，真正的存补丁在确认后走 git.shelve。
   const handleShelveFiles = useCallback(
-    async (files: GitChange[]) => {
+    (files: GitChange[]) => {
       if (!git.root || files.length === 0) return;
-      try {
-        const diffs: string[] = [];
-        for (const f of files) {
-          const text = await gitDiffText(git.root, "HEAD", "", absolute(f.path));
-          if (text) diffs.push(text);
-        }
-        if (diffs.length > 0) {
-          await navigator.clipboard.writeText(diffs.join("\n\n"));
-        }
-        // 暂存文件以保护工作区
-        await git.stage(files.map((f) => absolute(f.path)));
-      } catch (err) {
-        console.error("Shelve changes failed:", err);
-      }
+      setShelfPaths(files.map((f) => f.path));
+      setShelfName("");
+      setShelfNotice(null);
+      setShelfDialog(true);
     },
-    [absolute, git]
+    [git.root]
   );
 
   // 创建补丁文件并按设置分流处理 (对标 IDEA VCS onPatchCreated 规范)
@@ -703,110 +658,14 @@ function GitPanel({
   };
 
   /**
-   * 变更列表组节点（Changelist Header）右键菜单（1:1 对标 IDEA 的 listMenu 规范）
-   */
-  const getListMenu = (node: ChangeNode): MenuItem[] => {
-    const listId = node.changelist ?? DEFAULT_LIST_ID;
-    const isDefault = listId === DEFAULT_LIST_ID;
-    const isActive = changelists.activeId === listId;
-    const count = node.files.length;
-    const foundList = changelists.lists.find((l) => l.id === listId);
-    const listName = isDefault
-      ? (t("git.defaultChangelist") ?? "Default Changelist")
-      : (foundList?.name ?? listId);
-
-    const items: MenuItem[] = [];
-
-    // 1. 提交该变更列表 (Ctrl+K)
-    if (count > 0) {
-      items.push({
-        label: t("git.commitList") ?? "Commit Changelist…",
-        icon: Check,
-        shortcut: "Ctrl+K",
-        onSelect: () => handleCommitChangelist(node),
-      });
-      items.push({ separator: true });
-    }
-
-    // 2. 新建变更列表
-    items.push({
-      label: `${t("git.newChangelist") ?? "New Changelist"}…`,
-      icon: Plus,
-      onSelect: () => setClDialog({ mode: "new" }),
-    });
-
-    // 3. 编辑变更列表（非默认列表允许编辑）
-    if (!isDefault && foundList) {
-      items.push({
-        label: `${t("git.editChangelist") ?? "Edit Changelist"}…`,
-        icon: Settings,
-        onSelect: () =>
-          setClDialog({
-            mode: "edit",
-            id: foundList.id,
-            name: foundList.name,
-            comment: foundList.comment,
-            active: isActive,
-          }),
-      });
-    }
-
-    // 4. 设为活动列表（当前已激活则不提供）
-    if (!isActive) {
-      items.push({
-        label: t("git.setActiveChangelist") ?? "Set as Active Changelist",
-        icon: Check,
-        onSelect: () => handleSetActiveChangelist(listId),
-      });
-    }
-
-    // 5. 删除变更列表（非默认且非活动列表允许删除）
-    if (!isDefault && !isActive) {
-      items.push({
-        label: t("git.deleteChangelist") ?? "Delete Changelist",
-        icon: Trash2,
-        onSelect: () =>
-          setClDialog({
-            mode: "delete",
-            id: listId,
-            name: listName,
-            count,
-          }),
-      });
-    }
-
-    // 6. 分组下有文件时提供回滚、搁置与补丁
-    if (count > 0) {
-      items.push({ separator: true });
-      items.push({
-        label: `${t("git.rollback") ?? "Rollback"}…`,
-        icon: Undo2,
-        shortcut: "Ctrl+Alt+Z",
-        onSelect: () => onFileAction("rollback", "", false, true),
-      });
-      items.push({
-        label: `${t("git.shelve") ?? "Shelve Changes"}…`,
-        icon: ArrowDownToLine,
-        onSelect: () => void handleShelveFiles(node.files),
-      });
-      items.push({
-        label: `${t("git.patchToClipboard") ?? "Create Patch"}…`,
-        icon: ClipboardCopy,
-        onSelect: () => void handleCreatePatchFiles(node.files),
-      });
-    }
-
-    return items;
-  };
-
-  /**
    * 变更文件与目录节点右键菜单（1:1 对标 IDEA 的 nodeMenu 规范）
    */
   const getNodeMenu = (node: ChangeNode): MenuItem[] => {
     const files = filesOf([node]);
     const paths = files.map((f) => f.path);
     const firstChange = files[0];
-    const itemStaged = firstChange ? isStaged(firstChange) : false;
+    // 比对方向跟组走：已暂存组看 HEAD↔索引，未暂存组看索引↔工作区（部分暂存文件两边各一条）。
+    const itemStaged = node.group === "staged";
     const isDeleted = firstChange
       ? firstChange.indexStatus === "D" || firstChange.workStatus === "D"
       : false;
@@ -866,22 +725,22 @@ function GitPanel({
       });
     }
 
-    // 5. 暂存与取消暂存
+    // 5. 暂存与取消暂存：可用性跟组走，避免部分暂存文件在未暂存组被错禁 Stage
     items.push({
       label: t("git.stage") ?? "Stage",
       icon: Plus,
-      disabled: !files.some((f) => !isStaged(f)),
+      disabled: node.group === "staged",
       onSelect: () => void git.stage(paths.map(absolute)),
     });
     items.push({
       label: t("git.unstage") ?? "Unstage",
       icon: Minus,
-      disabled: !files.some((f) => isStaged(f)),
+      disabled: node.group !== "staged" && !files.some((f) => isStaged(f)),
       onSelect: () => void git.unstage(paths.map(absolute)),
     });
 
     // 6. 移动到其他变更列表 (Alt+Shift+M)
-    if (node.group === "changes" || node.changelist) {
+    if (node.group === "staged" || node.group === "unstaged") {
       items.push({ separator: true });
       items.push({
         label: `${t("git.moveToList") ?? "Move to Another Changelist"}…`,
@@ -1073,18 +932,23 @@ function GitPanel({
     const shouldCheckTodo = commitOptions.checkTodo || vcs.checkTodo;
     if (shouldCheckTodo && git.root && includedPaths.length > 0) {
       const filesWithTodo: string[] = [];
-      for (const p of includedPaths) {
-        try {
-          const diff = await gitDiffText(git.root, "HEAD", "", absolute(p));
-          if (diff) {
-            const addedLines = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
-            if (addedLines.some((l) => /\b(TODO|FIXME)\b/i.test(l))) {
-              filesWithTodo.push(p);
-            }
+      try {
+        // 一次拿整份 diff 再在内存里按文件切分：逐文件起 `git diff` 子进程，勾几十个文件
+        // 就是几十个进程排队（Windows 上每个几十毫秒，大提交点下去要干等好几秒）。
+        const diff = await gitDiffText(git.root, "HEAD", "", "");
+        const wanted = new Set(includedPaths);
+        let current: string | null = null;
+        for (const line of diff.split("\n")) {
+          if (line.startsWith("+++ ")) {
+            // `+++ b/<相对路径>`；删除文件是 `+++ /dev/null`，那种块里不会有新增行。
+            current = line.startsWith("+++ b/") ? line.slice(6) : null;
+            continue;
           }
-        } catch {
-          // 忽略单文件 diff 读取异常
+          if (!current || !line.startsWith("+") || !/\b(TODO|FIXME)\b/i.test(line)) continue;
+          if (wanted.has(current) && !filesWithTodo.includes(current)) filesWithTodo.push(current);
         }
+      } catch {
+        // 拿不到整份 diff 时跳过这项检查，不阻断提交。
       }
       if (filesWithTodo.length > 0) {
         const confirmed = window.confirm(
@@ -1123,9 +987,11 @@ function GitPanel({
       // 这样未暂存的块不会被 `git commit --only`（取的是工作区内容）顺手带上，部分暂存语义得以保留。
       if (git.root) {
         const toStage = (stageAll ? includedPaths : plan.stage).map((p) => absolute(p));
-        if (toStage.length > 0) await git.stage(toStage);
+        // silent：整理索引后紧跟着就是提交，提交那一步本来就要做一次全量刷新，
+        // 这里再各读回一次 `git status` 是白跑的。
+        if (toStage.length > 0) await git.stage(toStage, true);
         const toUnstage = (stageAll ? [] : plan.unstage).map((p) => absolute(p));
-        if (toUnstage.length > 0) await git.unstage(toUnstage);
+        if (toUnstage.length > 0) await git.unstage(toUnstage, true);
       }
 
       if (andPush) {
@@ -1150,13 +1016,26 @@ function GitPanel({
     }
   };
 
+  /**
+   * 这三个回调每次渲染都是一份新函数（内部引用整份 Git 状态与菜单表）。树的缓存一旦把
+   * 它们列进依赖就永远命中不了，等于没做缓存——所以用 ref 取最新一份：
+   * 树元只在事件回调里调用它们，取值时机晚于渲染，不影响正确性。
+   */
+  const openContextMenuRef = useRef(openContextMenu);
+  openContextMenuRef.current = openContextMenu;
+  const getNodeMenuRef = useRef(getNodeMenu);
+  getNodeMenuRef.current = getNodeMenu;
+  const openByDoubleClickRef = useRef(openByDoubleClick);
+  openByDoubleClickRef.current = openByDoubleClick;
+
   // 渲染单行树节点（1:1 对标 IDEA，并严格保留目录聚合圆点与行尾状态字母）
-  const renderRow = (node: ChangeNode, depth: number) => {
+  const renderRow = useCallback(function renderRows(node: ChangeNode, depth: number) {
     const isGroup = node.type === "group";
     const isDir = node.type === "dir";
     const isFile = node.type === "file";
     const isCollapsed = collapsedNodes.has(node.key);
-    const agg = aggregateCheck(node.files, checks);
+    // 复选框只看本侧：已暂存组与未暂存组各自的勾选互不相干
+    const agg = aggregateCheck(node.files, node.group === "staged" ? "staged" : "worktree", checks);
 
     // 缩进：每层 18px
     const paddingLeft = 4 + depth * 18;
@@ -1164,11 +1043,11 @@ function GitPanel({
     const displayLabel = isGroup
       ? node.group === "conflicts"
         ? t("git.unmerged")
-        : node.group === "unversioned"
-        ? t("git.untracked")
-        : node.changelist && node.changelist !== "default"
-        ? node.label
-        : t("git.changesList")
+        : node.group === "staged"
+        ? t("git.staged")
+        : node.group === "unstaged"
+        ? t("git.changes")
+        : t("git.untracked")
       : node.label;
 
     return (
@@ -1178,8 +1057,7 @@ function GitPanel({
             styles.nodeRow,
             "change-row",
             isSelected && styles.isSelected,
-            node.active && styles.groupLabel,
-            node.changelist && !node.active && styles.inactiveList
+            isGroup && styles.groupLabel
           )}
           style={{ paddingLeft }}
           onClick={() => {
@@ -1188,16 +1066,12 @@ function GitPanel({
               // 点击文件夹行才展开或收缩
               toggleCollapse(node.key);
             } else if (node.files[0]) {
-              // 点击文件打开差异对比
-              onOpenChange(node.files[0], isStaged(node.files[0]), rawChanges);
+              // 点击文件打开差异对比：方向跟组走，已暂存组比 HEAD↔索引，未暂存组比索引↔工作区
+              onOpenChange(node.files[0], node.group === "staged", rawChanges);
             }
           }}
           onContextMenu={(e) => {
-            if (isGroup && node.changelist) {
-              openContextMenu(e, getListMenu(node));
-            } else {
-              openContextMenu(e, getNodeMenu(node));
-            }
+            openContextMenuRef.current(e, getNodeMenuRef.current(node));
           }}
         >
           {/* 折叠箭头 */}
@@ -1264,7 +1138,7 @@ function GitPanel({
             title={node.path ?? displayLabel}
             onDoubleClick={() => {
               if (isFile && node.files[0]) {
-                openByDoubleClick(node.files[0], isStaged(node.files[0]), rawChanges);
+                openByDoubleClickRef.current(node.files[0], node.group === "staged", rawChanges);
               }
             }}
           >
@@ -1285,31 +1159,76 @@ function GitPanel({
             </span>
           )}
 
-          {/* 【保留项 1】：目录聚合彩色圆点 */}
-          {isDir && node.dirMark && (
-            <span
-              className={clsx(styles.changeDot, `change-dot ${markClass(node.dirMark)}`)}
-              aria-hidden="true"
-            />
-          )}
+          {/* 就地暂存/取消暂存：方向跟组走——未暂存（含未版本控制）加号、已暂存减号；
+              组行作用整组、目录行作用整棵子树、文件行只管自己。悬停该行才显。
+              冲突行保留隐形占位但禁点，带冲突标记进索引等于把冲突藏起来。 */}
+          {(() => {
+            const stageHere = node.group !== "conflicts" && node.files.length > 0;
+            const isStagedGroup = node.group === "staged";
+            const paths = node.files.map((f) => absolute(f.path));
+            return (
+              <button
+                type="button"
+                className={styles.stageAction}
+                disabled={!stageHere}
+                title={
+                  stageHere
+                    ? (t(isStagedGroup ? "git.unstage" : "git.stage") ?? undefined)
+                    : undefined
+                }
+                aria-label={
+                  stageHere
+                    ? (t(isStagedGroup ? "git.unstage" : "git.stage") ?? undefined)
+                    : undefined
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!stageHere) return;
+                  if (isStagedGroup) void git.unstage(paths);
+                  else void git.stage(paths);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                {isStagedGroup ? <Minus size={13} /> : <Plus size={13} />}
+              </button>
+            );
+          })()}
 
-          {/* 【保留项 1】：行尾单字母状态标记（如 M, U, A, D, R, C） */}
-          {isFile && node.mark && (
+          {/* 状态槽：字母 / 目录聚合圆点 / 空占位，统一 16px 宽，
+              保证暂存图标列与状态列在文件行、目录行、组标题行落在同一条竖线上 */}
+          {isFile && node.mark ? (
             <span
               className={clsx(styles.changeMark, `change-mark ${markClass(node.mark)}`)}
             >
               {node.mark}
             </span>
+          ) : isDir && node.dirMark ? (
+            <span
+              className={clsx(styles.changeDot, markClass(node.dirMark))}
+              aria-hidden="true"
+            />
+          ) : (
+            <span className={styles.markSlot} aria-hidden="true" />
           )}
         </div>
 
         {/* 展开子节点 */}
         {!isCollapsed &&
           node.children &&
-          node.children.map((child) => renderRow(child, depth + 1))}
+          node.children.map((child) => renderRows(child, depth + 1))}
       </div>
     );
-  };
+    // 依赖只列树本身读到的东西：`message`、拖拽高度这类与树无关的状态变化不该重建整棵树。
+  }, [collapsedNodes, checks, selectedKeys, t, rawChanges, toggleCheck, toggleCollapse, absolute, onOpenChange, git]);
+
+  /**
+   * 整棵树的元素数组缓存。提交说明框每敲一个字符都会重渲染 GitPanel，没有这层缓存
+   * 就得对几百个节点重跑一遍 renderRow（每行还要拼绝对路径、建一整套闭包）。
+   */
+  const treeRows = useMemo(
+    () => treeRoots.map((rootNode) => renderRow(rootNode, 0)),
+    [treeRoots, renderRow]
+  );
 
   // 空态检查
   if (!git.probe?.available) {
@@ -1335,7 +1254,6 @@ function GitPanel({
   void repoName;
   void onUnignore;
   void onOpenCommitFile;
-  void ignored;
 
   return (
     <div className={clsx(styles.root, "git-panel")}>
@@ -1381,6 +1299,17 @@ function GitPanel({
           size="small"
           disabled={rawChanges.length === 0}
           onClick={() => setStashDialog(true)}
+        />
+        <IconButton
+          icon="archive"
+          title={t("git.shelve")}
+          size="small"
+          disabled={rawChanges.length === 0}
+          onClick={() => {
+            setShelfName("");
+            setShelfNotice(null);
+            setShelfDialog(true);
+          }}
         />
         <IconButton
           icon="arrow-down-to-line"
@@ -1464,7 +1393,7 @@ function GitPanel({
             </div>
           ) : (
             <div style={{ padding: "4px 0" }}>
-              {treeRoots.map((rootNode) => renderRow(rootNode, 0))}
+              {treeRows}
             </div>
           )}
         </div>
@@ -1508,6 +1437,16 @@ function GitPanel({
                 </button>
                 <button
                   type="button"
+                  className={styles.stashAction}
+                  onClick={() => {
+                    const name = window.prompt(t("git.stashBranchPrompt"));
+                    if (name && name.trim()) void git.stashBranch(entry.index, name.trim());
+                  }}
+                >
+                  {t("git.stashBranch")}
+                </button>
+                <button
+                  type="button"
                   className={clsx(styles.stashAction, styles.stashDrop)}
                   onClick={() => {
                     if (window.confirm(t("git.stashDropConfirm"))) {
@@ -1516,6 +1455,75 @@ function GitPanel({
                   }}
                 >
                   {t("git.stashDrop")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {git.shelves.length > 0 && (
+        <div className={styles.stashBox}>
+          <div className={styles.stashHead}>
+            <span>{t("git.shelfTitle")}</span>
+            <span className={styles.stashCount}>{git.shelves.length}</span>
+          </div>
+          {shelfNotice ? (
+            <p className={styles.stashMsg} role="status">
+              {shelfNotice}
+            </p>
+          ) : null}
+          <div className={styles.stashList}>
+            {git.shelves.map((entry) => (
+              <div key={entry.id} className={styles.stashRow}>
+                <span className={styles.stashMsg} title={`${entry.name} · ${entry.files.length}`}>
+                  {entry.name}
+                </span>
+                <span className={styles.stashTime}>
+                  {new Date(entry.timeMs).toLocaleString([], {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <button
+                  type="button"
+                  className={styles.stashAction}
+                  onClick={() => {
+                    setShelfNotice(null);
+                    void git.unshelve(entry.id, false).then((outcome) => {
+                      if (outcome && outcome.conflicts.length > 0) {
+                        setShelfNotice(t("git.unshelveConflicts").replace("{n}", String(outcome.conflicts.length)));
+                      }
+                    });
+                  }}
+                >
+                  {t("git.unshelve")}
+                </button>
+                <button
+                  type="button"
+                  className={styles.stashAction}
+                  onClick={() => {
+                    const next = window.prompt(t("git.shelfRename"), entry.name);
+                    if (next && next.trim() && next.trim() !== entry.name) {
+                      void git.shelfRename(entry.id, next.trim());
+                    }
+                  }}
+                >
+                  {t("git.shelfRename")}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(styles.stashAction, styles.stashDrop)}
+                  onClick={() => {
+                    if (window.confirm(t("git.shelfDeleteConfirm"))) {
+                      void git.shelfDelete(entry.id);
+                    }
+                  }}
+                >
+                  {t("git.shelfDelete")}
                 </button>
               </div>
             ))}
@@ -1806,6 +1814,47 @@ function GitPanel({
                 }}
               >
                 {t("git.stashPushAction")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shelfDialog && (
+        <div className="dialog-backdrop" onClick={() => setShelfDialog(false)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <h3 className="dialog-title">{t("git.shelve")}</h3>
+            <div className="dialog-body">
+              <input
+                type="text"
+                className="text-input"
+                style={{ width: "100%" }}
+                placeholder={t("git.shelfName")}
+                aria-label={t("git.shelfName")}
+                value={shelfName}
+                autoFocus
+                onChange={(e) => setShelfName(e.target.value)}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button type="button" className="button" onClick={() => setShelfDialog(false)}>
+                {t("dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                className="button is-primary"
+                disabled={!shelfName.trim()}
+                onClick={() => {
+                  setShelfDialog(false);
+                  // 右键菜单存选中的那几个；工具栏按钮存全部变更（相对路径，后端兼容绝对路径）。
+                  void git.shelve(
+                    shelfName.trim(),
+                    shelfPaths ?? rawChanges.map((change) => change.path)
+                  );
+                  setShelfPaths(null);
+                }}
+              >
+                {t("git.shelveAction")}
               </button>
             </div>
           </div>

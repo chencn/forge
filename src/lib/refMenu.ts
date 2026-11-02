@@ -43,6 +43,10 @@ export interface RefMenuDeps {
   upstream: string;
   /** HEAD 是否游离。游离时没有「当前分支」可改变基目标，那两条变基项置灰给原因。 */
   detached: boolean;
+  /** 配了几个远端。推送与推送 tag 需要至少一个，与 BranchPicker / 日志窗共用同一门禁。 */
+  remotes: number;
+  /** 仓库是否尚无首次提交（刚 init）。空仓库没有任何 ref 可推，推送必失败。 */
+  fresh: boolean;
   onAction: (action: RefAction, target: RefTarget) => void;
   /** 「与当前比较」：把日志中列筛成 current..target。 */
   onCompareWith: (target: RefTarget) => void;
@@ -56,7 +60,11 @@ export interface RefMenuDeps {
  * （见 docs/features/git-branches/ref-action-matrix.md）。空组不留下悬空的分隔线。
  */
 export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
-  const { t, current, upstream, detached, onAction, onCompareWith, onDiffWithWorktree } = deps;
+  const { t, current, upstream, detached, remotes, fresh, onAction, onCompareWith, onDiffWithWorktree } = deps;
+  // 空仓库没有 ref 可推；没有远端推送无处可推。这两条与 BranchPicker / 日志窗共享同一门禁。
+  const canPushRef = !fresh && remotes > 0 && !detached;
+  const noRemotesHint = remotes === 0 ? t("git.noRemotes") : undefined;
+  const freshHint = fresh ? t("git.repoFresh") : undefined;
   const isBranch = target.kind !== "tag";
   const isCurrent = target.kind === "local" && target.name === current;
   const go =
@@ -172,6 +180,8 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
               label: t("git.refPush"),
               icon: ArrowUpToLine,
               shortcut: "Ctrl+Shift+K",
+              disabled: !canPushRef,
+              hint: !canPushRef ? (fresh ? freshHint : noRemotesHint) : undefined,
               onSelect: go("push"),
             },
           ]
@@ -212,6 +222,8 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refPushTag"),
               icon: TagIcon,
+              disabled: !canPushRef,
+              hint: !canPushRef ? (fresh ? freshHint : noRemotesHint) : undefined,
               onSelect: go("push"),
             },
           ],

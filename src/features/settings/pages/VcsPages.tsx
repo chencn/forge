@@ -29,17 +29,16 @@ export function VcsCommitPage() {
           <Checkbox
             checked={v.nonModalCommit}
             onChange={(val) => update({ nonModalCommit: val })}
-            label={t("vcs.nonModalCommit") ?? "使用非模态提交接口 (Use non-modal commit interface)"}
+            label={t("vcs.nonModalCommit")}
           />
           <p className="settings-hint" style={{ margin: "-4px 0 0 24px" }}>
-            {t("vcs.nonModalHint") ??
-              "关闭后，提交操作将以弹出独立模态对话框的形式呈现；开启后使用侧边栏提交工具窗口。"}
+            {t("vcs.nonModalHint")}
           </p>
 
           <Checkbox
             checked={v.clearInitialCommitMessage}
             onChange={(val) => update({ clearInitialCommitMessage: val })}
-            label={t("vcs.clearInitialMessage") ?? "提交成功后清空初始提交消息 (Clear initial commit message)"}
+            label={t("vcs.clearInitialMessage")}
           />
         </div>
 
@@ -47,21 +46,21 @@ export function VcsCommitPage() {
 
         {/* 提交信息规范 Commit Message Inspections */}
         <h4 style={{ margin: "0 0 6px 0", fontSize: 13, fontWeight: 600, color: "var(--fg-strong, #dfe1e5)" }}>
-          {t("vcs.messageInspections") ?? "提交消息检查规范 (Commit Message Inspections)"}
+          {t("vcs.messageInspections")}
         </h4>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Checkbox
             checked={v.blankLineAfterSubject}
             onChange={(val) => update({ blankLineAfterSubject: val })}
-            label={t("vcs.blankLineAfterSubject") ?? "首行（主题行）与正文之间保留空行"}
+            label={t("vcs.blankLineAfterSubject")}
           />
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Checkbox
               checked={v.limitSubjectLine}
               onChange={(val) => update({ limitSubjectLine: val })}
-              label={t("vcs.limitSubjectLine") ?? "限制主题行长度:"}
+              label={t("vcs.limitSubjectLine")}
             />
             <input
               type="number"
@@ -71,14 +70,14 @@ export function VcsCommitPage() {
               onChange={(e) => update({ subjectLineLimit: parseInt(e.target.value) || 72 })}
               style={{ width: 70, height: 24, padding: "2px 6px" }}
             />
-            <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)" }}>{t("vcs.characters") ?? "字符"}</span>
+            <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)" }}>{t("vcs.characters")}</span>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Checkbox
               checked={v.limitBodyLine}
               onChange={(val) => update({ limitBodyLine: val })}
-              label={t("vcs.limitBodyLine") ?? "限制正文行长度:"}
+              label={t("vcs.limitBodyLine")}
             />
             <input
               type="number"
@@ -88,7 +87,7 @@ export function VcsCommitPage() {
               onChange={(e) => update({ bodyLineLimit: parseInt(e.target.value) || 72 })}
               style={{ width: 70, height: 24, padding: "2px 6px" }}
             />
-            <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)" }}>{t("vcs.characters") ?? "字符"}</span>
+            <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)" }}>{t("vcs.characters")}</span>
           </div>
 
           <div style={{ marginLeft: 24, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -96,13 +95,13 @@ export function VcsCommitPage() {
               checked={v.showRightMargin}
               disabled={!v.limitSubjectLine && !v.limitBodyLine}
               onChange={(val) => update({ showRightMargin: val })}
-              label={t("vcs.showRightMargin") ?? "在提交文本框中显示右边界参考线 (Show right margin)"}
+              label={t("vcs.showRightMargin")}
             />
             <Checkbox
               checked={v.wrapRightMargin}
               disabled={!v.limitBodyLine}
               onChange={(val) => update({ wrapRightMargin: val })}
-              label={t("vcs.wrapRightMargin") ?? "输入达到右边界时自动换行 (Wrap when typing reaches right margin)"}
+              label={t("vcs.wrapRightMargin")}
             />
           </div>
         </div>
@@ -111,7 +110,7 @@ export function VcsCommitPage() {
 
         {/* 提交前检查 Commit Checks */}
         <h4 style={{ margin: "0 0 6px 0", fontSize: 13, fontWeight: 600, color: "var(--fg-strong, #dfe1e5)" }}>
-          {t("vcs.commitChecksTitle") ?? "提交前检查 (Before Commit Checks)"}
+          {t("vcs.commitChecksTitle")}
         </h4>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 24px" }}>
@@ -119,17 +118,17 @@ export function VcsCommitPage() {
             <Checkbox
               checked={v.checkAnalyzeCode}
               onChange={(val) => update({ checkAnalyzeCode: val })}
-              label={t("git.analyzeCode") ?? "分析代码 (Analyze code)"}
+              label={t("git.analyzeCode")}
             />
             <Checkbox
               checked={v.checkTodo}
               onChange={(val) => update({ checkTodo: val })}
-              label={t("git.checkTodo") ?? "检查 TODO (Check TODO)"}
+              label={t("git.checkTodo")}
             />
             <Checkbox
               checked={v.checkCleanup}
               onChange={(val) => update({ checkCleanup: val })}
-              label={t("git.cleanup") ?? "深度清理代码 (Cleanup)"}
+              label={t("git.cleanup")}
             />
           </div>
 
@@ -137,12 +136,12 @@ export function VcsCommitPage() {
             <Checkbox
               checked={v.checkReformatCode}
               onChange={(val) => update({ checkReformatCode: val })}
-              label={t("git.reformatCode") ?? "重新格式化代码 (Reformat code)"}
+              label={t("git.reformatCode")}
             />
             <Checkbox
               checked={v.checkOptimizeImports}
               onChange={(val) => update({ checkOptimizeImports: val })}
-              label={t("git.optimizeImports") ?? "优化导入依赖 (Optimize imports)"}
+              label={t("git.optimizeImports")}
             />
           </div>
         </div>
@@ -207,12 +206,12 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
         {/* Git 可用性探测：路径输入框已删（后端固定用系统 PATH 里的 git），按钮只做探测。 */}
         <div className="settings-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
           <span className="settings-label" style={{ fontWeight: 600 }}>
-            {t("vcs.gitPath") ?? "Git 可执行文件路径 (Path to Git executable):"}
+            {t("vcs.gitPath")}
           </span>
           <div style={{ display: "flex", gap: 8, width: "100%", maxWidth: 600 }}>
             <Button size="small" onClick={handleTest} disabled={testing}>
               {testing ? <Loader2 size={13} className="is-spinning" style={{ marginRight: 4 }} /> : null}
-              <span>{t("vcs.testButton") ?? "测试 (Test)"}</span>
+              <span>{t("vcs.testButton")}</span>
             </Button>
           </div>
 
@@ -237,31 +236,31 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
 
         {/* Commit 提交警告 */}
         <h4 style={{ margin: "0 0 6px 0", fontSize: 13, fontWeight: 600, color: "var(--fg-strong, #dfe1e5)" }}>
-          {t("vcs.commitWarnings") ?? "提交警告与签名 (Commit Warnings & Sign-off)"}
+          {t("vcs.commitWarnings")}
         </h4>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Checkbox
             checked={v.warnCrlf}
             onChange={(val) => update({ warnCrlf: val })}
-            label={t("vcs.warnCrlf") ?? "提交包含 CRLF 换行符的文件前发出警告"}
+            label={t("vcs.warnCrlf")}
           />
           <Checkbox
             checked={v.warnDetachedHead}
             onChange={(val) => update({ warnDetachedHead: val })}
-            label={t("vcs.warnDetachedHead") ?? "在游离 HEAD (Detached HEAD) 或变基中提交时发出警告"}
+            label={t("vcs.warnDetachedHead")}
           />
           <Checkbox
             checked={v.signOffCommit}
             onChange={(val) => update({ signOffCommit: val })}
-            label={t("git.signOff") ?? "默认签名提交 (添加 Signed-off-by trailer)"}
+            label={t("git.signOff")}
           />
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Checkbox
               checked={v.warnLargeFiles}
               onChange={(val) => update({ warnLargeFiles: val })}
-              label={t("vcs.warnLargeFiles") ?? "提交大于以下大小的文件时发出警告:"}
+              label={t("vcs.warnLargeFiles")}
             />
             <input
               type="number"
@@ -277,7 +276,7 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
           <Checkbox
             checked={v.warnBadFileNames}
             onChange={(val) => update({ warnBadFileNames: val })}
-            label={t("vcs.warnBadFileNames") ?? "提交在其他操作系统上可能导致问题的特殊文件名时发出警告"}
+            label={t("vcs.warnBadFileNames")}
           />
         </div>
 
@@ -285,14 +284,14 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
 
         {/* Push 推送控制 */}
         <h4 style={{ margin: "0 0 6px 0", fontSize: 13, fontWeight: 600, color: "var(--fg-strong, #dfe1e5)" }}>
-          {t("vcs.pushSettings") ?? "推送与受保护分支 (Push & Protected Branches)"}
+          {t("vcs.pushSettings")}
         </h4>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="settings-row">
-            <span className="settings-label">{t("vcs.showPushDialog") ?? "显示 Push 推送确认对话框:"}</span>
+            <span className="settings-label">{t("vcs.showPushDialog")}</span>
             <Select
-              label={t("vcs.showPushDialog") ?? "显示 Push 推送确认对话框"}
+              label={t("vcs.showPushDialog")}
               placeholder="—"
               value={v.showPushDialog}
               options={[
@@ -305,7 +304,7 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
           </div>
 
           <div className="settings-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: 4 }}>
-            <span className="settings-label">{t("vcs.protectedBranches") ?? "受保护分支模式 (Protected branches):"}</span>
+            <span className="settings-label">{t("vcs.protectedBranches")}</span>
             <input
               type="text"
               className="text-input"
@@ -315,8 +314,7 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
               style={{ width: "100%", maxWidth: 500 }}
             />
             <span className="settings-hint">
-              {t("vcs.protectedHint") ??
-                "禁止向受保护分支执行强制推送 (force push)。支持用分号 ; 分隔多个模式，支持 * 和 ? 通配符。"}
+              {t("vcs.protectedHint")}
             </span>
           </div>
         </div>
@@ -348,34 +346,34 @@ export function VcsConfirmationPage() {
     <div className="settings-rows">
       <div className="settings-rows-limit">
         <h4 style={{ margin: "0 0 6px 0", fontSize: 13, fontWeight: 600, color: "var(--fg-strong, #dfe1e5)" }}>
-          {t("vcs.confirmationsTitle") ?? "文件操作确认策略 (File Operations Confirmation)"}
+          {t("vcs.confirmationsTitle")}
         </h4>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Checkbox
             checked={v.showUpdateOptions}
             onChange={(val) => update({ showUpdateOptions: val })}
-            label={t("vcs.showUpdateOptions") ?? "执行项目更新前显示选项确认对话框"}
+            label={t("vcs.showUpdateOptions")}
           />
         </div>
 
         <div style={{ height: 1, background: "var(--border-subtle, rgba(255, 255, 255, 0.08))", margin: "6px 0" }} />
 
         <h4 style={{ margin: "0 0 6px 0", fontSize: 13, fontWeight: 600, color: "var(--fg-strong, #dfe1e5)" }}>
-          {t("vcs.changesTitle") ?? "变更展示与历史上限 (Changes & History Limit)"}
+          {t("vcs.changesTitle")}
         </h4>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Checkbox
             checked={v.highlightDirtyDirectories}
             onChange={(val) => update({ highlightDirtyDirectories: val })}
-            label={t("vcs.highlightDirtyDirs") ?? "在项目目录树中高亮显示包含已修改文件的父目录"}
+            label={t("vcs.highlightDirtyDirs")}
           />
 
           <div className="settings-row">
-            <span className="settings-label">{t("vcs.onPatchCreated") ?? "创建补丁后的行为:"}</span>
+            <span className="settings-label">{t("vcs.onPatchCreated")}</span>
             <Select
-              label={t("vcs.onPatchCreated") ?? "创建补丁后的行为"}
+              label={t("vcs.onPatchCreated")}
               placeholder="—"
               value={v.onPatchCreated}
               options={[
@@ -389,7 +387,7 @@ export function VcsConfirmationPage() {
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span className="settings-label" style={{ minWidth: "auto" }}>
-              {t("vcs.limitHistoryTo") ?? "文件历史记录行数限制 (Limit history rows):"}
+              {t("vcs.limitHistoryTo")}
             </span>
             <input
               type="number"
@@ -398,7 +396,7 @@ export function VcsConfirmationPage() {
               onChange={(e) => update({ limitHistoryRows: parseInt(e.target.value) || 1000 })}
               style={{ width: 80, height: 26, padding: "2px 6px" }}
             />
-            <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)" }}>{t("vcs.rows") ?? "行 (rows)"}</span>
+            <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)" }}>{t("vcs.rows")}</span>
           </div>
         </div>
       </div>
@@ -452,8 +450,7 @@ export function VcsIssueNavigationPage() {
     <div className="settings-rows">
       <div className="settings-rows-limit">
         <p className="settings-hint" style={{ margin: "0 0 8px 0" }}>
-          {t("vcs.issueHint") ??
-            "在 Git 提交信息与日志中匹配工单 ID 正则表达式，自动渲染为超链接。$0 代表完整匹配，$1… 代表括号内的正则捕获组。"}
+          {t("vcs.issueHint")}
         </p>
 
         {/* 规则表格 */}
@@ -481,9 +478,9 @@ export function VcsIssueNavigationPage() {
                   color: "var(--fg-secondary, #9fa2a8)",
                 }}
               >
-                <th style={{ padding: "6px 12px", width: "40%" }}>{t("vcs.issueRegex") ?? "工单 ID 正则 (Issue ID)"}</th>
-                <th style={{ padding: "6px 12px" }}>{t("vcs.issueUrlTemplate") ?? "链接模板 (Issue Link)"}</th>
-                <th style={{ padding: "6px 12px", width: 50 }}>{t("vcs.action") ?? "操作"}</th>
+                <th style={{ padding: "6px 12px", width: "40%" }}>{t("vcs.issueRegex")}</th>
+                <th style={{ padding: "6px 12px" }}>{t("vcs.issueUrlTemplate")}</th>
+                <th style={{ padding: "6px 12px", width: 50 }}>{t("vcs.action")}</th>
               </tr>
             </thead>
             <tbody>
@@ -497,7 +494,7 @@ export function VcsIssueNavigationPage() {
                       color: "var(--fg-muted, #6c707e)",
                     }}
                   >
-                    {t("vcs.noPatterns") ?? "暂无配置任何工单导航规则"}
+                    {t("vcs.noPatterns")}
                   </td>
                 </tr>
               ) : (
@@ -518,7 +515,7 @@ export function VcsIssueNavigationPage() {
                       <button
                         type="button"
                         className="icon-button is-inline"
-                        title={t("dialog.delete") ?? "删除"}
+                        title={t("dialog.delete")}
                         onClick={() => handleRemove(item.id)}
                         style={{ color: "var(--danger, #f57e84)" }}
                       >
@@ -552,14 +549,14 @@ export function VcsIssueNavigationPage() {
           />
           <Button size="small" onClick={handleAdd} disabled={!issueId.trim() || !issueLink.trim()}>
             <Plus size={13} style={{ marginRight: 4 }} />
-            <span>{t("vcs.add") ?? "添加"}</span>
+            <span>{t("vcs.add")}</span>
           </Button>
         </div>
 
         {/* 预设规则一键添加 */}
         <div style={{ marginTop: 16 }}>
           <span style={{ fontSize: 12, color: "var(--fg-secondary, #9fa2a8)", marginRight: 8 }}>
-            {t("vcs.quickPresets") ?? "常用快速预设:"}
+            {t("vcs.quickPresets")}
           </span>
           <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
             <Button

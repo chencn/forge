@@ -249,6 +249,49 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
     block(move || list_directory_impl(path)).await
 }
 
+/// 链延伸上限：防病态的单子目录深链把一次请求拖长；正常工程远达不到。
+const CHAIN_MAX_DEPTH: usize = 24;
+
+/// 一次带回「从 path 往下的单子目录链」所有层：链合并（Compact Directories）的
+/// 树在恢复展开状态时只能拿到链首 key，逐层补加载会形成「渲染 → 缺一层 → 补请求 →
+/// 再渲染」的串行瀑布（每层一次 IPC + 一次 check-ignore 子进程）。对齐 IDEA/openidea
+/// 「数据先于 UI」的思路：请求粒度预取，一次往返把整条链交给树一次构建。
+///
+/// 延伸条件与前端 compact 判定同源（过滤 hidden 与 ignored 后恰好 1 个目录子项）；
+/// 前端开了 showHidden/showExcluded 时可见项只会更多、链更短，这里多拉的层只是
+/// 提前进缓存的普通数据，无害。链中某层读取失败即截断返回已收集的层，首层失败才报错。
+#[tauri::command]
+pub async fn list_directory_chain(path: String) -> Result<Vec<DirectoryListing>, String> {
+    block(move || list_directory_chain_impl(path)).await
+}
+
+fn list_directory_chain_impl(path: String) -> Result<Vec<DirectoryListing>, String> {
+    let mut chain = Vec::with_capacity(4);
+    let mut current = path;
+    for _ in 0..CHAIN_MAX_DEPTH {
+        let listing = match list_directory_impl(current.clone()) {
+            Ok(listing) => listing,
+            Err(error) => {
+                if chain.is_empty() {
+                    return Err(error);
+                }
+                break;
+            }
+        };
+        // 与前端 compact 同条件的唯一子目录才继续延伸。
+        let next = listing
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Directory && !entry.is_hidden && !entry.is_ignored)
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        chain.push(listing);
+        let [next] = next.as_slice() else { break };
+        current = next.clone();
+    }
+    Ok(chain)
+}
+
 fn list_directory_impl(path: String) -> Result<DirectoryListing, String> {
     let dir = PathBuf::from(&path);
     let read = fs::read_dir(&dir).map_err(|e| io_err(&path, e))?;
@@ -267,9 +310,17 @@ fn list_directory_impl(path: String) -> Result<DirectoryListing, String> {
             Err(e) => unreadable.push(e.to_string()),
         }
     }
-
-    let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
-    let ignored_names = crate::git::ignored_names_in_dir(&dir, &names);
+    // 规则匹配在进程内完成：目录规则（`build/`）要按目录身份判断，因此把类型一起传下去。
+    let candidates: Vec<(String, bool)> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.name.clone(),
+                entry.kind == EntryKind::Directory,
+            )
+        })
+        .collect();
+    let ignored_names = crate::git::ignored_names_in_dir(&dir, &candidates);
     for entry in &mut entries {
         entry.is_ignored = ignored_names.contains(&entry.name);
     }
@@ -1074,12 +1125,52 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// 批量 check-ignore 的管道死锁回归：输入与输出都超过管道缓冲（64KB）时，
-    /// git 流式地边读 stdin 边写 stdout——写 stdin 抢在读 stdout 之前的老写法
-    /// 会两头互等，目录永远停在「正在加载」。断言这条路径能在常规测试时限内返回。
+    /// 嵌套 `.gitignore` 与取反规则要按 Git 语义工作：根规则继承到子目录，
+    /// 子目录规则只作用于自己的子树，`!` 能把已匹配的路径重新包含。
     #[test]
-    fn listing_survives_check_ignore_larger_than_pipe_buffer() {
-        let dir = sandbox("listing-check-ignore-deadlock");
+    fn listing_follows_nested_gitignore_and_negation() {
+        let dir = sandbox("listing-nested-ignore");
+        let init = std::process::Command::new("git")
+            .args(["-C", &lossy(&dir), "init", "--quiet"])
+            .status()
+            .expect("测试 Git 忽略标记需要 git 可执行文件");
+        assert!(init.success(), "测试沙盒应能初始化 Git 仓库");
+
+        touch(&dir, ".gitignore", b"*.log\n!keep.log\n");
+        touch(&dir, "drop.log", b"drop");
+        touch(&dir, "keep.log", b"keep");
+        let sub = dir.join("sub");
+        fs::create_dir(&sub).unwrap();
+        touch(&sub, ".gitignore", b"*.tmp\n");
+        touch(&sub, "artifact.tmp", b"tmp");
+        touch(&sub, "note.log", b"log");
+
+        let ignored = |listing: &DirectoryListing, name: &str| {
+            listing
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("目录列表缺少 {name}"))
+                .is_ignored
+        };
+
+        let root_listing = list_directory_impl(lossy(&dir)).unwrap();
+        assert!(ignored(&root_listing, "drop.log"), "根规则应忽略 *.log");
+        assert!(!ignored(&root_listing, "keep.log"), "取反规则应重新包含 keep.log");
+
+        let sub_listing = list_directory_impl(lossy(&sub)).unwrap();
+        assert!(ignored(&sub_listing, "artifact.tmp"), "子目录规则应生效");
+        assert!(ignored(&sub_listing, "note.log"), "根规则应继承到子目录");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 大批量忽略名一次判定：3000 项全部要标记。旧实现把整批名字喂给
+    /// `git check-ignore` 子进程，这条路径既慢又受管道缓冲限制；改成进程内
+    /// 匹配后仍是同一份契约，但不再有子进程。
+    #[test]
+    fn listing_marks_large_ignored_batch() {
+        let dir = sandbox("listing-large-ignore-batch");
         let init = std::process::Command::new("git")
             .args(["-C", &lossy(&dir), "init", "--quiet"])
             .status()

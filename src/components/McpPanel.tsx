@@ -370,9 +370,9 @@ export default function McpPanel() {
           options={(["claude", "codex"] as AiProvider[]).map((item) => ({ value: item, label: AI_NAMES[item] }))}
           onChange={(next) => guard(() => setProvider(next))} />
         <div className="ai-manage-tabs" role="group" aria-label={t("mcp.title")}>
-          <button type="button" className="lsp-action" aria-pressed={tab === "local"}
+          <button type="button" className="panel-action" aria-pressed={tab === "local"}
             onClick={() => tab === "local" || guard(() => setTab("local"))}>{t("mcp.tabLocal")}</button>
-          <button type="button" className="lsp-action" aria-pressed={tab === "market"}
+          <button type="button" className="panel-action" aria-pressed={tab === "market"}
             onClick={() => {
               if (tab === "market") return;
               guard(() => setTab("market"));
@@ -387,7 +387,7 @@ export default function McpPanel() {
               spellCheck={false} maxLength={120}
               onChange={(event) => setMarketQuery(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") guard(() => void runMarketSearch(marketQuery)); }} />
-            <button type="button" className="lsp-action" disabled={!desktop || marketLoading}
+            <button type="button" className="panel-action" disabled={!desktop || marketLoading}
               onClick={() => guard(() => void runMarketSearch(marketQuery))}>
               {marketLoading ? <Loader2 size={13} className="is-spinning" /> : <Search size={13} />}
               {t("mcp.marketGo")}
@@ -395,13 +395,13 @@ export default function McpPanel() {
           </span>
         )}
         <span className="ai-cli-hint ai-manage-path">{tab === "local" ? (list?.path ?? "") : t("mcp.marketSourceHint")}</span>
-        <button type="button" className="lsp-action" disabled={!desktop || busy}
+        <button type="button" className="panel-action" disabled={!desktop || busy}
           title={t("mcp.refresh")} aria-label={t("mcp.refresh")}
           onClick={() => guard(() => tab === "local" ? setReloadToken((value) => value + 1) : void runMarketSearch(marketQuery))}>
           <RefreshCw size={13} />
         </button>
         {tab === "local" ? (
-          <button type="button" className="lsp-action" disabled={!desktop || busy} onClick={() => guard(startNew)}>
+          <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => guard(startNew)}>
             <Plus size={13} />{t("mcp.add")}
           </button>
         ) : null}
@@ -537,7 +537,7 @@ export default function McpPanel() {
               <div className="ai-manage-foot">
                 {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
                 <div className="ai-cli-actions">
-                  <button type="button" className="lsp-action" disabled={!desktop || busy || !marketDetail.installOptions.length}
+                  <button type="button" className="panel-action" disabled={!desktop || busy || !marketDetail.installOptions.length}
                     onClick={() => void prepareInstall()}>
                     <Download size={13} />{t("mcp.marketInstall")}
                   </button>
@@ -579,14 +579,14 @@ export default function McpPanel() {
             <div className="ai-manage-foot">
               {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
               <div className="ai-cli-actions">
-                {!isNew ? <button type="button" className="lsp-action" disabled={!desktop || busy} onClick={() => void copyToOther()}>
+                {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void copyToOther()}>
                   <Copy size={13} />{t("mcp.copy", { name: AI_NAMES[other(provider)] })}
                 </button> : null}
-                {!isNew ? <button type="button" className="lsp-action" disabled={!desktop || busy}
+                {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy}
                   onClick={() => { const item = list?.servers.find((server) => server.id === selectedId); if (item) setPendingDelete(item); }}>
                   <Trash2 size={13} />{t("mcp.delete")}
                 </button> : null}
-                <button type="button" className="lsp-action" disabled={!desktop || busy || !id.trim()} onClick={() => void save()}>
+                <button type="button" className="panel-action" disabled={!desktop || busy || !id.trim()} onClick={() => void save()}>
                   {busy ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                   {busy ? t("ai.saving") : t("mcp.save")}
                 </button>

@@ -1,8 +1,8 @@
 # 后端总览
 
-Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表，一共 210 条；本文件收录其中 109 条，
-AI 助手的其余命令见 [../features/ai-assistants/](../features/ai-assistants/)。系统事件 13 条（`fs://` 两条、
-`term://` 两条、`proc://` 两条、`lsp://` 三条、`app://flush`、`shell-open`，加浏览器那两条 `forge-browser-*`），
+Rust 侧的入口只有一处：`src-tauri/src/lib.rs` 的 `invoke_handler` 注册表，一共 213 条；本文件收录其中 97 条，
+AI 助手的其余命令见 [../features/ai-assistants/](../features/ai-assistants/)。系统事件 10 条（`fs://` 两条、
+`term://` 两条、`proc://` 两条、`app://flush`、`shell-open`，加浏览器那两条 `forge-browser-*`），
 AI 运行时另走 `ai-runtime://events`。命令数只按注册表算，写了 `#[tauri::command]` 但没进表的不算契约。
 命令契约逐条对着代码核过，见 [commands.md](./commands.md)；错误模型见 [error-model.md](./error-model.md)；
 构建与工具链约束见 [toolchain.md](./toolchain.md)；辅助脚本见 [scripts.md](./scripts.md)。
@@ -32,10 +32,6 @@ AI 运行时另走 `ai-runtime://events`。命令数只按注册表算，写了 
 | `src-tauri/src/run/dep_sync.rs` | 1505 | 依赖同步探测：按清单算语义指纹（注释/空行/版本字段不参与）、判断本地装没装、给出安装命令 | 1 |
 | `src-tauri/src/run/store.rs` | 189 | `runConfigs.json` 按工程读写，落盘前只留用户自己建的那几条与三个 id 列表 | 2 |
 | `src-tauri/src/watch.rs` | 505 | notify 递归监听，150ms 静默去抖、1s 封顶，攒下的路径按 256 拆批发 `fs://change`；新增/删除/改名顺手作废 `run/scan.rs` 那份名单 | 2 |
-| `src-tauri/src/lsp.rs` | 752 | 语言服务会话表：stdio 管道、`Content-Length` 分帧读写、stderr 按行转事件、按窗口/server/根三份身份记账、退避与空闲回收、状态快照 | 7 |
-| `src-tauri/src/lsp_config.rs` | 704 | `lsp.json` 读写：12 语言种子表、档位与空字段归一化、旧 `settings.json` 的 `lsp` 段一次性迁移、原子写 | 2 |
-| `src-tauri/src/lsp_probe.rs` | 350 | 安装状态探测（PATH 补齐、`PATHEXT`、`.ps1`、rust-analyzer 的 shim 复核）与一键安装 | 2 |
-| `src-tauri/src/lsp_detect.rs` | 310 | 按 `rootMarkers` 在工程里找语言服务的真根：向上越界即停、向下 2 层、结果缓存 60 秒 | 1 |
 | `src-tauri/src/ai_commit.rs` | 872 | AI 提交说明：`ai-commit.json` 读写、三家协议请求计划、敏感路径拦截、可取消的在飞请求；所有请求共用一个连接池 | 5 |
 | `src-tauri/src/settings.rs` | 511 | `settings.json` 读写，全在系统配置目录：读缺字段按 `Default` 补，写是 RFC 7396 按字段合并（不整份覆盖别的窗口的设置），落盘走 `write_atomic` | 2 |
 | `src-tauri/src/history.rs` | 191 | `history.json` 读写：上次开的项目、最近项目/分支/提交说明；首次从旧 `settings.json` 迁移，坏文件退回空表 | 2 |
@@ -100,26 +96,20 @@ tauri 打开了 `protocol-asset` 特性。`tauri.conf.json` 里 scope 的 `allow
 
 ## 事件
 
-命名一律 `<域>://<动作>`，九条：`fs://change`（载荷只有 `paths`）、`term://output` 与 `term://exit`、
-`proc://output` 与 `proc://exit`、`lsp://message`（`{id, body}`，`body` 是去掉帧头之后的 JSON 文本）、
-`lsp://log`（`{id, text}`，server 写到 stderr 的按行转发）、`lsp://exit`（`{id, code}`）、`app://flush`
+命名一律 `<域>://<动作>`，六条：`fs://change`（载荷只有 `paths`）、`term://output` 与 `term://exit`、
+`proc://output` 与 `proc://exit`、`app://flush`
 （退出前让前端把脏文档写完）。字节类载荷都是 base64 字符串，
-理由是 JSON 会把半个 UTF-8 序列拆坏；`lsp://message` 是唯一带 JSON 文本的那条，因为它整条就是 JSON-RPC。
-事件是广播给所有窗口的，所以语言服务的会话身份里带了窗口名，前端只采自己那一份。git 命令不发事件：前端在写操作后自己 `git.refresh()`，磁盘侧统一靠
+理由是 JSON 会把半个 UTF-8 序列拆坏。git 命令不发事件：前端在写操作后自己 `git.refresh()`，磁盘侧统一靠
 `fs://change` 那一条。`app://flush` 之后前端存完盘调 `app_exit`；`FLUSH_TIMEOUT` 是 5 秒，到点没回音，
 看门狗自己 `app.exit(0)`。
 
 ## 状态与生命周期
 
 托管状态只有两份：`WatchSlot`（装着当前 `RecommendedWatcher`，丢掉句柄就等于停了监听那条线程）和
-`TrayMenu`（换菜单文字用）。终端会话表、进程表和语言服务会话表用 `OnceLock<Mutex<HashMap<..>>>` 的进程级全局。
-终端与进程按 `term-<n>` / `proc-<n>` 这类自增 id 定位会话；语言服务的键由 `<窗口>::<server 键>::<根>` 三段拼接而成，
-同一窗口对同一根第二次启动直接返回原 id，启动过程中另有一张「正在启动」表加条件变量，让并发请求等待结果而不是重复
-spawn。语言服务另有一张失败记录表：启动失败记录一次，下次允许重试的时刻按 `5s*2^n`（上限 300 秒）推后，连续超过 2
-次后不再自动尝试，界面侧的「重试」调用 `lsp_retry` 清除记录。回收不使用定时器：每次 `lsp_start` 之前扫描一遍，空闲超过
-`idleTimeoutMin` 的先回收，总数仍达到 `maxSessions` 时摘除最久未使用的一条。两处 `last_used_ms` 由 `lsp_write` 更新。
+`TrayMenu`（换菜单文字用）。终端会话表和进程表用 `OnceLock<Mutex<HashMap<..>>>` 的进程级全局。
+终端与进程按 `term-<n>` / `proc-<n>` 这类自增 id 定位会话。
 页面重载时上一条 shell 的 `term_close` 往往来不及送达，所以
-新页面一开头先调 `term_reap`，把上一回剩下的会话收掉；语言服务同理调 `lsp_reap`。锁中毒一律 `unwrap_or_else(|p| p.into_inner())`
+新页面一开头先调 `term_reap`，把上一回剩下的会话收掉。锁中毒一律 `unwrap_or_else(|p| p.into_inner())`
 继续走，一侧线程 panic 不把终端和进程表整体卡住。
 
 ## 代码
@@ -136,18 +126,14 @@ spawn。语言服务另有一张失败记录表：启动失败记录一次，下
 | `src-tauri/src/watch.rs` | `SETTLE` 150ms `:19`、`BATCH_CAP` 256 `:22`、`WatchSlot` `:33-36`、`fs_watch_start` `:83-144`、攒批转发线程 `:173` |
 | `src-tauri/src/term.rs` | 会话表 `:23-26`、锁中毒处理 `:29-31`、base64 载荷的理由 `:33-39`、reader 线程发两个事件 `:220-248`、`term_reap` `:293-299` |
 | `src-tauri/src/tray.rs` | `FLUSHING` `:23`、`FLUSH_TIMEOUT` 5 秒 `:26`、`TrayMenu` `:29-32`、托盘建起来并 `manage` `:35-65`、`request_flush` 与看门狗 `:106-119` |
-| `src-tauri/src/settings.rs` | `Settings` 结构与默认值 `:120-164`、`settings_path` `:166-172`、读写命令 `:185-200`（`lsp` 段已搬到 `lsp.json`，旧文件里那一节读到时忽略） |
+| `src-tauri/src/settings.rs` | `Settings` 结构与默认值 `:120-164`、`settings_path` `:166-172`、读写命令 `:185-200`（旧文件里废弃键读到时忽略） |
 | `src-tauri/src/sys.rs` | `write_atomic` 的 tmp+rename `:25-33`、`which` `:51`、windows 侧 `mod win` `:73-139`、非 Windows 返回 `(0, 0)` `:141-146` |
 | `src-tauri/capabilities/default.json` | `windows` `:5`、8 条权限 `:6-15` |
 | `src-tauri/tauri.conf.json` | 窗口 `decorations: false` `:22`、`assetProtocol` `:28-34` |
 | `src-tauri/Cargo.toml` | `crate-type` 与那句注释 `:8-11`、`protocol-asset` 特性 `:18` |
 | `src/lib/fs.ts` | `FsEntry` 等结构逐字段镜像 `:6-54`、`lineEnding` 的传法 `:67`、搜索两个封装 `:226-233`、`errorText` `:236-239` |
-| `src/lib/window.ts` | `setTrayLabels` `:14-16`、`useWindowControls` 与纯浏览器容错 `:29-56`、导出的 `windowLabel` 给语言服务会话身份用 |
-| `src/lib/lsp.ts` | 十二条命令的薄封装，纯 Tauri 壳、不引 monaco |
-| `src/lib/lspClient.ts` | 会话键的三段拼接 `:74-116`、`lspStart` 的传法 `:144`、`initialize` 握手 `:167`、`startServer` `:220`、`reconcileLsp` `:768`、文档同步 `:858`、退出时收会话 `:900` |
-| `src/hooks/useLspConfig.tsx` | 配置的唯一持有处、探测缓存与一份会话轮询：起手读一份，探测回的配置不再写回磁盘 |
-| `src/hooks/useLspSessions.ts` | 会话状态的唯一轮询：3 秒一次，一次请求落定再排下一次，拉失败留住上一轮数据；底部状态条与设置页共用 |
-| `src/main.tsx` | 起手调 `termReap` `:20-21`、`lspReap` `:22-23`、两份配置并读 `:16` |
-| `src/App.tsx` | `open` 来自 plugin-dialog `:3`、`allowAssetDir` 的 effect `:423-425`、`app://flush` 的监听 `:448-454`、reconcile 的挂点 `:296` |
+| `src/lib/window.ts` | `setTrayLabels` `:14-16`、`useWindowControls` 与纯浏览器容错 `:29-56` |
+| `src/main.tsx` | 起手调 `termReap` `:20-21`、两份配置并读 `:16` |
+| `src/App.tsx` | `open` 来自 plugin-dialog `:3`、`allowAssetDir` 的 effect `:423-425`、`app://flush` 的监听 `:448-454` |
 | `src/components/SearchEverywhere.tsx` | 调 `findFiles` `:136`、调 `searchText` `:150` |
 | `src/components/FindPane.tsx` | 不发查询，按 `path` 聚合交过来的命中 `:44-52` |

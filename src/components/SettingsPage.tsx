@@ -1,16 +1,21 @@
-import { useState, useEffect } from "react";
-import { RefreshCw } from "lucide-react";
-import { useI18n } from "../i18n";
-import { Button } from "../ui";
-import { hasUnsavedSettings } from "../hooks/useUnsavedGuard";
-import { useSettings } from "../hooks/useSettings";
-import { useLspConfig } from "../hooks/useLspConfig";
-import type { LspWakeResult as WakeResult } from "../lib/lspTypes";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { RotateCcw } from "lucide-react";
+import PromptDialog from "./PromptDialog";
 import AiActionDialog from "./AiActionDialog";
+import AiCommitSettingsPanel from "./AiCommitSettingsPanel";
+import AiCliSettingsPanel, { AiCliSettingsControls } from "./AiCliSettingsPanel";
+import AiArchivedSessionsPanel from "./AiArchivedSessionsPanel";
+import ModelProvidersPanel from "./ModelProvidersPanel";
+import SkillsPanel from "./SkillsPanel";
+import McpPanel from "./McpPanel";
+import HooksSettingsPanel from "./HooksSettingsPanel";
 import ShortcutSettingsPanel from "./ShortcutSettingsPanel";
-import SettingsLayout from "../features/settings/components/SettingsLayout";
-import { resolvePageId } from "../features/settings/model/legacyAdapter";
-import { isSettingsPageAccessible } from "../features/settings/model/settingsModel";
+import { useSettings } from "../hooks/useSettings";
+import { hasUnsavedSettings } from "../hooks/useUnsavedGuard";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n/lang/zh";
+import { DEFAULT_SETTINGS } from "../lib/settings";
 import {
   AppearanceNotificationsPage,
   AppearanceSystemPage,
@@ -30,39 +35,15 @@ import {
   VcsGitPage,
   VcsIssueNavigationPage,
 } from "../features/settings/pages/VcsPages";
-import {
-  ProjectRootsPage,
-  ProjectSdkPage,
-} from "../features/settings/pages/ProjectPages";
-import {
-  BuildDeploymentPage,
-  BuildRunConfigsPage,
-  BuildToolsPage,
-} from "../features/settings/pages/BuildPages";
-import {
-  LanguageLspPage,
-  LanguageSchemasPage,
-} from "../features/settings/pages/LanguagePages";
-import {
-  ToolAboutPage,
-  ToolAiArchivedSessionsPage,
-  ToolAiCliPage,
-  ToolAiCommitPage,
-  ToolAiHooksPage,
-  ToolAiMcpPage,
-  ToolAiProvidersPage,
-  ToolAiSkillsPage,
-  ToolDiffPage,
-  ToolTerminalPage,
-} from "../features/settings/pages/ToolPages";
+import { ToolAboutPage, ToolTerminalPage } from "../features/settings/pages/ToolPages";
 
-/** 设置窗口左侧的模块枚举，保留向后兼容 */
+/** 设置窗口左侧的模块，一行一个。AI 相关六页只在总开关开启后出现。 */
 export type SettingsModule =
   | "general"
   | "editor"
   | "shortcuts"
   | "terminal"
-  | "lsp"
+  | "git"
   | "aiCommit"
   | "aiCli"
   | "aiArchived"
@@ -72,198 +53,223 @@ export type SettingsModule =
   | "hooks"
   | "about";
 
+const MODULES: SettingsModule[] = [
+  "general",
+  "editor",
+  "shortcuts",
+  "terminal",
+  "git",
+  "aiCommit",
+  "aiCli",
+  "aiArchived",
+  "modelProviders",
+  "skills",
+  "mcp",
+  "hooks",
+  "about",
+];
+
+const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
+  general: "settings.general",
+  editor: "settings.editor",
+  shortcuts: "settings.shortcuts",
+  terminal: "settings.terminal",
+  git: "settings.git",
+  aiCommit: "settings.aiCommit",
+  aiCli: "ai.title",
+  aiArchived: "settings.aiArchived",
+  modelProviders: "settings.modelProviders",
+  skills: "settings.skills",
+  mcp: "settings.mcp",
+  hooks: "settings.hooks",
+  about: "settings.about",
+};
+
+/** 受 AI 总开关门控的模块；智能提交等其余 AI 页不在此列。 */
+const AI_MODULES = new Set<SettingsModule>([
+  "aiCli",
+  "aiArchived",
+  "modelProviders",
+  "skills",
+  "mcp",
+  "hooks",
+]);
+
 interface Props {
-  /** 当前项目根；未打开项目时没有可启动的会话，「启动」按钮禁用。 */
+  /** 当前项目根；「版本控制」页探测 git 与归档会话面板都要用。 */
   workspace: string | null;
-  /** 变更进程之后需要重新执行一次文档与配置的对档。 */
-  onLspKick?: () => void;
-  /** 让指定 server 立即在项目中启动；返回未能启动的原因。 */
-  onLspWake?: (serverId: string) => Promise<WakeResult>;
   /** 初始或外部要求激活的模块。 */
   initialModule?: SettingsModule;
-  /** 关闭设置窗口回调。 */
-  onClose?: () => void;
 }
 
-export default function SettingsPage({
-  workspace,
-  onLspKick,
-  onLspWake,
-  initialModule,
-  onClose,
-}: Props) {
-  const { t } = useI18n();
-  const { settings } = useSettings();
-  const { reprobe, probing } = useLspConfig();
+/** 一个模块内的分节：标题 + 对应页面组件，按约定堆在一屏里滚到底。 */
+interface Section {
+  title: TranslationKey;
+  content: ReactNode;
+}
 
-  const [selectedPageId, setSelectedPageId] = useState<string>(() => {
-    const pageId = resolvePageId(initialModule || "general");
-    return isSettingsPageAccessible(pageId, settings.aiAssistantsEnabled) ? pageId : "appearance.system";
-  });
-  const [pendingPageId, setPendingPageId] = useState<string | null>(null);
+export default function SettingsPage({ workspace, initialModule }: Props) {
+  const { t } = useI18n();
+  const { settings, patch } = useSettings();
+  const [module, setModule] = useState<SettingsModule>(() =>
+    initialModule && (settings.aiAssistantsEnabled || !AI_MODULES.has(initialModule)) ? initialModule : "general",
+  );
+  /** 「重置所有设置」的二次确认框；确认后才把通用项写回默认值。 */
+  const [confirmReset, setConfirmReset] = useState(false);
+  /** AI 各页有未保存草稿时，先记下想跳去的模块，等确认框决定去不去。 */
+  const [pendingModule, setPendingModule] = useState<SettingsModule | null>(null);
+
+  const visibleModules = settings.aiAssistantsEnabled
+    ? MODULES
+    : MODULES.filter((key) => !AI_MODULES.has(key));
+
+  // 面板卸载就会丢掉草稿，所以离开前问一句；目标就是当前页时不用管。
+  const navigate = (next: SettingsModule) => {
+    if (next !== module && hasUnsavedSettings()) setPendingModule(next);
+    else setModule(next);
+  };
 
   useEffect(() => {
     if (initialModule) {
-      const pageId = resolvePageId(initialModule);
-      setSelectedPageId(isSettingsPageAccessible(pageId, settings.aiAssistantsEnabled) ? pageId : "appearance.system");
+      setModule(!settings.aiAssistantsEnabled && AI_MODULES.has(initialModule) ? "general" : initialModule);
     }
   }, [initialModule, settings.aiAssistantsEnabled]);
 
-  // 总开关关闭时若正停在受门控的 AI 页，跳回开关所在的「系统设置」页
   useEffect(() => {
-    if (!isSettingsPageAccessible(selectedPageId, settings.aiAssistantsEnabled)) {
-      setSelectedPageId("appearance.system");
-    }
-  }, [settings.aiAssistantsEnabled, selectedPageId]);
+    // 重置设置或其他窗口关闭总开关时，不能继续停在已经从导航中移除的页面。
+    if (!settings.aiAssistantsEnabled && AI_MODULES.has(module)) setModule("general");
+  }, [module, settings.aiAssistantsEnabled]);
 
-  // 当外部导航切换时，如有未保存草稿弹出拦截确认框
-  const handleSelectPage = (nextId: string) => {
-    if (!isSettingsPageAccessible(nextId, settings.aiAssistantsEnabled)) return;
-    if (nextId !== selectedPageId && hasUnsavedSettings()) {
-      setPendingPageId(nextId);
-    } else {
-      setSelectedPageId(nextId);
-    }
-  };
-
-  /** 根据当前选中的页面 ID 渲染对应的子页面 */
-  const renderContent = () => {
-    switch (selectedPageId) {
-      // 1. 外观与行为
-      case "appearance":
-      case "appearance.theme":
-        return <AppearanceThemePage />;
-      case "appearance.system":
-        return <AppearanceSystemPage />;
-      case "appearance.notifications":
-        return <AppearanceNotificationsPage />;
-
-      // 2. 按键映射
-      case "keymap":
-        return <ShortcutSettingsPanel />;
-
-      // 3. 编辑器
+  const sections = (): Section[] => {
+    switch (module) {
+      case "general":
+        return [
+          { title: "settings.section.theme", content: <AppearanceThemePage /> },
+          { title: "settings.section.system", content: <AppearanceSystemPage /> },
+          { title: "settings.section.notifications", content: <AppearanceNotificationsPage /> },
+        ];
       case "editor":
-      case "editor.general":
-        return <EditorGeneralPage />;
-      case "editor.font":
-        return <EditorFontPage />;
-      case "editor.colorScheme":
-        return <EditorColorSchemePage />;
-      case "editor.codeStyle":
-        return <EditorCodeStylePage />;
-      case "editor.fileTypes":
-        return <EditorFileTypesPage />;
-      case "editor.minimap":
-        return <EditorMinimapPage />;
-
-      // 4. 版本控制
-      case "vcs":
-      case "vcs.commit":
-        return <VcsCommitPage />;
-      case "vcs.git":
-        return <VcsGitPage workspace={workspace} />;
-      case "vcs.confirmation":
-        return <VcsConfirmationPage />;
-      case "vcs.issueNavigation":
-        return <VcsIssueNavigationPage />;
-
-      // 5. 项目结构
-      case "project":
-      case "project.sdk":
-        return <ProjectSdkPage workspace={workspace} />;
-      case "project.roots":
-        return <ProjectRootsPage workspace={workspace} />;
-
-      // 6. 构建、执行、部署
-      case "build":
-      case "build.tools":
-        return <BuildToolsPage />;
-      case "build.runConfigs":
-        return <BuildRunConfigsPage />;
-      case "build.deployment":
-        return <BuildDeploymentPage />;
-
-      // 7. 语言与框架
-      case "languages":
-      case "languages.lsp":
-        return (
-          <LanguageLspPage
-            workspace={workspace}
-            onLspKick={onLspKick}
-            onLspWake={onLspWake}
-          />
-        );
-      case "languages.schemas":
-        return <LanguageSchemasPage />;
-
-      // 8. 工具
-      case "tools":
-      case "tools.terminal":
-        return <ToolTerminalPage />;
-      case "tools.diff":
-        return <ToolDiffPage />;
-      case "tools.ai":
-      case "tools.ai.cli":
-        return <ToolAiCliPage />;
-      case "tools.ai.providers":
-        return <ToolAiProvidersPage />;
-      case "tools.ai.commit":
-        return <ToolAiCommitPage />;
-      case "tools.ai.skills":
-        return <ToolAiSkillsPage />;
-      case "tools.ai.mcp":
-        return <ToolAiMcpPage />;
-      case "tools.ai.hooks":
-        return <ToolAiHooksPage />;
-      case "tools.ai.archived":
-        return <ToolAiArchivedSessionsPage workspace={workspace} />;
-      case "tools.about":
-        return <ToolAboutPage />;
-
+        return [
+          { title: "settings.section.editorGeneral", content: <EditorGeneralPage /> },
+          { title: "settings.section.font", content: <EditorFontPage /> },
+          { title: "settings.section.colorScheme", content: <EditorColorSchemePage /> },
+          { title: "settings.section.codeStyle", content: <EditorCodeStylePage /> },
+          { title: "settings.section.fileTypes", content: <EditorFileTypesPage /> },
+          { title: "settings.section.minimap", content: <EditorMinimapPage /> },
+        ];
+      case "git":
+        return [
+          { title: "settings.section.commit", content: <VcsCommitPage /> },
+          { title: "settings.section.gitExecutable", content: <VcsGitPage workspace={workspace} /> },
+          { title: "settings.section.confirmations", content: <VcsConfirmationPage /> },
+          { title: "settings.section.issueNavigation", content: <VcsIssueNavigationPage /> },
+        ];
       default:
-        return <AppearanceThemePage />;
+        return [];
     }
   };
+
+  const moduleSections = sections();
 
   return (
-    <div style={{ height: "100%", width: "100%", overflow: "hidden" }}>
-      <SettingsLayout
-        activePageId={selectedPageId}
-        onSelectPage={handleSelectPage}
-        onClose={onClose}
-        aiAssistantsEnabled={settings.aiAssistantsEnabled}
-        headerActions={
-          selectedPageId === "languages" || selectedPageId === "languages.lsp" ? (
-            <Button
-              variant="ghost"
-              size="small"
-              icon={<RefreshCw size={14} className={probing ? "is-spinning" : undefined} />}
-              disabled={probing}
-              title={t(probing ? "lsp.probe.probing" : "lsp.probe.refresh")}
-              onClick={() => void reprobe()}
-            >
-              {t(probing ? "lsp.probe.probing" : "lsp.probe.refresh")}
-            </Button>
-          ) : null
-        }
-        onApply={() => {
-          // 当前设置项均已实时自动 patch 并保存至本地 store
-        }}
-      >
-        {renderContent()}
-      </SettingsLayout>
+    <div className="settings-page">
+      <nav className="settings-nav" aria-label={t("settings.title")}>
+        <p className="settings-nav-title">{t("settings.title")}</p>
+        {visibleModules.map((key) => (
+          <button
+            key={key}
+            type="button"
+            className={`settings-nav-item${module === key ? " is-active" : ""}`}
+            onClick={() => navigate(key)}
+          >
+            {t(MODULE_LABEL[key])}
+          </button>
+        ))}
+      </nav>
 
-      {pendingPageId ? (
+      <div className="settings-body">
+        <header className="settings-head">
+          <span className="settings-head-title">{t(MODULE_LABEL[module])}</span>
+          <span className="settings-head-spacer" />
+          {/* AI 页这里只保留 CLI 检测；应用级总开关归到「通用」。 */}
+          {module === "aiCli" ? <AiCliSettingsControls /> : null}
+          {/* 把「恢复默认值」放在通用页标题行右端；点开先过一遍确认框。 */}
+          {module === "general" ? (
+            <button
+              type="button"
+              className="icon-button settings-reset"
+              title={t("settings.resetAll")}
+              aria-label={t("settings.resetAll")}
+              onClick={() => setConfirmReset(true)}
+            >
+              <RotateCcw size={14} />
+            </button>
+          ) : null}
+        </header>
+
+        {moduleSections.length > 0 ? (
+          <div className="settings-stack">
+            {moduleSections.map((section) => (
+              <section key={section.title}>
+                <h3 className="settings-section-title">{t(section.title)}</h3>
+                {section.content}
+              </section>
+            ))}
+          </div>
+        ) : module === "shortcuts" ? (
+          <ShortcutSettingsPanel />
+        ) : module === "terminal" ? (
+          <ToolTerminalPage />
+        ) : module === "aiCommit" ? (
+          <AiCommitSettingsPanel />
+        ) : module === "aiCli" ? (
+          <AiCliSettingsPanel />
+        ) : module === "aiArchived" ? (
+          <AiArchivedSessionsPanel workspace={workspace} />
+        ) : module === "modelProviders" ? (
+          <ModelProvidersPanel />
+        ) : module === "skills" ? (
+          <SkillsPanel />
+        ) : module === "mcp" ? (
+          <McpPanel />
+        ) : module === "hooks" ? (
+          <HooksSettingsPanel />
+        ) : (
+          <ToolAboutPage />
+        )}
+      </div>
+
+      {confirmReset ? (
+        <PromptDialog
+          request={{ kind: "resetSettings", name: "" }}
+          onSubmit={() => {
+            setConfirmReset(false);
+            // 只把通用页这几项恢复默认；编辑器、终端等其它页与最近使用记录都不动。
+            patch({
+              theme: DEFAULT_SETTINGS.theme,
+              language: DEFAULT_SETTINGS.language,
+              workspaceMode: DEFAULT_SETTINGS.workspaceMode,
+              httpResponse: DEFAULT_SETTINGS.httpResponse,
+              closeBehavior: DEFAULT_SETTINGS.closeBehavior,
+              notificationPosition: DEFAULT_SETTINGS.notificationPosition,
+              explorer: { ...DEFAULT_SETTINGS.explorer },
+              shell: { ...DEFAULT_SETTINGS.shell },
+            });
+          }}
+          onCancel={() => setConfirmReset(false)}
+        />
+      ) : null}
+
+      {pendingModule ? (
         <AiActionDialog
           title={t("settings.unsavedTitle")}
           confirm={t("settings.unsavedConfirm")}
           danger
-          onCancel={() => setPendingPageId(null)}
+          onCancel={() => setPendingModule(null)}
           onConfirm={() => {
-            const next = pendingPageId;
-            setPendingPageId(null);
-            setSelectedPageId(next);
+            const next = pendingModule;
+            setPendingModule(null);
+            setModule(next);
           }}
         >
           <p className="dialog-body">{t("settings.unsavedHint")}</p>

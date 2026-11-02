@@ -33,6 +33,7 @@ import {
   type CommitProtocol,
   type ChatTokenLimitField,
 } from "../lib/aiCommit";
+import { describeError } from "../lib/errors";
 
 const SWITCHES = ["yes", "no"] as const;
 type Switch = (typeof SWITCHES)[number];
@@ -43,6 +44,7 @@ export default function AiCommitSettingsPanel() {
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [savedTip, setSavedTip] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // 模型拉取与下拉交互状态
   const [modelsMap, setModelsMap] = useState<Record<string, string[]>>({});
@@ -100,12 +102,21 @@ export default function AiCommitSettingsPanel() {
 
   const persistConfig = (next: AiCommitConfig) => {
     setConfig(next);
+    setSaveError(null);
     void saveAiCommitConfig(next)
       .then(() => {
         setSavedTip(true);
         setTimeout(() => setSavedTip(false), 2000);
       })
-      .catch(() => {});
+      .catch((cause: unknown) => {
+        // 保存失败不能静默：界面亮着新值、磁盘还是旧值，重启后会悄悄弹回。
+        // 回滚取磁盘上的权威值而不是上次内存快照——连续改动时中间态可能已被
+        // 另一次在飞的保存覆盖，previous 未必是用户最后认可的那份。
+        void loadAiCommitConfig()
+          .then((authoritative) => setConfig(authoritative))
+          .catch(() => {});
+        setSaveError(t("aiCommit.saveFailed", { detail: describeError(typeof cause === "string" ? cause : String(cause), t) }));
+      });
   };
 
   const updateConfig = (patch: Partial<AiCommitConfig>) => {
@@ -902,6 +913,19 @@ export default function AiCommitSettingsPanel() {
           >
             <Check size={14} />
             {t("aiCommit.saved")}
+          </span>
+        ) : null}
+        {saveError ? (
+          <span
+            style={{
+              fontSize: 12,
+              color: "var(--color-error, #ef4444)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            {saveError}
           </span>
         ) : null}
       </div>

@@ -180,8 +180,13 @@ export function useRunSessions(configs: RunConfigController) {
   const stop = useCallback((id: ProcSessionId | null) => {
     if (!id) return;
     killedRef.current.add(id);
-    void procKill(id);
-  }, []);
+    // kill 失败不能静默：登记已经把将来的退出文案标成「已停止」，进程却还活着，
+    // 用户点停止毫无反应。失败时回滚登记并把原因写进这块会话的输出区。
+    procKill(id).catch((cause: unknown) => {
+      killedRef.current.delete(id);
+      appendText(id, `\r\n${tRef.current("run.stopFailed", { detail: typeof cause === "string" ? cause : String(cause) })}\r\n`);
+    });
+  }, [appendText]);
 
   /**
    * 跑一条配置。先把占位展开、辅助文件落盘，再交给进程通道。
@@ -196,6 +201,16 @@ export function useRunSessions(configs: RunConfigController) {
       if (!targetRoot) return;
       const key = rootKey(targetRoot);
       setErrorByRoot((prev) => ({ ...prev, [key]: null }));
+      // 先查 unavailable（NO_JDK / JDK_TOO_OLD 等后端判定的硬前置），再查占位工具。
+      // 快捷键、命令面板、Run 窗口重跑都走这条路，不能只让 RunControls 的按钮置灰。
+      const unavailable = config.unavailable;
+      if (unavailable) {
+        setErrorByRoot((prev) => ({
+          ...prev,
+          [key]: describeError(codedError(unavailable.code, unavailable.detail), t),
+        }));
+        return;
+      }
       const missing = missingTool(config.command, configs.tools);
       if (missing) {
         setErrorByRoot((prev) => ({

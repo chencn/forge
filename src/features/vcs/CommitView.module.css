@@ -100,8 +100,7 @@
 }
 
 .label {
-  flex: 0 0 auto;
-  max-width: 70%;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -111,10 +110,6 @@
 .groupLabel {
   color: var(--fg-strong, var(--text-primary));
   font-weight: 600;
-}
-
-.inactiveList {
-  font-weight: 400;
 }
 
 .detail {
@@ -139,24 +134,69 @@
   line-height: 14px;
 }
 
-/* 【保留项】目录聚合状态圆点 */
+/* 【保留项】目录聚合状态圆点：固定 16px 状态槽居中画 6px 圆，跟字母列同宽，
+   图标列才能在文件行/目录行/组行落在同一条竖线上 */
 .changeDot {
   flex: none;
+  width: 16px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.changeDot::before {
+  content: "";
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  margin-left: 6px;
+  background: currentColor;
+  opacity: 0.4;
 }
 
-/* 【保留项】行尾单字母状态标记 */
+/* 【保留项】行尾单字母状态标记：固定 16px 状态槽 */
 .changeMark {
   flex: none;
+  width: 16px;
   font-family: var(--font-mono, monospace);
   font-size: 11px;
   font-weight: 600;
-  margin-left: auto;
-  padding: 0 4px;
+  text-align: center;
   letter-spacing: 0;
+}
+
+/* 状态槽空占位：该行没有字母/圆点（组标题行、无聚合变更的目录）时补齐列宽 */
+.markSlot {
+  flex: none;
+  width: 16px;
+}
+
+/* 就地暂存/取消暂存图标：方向跟组走（未暂存加号、已暂存减号），平时隐形，
+   悬停该行或键盘聚焦时才出现；冲突行保留隐形占位但禁点——带冲突标记进索引等于把冲突藏起来 */
+.stageAction {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-subtle, var(--text-muted));
+  cursor: pointer;
+  opacity: 0;
+}
+
+.nodeRow:hover .stageAction:not(:disabled),
+.nodeRow:focus-within .stageAction:not(:disabled),
+.stageAction:focus-visible {
+  opacity: 1;
+}
+
+.stageAction:not(:disabled):hover {
+  color: var(--fg-strong, var(--text-primary));
 }
 
 /* 树节点行样式（22px 规范高度、交互 hover/selected 高亮） */

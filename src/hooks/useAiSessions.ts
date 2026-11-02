@@ -3,7 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { aiSessionStorageKey, parseAiSessions, reduceAiSessions, sessionSubtree } from "../lib/aiSessions";
 import type { AiSessionAction, AiSessionState } from "../lib/aiSessions";
 import { clearAiSessionStorage } from "../lib/aiDrafts";
-import { ensureAiRuntimeListener, refreshAiSessionActivity } from "../lib/aiRuntime";
+import { ensureAiRuntimeListener, hasLiveAiActivity, refreshAiSessionActivity } from "../lib/aiRuntime";
 
 /** 一个工作区缓存下来的会话状态。 */
 interface Snapshot {
@@ -16,6 +16,9 @@ interface Snapshot {
 const stores = new Map<string, Snapshot>();
 /** 已打开过的工程继续更新任务状态，切换前台不能冻结后台工程的运行灯。 */
 const activityWorkspaces = new Map<string, string>();
+/** 活动探针的两个档位：有人在跑就盯紧，全闲就松到 10 秒。 */
+const ACTIVE_POLL_MS = 3000;
+const IDLE_POLL_MS = 10000;
 const listeners = new Set<() => void>();
 /** 已删除的会话 id（带存储键前缀）。后端历史里仍有记录，靠它挡住重新导入。 */
 const deleted = new Set<string>();
@@ -55,22 +58,29 @@ function subscribe(listener: () => void) {
  * 数据有两个来源：本地存储（用户建过、改过名的会话）和后端持久化记录。
  * 启动时先读本地，再把后端里有、本地没有的补进来——这样换机器或清过缓存后仍能看到历史，
  * 而用户主动删掉的记录靠 `deleted` 集合挡住，不会被重新导入。
- * 会话数据只跟工程走，不受 AI 总开关约束：开关只藏菜单与侧栏入口，
- * 已渲染出来的会话面板必须照常拿到数据（多开窗口共享设置时尤其如此）。
+ *
+ * `live` 是「AI 界面在这一窗口里可见」。为 false 时不向后端要列表、也不轮询活动：
+ * 后端那一步要扫 ~/.claude 与 ~/.codex 的原生历史、还要起一次 `codex app-server`
+ * 取线程表，AI 关着的时候全是白付的启动开销。本地存储照常读，缓存过的列表项仍能渲染。
  */
-export function useAiSessions(root: string | null) {
+export function useAiSessions(root: string | null, live = true) {
   const key = aiSessionStorageKey(root);
   const snapshot = useSyncExternalStore(subscribe, () => get(key));
   useEffect(() => {
-    if (!root || !isTauri()) return;
+    if (!root || !isTauri() || !live) return;
     activityWorkspaces.set(key, root);
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // 不扫描聊天正文；每轮完成后再计时，慢机器也不会积压查询。
     const poll = async () => {
-      await Promise.allSettled([...activityWorkspaces].map(([workspaceKey, workspace]) =>
-        refreshAiSessionActivity(workspace, get(workspaceKey).state.sessions.map((session) => session.id))));
-      if (!cancelled) timer = setTimeout(() => { void poll(); }, 3000);
+      await Promise.allSettled([...activityWorkspaces].map(([workspaceKey, workspace]) => {
+        // 归档会话不再探测：它们不可能由本窗口跑起来，再为几十上百个历史会话每轮读一遍
+        // meta.json 纯属空转。真要看它，取消归档就会重新纳入。
+        const ids = get(workspaceKey).state.sessions.filter((session) => session.archived !== true).map((session) => session.id);
+        return refreshAiSessionActivity(workspace, ids);
+      }));
+      // 有活动时 3 秒一看；全闲时降到 10 秒——外部占用提示晚几秒无所谓，空转的读盘才是常态成本。
+      if (!cancelled) timer = setTimeout(() => { void poll(); }, hasLiveAiActivity() ? ACTIVE_POLL_MS : IDLE_POLL_MS);
     };
     void ensureAiRuntimeListener().catch(() => {});
     void poll();
@@ -79,9 +89,9 @@ export function useAiSessions(root: string | null) {
       // 切换前台工程不等于关闭该工程：保留登记，让新工程的轮询继续覆盖所有已打开过的项目。
       // 后端队列另有进程级监控，因此 WebView 刷新期间也不会冻结 waitingExternal。
     };
-  }, [key, root]);
+  }, [key, root, live]);
   useEffect(() => {
-    if (!root || !isTauri()) return;
+    if (!root || !isTauri() || !live) return;
     let cancelled = false;
     let pending: Promise<void> | null = null;
     let refreshAgain = false;
@@ -126,7 +136,7 @@ export function useAiSessions(root: string | null) {
     // 首次发送改变持久化标题，不能等窗口重新聚焦才刷新标签。
     window.addEventListener("ai-session-metadata", refresh);
     return () => { cancelled = true; refreshers.delete(refresh); window.removeEventListener("focus", refresh); window.removeEventListener("ai-session-metadata", refresh); };
-  }, [key, root]);
+  }, [key, root, live]);
   /** 写回 localStorage 并通知订阅者。写失败只降级成「本次不持久化」，不阻断界面。 */
   const dispatch = useCallback((action: AiSessionAction): boolean => {
     // 删会话带走全部会话级缓存；发送历史和引擎默认项按工程/引擎共享，继续保留。

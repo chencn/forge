@@ -22,5 +22,7 @@ export default defineConfig(({ command }) => ({
   // 测试集中在 tests/，目录与 src 镜像；钉死 include 免得默认 glob 把 src 内散落的也扫进来。
   test: {
     include: ["tests/**/*.test.ts"],
+    // 词典改成按语言懒加载后，测试得先统一预载（见 tests/setup.ts）。
+    setupFiles: ["tests/setup.ts"],
   },
 }));

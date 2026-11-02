@@ -48,7 +48,18 @@ import { isTabWorthyTitle } from "../lib/termTitle";
 import { profileSpec } from "../lib/termProfiles";
 import { writeFile } from "../lib/fs";
 import { useSettings } from "../hooks/useSettings";
+import { describeError } from "../lib/errors";
+import { notificationCenter } from "../lib/notifications";
 import { useI18n } from "../i18n";
+
+/** 页签栏没有终端可以写错误：用户主动动作（导出/新建/拆分/复制）失败时走通知气泡，
+ *  不能像以前那样整段吞掉——点了没反应也不知道为什么。两个组件共用。 */
+const notifyFail = (title: string, detail: string) => notificationCenter.notify({
+  groupId: "system",
+  title,
+  content: detail,
+  level: "error",
+});
 
 /**
  * 终端页签。横排时住在工具窗口标题行里，竖排时是终端左侧一列；两处用同一个 `TermTabList`。
@@ -193,11 +204,15 @@ export function TermTabList({ cwd, orientation, placement }: TermTabListProps) {
       ],
     }).catch(() => null);
     if (!path) return;
-    await writeFile(path, `${text}\n`, "lf", false).catch(() => {});
+    // 写失败要明说：用户以为文件已导出，去磁盘上找不到才来问就太晚了。
+    await writeFile(path, `${text}\n`, "lf", false).catch((cause: unknown) => {
+      notifyFail(t("terminal.exportFailed"), describeError(typeof cause === "string" ? cause : String(cause), t));
+    });
   };
 
   const split = (session: TermSession, direction: SplitDirection) => {
-    void splitTerm(session.id, direction, 80, 24).catch(() => {});
+    void splitTerm(session.id, direction, 80, 24).catch((cause: unknown) =>
+      notifyFail(t("terminal.splitFailed"), describeError(typeof cause === "string" ? cause : String(cause), t)));
   };
 
   const menuFor = (session: TermSession, x: number, y: number) => {
@@ -228,7 +243,8 @@ export function TermTabList({ cwd, orientation, placement }: TermTabListProps) {
       {
         label: t("terminal.duplicate"),
         icon: Copy,
-        onSelect: () => void duplicateTerm(session.id, 80, 24).catch(() => {}),
+        onSelect: () => void duplicateTerm(session.id, 80, 24).catch((cause: unknown) =>
+          notifyFail(t("terminal.duplicateFailed"), describeError(typeof cause === "string" ? cause : String(cause), t))),
       },
       { separator: true },
       { label: t("terminal.clear"), icon: Eraser, onSelect: () => termControl(session.id)?.clear() },
@@ -524,7 +540,8 @@ export function TermTabActions({ cwd }: { cwd: string | null }) {
   const defaultShell = settings.terminal.shell || shells[0]?.id || "";
 
   const newTab = (shell: string) => {
-    void openTerm(cwd, shell, 80, 24).catch(() => {});
+    void openTerm(cwd, shell, 80, 24).catch((cause: unknown) =>
+      notifyFail(t("terminal.newTabFailed"), describeError(typeof cause === "string" ? cause : String(cause), t)));
   };
 
   const openShellMenu = () => {
@@ -539,7 +556,8 @@ export function TermTabActions({ cwd }: { cwd: string | null }) {
           label: profile.name,
           onSelect: () => {
             const { shell, ...extra } = profileSpec(profile, cwd, defaultShell);
-            void openTerm(cwd, shell, 80, 24, extra).catch(() => {});
+            void openTerm(cwd, shell, 80, 24, extra).catch((cause: unknown) =>
+              notifyFail(t("terminal.newTabFailed"), describeError(typeof cause === "string" ? cause : String(cause), t)));
           },
         });
       }
@@ -549,7 +567,8 @@ export function TermTabActions({ cwd }: { cwd: string | null }) {
 
   const splitActive = () => {
     const active = termSessionFor(cwd);
-    if (active) void splitTerm(active.id, "row", 80, 24).catch(() => {});
+    if (active) void splitTerm(active.id, "row", 80, 24).catch((cause: unknown) =>
+      notifyFail(t("terminal.splitFailed"), describeError(typeof cause === "string" ? cause : String(cause), t)));
   };
 
   return (

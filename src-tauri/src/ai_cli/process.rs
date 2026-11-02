@@ -157,7 +157,7 @@ pub enum Truncation { Tail, Full }
 
 pub fn run_with(mut command: Command, timeout: Duration, mode: Truncation) -> Result<Output, String> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    command.env("PATH", crate::lsp_probe::augmented_path());
+    command.env("PATH", crate::sys::augmented_path());
     command.env("DISABLE_AUTOUPDATER", "1").env("CI", "1");
     #[cfg(unix)]
     { use std::os::unix::process::CommandExt; command.process_group(0); }

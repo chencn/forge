@@ -35,6 +35,8 @@ export interface AiCliStatus {
   canUpdate: boolean;
   /** 是否允许卸载：唯一一份安装、来源为 npm、无前置条件错误。 */
   canUninstall: boolean;
+  /** PATH 上找到了几份同名可执行文件。>1 表示安装冲突，不可启动会话。 */
+  launcherCount: number;
   /** 阻止操作的原因（Node 版本不够、多份安装、目录被链接占用等）。 */
   prerequisiteError: string | null;
   /** `--version` 探测失败的原因；与前置条件错误分开，用户要修的东西不同。 */
@@ -263,12 +265,20 @@ export function orderedAiProviders(settings: AiCliSettings): AiProvider[] {
   return [...AI_PROVIDERS].sort((a, b) => settings.agents[a].sortOrder - settings.agents[b].sortOrder);
 }
 
-/** 会话入口：已安装且未被停用。 */
+/**
+ * 会话入口：已安装、未被停用、且安装唯一（launcherCount === 1）。
+ *
+ * 多份安装是真前置失败——后端真正启动对话的门是 `!installed || launcher_count != 1`，
+ * 只判 `installed` 会让冲突态的 CLI 出现在欢迎页可选列表里，第一条消息才失败。
+ */
 export function availableAiProviders(
   statuses: Partial<Record<AiProvider, AiCliStatus>>,
   settings: AiCliSettings,
 ): AiProvider[] {
-  return orderedAiProviders(settings).filter((provider) => statuses[provider]?.installed === true && settings.agents[provider].enabled);
+  return orderedAiProviders(settings).filter((provider) => {
+    const status = statuses[provider];
+    return status?.installed === true && status.launcherCount === 1 && settings.agents[provider].enabled;
+  });
 }
 
 /** `KEY=VALUE` → 映射；空行与 `#` 注释跳过，值里的 `=` 保留。 */

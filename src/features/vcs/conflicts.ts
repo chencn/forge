@@ -3,7 +3,7 @@
  * 移植自 openidea `features/vcs/conflicts.ts` 的标记解析与逐块取舍核心。
  */
 
-export interface ConflictBlock {
+interface ConflictBlock {
   /** `<<<<<<<` 行的起点偏移。 */
   from: number;
   /** `>>>>>>>` 行终止符之后的偏移。 */
@@ -92,18 +92,40 @@ export function resolutionText(
 }
 
 /** 按每块的取舍拼出解决后的全文；`choices` 缺块的条目原样保留标记。 */
-export function resolveWithChoices(
-  text: string,
-  choices: ReadonlyArray<Resolution | undefined>,
-): string {
-  const blocks = parseConflicts(text);
-  let out = "";
+/** 三栏合并编辑器结果栏里的一个未解决冲突（范围存的是 base 段的偏移）。 */
+export interface ResultConflict {
+  from: number;
+  to: number;
+  ours: string;
+  base: string | null;
+  theirs: string;
+}
+
+/**
+ * 三栏合并编辑器的起始结果，同 IDEA：合并文本里每个冲突块先填 base 段——
+ * 界面上不出现标记，块的位置由 ResultConflict 记着，编辑过程中随文档改动平移。
+ * `reversed`：变基/恢复 stash 撞出的冲突 git 把上游写进 stage 2，两侧对调
+ * （对齐 openidea 同名函数），ours/theirs 存的是对调后的「你的/对方的」正文。
+ */
+export function initialResult(
+  merged: string,
+  reversed = false,
+): { text: string; conflicts: ResultConflict[] } {
+  const conflicts: ResultConflict[] = [];
+  let text = "";
   let pos = 0;
-  blocks.forEach((b, i) => {
-    const how = choices[i];
-    if (how) out += text.slice(pos, b.from) + resolutionText(b, how);
-    else out += text.slice(pos, b.to);
+  for (const b of parseConflicts(merged)) {
+    text += merged.slice(pos, b.from);
+    const from = text.length;
+    text += b.base ?? "";
+    conflicts.push({
+      from,
+      to: text.length,
+      ours: reversed ? b.theirs : b.ours,
+      base: b.base,
+      theirs: reversed ? b.ours : b.theirs,
+    });
     pos = b.to;
-  });
-  return out + text.slice(pos);
+  }
+  return { text: text + merged.slice(pos), conflicts };
 }

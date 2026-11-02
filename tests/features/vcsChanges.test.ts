@@ -4,13 +4,12 @@ import { parseIssueTokens } from "../../src/features/vcs/IssueNavigation";
 import {
   aggregateCheck,
   buildChangeTree,
-  checkOf,
+  checkKey,
   groupOf,
+  isChecked,
   isPartiallyStaged,
   isStaged,
   planCommit,
-  toggledCheck,
-  type CheckState,
 } from "../../src/features/vcs/changes";
 
 function change(partial: Partial<GitChange>): GitChange {
@@ -35,9 +34,10 @@ describe("vcs changes 核心逻辑", () => {
       expect(groupOf(change({ untracked: true }))).toBe("unversioned");
     });
 
-    it("普通变更归入 changes 组", () => {
-      expect(groupOf(change({ workStatus: "M" }))).toBe("changes");
-      expect(groupOf(change({ indexStatus: "M" }))).toBe("changes");
+    it("未暂存修改归入 unstaged 组，已暂存归入 staged 组", () => {
+      expect(groupOf(change({ workStatus: "M" }))).toBe("unstaged");
+      expect(groupOf(change({ indexStatus: "M" }))).toBe("staged");
+      expect(groupOf(change({ indexStatus: "M", workStatus: "M" }))).toBe("staged");
     });
   });
 
@@ -65,9 +65,9 @@ describe("vcs changes 核心逻辑", () => {
       ];
 
       const tree = buildChangeTree(changes, true);
-      expect(tree).toHaveLength(2); // Changes 组与 Unversioned Files 组
+      expect(tree).toHaveLength(2); // 未暂存组与 Unversioned Files 组
 
-      const changesGroup = tree.find((n) => n.group === "changes");
+      const changesGroup = tree.find((n) => n.group === "unstaged");
       expect(changesGroup).toBeDefined();
       expect(changesGroup?.children).toBeDefined();
 
@@ -87,31 +87,154 @@ describe("vcs changes 核心逻辑", () => {
       expect(fileB?.mark).toBe("D");
       expect(fileB?.isDeleted).toBe(true);
     });
+
+    it("部分暂存文件在已暂存与未暂存两组各出现一条，各取自己那一侧的字母", () => {
+      const changes: GitChange[] = [
+        change({ path: "src/partial.ts", indexStatus: "M", workStatus: "M" }),
+        change({ path: "src/staged.ts", indexStatus: "A" }),
+      ];
+
+      const tree = buildChangeTree(changes, true);
+      expect(tree).toHaveLength(2); // 已暂存组与未暂存组
+
+      const stagedGroup = tree.find((n) => n.group === "staged");
+      const unstagedGroup = tree.find((n) => n.group === "unstaged");
+      expect(stagedGroup?.files.map((f) => f.path)).toEqual(["src/partial.ts", "src/staged.ts"]);
+      expect(unstagedGroup?.files.map((f) => f.path)).toEqual(["src/partial.ts"]);
+
+      // 各组行尾字母取自己那一侧：暂存侧读索引位，未暂存侧读工作区位
+      const stagedPartial = stagedGroup?.children
+        ?.flatMap((n) => n.children ?? [])
+        .find((n) => n.label === "partial.ts");
+      const unstagedPartial = unstagedGroup?.children
+        ?.flatMap((n) => n.children ?? [])
+        .find((n) => n.label === "partial.ts");
+      expect(stagedPartial?.mark).toBe("M");
+      expect(unstagedPartial?.mark).toBe("M");
+
+      const stagedAdded = stagedGroup?.children
+        ?.flatMap((n) => n.children ?? [])
+        .find((n) => n.label === "staged.ts");
+      expect(stagedAdded?.mark).toBe("A");
+    });
   });
 
   describe("三态勾选与提交计划 planCommit", () => {
     it("初始状态：普通变更默认勾选，未跟踪文件默认不勾选", () => {
       const c1 = change({ path: "mod.ts", workStatus: "M" });
       const c2 = change({ path: "new.ts", untracked: true });
-      const checks = new Map<string, CheckState>();
+      const checks = new Map<string, boolean>();
 
-      expect(checkOf(c1, checks)).toBe("all");
-      expect(checkOf(c2, checks)).toBe("none");
+      expect(isChecked(c1, "worktree", checks)).toBe(true);
+      expect(isChecked(c2, "worktree", checks)).toBe(false);
 
-      const agg = aggregateCheck([c1, c2], checks);
+      const agg = aggregateCheck([c1, c2], "worktree", checks);
       expect(agg.checked).toBe(false);
       expect(agg.indeterminate).toBe(true);
     });
 
-    it("切换勾选与计划计算", () => {
-      const c1 = change({ path: "mod.ts", workStatus: "M" });
-      const checks = new Map<string, CheckState>();
-      checks.set(c1.path, toggledCheck(checkOf(c1, checks))); // 变为 none
+    it("两侧勾选互相独立：勾已暂存那条不动未暂存那条", () => {
+      const partial = change({ path: "p.ts", indexStatus: "M", workStatus: "M" });
+      const checks = new Map<string, boolean>();
 
-      const plan = planCommit([c1], checks);
+      // 默认：已暂存侧勾，部分暂存的工作区侧不勾
+      expect(isChecked(partial, "staged", checks)).toBe(true);
+      expect(isChecked(partial, "worktree", checks)).toBe(false);
+
+      // 只翻转已暂存侧，工作区侧不受影响
+      checks.set(checkKey("staged", partial.path), false);
+      expect(isChecked(partial, "staged", checks)).toBe(false);
+      expect(isChecked(partial, "worktree", checks)).toBe(false);
+      checks.set(checkKey("worktree", partial.path), true);
+      expect(isChecked(partial, "staged", checks)).toBe(false);
+      expect(isChecked(partial, "worktree", checks)).toBe(true);
+    });
+
+    it("复选框三态只表达纳不纳入：同一侧内混合才画横线", () => {
+      const plainFile = change({ path: "q.ts", workStatus: "M" });
+      const untrackedFile = change({ path: "new.ts", untracked: true });
+      const checks = new Map<string, boolean>();
+
+      // 同侧整组都纳入是勾
+      const allOn = aggregateCheck([plainFile, change({ path: "r.ts", workStatus: "M" })], "worktree", checks);
+      expect(allOn.checked).toBe(true);
+      expect(allOn.indeterminate).toBe(false);
+
+      // 组内一部分纳入、一部分（未跟踪）不纳入才是横线
+      const mixed = aggregateCheck([plainFile, untrackedFile], "worktree", checks);
+      expect(mixed.checked).toBe(false);
+      expect(mixed.indeterminate).toBe(true);
+    });
+
+    it("提交计划按两侧勾选独立推导", () => {
+      const partial = change({ path: "p.ts", indexStatus: "M", workStatus: "M" });
+
+      // 默认（s勾 w不勾）：只提交暂存块
+      const onlyStaged = planCommit([partial], new Map());
+      expect(onlyStaged.included.map((f) => f.path)).toEqual(["p.ts"]);
+      expect(onlyStaged.stage).toHaveLength(0);
+      expect(onlyStaged.unstage).toHaveLength(0);
+
+      // s勾 w勾：全部内容提交
+      const allChecks = new Map([[checkKey("worktree", partial.path), true]]);
+      const everything = planCommit([partial], allChecks);
+      expect(everything.included.map((f) => f.path)).toEqual(["p.ts"]);
+      expect(everything.stage).toEqual(["p.ts"]);
+      expect(everything.unstage).toHaveLength(0);
+
+      // s不勾 w不勾：整个放弃并 unstage
+      const noneChecks = new Map([[checkKey("staged", partial.path), false]]);
+      const dropped = planCommit([partial], noneChecks);
+      expect(dropped.included).toHaveLength(0);
+      expect(dropped.unstage).toEqual(["p.ts"]);
+
+      // s不勾 w勾：只提交工作区改动
+      const workOnlyChecks = new Map([
+        [checkKey("staged", partial.path), false],
+        [checkKey("worktree", partial.path), true],
+      ]);
+      const workOnly = planCommit([partial], workOnlyChecks);
+      expect(workOnly.included.map((f) => f.path)).toEqual(["p.ts"]);
+      expect(workOnly.stage).toEqual(["p.ts"]);
+      expect(workOnly.unstage).toEqual(["p.ts"]);
+    });
+
+    it("纯工作区变更勾选后先暂存再提交，取消勾选不动索引", () => {
+      const unstaged = change({ path: "mod.ts", workStatus: "M" });
+
+      const on = planCommit([unstaged], new Map());
+      expect(on.included.map((f) => f.path)).toEqual(["mod.ts"]);
+      expect(on.stage).toEqual(["mod.ts"]);
+      expect(on.unstage).toHaveLength(0);
+
+      const off = new Map([[checkKey("worktree", unstaged.path), false]]);
+      const skip = planCommit([unstaged], off);
+      expect(skip.included).toHaveLength(0);
+      expect(skip.stage).toHaveLength(0);
+      expect(skip.unstage).toHaveLength(0);
+    });
+
+    it("冲突文件不进提交计划：porcelain 的 UU 两边都有字母，不能对它跑 unstage", () => {
+      const conflicted = change({ path: "c.ts", indexStatus: "U", workStatus: "U", conflicted: true });
+      const plan = planCommit([conflicted], new Map());
       expect(plan.included).toHaveLength(0);
       expect(plan.stage).toHaveLength(0);
       expect(plan.unstage).toHaveLength(0);
+    });
+
+    it("已暂存文件取消勾选会 unstage，未跟踪文件勾选即 add", () => {
+      const stagedFile = change({ path: "s.ts", indexStatus: "M" });
+      const untracked = change({ path: "new.ts", untracked: true });
+
+      // 未跟踪默认不勾，显式勾上才纳入
+      const checks = new Map([
+        [checkKey("staged", stagedFile.path), false],
+        [checkKey("worktree", untracked.path), true],
+      ]);
+      const plan = planCommit([stagedFile, untracked], checks);
+      expect(plan.included.map((f) => f.path)).toEqual(["new.ts"]);
+      expect(plan.stage).toEqual(["new.ts"]);
+      expect(plan.unstage).toEqual(["s.ts"]);
     });
   });
 

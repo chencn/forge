@@ -2,7 +2,7 @@
  * 通知系统核心数据结构、响应式总线与本地持久化。
  *
  * 1:1 参照 IntelliJ IDEA 通知中心设计：
- * - 每个功能模块归属独立的 NotificationGroup（如 Git, Maven, Build, LSP, AI, System）；
+ * - 每个功能模块归属独立的 NotificationGroup（如 Git, Maven, Build, AI, System）；
  * - 支持 Action 操作按钮（如查看日志、重试、解决冲突）；
  * - 区分气泡形态（None / Balloon / Sticky）与是否记入工具窗口历史；
  * - 每个项目独立持久化保留最近 7 天通知历史，过期自动清理；
@@ -17,7 +17,6 @@ export type BuiltinNotificationGroup =
   | "git"
   | "maven"
   | "build"
-  | "lsp"
   | "ai"
   | "dependencies"
   | "terminal"

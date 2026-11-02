@@ -11,10 +11,8 @@ detail 为空、或 parts 为空时只发代码本身，不带尾分隔符，所
 
 会失败的命令签名一律是 `Result<T, String>`：错误就是那个 `String`，Tauri 把它 reject 成前端的一个 `Error`
 样对象，前端用 `errorText()` 取 `.message`。14 条不带 `Result`，因为它们没有可失败的分支：`git_probe`
-（探不到就报 `available:false`）、`shell_probe`（扫不到就不列）、`settings_load` 与 `lsp_config_load`（读坏了
-退默认值 / 退种子）、`sys_memory`（取不到给 0）、`fs_watch_stop`、`term_reap`、`app_exit`、`lsp_reap`、
-`lsp_session_statuses`（表空就给空表）、`lsp_failed`、`lsp_retry`（id 不在就当没事）、`lsp_probe`（探不到只是
-`installed:false`）、`lsp_resolve_root`（没命中给 null）。
+（探不到就报 `available:false`）、`shell_probe`（扫不到就不列）、`settings_load`（读坏了退默认值）、
+`sys_memory`（取不到给 0）、`fs_watch_stop`、`term_reap`、`app_exit`。
 Rust 侧不定义错误枚举类型、不做 `impl Error`，代码是散在调用点的字符串字面量，加一条错误就是加一个码串
 加一条词典。
 
@@ -60,7 +58,7 @@ stdout（例如 `nothing to commit, working tree clean`），所以后端 `fail(
 
 | 代码 | 发出位置 | 段 | 文案键 |
 | --- | --- | --- | --- |
-| `IO` | `fs/mod.rs:10` 那个 `io_err` 的全部调用点，另有 `settings.rs:195`、`lsp_config.rs:487`、`sys.rs:28`、`:31`（`write_atomic` 的写临时名两步） | 路径、系统原因 | `error.io` |
+| `IO` | `fs/mod.rs:10` 那个 `io_err` 的全部调用点，另有 `settings.rs:195`、`sys.rs:28`、`:31`（`write_atomic` 的写临时名两步） | 路径、系统原因 | `error.io` |
 | `PATH_GONE` | `fs/mod.rs:140` | 路径 | `error.pathGone` |
 | `IS_DIR` | `fs/mod.rs:198`、`:360` | 路径 | `error.isDir` |
 | `TOO_LARGE` | `fs/mod.rs:202` | 实际字节数、上限（`8388608`） | `error.tooLarge` |
@@ -97,17 +95,8 @@ stdout（例如 `nothing to commit, working tree clean`），所以后端 `fail(
 | `NO_JDK` | `run/detect.rs:587` | `java` | `error.noJdk` |
 | `JDK_TOO_OLD` | `run/detect.rs:592` | `java -version` 里的大版本号 | `error.jdkTooOld` |
 | `TOO_MANY_SOURCES` | `run/detect.rs:660` | 那个源文件路径 | `error.tooManySources` |
-| `CONFIG_DIR` | `settings.rs:170`、`lsp_config.rs:458`、`run/store.rs:58` | 原因 | `error.configDir` |
+| `CONFIG_DIR` | `settings.rs:170`、`run/store.rs:58` | 原因 | `error.configDir` |
 | `BAD_JSON` | `run/detect.rs:399` | 文件路径、原因 | `error.badJson` |
-| `LSP_NOT_FOUND` | `lsp.rs:347` | 配置里的程序名 | `error.lspNotFound` |
-| `LSP_SPAWN` | `lsp.rs:367` | 解析出的完整路径、系统原因 | `error.lspSpawn` |
-| `LSP_GONE` | `lsp.rs:493` | 会话 id（词典那行不读这个段） | `error.lspGone` |
-| `LSP_IO` | `lsp.rs:370-372`、`:499` | 管道名或系统原因 | `error.lspIo` |
-| `LSP_START_BACKOFF` | `lsp.rs:232` | 还能等的毫秒数、上次失败原因 | `error.lspBackoff` |
-| `LSP_START_LIMIT` | `lsp.rs:238` | 连续失败次数、上次失败原因 | `error.lspStartLimit` |
-| `LSP_NO_SERVER` | `lsp_probe.rs:266`、`:270` | 配置里没有的那个键（空名时不带段） | `error.lspNoServer` |
-| `LSP_NO_INSTALL` | `lsp_probe.rs:274` | 键 | `error.lspNoInstall` |
-| `LSP_INSTALL_SPAWN` | `lsp_probe.rs:234` | 壳程序名、系统原因 | `error.lspInstallSpawn` |
 | `BROWSER_DISABLED` | `browser/mod.rs:674`、`:693`、`:734`、`:849` | 无（detail 只给日志与模型看） | `error.browserDisabled` |
 | `BROWSER_SESSION` | `browser/mod.rs:696` | 无 | `error.browserSession` |
 | `BROWSER_ZOOM` | `browser/mod.rs:943` | 无 | `error.browserZoom` |
@@ -160,7 +149,7 @@ AI 那侧不查词典：`forge_browser` 的请求经管道回来，`browser/mod.
 | 文件 | 内容 |
 | --- | --- |
 | `src-tauri/src/error.rs` | 模块注释里那条理由 `:1-4`、`SEP` `:7`、`err` 空 detail 只发代码 `:10-16`、`err_parts` `:19-24` |
-| `src/lib/errors.ts` | `SEP` `:4`、`codedError` `:12`、`humanBytes` `:19`、`CODES` 表 `:33-141`、`GIT` 那一行 `:58-61`、run 那四条从 `:82` 起、LSP 九条 `:95-106`、浏览器那批 `:116-140`、`describeError` 的三步与退回原文 `:144` |
+| `src/lib/errors.ts` | `SEP` `:4`、`codedError` `:12`、`humanBytes` `:19`、`CODES` 表 `:33-141`、`GIT` 那一行 `:58-61`、run 那四条从 `:82` 起、浏览器那批 `:116-140`、`describeError` 的三步与退回原文 `:144` |
 | `src-tauri/src/browser/mod.rs` | `dispatch()` 取码那一步（`CODE:` 与 `CODE\u0001` 两种形状都认）`:417`、把 `SEP` 换成 `": "` 再交给模型 `:423`、八条命令与 `panel_tab` 的早退 `:672-994` |
 | `src-tauri/src/browser/annotation.html` | 浮层自带那份「码 → 三种语言」表 `:41`、`error()` 的翻译与不认码时的 passthrough 紧随其后 |
 | `src/components/BrowserPanel.tsx` | 五处 `describeError(errorText(cause), t)`（`:124`、`:126`、`:156`、`:180`、`:241`）、`details.picker.error` 那格也翻过 `:338` |
@@ -168,9 +157,6 @@ AI 那侧不查词典：`forge_browser` 的请求经管道回来，`browser/mod.
 | `src-tauri/src/fs/mod.rs` | `io_err` `:9-11`、`EDITOR_CEILING` 与 `TOO_LARGE` 的字节数 `:30`、`:200-205`、BINARY / NOT_UTF8 那层分流 `:211-219` |
 | `src-tauri/src/fs/search.rs` | `NOT_DIR` 两处 `:203-205`、`:545-547`、`BAD_REGEX` `:351-364` |
 | `src-tauri/src/git/mod.rs` | `fail()` 先 stderr 后 stdout `:168-178`、`GIT_SPAWN` `:152-166`、`BAD_MODE` `:1125-1130`、`BAD_SIDE` `:1155-1159` |
-| `src-tauri/src/lsp.rs` | `backoff_error` 的两条码 `:226-244`、`LSP_NOT_FOUND` `:347`、`LSP_SPAWN` `:367`、三路管道取不到的 `LSP_IO` `:370-372`、`lsp_write` 的 `LSP_GONE` 与写失败 `:491-500` |
-| `src-tauri/src/lsp_probe.rs` | `LSP_INSTALL_SPAWN` `:228-230`、`lsp_install` 的两条码 `:259-272` |
-| `src-tauri/src/lsp_config.rs` | `config_dir` 的 `CONFIG_DIR` `:455-460`、`save_in` 的 `IO` `:485-491`、`load_in` 读坏退种子不发错误 `:463-483` |
 | `src/lib/git.ts` | `ResetMode` `:362`、`side` 的字面量联合 `:375` |
 | `src/App.tsx` | `reportError` `:255-281`、`NO_DIFF` 那段判定 `:888-923`、`BINARY` 的告示 `:1172-1191`、状态条那一格与计数 `:2854-2904` |
 | `src/hooks/useDocuments.ts` | 打开前就发 `BINARY` `:151-159` |

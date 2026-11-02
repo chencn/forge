@@ -3,27 +3,10 @@ import { EditorState } from "@codemirror/state";
 import { defaultKeymap } from "@codemirror/commands";
 import { EditorView, keymap } from "@codemirror/view";
 import { base as KEY_CODES } from "w3c-keyname";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { forgeKeymap, keymapBindings } from "../../src/lib/cm/keymap";
 import type { KeymapScheme } from "../../src/lib/settings";
 import { stubTextLayout } from "../helpers/cmLayout";
-
-/**
- * `cm/lsp` 那一头拉着 `lspClient`，而后者在模块顶层就要取 Tauri 的窗口对象。
- * 这里只验键位表，不需要真起语言服务。
- */
-vi.mock("../../src/lib/cm/lsp", () => ({
-  findUsages: () => false,
-  formatDocument: () => false,
-  gotoDefinition: () => false,
-  gotoDeclaration: () => false,
-  gotoImplementation: () => false,
-  gotoTypeDefinition: () => false,
-  renameSymbol: () => false,
-  showCodeActions: () => false,
-  showDocumentation: () => false,
-  showSignatureHelp: () => false,
-}));
 
 /**
  * 键位方案的两件事：

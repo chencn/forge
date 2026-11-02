@@ -94,18 +94,6 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   TERM_LONG_INPUT_ENCODING: (_p, t) => t("error.termLongInputEncoding"),
   CONFIG_DIR: (p, t) => t("error.configDir", { detail: p[0] ?? "" }),
   BAD_JSON: (p, t) => t("error.badJson", { path: p[0] ?? "", detail: p[1] ?? "" }),
-  LSP_NOT_FOUND: (p, t) => t("error.lspNotFound", { program: p[0] ?? "" }),
-  LSP_SPAWN: (p, t) => t("error.lspSpawn", { program: p[0] ?? "", detail: p[1] ?? "" }),
-  LSP_GONE: (_p, t) => t("error.lspGone"),
-  LSP_IO: (p, t) => t("error.lspIo", { detail: p[0] ?? "" }),
-  LSP_START_BACKOFF: (p, t) =>
-    t("error.lspBackoff", { ms: p[0] ?? "", detail: p[1] ?? "" }),
-  LSP_START_LIMIT: (p, t) =>
-    t("error.lspStartLimit", { count: p[0] ?? "", detail: p[1] ?? "" }),
-  LSP_NO_SERVER: (p, t) => t("error.lspNoServer", { server: p[0] ?? "" }),
-  LSP_NO_INSTALL: (p, t) => t("error.lspNoInstall", { server: p[0] ?? "" }),
-  LSP_INSTALL_SPAWN: (p, t) =>
-    t("error.lspInstallSpawn", { program: p[0] ?? "", detail: p[1] ?? "" }),
   HTTP_URL: (p, t) => t("error.httpUrl", { url: p[0] ?? "" }),
   HTTP_NETWORK: (p, t) => t("error.httpNetwork", { detail: p[0] ?? "" }),
   HTTP_TIMEOUT: (p, t) => t("error.httpTimeout", { detail: p[0] ?? "" }),

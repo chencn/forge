@@ -30,10 +30,6 @@ xterm 跟着终端与运行那两片 chunk，marked 与 DOMPurify 跟着 `Markdo
 后缀直接 import，不走 CDN，因为桌面应用离线也要有补全和高亮。路径写成 `monaco-editor/editor/editor.worker.js`，
 是因为 0.57 的 `exports` 映射把 `./esm/vs/*` 挂在包根下。`vite.config.ts` 因此不用加 monaco 插件。
 
-语义有两个来源，同一个语言只能留一个。内置语义只在 `builtin` 档开着；`off` 与 `lsp` 两档都被 `configureBuiltin`
-关掉（`off` 是只剩高亮，`lsp` 是改由那个独立进程答补全、hover、跳定义，诊断以 `setModelMarkers` 写成另一份
-marker）。让位规则、三态档位与进程那一套见 [../lsp-language-servers/](../lsp-language-servers/)。
-
 语言靠两张表认：51 条扩展名加 4 条文件名特例（`Dockerfile`、`Makefile`、`.gitignore`→ini、`.env`→ini）。
 `languageForPath` 先按文件名查、再取最后一个点之后的扩展名，没点或查不到一律 `plaintext`，不嗅探内容。几张不显然的映射：
 `tsx|mts|cts`→typescript、`vue|svelte`→html（借 HTML 的语言服务，而不是落回没有高亮）、`ps1`→powershell。

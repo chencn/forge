@@ -1,6 +1,6 @@
 # forge 移植缺陷清单（对照 openidea）
 
-> 来源：2026-10-31 五领域深度对比审查（LSP/跳转、编辑器、UI 主题、workbench/项目树、Git/VCS）。
+> 来源：2026-10-31 五领域深度对比审查（编辑器、UI 主题、workbench/项目树、Git/VCS）。
 > 每条缺陷均已回到源码核实行号；Git 的补丁缺陷由 `git apply --stat` 本机实测复现。
 > 修复纪律：**一条缺陷一条 task，逐条修复，修完在本文件对应条目下登记状态与变更摘要。**
 > 状态取值：`待修` / `修复中` / `已修` / `已复核`。
@@ -41,115 +41,6 @@
 - 位置：`src/App.tsx:3115/3120 openCommitFile`、`src/components/GitLogPane.tsx:483`、`src-tauri/src/git/mod.rs:2257-2285 git_commit_file_impl`
 - 问题：只用新路径、丢弃 `file.oldPath`，父侧 `"<rev>^:<newpath>"` 取不到内容 → 空串，整份显示为新增。
 - 修法：对齐 openidea `diffInput.ts:157`，父侧基线用 `oldPath`；后端 `git_commit_file` 接纳 oldPath。
-
----
-
-## P1 — LSP / 代码跳转
-
-### D-06 诊断按文件单值覆盖，多 server 互相顶掉 ｜ 状态：已修
-- 位置：`src/lib/lspClient.ts:898-913 rememberDiagnostics`
-- 问题：缓存是 `path → diagnostics[]` 单值 Map；tsserver+eslint 双 server 时后写者整体覆盖先写者。
-- 修法：改 `path → Map<serverId, items>` 取并集，对齐 openidea `editor/lsp/diagnostics.ts:32-62`。
-
-### D-07 LSP 请求不等文档同步 ｜ 状态：已修
-- 位置：`src/App.tsx:414`（`LSP_SYNC_GAP_MS=250`）+ `src/lib/lspClient.ts:135`（`CHANGE_DEBOUNCE_MS=150`）+ `src/lib/cm/lsp.ts` 全部请求路径
-- 问题：无 `whenAllSynced`（forge grep 零命中），击键后约 400ms 内 hover/补全/跳转/保存前格式化基于旧文本。
-- 修法：在请求入口等待该文档 pending didChange 冲刷，对齐 openidea `editor/lsp/lsp.ts:26-37`。
-
-### D-08 完全无 `completionItem/resolve` 链路 ｜ 状态：已修
-- 位置：`src/lib/cm/lsp.ts:117-179`；`src/lib/lspClient.ts:393-425`（initialize 未声明 `resolveSupport`）
-- 问题：clangd/gopls/jdtls 的 detail/文档/自动 import 永远为空；未处理 `completionList.itemDefaults`，`insertTextFormat` 丢失会让 snippet 项被当纯文本插入。
-- 修法：声明 `resolveSupport`，选中时发 `completionItem/resolve`，处理 `itemDefaults`。对齐 openidea `completion.ts:80-150`、`convert.rs:230-279`。
-
-### D-09 签名帮助丢弃 offset 型参数 label ｜ 状态：已修
-- 位置：`src/lib/cm/lsp.ts:281-288`
-- 问题：`typeof label === "string" ? [label] : []`，gopls/clangd/basedpyright 用 `[start,end]` 偏移标注参数时参数高亮全丢。
-- 修法：处理 `ParameterLabel::LabelOffsets`（同 label 多参数搜索），并声明 `labelOffsetSupport: true`。对齐 openidea `convert.rs:793-828`。
-
-### D-10 LocationLink 跳转落点用错 range ｜ 状态：已修
-- 位置：`src/lib/cm/lsp.ts:923`
-- 问题：`location.range ?? location.targetRange ?? location.targetSelectionRange`，LocationLink 时优先取整个符号范围，多行范围时跳错位置。
-- 修法：按规范优先取 `targetSelectionRange`，并在 initialize 声明 `linkSupport`。对齐 openidea `convert.rs:673-676`。
-
-### D-11 `workspace/configuration` 一律回 `[{}]` ｜ 状态：已修
-- 位置：`src/lib/lspClient.ts:679-683`
-- 问题：依赖运行时配置的 server（vtsls/basedpyright/eslint）拿到空配置，功能静默降级。
-- 修法：按 section 从 `initializationOptions`/`settings` 逐级查找，对齐 openidea `handler.rs:127-151`。
-
-### D-12 `wakeLsp` 手动启动的会话被 reconcile 秒收 ｜ 状态：已修
-- 位置：`src/lib/lspClient.ts:1252`（注释）vs `:1000-1045 reconcileOnce`（`:1020-1027` 回收不在 groups 的会话）
-- 问题：手动"启动"后若无该语言打开文件，下次击键触发的 reconcile 即 `lspStop`，与注释意图直接冲突。
-- 修法：给手动会话加"TTL 内不回收"标记，或让 reconcile 忽略手动会话。
-
-### D-13 状态栏弹层 JSX 裸 `//` 注释被当文本渲染 ｜ 状态：已修
-- 位置：`src/components/LspStatusBar.tsx:350`
-- 问题：JSX children 里的 `// …` 是字面文本节点，每个服务行下都会渲染出这句话。
-- 修法：删除该行，或用 `{/* … */}`。
-
-### D-14 `formatDocument` 不查能力且硬编码格式化参数 ｜ 状态：已修（rangeFormatting 入口见登记遗留）
-- 位置：`src/lib/cm/lsp.ts:1110-1134`
-- 问题：不检查 `documentFormattingProvider`，硬编码 `insertSpaces: true`，Tab 缩进工程格式化参数错误；无 rangeFormatting 入口。
-- 修法：查能力；`insertSpaces/tabSize` 按缩进配置推导，对齐 openidea `format.ts:72-77`。
-
-### D-15 `snippetSupport:false` 与前端 snippet 支持矛盾 ｜ 状态：已修
-- 位置：`src/lib/lspClient.ts:398` vs `src/lib/cm/lsp.ts:159` + `src/lib/cm/snippet.ts`
-- 问题：声明不支持 snippet，守约 server 不给 snippet，前端 snippet 路径成死代码。
-- 修法：initialize 声明 `snippetSupport: true`，对齐 openidea `caps.rs:66`。
-
-### D-16 工程根查找方向与 openidea 相反 ｜ 状态：已修
-- 位置：`src-tauri/src/lsp_detect.rs:93-106 search_up`（取最内层）+ `:109-139 search_down`（自创向下扫）
-- 问题：嵌套工程两侧起在不同根的会话；openidea 取最外层（`launch.rs:227-236`）。
-- 修法：统一选根口径（已对齐 openidea 取最外层：嵌套工作区只起一条会话，与向下扫的「取最浅」口径一致）。
-
-### D-17 停止会话不发 `shutdown`/`exit` ｜ 状态：已修
-- 位置：`src-tauri/src/lsp.rs:645-667 stop_one`
-- 问题：直接 `taskkill /F /T`，server 无法清理临时文件/索引缓存。
-- 修法：先发 `shutdown` 请求 + `exit` 通知，超时才 kill。对齐 openidea `lib.rs:2023-2053`。
-
-### D-18 缺 workspace 级通知 ｜ 状态：已修（didChangeWatchedFiles 按参照只声明不发）
-- 位置：`src/lib/lspClient.ts:425`（`workspaceFolders:false`）
-- 问题：不发 `didChangeConfiguration`/`didChangeWatchedFiles`，外部增删文件 server 不知情。
-- 修法：补发这两条通知，对齐 openidea `lib.rs:456-462`。
-
-### D-19 补全触发字符硬编码，不读 server 声明 ｜ 状态：已修
-- 位置：`src/lib/cm/lsp.ts:86`
-- 问题：常触发多余补全，接不到 server 特有触发字符（`-`、`>`）。
-- 修法：读 `completionProvider.triggerCharacters`，对齐 openidea `caps.rs:267-273`。
-
-### D-20 请求超时一刀切 60s ｜ 状态：已修
-- 位置：`src/lib/lspClient.ts:133`
-- 问题：半死 server 会让 hover 挂满 60s。
-- 修法：按方法分档（补全 5s / 默认 10s / references·rename 30s），对齐 openidea `lib.rs:56-66`。
-
-### D-21 重命名缺 `prepareRename` 与预览确认 ｜ 状态：已修（prepareRename/占位符；多文件预览待议）
-- 位置：`src/lib/cm/lsp.ts:690-757`
-- 问题：直接发 rename，用本地词边界取初值，无 prepareRename、无占位符、无多文件预览。
-- 修法：先 `prepareRename` 取有效范围/占位符，结果走多文件预览确认。对齐 openidea `lib.rs:1297-1318` + `rename.ts`。
-
-### D-22 跳转行为多处差异 ｜ 状态：已修（重试/自跳转/顺序/声明计入；无语法降级）
-- 位置：`src/lib/cm/lsp.ts:936-939`（多结果按路径字母序重排）、`:854`（`includeDeclaration` 硬编码 true）；`:852 openLocations`
-- 问题：无空结果重试、声明上跳转不转用法、无 dumb mode 语法降级、结果重排丢 server 顺序。
-- 修法：对齐 openidea `navigation.ts:145-151`（空结果重试）、`:197-200`（isSelfTarget→用法）、保持 server 顺序。
-
-### D-23 能力表"幽灵能力" ｜ 状态：已修
-- 位置：`src/lib/lspClient.ts:138-171 DYNAMIC_CAPABILITY_BY_METHOD`
-- 问题：注册了 pull diagnostics/folding/selectionRange 等，但编辑器从不调用，声明 pull 能力可能让 server 不主动 publish。
-- 修法：删除未实际使用的能力声明，或补齐对应消费。
-
-### D-24 诊断细节：空 range 不扩宽 / `version` 被忽略 ｜ 状态：已修
-- 位置：`src/lib/cm/lsp.ts:781-786`、`src/lib/lspClient.ts:667-673`
-- 问题：空 range 波浪线不可见；过期版本诊断照样映射。
-- 修法：空 range 扩一个字符；声明并按 source 管理 `versionSupport`。对齐 openidea `diagnostics.ts:126-131`。
-
-### D-25 语义 tokens legend 处理 ｜ 状态：已修
-- 位置：`src/lib/cm/lspSemanticTokens.ts:26-33`
-- 问题：把 `tokenModifiers` 当必需字段；`.filter(非空)` 后不重排位索引，legend 含空串会 modifier 位错位。
-- 修法：按原始 legend 解码，不重排。
-
-### D-26 状态栏缺 LSP "Busy（索引中）" 态 ｜ 状态：已修
-- 位置：`src/components/LspStatusBar.tsx`（五态映射）
-- 问题：用户无法区分"空闲"与"正在索引"。
-- 修法：补 Busy 态，对齐 openidea ServerStatus 七态。
 
 ---
 
@@ -348,10 +239,6 @@
 - 位置：`src/themes/tokens.css:92/98-105/284`、`src/ui/Tabs.module.css:10/16`
 - 修法：逐项对齐 IDEA 取值。
 
-### D-64 LSP 未安装判定依赖中文字面量 ｜ 状态：已修
-- 位置：`src/components/LspStatusBar.tsx:126`（`includes("没找到")`）
-- 修法：后端返回结构化错误码，前端按码判定。
-
 ### D-65 右键菜单模板标签 / InlineEditor aria-label 硬编码英文 ｜ 状态：已修
 - 位置：`src/features/project-tree/contextMenu.ts:153-182/375/446`、`src/features/project-tree/InlineEditor.tsx:102-106`
 - 修法：走 `t()`。
@@ -360,12 +247,43 @@
 
 ## 修复进度登记
 
+### D-29 替换增强已实现（2026-11-01，待议项落地第四批）
+- FindPane（`src/components/FindPane.tsx` 重构）三项增强，对齐 IDEA 的 Replace in Files：
+  - **Preserve Case**：替换栏新增「Aa」开关；替换时按每个命中原文的形态现算替换词（全大写命中 → 全大写替换、首字母大写命中 → 首字母大写替换、其余原样），`replaceInLine` 改为接受 `(matched) => string` 闭包。
+  - **替换预览**：点「全部替换」先重扫全量命中，弹受影响文件清单（文件 + 命中数，可按文件勾选排除），确认才落盘——取代原来的 window.confirm 一把梭。
+  - **逐处 Replace/Skip**：结果列表每条命中行悬停出「替换 / 跳过」小按钮；替换后该行标「已替换」并从后续批量替换排除，跳过行划掉显示、可「恢复」；统计数字实时排除这两类行。
+- 样式 `.find-replace-case/.find-row-actions/.find-preview-*`（styles.css）；三语补 7 键。
+- 验证：check:ts、vite build、tests/features/searchScope.test.ts 8/8 通过。
+
+
+### D-55 Shelf 搁置区已实现（2026-11-01，待议项落地第三批）
+- 对齐点：openidea `crates/ide-vcs/src/shelf.rs` + `patch.rs` 的 working_patch/apply、IDEA 的 Shelve Changes / Unshelve。
+- 后端（`src-tauri/src/git/mod.rs`）：`run_git_raw_env`（临时注入 GIT_INDEX_FILE）+ TempIndex（.git/forge-index-*，Drop 自清理）；working_patch 用临时索引对 HEAD 出 --binary 补丁与 name-status 清单；shelf_apply_patch 先普通应用、失败退 --3way（冲突文件留标记与未合并索引位）；shelf_revert_files 恢复 HEAD/删除新增文件。五条命令 git_shelve/git_shelves/git_unshelve/git_shelf_delete/git_shelf_rename，存储 `<repo>/.git/forge-shelf/<id>/`（shelved.patch + shelf.json，跟仓库走）。lib.rs 注册完毕。
+- 前端：lib/git.ts 五个封装 + GitShelfFile/GitShelvedChangeList/GitShelfApplyOutcome 类型；useGitState shelves state（与 stash 同一 effect 拉取）+ shelve/unshelve/shelfDelete/shelfRename + stashBranch；GitPanel 工具栏搁置按钮（archive 图标）+ 名字对话框（右键菜单存选中文件、工具栏存全部变更）+ 搁置区列表（取消搁置/重命名/删除，unshelve 冲突时内联提示）。
+- 修正旧右键菜单 handleShelveFiles 的错误占位实现（原来是拷 diff 到剪贴板 + stage，并非搁置）——接为真正的 shelve 流程。
+- stash_branch UI 接线补上：stash 行新增「弹出为分支」（window.prompt 输分支名，git stash branch）。
+- 验证：cargo check -p forge、check:ts、vite build 通过。
+
+
+### D-56 已修（2026-11-01，待议项落地第二批）
+- **D-56 提交图折叠/长边选项**：graph.ts 原样移植 openidea 的 collapseLinear（线性链折叠，只留分叉/合并/端点/带引用提交，虚线边连接）与 hideLongEdges（旁路 lane 笔直穿过 ≥30 行的中段不画，两端 stub 带箭头）；GraphSegment/Lane/GraphCommit 补 dashed/arrow 字段，computeGraph 消费每父 dashed 标记；GraphCell 画 strokeDasharray 虚线与箭头三角。BranchSettings（前端 + Rust serde）加 collapseLinear（默认关）/showLongEdges（默认开），GitLogPane 齿轮菜单两个开关，graphRows 按选项走「折叠 → 铺 lane → 藏长边」链。HEAD 不藏的 keep 集合靠 refs 装饰兜住（forge 无现成 head 哈希，refs 非空即带引用）。单测补 2 条（6/6）。
+- 验证：check:ts、cargo check -p forge、tests/features/graph.test.ts 通过。
+
+
+### 待议项落地第一批（2026-11-01，用户批示「全部同意」后逐项实现）
+- **死键清理（D-33 遗留）**：对比三语定义与全仓引用，删 15 个未用键（vcs.mappingsHint / directory / vcsRoot / noMappings / addDirectoryPlaceholder / autoUpdateOnReject / updateStrategy / updateMethod / incomingCheck / combineStashShelf / onCreate / onDelete / confirmDropCommits / removeAppliedShelf / shelfHint）×三语。动态拼接已核实不存在。
+- **R-9 caret 焦点判定**：cmEditor 的 updateListener 汇报加 `update.view.hasFocus` 前置——分屏同文档时非焦点视图的编程性事务（外部重载）不再覆盖状态栏。attach 的手动汇报不加判定（首开文档不持焦点，加了会让行列永远空白）。
+- **R-7 块合并与缓冲联动**：核查发现保存路径已有 mtime 乐观锁兜底（脏缓冲保存会拦 CONFLICT_ON_WRITE 走三向合并，不会静默覆盖已解决文件），缺口只在知情权。修法：BlockMergeDialog 应用后，若该文件在编辑器中打开且有未保存修改，发 warn 通知说明磁盘已解决、保存将走合并（git.blockMergeDirtyTitle/Body 三语）。
+- **状态栏行列点击跳转 + 每文件缩进菜单（D-53 待议部分）**：CaretStatus 渲染为按钮，点击经 `editorFor(path)` 拿活动视图调 `@codemirror/search` 的 `gotoLine`（与 Ctrl+G 同一入口）；新增 `src/lib/indentOverride.ts`（每文件缩进覆盖表，localStorage 持久化 + 版本号外部存储），EditorDoc 加 `useTabs`，CodeEditor 装配三档优先（覆盖 > .editorconfig > 全局）并订阅覆盖变化重装配；IndentStatus 点开菜单：2/4/8 空格、制表符、恢复默认（勾选当前档）。
+- 验证：check:ts、vite build 通过。
+
+
 ### D-32 已修（2026-11-01，用户同意后执行）
 - `src/components/ExplorerTree.tsx`（617 行）为被 ProjectTree 体系取代的死代码，全仓无引用（src/、tests/ 均 0 命中），删除。check:ts / vite build 复验通过。
 
 
 ### 收尾 review（2026-11-01，独立子代理复核全部修复）
-复核方式：纯读代码 + 抽查运行相关单测（graph/conflicts/errors/fileIcons 共 23 条全过）。结论：登记文档声称与代码实际行为一致，graph lane 状态机、conflicts 解析（CRLF/未闭合标记）、错误码对齐（BINARY/LSP_NOT_FOUND）、stash 全链路、--skip 分页逻辑、D-33 删字段无残留消费点、D-61/63/65 度量与 i18n 均确认无误；清理（observer/keydown/订阅）无泄漏。发现 9 条问题，当场修复 7 条：
+复核方式：纯读代码 + 抽查运行相关单测（graph/conflicts/errors/fileIcons 共 23 条全过）。结论：登记文档声称与代码实际行为一致，graph lane 状态机、conflicts 解析（CRLF/未闭合标记）、错误码对齐（BINARY）、stash 全链路、--skip 分页逻辑、D-33 删字段无残留消费点、D-61/63/65 度量与 i18n 均确认无误；清理（observer/keydown/订阅）无泄漏。发现 9 条问题，当场修复 7 条：
 
 ### R-1…R-8 已修（2026-11-01）
 - **R-1（高）GitLogPane 观察器时机**：IntersectionObserver effect 依赖 `[]`，组件在 probe 就绪前挂载时 ref 为 null，observer 永不建立、分页整场失效。修法：effect 依赖加 `root`。
@@ -402,31 +320,8 @@ epo\...` 带 Prefix 组件，`strip_prefix("/repo")` 匹配失败，断言从未
 
 - **D-05 已修（2026-10-31）**：后端 `git_commit_file` 增 `old_path`（父侧取 `"<rev>^:<oldPath>"`）、`git_diff_text` 增 `old_path`（补第二路径，让 `git diff` 双侧重命名检测）（`src-tauri/src/git/mod.rs`）；前端 `src/lib/git.ts` 两函数增可选 `oldPath`，`src/App.tsx` 的 `openCommitFile` 与 `src/components/GitLogPane.tsx` 预览均传 `oldPath`。验证：`check:ts`、`cargo check -p forge` 通过；临时仓库实测——旧路径取到父版本内容（新路径报 `exists on disk, but not in 'HEAD^'`），双路径 diff 显示 `rename from/to` + `similarity index 60%`（旧单路径显示 `new file`）。
 
-- **D-06 已修（2026-11-01）**：`src/lib/lspClient.ts` 诊断缓存由 `Map<path, Diagnostic[]>` 改为 `Map<path, Map<serverId, Diagnostic[]>>`；`diagnosticsFor` 合并多 server 结果；新增 `clearDiagnosticsForKey`；`rememberDiagnostics`/`applyDiagnostics` 增 `serverId`（取自 `handleMessage` 的 server）；`forgetDiagnostics` 与文档关闭路径按会话删除。验证：`check:ts` 通过。
-- **D-07 已修（2026-11-01）**：`src/lib/lspClient.ts` 抽出 `sendDidChange`，新增 `flushPendingChange`，`scheduleChange` 复用；`lspRequest`/`lspRawRequest`/`willSave` 发请求前先冲刷该文档排定中的 didChange（对齐 IDEA `whenAllSynced`）。验证：`check:ts` 通过。
-
-- **D-08 已修（2026-11-01）**：`src/lib/lspClient.ts` initialize 的 `completionItem` 增 `resolveSupport`（documentation/detail/additionalTextEdits）与 `labelDetailsSupport`；`src/lib/cm/lsp.ts` 新增 `RawCompletionItem`/`ResolvedCompletion`/`completionDoc`，`lspCompletions` 对候选做 `completionItem/resolve`（`info` 懒加载触发、`apply` 取回 resolve 后的 additionalTextEdits 与 snippet 信息），按 label 缓存。验证：`check:ts` 通过。
-- **D-09 已修（2026-11-01）**：`src/lib/cm/lsp.ts` 的 `signatureHelpViewOf` 支持 `parameter.label` 为 `[start,end]` 偏移（按签名行切片）；`src/lib/lspClient.ts` initialize 声明 `signatureHelp.parameterInformation.labelOffsetSupport`。验证：`check:ts` 通过。
-- **D-10 已修（2026-11-01）**：`src/lib/cm/lsp.ts` 的 `locationItems` 落点改为优先 `targetSelectionRange`（LocationLink 的符号名范围），`src/lib/lspClient.ts` 声明 `definition.linkSupport`。验证：`check:ts` 通过。
-- **D-11 已修（2026-11-01）**：`src/lib/lspClient.ts` 的 `workspace/configuration` 不再一律回 `[{}]`，新增 `configurationForSection` 按 section 从会话 `initializationOptions` 逐级取值。验证：`check:ts` 通过。
-- **D-12 已修（2026-11-01）**：`src/lib/lspClient.ts` 新增 `manualSessions`（WeakSet），`wakeLsp` 启动后标记，`reconcileOnce` 回收时跳过手动会话，与注释意图一致。验证：`check:ts` 通过。
-
-- **D-13 已修（2026-11-01）**：`src/components/LspStatusBar.tsx:351` 的裸 `// …` 改为 `{/* … */}`，不再作为文本节点渲染。验证：`check:ts` 通过。
-- **D-14 已修（2026-11-01）**：`src/lib/cm/lsp.ts` 的 `formatDocument` 增 `capabilityEnabled(path, language, "documentFormattingProvider")` 前置检查（未声明即不发请求，避免 MethodNotFound 与空「格式化」撤销点）；新增 `formattingOptionsOf(state)`——`tabSize` 取 `state.tabSize`，`insertSpaces` 由 `indentUnit` facet 是否含制表符推导，替换原硬编码 `insertSpaces: true`；`:1202` 的 `languageIdOf(state)` 复用已取出的 `language`。验证：`check:ts` 通过。**遗留**：选区格式化（`textDocument/rangeFormatting`）入口仍未接线，当前只有整篇格式化。
 - **D-28 已修（2026-11-01）**：`src/features/project-tree/contextMenu.ts` 三处——`t("git.diff")`→`git.viewDiff`（已有「查看差异」）、`t("dialog.rollback")`→`git.rollback`（`dialog.rollback` 三份字典都没有，正确的键是 `git.rollback`），并给 `git.branches` 补三语文案（zh「分支」/en "Branches"/zh-TW「分支」，与同菜单 `git.push`「推送」/`git.pull`「拉取」同风格）。验证：脚本全仓扫描 `t(`/`translate(` 的字面量 key 对三份字典——**剩余缺失 0**，三语键集合完全一致；`check:ts` 通过；`tests/features/contextMenu.test.ts` 通过。
 - **D-27 已修（2026-11-01）**：右键菜单的 `onMove` 不再调 `confirmRename`（`src/App.tsx:3868`），改为打开「移动」对话框——收目标目录、名字不变（IDEA 的 Move 语义），默认落在当前工程根；提交后走**与 F6 / 拖拽落点同一个** `moveTreeEntries`（其入参放宽为 `readonly { path: string; name: string }[]`，`FsEntry` 结构兼容），逐条移动、重名等错误逐条提示、收尾统一清选中 + 刷树 + 同步 Git。为此 `src/components/PromptDialog.tsx` 增 `kind: "move"`（`INPUT_KINDS` + `PATH_KINDS`，字段是「路径」而不是「名字」），`PendingDialog`（`src/App.tsx:283`）增 `moveFrom` 承载一批条目，三语补 `dialog.move` / `dialog.moveTargetPlaceholder`。验证：`check:ts` 通过；`tests/features/contextMenu.test.ts`、`tests/features/projectTree.test.ts`、`tests/components/PromptDialog.test.ts` 共 22/22 通过。
-- **D-26 已修（2026-11-01）**：① `src/lib/lspClient.ts` 新增忙闲追踪——`handleMessage` 接 `$/progress`（后端本来就把每条帧转到前端），`begin` 记下令牌、`end` 划掉、`report` 不改忙闲（没有 `begin` 的孤立 report 会让行永远显示忙），令牌清空即不忙；对外给 `busySessionIds()` + `subscribeBusy()`（快照只在真的变化时换新对象，避免 React 每帧重渲），会话回收三处（握手失败、退出事件、reconcile 回收）调 `forgetBusy` 清账；`src/lib/lspTypes.ts`/`src/lib/lspManager.ts` 接线。② `src/components/LspStatusBar.tsx` 的 `RowStatus` 增 `busy`（`item.status === "running" && busySessionIds.has(item.id)`），文案 `lsp.status.busy`（zh「索引中」/en "Indexing"/zh-TW「索引中」），`toneOf` 与 `serversSummary` 把 busy 与 starting 同档（都在动）。验证：`check:ts` 通过；`tests/components/LspStatusBar.test.ts` 新增「索引中」行断言（mock 补 `busySessionIds`/`subscribeBusy`）——5/5 通过；相关 3 个测试文件 26/26 通过。
-- **D-25 已修（2026-11-01）**：`src/lib/cm/lspSemanticTokens.ts` 的 `legendOf` 不再 `filter` 掉空串/非法项——`tokenModifiers` 的下标就是位序号，滤一项后面每位都错位；改为 `map` 归一（非字符串→空串占位）保留原始下标，并导出以便直接断言；`semanticTokensOf` 取 modifier 时改为 `modifier.length > 0 && (modifierBits & (1 << bit))`（空名字只丢名字、丢不掉这一位）。验证：`check:ts` 通过；`tests/lib/cmLspDecorations.test.ts` 新增两条断言（legend 原样保留含空串与非字符串占位；位图 6 在 legend 第二位为空串时仍命中第三位 `deprecated`，类型名为空的下标整条丢弃）——15/15 通过。
-- **D-24 已修（2026-11-01）**：① `src/lib/cm/lsp.ts` 的 `toDiagnostics` 对空 range 扩宽——行内往右扩一个字符，已在行尾则起点往左退一格（对齐参照 `diagnostics.ts:126-131`），这类诊断（多余分号之类）原来画不出波浪线；② `src/lib/lspClient.ts` 客户端能力 `publishDiagnostics: { versionSupport: true }`，并让 `applyDiagnostics` 真正认这个字段：批次 `version` 小于该文档最后发出的版本就整批丢弃（旧行列映射到新正文会标错位置，服务随后会再推一批）；`handleMessage` 把 `version` 解析后传下去，函数签名由 `serverId: string` 改为 `server: RunningServer` 以便查 `server.opened` 里的版本。验证：`check:ts` 通过；`npx vitest run tests/lib/cmLsp.test.ts tests/lib/cmPhrases.test.ts` 11/11 通过。
-- **D-23 已修（2026-11-01）**：按「有消费点才留」逐键核对 `DYNAMIC_CAPABILITY_BY_METHOD`（全仓裸标识符扫描）后：① 删除 8 条无任何消费点的映射——`documentRangeFormattingProvider`、`documentOnTypeFormattingProvider`、`documentHighlightProvider`、`foldingRangeProvider`、`selectionRangeProvider`、`linkedEditingRangeProvider`、`colorProvider`、`diagnosticProvider`（服务动态注册这些方法时不再往能力表塞假字段），并在表头写明这条规则；② 给两处「真发请求但没查能力」的地方补上消费点——`src/lib/cm/lsp.ts` 的 `hoverTip` 前置 `capabilityEnabled(..., "hoverProvider")`（鼠标每划过一次都发一条请求，没能力就白问）、`src/lib/lspClient.ts` 的 `executeLspCommand` 前置 `server.capabilities.executeCommandProvider`。验证：`check:ts` 通过。**说明**：`executeCommandProvider`、`hoverProvider` 因此保留在表内（现在有消费点了）。
-- **D-22 已修（2026-11-01）**：`src/lib/cm/lsp.ts` 四处对齐参照 `navigation.ts`——① `locationItems` 不再按路径字母序重排（该列表同时承载符号树与调用层级，重排把层级顺序打乱），只去重、保留服务顺序；② 新增 `editedAt`（`trackEdits` ViewPlugin 记录最后改正文时刻）+ `retryEmpty`：结果为空且 1.5 秒内改过正文时最多再问 3 次、间隔 250ms（对齐 `gotoAfterEdits`，治 kotlin-language-server 打字后约 300ms 回空）；③ 光标正停在声明上且定义只命中一处时转去「查找用法」（对齐 `isSelfTarget` → `find.showUsages`），不再原地跳；④ `references` 的 `context.includeDeclaration` 由硬编码 `true` 改为 `false`（对齐参照用法面板的调用点）。验证：`check:ts` 通过；`npx vitest run tests/lib/cmLocations.test.ts tests/lib/cmChooser.test.ts` 9/9 通过。**未做（末尾问用户）**：服务挂掉时的语法树降级（dumb mode）——forge 没有本地符号索引（参照 `syntaxFallback.ts` 是一整套语法树改名/跳转兜底），属新增能力而非接线。
-- **D-21 已修（2026-11-01，部分）**：`src/lib/cm/lsp.ts` 新增 `prepareRename(path, language, position)`——仅当 `renameProvider.prepareProvider` 为真才发 `textDocument/prepareRename`（否则吃 MethodNotFound），兼容三种应答形态（null = 不可改名、旧规范 Range、新规范 `{range, placeholder}`、`defaultBehavior:false` = 不可改名）；`renameSymbol` 弹出输入框后异步补问一次：不可改名就当场写 `editor.lsp.renameUnavailable` 并禁用输入框，能改名则用服务给的 `placeholder` 覆盖本地词边界猜出的初值（`foo_bar` 这类位置本地只能取到半截）；该问失败不挡改名。`src/lib/lspTypes.ts:111` 的 `renameProvider` 由 `unknown` 收成 `{ prepareProvider?: boolean } | boolean`；三语补 `editor.lsp.renameUnavailable`。验证：`check:ts` 通过（i18n 三语键齐全，缺一个即类型报错）。**待议（末尾问用户）**：多文件预览确认未做——forge 没有 WorkspaceEdit 预览组件（`PromptDialog` 是固定 kind 的命名框），且改动已由 `registerWorkspaceUndo` 整体可撤销；参照的预览是独立弹层 + `summarizeWorkspaceEdit`/`needsPreview`，属新增 UI 特性。
-- **D-20 已修（2026-11-01）**：`src/lib/lspClient.ts` 的 `REQUEST_TIMEOUT_MS = 60_000` 换成 `FAST / DEFAULT / LONG = 5 / 10 / 30 秒` 三档 + `timeoutOf(method)`：`textDocument/completion`、`textDocument/inlineCompletion` 走 5 秒（打字路径晚到无意义），`textDocument/references`、`textDocument/rename`、`workspace/executeCommand`、`workspace/willRenameFiles` 走 30 秒（要遍历全工程），其余 10 秒；超时报文里的秒数改为取本档值。档位与 openidea `lib.rs:56-58` 及其各调用点一致（其 formatting / hover / signatureHelp / 跳转均用 10 秒档）。验证：`check:ts` 通过。
-- **D-19 已修（2026-11-01）**：`src/lib/cm/lsp.ts` 删掉写死的 `TRIGGER_CHARACTERS`，换成 `triggerCharactersOf(path, language)`——从 `lspManager.capabilities(...).completionProvider.triggerCharacters` 读取；触发判定按声明表建正则（服务没声明就不认触发字符，靠打字本身触发），并顺势补上请求里的 `context`：命中声明字符时 `{triggerKind: 2, triggerCharacter}`，其余（含 Ctrl+Space）`{triggerKind: 1}`——原来整条 `context` 都不发，服务端无从区分「打字触发」与「显式呼出」（对齐 openidea `lib.rs:840-845`）。`src/lib/lspTypes.ts:102` 把 `completionProvider` 由 `unknown` 收成 `{ triggerCharacters?: string[] } | boolean`。验证：`check:ts` 通过、全仓无 `TRIGGER_CHARACTERS` 残留引用。
-- **D-18 已修（2026-11-01）**：`src/lib/lspClient.ts` 客户端能力 `workspace` 由 `{ workspaceFolders: false }` 补成 `workspaceFolders/configuration/didChangeConfiguration/didChangeWatchedFiles` 四条（对齐 openidea `caps.rs:38-40`）——补 `configuration: true` 是实打实的修复，否则守约服务端根本不会发 `workspace/configuration`，D-11 那条应答路径形同虚设；`initialize` 收到响应、发出 `initialized` 之后，若 `entry.initOptions` 非空再补一条 `workspace/didChangeConfiguration { settings: initOptions }`（对齐 openidea `lib.rs:456-462` 的 `all_settings`，其载荷正是「initializationOptions 打底」）。验证：`check:ts` 通过。**遗留（不修，附理由）**：`workspace/didChangeWatchedFiles` 只声明不发送——参照实现同样只有声明、全仓无发送点；且 forge 的 `fs://change` 批次载荷只有路径、不带事件类型（`src-tauri/src/watch.rs:33` 的 `FsChange`），要真发得先给攒批管道加种类，属于超出参照范围的新增行为，留待末尾与用户确认。
-- **D-17 已修（2026-11-01）**：`src-tauri/src/lsp.rs` 抽出 `write_frame`（`lsp_write` 复用，分帧口径只有一处），新增 `goodbye(session, grace)`——按协议写 `shutdown` 请求（id `forge/shutdown`）+ `exit` 通知，再以 `try_wait` 每 20ms 轮询等进程退出（`STOP_GRACE = 1500ms`）；`stop_one` 改为「先道别 → 已退出就只在句柄上收尸，超时才 `kill_tree`（原 `taskkill /F /T` 整树逻辑原样搬进 `kill_tree`）」。先摘会话再道别，`read_loop` 的退出记账不会误判成崩溃。验证：`cargo check -p forge` 通过；前端 `lspClient` 对未知 id（字符串 id 走 `Number.isFinite` 判假）本就忽略，不会把 shutdown 响应当异常。**待人工复验**：grace 窗口内 rust-analyzer 是否确实落盘索引缓存（需真实服务）。**取舍**：`lsp_reap`（页面重载/退出）也走同一 grace，最坏多等 1.5 秒（并行、非串行），换来不丢索引。
-- **D-16 已修（2026-11-01）**：`src-tauri/src/lsp_detect.rs` 的 `search_up` 由「命中即返回（最内层）」改为沿 `stop` 向上走完取最外层命中，并在入口加 `start.starts_with(stop)` 保护（越界文件不做探测外搜索）；`resolve` 文档注释同步口径说明。测试 `finds_nearest_stack_root_upwards` 拆为 `picks_outermost_stack_root_upwards`（根与成员都有 `Cargo.toml` → 取根）与 `falls_back_to_inner_root_when_outer_has_no_marker`（只有成员有 → 取成员）。验证：`cargo check -p forge` 通过、测试目标已链接生成；**本机 `cargo test` 无法执行**（`forge_lib-*.exe` 启动报 `api-ms-win-core-winrt-error-l1-1-0.dll: cannot open shared object file`，属环境缺 MinGW 运行库，非代码问题），故这两条断言仅做了编译核对，待用户在可运行环境复验。
-- **D-15 已修（2026-11-01）**：`src/lib/lspClient.ts` initialize 的 `textDocument.completion.completionItem.snippetSupport` 由 `false` 改为 `true`，与 `src/lib/cm/snippet.ts` 的 snippet 渲染路径一致（守约 server 此前不会给 snippet，该路径成死代码）。验证：`check:ts` 通过。
 - **D-29 已修（2026-11-01）**：替换模式全链路打通——① `src/App.tsx` 的 `everywhere` 状态与 `openEverywhere` 增 `replace` 位，`onReplaceInFiles` 传 `true`（对齐 openidea `showFindPopup(true, …)` 的替换模式入参），`FindState` 增 `replaceWith`；② `src/components/SearchEverywhere.tsx` 增 `initialReplace`，替换模式下 Text 页签多出「替换为」输入行，`onOpenHit` 增第 5 参把替换词一并交给底部窗口；③ `src/components/FindPane.tsx` 增替换栏与「全部替换」——点击先 `window.confirm` 确认（沿用 GitPanel 的确认惯例），再按 `searchText` 重扫全量命中（上限 20 万行，防只替当前页），逐文件 `readFile` → 按后端算好的命中区间从右往左改写（区间口径天然兼容大小写/整词/正则，零长度命中按插入处理）→ `writeFile`（带 `modifiedMs` 乐观锁，写前被外部改动则该文件计入失败），完成后展示「已替换 X 处（Y 个文件）」回执；打开中的干净文档由既有 watcher 回声路径自动重读。④ `src/styles.css` 补 `.find-replace-*` 样式；三语补 `find.replace.*` 六个键。验证：`check:ts` 通过；`tests/features/searchScope.test.ts` 8/8 通过。**取舍**：未做 openidea 的逐处 Replace/Skip 与排除标记、preserveCase、替换预览（属新增特性而非接线，末尾与用户确认）。
 - **D-30 已修（2026-11-01，改文案路线）**：forge 没有 Local History 子系统（openidea 的 `historyPutLabel` 是后端命令 + 通知的整条特性，超出本条「接线」范畴），按缺陷文档给的备选路线改文案让菜单如实：`src/features/project-tree/contextMenu.ts:323` 的 Git 子菜单项由 `t("git.putLabel")`（「放置标签…」）改为 `t("git.newTag")`（「新建标签」，行为本来就是开 newTag 对话框），`GitMenuHandlers.putLabel` 字段与 `App.tsx:3810` 回调同步改名 `newTag`；删除三份字典已无引用的 `git.putLabel` 键。测试断言同步（`tests/features/contextMenu.test.ts`）。验证：`check:ts` 通过；`tests/features/contextMenu.test.ts` 5/5 通过。**待议（末尾问用户）**：是否值得为 forge 建 Local History 特性（对齐 openidea 的 recentChanges + putLabel），属 P2 级新增。
 - **D-31 已修（2026-11-01）**：核实后发现 `ProjectDirectoryRole`（`src/lib/projectDirectoryRoles.ts:2`）、folderKind 着色、`markTreeDirectory` 持久化早已支持 `testResources`，缺的只是菜单项——`src/features/project-tree/contextMenu.ts` 的 Mark Directory as 子菜单在 Resources Root 与 Excluded 之间补「Test Resources Root」项（发 `"testResources"` 角色），三语补 `project.view.markTestResources`（zh「测试资源根目录」/en "Test Resources Root"/zh-TW「測試資源根目錄」）。验证：`check:ts` 通过；`tests/features/contextMenu.test.ts` + `tests/features/projectTree.test.ts` 17/17 通过。
@@ -439,8 +334,6 @@ epo\...` 带 Prefix 组件，`strip_prefix("/repo")` 匹配失败，断言从未
 - **D-42 已修（2026-11-01）**：`src/lib/cmEditor.ts` 移植 openidea `prefs.ts:364-398` 的缩放机制——`fontZoomField`（StateField）+ `Prec.highest` 的 `editorAttributes` 把 `--editor-font-size/--editor-line-height` 覆写成 `calc(base + zoom)`，步进限 -6..36；`wheelZoom`（domEventHandlers）Ctrl/⌘+滚轮上滚放大下滚缩小（无修饰键不拦截）。为避开 CSS 自引用环，`applyFontMetrics` 增写 `--editor-font-base/--editor-line-base` 两份底数变量，zoom 在底数上做加法。挂进常驻扩展表（`drawSelection` 前）。验证：`check:ts` 通过；`tests/components/CodeEditor.test.tsx` 等 5/5 通过。
 - **D-45 已修（2026-11-01）**：`src/lib/cm/keymap.ts` 的 IDEA 方案补 `{ key: "Ctrl-g", command: gotoLine }`——直接用 CodeMirror `@codemirror/search` 内置的 `gotoLine` 命令（自带行号输入对话框），对齐 openidea `intellij-windows.ts:21` 的 `navigate.gotoLine = Ctrl+G`。验证：`check:ts` 通过；`tests/lib/cmKeymap.test.ts` 8/8 通过。
 - **D-46 已修（2026-11-01）**：`src/lib/cmEditor.ts` 键位装配处把 defaultKeymap 过滤一遍 `DROPPED_DEFAULT_BINDINGS`（对齐 openidea `baseKeymap.ts` 的 DROPPED）：`insertBlankLine`（Ctrl+Enter）、`toggleTabFocusMode`（Ctrl+M）、`selectLine`（Alt+L/Ctrl+L）、`addCursorAbove/Below`（Ctrl+Alt+↑↓，键位归 D-53 的出现处导航）、`indentLess/indentMore`（Ctrl+[ ]）——这批键在 IDEA 里是 IDE 级动作，落到引擎默认绑定只会制造语义分叉。
-- **D-47 已修（2026-11-01）**：IDEA 方案改绑——`Alt+↑/↓` 接新命令 `gotoMethod(view, ±1)`（`src/lib/cm/lsp.ts` 新增：LSP `textDocument/documentSymbol` 拉平取 Method/Function/Constructor 的 selectionRange 起点，光标跳上/下一个方法头，对齐 openidea `navigation/index.ts:55 gotoMethod`；无 documentSymbolProvider 时返回 false 落空，不误跳），`Alt+Shift+↑/↓` 才是移行（对齐 openidea `intellij-windows.ts:58-59/97-98`）。验证：`check:ts` 通过；`tests/lib/cmKeymap.test.ts`、`tests/lib/cmLocations.test.ts` 13/13 通过。
-- **D-48 已修（2026-11-01）**：新建 `src/lib/cm/stickyScroll.ts`（移植 openidea `cm/stickyScroll.ts` 的精简版）——ViewPlugin 在滚动/文档/视口变化时 requestMeasure，算出首个可视行所在作用域的头部行（`enclosingHeaders`：优先 `foldedRanges`——forge 的折叠状态已合并语法折叠与 LSP folding，无折叠信息退回语法树 Body/Block 节点），最多钉 5 行；钉住的行带行号（宽度与折叠扣/行号槽实测对齐）+ 语法高亮正文（`highlightTree` + `forgeHighlightStyle`），点行跳转并把该行放到原 sticky 的位置；水平滚动反向平移跟手。挂进常驻扩展表；`src/styles.css` 补 `.cm-forge-sticky*` 样式（全部走 token）。验证：`check:ts` 通过、`vite build` 通过；`tests/components/CodeEditor.test.tsx`、`tests/lib/cmKeymap.test.ts` 8/8 通过。
 - **D-49 已修（2026-11-01）**：`src/lib/editorEnv.ts` 目录 id `go.mod`→`gomod`、`go.work`→`gowork`、`ocaml.interface`→`ocaml-interface`（对齐 openidea 注册 id，也消掉「带点 id」与后缀检测的天然冲突）；`src/lib/cm/grammars.ts` 的 SPELLINGS 删掉前两条恒等映射，`"ocaml.interface"→"ocaml"` 改 `"ocaml-interface"→"ocaml"`。测试断言同步（`tests/lib/editorEnv.test.ts`）。验证：`check:ts` 通过；`tests/lib/editorEnv.test.ts` 7/7 通过。
 - **D-50 已修（2026-11-01）**：`src/lib/editorEnv.ts` 的 `languageForPath` 后缀匹配由「最后一段」改为最长后缀优先——从第一个点开始逐段缩短尝试（`a.json.map` 命中 `json.map`→JSON、`foo.pkr.hcl` 命中 `hcl`），对齐 openidea `cm/languages.ts:46-54`。验证：`check:ts` 通过；`tests/lib` 全量 1149 条仅 3 条失败且均为本两轮改动的断言/门控同步（已修正），修正后全绿。
 - **D-51 已修（2026-11-01）**：`src/features/settings/pages/EditorPages.tsx` 的常规页在 formatOnSave 后补「彩虹括号」开关（读写 `settings.editor.rainbowBrackets`，该字段的 CM 消费点 `setRainbowBrackets` 已在），三语补 `settings.rainbowBrackets`（zh「彩虹括号」/en "Rainbow brackets"/zh-TW「彩虹括號」）。验证：`check:ts` 通过（i18n 键三语齐否则类型报错）。
@@ -454,10 +347,13 @@ epo\...` 带 Prefix 组件，`strip_prefix("/repo")` 匹配失败，断言从未
 - **D-56 已修（2026-11-01）**：日志提交图落地。① 新建 `src/features/vcs/graph.ts`——移植 openidea `features/vcs/graph.ts` 的 `computeGraph` lane 状态机（纯前端从 parents 算，lane 存活期位置不动、空槽回收、第一父沿用本 lane、其余父合流到已有 lane 或占新槽；state 可跨分页延续）+ `laneColor` 八色 token 轮换（`--accent/--vcs-added/--vcs-modified/--syn-*` 均已存在于 ideaTokens.css）。未移植 `collapseLinear`/`hideLongEdges`——那是 IDEA 的 View 选项（Collapse Linear Branches / Show Long Edges），forge 日志没有这两个开关，带上即死代码（**待议**：是否要这两个 View 选项）。② `GitLogPane.tsx`：`graphRows` useMemo 与 commits 一一对应；行首 `log-dot` 单点换成 `GraphCell` SVG（上下两半 path，直行直线、拐弯三次贝塞尔，节点圆 r=3.2；坐标常量 GRAPH_ROW=24/GRAPH_LANE=12 对齐 openidea 的 22/12 口径微调）。③ `styles.css`：`.log-commit` 钉死 `height: 24px`（SVG 纵向坐标的前提），新增 `.log-graph`。④ 新增 `tests/features/graph.test.ts` 4 条：直线历史、分叉合流、槽位复用、跨页延续。验证：`check:ts`、`vite build` 通过；graph 测试 4/4。
 - **D-57 已修（2026-11-01）**：日志无限滚动分页。① 后端 `GitLogQuery` 增 `skip`（serde default 0，`--skip=N`），前端 `GitLogQuery.skip` 同步。② `GitLogPane`：页长常量 `LOG_PAGE = 200`，主查询 limit 改用它并回填 `logDone`（本页短于页长即到底；失败也置 done 防反复报错）；`loadMoreRef` 续页（`skip: commits.length`，失败不推翻已有列表），列表底部 sentinel div + IntersectionObserver（root 为滚动容器、120px 提前量，observer 只挂一次、回调经 ref 取最新动作，避免每次筛选/追加都重建）。提交图 `graphRows` 走 useMemo 全量重算，追加后 lane 自动延续（computeGraph 状态机对同一列表重算结果一致）。验证：`cargo check -p forge`、`check:ts`、`vite build` 通过。
 - **D-58 已修（2026-11-01）**：块级冲突解决落地。① 新建 `src/features/vcs/conflicts.ts`——移植 openidea `conflicts.ts` 的核心纯函数：`parseConflicts`（逐行扫描识别良构冲突块，两段式与 diff3 三段式都认，标签从标记行尾取）、`resolutionText`（ours/theirs/base/both，both 在 ours 缺结尾换行时补行）、`resolveWithChoices`（按每块取舍拼全文，未取舍块原样保留标记）。未移植 `mergeTitles`/`initialResult`——它们是三栏 MergeEditor（依赖 openidea 的 MergeSides 绑定与专用 UI）的配套，本次按缺陷修法先给「逐块取舍」能力（**待议**：是否要完整三栏 Merge 编辑器）。② 新建 `src/components/BlockMergeDialog.tsx`：读文件（readFile 拿行尾/BOM/乐观锁戳）→ 列块 → 每块「采用本地/采用对方/保留两者/取共同祖先」（base 无则禁用），两侧预览超 12 行折叠；全部取舍后「应用解决」→ resolveWithChoices 写回（writeFile 保行尾与 BOM、传 modifiedMs 乐观锁）→ 通知上层。③ `ResolveConflictsDialog` 每行增「逐块解决…」入口（新 prop `onMerge`）。④ App：`blockMergePath` state 挂 BlockMergeDialog，onApplied 里 `git.stage([abs])` 写回即暂存（同按一边了结的收尾），未合并组随即消失。⑤ i18n 三语补 `git.blockMergeOpen/blockMergeTitle/blockRemaining/blockAllResolved/blockNoMarkers/blockBoth/blockBase/blockApply`；`styles.css` 补 `.block-merge-*` 样式（ours/theirs 侧底色走 vcs token）。⑥ 新增 `tests/features/conflicts.test.ts` 7 条：两段式/diff3 解析、标签、both 拼接换行、逐块取舍与未取舍保留、base 取舍。验证：`check:ts`、`vite build` 通过；conflicts 测试 7/7。
+
+- **D-58 三栏 Merge 编辑器已修（2026-11-01）**：把「待议」的完整三栏 MergeEditor 落地，替换半程的块级对话框。① Rust 新增 `git_conflict_versions`（`git/mod.rs`，`lib.rs` 已注册）：从 index stage 读未合并文件的三方正文（ours=stage 2、theirs=stage 3、base=stage 1，base 无则 null），前端 `git.ts` 绑定 `GitConflictVersions`。② `conflicts.ts` 移植 openidea `initialResult`：结果栏从「冲突块填 base 段」的形态起步（不留标记），`ResultConflict` 记录块范围与三方文本。③ 新建 `src/components/TriMergeDialog.tsx`（对齐 openidea `MergeEditor`）：Yours | Result | Theirs 三栏，两侧只读、结果栏可编辑（带 undo 历史），每个未解决冲突上方挂取舍按钮条（采用本地/对方/两者/共同祖先，StateField 里随文档改动平移块范围、点按钮整块解决），手动编辑也行；apply 前校验磁盘文本与起步时一致，窗口期被外部改过则报 `git.blockStale` 让用户重开（R-6 语义延续），写回沿用行尾/BOM/modifiedMs 乐观锁。④ `ResolveConflictsDialog` 的「逐块解决…」按钮改「合并…」（键 `git.blockMergeOpen`→`git.triMergeOpen`），`onMerge` 改开三栏编辑器；App 侧 `blockMergePath`→`triMergePath`，onApplied 暂存 + 脏缓冲提醒（`git.blockMergeDirty*`→`git.triMergeDirty*`）不变。⑤ `styles.css` 补 `.tri-merge-*`（三栏 grid、结果栏分隔、冲突行高亮 `--vcs-danger` 14% 混色、按钮条），对齐 openidea `MergeEditor` 的 baseTheme。⑥ `tests/features/conflicts.test.ts` 补 `initialResult` 3 条：diff3 填 base 与范围记录、两段式空块不丢、无标记原样返回。验证：`tsc --noEmit`、`vite build`、`cargo check -p forge` 通过；conflicts 测试 10/10。**遗留已清（2026-11-01，经用户同意）**：删除 `BlockMergeDialog.tsx`、`.block-merge-*` 样式段与死键 `git.blockMergeTitle/blockRemaining/blockAllResolved/blockNoMarkers`（三语）。`resolveWithChoices`/`ConflictBlock` 死代码已删（2026-11-01，经用户同意）：conflicts.ts 删 `resolveWithChoices`、`ConflictBlock` 转内部类型（`parseConflicts` 仍返回它）；测试删 2 条纯 `resolveWithChoices` 用例，base 取舍条改写为纯 `resolutionText` 断言保留。
+
+- **D-58 收尾 review（2026-11-01，与 openidea 逐项核对）确认并修复 3 处**：① R-58a（高·侧别对调）——openidea 的 `initialResult(merged, reversed)` 带反转参数：变基冲突里 git 把上游写进 stage 2、你的提交是 stage 3，恢复 stash 撞冲突同理；forge 移植时丢了该参数，rebase/未暂存恢复场景下「你的版本」「采用本地」会全部指向对面。修法：Rust `GitConflictVersions` 加 `reversed`（复用 `in_progress`：rebase→true，merge/cherry-pick/revert→false，无进行中操作→true，同 openidea 判定），`initialResult` 补 `reversed` 对调 ours/theirs，TriMergeDialog 传入；`resolutionText` 取的是对调后的 ResultConflict，按钮语义随之正确。② R-58b（中·崩溃）——手动编辑删掉冲突块前的换行后块起点落进行中间，行装饰位置小于先加的 widget 位置，`RangeSetBuilder` 顺序断言直接抛异常打崩编辑器（openidea 同病，forge 结果栏可编辑更易触发）；改用数组 + `Decoration.set(ranges, true)` 排序兜底。③ R-58c（低）——底栏剩余计数初始为 null 空白到首次编辑，构建编辑器后即 `setRemaining(start.conflicts.length)`。其余核对一致：conflictField 的 mapPos 偏差（from -1/to +1）与 effect 索引移除、按钮 dispatch（changes+effect）、后端 stage 探测与二进制检测（同 `git_index_show` 口径）、i18n 键 3/3、apply 的 stale 校验与乐观锁写回。验证：`tsc --noEmit`、`vite build`、`cargo check -p forge` 通过；conflicts 测试 11/11（补 reversed 用例 1 条）。
 - **D-59 已修（2026-11-01）**：二进制/大文件实际探测。① 后端 `git_show_impl` 与 `git_index_show_impl` 增内容探测——输出前 8KB 含 NUL 即回 `BINARY{path}`（git 对二进制 blob 照样吐字节，此前无扩展名或 .gitattributes 标记的二进制会以乱码正文进入比对视图；`read_file` 侧早有同款判定，这次补齐 git 侧两处，与 openidea `DiffEditor` 的 fsProbe 实际探测同语义）。② 前端 `errors.ts` 增 `errorCodeOf`（从带码错误文本认码，不在 CODES 表的回 null）。③ `App.openDiffTab` 的 catch 兜底：`BINARY/TOO_LARGE/NOT_UTF8/IS_DIR` 四种「本来就没得比」不再 closeDiff+红横幅，标签保留、理由以 notice 摆进正文（与扩展名预判同一条展示通道，切语言跟随）。验证：`cargo check -p forge`、`check:ts`、`vite build` 通过；`tests/lib/errors.test.ts` 补 `errorCodeOf` 断言 8/8。
 - **D-60 已修（2026-11-01）**：文件监听排除重目录。核实 forge 与 openidea 架构差异后收窄修法——forge 用 notify 的 Recursive 模式（Windows ReadDirectoryChangesW 单句柄，无 openidea per-directory 逐目录 watch 的建监听开销），所以对齐点不在「建监听时跳过目录」，而在「排除目录下的事件不再上报」。`src-tauri/src/watch.rs` 事件回调增 `under_default_excluded` 过滤：路径相对根的任一段命中文件树默认排除表（`fs::is_default_excluded`，node_modules/dist/target/build/out/.turbo/.next/.nuxt/.cache，`is_default_excluded` 改 pub(crate) 复用同一张表）即丢弃——树里看不见的目录监听里也不报，语义一致；排除目录下的构建翻动不再造成刷新风暴，`changes_listing` 的构建清单缓存作废也随过滤后的路径走（排除目录内的产物变化不再误作废）。附单测 `events_under_default_excluded_dirs_are_dropped`（4 组路径判定）。验证：`cargo check -p forge` 通过；`cargo test watch::` 两种工具链（宿主与 --target x86_64-pc-windows-gnu）下测试 exe 均无法加载（STATUS_ENTRYPOINT_NOT_FOUND，0xc0000139，本机环境问题，与代码无关——编译干净），单测未能在本机执行，**待议**：需要用户在正常终端确认 cargo test 环境或后续排查。
 - **D-61 已修（2026-11-01）**：UI 字体引入 Inter（对齐 openidea 的做法，不猜）。openidea 用 `@fontsource-variable/inter`（OFL 许可，随包本地打包，无 CDN 请求）；forge 已有同机制的 `@fontsource-variable/jetbrains-mono` 先例，照抄：`npm install @fontsource-variable/inter`，`main.tsx` 增 import，`tokens.css` 的 `--font-sans` 首位加 `"Inter Variable", Inter`（注释说明 CJK 字形自动落到系统栈——Inter 无全角中文，回退链保证中文观感不变）。验证：`vite build`、`check:ts` 通过。
 - **D-63 已修（2026-11-01，逐项核对后收窄）**：逐项对齐 openidea `tokens.css` 的 metrics 后，多数项 forge 本就一致：菜单项 28px（=openidea `--h-field/--h-button/--h-tab`）、标签本体 min22/max28（=`--h-tab` 28）、`--radius-xs 4`（=radius-small/row/control）、`--radius-md 8`（=radius-popup）、`--header-height 40px`（=h-header 40）。实际改两处：① 滚动条 `styles.css` 宽/高 11→10px、thumb border 3→2px（对齐 openidea global.css 的 macOS 式细滚动条：10px、border 2、radius 6；forge 用 radius-pill 胶囊观感一致）；② `--radius-lg` 12→10px（弹层/对话框档对齐 `--radius-dialog`/`--radius-popup-large`，全仓仅 aiAssistants 1 处使用，影响面小）。**有意不改**：标签栏容器 forge 32px vs openidea `--h-tabbar` 38px/`--h-header` 40px——那是 macOS 内嵌标题栏口径（含窗口钮），Windows IDEA 编辑器标签条不带标题栏、实际约 32px，照抄反而不像 Windows 版 IDEA（待议：如需完全对齐 macOS 观感可改 38px）。验证：`vite build` 通过。
-- **D-64 已修（2026-11-01）**：LSP 未安装判定改结构化错误码。后端 `lsp.rs` 的 `spawn_session`：`resolve_program` 失败时 `record_failure` 与返回值统一用同一条 `err("LSP_NOT_FOUND", program)`（此前 record_failure 记自由文本「没找到 {program}」、返回值才带码，两端脱节）；前端 `LspStatusBar` 的判定由 `item.error?.includes("没找到")` 改为 `errorCodeOf(item.error) === "LSP_NOT_FOUND"`（复用 D-59 引入的 `errorCodeOf`；CODES 表本就有 `LSP_NOT_FOUND → error.lspNotFound` 文案映射，错误串展示随语言切换）。`tests/components/LspStatusBar.test.ts` 两条死会话用例的夹具由旧中文文案换成 `LSP_NOT_FOUNDyaml-language-server`，5/5 通过。验证：`cargo check -p forge`、`check:ts`、`vite build` 通过。
 - **D-65 已修（2026-11-01）**：右键菜单与 InlineEditor 的硬编码走 i18n。① `contextMenu.ts`：New 菜单 8 个模板标签（JavaScript/TypeScript/Rust/Python/Markdown/JSON/HTML/CSS File）改 `t("project.view.newJs"…)`（中文按 IDEA 中文包口径：技术名保留英文 + 类型词翻译，如「CSS 样式表」）；Group 8 菜单标题 `"Git"` → `t("project.view.git")`（三语同为 "Git"，但键进 i18n 体系）；AI 组 `"Send to AI Chat"` → `t("project.view.sendToAiChat")`。② `InlineEditor.tsx`：输入框 aria-label 三条（New name / New folder name / New file name）→ `project.rename.a11y`/`project.newFolder.a11y`/`project.newFile.a11y`，组件引入 `useI18n`。③ i18n 三语各补 14 键。验证：`check:ts`（i18n 键三语齐全否则类型报错）、`vite build` 通过；`tests/features/contextMenu.test.ts` 5/5。
 - **D-33 已修（2026-11-01，全移除路线）**：逐项核实 10 个字段均无消费点（`confirmDropCommits` 对应的日志 Drop 动作不存在、`autoUpdateOnPushRejected`/`updateMethod`/`incomingCheck` 需要后端新管线、shelf 两项依赖未实现的 Shelf、`gitExecutablePath`/`directoryMappings` 后端固定走系统 git 且只支持单仓库），接线 = 新造能力，超出本缺陷范围——按修法允许的另一选项**全部从设置模型与 UI 移除**，消除虚假控制感；将来实现对应能力时按需加回。改动：① `src/lib/settings.ts`——`VcsSettings` 删 10 字段、删 `DirectoryMapping` 接口、默认值同步；② `src-tauri/src/settings.rs`——`VcsSettings` 删 10 字段（serde 同步，旧配置文件里的多余键被 `#[serde(default)]` 容忍静默忽略）、删 `DirectoryMapping` 结构与默认值；③ `VcsPages.tsx`——整页删「目录映射」（VcsGeneralPage）与「搁置区」（VcsShelfPage）两个空壳页，Git 页删路径输入框（保留可用的系统 Git 探测按钮，注明 forge 固定取系统 PATH）、删 Update 策略段与 autoUpdateOnPushRejected，确认页删 onCreate/onDelete/confirmDropCommits 三控件；④ `SettingsPage.tsx` 删 `vcs.general`/`vcs.shelf` 路由与 import，`settingsModel.ts` 删两条导航项。遗留：相关 i18n 键（vcs.gitPath 等）暂留在语言文件，未用键不影响类型检查，待整体清理。验证：`cargo check -p forge`、`check:ts`、`vite build` 通过；`tests/lib/settings.test.ts` 13/13。

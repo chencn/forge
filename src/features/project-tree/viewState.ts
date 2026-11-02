@@ -40,19 +40,11 @@ function write(storageKey: string, value: unknown): void {
 
 export function loadViewOptions(root: RootKey): ViewOptions {
   const raw = read<unknown>(`forge:tree:options:${root}`, {});
-  const saved: Partial<ViewOptions> & { _v?: number } =
+  const saved: Partial<ViewOptions> =
     raw !== null && typeof raw === "object" && !Array.isArray(raw)
-      ? (raw as Partial<ViewOptions> & { _v?: number })
+      ? (raw as Partial<ViewOptions>)
       : {};
-  // _v4 对齐 IDEA 默认值：单击打开/单击展开/预览标签页默认关（v2/v3 曾强推为 true，一并迁回）。
-  // v4 起才认用户自己保存的值；更老的数据里的 true 是当年迁移强推的，不当作用户偏好。
-  const legacy = !saved._v || saved._v < 4;
-  const singleClickOpen = legacy ? false : (saved.singleClickOpen ?? false);
-  const singleClickExpand = legacy ? false : (saved.singleClickExpand ?? false);
-  const previewTab = legacy ? false : (saved.previewTab ?? false);
-  const { _v: _version, ...persisted } = saved;
-  void _version;
-  return { ...DEFAULT_VIEW_OPTIONS, ...persisted, singleClickOpen, singleClickExpand, previewTab };
+  return { ...DEFAULT_VIEW_OPTIONS, ...saved };
 }
 
 /** 首次迁移时区分“没有项目级选项”和“已有项目级选项”。 */
@@ -65,7 +57,7 @@ export function hasSavedViewOptions(root: RootKey): boolean {
 }
 
 export function saveViewOptions(root: RootKey, options: ViewOptions): void {
-  write(`forge:tree:options:${root}`, { ...options, _v: 4 });
+  write(`forge:tree:options:${root}`, options);
 }
 
 export function loadViewMode(root: RootKey): ProjectViewMode {

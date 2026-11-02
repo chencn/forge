@@ -1,6 +1,6 @@
 /**
  * Sticky scroll（IDEA 2023+ 默认开启）：首个可视行所在作用域的头部行钉在编辑区顶部。
- * 作用域取折叠范围（forge 的 foldedRanges 已合并语法折叠与 LSP folding），没有折叠信息时
+ * 作用域取折叠范围（forge 的 foldedRanges），没有折叠信息时
  * 退回语法树的 Body/Block 节点。点钉住的行跳到那一行（对齐 openidea cm/stickyScroll.ts）。
  */
 import { EditorSelection, type EditorState, type Extension } from "@codemirror/state";

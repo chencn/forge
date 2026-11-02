@@ -24,6 +24,7 @@ mod store;
 mod task_status;
 
 use crate::ai_cli::{self, Provider};
+use crate::error::err;
 use crate::offload::block;
 use events::{Page, CHANNEL};
 use process::{Input, Process};
@@ -177,15 +178,21 @@ fn take_queued_run(run_id: &str) -> Result<Option<(String, SendRequest)>, String
 fn queued_status(is_front: bool, external_blocked: bool) -> &'static str {
     if is_front && external_blocked { task_status::WAITING_EXTERNAL } else { task_status::QUEUED }
 }
-/// 先解析源和目标，再改队列。目标来自另一个窗口的旧快照时必须原样失败，不能先把源任务删掉。
-fn move_queued_run(items: &mut VecDeque<SendRequest>, run_id: &str, before_run_id: Option<&str>) -> Result<(), &'static str> {
-    let old = items.iter().position(|item| item.run_id == run_id).ok_or(NOT_QUEUED_HERE)?;
+/// 队列活在收下它的那个进程的内存里：查不到有两种真实原因——已经开始或结束了，
+/// 或者是**另一个** Forge 窗口排的。拒绝一律带 `NOT_QUEUED` 稳定码：前端据此清掉
+/// 本地的过期登记并刷新队列，而不是把原文贴出来后留着幽灵卡让用户反复点同一个死按钮。
+/// 跨窗口共用一份队列需要另建持久队列，现在还没到那一步。
+fn not_queued() -> String {
+    err("NOT_QUEUED", "任务已开始或结束，或由另一个 Forge 窗口排队")
+}
+fn move_queued_run(items: &mut VecDeque<SendRequest>, run_id: &str, before_run_id: Option<&str>) -> Result<(), String> {
+    let old = items.iter().position(|item| item.run_id == run_id).ok_or_else(not_queued)?;
     if before_run_id == Some(run_id) { return Ok(()); }
     let target = match before_run_id {
-        Some(before) => items.iter().position(|item| item.run_id == before).ok_or(NOT_QUEUED_HERE)?,
+        Some(before) => items.iter().position(|item| item.run_id == before).ok_or_else(not_queued)?,
         None => items.len(),
     };
-    let item = items.remove(old).ok_or(NOT_QUEUED_HERE)?;
+    let item = items.remove(old).ok_or_else(not_queued)?;
     // 删除发生在目标之前时，目标下标左移一位；None 的 len 也按同一规则落到新队尾。
     items.insert(target.saturating_sub(usize::from(old < target)), item);
     Ok(())
@@ -315,11 +322,6 @@ fn emit_queue_order(app: &AppHandle, session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 队列活在收下它的那个进程的内存里：这条查不到有两种真实原因——已经开始或结束了，
-/// 或者是**另一个** Forge 窗口排的。只说「不存在」会把后一种推给「界面坏了」，
-/// 所以把两种都点名，并说清去哪儿操作。跨窗口共用一份队列需要另建持久队列，现在还没到那一步。
-const NOT_QUEUED_HERE: &str = "这条任务不在当前窗口的队列里：它可能已经开始或结束，也可能由另一个 Forge 窗口排队（排队时用的是哪个窗口，就到哪个窗口操作）";
-
 #[tauri::command]
 pub async fn ai_runtime_queue_update(app: AppHandle, run_id: String, prompt: String) -> Result<(), String> {
     block(move || {
@@ -328,7 +330,7 @@ pub async fn ai_runtime_queue_update(app: AppHandle, run_id: String, prompt: Str
         if prompt.is_empty() || prompt.len() > 64 * 1024 { return Err("消息不能为空，且不能超过 64 KiB".into()); }
         let session_id = {
             let mut all = queued().lock().map_err(|e| e.to_string())?;
-            let (session_id, item) = all.iter_mut().find_map(|(session_id, items)| items.iter_mut().find(|item| item.run_id == run_id).map(|item| (session_id.clone(), item))).ok_or(NOT_QUEUED_HERE)?;
+            let (session_id, item) = all.iter_mut().find_map(|(session_id, items)| items.iter_mut().find(|item| item.run_id == run_id).map(|item| (session_id.clone(), item))).ok_or_else(not_queued)?;
             item.prompt = prompt.to_owned();
             session_id
         };
@@ -344,7 +346,7 @@ pub async fn ai_runtime_queue_move(app: AppHandle, run_id: String, before_run_id
         let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
         let session_id = {
             let mut all = queued().lock().map_err(|e| e.to_string())?;
-            let session_id = all.iter().find_map(|(session_id, items)| items.iter().any(|item| item.run_id == run_id).then(|| session_id.clone())).ok_or(NOT_QUEUED_HERE)?;
+            let session_id = all.iter().find_map(|(session_id, items)| items.iter().any(|item| item.run_id == run_id).then(|| session_id.clone())).ok_or_else(not_queued)?;
             let items = all.get_mut(&session_id).ok_or("排队会话不存在")?;
             move_queued_run(items, &run_id, before_run_id.as_deref())?;
             session_id
@@ -360,10 +362,10 @@ pub async fn ai_runtime_queue_run_now(app: AppHandle, run_id: String) -> Result<
             let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
             let session_id = {
                 let mut all = queued().lock().map_err(|e| e.to_string())?;
-                let session_id = all.iter().find_map(|(session_id, items)| items.iter().any(|item| item.run_id == run_id).then(|| session_id.clone())).ok_or(NOT_QUEUED_HERE)?;
+                let session_id = all.iter().find_map(|(session_id, items)| items.iter().any(|item| item.run_id == run_id).then(|| session_id.clone())).ok_or_else(not_queued)?;
                 let items = all.get_mut(&session_id).ok_or("排队会话不存在")?;
-                let index = items.iter().position(|item| item.run_id == run_id).ok_or(NOT_QUEUED_HERE)?;
-                let item = items.remove(index).ok_or(NOT_QUEUED_HERE)?;
+                let index = items.iter().position(|item| item.run_id == run_id).ok_or_else(not_queued)?;
+                let item = items.remove(index).ok_or_else(not_queued)?;
                 items.push_front(item);
                 session_id
             };
@@ -869,32 +871,49 @@ fn models_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("ai-models.json"))
 }
 
-// 记「哪一版 CLI 探过」：CLI 升级会带来新模型，一次探测不能封住整个进程的目录。
-static MODEL_REFRESH: tokio::sync::Mutex<Vec<(Provider, String)>> = tokio::sync::Mutex::const_new(Vec::new());
+// 记「哪一版 CLI、哪份来源探过」：CLI 升级或切换供应商都会带来新模型，
+// 一次探测不能封住整个进程的目录。
+static MODEL_REFRESH: tokio::sync::Mutex<Vec<(Provider, String, String)>> = tokio::sync::Mutex::const_new(Vec::new());
 #[tauri::command]
 pub async fn ai_runtime_refresh_models(app: AppHandle, provider: Provider, workspace: String, force: bool) -> Result<Value, String> {
     let path = models_path(&app)?;
     let (probe_provider, probe_path) = (provider, path.clone());
+    // 模型列表不只跟 CLI 版本走：同一版 CLI 在不同供应商路由下报出的模型不同。
+    // 指纹参与缓存判定与进程内去重键，切换供应商后必须重新探测。
+    let source = ai_cli::settings::model_source_key(provider);
+    let probe_source = source.clone();
     let (version, current) = block(move || {
         // 版本探测自身会跑 `--version`，结果进程级缓存；取不到版本就退回「本进程只试一次」。
         let version = ai_cli::installed_version(probe_provider).unwrap_or_default();
-        let current = !version.is_empty() && options::is_current(&probe_path, probe_provider, &version);
+        let current = !version.is_empty() && options::is_current(&probe_path, probe_provider, &version, &probe_source);
         Ok((version, current))
     })
     .await?;
-    let mut attempted = MODEL_REFRESH.lock().await;
-    let key = (provider, version);
-    if !force && (current || attempted.contains(&key)) { return ai_runtime_models(app, provider, workspace).await; }
+    let key = (provider, version, source.clone());
+    if !force {
+        let mut attempted = MODEL_REFRESH.lock().await;
+        if current || attempted.contains(&key) {
+            drop(attempted);
+            return ai_runtime_models(app, provider, workspace).await;
+        }
+        attempted.push(key.clone());
+    }
     if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后刷新模型".into()); }
-    if !attempted.contains(&key) { attempted.push(key); }
-    block(move || {
+    let result = block(move || {
         let root = store::workspace(&workspace)?;
-        let catalog = options::models(provider, &root)?;
+        let mut catalog = options::models(provider, &root)?;
+        // 与缓存一起落盘：下次读磁盘时能判断这份目录是不是当前来源报的。
+        catalog["sourceKey"] = json!(source);
         let mut saved = options::save_models(&path, provider, Some(catalog), None)?;
         // 这一次是现问 CLI 拿的，和从磁盘读缓存不同；前端靠它区分「实测」与「沿用上次目录」。
         saved["remote"] = json!(true);
         Ok(if provider == Provider::Claude { options::claude_configured_models(saved, &root) } else { saved })
-    }).await
+    }).await;
+    // 探测失败不能封住整个进程：否则这一轮之后的每次挂载都只拿到旧缓存，用户只能重启。
+    if result.is_err() {
+        MODEL_REFRESH.lock().await.retain(|item| item != &key);
+    }
+    result
 }
 
 #[tauri::command]
@@ -2223,7 +2242,8 @@ pub async fn ai_runtime_stop(app: AppHandle, run_id: String) -> Result<(), Strin
             } else {
                 // 找不到不是幂等成功：最常见的是历史快照指向另一个 Forge 窗口的运行。
                 // 若这里回 Ok，前端会误以为当前进程已经把那个 CLI 中断。
-                return Err("任务已结束或不属于当前窗口，未发送中断".into());
+                // 稳定码同队列族：前端据此清登记，而不是留着幽灵卡让用户反复点。
+                return Err(err("NOT_QUEUED", "任务已结束或不属于当前窗口，未发送中断"));
             }
         };
         registry::wait_stopped(stopping)
@@ -2784,18 +2804,26 @@ pub async fn ai_session_checkpoint_restore(
 pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Value>, String> {
     block(move || {
         let root=store::workspace(&workspace)?; let base=base(&app)?;
-        { let _io=store::IO_LOCK.lock().map_err(|e|e.to_string())?; history::discover(&base, &root)?; }
+        // discover 内部按「锁外扫描、锁内写回」分段持 IO_LOCK，这里不能再整段包一层：
+        // 否则目录遍历那段最贵的活又回到锁里，正在落盘的运行中会话会被堵在门口。
+        history::discover(&base, &root)?;
         // thread/list 与 Codex /resume 同源；失败时保留磁盘镜像，不能连带阻塞 Claude。
         let codex = options::codex_threads(&root).unwrap_or_default();
         let codex_by_id: HashMap<String, Value> = codex.into_iter().filter_map(|item| Some((item["id"].as_str()?.to_owned(), item))).collect();
-        let _io=store::IO_LOCK.lock().map_err(|e|e.to_string())?;
-        let mut sessions=vec![];
-        for entry in std::fs::read_dir(&base).map_err(|e|e.to_string())?.take(20000) {
-            let entry=entry.map_err(|e|e.to_string())?;
-            if !entry.file_type().map_err(|e|e.to_string())?.is_dir() { continue; }
-            let id=entry.file_name().to_string_lossy().into_owned();
+        // 列举会话本身是读：meta.json 走 write_atomic，读到的只会是完整版本，不会是半截。
+        // 但每个会话都要 stat + 读 + 反序列化，再 stat 一次 events.jsonl，几百个会话就是
+        // 十几毫秒。这一段压在 IO_LOCK 里，聚焦窗口的那一下就会把正在落盘的运行中会话堵住。
+        // 所以先锁外读完；只有「Codex 标题/创建时间确实变了」的那几条才进锁补写，
+        // 而且进锁后重新读一次 meta 再改——否则会拿锁外的旧快照覆盖用户刚做的归档/置顶/改名。
+        let mut sessions = vec![];
+        let mut to_sync: Vec<(usize, std::path::PathBuf, Option<String>, Option<u64>)> = vec![];
+        for entry in std::fs::read_dir(&base).map_err(|e| e.to_string())?.take(20000) {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+            let dir = entry.path();
+            let id = entry.file_name().to_string_lossy().into_owned();
             if !store::valid_id(&id) { continue; }
-            if let Ok(mut meta)=store::Store::metadata(&entry.path(),&root) {
+            if let Ok(mut meta) = store::Store::metadata(&dir, &root) {
                 // Codex 会话在 CLI 侧的身份是原生线程 ID；目录名只是 Forge 主键，
                 // 自建会话的目录名和它天生不同（线程要等首条消息才建出来）。
                 let native = meta.native_id.clone().unwrap_or_default();
@@ -2807,18 +2835,24 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                     if let Some(thread) = codex_by_id.get(&native).filter(|_| !native.is_empty()) {
                         // 用户锁定过的标题以 Forge 为准；未锁定时原生线程名是权威来源。
                         // 原生没有名字（新建还没发过消息，或名字是早期写下的占位名）就什么都不动。
-                        if !meta.title_locked {
-                            if let Some(title) = thread["title"].as_str().filter(|title| !title.trim().is_empty() && !history::is_placeholder_title(title)) {
-                                meta.title = title.to_owned();
-                            }
+                        let title = thread["title"].as_str()
+                            .filter(|title| !title.trim().is_empty() && !history::is_placeholder_title(title))
+                            .map(|title| title.to_owned());
+                        let created = thread["createdAt"].as_u64();
+                        let title_changes = title.as_deref().is_some_and(|title| !meta.title_locked && meta.title != title);
+                        let created_changes = created.is_some_and(|created| meta.created_at != created);
+                        // 没有变化就不写：以前这里每轮都会把每条 Codex 会话的 meta 重写一遍。
+                        if title_changes || created_changes {
+                            to_sync.push((sessions.len(), dir.clone(), title.clone(), created));
+                            // 本次返回的列表先按同步后的值给，别让前端看见一轮旧标题。
+                            if title_changes { if let Some(title) = &title { meta.title = title.clone(); } }
+                            if created_changes { if let Some(created) = created { meta.created_at = created; } }
                         }
-                        if let Some(created) = thread["createdAt"].as_u64() { meta.created_at = created; }
-                        let _ = store::Store { dir: entry.path(), meta: meta.clone(), seq: 0, poisoned: false }.save();
                     }
                 }
                 // 最近活动取事件日志的修改时间：每轮对话都会追加事件，比读取正文便宜得多，
                 // 也覆盖 Claude 与 Codex 两种来源。没有日志（新建未发言）回落到创建时间。
-                let last_activity = std::fs::metadata(entry.path().join("events.jsonl"))
+                let last_activity = std::fs::metadata(dir.join("events.jsonl"))
                     .and_then(|meta| meta.modified())
                     .ok()
                     .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
@@ -2826,6 +2860,21 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                     .filter(|ts| *ts > 0)
                     .unwrap_or(meta.created_at);
                 sessions.push(json!({"id":meta.session_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&native).map(|v|v["status"].clone()),"parentSessionId":meta.parent_session_id,"agent":meta.agent}));
+            }
+        }
+        if !to_sync.is_empty() {
+            let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+            for (index, dir, title, created) in to_sync {
+                // 锁内重读：锁外那份可能已过期，直接拿它改会把用户刚写进去的字段覆盖掉。
+                let Ok(mut meta) = store::Store::metadata(&dir, &root) else { continue; };
+                // 锁定状态也要重新判定：用户可能刚在界面上锁定过标题。
+                if let Some(title) = &title { if !meta.title_locked { meta.title = title.clone(); } }
+                if let Some(created) = created { meta.created_at = created; }
+                let title_value = meta.title.clone();
+                let created_value = meta.created_at;
+                let _ = store::Store { dir, meta, seq: 0, poisoned: false }.save();
+                sessions[index]["title"] = json!(title_value);
+                sessions[index]["createdAt"] = json!(created_value);
             }
         }
         sessions.sort_by_key(|item| std::cmp::Reverse(item["createdAt"].as_u64().unwrap_or_default()));
@@ -3161,7 +3210,7 @@ mod tests {
     #[test]
     fn invalid_queue_target_does_not_remove_the_source_run() {
         let mut items = VecDeque::from([base_request_with_id("first"), base_request_with_id("second")]);
-        assert_eq!(move_queued_run(&mut items, "first", Some("missing")), Err(NOT_QUEUED_HERE));
+        assert!(matches!(move_queued_run(&mut items, "first", Some("missing")), Err(message) if message.starts_with("NOT_QUEUED")));
         assert_eq!(items.iter().map(|item| item.run_id.as_str()).collect::<Vec<_>>(), ["first", "second"]);
     }
     #[test]

@@ -79,16 +79,16 @@ const NOTIFICATION_POSITION_LABEL: Record<
  * 外观设置页
  */
 export function AppearanceThemePage() {
-  const { lang, setLang } = useI18n();
+  const { t, lang, setLang } = useI18n();
   const { settings, patch } = useSettings();
 
   return (
     <div className="settings-rows">
       <div className="settings-rows-limit">
         <div className="settings-row">
-          <span className="settings-label">主题方案 (Theme)</span>
+          <span className="settings-label">{t("settings.themeMode")}</span>
           <Select
-            label="主题方案"
+            label={t("settings.themeMode")}
             placeholder="—"
             value={settings.theme}
             options={THEME_OPTIONS.map((theme) => ({
@@ -108,9 +108,9 @@ export function AppearanceThemePage() {
         </div>
 
         <div className="settings-row">
-          <span className="settings-label">界面语言 (Language)</span>
+          <span className="settings-label">{t("settings.uiLanguage")}</span>
           <Select
-            label="界面语言"
+            label={t("settings.uiLanguage")}
             placeholder="—"
             value={lang}
             options={LANG_OPTIONS}
@@ -119,14 +119,12 @@ export function AppearanceThemePage() {
         </div>
 
         <p className="settings-hint">
-          Forge 内置精选暗色 (Islands Dark)、浅色 (Islands Light) 与高对比度无障碍模式，支持随操作系统外观自动同步切换。
+          {t("settings.themeHint")}
         </p>
       </div>
     </div>
   );
 }
-
-export const AppearanceGeneralPage = AppearanceThemePage;
 
 /**
  * 系统设置页
@@ -200,7 +198,6 @@ const NOTIFICATION_GROUP_LABELS: Record<string, string> = {
   git: "Git 版本控制 (VCS)",
   maven: "Maven 构建与依赖",
   build: "运行与编译 (Run & Build)",
-  lsp: "代码分析与语言服务 (LSP)",
   ai: "AI 助手会话与操作",
   dependencies: "项目依赖同步 (Dependencies)",
   terminal: "终端与会话 (Terminal)",
@@ -250,7 +247,7 @@ export function AppearanceNotificationsPage() {
           />
         </div>
         <p className="settings-hint">
-          全局弹窗与重要事件提示的出现停靠角落。
+          {t("settings.notifyPositionHint")}
         </p>
 
         {/* 1b. 气泡总开关（对齐 IDEA「Display balloon notifications」） */}
@@ -279,14 +276,14 @@ export function AppearanceNotificationsPage() {
 
         {/* 2. 勿扰模式开关 */}
         <div className="settings-row" style={{ marginTop: 16 }}>
-          <span className="settings-label">勿扰模式 (Do Not Disturb)</span>
+          <span className="settings-label">{t("settings.dndMode")}</span>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
             <input
               type="checkbox"
               checked={settings.notificationDoNotDisturb}
               onChange={(e) => patch({ notificationDoNotDisturb: e.target.checked })}
             />
-            静默所有浮动气泡，仅静默记录到通知工具窗口
+            {t("settings.dndHint")}
           </label>
         </div>
 
@@ -296,7 +293,7 @@ export function AppearanceNotificationsPage() {
             通知组与弹出行为 (Notification Groups)
           </div>
           <p className="settings-hint" style={{ marginBottom: 12 }}>
-            针对各子系统独立配置气泡弹出模式（自动淡出 / 常驻不消失 / 不弹气泡）、是否记入历史日志或发送操作系统通知。
+            {t("settings.notifyModesHint")}
           </p>
 
           <table

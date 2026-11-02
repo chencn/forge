@@ -17,9 +17,11 @@ use super::{RunConfiguration, RunKind, Unavailable};
 use crate::offload::block_value;
 use crate::sys;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 /// 单个构建清单算 CRC32 的最大读取上限（16 MiB），防止异常超大文件阻塞探测。
@@ -69,7 +71,7 @@ impl Crc32 {
 }
 
 /// 构建文件的注释语法类别。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CommentSyntax {
     /// XML 类（`pom.xml`, `*.csproj`, `*.fsproj`, `Directory.Packages.props`）：忽略 `<!-- ... -->` 与空白。
     Xml,
@@ -232,17 +234,65 @@ fn read_manifest_bytes(path: &Path) -> Option<Vec<u8>> {
     fs::read(path).ok()
 }
 
+/// 语义 CRC32 的指纹缓存上限。探测过的清单文件数量有限，撑破就整表重开。
+const MAX_CRC_CACHE_ENTRIES: usize = 4096;
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 按（路径、语法、内容指纹）缓存的语义 CRC32。
+///
+/// 存一次文件之后那趟探测要把每个候选目录的清单都过一遍，而多数时候只有刚存的那一份
+/// 变了：`package-lock.json` 动辄上兆，还要再解析一遍 JSON，不缓存就是每存一次重算全部。
+/// 用长度加 mtime 当指纹：内容一变指纹就变，不需要任何作废协议。
+fn crc_cache() -> &'static Mutex<HashMap<(PathBuf, CommentSyntax), ((u64, u64), u32)>> {
+    static CACHE: OnceLock<Mutex<HashMap<(PathBuf, CommentSyntax), ((u64, u64), u32)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 文件的内容指纹：长度 + mtime。取不到 mtime 就没有指纹，调用方据此跳过缓存。
+fn content_stamp(path: &Path) -> Option<(u64, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos() as u64;
+    Some((meta.len(), modified))
+}
+
 /// 读取磁盘上的构建文件并计算语义 CRC32；文件不存在或超长时返回 `None`。
 fn file_semantic_crc32(path: &Path, syntax: CommentSyntax) -> Option<u32> {
+    let stamp = content_stamp(path);
+    if let Some(stamp) = stamp {
+        let hit = lock(crc_cache())
+            .get(&(path.to_path_buf(), syntax))
+            .filter(|(at, _)| *at == stamp)
+            .map(|(_, crc)| *crc);
+        if let Some(crc) = hit {
+            return Some(crc);
+        }
+    }
     let bytes = read_manifest_bytes(path)?;
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if filename.eq_ignore_ascii_case("package-lock.json") {
-        return Some(package_lock_semantic_crc32(&bytes));
+    let crc = if filename.eq_ignore_ascii_case("package-lock.json") {
+        package_lock_semantic_crc32(&bytes)
+    } else if filename.eq_ignore_ascii_case("Cargo.toml") {
+        cargo_toml_semantic_crc32(&bytes)
+    } else {
+        semantic_crc32_bytes(&bytes, syntax)
+    };
+    if let Some(stamp) = stamp {
+        let mut cache = lock(crc_cache());
+        if cache.len() >= MAX_CRC_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert((path.to_path_buf(), syntax), (stamp, crc));
     }
-    if filename.eq_ignore_ascii_case("Cargo.toml") {
-        return Some(cargo_toml_semantic_crc32(&bytes));
-    }
-    Some(semantic_crc32_bytes(&bytes, syntax))
+    Some(crc)
 }
 
 /// 针对 `package-lock.json`：

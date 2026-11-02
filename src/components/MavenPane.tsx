@@ -20,7 +20,7 @@ import {
   mavenWorkingDir,
 } from "../lib/maven";
 import type { MavenDependency, MavenModule, MavenProject, MavenSourceRoot } from "../lib/maven";
-import type { RunConfiguration } from "../lib/runConfigs";
+import type { RunConfiguration, RunTools } from "../lib/runConfigs";
 import MavenIcon from "./MavenIcon";
 
 const PHASES = ["clean", "validate", "compile", "test", "package", "verify", "install", "site", "deploy"] as const;
@@ -38,6 +38,8 @@ interface Props {
   error: string | null;
   refreshing: boolean;
   running: boolean;
+  /** 本机探测到的构建工具；mvn 为空串时运行/执行目标置灰。 */
+  tools: RunTools;
   onRun: (config: RunConfiguration) => void;
   onStop: () => void;
   onOpenFile: (path: string) => void;
@@ -49,11 +51,14 @@ export default function MavenPane({
   error,
   refreshing,
   running,
+  tools,
   onRun,
   onStop,
   onOpenFile,
 }: Props) {
   const { t } = useI18n();
+  // 本机没有 mvn 就不该让「运行/执行目标」可点——状态已知，与 RunControls 的 unavailable 门禁同源。
+  const mvnMissing = !tools.maven;
   const [expanded, setExpanded] = useState<Set<string>>(() => initialExpanded(project));
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
   const [selectedPhase, setSelectedPhase] = useState<string>("compile");
@@ -126,8 +131,8 @@ export default function MavenPane({
         <button
           type="button"
           className="icon-button is-inline"
-          title={running ? t("maven.stop") : t("maven.runSelected")}
-          disabled={!project}
+          disabled={!project || mvnMissing || running}
+          title={!project ? t("maven.goalInvalid") : mvnMissing ? t("maven.mvnMissing") : running ? t("maven.stop") : t("maven.runSelected")}
           onClick={() => {
             if (running) {
               onStop();
@@ -185,7 +190,7 @@ export default function MavenPane({
             placeholder={t("maven.goalPlaceholder")}
             onChange={(event) => setGoalText(event.target.value)}
           />
-          <button type="submit" className="maven-goal-run" disabled={!goalText.trim() || running}>
+          <button type="submit" className="maven-goal-run" disabled={!goalText.trim() || running || mvnMissing}>
             {t("maven.run")}
           </button>
         </form>

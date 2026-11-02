@@ -20,7 +20,7 @@ import {
   createFile,
   createFolder,
   errorText,
-  listDirectory,
+  listDirectoryChain,
   moveEntry,
   copyEntry,
   renameEntry,
@@ -35,7 +35,7 @@ import { Icon } from "../../ui/Icon";
 import { notify } from "../../workbench/notificationStore";
 import { HighlightedText } from "../../ui/HighlightedText";
 import { Tree, type TreeHandle, type TreeRowState } from "../../ui/Tree";
-import { detectExternalLibraries, type LibraryGroup } from "./libraries";
+import { detectExternalLibraries, invalidateLibrariesCache, type LibraryGroup } from "./libraries";
 import { getScratchesDir, createScratchFile, SCRATCH_LANGUAGES } from "./scratches";
 import {
   ProjectHeader,
@@ -250,6 +250,9 @@ function isVirtualPath(path: string): boolean {
   );
 }
 
+/** 加载失败占位行的 key 前缀；整行是虚拟节点，点击重新加载对应目录。 */
+const LOAD_FAILED_PREFIX = "__load_failed__:";
+
 /** 惰性目录缓存 Hook */
 function useLazyChildren(
   refresh: { paths: string[] | null; seq: number },
@@ -258,11 +261,16 @@ function useLazyChildren(
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(new Map());
   const childrenRef = useRef(children);
   childrenRef.current = children;
+  // 读取失败（不存在/受限/超时）且没有旧缓存可展示的目录：渲染「加载失败，点击重试」占位行。
+  const [failed, setFailed] = useState<Set<string>>(new Set());
   // 小写缓存 key → 首次登记的原文形态路径。expanded/行 key 都是小写契约，
   // 若按 key 还原出的小写路径去 listDirectory，后端拼出的子条目 path 会带上小写前缀。
   const rawPathByKey = useRef<Map<string, string>>(new Map());
   // 已作废但尚未重读的目录：展开时 load 必须重读，不能拿旧缓存交差。
   const staleKeysRef = useRef<Set<string>>(new Set());
+  // 在飞的目录链请求：挂载时 load(root) 与 expanded effect 会在同一帧各发一次，
+  // 持久化展开目录之间也可能互为祖孙，不去重就会叠着读同一批目录。
+  const inFlightRef = useRef<Map<string, Promise<void>>>(new Map());
   // effect 里只读 ref：把 expanded 放进依赖会让每次展开/折叠都重跑一遍作废逻辑。
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -273,15 +281,40 @@ function useLazyChildren(
       if (!dir || isVirtualPath(dir)) return;
       const key = pathKey(dir);
       rawPathByKey.current.set(key, dir);
-      void listDirectory(dir)
-        .then((listing) => {
-          setChildren((prev) => new Map(prev).set(key, listing.entries));
+      // 同一目录已有请求在飞：直接复用。两条请求读的是同一份磁盘现状，
+      // 再发一条只是白读一遍目录链。
+      if (inFlightRef.current.has(key)) return;
+      // 重发即清失败标记：读回成功由 then 落数据，再失败 catch 会重新标上。
+      setFailed((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      const request = listDirectoryChain(dir)
+        .then((chain) => {
+          // 一次写入整条链：链合并的树在展开/恢复时只拿得到链首，后续层的
+          // 数据跟着首层一起落缓存，省掉「渲染→缺一层→补请求」的逐层瀑布。
+          setChildren((prev) => {
+            const next = new Map(prev);
+            for (const listing of chain) {
+              next.set(pathKey(listing.path), listing.entries);
+            }
+            return next;
+          });
         })
         .catch(() => {
-          // 首次读取失败（不存在/受限）：置空列表显示空目录，不触发红色横条；
+          // 首次读取失败（不存在/受限/超时）：标进失败集，渲染可点的重试占位行，不触发红色横条；
           // 已有缓存时刷新失败：保留旧内容（对齐 IDEA loadDir 的错误分级）。
-          setChildren((prev) => (prev.has(key) ? prev : new Map(prev).set(key, [])));
+          setFailed((prev) => {
+            if (prev.has(key) || childrenRef.current.has(key)) return prev;
+            return new Set(prev).add(key);
+          });
+        })
+        .finally(() => {
+          inFlightRef.current.delete(key);
         });
+      inFlightRef.current.set(key, request);
     },
     []
   );
@@ -332,7 +365,7 @@ function useLazyChildren(
     }
   }, [refresh, reloadDir]);
 
-  return { children, load, reloadDir };
+  return { children, failed, load, reloadDir };
 }
 
 export function ProjectTree({
@@ -462,7 +495,7 @@ export function ProjectTree({
     };
   }, []);
 
-  const { children, load, reloadDir } = useLazyChildren(refresh, expanded);
+  const { children, failed, load, reloadDir } = useLazyChildren(refresh, expanded);
 
   // 初始加载工作区物理根
   useEffect(() => {
@@ -481,6 +514,10 @@ export function ProjectTree({
 
   useEffect(() => {
     let active = true;
+    // 全量作废（安装收尾、整树重读）之后依赖目录可能整块换过，外部库缓存必须跟着重探——
+    // 之前这份缓存从来不失效，`npm i` 装完新依赖，外部库节点一直是旧的。
+    // 精确刷新只动几条路径，沿用上次的探测结果。
+    if (refresh.paths === null) invalidateLibrariesCache(root);
     void detectExternalLibraries(root).then((libs) => {
       if (active) setLibraries(libs);
     });
@@ -678,6 +715,8 @@ export function ProjectTree({
   }, [targetFiles]);
 
   // 构建完整的层次树模型 (TreeModel: roots + childrenMap)
+  // 本轮树模型构建发现「画成了展开而末端没有数据」的目录；构建完后在下方 effect 统一补加载。
+  const pendingChainLoads = useRef<Set<string>>(new Set());
   const treeModel = useMemo(() => {
     const roots: ProjectTreeNode[] = [];
     const childrenMap = new Map<string, ProjectTreeNode[]>();
@@ -695,6 +734,20 @@ export function ProjectTree({
       // Tree.tsx 收到 undefined 会渲染稳定固高(24px)的 loading 占位行，
       // 彻底消除异步加载前后虚拟列表高度突变导致的重影与拉扯！
       if (!children.has(pKey)) {
+        // 读取失败且无旧缓存：渲染可点的重试占位行，不再无限转圈（对齐 IDEA loadDir 错误分级）。
+        if (failed.has(pKey)) {
+          const retryNode: ProjectTreeNode = {
+            key: `${LOAD_FAILED_PREFIX}${dirPath}`,
+            displayName: t("explorer.loadFailedRetry"),
+            entry: makeVirtualDirectoryEntry("", `${dirPath}/__load_failed__`),
+            domain,
+            deepestPath: dirPath,
+            depth,
+            isExpanded: false,
+            hasChildren: false,
+          };
+          return [retryNode];
+        }
         return undefined;
       }
 
@@ -805,6 +858,12 @@ export function ProjectTree({
           const subChildren = buildChildrenForDir(endEntry.path, depth + 1, domain, groupNamespace);
           if (subChildren !== undefined) {
             childrenMap.set(node.key, subChildren);
+          } else if (isExp && !isVirtualPath(endEntry.path) && !failed.has(pathKey(endEntry.path))) {
+            // 链节点画成了展开态而末端目录没有数据：补一发加载。
+            // 恢复的展开 key 是链首（旧版/折叠持久化的形态），末端从来没人加载过，
+            // 只靠 expanded effect 会永远停在 loading。渲染期不做副作用，先收集、
+            // 构建完在 effect 里统一 load；读取失败的目录已在 failed 里，跳过防循环。
+            pendingChainLoads.current.add(endEntry.path);
           }
         } else {
           const fileKey = groupNamespace
@@ -976,6 +1035,7 @@ export function ProjectTree({
     scratchesDir,
     expanded,
     children,
+    failed,
     options,
     directoryRoles,
     targetFiles,
@@ -983,6 +1043,15 @@ export function ProjectTree({
     editing,
     t,
   ]);
+
+  // 树模型构建时发现缺数据的展开链末端：在这里统一补加载。
+  // 数据回来 children 更新、模型重算后不再缺失；读取失败的目录构建侧会跳过，不会打转。
+  useEffect(() => {
+    if (pendingChainLoads.current.size === 0) return;
+    const pending = [...pendingChainLoads.current];
+    pendingChainLoads.current.clear();
+    for (const dir of pending) load(dir);
+  }, [treeModel, load]);
 
   // 响应 pendingRevealRef：当树节点在 treeModel 中生成并可见时，平滑滚动至视口中央并高亮选中
   useEffect(() => {
@@ -1361,9 +1430,10 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
   const handleSelectionChange = useCallback(
     (selectedKeys: Set<string>, lead: ProjectTreeNode | null) => {
       const entries = [...selectedKeys]
+        .filter((k) => !k.startsWith(LOAD_FAILED_PREFIX))
         .map((k) => treeModel.byKey.get(k)?.entry)
         .filter((e): e is FsEntry => !!e);
-      onPick(entries.length ? entries : lead ? [lead.entry] : []);
+      onPick(entries.length ? entries : lead && !lead.key.startsWith(LOAD_FAILED_PREFIX) ? [lead.entry] : []);
     },
     [treeModel.byKey, onPick]
   );
@@ -1396,6 +1466,11 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
   // 节点激活（双击或按回车由 Tree 统一调度）
   const handleActivate = useCallback(
     (node: ProjectTreeNode) => {
+      // 「加载失败，点击重试」占位行：重新拉该目录，数据到达后占位行自然消失。
+      if (node.key.startsWith(LOAD_FAILED_PREFIX)) {
+        reloadDir(node.deepestPath);
+        return;
+      }
       if (node.hasChildren) {
         // 「单击展开」开启时，双击的第一段单击已经切过一次，这里再切就等于没变（对齐 IDEA 的 stopPropagation 语义）。
         if (options.singleClickExpand ?? true) return;
@@ -1404,7 +1479,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         onOpenFile(node.entry);
       }
     },
-    [options.singleClickExpand, toggleNodeExpanded, onOpenFile]
+    [options.singleClickExpand, toggleNodeExpanded, onOpenFile, reloadDir]
   );
 
   // 右键菜单
@@ -1412,9 +1487,10 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     (node: ProjectTreeNode | null, selection: Set<string>, e: ReactMouseEvent) => {
       e.preventDefault();
       const entries = [...selection]
+        .filter((k) => !k.startsWith(LOAD_FAILED_PREFIX))
         .map((k) => treeModel.byKey.get(k)?.entry)
         .filter((entry): entry is FsEntry => !!entry);
-      const target = entries.length ? entries : node ? [node.entry] : [];
+      const target = entries.length ? entries : node && !node.key.startsWith(LOAD_FAILED_PREFIX) ? [node.entry] : [];
       onContextMenu(target, { x: e.clientX, y: e.clientY }, node ?? undefined);
     },
     [treeModel.byKey, onContextMenu]

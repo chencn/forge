@@ -234,7 +234,7 @@ export default function ModelProvidersPanel() {
       <aside className="ai-cli-list" aria-label={t("providers.title")}>
         <div className="ai-cli-list-head">
           <span>{t("providers.title")}</span>
-          <button type="button" className="lsp-action" disabled={!desktop || busy}
+          <button type="button" className="panel-action" disabled={!desktop || busy}
             onClick={() => guard(() => select(emptyModelProvider("claude"), true))}>
             <Plus size={13} />{t("providers.add")}
           </button>
@@ -317,7 +317,7 @@ export default function ModelProvidersPanel() {
 
               {draft.kind === "claude" ? (
                 <>
-                  <button type="button" className="lsp-action" disabled={busy || !draft.apiUrl.trim()}
+                  <button type="button" className="panel-action" disabled={busy || !draft.apiUrl.trim()}
                     title={draft.apiUrl.trim() ? t("providers.fetchModels") : t("providers.fetchModelsNeedUrl")}
                     onClick={() => setPicking(true)}>
                     <ListPlus size={13} />{t("providers.fetchModels")}
@@ -359,7 +359,7 @@ export default function ModelProvidersPanel() {
                 </>
               ) : (
                 <div className="ai-cli-field">
-                  <button type="button" className="lsp-action" disabled={busy || !draft.apiUrl.trim()}
+                  <button type="button" className="panel-action" disabled={busy || !draft.apiUrl.trim()}
                     title={draft.apiUrl.trim() ? t("providers.fetchModels") : t("providers.fetchModelsNeedUrl")}
                     onClick={() => setPicking(true)}>
                     <ListPlus size={13} />{t("providers.fetchModels")}
@@ -382,13 +382,13 @@ export default function ModelProvidersPanel() {
           <div className="ai-manage-foot">
             {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
             <div className="ai-cli-actions">
-              {!isNew ? <button type="button" className="lsp-action" disabled={!desktop || busy} onClick={() => void apply()}>
+              {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void apply()}>
                 <Send size={13} />{t("providers.apply", { name: AI_NAMES[draft.kind] })}
               </button> : null}
-              {!isNew ? <button type="button" className="lsp-action" disabled={!desktop || busy} onClick={() => setPendingDelete(draft)}>
+              {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => setPendingDelete(draft)}>
                 <Trash2 size={13} />{t("providers.delete")}
               </button> : null}
-              <button type="button" className="lsp-action" disabled={!desktop || busy} onClick={() => void save()}>
+              <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void save()}>
                 {busy ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                 {busy ? t("ai.saving") : t("providers.save")}
               </button>
@@ -407,7 +407,7 @@ export default function ModelProvidersPanel() {
                 onChange={(slot) => fillSlot(slot, modelId)} />
             </span>
           ) : (
-            <button type="button" className="lsp-action" onClick={() => addEndpointCustom(modelId)}>
+            <button type="button" className="panel-action" onClick={() => addEndpointCustom(modelId)}>
               {t("providers.fetchModelsAdd")}
             </button>
           )} />

@@ -15,6 +15,30 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("AI runtime event store", () => {
+  // 流式期间每帧都会做一次增量投影。下面两条盯住写时复制的两条底线：没被这一批事件
+  // 碰过的条目必须原样保留身份（否则下游 memo 每帧全线失效），被碰过的也绝不能回头
+  // 改写上一帧快照里的对象（否则 React 会认为这一帧什么都没变）。
+  it("增量只替换被事件碰过的条目，其余保持原身份", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const first = projectAiEvents([event(1, "user", { text: "问" }), event(2, "text", { id: "m1", text: "答" })]);
+    const [user, assistant] = first.entries;
+    expect(first.entries).toHaveLength(2);
+    const next = projectAiEvents([event(3, "text", { id: "m1", text: "案" })], first, true);
+    expect(next.entries[0]).toBe(user);
+    expect((next.entries[1] as { text: string }).text).toBe("答案");
+    expect(next.entries[1]).not.toBe(assistant);
+    expect((first.entries[1] as { text: string }).text).toBe("答");
+  });
+  it("增量里失效的请求同样写时复制，不回头改写上一帧", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const first = projectAiEvents([event(1, "permission", { requestId: "r1", title: "改文件" })]);
+    const request = first.requests[0];
+    expect(request.active).toBe(true);
+    const next = projectAiEvents([event(2, "invalidated", { requestId: "r1", answer: "允许" })], first, true);
+    expect(next.requests[0].active).toBe(false);
+    expect(next.requests[0]).not.toBe(request);
+    expect(request.active).toBe(true);
+  });
   it("压缩身份延迟关联时合并已有卡片，增量与重放一致", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");
     const first = [event(1, "compaction", { episodeId: "run:1", status: "running" }),

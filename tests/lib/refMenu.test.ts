@@ -11,6 +11,8 @@ const base: RefMenuDeps = {
   current: "main",
   upstream: "",
   detached: false,
+  remotes: 1,
+  fresh: false,
   onAction: () => {},
   onCompareWith: () => {},
   onDiffWithWorktree: () => {},

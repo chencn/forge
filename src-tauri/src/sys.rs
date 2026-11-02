@@ -199,6 +199,152 @@ fn search_program(base: &str) -> String {
     String::new()
 }
 
+/// 真正拿得来的目录列表：进程 PATH，再加上几个装完不会立刻进 PATH 的常用位置。
+///
+/// 候选表（拼 PATH + 去重）进程内算一次就够，但「这个目录现在在不在」每次现问：
+/// `~/.cargo/bin`、`~/go/bin`、`%APPDATA%\npm` 正是装完才出现的，首轮就把它们筛掉的话，
+/// 应用自己装进去的东西从此再也认不出来，而且没有恢复入口。
+fn augmented_search_dirs() -> Vec<std::path::PathBuf> {
+    static CANDIDATES: OnceLock<Vec<std::path::PathBuf>> = OnceLock::new();
+    CANDIDATES
+        .get_or_init(augmented_search_dirs_scan)
+        .iter()
+        .filter(|dir| dir.is_dir())
+        .cloned()
+        .collect()
+}
+
+/// 候选表保序：PATH 里的那几档要排在补的常用位置前面，命中优先级才和 shell 一致。
+fn augmented_search_dirs_scan() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from);
+    if let Some(home) = home {
+        #[cfg(windows)]
+        {
+            if let Some(app_data) = std::env::var_os("APPDATA") {
+                dirs.push(std::path::PathBuf::from(app_data).join("npm"));
+            }
+            if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+                dirs.push(
+                    std::path::PathBuf::from(&local)
+                        .join("Programs")
+                        .join("Python")
+                        .join("Launcher"),
+                );
+                dirs.push(
+                    std::path::PathBuf::from(&local)
+                        .join("Microsoft")
+                        .join("WindowsApps"),
+                );
+            }
+            dirs.push(home.join(".cargo").join("bin"));
+            dirs.push(home.join("go").join("bin"));
+        }
+        #[cfg(not(windows))]
+        {
+            dirs.push(home.join(".local").join("bin"));
+            dirs.push(home.join(".npm-global").join("bin"));
+            dirs.push(home.join(".cargo").join("bin"));
+            dirs.push(home.join("go").join("bin"));
+            dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+            dirs.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+            dirs.push(std::path::PathBuf::from("/home/linuxbrew/.linuxbrew/bin"));
+        }
+    }
+    let mut seen = HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
+    dirs
+}
+
+/// 把常用安装目录拼成一条 PATH，起进程时用它覆盖继承来的那份。
+/// 每次现拼：里面装的目录会随安装动作变多，钉死了新装好的工具就进不了子进程的 PATH。
+pub fn augmented_path() -> std::ffi::OsString {
+    let dirs = augmented_search_dirs();
+    if dirs.is_empty() {
+        return std::env::var_os("PATH").unwrap_or_default();
+    }
+    std::env::join_paths(dirs.iter())
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// 解析出的命令缓存。命中/未命中都只信这么久，环境变化后能自愈。
+const RESOLVE_TTL: Duration = Duration::from_secs(10);
+
+type ResolveCache = Mutex<HashMap<String, (Instant, Option<String>)>>;
+
+/// 解析出一个程序的可执行路径，没装着返回 `None`。带 10 秒缓存。
+pub fn resolve_command(program: &str) -> Option<String> {
+    static CACHE: OnceLock<ResolveCache> = OnceLock::new();
+    let trimmed = program.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((at, hit)) = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(trimmed)
+    {
+        if at.elapsed() < RESOLVE_TTL {
+            return hit.clone();
+        }
+    }
+    let found = resolve_command_search(trimmed);
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(trimmed.to_string(), (Instant::now(), found.clone()));
+    found
+}
+
+/// 不带缓存的那段，方便单测直接喂一个目录列表。
+fn resolve_command_search(program: &str) -> Option<String> {
+    if program.contains('\\') || program.contains('/') {
+        let path = std::path::Path::new(program);
+        return path.is_file().then(|| program.to_string());
+    }
+    // Windows 上 PATH 里能起来的程序一定带扩展名。npm 的 cmd-shim 会生成三份 `foo`
+    // （无扩展名的 sh 脚本，给 Git Bash 之类用）、`foo.cmd`、`foo.ps1`，其中那份无扩展名的
+    // `CreateProcess` 认不了，选中它就报 os error 193。所以裸名字不进候选，一律按 `PATHEXT`
+    // 逐个补扩展名。`PATHEXT` 默认不含 `.ps1`，不补就会出现「探测说不存在、spawn 却能起来」。
+    let names: Vec<String> = if cfg!(windows) {
+        let pathext = std::env::var("PATHEXT")
+            .ok()
+            .filter(|value| value.contains('.'))
+            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+        let mut out: Vec<String> = pathext
+            .split(';')
+            .filter_map(|ext| {
+                let ext = ext.trim();
+                (!ext.is_empty()).then(|| format!("{program}{ext}"))
+            })
+            .collect();
+        if !out
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&format!("{program}.PS1")))
+        {
+            out.push(format!("{program}.ps1"));
+        }
+        out
+    } else {
+        vec![program.to_string()]
+    };
+    for dir in augmented_search_dirs() {
+        for name in &names {
+            let full = dir.join(name);
+            if full.is_file() {
+                return Some(full.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 /// 跑一条命令取一行文本输出。`java -version` 这类写在 stderr 的也算：先取 stdout，
 /// 空了就取 stderr。取不到回空串。
 pub fn capture_text(program: &str, args: &[&str]) -> String {
@@ -324,7 +470,7 @@ fn group(
         .collect();
     let host_count = host_instances.len().max(1) as u64;
 
-    // 1) 收集属于本实例独占的普通子进程（终端、LSP 等，排除 webview）
+    // 1) 收集属于本实例独占的普通子进程（终端等，排除 webview）
     let mut child_picked: Vec<&ProcInfo> = Vec::new();
     let mut child_seen: HashSet<u32> = HashSet::new();
     let mut child_queue: VecDeque<u32> = VecDeque::new();
@@ -415,7 +561,7 @@ fn group(
         count: 1,
     });
 
-    // 独占子进程（如终端、LSP）
+    // 独占子进程（如终端）
     for row in child_picked {
         let program = row.program.to_ascii_lowercase();
         let mb = read_bytes(row.pid) / MB;

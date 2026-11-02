@@ -1,6 +1,10 @@
 use crate::error::{err, err_parts};
 use crate::offload::block_value;
 use crate::sys::hide_console;
+
+mod ignore_rules;
+
+pub(crate) use ignore_rules::ignored_names_in_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -236,6 +240,16 @@ fn read_capped(reader: &mut impl std::io::Read, ceiling: usize) -> (Vec<u8>, boo
 }
 
 fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOutput, String> {
+    run_git_raw_env(root, args, stdin, &[])
+}
+
+/// 同 run_git_raw，另注入临时环境变量（shelf 的临时索引用 `GIT_INDEX_FILE`）。
+fn run_git_raw_env(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+    extra_envs: &[(&str, &std::ffi::OsStr)],
+) -> Result<GitOutput, String> {
     // 读的一律放行，写的排队，免得两条同时落进 `.git` 撞锁。
     let _queued = mutates_repo(args).then(git_write_lock);
     let mut command = Command::new("git");
@@ -258,6 +272,8 @@ fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOut
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
+        // 临时 index 等特殊调用从这里注入（在 env_remove 之后，能覆盖回 GIT_INDEX_FILE）。
+        .envs(extra_envs.iter().copied())
         // 中文文件名保持原样输出，不要八进制转义。
         .args(["-c", "core.quotepath=false", "--no-optional-locks"])
         .args(args);
@@ -489,7 +505,14 @@ fn in_progress(root: &Path) -> (bool, bool, bool, bool) {
 
 fn git_probe_impl(path: &str) -> GitProbe {
     let start = PathBuf::from(path);
-    let Ok(probe) = run_git(&start, &["rev-parse", "--show-toplevel"]) else {
+    // remote 不依赖仓库根：`git -C <子目录> remote` 与在根上跑结果一致。
+    // Windows 上每条命令的进程启动就要 ~85ms，两条并行，探测不再串行付两次。
+    let (root_result, remote_result) = std::thread::scope(|scope| {
+        let root = scope.spawn(|| run_git(&start, &["rev-parse", "--show-toplevel"]));
+        let remotes = scope.spawn(|| run_git(&start, &["remote"]));
+        (root.join(), remotes.join())
+    });
+    let Some(probe) = root_result.ok().and_then(|result| result.ok()) else {
         return GitProbe::unavailable();
     };
     if !probe.ok {
@@ -504,7 +527,9 @@ fn git_probe_impl(path: &str) -> GitProbe {
         };
     }
     let root = trim_line(&probe.stdout);
-    let remotes = run_git(Path::new(&root), &["remote"])
+    let remotes = remote_result
+        .ok()
+        .and_then(|result| result.ok())
         .map(|list| {
             list.stdout
                 .lines()
@@ -596,6 +621,12 @@ fn parse_status(stdout: &str) -> GitStatus {
             (payload, None)
         };
 
+        // `!!` 是「被忽略」条目（`--ignored=matching` 带出来的），不是工作区变更：
+        // 它由 parse_ignored 单独取走当忽略清单，这里必须丢掉，否则会被画成一条变更。
+        if codes == "!!" {
+            continue;
+        }
+
         if codes == "??" {
             changes.push(GitChange {
                 path: payload.to_string(),
@@ -630,6 +661,15 @@ fn parse_status(stdout: &str) -> GitStatus {
     }
 }
 
+/// 从 `git status --porcelain=v1 -z` 的输出里取被忽略的条目（`!! <路径>`）。
+fn parse_ignored(stdout: &str) -> Vec<String> {
+    stdout
+        .split('\0')
+        .filter(|token| token.len() > 3 && token.starts_with("!! "))
+        .map(|token| token[3..].to_string())
+        .collect()
+}
+
 #[tauri::command]
 pub async fn git_status(root: String) -> Result<GitStatus, String> {
     block(move || git_status_impl(root)).await
@@ -646,11 +686,17 @@ fn git_status_impl(root: String) -> Result<GitStatus, String> {
             "-z",
             "--branch",
             "--untracked-files=all",
+            // 顺带把忽略清单带回来给 git_ignored 用：这趟目录遍历是两条命令共有的开销，
+            // 实测单独跑 `--untracked-files=all` 与 `--ignored=matching` 各约 125ms，
+            // 一起跑仍是 125ms。忽略清单不是变更，parse_status 会丢掉 `!!` 条目。
+            "--ignored=matching",
         ],
     )?;
     if !output.ok {
         return Err(fail(&output));
     }
+    // 先从原始输出里取忽略清单再解析变更：解析会消耗掉一份迭代器，两者互不影响。
+    remember_ignored(&root, parse_ignored(&output.stdout));
     Ok(parse_status(&output.stdout))
 }
 
@@ -1036,18 +1082,28 @@ fn git_create_tag_impl(
     Ok(name)
 }
 
-/// 解析一个命名空间下的 `for-each-ref` 输出，每行 `全名<SEP>上游短名<SEP>符号引用目标`。
+/// 一次 `for-each-ref` 取回的全部分支与标签。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRefs {
+    pub branches: Vec<GitBranch>,
+    pub tags: Vec<GitTag>,
+}
+
+/// 解析分支与标签合并的 `for-each-ref` 输出，每行
+/// `HEAD 标记<SEP>全名<SEP>上游短名<SEP>符号引用目标<SEP>目标对象<SEP>创建时间`。
 ///
-/// `prefix` 是连末尾斜杠一起剥掉的命名空间。这里不能图省事用 `%(refname:short)`：
-/// git 会把 `refs/remotes/origin/HEAD` 折成 `origin`，那条符号引用就冒充成一支远程分支，
-/// 每个远端都多出一条不存在的分支。`<远端>/HEAD` 只用来标默认分支，不进列表。
-/// 解析一次 `for-each-ref` 的输出，本地与远程两条都从这一趟里出来。
+/// 这里不能图省事用 `%(refname:short)` 认分支：git 会把 `refs/remotes/origin/HEAD`
+/// 折成 `origin`，那条符号引用就冒充成一支远程分支，每个远端都多出一条不存在的分支。
+/// `<远端>/HEAD` 只用来标默认分支，不进列表。
 ///
 /// 字段第一位是 `%(HEAD)`：当前分支那行是 `*`，其余是空格。之前要再补一条
-/// `rev-parse --abbrev-ref HEAD` 才知道哪支是当前，而本地/远程还得各起一轮
-/// `for-each-ref`——凑齐这张表要三个 git 进程，每次刷新都付一遍。
-fn parse_refs(stdout: &str) -> Vec<GitBranch> {
+/// `rev-parse --abbrev-ref HEAD` 才知道哪支是当前，而本地/远程/标签还得各起一轮
+/// `for-each-ref`——凑齐这张表要三个 git 进程，每次刷新都付一遍（Windows 上每起一个
+/// 进程约 100ms，并发也省不掉那三次进程创建）。
+fn parse_refs(stdout: &str) -> GitRefs {
     let mut branches: Vec<GitBranch> = Vec::new();
+    let mut tags: Vec<GitTag> = Vec::new();
     let mut defaults: Vec<String> = Vec::new();
     for line in stdout.lines() {
         // 逐字段 trim：整行 trim 会把开头那个代表「不是当前」的空格字段一起吃掉，字段就错位了。
@@ -1057,6 +1113,27 @@ fn parse_refs(stdout: &str) -> Vec<GitBranch> {
         else {
             continue;
         };
+        // 标签那两列缺失就是空串，分支行用不到它们，别因此把分支整行丢掉。
+        let target = fields.next().unwrap_or("");
+        let created = fields.next().unwrap_or("");
+
+        if let Some(name) = full.strip_prefix("refs/tags/").filter(|name| !name.is_empty()) {
+            // 附注标签的 objectname 是标签对象自己的哈希，点层（*objectname）才是它指向的提交；
+            // 轻量标签没有标签对象，点层为空，退回原值。目标或时间读不出来就不展示这一条。
+            let Ok(created) = created.parse::<i64>() else {
+                continue;
+            };
+            if target.is_empty() {
+                continue;
+            }
+            tags.push(GitTag {
+                name: name.to_string(),
+                target: target.to_string(),
+                created_ms: created * 1000,
+            });
+            continue;
+        }
+
         let is_current = mark == "*";
         let (prefix, remote) = if full.starts_with("refs/heads/") {
             ("refs/heads/", false)
@@ -1088,67 +1165,33 @@ fn parse_refs(stdout: &str) -> Vec<GitBranch> {
     for branch in &mut branches {
         branch.default_ref = defaults.contains(&branch.name);
     }
-    branches
+    GitRefs { branches, tags }
 }
 
 #[tauri::command]
-pub async fn git_branches(root: String) -> Result<Vec<GitBranch>, String> {
-    block(move || git_branches_impl(root)).await
+pub async fn git_refs(root: String) -> Result<GitRefs, String> {
+    block(move || git_refs_impl(root)).await
 }
 
-fn git_branches_impl(root: String) -> Result<Vec<GitBranch>, String> {
+fn git_refs_impl(root: String) -> Result<GitRefs, String> {
     let root = ensure_root(&root)?;
     // for-each-ref 没有 -z；ref 名不会含换行。字段之间用 %1F 分隔，
-    // 上游或符号引用缺失时该字段就是空串，正好落到后面的解析里。
-    // 本地和远程两类一次问完，当前分支靠 %(HEAD) 那一位认，不再另起一次 rev-parse。
+    // 上游、符号引用、目标对象、创建时间缺失时该字段就是空串，正好落到后面的解析里。
+    // 分支与标签共用一趟：两类格式串拼在一起，按全名前缀分流。
     let output = run_git(
         &root,
         &[
             "for-each-ref",
-            "--format=%(HEAD)%1F%(refname)%1F%(upstream:short)%1F%(symref)",
+            "--format=%(HEAD)%1F%(refname)%1F%(upstream:short)%1F%(symref)%1F%(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)%1F%(creatordate:unix)",
             "refs/heads",
             "refs/remotes",
-        ],
-    )?;
-    if !output.ok {
-        return Err(fail(&output));
-    }
-    Ok(parse_refs(&output.stdout))
-}
-
-#[tauri::command]
-pub async fn git_tags(root: String) -> Result<Vec<GitTag>, String> {
-    block(move || git_tags_impl(root)).await
-}
-
-fn git_tags_impl(root: String) -> Result<Vec<GitTag>, String> {
-    let root = ensure_root(&root)?;
-    let output = run_git(
-        &root,
-        &[
-            "for-each-ref",
-            // 附注标签的 objectname 是标签对象自己的哈希，要点层（*objectname）才是它指向的提交；
-            // 轻量标签没有标签对象，点层为空，退回原值。
-            "--format=%(refname:short)%1F%(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)%1F%(creatordate:unix)",
             "refs/tags",
         ],
     )?;
     if !output.ok {
         return Err(fail(&output));
     }
-    Ok(output
-        .stdout
-        .lines()
-        .map(trim_line)
-        .filter_map(|line| {
-            let mut fields = line.split('\u{1f}');
-            Some(GitTag {
-                name: fields.next()?.to_string(),
-                target: fields.next()?.to_string(),
-                created_ms: fields.next()?.parse::<i64>().ok()? * 1000,
-            })
-        })
-        .collect())
+    Ok(parse_refs(&output.stdout))
 }
 
 /// 远端名列表，推送时取第一个作缺省目标。
@@ -1171,6 +1214,38 @@ fn git_remotes_impl(root: String) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// 忽略清单的时效兜底。规则文件变动由前端显式作废（`git_forget_ignored`）；
+/// 万一那次作废没送到（前端没起来、调用失败），最多陈旧这么久。
+const IGNORED_TTL: Duration = Duration::from_secs(10);
+
+fn ignored_cache() -> &'static Mutex<HashMap<String, (Instant, Vec<String>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Vec<String>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 记下这趟扫描看到的忽略清单；过期的条目顺手清掉（关掉的工程不会再来读它）。
+fn remember_ignored(root: &Path, list: Vec<String>) {
+    let key = probe_cache_key(&root.to_string_lossy());
+    let mut cache = lock(ignored_cache());
+    cache.retain(|_, (at, _)| at.elapsed() < IGNORED_TTL);
+    cache.insert(key, (Instant::now(), list));
+}
+
+/// 取最近一趟扫描留下的忽略清单；没有或过期给 None。
+fn cached_ignored(root: &Path) -> Option<Vec<String>> {
+    let key = probe_cache_key(&root.to_string_lossy());
+    lock(ignored_cache())
+        .get(&key)
+        .filter(|(at, _)| at.elapsed() < IGNORED_TTL)
+        .map(|(_, list)| list.clone())
+}
+
+/// 规则文件变了：丢掉这份清单，下次 `git_ignored` 重新扫。
+fn forget_ignored(root: &Path) {
+    let key = probe_cache_key(&root.to_string_lossy());
+    lock(ignored_cache()).remove(&key);
+}
+
 /// 被 .gitignore 忽略的路径，「显示忽略文件」开关用。
 #[tauri::command]
 pub async fn git_ignored(root: String) -> Result<Vec<String>, String> {
@@ -1179,43 +1254,29 @@ pub async fn git_ignored(root: String) -> Result<Vec<String>, String> {
 
 fn git_ignored_impl(root: String) -> Result<Vec<String>, String> {
     let root = ensure_root(&root)?;
+    // 刚刷过的 git_status 已经把清单带回来了，别再起一个进程走第二趟遍历。
+    if let Some(list) = cached_ignored(&root) {
+        return Ok(list);
+    }
     // -z：与 git_status 同理，含空格的忽略路径不做引号转义。
     let output = run_git(&root, &["status", "--porcelain=v1", "-z", "--ignored=matching"])?;
     if !output.ok {
         return Err(fail(&output));
     }
-    Ok(output
-        .stdout
-        .split('\0')
-        .filter(|token| token.len() > 3 && token.starts_with("!! "))
-        .map(|token| token[3..].to_string())
-        .collect())
+    let list = parse_ignored(&output.stdout);
+    // 自己扫的这一趟也记下来：同一份不变式——缓存就是「最近一趟扫描看到的东西」。
+    remember_ignored(&root, list.clone());
+    Ok(list)
 }
 
-/// 批量判断一个目录下的直接子项是否命中 Git 忽略规则。
-///
-/// 文件树只需要一趟目录读取的结果，不应该再把整仓库的 `status --ignored` 清单搬到前端
-/// 做前缀匹配。这里用同一个 git 进程接收所有名字；非仓库目录和无匹配都按空集处理，
-/// 这样外部库、用户目录等普通文件树不需要知道 Git 的存在。
-pub(crate) fn ignored_names_in_dir(dir: &Path, names: &[String]) -> HashSet<String> {
-    if names.is_empty() {
-        return HashSet::new();
-    }
-
-    let input = format!("{}\0", names.join("\0"));
-    let Ok(output) = run_git_stdin(dir, &["check-ignore", "--stdin", "-z"], &input) else {
-        return HashSet::new();
-    };
-    if !output.ok {
-        return HashSet::new();
-    }
-
-    output
-        .stdout
-        .split('\0')
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .collect()
+/// `.gitignore` / `.git/info/exclude` 一类规则文件变了：作废忽略清单，下次重新扫。
+#[tauri::command]
+pub async fn git_forget_ignored(root: String) -> Result<(), String> {
+    block(move || {
+        forget_ignored(&ensure_root(&root)?);
+        Ok(())
+    })
+    .await
 }
 
 /// 分支名字符集校验：只放常见写法，且不能以 - 或 . 开头被当成选项或非法 ref。
@@ -1466,6 +1527,465 @@ fn git_stash_drop_impl(root: String, index: u32) -> Result<String, String> {
 #[tauri::command]
 pub async fn git_stash_drop(root: String, index: u32) -> Result<String, String> {
     block(move || git_stash_drop_impl(root, index)).await
+}
+
+// ---------------------------------------------------------------- shelf（搁置区）
+
+/// 搁置区（Shelf，对齐 IDEA 的 Shelve Changes / Unshelve）：把选中文件的未提交改动
+/// 存成命名补丁并把工作区恢复到 HEAD；随时可以 unshelve 放回来（有冲突就留标记）。
+/// 存储在 `<repo>/.git/forge-shelf/<id>/`：`shelved.patch` + `shelf.json`，跟仓库走、
+/// 永不进版本控制。移植自 openidea `crates/ide-vcs/src/shelf.rs`。
+
+/// 一条搁置清单里的一个文件。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitShelfFile {
+    /// 相对仓库根的路径，正斜杠。
+    pub path: String,
+    /// A / D / M / R / T 之一（name-status 的字母）。
+    pub kind: String,
+    /// 改名前的路径；其余为空串。
+    #[serde(default)]
+    pub old_path: String,
+}
+
+/// 一条搁置清单（不含补丁正文）。
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitShelvedChangeList {
+    pub id: String,
+    pub name: String,
+    /// 搁置时刻的 unix 毫秒。
+    pub time_ms: i64,
+    /// 搁置时所在的分支；取不到为 null。
+    pub branch: Option<String>,
+    pub files: Vec<GitShelfFile>,
+}
+
+/// unshelve 的结果：干净落地的文件与带冲突标记留下的文件。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitShelfApplyOutcome {
+    pub applied: Vec<String>,
+    pub conflicts: Vec<String>,
+}
+
+const SHELF_PATCH: &str = "shelved.patch";
+const SHELF_INFO: &str = "shelf.json";
+
+fn shelf_dir(root: &Path) -> PathBuf {
+    root.join(".git").join("forge-shelf")
+}
+
+/// 搁置区条目目录：id 只能是单段普通名字，patch 文件必须真的在。
+fn shelf_entry(shelf: &Path, id: &str) -> Result<PathBuf, String> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.starts_with('.') {
+        return Err(err("BAD_SHELF_ID", id));
+    }
+    let dir = shelf.join(id);
+    if !dir.join(SHELF_PATCH).is_file() {
+        return Err(err("SHELF_NOT_FOUND", id));
+    }
+    Ok(dir)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShelfInfo {
+    name: String,
+    time_ms: f64,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    files: Vec<GitShelfFile>,
+}
+
+fn shelf_now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
+}
+
+/// 名字 → 目录 id：非字母数字压成下划线、去空段、截到 60 字符；空了给 "shelf"。
+fn shelf_slug(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let joined = mapped
+        .split('_')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    let cut = joined.char_indices().nth(60).map(|(i, _)| i).unwrap_or(joined.len());
+    let s = &joined[..cut];
+    if s.is_empty() { "shelf".to_string() } else { s.to_string() }
+}
+
+/// `.git/forge-index-<pid>-<序号>` 临时索引文件，Drop 时连同 .lock 一起删。
+struct TempIndex(PathBuf);
+
+impl TempIndex {
+    fn new(root: &Path) -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        TempIndex(root.join(".git").join(format!("forge-index-{}-{n}", std::process::id())))
+    }
+    fn envs(&self) -> [(&str, &std::ffi::OsStr); 1] {
+        [("GIT_INDEX_FILE", self.0.as_os_str())]
+    }
+}
+
+impl Drop for TempIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(self.0.with_extension("lock"));
+    }
+}
+
+fn has_head(root: &Path) -> Result<bool, String> {
+    Ok(run_git(root, &["rev-parse", "--verify", "-q", "HEAD"])?.ok)
+}
+
+/// 选中文件的二进制安全补丁（工作区相对 HEAD，含暂存与未跟踪，改名拆成删+增），
+/// 外加补丁触及的文件清单。用临时索引比对，真实索引不动。
+fn working_patch(root: &Path, rel_paths: &[String]) -> Result<(String, Vec<GitShelfFile>), String> {
+    if rel_paths.is_empty() {
+        return Err(err("BAD_SHELF_ID", "no files selected"));
+    }
+    let tmp = TempIndex::new(root);
+    let env = tmp.envs();
+    if has_head(root)? {
+        run_git_raw_env(root, &["read-tree", "HEAD"], None, &env)?;
+    } else {
+        run_git_raw_env(root, &["read-tree", "--empty"], None, &env)?;
+    }
+    let mut add: Vec<&str> = vec!["--literal-pathspecs", "add", "-A", "--"];
+    add.extend(rel_paths.iter().map(String::as_str));
+    let add_out = run_git_raw_env(root, &add, None, &env)?;
+    if !add_out.ok {
+        return Err(fail(&add_out));
+    }
+    let diff = run_git_raw_env(
+        root,
+        &["diff", "--cached", "--binary", "--full-index", "-M", "--no-color", "--no-ext-diff"],
+        None,
+        &env,
+    )?;
+    let names = run_git_raw_env(
+        root,
+        &["diff", "--cached", "--name-status", "-z", "--no-renames", "--no-color"],
+        None,
+        &env,
+    )?;
+    // name-status 的 -z 流：`code` + `path` 两个 token，R/C 多一条旧路径。
+    let mut files = Vec::new();
+    let mut tokens = names.stdout.split('\0').filter(|t| !t.is_empty());
+    while let Some(code) = tokens.next() {
+        let kind = code.chars().next().unwrap_or('M').to_string();
+        let (old_path, path) = if kind == "R" || kind == "C" {
+            let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else { break };
+            (old.to_string(), new.to_string())
+        } else {
+            let Some(path) = tokens.next() else { break };
+            (String::new(), path.to_string())
+        };
+        files.push(GitShelfFile { path, kind, old_path });
+    }
+    Ok((diff.stdout, files))
+}
+
+/// 恢复 `files` 到 HEAD（索引与工作区一起）；HEAD 里没有的（新增文件）从索引与磁盘移除。
+fn shelf_revert_files(root: &Path, files: &[GitShelfFile]) -> Result<(), String> {
+    let head = has_head(root)?;
+    let (in_head, new): (Vec<&GitShelfFile>, Vec<&GitShelfFile>) =
+        files.iter().partition(|f| head && f.kind != "A");
+    if !in_head.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"];
+        args.extend(in_head.iter().map(|f| f.path.as_str()));
+        let out = run_git(root, &args)?;
+        if !out.ok {
+            return Err(fail(&out));
+        }
+    }
+    if !new.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "rm", "--cached", "-q", "-r", "--ignore-unmatch", "--"];
+        args.extend(new.iter().map(|f| f.path.as_str()));
+        let out = run_git(root, &args)?;
+        if !out.ok {
+            return Err(fail(&out));
+        }
+        for f in new {
+            let abs = root.join(&f.path);
+            if abs.is_file() || abs.is_symlink() {
+                std::fs::remove_file(&abs).map_err(|e| err("FS", e.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 一份补丁按干净落地/冲突两路应用：先试普通应用，不行退到 --3way（冲突文件留
+/// 标记与未合并索引位，交给三向合并 UI）。对齐 openidea `patch::apply`。
+fn shelf_apply_patch(root: &Path, patch: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    let patch = patch.trim_end();
+    if patch.is_empty() {
+        return Err(err("BAD_PATCH", "patch is empty"));
+    }
+    let paths: Vec<String> = patch
+        .lines()
+        .filter_map(|line| line.strip_prefix("+++ b/").map(|p| p.to_string()))
+        .collect();
+    let stdin_patch = format!("{patch}\n");
+    let check = run_git_stdin(root, &["apply", "--check", "--binary", "-"], &stdin_patch)?;
+    if check.ok {
+        let out = run_git_stdin(root, &["apply", "--binary", "-"], &stdin_patch)?;
+        if !out.ok {
+            return Err(fail(&out));
+        }
+        return Ok((paths, Vec::new()));
+    }
+    let out = run_git_stdin(root, &["apply", "--3way", "--binary", "-"], &stdin_patch)?;
+    let unmerged = run_git(root, &["diff", "--name-only", "--diff-filter=U", "-z"])?;
+    let conflicts: Vec<String> = unmerged
+        .stdout
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !out.ok && conflicts.is_empty() {
+        return Err(fail(&out));
+    }
+    // --3way 会把它成功应用的部分写进索引；干净文件保持索引原样。
+    let clean: Vec<String> = paths.iter().filter(|p| !conflicts.contains(p)).cloned().collect();
+    if !clean.is_empty() && has_head(root)? {
+        let mut args = vec!["--literal-pathspecs", "reset", "-q", "--"];
+        args.extend(clean.iter().map(String::as_str));
+        let reset = run_git(root, &args)?;
+        if !reset.ok {
+            return Err(fail(&reset));
+        }
+    }
+    Ok((clean, conflicts))
+}
+
+/// 搁置：把 `paths` 的未提交改动存成一条命名清单并恢复工作区。
+fn git_shelve_impl(root: String, name: String, paths: Vec<String>) -> Result<GitShelvedChangeList, String> {
+    let root = ensure_root(&root)?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(err("BAD_SHELF_NAME", &name));
+    }
+    // 绝对路径 → 相对仓库根（前端传来的是 absoluteOf 的绝对路径）。
+    let root_prefix = format!("{}/", root.to_string_lossy().replace('\\', "/"));
+    let rel_paths: Vec<String> = paths
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .map(|p| p.strip_prefix(&root_prefix).map(str::to_string).unwrap_or(p))
+        .collect();
+    let (patch, files) = working_patch(&root, &rel_paths)?;
+    if files.is_empty() || patch.trim().is_empty() {
+        return Err(err("EMPTY_SHELF", &name));
+    }
+    let shelf = shelf_dir(&root);
+    std::fs::create_dir_all(&shelf).map_err(|e| err("FS", e.to_string()))?;
+    let base = shelf_slug(&name);
+    let mut id = base.clone();
+    let mut n = 1;
+    while shelf.join(&id).exists() {
+        n += 1;
+        id = format!("{base}_{n}");
+    }
+    let dir = shelf.join(&id);
+    std::fs::create_dir_all(&dir).map_err(|e| err("FS", e.to_string()))?;
+    let info = ShelfInfo {
+        name: name.clone(),
+        time_ms: shelf_now_ms(),
+        branch: None,
+        files: files.clone(),
+    };
+    let write = || -> Result<(), String> {
+        std::fs::write(dir.join(SHELF_PATCH), patch.as_bytes()).map_err(|e| err("FS", e.to_string()))?;
+        std::fs::write(
+            dir.join(SHELF_INFO),
+            serde_json::to_vec_pretty(&info).map_err(|e| err("FS", e.to_string()))?,
+        )
+        .map_err(|e| err("FS", e.to_string()))?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e);
+    }
+    shelf_revert_files(&root, &files)?;
+    Ok(GitShelvedChangeList {
+        id,
+        name: info.name,
+        time_ms: info.time_ms as i64,
+        branch: info.branch,
+        files,
+    })
+}
+
+/// 搁置区清单，最新在前。
+fn git_shelves_impl(root: String) -> Result<Vec<GitShelvedChangeList>, String> {
+    let root = ensure_root(&root)?;
+    let shelf = shelf_dir(&root);
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&shelf) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.join(SHELF_PATCH).is_file() {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let info = std::fs::read(dir.join(SHELF_INFO))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<ShelfInfo>(&bytes).ok())
+            .unwrap_or_else(|| ShelfInfo {
+                name: id.clone(),
+                time_ms: 0.0,
+                branch: None,
+                files: Vec::new(),
+            });
+        out.push(GitShelvedChangeList {
+            id,
+            name: info.name,
+            time_ms: info.time_ms as i64,
+            branch: info.branch,
+            files: info.files,
+        });
+    }
+    out.sort_by(|a, b| b.time_ms.cmp(&a.time_ms).then_with(|| a.name.cmp(&b.name)));
+    Ok(out)
+}
+
+/// 放回搁置的改动；`remove` 在无冲突时顺带删除条目（有冲突条目保留）。
+fn git_unshelve_impl(root: String, id: String, remove: bool) -> Result<GitShelfApplyOutcome, String> {
+    let root = ensure_root(&root)?;
+    let patch = std::fs::read_to_string(shelf_entry(&shelf_dir(&root), &id)?.join(SHELF_PATCH))
+        .map_err(|e| err("FS", e.to_string()))?;
+    let (applied, conflicts) = shelf_apply_patch(&root, &patch)?;
+    if remove && conflicts.is_empty() {
+        std::fs::remove_dir_all(shelf_dir(&root).join(&id)).map_err(|e| err("FS", e.to_string()))?;
+    }
+    Ok(GitShelfApplyOutcome { applied, conflicts })
+}
+
+fn git_shelf_delete_impl(root: String, id: String) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    std::fs::remove_dir_all(shelf_entry(&shelf_dir(&root), &id)?).map_err(|e| err("FS", e.to_string()))?;
+    Ok(String::new())
+}
+
+fn git_shelf_rename_impl(root: String, id: String, name: String) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(err("BAD_SHELF_NAME", &name));
+    }
+    let dir = shelf_entry(&shelf_dir(&root), &id)?;
+    let mut info: ShelfInfo = std::fs::read(dir.join(SHELF_INFO))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(ShelfInfo {
+            name: String::new(),
+            time_ms: shelf_now_ms(),
+            branch: None,
+            files: Vec::new(),
+        });
+    info.name = name;
+    std::fs::write(
+        dir.join(SHELF_INFO),
+        serde_json::to_vec_pretty(&info).map_err(|e| err("FS", e.to_string()))?,
+    )
+    .map_err(|e| err("FS", e.to_string()))?;
+    Ok(String::new())
+}
+
+/// 冲突文件的三个版本（index stage）：ours=2、theirs=3、base=1（stage 1 可能没有）。
+/// `reversed`：变基/恢复 stash 撞出的冲突里 git 把「别人的」写进 stage 2、你的写进
+/// stage 3，两侧语义对调（对齐 openidea 的 MergeSides.reversed）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConflictVersions {
+    pub ours: String,
+    pub theirs: String,
+    pub base: Option<String>,
+    pub reversed: bool,
+}
+
+fn show_conflict_stage(root: &Path, relative: &str, stage: u32, path: &str) -> Result<Option<String>, String> {
+    let spec = format!(":{stage}:{relative}");
+    let output = run_git(root, &["show", spec.as_str()])?;
+    if !output.ok {
+        // stage 不存在（比如新增文件没有 base）不是错；别的失败照实报。
+        let missing = !run_git(root, &["cat-file", "-e", spec.as_str()])
+            .map(|probe| probe.ok)
+            .unwrap_or(true);
+        if missing {
+            return Ok(None);
+        }
+        return Err(fail(&output));
+    }
+    // 同 git_index_show：二进制 blob 按内容探测（前 8KB 有 NUL）。
+    if output.stdout.as_bytes()[..output.stdout.len().min(8192)].contains(&0) {
+        return Err(err("BINARY", path));
+    }
+    Ok(Some(output.stdout))
+}
+
+fn git_conflict_versions_impl(root: String, path: String) -> Result<GitConflictVersions, String> {
+    let root = ensure_root(&root)?;
+    let relative = relative_path(&root, &path)?;
+    let ours = show_conflict_stage(&root, &relative, 2, &path)?;
+    let theirs = show_conflict_stage(&root, &relative, 3, &path)?;
+    let base = show_conflict_stage(&root, &relative, 1, &path)?;
+    match (ours, theirs) {
+        (Some(ours), Some(theirs)) => {
+            // 变基、以及没有进行中操作的未合并（恢复 stash 撞冲突）都要把两侧对调；
+            // merge / cherry-pick / revert 的 stage 2 本来就是你的（对齐 openidea 判定）。
+            let (merge, rebase, cherry_pick, revert) = in_progress(&root);
+            let reversed = rebase || !(merge || cherry_pick || revert);
+            Ok(GitConflictVersions { ours, theirs, base, reversed })
+        }
+        // 没有 stage 2/3 说明这不是未合并文件，三栏编辑器无从谈起。
+        _ => Err(err("NOT_CONFLICTED", &path)),
+    }
+}
+
+#[tauri::command]
+pub async fn git_conflict_versions(root: String, path: String) -> Result<GitConflictVersions, String> {
+    block(move || git_conflict_versions_impl(root, path)).await
+}
+
+#[tauri::command]
+pub async fn git_shelve(root: String, name: String, paths: Vec<String>) -> Result<GitShelvedChangeList, String> {
+    block(move || git_shelve_impl(root, name, paths)).await
+}
+
+#[tauri::command]
+pub async fn git_shelves(root: String) -> Result<Vec<GitShelvedChangeList>, String> {
+    block(move || git_shelves_impl(root)).await
+}
+
+#[tauri::command]
+pub async fn git_unshelve(root: String, id: String, remove: bool) -> Result<GitShelfApplyOutcome, String> {
+    block(move || git_unshelve_impl(root, id, remove)).await
+}
+
+#[tauri::command]
+pub async fn git_shelf_delete(root: String, id: String) -> Result<String, String> {
+    block(move || git_shelf_delete_impl(root, id)).await
+}
+
+#[tauri::command]
+pub async fn git_shelf_rename(root: String, id: String, name: String) -> Result<String, String> {
+    block(move || git_shelf_rename_impl(root, id, name)).await
 }
 
 /// 重命名分支。
@@ -2515,9 +3035,9 @@ fn git_commit_file_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        git_authors_impl, git_commit_detail_impl, git_log_impl, git_probe_impl,
-        git_restore_file_impl, git_show_impl, git_status_impl, merge_file_lists, parse_log,
-        parse_refs, parse_status, read_capped, valid_range, valid_rev, GitLogQuery,
+        forget_ignored, git_authors_impl, git_commit_detail_impl, git_ignored_impl, git_log_impl,
+        git_probe_impl, git_restore_file_impl, git_show_impl, git_status_impl, merge_file_lists,
+        parse_log, parse_refs, parse_status, read_capped, valid_range, valid_rev, GitLogQuery,
     };
     // relative_path 的用例直接拿 &Path 当根，这里补上类型导入。
     use std::path::Path;
@@ -2588,7 +3108,7 @@ mod tests {
              \u{1f}refs/remotes/origin/main\u{1f}\u{1f}\n\
              \u{1f}refs/heads/main\u{1f}origin/main\u{1f}\n",
         );
-        let names: Vec<&str> = refs.iter().map(|branch| branch.name.as_str()).collect();
+        let names: Vec<&str> = refs.branches.iter().map(|branch| branch.name.as_str()).collect();
         assert_eq!(names, vec!["origin/dev", "origin/main", "main"]);
     }
 
@@ -2598,8 +3118,8 @@ mod tests {
             " \u{1f}refs/remotes/origin/HEAD\u{1f}\u{1f}refs/remotes/origin/main\n\
              \u{1f}refs/remotes/origin/main\u{1f}\u{1f}\n",
         );
-        assert!(refs[0].default_ref);
-        assert!(!refs[0].current, "远端默认分支不是当前分支");
+        assert!(refs.branches[0].default_ref);
+        assert!(!refs.branches[0].current, "远端默认分支不是当前分支");
     }
 
     #[test]
@@ -2607,10 +3127,26 @@ mod tests {
         let refs = parse_refs(
             "*\u{1f}refs/heads/main\u{1f}origin/main\u{1f}\n \u{1f}refs/heads/dev\u{1f}\u{1f}\n",
         );
-        assert_eq!(refs[0].upstream, "origin/main");
-        assert!(refs[0].current);
-        assert!(!refs[0].default_ref);
-        assert!(!refs[1].current);
+        assert_eq!(refs.branches[0].upstream, "origin/main");
+        assert!(refs.branches[0].current);
+        assert!(!refs.branches[0].default_ref);
+        assert!(!refs.branches[1].current);
+    }
+
+    /// 分支与标签共用一趟 `for-each-ref`：同一条输出里两种前缀各归各的，
+    /// 别把标签当成分支、也别把分支塞进标签表。附注标签取点层目标而不是标签对象哈希。
+    #[test]
+    fn tags_and_branches_are_split_from_one_ref_listing() {
+        let refs = parse_refs(
+            "*\u{1f}refs/heads/main\u{1f}origin/main\u{1f}\u{1f}abc1234\u{1f}1700000000\n\
+             \u{1f}refs/tags/v1.0\u{1f}\u{1f}\u{1f}9f8e7d6\u{1f}1700000100\n",
+        );
+        assert_eq!(refs.branches.len(), 1);
+        assert_eq!(refs.branches[0].name, "main");
+        assert_eq!(refs.tags.len(), 1);
+        assert_eq!(refs.tags[0].name, "v1.0");
+        assert_eq!(refs.tags[0].target, "9f8e7d6", "要的是标签指向的提交");
+        assert_eq!(refs.tags[0].created_ms, 1_700_000_100_000);
     }
 
     #[test]
@@ -2832,6 +3368,64 @@ mod tests {
         assert_eq!(resolved, target_dir);
 
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// 忽略清单跟着变更扫描一起回来：`git_status` 跑过之后 `git_ignored` 读的就是那份，
+    /// 不再起第二个进程；规则文件改了要显式作废才重扫。
+    #[test]
+    fn ignored_list_rides_along_with_the_status_scan_until_forgotten() {
+        let dir = std::env::temp_dir().join(format!("forge-git-ignored-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |repo: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .output()
+                .expect("起 git 进程失败（测试机需要装 git）");
+            assert!(
+                output.status.success(),
+                "git {:?} 失败：{}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let root = dir.to_string_lossy().into_owned();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/out.txt"), "x").unwrap();
+
+        // 变更扫描顺带把忽略条目带回来，但它们不是变更，不能混进清单。
+        let status = git_status_impl(root.clone()).unwrap();
+        assert!(
+            status.changes.iter().all(|change| !change.path.starts_with("build")),
+            "被忽略的路径不该算变更：{:?}",
+            status.changes.iter().map(|c| c.path.as_str()).collect::<Vec<_>>()
+        );
+        let ignored = git_ignored_impl(root.clone()).unwrap();
+        assert!(
+            ignored.iter().any(|path| path.starts_with("build")),
+            "应带上被忽略的 build/：{:?}",
+            ignored
+        );
+
+        // 规则清了但没作废：读到的还是上一趟扫描的清单——证明走的是缓存，没重新扫。
+        std::fs::write(dir.join(".gitignore"), "").unwrap();
+        assert!(
+            git_ignored_impl(root.clone()).unwrap().iter().any(|path| path.starts_with("build")),
+            "作废之前读到的仍是上一趟扫描的清单"
+        );
+
+        // 显式作废之后重扫，拿到新规则下的清单；这一趟也进缓存。
+        forget_ignored(&dir);
+        assert!(
+            git_ignored_impl(root.clone()).unwrap().is_empty(),
+            "规则清空后不该还有忽略项"
+        );
+        assert!(git_ignored_impl(root.clone()).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 真跑 git 进程的端到端冒烟。上面的解析器测试喂的是手写字符串，真实输出里

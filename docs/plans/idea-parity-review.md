@@ -93,7 +93,7 @@
 ### 行为/键位
 - **E-17（L）**：smartKeys 整组缺（Tab 跳出括号、引号跳过、粘贴自动缩进、智能退格、camelHumps、smartHome…）。
 - **E-18（L）**：行操作命令面缺（选区重复、语句移动、joinLines、toggleCase、sortLines、unwrap、completeStatement、选区栈 Ctrl+W、Alt+/ 词补全…）。
-- **E-19（M）**：多光标手势（Ctrl+Alt+↑↓ 应为出现处导航、Alt+Shift+click、列选开关；forge Ctrl+click 加选与 LSP 跳转冲突漏出）。
+- **E-19（M）**：多光标手势（Ctrl+Alt+↑↓ 应为出现处导航、Alt+Shift+click、列选开关；forge Ctrl+click 加选漏出）。
 - **E-20（M）**：注释行为（caret 停位、行注释风格可配、行注释内回车续注释）。
 - **E-21（M/L）**：折叠（无后端折叠、Ctrl+- 不向上找包含光标的折叠区、无选区折叠/递归）。
 - **E-22（L）**：查找缺范围/排除/注释字符串过滤/保大小写/命中进概览条（自研 FindBar vs CM 内置面板）。
@@ -106,7 +106,6 @@
 
 ### 后台
 - **E-33（M）**：保存卫生缺（formatOnSave/裁尾随空白/末换行）。CRLF/BOM/冲突处理两边等价（forge 不弱）。
-- **E-34（L）**：LSP 缺 rename/Alt+Enter/签名帮助/inlay hints 四大件。
 - **E-35（M）**：诊断缺 tags 专属样式/info 点线；forge 挂了 lintGutter（IDEA 明确「无 lint gutter」）。
 - **E-36（S，待验证）**：大文件 8MB 降级开关。
 
@@ -125,7 +124,7 @@
 6. **默认行高**（E-02）：13px 字号配 22px（IDEA）还是 20px？
 7. **tabSize 默认**（E-39）：2 还是 4？要不要缩进探测 + .editorconfig？
 8. **forge 独有增强去留**：勿扰模式、原生系统通知、删除进度框、Escape 取消剪切、danger 红样式——建议全部保留（IDEA 无对应物，均为增量），默认不动，除非你想删。
-9. **编辑器大功能**（E-17/E-18/E-22/E-25/E-26/E-34 各 L 级）：smartKeys/行操作命令面/自研 FindBar/stickyScroll/codeLens/LSP 四大件——按批拍板做不做、先做哪批。
+9. **编辑器大功能**（E-17/E-18/E-22/E-25/E-26/E-34 各 L 级）：smartKeys/行操作命令面/自研 FindBar/stickyScroll/codeLens——按批拍板做不做、先做哪批。
 
 ## 建议执行批次（拍板后按批做）
 
@@ -156,12 +155,11 @@
 
 1. **P1**：已清空；下一批按优先级进入 E-23/E-19/E-20/E-33/E-35/E-39
 2. **P2**：T-06、T-10、T-11、T-12、T-18、T-19、T-20、T-21、T-22、T-25、T-26、T-31、T-34、T-35、E-19、E-20、E-23、E-33、E-35、E-39、N-21、N-27
-3. **L 级大件**：E-17（smartKeys）、E-18（行操作命令面）、E-21（折叠增强）、E-22（自研 FindBar）、E-25（stickyScroll）、E-26（codeLens）、E-29（剪贴板历史）、E-34（LSP rename/Alt+Enter/签名/inlay）、E-09（概览条汇聚）、E-11~14（折行悬挂/空白符/硬换行参考线/外观开关组）、E-30 剩余语言（zig/nix/gdscript/dotenv/gitattributes/gowork/godot-resource/terraform-vars/objective-c++——legacy-modes 无源，需自写语法或补 toml 包）、T-04 删除快照（目录级）
+3. **L 级大件**：E-17（smartKeys）、E-18（行操作命令面）、E-21（折叠增强）、E-22（自研 FindBar）、E-25（stickyScroll）、E-26（codeLens）、E-29（剪贴板历史）、E-09（概览条汇聚）、E-11~14（折行悬挂/空白符/硬换行参考线/外观开关组）、E-30 剩余语言（zig/nix/gdscript/dotenv/gitattributes/gowork/godot-resource/terraform-vars/objective-c++——legacy-modes 无源，需自写语法或补 toml 包）、T-04 删除快照（目录级）
 
 ### T-24 本轮实施与 Review（2026-10-30）
 
 - `src/features/project-tree/contextMenu.ts` 的 Git 子菜单补齐 Fetch、Put Label；文件动作补齐 Reformat code、Optimize Imports、Find Usages。
-- `Optimize Imports` 通过 CodeMirror 命令请求整篇文档的 `textDocument/codeAction`，限定 `source.organizeImports`，结果继续走 `LspManager.applyWorkspaceEdit` 或 `LspManager.executeCommand`。
 - `Put Label…` 复用 App 已有的 `newTag` 对话框和 `git.createTag`，没有新增 Git 状态模型。
 - Review 核实 rollback 后端使用 `git restore --worktree`：空 revision 从 index 恢复，未跟踪文件经确认后移入回收站；因此不是 `unstage`。
 - Review 核实 Compare With 固定打开 HEAD/工作区差异，Terminal 使用选中目标目录，Mark Directory 的 source/test/resources/excluded 角色写入设置。

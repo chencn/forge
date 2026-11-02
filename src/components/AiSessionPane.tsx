@@ -18,8 +18,9 @@ import { assetUrl } from "../lib/fs";
 import { aiArrival, aiArrivalOf, formatAiClock, formatAiSeconds, useAiElapsed } from "../lib/aiClock";
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { compactionFacts } from "../lib/aiCompaction";
-import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiCapabilities, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, respondAiRequest, runQueuedAiTaskNow, sendAiAgentMessage, sendAiMessage, setAiGoalStatus, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
+import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiCapabilities, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, reconcileStaleQueuedTask, respondAiRequest, runQueuedAiTaskNow, sendAiAgentMessage, sendAiMessage, setAiGoalStatus, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
 import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiThreadGoal, AiPermissionDenied } from "../lib/aiRuntime";
+import { describeError } from "../lib/errors";
 import { buildNavRows, NAV_PAGE, visibleNavRows, parseNavPrompt } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
@@ -430,6 +431,14 @@ function AiTurnAnchor({
       {hovered ? <AiTurnPeekPopover row={row} onJump={onJump} /> : null}
     </div>
   );
+}
+
+/** 逐项按引用比较两个数组：投影层写时复制之后，元素身份就是「有没有真变」的判据。 */
+function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+  return true;
 }
 
 /**
@@ -1495,7 +1504,9 @@ export default function AiSessionPane({
         await sendAiAgentMessage(session.id, workspace, text);
         commitDraft(""); setBrowse(null);
         setAnchor(null); setAtBottom(true); scrollToBottom();
-      } catch (cause) { setError(String(cause)); }
+      } catch (cause) {
+        setError(reconcileStaleQueuedTask(queueEdit?.runId ?? "", cause) ? t("ai.queue.stale") : describeError(String(cause), t));
+      }
       finally { sendingRef.current = false; setSending(false); }
       return;
     }
@@ -1562,6 +1573,12 @@ export default function AiSessionPane({
     finally { sendingRef.current = false; setSending(false); }
   };
   const queuedTasks = aiQueueOrder(runtime.tasks);
+  /** 队列操作失败：撞上 NOT_QUEUED（任务已开始/结束/别的窗口排的）就清掉本窗口的过期
+   *  登记并刷新队列，红条用短话；其余错误按稳定码翻成人话。没有这一步，同一个
+   *  幽灵按钮可以无限重复触发同一句后端拒绝。 */
+  const failQueueAction = (runId: string, cause: unknown) => {
+    setError(reconcileStaleQueuedTask(runId, cause) ? t("ai.queue.stale") : describeError(String(cause), t));
+  };
   const ownedQueued = useMemo(() => new Set(ownedQueuedRunIds), [ownedQueuedRunIds]);
   const ownedQueuedTasks = queuedTasks.filter((task) => ownedQueued.has(task.runId));
   /** WebView2 会接管 HTML5 文件拖放；队列排序必须用 Pointer Events 才能在 Tauri 中生效。 */
@@ -1600,7 +1617,7 @@ export default function AiSessionPane({
     const beforeRunId = drag.drop.edge === "after" ? ownedQueuedTasks[targetIndex + 1]?.runId ?? null : drag.drop.runId;
     if (beforeRunId === drag.runId) return;
     captureQueueFlip();
-    void moveQueuedAiTask(drag.runId, beforeRunId).catch((cause) => setError(String(cause)));
+    void moveQueuedAiTask(drag.runId, beforeRunId).catch((cause) => failQueueAction(drag.runId, cause));
   };
   const runningTask = runtime.tasks.find((task) => task.status === "running");
   const connectingTask = activity === "running" && ownedRunId
@@ -1618,11 +1635,23 @@ export default function AiSessionPane({
    * 用户只能看到进度条空转几十秒，以为卡住了——那件事本身要说出来。
    */
   // 项目目标库未包含 ES2023，倒序查找不依赖 findLast。
-  const latestCompaction = [...runtime.entries].reverse().find((entry) => entry.name === "compaction" && entry.runId === runningTask?.runId);
+  // 直接按下标从尾往头扫：`[...entries].reverse()` 每帧都要拷一份完整时间线再反转，
+  // 在流式刷新的热路径上纯属浪费。
+  const latestCompaction = useMemo(() => {
+    for (let i = runtime.entries.length - 1; i >= 0; i -= 1) {
+      const entry = runtime.entries[i]!;
+      if (entry.name === "compaction" && entry.runId === runningTask?.runId) return entry;
+    }
+    return undefined;
+  }, [runtime.entries, runningTask?.runId]);
   const compactionStatus = (latestCompaction?.input as Record<string, unknown> | undefined)?.status;
   const compacting = compactionStatus === "running" || compactionStatus === "compacting"
     || !latestCompaction && runningTask?.prompt?.trim().split(/\s+/, 1)[0] === COMPACT_COMMAND_TEXT;
-  const requestsById = new Map(runtime.requests.map((request) => [request.requestId, request]));
+  /** 请求 id → 请求：每次渲染重建一张 Map 是打字卡顿的直接来源，按 requests 身份缓存。 */
+  const requestsById = useMemo(
+    () => new Map(runtime.requests.map((request) => [request.requestId, request])),
+    [runtime.requests]
+  );
   /** 已有请求卡的工具 id 集合：同一次提问的工具记录给请求卡让位，不画第二张。 */
   const requestToolIds = useMemo(() => new Set(runtime.requests.flatMap((request) => request.toolId ? [request.toolId] : [])), [runtime.requests]);
   /** 存在提问请求卡的轮次：旧日志的请求里没有 toolId，按「轮次里出现过提问卡」让位同样成立。 */
@@ -1650,6 +1679,7 @@ export default function AiSessionPane({
   const editSummary = useMemo(() => summarizeAiFileEdits(replyTurns.at(-1)?.items ?? []), [replyTurns]);
   // 子代理条目（带 parent 归属）不再平铺主时间线：按归属挂进对应 Task 委派卡展开看。
   // 若当前本身就是子代理会话，则时间线即为其专属视图，必须完整展示，不进行 parent 过滤。
+  const subagentCache = useRef(new Map<string, AiEntry[]>());
   const subagentChildren = useMemo(() => {
     if (isAgentSession) return new Map<string, AiEntry[]>();
     const map = new Map<string, AiEntry[]>();
@@ -1659,6 +1689,13 @@ export default function AiSessionPane({
       if (list) list.push(entry);
       else map.set(entry.parent, [entry]);
     }
+    // 子代理条目绝大多数时候是静止的：这一组的每条与上一帧逐项同引用就沿用旧数组，
+    // 否则 AiChatEntryRow 的 memo 会因为 subagents 这个 prop 每帧换身份而整片重渲染。
+    for (const [key, list] of map) {
+      const before = subagentCache.current.get(key);
+      if (before && sameItems(before, list)) map.set(key, before);
+    }
+    subagentCache.current = map;
     return map;
   }, [isAgentSession, runtime.entries]);
   const timelineEntries = useMemo(() => isAgentSession ? runtime.entries : runtime.entries.filter((entry) => !entry.parent), [isAgentSession, runtime.entries]);
@@ -1719,15 +1756,29 @@ export default function AiSessionPane({
   /** 正在流式输出的那条回复：给它做未闭合围栏的修复，免得半截代码块吞掉后面的字。 */
   const streamingEntryId = running ? runtime.entries.at(-1)?.id ?? null : null;
   /** 每轮最后一条顶层条目 → 该轮的文件汇总：轮内 edits 统计同底栏口径（不含子代理的改动）。 */
+  const artifactCache = useRef(new Map<string, { count: number; last: AiEntry; summary: AiEditSummary }>());
   const artifactsByLastEntry = useMemo(() => {
     const map = new Map<string, AiEditSummary>();
+    const cache = new Map<string, { count: number; last: AiEntry; summary: AiEditSummary }>();
     for (const group of replyTurns) {
       // 正在跑的这一轮先不挂卡：改动还在往里加，挂上去就是一张数字一直跳的卡。
       if (running && group.runId === runtime.runId) continue;
+      // 已经收尾的轮次不会再被事件改动（投影层写时复制保证没变过的条目身份不变），
+      // 条目数与最后一条都还是上次那两个，就直接取上次的汇总：diff 逐行解析比重算一遍贵得多。
+      const before = artifactCache.current.get(group.last.id);
+      if (before && before.count === group.items.length && before.last === group.last) {
+        cache.set(group.last.id, before);
+        map.set(group.last.id, before.summary);
+        continue;
+      }
       // 汇总卡挂在顶层该轮最后一个条目之后（不论收尾是消息、工具调用还是通知，只要有改动就必须呈现）。
       const summary = summarizeAiFileEdits(group.items);
-      if (summary.fileCount) map.set(group.last.id, summary);
+      if (summary.fileCount) {
+        cache.set(group.last.id, { count: group.items.length, last: group.last, summary });
+        map.set(group.last.id, summary);
+      }
     }
+    artifactCache.current = cache;
     return map;
   }, [replyTurns, runtime.runId, running]);
   // 会话状态与任务状态共用同一批词；认不出就当 idle，让判定回到任务列表本身。
@@ -2119,7 +2170,7 @@ export default function AiSessionPane({
             {queueExpanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
             <ListOrdered size={14} aria-hidden /><strong>{t("ai.runtime.queue")}</strong><small>{queuedTasks.length}</small>
           </button>
-          {ownedQueuedTasks.length ? <button type="button" className="ai-task-queue-clear" onClick={() => void clearQueuedAiTasks(session.id).catch((cause) => setError(String(cause)))}>{t("ai.runtime.clearQueue")}</button> : null}
+          {ownedQueuedTasks.length ? <button type="button" className="ai-task-queue-clear" onClick={() => void clearQueuedAiTasks(session.id).catch((cause) => setError(describeError(String(cause), t)))}>{t("ai.runtime.clearQueue")}</button> : null}
         </header>
         <div className="ai-task-queue-list" id={queueBodyId} hidden={!queueExpanded}>
         {queuedTasks.map((task, index) => { const owned = ownedQueued.has(task.runId); const ownedIndex = ownedQueuedTasks.findIndex((item) => item.runId === task.runId); return <div key={task.runId} data-queue-id={task.runId} aria-current={editingTask?.runId === task.runId ? "true" : undefined}
@@ -2138,16 +2189,16 @@ export default function AiSessionPane({
                 : ownedQueuedTasks[ownedIndex + 2]?.runId ?? null;
               if (event.key === "ArrowUp" && !beforeRunId || event.key === "ArrowDown" && ownedIndex >= ownedQueuedTasks.length - 1) return;
               event.preventDefault(); captureQueueFlip();
-              void moveQueuedAiTask(task.runId, beforeRunId ?? null).catch((cause) => setError(String(cause)));
+              void moveQueuedAiTask(task.runId, beforeRunId ?? null).catch((cause) => failQueueAction(task.runId, cause));
             }}><GripVertical size={14} aria-hidden /></span>
           {/* 序号属于任务正文，不属于拖拽图标；用普通文本保持列表阅读顺序。 */}
           <span className="ai-task-queue-index" aria-hidden>{index + 1}.</span>
           <p title={task.prompt}>{task.prompt || t("ai.runtime.queuedTask")}</p>
           {owned ? <span className="ai-task-queue-actions">
             {/* 队列是高频操作区：正文占主位，右侧只留图标；完整语义由 title 与 aria-label 承担。 */}
-            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => setError(String(cause)))}><Send size={14} aria-hidden /></button>
+            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => failQueueAction(task.runId, cause))}><Send size={14} aria-hidden /></button>
             <button type="button" className="ai-task-action" aria-label={t("ai.runtime.editQueued")} title={t("ai.runtime.editQueued")} onClick={() => beginQueuedEdit(task.runId, task.prompt ?? "")}><Pencil size={14} aria-hidden /></button>
-            <button type="button" className="ai-task-action is-danger" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => setError(String(cause)))}><X size={14} aria-hidden /></button>
+            <button type="button" className="ai-task-action is-danger" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => failQueueAction(task.runId, cause))}><X size={14} aria-hidden /></button>
           </span> : <small className="ai-task-queue-owner">{t("ai.runtime.otherWindow")}</small>}
         </div>; })}
         </div>
@@ -2281,9 +2332,9 @@ export default function AiSessionPane({
           <button type="button" className="icon-button is-inline ai-queue-edit-cancel" aria-label={t("dialog.cancel")} title={t("dialog.cancel")} disabled={sending} onClick={cancelQueuedEdit}><X size={14} /></button>
           <button type="button" className="ai-send-button" aria-label={t("ai.runtime.saveQueued")} title={t("ai.runtime.saveQueued")} disabled={!draft.trim() || sending} onClick={() => void send()}><Check size={16} /></button>
         </> : activity === "running" && ownedRunId && (running || connectingTask)
-          ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} disabled={runtime.stopping} onClick={() => void stopAiRun(ownedRunId).catch((cause) => setError(String(cause)))}><Square size={13} fill="currentColor" /></button>
+          ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} disabled={runtime.stopping} onClick={() => void stopAiRun(ownedRunId).catch((cause) => failQueueAction(ownedRunId, cause))}><Square size={13} fill="currentColor" /></button>
           : ownedQueuedTasks.length
-            ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} onClick={() => void stopAiRun(ownedQueuedTasks[0].runId).catch((cause) => setError(String(cause)))}><Square size={13} fill="currentColor" /></button>
+            ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} onClick={() => void stopAiRun(ownedQueuedTasks[0].runId).catch((cause) => failQueueAction(ownedQueuedTasks[0].runId, cause))}><Square size={13} fill="currentColor" /></button>
             : <button type="button" className="ai-send-button" aria-label={t("ai.send")} title={t("ai.send")} disabled={!workspace || !cliDesktopAvailable() || !draft.trim() && !images.length || sending} onClick={() => void send()}><Send size={16} /></button>}
       </>}
     />

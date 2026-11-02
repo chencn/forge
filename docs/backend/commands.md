@@ -5,7 +5,7 @@
 非 AI 命令里发事件的只有六条：`fs_watch_start` 起的每条转发线程发 `fs://change{root,paths}`，
 `delete_entry` 降级物理删除时发 `fs://delete-progress{count,current}`（送回收站那条不发），`term_open` 的 reader 线程发
 `term://output` / `term://exit`，`proc_start` 的转发与轮询线程发 `proc://output` / `proc://exit`，
-`lsp_start` 的两条读线程发 `lsp://message` / `lsp://log` / `lsp://exit`，内置浏览器那八条 `browser_panel_*`
+内置浏览器那八条 `browser_panel_*`
 在每次改动页面状态后统一发 `forge-browser-changed{}`（载荷是空的，面板只把它当「重新拉一次 `browser_panel_state`」）。
 `app://flush` 由窗口关闭事件和托盘菜单的「退出」触发，不经命令。其余写命令不发事件：磁盘上的动静统一经
 `fs://change` 回来，git 状态由前端在写完之后再调一次 `git_status`。
@@ -127,26 +127,6 @@ AI 助手另有 `ai_cli` / `ai_runtime` 两族命令，本文件只收录其中�
 | `run_state_load` | `root` | `ProjectRunState` | 按工程键读 `runConfigs.json` 那一份；只落用户自己建的条目与三个 id 列表 | `run/store.rs:72` |
 | `run_state_save` | `root, state` | `()` | 写盘前过一遍 `keepable`：识别出来的、没有命令的都不留 | `run/store.rs:87` |
 
-## 语言服务（12）
-
-会话身份是 `<窗口>::<server 键>::<根>` 三段拼接的字符串，它同时就是 `lsp_write` / `lsp_stop` 接收的 id。
-`program` / `args` / `root` 由前端按 `lsp.json` 计算后传入，后端不再自行读取配置，避免两处口径不一致。
-探测（`lsp_probe`）与安装（`lsp_install`）不触碰会话，只修改配置并执行一次性命令。
-
-| 命令 | 参数 | 返回 | 副作用 / 事件 | 出处 |
-| --- | --- | --- | --- | --- |
-| `lsp_start` | `window, server, root, program, args` | `String`（会话 id） | 启动进程（三路管道、非 PTY）与两条读线程；启动前先按配置扫描空闲会话与总数上限；身份已在表内时直接返回原 id，不重复启动；同一身份正在启动时后到的请求等待其结果（条件变量，不重复 spawn）。找不到可执行文件返回 `LSP_NOT_FOUND`，spawn 失败返回 `LSP_SPAWN`，管道未建立返回 `LSP_IO`；退避期内返回 `LSP_START_BACKOFF`（剩余等待毫秒数、上次失败原因），连续失败超过 2 次返回 `LSP_START_LIMIT`。发送 `lsp://message{id,body}`、`lsp://log{id,text}`、`lsp://exit{id,code}` | `lsp.rs:341` |
-| `lsp_write` | `id, body` | `()` | 补齐 `Content-Length` 头（按字节数）后写入 stdin，同时将该会话的「最后使用时间」更新到当前时刻；会话已回收时返回 `LSP_GONE` | `lsp.rs:616` |
-| `lsp_stop` | `id` | `()` | 先执行 `taskkill /F /T /PID` 终止整棵进程树，再结束壳进程；`lsp://exit` 由读线程补发 | `lsp.rs:637` |
-| `lsp_reap` | — | `()` | 回收上一次页面遗留的全部会话，不报错 | `lsp.rs:671` |
-| `lsp_session_statuses` | `window?` | `SessionStatus[]` | 只读，实时采集：`try_lock` + `try_wait`。`running` 仅表示进程存在，不表示服务器已完成索引；锁被占用时上报 `running` 并附「本轮未采集到」；从未启动成功的条目按失败记录合成一条 `dead`，id 前缀与当前窗口不符时不列出；按 server、根排序 | `lsp.rs:698` |
-| `lsp_failed` | `id, message` | `()` | 供前端上报握手超时等情况，计入同一套退避记录，不报错 | `lsp.rs:801` |
-| `lsp_retry` | `id` | `()` | 手动重试：回收残留会话并清除失败记录，下一次 `lsp_start` 可立即重试 | `lsp.rs:811` |
-| `lsp_config_load` | — | `LspConfig` | 读取 `<app_config_dir>/lsp.json`；文件不存在时按种子生成一份，并顺带迁移同目录 `settings.json` 中的 `lsp` 段；JSON 解析失败同样回退为种子并重写文件，不报错 | `lsp_config.rs:576` |
-| `lsp_config_save` | `config` | `()` | 归一化（非法档位与空字段按种子补齐）后 `to_string_pretty` 原子写入 `lsp.json`，目录不存在时先创建 | `lsp_config.rs:582` |
-| `lsp_resolve_root` | `server, workspaceRoot, file?` | `RootHit{root,marker}` 或 null | 按配置中的 `rootMarkers` 确定真正的项目根：先从文件所在目录向上查找（不越过 `workspaceRoot`），未命中时再从 `workspaceRoot` 向下扫描 2 层，跳过 `node_modules` / `.git` / `target` / `dist` / `build` / `out` / `vendor` / `__pycache__` / `.venv`；标志表为空时直接返回 `workspaceRoot`；结果缓存 60 秒；目录不存在或未命中一律返回 null，不报错 | `lsp_detect.rs:215` |
-| `lsp_probe` | — | `LspProbeReport{config,servers[]}` | 逐项探测是否已安装：进程 PATH 加几个常用安装位置（`%APPDATA%\npm`、`WindowsApps`、`~/.cargo/bin`、`~/go/bin`、`/usr/local/bin`、`/opt/homebrew/bin` 等），按 `PATHEXT` 构造候选并补充 `.ps1`，rust-analyzer 额外执行一次 `--version` 以排除占位垫片；单次结果缓存 10 秒。档位不是 `off` 而本机未安装的一律落回 `off`（编辑器换成 CodeMirror 之后没有「渲染进程里的内置语义」可退，`builtin` 与 `lsp` 都得真起一条进程，故两档同规矩，`lsp_probe.rs:353`），安装完成后不自动启用；确有改动才写回 `lsp.json`（无改动不落盘），校正后的配置随报告带回；不报错 | `lsp_probe.rs:310` |
-| `lsp_install` | `server` | `InstallResult{command,output,exitCode}` | 使用系统 shell 执行配置中的 `installCommand`（Windows `%COMSPEC% /D /C`，其余 `/bin/sh -c`），不设超时（全局安装通常需要数分钟）；输出只保留尾部 32 KiB。该项不存在回 `LSP_NO_SERVER`，未配置安装命令回 `LSP_NO_INSTALL`，shell 无法启动回 `LSP_INSTALL_SPAWN` | `lsp_probe.rs:316` |
 
 ## 设置与系统（7）
 
@@ -208,7 +188,7 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 
 | 文件 | 内容 |
 | --- | --- |
-| `src-tauri/src/lib.rs` | 注册表全表 `:88-299`；`browser::browser_panel_*` 八条打头 `:89-96`、`fs` 段 `:97-110` 加 `:115-116`、`local_history` 段 `:111-114`、`watch` 段 `:117-118`、`git` 段 `:119-166`、`term` / `term_layout` / `proc` 段 `:167-179`、run 那几条 `:180-185`、`lsp` 族 `:186-197`、`history` / `settings` / `shell_open` / `tray` / `sys` 段 `:198-208`、`update` 段 `:209-216`、AI 那几族 `:217-298`。Tauri 的命令宏不穿 `pub use`，那几条 run 命令按 `run::detect::…` / `run::store::…` / `run::dep_sync::…` 全路径注册；`browser::init` 挂在 setup `:73`，`browser::shutdown` 挂在退出清理 `:309` |
+| `src-tauri/src/lib.rs` | 注册表全表 `:88-299`；`browser::browser_panel_*` 八条打头 `:89-96`、`fs` 段 `:97-110` 加 `:115-116`、`local_history` 段 `:111-114`、`watch` 段 `:117-118`、`git` 段 `:119-166`、`term` / `term_layout` / `proc` 段 `:167-179`、run 那几条 `:180-185`、`history` / `settings` / `shell_open` / `tray` / `sys` 段 `:198-208`、`update` 段 `:209-216`、AI 那几族 `:217-298`。Tauri 的命令宏不穿 `pub use`，那几条 run 命令按 `run::detect::…` / `run::store::…` / `run::dep_sync::…` 全路径注册；`browser::init` 挂在 setup `:73`，`browser::shutdown` 挂在退出清理 `:309` |
 | `src-tauri/src/browser/mod.rs` | `Grant` `:49-55`、`Tab` 与 `#[serde(skip)]` 那几格 `:56-93`、`State`（endpoint / unavailable / pending_close / enabled 四样都在这张表里）`:104-`、`init` 只登记状态 `:138`、`start` 的版本闸与管道名 `:147`、`attach` 的三重早退 `:230`、`permissions_changed` 的撤权与遮罩复位 `:246`、`shutdown` `:268`、`changed` 发的事件 `:272`、`sync_capability` `:279`、`settings_saved` `:290`、`create` 的 16 页上限与两处回滚 `:428-482`、`managed_private_target` `:495`、八条命令 `:672-994`、`panel_tab` `:847` 与主线程只读镜像的 `panel_tab_mirror` `:856`、`PanelCommand` `:878-889`、`Bounds` `:665` |
 | `src-tauri/src/browser/surface.rs` | `ui()` 的放弃标志（超时之后 closure 不再派发）`:6-`、`create` `:86`、`cdp` 的派发复查 `:298`、`show` `:385`、`close` `:449`；非 Windows 那一组空实现 `:529-556` |
 | `src-tauri/src/browser/launch.rs` | `companion()` 两档文件名（先 `<stem>-<target triple>.exe`，再 cargo 的裸名）`:8`、`environment()` 注入 endpoint 与 token `:69` |
@@ -221,11 +201,7 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 | `src-tauri/src/run/mod.rs` | `RunKind` `:14-63`（二十四族：npm / maven / gradle / spring / java / go / wails / rust / python / dotnet / php / ruby / dart / scala / elixir / cpp / zig / deno / clojure / haskell / julia / lua / swift / shell）、`EnvVar` `:68`、`HelperFile` `:77`、`Unavailable` `:85`、`RunConfiguration` `:95` |
 | `src-tauri/src/run/detect.rs` | 边界常量 `:47-68`、`RunDetectOutcome` `:74-77`、`Tools` `:83-90`、`MainClass`（带装订线落点）`:106-117`、`npm_client` 的锁文件认客户端 `:152`、行号三件套 `line_at :176` / `line_of :186` / `object_key_lines :201`（数 JSON 里每个键主张在哪一行）、`has_main_method :375`、`jvm_markers :390`、`is_go_main_package :407`、`is_python_entry :418`、`program_missing`（非 JVM 那几族的缺工具判定）`:427`、`python_program :438`、`toml_tables :449`、`run_tools`（`async`，命令体经 `offload::block_value`）`:533`、`tools_cached :541`、`tool` 的 wrapper 优先与缺工具 `:616-648`、`location` 的相对参数 `:649`、npm `:661`、maven `:728`、gradle `:815`、`bare_java :913`、主类扫描 `:957`、`java_exec_script :1033`、golang（含 `wails.json` 那条早退）`:1062`、`go_main_packages :1124`、`marker_at`（一个源文件里那条模式所在的行）`:1191`、rust `:1203`、python `:1286`、`python_marker :1380`、`python_package_entry :1387`、`bare_python :1408`、dotnet `:1431`、`push_simple`（长尾那十几族共用的一口）`:1485`、php `:1505`、ruby `:1559`、dart `:1600`、scala `:1616`、elixir `:1623`、native（CMake 与 Makefile）`:1652`、zig `:1686`、deno `:1705`、clojure `:1750`、haskell `:1768`、julia `:1785`、lua `:1805`、swift `:1819`、`source_where :1869`、`bare_shell :1906`、`kind_rank :1932`、`run_detect`（`async`，命令体经 `offload::block`）`:1963`、`run_detect_impl`（真正干活的那层，单测直接调它）`:1967-2015` |
 | `src-tauri/src/run/store.rs` | `ProjectRunState` `:24-33`、`run_state_load` `:72`、`keepable` `:81`、`run_state_save` `:87-117` |
-| `src-tauri/src/lsp.rs` | 缓冲上限常量、会话表与 `Session`（含 `last_used_ms`）、失败记录 `Failure` 与 `RESTART_LIMIT` 2、`backoff` 的 `5s*2^n` 封顶 300 秒 `:84`、`SessionStatus` `:139`、`parse_args` 的双引号规则 `:168`、`build_command` 的 `.cmd` / `.bat` 走 `cmd /C` `:198`、`session_id` 三段拼接 `:222`、起锁 `:241`、`backoff_error` `:260`、`sweep` 的空闲回收与 LRU 淘汰 `:297`、`spawn_session`（含 `env_remove` 那两条调试器变量）`:382`、`read_loop` 的 `Content-Length` 解帧 `:459`、`stderr_loop`、`take_message` `:575`、`stop_one` 的 `taskkill /F /T`、`lsp_session_statuses` 的现采与合成 `:698`、单测。模块级设计与取舍见 [../features/lsp-language-servers/](../features/lsp-language-servers/) |
-| `src-tauri/src/lsp_config.rs` | `LspServerConfig` / `LspConfig`、`allowed_modes`、种子表、`DEFAULT_MAX_SESSIONS` `:354` 与 `DEFAULT_IDLE_TIMEOUT_MIN` `:356`、`default_config` `:371`、`effective_program` 的 path 优先、`normalize`、`clamp`、`migrate_from_settings`、`load_in` `:491`、`save_in` `:529`、探测结构 `LspServerProbe` / `LspProbeReport`、两条命令 `:576` 与 `:582`、单测 |
-| `src-tauri/src/lsp_probe.rs` | `PROBE_TTL` 10 秒 `:21`、`OUTPUT_TAIL` 32 KiB `:24`、`candidates` 的 `PATHEXT` 与补 `.ps1`、`search_dirs` 的补目录、`augmented_path` `:150`、`is_functional` 的 rust-analyzer `--version`、`resolve_command` 与缓存 `:190`、`run_install` 的 shell 选择与按字符取尾、`probe_and_reconcile` 的单向校正、两条命令 `:310` 与 `:316`、单测 |
-| `src-tauri/src/lsp_detect.rs` | `CACHE_TTL` 60 秒 `:16`、`MISS_TTL` 5 秒 `:19`、`CACHE_LIMIT` 512 `:21`、`MAX_DEPTH` 2 `:23`、`SKIP_DIRS` 九项 `:25`、`marker_matches`（`*` 前缀名）、`hit_in`、`search_up`、`search_down`、`resolve` 的标志表为空原样回根 `:146`、`cached`、命令壳 `:215`、单测 |
-| `src-tauri/src/settings.rs` | `read` `:320`、`settings_load` `:330`、`read_document` `:339`、`apply_patch` `:359`、`settings_save` `:384`（按字段合并落盘；`lsp` 段已搬去 `lsp.json`，历史四项已搬去 `history.json`，旧文件里那些键读到就原样留着） |
+| `src-tauri/src/settings.rs` | `read` `:320`、`settings_load` `:330`、`read_document` `:339`、`apply_patch` `:359`、`settings_save` `:384`（按字段合并落盘；历史四项已搬去 `history.json`，旧文件里那些键读到就原样留着） |
 | `src-tauri/src/history.rs` | `History` 字段（含 `openFolders` / `activeFolder`）、`migrate_from_settings`、`load_in` / `save_in`、`read`、`history_load` `:111` / `history_save` `:117`、单测（缺字段回落默认、多根字段往返） |
 | `src-tauri/src/tray.rs` | `tray_labels` `:68-76`、`app_exit` `:122-126` |
 | `src-tauri/src/ai_runtime/checkpoint.rs` | 上限 `MAX_FILE_BYTES` 8 MiB 与 `MAX_FILES` 32 `:16-18`、`normalize_paths` `:35`、`take_snapshot` `:54`、`record` `:88`、`restore` `:98`、`append_event` `:127`、链式恢复测试 `:181` |
@@ -233,6 +209,4 @@ checkpoint 的两条不在外层拿 `IO_LOCK`：锁由 `checkpoint::append_event
 | `src-tauri/src/sys.rs` | `hide_console` 的 `CREATE_NO_WINDOW` `:5-11`、`write_atomic` 的 tmp+rename `:25-33`、`which_program` 的 Windows 扩展名候选 `:65-76`、`capture_text`（stdout 空了取 stderr）`:80-101`、`group` 的 ppid 走树与按程序归并 `:154-212`、`win::private_set_of` `:305-316`、`win::snapshot` `:319-341`、`sys_memory` `:369-376`、单测 4 条 `:378` 起 |
 | `src-tauri/src/watch.rs` | `SETTLE` 150ms `:20`、`MAX_WAIT` 1s `:24`、`BATCH_CAP` 256 `:28`、`FsChange{root,paths}` `:33-36`、`WatchSlot` `:45`、`ignorable_git_internal` `:89`、`fs_watch_start` `:174-264`、`fs_watch_stop` `:261-283` |
 | `src/lib/fs.ts` | `findFiles` / `searchText` `:226-233`、搜索结果的 TS 镜像 `:147-223` |
-| `src/lib/lsp.ts` | 会话状态、探测报告、安装结果、根命中的 TS 镜像 `:26-68`、十二条命令的封装 `:71-132`（`lspStart` 收 `window` / `server` / `root` / `program` / `args` `:71`） |
-| `src/lib/lspConfig.ts` | `LspMode` 与两份结构的镜像 `:12-46`、`modesFor` `:49`、`programOf` 的 path 优先 `:54`、`serverEntries` / `serverForLanguage` `:59-70`、读写两条封装 `:72-83` |
-| `src/lib/errors.ts` | LSP 那九条码（`:78-89`）的文案见 [error-model.md](./error-model.md) 的稳定代码表 |
+| `src/lib/errors.ts` | 稳定错误码的文案映射见 [error-model.md](./error-model.md) |

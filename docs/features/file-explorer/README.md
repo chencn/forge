@@ -91,7 +91,6 @@ WebView2 自带的「刷新 / 打印 / 检查」被两道闸挡住：`src-tauri/
 | 5 | 复制路径 | 无 | 整批一次复制，绝对路径按 `\n` 连接 |
 | 5 | 在系统文件管理器中打开 / 用关联应用打开 | 无 | 都只在恰好一项时出现；后者只给文件 |
 | 6 | Git 子菜单 | 无 | 有仓库时出现：暂存、Fetch、历史、回滚、Put Label、推送、拉取和分支入口；回滚对已跟踪文件执行 `git restore --worktree`，对未跟踪文件先确认后移入回收站 |
-| 7 | 文件级编辑器动作 | 无 | 单文件出现 Reformat code、Optimize Imports、Find Usages；Optimize Imports 只请求 `source.organizeImports`，通过 LSP Manager 应用编辑或执行命令 |
 | 8 | 在目录中查找 | 无 | 开了工程才出现，作用层按上面那条口径取，点开的是随处搜索的文本页签，词取编辑器选区，见 [../search/](../search/) |
 | 9 | 比较文件 | 无 | 恰好两个文件时比较两份磁盘文本；单文件的 Compare With… 固定比较 HEAD 与当前工作区，并保留已打开文档的未保存正文 |
 | 10 | 刷新 | 无 | 树重读加 git 状态重取 |

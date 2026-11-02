@@ -300,7 +300,7 @@ function ProviderPicker({ boundId, choices, applying, missing, onPick, onApply }
         <em className="ai-cli-hint">{t("ai.cfg.providerApplyHint")}</em>
       ) : null}
       {boundId ? (
-        <button type="button" className="lsp-action" disabled={applying} onClick={onApply}>
+        <button type="button" className="panel-action" disabled={applying} onClick={onApply}>
           {applying ? <Loader2 size={13} className="is-spinning" /> : <Send size={13} />}
           {t("ai.cfg.providerApply")}
         </button>
@@ -988,7 +988,7 @@ function EnabledAiCliSettingsPanel() {
                   <strong>{t("ai.checks.title")}</strong>
                   <span className="ai-muted">{t("ai.checks.count", { count: allChecks.length })}</span>
                 </div>
-                <button type="button" className="lsp-action" disabled={!desktop || checking[current]}
+                <button type="button" className="panel-action" disabled={!desktop || checking[current]}
                   onClick={() => { void refreshStatus(current); }}>
                   {checking[current] ? <Loader2 size={13} className="is-spinning" /> : <RefreshCw size={13} />}
                   {t("ai.checks.refresh")}
@@ -1030,7 +1030,7 @@ function EnabledAiCliSettingsPanel() {
               {status?.installed && !status.canUpdate && !status.canUninstall ? <p className="ai-notice">{t("ai.externalHint")}</p> : null}
               <div className="ai-cli-actions">
                 {(["install", "update", "uninstall"] as const).map((action) => (
-                  <button key={action} type="button" className="lsp-action"
+                  <button key={action} type="button" className="panel-action"
                     disabled={!desktop || busy || !canManageCli(status, action)}
                     onClick={() => setPending({ provider: current, action })}>
                     {cli.operation?.provider === current && cli.operation.action === action
@@ -1071,7 +1071,7 @@ function EnabledAiCliSettingsPanel() {
                 {envNotice?.provider === current
                   ? <p className={envNotice.error ? "ai-error" : "ai-success"} role="status">{envNotice.text}</p>
                   : <span />}
-                <button type="button" className="lsp-action" disabled={!desktop || store.saving || envSaving === current}
+                <button type="button" className="panel-action" disabled={!desktop || store.saving || envSaving === current}
                   onClick={() => void saveEnv(current)}>
                   {envSaving === current ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                   {envSaving === current ? t("ai.saving") : t("ai.env.save")}
@@ -1444,7 +1444,7 @@ function EnabledAiCliSettingsPanel() {
                 {manageNotice?.provider === current
                   ? <p className={manageNotice.error ? "ai-error" : "ai-success"} role="status">{manageNotice.text}</p>
                   : <p className="ai-cli-hint">{t("ai.cfg.applyHint")}</p>}
-                <button type="button" className="lsp-action" disabled={!desktop || managedBusy}
+                <button type="button" className="panel-action" disabled={!desktop || managedBusy}
                   onClick={() => current === "claude" ? void saveClaudeManage() : void saveCodexManage()}>
                   {managedBusy ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                   {managedBusy ? t("ai.saving") : t("ai.cfg.save")}
@@ -1465,7 +1465,7 @@ function EnabledAiCliSettingsPanel() {
                     {(customModels[current] ?? []).map((model) => (
                       <div className="ai-custom-model-row" key={model}>
                         <code title={model}>{model}</code>
-                        <button type="button" className="lsp-action" disabled={customBusy} onClick={() => void dropCustomModel(model)}>
+                        <button type="button" className="panel-action" disabled={customBusy} onClick={() => void dropCustomModel(model)}>
                           <Trash2 size={13} />{t("ai.custom.remove")}
                         </button>
                       </div>
@@ -1483,7 +1483,7 @@ function EnabledAiCliSettingsPanel() {
                           placeholder={t("ai.custom.placeholder")} aria-label={t("ai.custom.placeholder")}
                           onChange={(event) => setCustomDraft(event.target.value)}
                           onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void addCustomModel(); } }} />
-                        <button type="button" className="lsp-action" disabled={customBusy || !customDraft.trim()} onClick={() => void addCustomModel()}>
+                        <button type="button" className="panel-action" disabled={customBusy || !customDraft.trim()} onClick={() => void addCustomModel()}>
                           {customBusy ? <Loader2 size={13} className="is-spinning" /> : <Plus size={13} />}
                           {t("ai.custom.add")}
                         </button>
@@ -1521,7 +1521,7 @@ function EnabledAiCliSettingsPanel() {
                   <span className="ai-muted">{t("ai.config.hint", { backup: ".forge.bak" })}</span>
                   {current && fileDirty(current) ? <span className="ai-cli-badge is-checking">{t("ai.unsaved")}</span> : null}
                 </div>
-                <button type="button" className="lsp-action" disabled={!desktop || fileBusy === current}
+                <button type="button" className="panel-action" disabled={!desktop || fileBusy === current}
                   onClick={() => { if (fileOpen[current]) setFileOpen((value) => ({ ...value, [current]: false })); else void openFile(current); }}>
                   {fileOpen[current] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   <FileCode2 size={13} />
@@ -1543,12 +1543,12 @@ function EnabledAiCliSettingsPanel() {
                     ? <p className={fileNotice.error ? "ai-error" : "ai-success"} role="status">{fileNotice.text}</p>
                     : <span />}
                   <div className="ai-cli-actions">
-                    <button type="button" className="lsp-action" disabled={!desktop || fileBusy === current}
+                    <button type="button" className="panel-action" disabled={!desktop || fileBusy === current}
                       onClick={() => guard(() => void reloadFile(current))}>
                       {fileBusy === current ? <Loader2 size={13} className="is-spinning" /> : <RefreshCw size={13} />}
                       {t("ai.config.reload")}
                     </button>
-                    <button type="button" className="lsp-action" disabled={!desktop || fileBusy === current}
+                    <button type="button" className="panel-action" disabled={!desktop || fileBusy === current}
                       onClick={() => void saveFile(current)}>
                       {fileBusy === current ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                       {t("ai.config.save")}

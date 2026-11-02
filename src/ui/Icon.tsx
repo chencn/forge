@@ -1,5 +1,4 @@
 import { isValidElement, type ComponentType, type ReactNode } from "react";
-import * as LucideIcons from "lucide-react";
 import {
   LibraryIcon,
   ScratchesIcon,
@@ -43,6 +42,8 @@ import {
   Undo2,
   ArrowDownToLine,
   Eye,
+  History,
+  List,
 } from "lucide-react";
 
 export type LucideIconType = ComponentType<{
@@ -53,7 +54,12 @@ export type LucideIconType = ComponentType<{
 }>;
 
 /**
- * 常用操作到 Lucide 图标的名称映射表
+ * 常用操作到 Lucide 图标的名称映射表。
+ *
+ * 这里**必须**是唯一的字符串名入口：早先还留了一条「查不到就去 `import * as LucideIcons`
+ * 全量导出里翻」的兜底，那一个命名空间导入就让 tree-shaking 彻底失效，把 lucide 全部
+ * 图标（实测产物里 800KB / gzip 205KB）打进了启动 chunk。全库会走字符串分支的名字已经
+ * 逐点核对过，全部落在这张表里；新增图标名请具名导入后补进本表。
  */
 const ICON_NAME_MAP: Record<string, LucideIconType> = {
   close: X,
@@ -86,11 +92,14 @@ const ICON_NAME_MAP: Record<string, LucideIconType> = {
   filter: Filter,
   trash: Trash2,
   stash: Archive,
+  archive: Archive,
   bell: Bell,
   undo: Undo2 as unknown as LucideIconType,
   "arrow-down-to-line": ArrowDownToLine as unknown as LucideIconType,
   "git-pull": ArrowDownToLine as unknown as LucideIconType,
   eye: Eye as unknown as LucideIconType,
+  history: History as unknown as LucideIconType,
+  list: List as unknown as LucideIconType,
   library: LibraryIcon as unknown as LucideIconType,
   scratches: ScratchesIcon as unknown as LucideIconType,
   locate: LocateIcon as unknown as LucideIconType,
@@ -130,33 +139,12 @@ export function Icon({ icon, name, size = 16, className, color }: IconProps) {
     return <Component size={size} className={className} color={color} />;
   }
 
-  // 如果传入了字符串名称
+  // 如果传入了字符串名称：只认映射表，查不到就什么都不画。
   if (typeof target === "string") {
-    const lower = target.toLowerCase();
-    // 1. 尝试直接从预设映射表拿
-    const mapped = ICON_NAME_MAP[lower];
+    const mapped = ICON_NAME_MAP[target.toLowerCase()];
     if (mapped) {
       const Component = mapped as unknown as ComponentType<any>;
       return <Component size={size} className={className} color={color} />;
-    }
-
-    // 2. 尝试从 Lucide 全量导出中查找（支持 kebab-case、PascalCase、数字变体如 Undo2）
-    const pascal = target
-      .replace(/(^\w|-\w)/g, (s) => s.replace("-", "").toUpperCase());
-    const candidates = [
-      pascal,
-      `${pascal}2`,
-      `Lucide${pascal}`,
-    ];
-    for (const cand of candidates) {
-      const Dynamic = (LucideIcons as Record<string, any>)[cand];
-      if (
-        typeof Dynamic === "function" ||
-        (typeof Dynamic === "object" && Dynamic !== null && "$$typeof" in Dynamic)
-      ) {
-        const Component = Dynamic as unknown as ComponentType<any>;
-        return <Component size={size} className={className} color={color} />;
-      }
     }
   }
 

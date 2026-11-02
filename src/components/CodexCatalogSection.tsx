@@ -270,7 +270,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
       <div className={`ai-catalog-row${excluded ? " is-excluded" : ""}`} key={slug}>
         <div className="ai-catalog-row-main">
           {!excluded ? (
-            <button type="button" className="lsp-action ai-catalog-star" title={t("ai.catalog.default")}
+            <button type="button" className="panel-action ai-catalog-star" title={t("ai.catalog.default")}
               aria-label={t("ai.catalog.default")} aria-pressed={isDefault}
               disabled={busy || readOnly} onClick={() => pickDefault(slug)}>
               <Star size={13} />
@@ -284,12 +284,12 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             {excluded ? <span className="ai-cli-badge is-warn">{t("ai.catalog.excludedLabel")}</span> : null}
           </div>
           <div className="ai-catalog-row-actions">
-            <button type="button" className="lsp-action" disabled={busy || readOnly} onClick={() => toggleExclude(slug)}>
+            <button type="button" className="panel-action" disabled={busy || readOnly} onClick={() => toggleExclude(slug)}>
               {excluded ? <Plus size={13} /> : <Trash2 size={13} />}
               {t(excluded ? "ai.catalog.include" : "ai.catalog.exclude")}
             </button>
             {!excluded ? (
-              <button type="button" className="lsp-action" aria-expanded={open === slug}
+              <button type="button" className="panel-action" aria-expanded={open === slug}
                 onClick={() => setOpen((value) => value === slug ? null : slug)}>
                 {open === slug ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                 {t("ai.catalog.override")}
@@ -336,7 +336,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
     return (
       <div className="ai-catalog-custom" key={key}>
         <div className="ai-catalog-row-main">
-          <button type="button" className="lsp-action ai-catalog-star" title={t("ai.catalog.default")}
+          <button type="button" className="panel-action ai-catalog-star" title={t("ai.catalog.default")}
             aria-label={t("ai.catalog.default")} aria-pressed={isDefault}
             disabled={busy || readOnly || !item.slug} onClick={() => pickDefault(item.slug)}>
             <Star size={13} />
@@ -351,7 +351,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             {item.base ? <em className="ai-cli-hint">{t("ai.catalog.baseOf", { name: item.base })}</em> : null}
           </div>
           <div className="ai-catalog-row-actions">
-            <button type="button" className="lsp-action" disabled={busy || readOnly}
+            <button type="button" className="panel-action" disabled={busy || readOnly}
               onClick={() => props.onChange({
                 ...draft,
                 customs: draft.customs.filter((_, position) => position !== index),
@@ -359,7 +359,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
               })}>
               <Trash2 size={13} />{t("ai.catalog.removeCustom")}
             </button>
-            <button type="button" className="lsp-action" aria-expanded={open === key}
+            <button type="button" className="panel-action" aria-expanded={open === key}
               onClick={() => setOpen((value) => value === key ? null : key)}>
               {open === key ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               {t("ai.catalog.override")}
@@ -415,11 +415,11 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             <div className="ai-cli-field">
               <span>{t("ai.catalog.preset")}</span>
               <div className="ai-catalog-presets">
-                <button type="button" className="lsp-action" disabled={busy || readOnly} aria-pressed={!compat}
+                <button type="button" className="panel-action" disabled={busy || readOnly} aria-pressed={!compat}
                   onClick={() => updateCustom(index, { overrides: applyCodexCompatPreset(item, template, false) })}>
                   {t("ai.catalog.presetGpt")}
                 </button>
-                <button type="button" className="lsp-action" disabled={busy || readOnly} aria-pressed={compat}
+                <button type="button" className="panel-action" disabled={busy || readOnly} aria-pressed={compat}
                   onClick={() => updateCustom(index, { overrides: applyCodexCompatPreset(item, template, true) })}>
                   {t("ai.catalog.presetCompat")}
                 </button>
@@ -447,7 +447,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             <span className="ai-muted">{t(view?.active ? "ai.catalog.active" : "ai.catalog.inactive")}</span>
             {dirty ? <span className="ai-cli-badge is-checking">{t("ai.unsaved")}</span> : null}
           </div>
-          <button type="button" className="lsp-action" disabled={loading || busy} title={t("ai.catalog.reload")}
+          <button type="button" className="panel-action" disabled={loading || busy} title={t("ai.catalog.reload")}
             aria-label={t("ai.catalog.reload")} onClick={props.onReload}>
             <RefreshCw size={13} className={loading ? "is-spinning" : undefined} />
           </button>
@@ -471,19 +471,19 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
       <div className="ai-cli-section-foot">
         {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
         <div className="ai-cli-actions">
-          <button type="button" className="lsp-action" disabled={busy || readOnly} onClick={() => addCustom(false)}>
+          <button type="button" className="panel-action" disabled={busy || readOnly} onClick={() => addCustom(false)}>
             <Plus size={13} />{t("ai.catalog.addGpt")}
           </button>
-          <button type="button" className="lsp-action" disabled={busy || readOnly} onClick={() => addCustom(true)}>
+          <button type="button" className="panel-action" disabled={busy || readOnly} onClick={() => addCustom(true)}>
             <Plus size={13} />{t("ai.catalog.addCompat")}
           </button>
           {!embedded && view?.active ? (
-            <button type="button" className="lsp-action" disabled={busy || readOnly} onClick={props.onClear}>
+            <button type="button" className="panel-action" disabled={busy || readOnly} onClick={props.onClear}>
               <Check size={13} />{t("ai.catalog.clear")}
             </button>
           ) : null}
           {!embedded ? (
-            <button type="button" className="lsp-action" disabled={busy || loading || !view || readOnly} onClick={props.onSave}>
+            <button type="button" className="panel-action" disabled={busy || loading || !view || readOnly} onClick={props.onSave}>
               {busy ? <RefreshCw size={13} className="is-spinning" /> : <Save size={13} />}
               {busy ? t("ai.saving") : t("ai.catalog.save")}
             </button>

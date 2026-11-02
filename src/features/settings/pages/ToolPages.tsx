@@ -15,13 +15,6 @@ import {
 } from "../../../lib/settings";
 import { shellProbe, type ShellInfo } from "../../../lib/term";
 import TerminalProfilesEditor from "../../../components/TerminalProfilesEditor";
-import AiCliSettingsPanel from "../../../components/AiCliSettingsPanel";
-import ModelProvidersPanel from "../../../components/ModelProvidersPanel";
-import AiCommitSettingsPanel from "../../../components/AiCommitSettingsPanel";
-import SkillsPanel from "../../../components/SkillsPanel";
-import McpPanel from "../../../components/McpPanel";
-import HooksSettingsPanel from "../../../components/HooksSettingsPanel";
-import AiArchivedSessionsPanel from "../../../components/AiArchivedSessionsPanel";
 import {
   checkForUpdate,
   currentVersion,
@@ -217,54 +210,6 @@ export function ToolTerminalPage() {
   );
 }
 
-/** 比较工具与 Diff 设置页 */
-export function ToolDiffPage() {
-  return (
-    <div className="settings-rows">
-      <div className="settings-rows-limit">
-        <p className="settings-hint">
-          Forge 内置高性能双栏与三方冲突合并（Three-way Merge）差异对比视图，并支持行内差异内联渲染与高亮提示。
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/** AI 助理：命令行助手与总开关 */
-export function ToolAiCliPage() {
-  return <AiCliSettingsPanel />;
-}
-
-/** AI 助理：模型服务商 */
-export function ToolAiProvidersPage() {
-  return <ModelProvidersPanel />;
-}
-
-/** AI 助理：智能提交与摘要 */
-export function ToolAiCommitPage() {
-  return <AiCommitSettingsPanel />;
-}
-
-/** AI 助理：技能与提示词库 */
-export function ToolAiSkillsPage() {
-  return <SkillsPanel />;
-}
-
-/** AI 助理：MCP 模型上下文协议 */
-export function ToolAiMcpPage() {
-  return <McpPanel />;
-}
-
-/** AI 助理：自动化钩子 */
-export function ToolAiHooksPage() {
-  return <HooksSettingsPanel />;
-}
-
-/** AI 助理：归档会话记录 */
-export function ToolAiArchivedSessionsPage({ workspace }: { workspace: string | null }) {
-  return <AiArchivedSessionsPanel workspace={workspace} />;
-}
-
 /** 关于与更新设置页 */
 export function ToolAboutPage() {
   const { t } = useI18n();
@@ -370,24 +315,24 @@ export function ToolAboutPage() {
             disabled={checking}
             onClick={() => void handleCheck()}
           >
-            {checking ? "检查中..." : t("about.check")}
+            {checking ? t("about.checking") : t("about.check")}
           </button>
         </div>
 
         {hasChecked ? (
           <div className="settings-row">
-            <span className="settings-label">检查结果</span>
+            <span className="settings-label">{t("about.checkResult")}</span>
             <span className="settings-value">
               {checkInfo
-                ? `发现新版本 v${checkInfo.version}`
-                : "当前已是最新版本"}
+                ? t("update.status.available", { version: `v${checkInfo.version}` })
+                : t("about.latest")}
             </span>
           </div>
         ) : null}
 
         {checkError ? (
           <div className="settings-row">
-            <span className="settings-label">检查失败</span>
+            <span className="settings-label">{t("about.checkFailed")}</span>
             <span className="settings-value is-error">{checkError}</span>
           </div>
         ) : null}

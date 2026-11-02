@@ -61,7 +61,7 @@ fn lock_idle_sessions(app: &AppHandle) -> Result<Vec<crate::sys::ExclusiveFileLo
 }
 
 /// 两个受支持的 CLI。序列化成小写字符串，直接对应前端的 provider 值。
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider { Claude, Codex }
 impl Provider {
@@ -125,8 +125,7 @@ pub struct Status {
     probe_error: Option<String>,
     /// 最新版本查询失败的原因；本地结论仍然有效。
     latest_error: Option<String>,
-    /// 仅供本进程启动对话时判断安装是否唯一，不进入前端协议。
-    #[serde(skip)]
+    /// PATH 上找到了几份同名可执行文件。>1 表示安装冲突，前端据此禁用「新建会话」。
     launcher_count: usize,
 }
 /// 管理动作的结果。`success` 是「事后校验通过」，不是「命令退出码为 0」——
@@ -204,7 +203,7 @@ fn executable(path: &Path) -> bool {
 /// 返回的是「候选集合」而不是单个路径：数量大于 1 本身就是一种需要报告的状态，
 /// 调用方据此拒绝操作，而不是替用户挑一个。
 fn launchers(provider: Provider) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::split_paths(&crate::lsp_probe::augmented_path()).collect();
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&crate::sys::augmented_path()).collect();
     if let Ok(home) = home() { dirs.push(home.join(".local/bin")); }
     let mut found: Vec<PathBuf> = Vec::new();
     for dir in dirs {
@@ -220,7 +219,7 @@ fn launchers(provider: Provider) -> Vec<PathBuf> {
     found
 }
 fn resolve(program: &str) -> Result<PathBuf, String> {
-    crate::lsp_probe::resolve_command(program).map(PathBuf::from)
+    crate::sys::resolve_command(program).map(PathBuf::from)
         .ok_or_else(|| format!("未找到 {program}，请安装并在重启 Forge 后重试"))
 }
 /// 判断是不是「干净目录」：符号链接与 Windows 重解析点都算不安全。

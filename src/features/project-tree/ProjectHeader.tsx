@@ -26,10 +26,9 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   autoscrollToSource: false,
   // 对齐 IDEA 默认值：不随标签切换自动跟随，仅点「选择已打开的文件」按钮才定位
   autoscrollFromSource: false,
-  // 对齐 IDEA 默认值：单击文件选中，双击才打开；要一键打开在视图选项里开
-  singleClickOpen: false,
-  // 对齐 IDEA 默认值：单击目录不自动展开
-  singleClickExpand: false,
+  // 单击打开/单击展开默认勾选（2026-11 拍板，放弃 IDEA 的双击默认）
+  singleClickOpen: true,
+  singleClickExpand: true,
   // 对齐 IDEA 默认值：预览标签页默认关闭
   previewTab: false,
 };

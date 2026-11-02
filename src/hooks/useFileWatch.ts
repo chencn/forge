@@ -22,10 +22,14 @@ interface FsChangePayload {
   root: string;
   /** 受影响的路径，绝对路径，分隔符按平台原样。 */
   paths: string[];
+  /** `paths` 里会改变目录清单的那一部分（新增/删除/改名、忽略规则）。 */
+  structural?: string[];
 }
 
 interface RootBatchState {
   paths: Set<string>;
+  /** 与 `paths` 同步攒的结构变动子集：只有它才值得让文件树重列目录。 */
+  structural: Set<string>;
   chunks: number;
   firstAt: number;
   bulk: boolean;
@@ -37,7 +41,7 @@ interface RootBatchState {
  */
 export function useFileWatch(
   roots: string[],
-  onChange: (root: string, paths: string[], bulk: boolean) => void
+  onChange: (root: string, paths: string[], bulk: boolean, structural: string[]) => void
 ) {
   const handler = useRef(onChange);
   handler.current = onChange;
@@ -59,18 +63,21 @@ export function useFileWatch(
       batches.delete(root);
       timers.delete(root);
       if (state && state.paths.size > 0) {
-        handler.current(root, [...state.paths], state.bulk);
+        handler.current(root, [...state.paths], state.bulk, [...state.structural]);
       }
     };
 
     void listen<FsChangePayload>("fs://change", (event) => {
       const { root, paths } = event.payload;
       if (!root || paths.length === 0) return;
+      // 后端没给 structural（旧版事件）就按全量算，宁可多刷一次也不能漏掉目录变动。
+      const structural = event.payload.structural ?? paths;
       const now = Date.now();
       let state = batches.get(root);
       if (!state) {
         state = {
           paths: new Set(paths),
+          structural: new Set(structural),
           chunks: 1,
           firstAt: now,
           bulk: paths.length >= STORM_PATH_THRESHOLD || paths.some(isBulkArtifactPath),
@@ -78,6 +85,7 @@ export function useFileWatch(
         batches.set(root, state);
       } else {
         for (const p of paths) state.paths.add(p);
+        for (const p of structural) state.structural.add(p);
         state.chunks += 1;
         // 仅依据去重后的路径总数达到阈值，或命中构建产物特征路径时，才判定为批量写入风暴；
         // 严禁将批次数量 (chunks >= 2) 视为风暴，避免单文件保存分批通知误触发 1.2s 延迟与全量刷新。

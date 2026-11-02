@@ -23,7 +23,9 @@ interface PurgeFailure { id: string; title: string; error: string }
 export default function AiArchivedSessionsPanel({ workspace }: { workspace: string | null }) {
   const { t } = useI18n();
   const desktop = cliDesktopAvailable();
-  const { sessions, dispatch } = useAiSessions(workspace);
+  // 这里只要会话列表和 dispatch。列表刷新与活动轮询由 App 顶层那个实例负责，
+  // 两者共享同一份 store：再挂一份 live 轮询只会让后端把每个会话读两遍。
+  const { sessions, dispatch } = useAiSessions(workspace, false);
   /** 已归档的顶层会话；子代理随父一起走，不单独列一行。 */
   const archived = useMemo(() => sessions
     .filter((item) => item.archived === true && !item.parentSessionId)
@@ -94,19 +96,19 @@ export default function AiArchivedSessionsPanel({ workspace }: { workspace: stri
     <div className="ai-manage-panel" aria-label={t("settings.aiArchived")}>
       <div className="ai-manage-toolbar ai-archived-toolbar">
         <div className="ai-manage-tabs" role="group" aria-label={t("ai.archived.filter")}>
-          <button type="button" className="lsp-action" aria-pressed={provider === null}
+          <button type="button" className="panel-action" aria-pressed={provider === null}
             disabled={busy} onClick={() => setProvider(null)}>
             {t("ai.archived.filterAll")}<span className="ai-cli-badge is-idle">{counts.all}</span>
           </button>
           {(["claude", "codex"] as AiProvider[]).map((item) => (
-            <button type="button" key={item} className="lsp-action" aria-pressed={provider === item}
+            <button type="button" key={item} className="panel-action" aria-pressed={provider === item}
               disabled={busy} onClick={() => setProvider(item)}>
               {AI_NAMES[item]}<span className="ai-cli-badge is-idle">{counts[item]}</span>
             </button>
           ))}
         </div>
         <span className="ai-cli-hint">{t("ai.archived.count", { count: rows.length })}</span>
-        <button type="button" className="lsp-action is-danger" disabled={!workspace || !desktop || busy || rows.length === 0}
+        <button type="button" className="panel-action is-danger" disabled={!workspace || !desktop || busy || rows.length === 0}
           onClick={() => setPending({ scope: "all", purgeNative: false })}>
           <Trash2 size={13} />{t("ai.archived.deleteAll")}
         </button>
@@ -121,7 +123,7 @@ export default function AiArchivedSessionsPanel({ workspace }: { workspace: stri
               {/* 页签已经限定 CLI 时不必再重复一遍徽章，那部分宽度留给标题。 */}
               {provider ? null : <span className="ai-cli-badge is-idle">{AI_NAMES[session.provider]}</span>}
               <span className="ai-cli-row-meta">{formatAiRelativeTime(session.lastActivity ?? session.createdAt, Date.now())}</span>
-              <button type="button" className="lsp-action is-danger" disabled={!workspace || busy}
+              <button type="button" className="panel-action is-danger" disabled={!workspace || busy}
                 aria-label={t("menu.delete")} title={t("menu.delete")}
                 onClick={() => setPending({ scope: "one", session, purgeNative: loadNativePurgeDefault(session.provider) })}>
                 <Trash2 size={13} />

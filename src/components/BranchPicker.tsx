@@ -23,6 +23,7 @@ import type { GitState } from "../hooks/useGitState";
 import type { GitBranch as GitBranchInfo, GitTag as GitTagInfo } from "../lib/git";
 import { buildRefMenu, upstreamOf } from "../lib/refMenu";
 import type { RefAction, RefTarget } from "../lib/refMenu";
+import { canPush, canUpdate, canFetch } from "../lib/gitGates";
 import type { BranchSettings } from "../lib/settings";
 import { withFavoriteToggled } from "../lib/settings";
 import { useI18n } from "../i18n";
@@ -240,11 +241,34 @@ export default function BranchPicker({
   const { locals, remotes, tags, recents, groups } = lists;
 
   // 动作名跟着界面语言走，但人搜的多半是英文命令名，两边都进匹配串。
-  const sync: { key: BranchAction; label: string; icon: ReactNode; also: string }[] = [
-    { key: "update", label: t("git.updateProject"), icon: <RefreshCw size={14} />, also: "update project pull merge" },
+  // 门禁判定由 gitGates 提供唯一真源：canPush / canUpdate / canFetch 分别看 remotes、
+  // detached、upstream，而不是在这里各写一遍——分支弹层、日志窗、命令面板共用同一份。
+  const sync: { key: BranchAction; label: string; icon: ReactNode; also: string; disabled?: boolean; hint?: string }[] = [
+    {
+      key: "update",
+      label: t("git.updateProject"),
+      icon: <RefreshCw size={14} />,
+      also: "update project pull merge",
+      disabled: !canUpdate(git),
+      hint: !canUpdate(git) ? (git.status?.upstream === "" ? t("git.noUpstream") : t("git.noRemotes")) : undefined,
+    },
     { key: "commit", label: t("git.commit"), icon: <GitCommit size={14} />, also: "commit" },
-    { key: "push", label: t("git.push"), icon: <Upload size={14} />, also: "push" },
-    { key: "fetch", label: t("git.fetch"), icon: <Download size={14} />, also: "fetch" },
+    {
+      key: "push",
+      label: t("git.push"),
+      icon: <Upload size={14} />,
+      also: "push",
+      disabled: !canPush(git),
+      hint: !canPush(git) ? t("git.noRemotes") : undefined,
+    },
+    {
+      key: "fetch",
+      label: t("git.fetch"),
+      icon: <Download size={14} />,
+      also: "fetch",
+      disabled: !canFetch(git),
+      hint: !canFetch(git) ? t("git.noRemotes") : undefined,
+    },
   ];
   const refs: { key: BranchAction; label: string; icon: ReactNode; also: string }[] = [
     { key: "newBranch", label: t("git.newBranch"), icon: <Plus size={14} />, also: "branch new" },
@@ -299,6 +323,8 @@ export default function BranchPicker({
           current: git.status?.branch ?? "",
           upstream: upstreamOf(git.branches, target),
           detached: git.status?.detached ?? false,
+          remotes: git.probe?.remotes.length ?? 0,
+          fresh: git.lastCommit === null,
           onAction: (action, held) => take(() => onRefAction(action, held)),
           onCompareWith: (held) => take(() => onRefInspect(held, "compare")),
           onDiffWithWorktree: (held) => take(() => onRefInspect(held, "worktree")),
@@ -306,8 +332,18 @@ export default function BranchPicker({
       });
     };
 
-  const item = (action: { key: BranchAction; label: string; icon: ReactNode }) => (
-    <button key={action.key} type="button" className="popover-item" onClick={() => run(action.key)}>
+  const item = (action: { key: BranchAction; label: string; icon: ReactNode; disabled?: boolean; hint?: string }) => (
+    <button
+      key={action.key}
+      type="button"
+      className="popover-item"
+      disabled={action.disabled}
+      title={action.disabled ? action.hint : undefined}
+      onClick={() => {
+        if (action.disabled) return;
+        run(action.key);
+      }}
+    >
       {action.icon}
       <span>{action.label}</span>
     </button>

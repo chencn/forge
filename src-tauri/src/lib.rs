@@ -7,15 +7,7 @@ mod http_exchange;
 mod fs;
 mod git;
 mod history;
-mod lsp;
-#[cfg(feature = "lsp-smoke")]
-mod lsp_smoke;
-#[cfg(feature = "lsp-ui-smoke")]
-mod lsp_ui_smoke;
 mod maven;
-mod lsp_config;
-mod lsp_detect;
-mod lsp_probe;
 mod local_history;
 mod offload;
 mod proc;
@@ -38,9 +30,6 @@ use tauri::Manager;
 #[cfg(feature = "browser-smoke")]
 pub fn run_browser_smoke() { browser::smoke::run(); }
 
-#[cfg(feature = "lsp-smoke")]
-pub fn run_lsp_smoke() { lsp_smoke::run(); }
-
 pub fn run() {
     #[cfg(windows)]
     init_app_user_model_id();
@@ -58,7 +47,8 @@ pub fn run() {
 
     // 单实例检查：若已有主实例在运行，将启动参数转交给主实例并在已有窗口中打开，随后本从实例立即退出。
     // 这彻底避免了重复创建多余窗口，并防止从实例因独立初始化无法连接前端服务而弹报错页面。
-    if single_instance::try_forward(&raw_args) {
+    // smoke 构建必须自己当主实例：它的 debug 构建与用户的 dev 实例共用同一条管道，
+        if single_instance::try_forward(&raw_args) {
         return;
     }
 
@@ -83,17 +73,9 @@ pub fn run() {
             ai_runtime::start_queue_monitor(app.handle().clone())?;
             single_instance::start_server(app.handle().clone());
             // 首次启动若带有路径参数，由主实例窗口打开
-            #[cfg(feature = "lsp-ui-smoke")]
-            {
-                let root = std::env::var("FORGE_LSP_UI_SMOKE_ROOT")
-                    .map_err(|_| "FORGE_LSP_UI_SMOKE_ROOT 未设置".to_string())?;
-                lsp_ui_smoke::prepare(app.handle(), &root)?;
-            }
             shell_open::deliver(app.handle(), &args_for_setup);
             Ok(())
         });
-    #[cfg(feature = "lsp-ui-smoke")]
-    let app = app.on_page_load(lsp_ui_smoke::on_page_load);
     let app = app
         // 关闭按钮归关闭按钮管，托盘还是退出，看设置里那一项怎么选。
         .on_window_event(|window, event| {
@@ -111,6 +93,7 @@ pub fn run() {
             browser::browser_panel_show,
             browser::browser_panel_close,
             fs::list_directory,
+            fs::list_directory_chain,
             fs::read_file,
             fs::write_file,
             fs::create_folder,
@@ -143,10 +126,10 @@ pub fn run() {
             git::git_unstage,
             git::git_commit,
             git::git_apply_patch,
-            git::git_branches,
-            git::git_tags,
+            git::git_refs,
             git::git_remotes,
             git::git_ignored,
+            git::git_forget_ignored,
             git::git_fetch,
             git::git_pull,
             git::git_push,
@@ -163,6 +146,12 @@ pub fn run() {
             git::git_stash_apply,
             git::git_stash_branch,
             git::git_stash_drop,
+            git::git_conflict_versions,
+            git::git_shelve,
+            git::git_shelves,
+            git::git_unshelve,
+            git::git_shelf_delete,
+            git::git_shelf_rename,
             git::git_rebase,
             git::git_rename_branch,
             git::git_delete_branch,
@@ -207,20 +196,6 @@ pub fn run() {
             run::store::run_state_load,
             run::store::run_state_save,
             maven::maven_scan,
-            lsp::lsp_start,
-            lsp::lsp_write,
-            lsp::lsp_stop,
-            lsp::lsp_reap,
-            lsp::lsp_session_statuses,
-            lsp::lsp_failed,
-            lsp::lsp_retry,
-            lsp_config::lsp_config_load,
-            lsp_config::lsp_config_save,
-            lsp_config::lsp_config_defaults,
-            lsp_detect::lsp_resolve_root,
-            lsp_probe::lsp_probe,
-            lsp_probe::lsp_install,
-            lsp_probe::lsp_uninstall,
             history::history_load,
             history::history_save,
             settings::settings_load,
@@ -329,14 +304,13 @@ pub fn run() {
     // 退出清理选 RunEvent::Exit：它在事件循环真正退出前发出，任何退出路径
     // （关窗、托盘退出、app.exit）都必经且不可拦截；ExitRequested 会被
     // api.prevent_exit() 拦下，在那儿清理会错杀本该活着的会话。
-    // 这几张表里的子进程（AI CLI、构建命令、语言服务、终端 shell）裸持着 Child，
+    // 这几张表里的子进程（AI CLI、构建命令、终端 shell）裸持着 Child，
     // 不在这儿杀掉，应用一退它们就全成孤儿。
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             browser::shutdown(app);
             single_instance::stop_server();
             ai_runtime::reap_all_for_exit();
-            lsp::reap_all_for_exit();
             proc::reap_all_for_exit();
             term::reap_all_for_exit();
         }

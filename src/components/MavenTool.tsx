@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import type { RunConfiguration } from "../lib/runConfigs";
+import type { RunConfiguration, RunTools } from "../lib/runConfigs";
 import { useMavenProject } from "../hooks/useMavenProject";
 
 const MavenPane = lazy(() => import("./MavenPane"));
@@ -12,12 +12,15 @@ const MavenPane = lazy(() => import("./MavenPane"));
 export function MavenDock({
   workspace,
   running,
+  tools,
   onRun,
   onStop,
   onOpenFile,
 }: {
   workspace: string | null;
   running: boolean;
+  /** 本机探测到的构建工具；mvn 为空串时「运行/执行目标」该置灰，点了只会得到 NO_TOOL。 */
+  tools: RunTools;
   onRun: (config: RunConfiguration) => void;
   onStop: () => void;
   onOpenFile: (path: string) => void;
@@ -33,6 +36,7 @@ export function MavenDock({
         error={maven.error}
         refreshing={maven.status === "loading"}
         running={running}
+        tools={tools}
         onRun={onRun}
         onStop={onStop}
         onOpenFile={onOpenFile}

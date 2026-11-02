@@ -31,8 +31,6 @@ pub struct EditorSettings {
     pub save_policy: String,
     /// 退出前是否把没保存的改动写回磁盘。
     pub save_on_exit: bool,
-    /// 手动保存、失焦保存和退出保存前请求语言服务格式化。
-    pub format_on_save: bool,
     /// 保存时删除行尾空格和制表符。
     pub trim_trailing_whitespace: bool,
     /// 保存时保证非空文本以换行结束。
@@ -56,7 +54,6 @@ impl Default for EditorSettings {
             keymap: "default".to_string(),
             save_policy: "blur".to_string(),
             save_on_exit: true,
-            format_on_save: false,
             trim_trailing_whitespace: false,
             insert_final_newline: false,
             soft_wrap: false,
@@ -176,6 +173,12 @@ pub struct BranchSettings {
     pub on_single_click: String,
     /// 收藏的引用全名（本地分支不带前缀，远端带 `origin/`）；排在同层前面。
     pub favorites: Vec<String>,
+    /// 提交图折叠线性链（Collapse Linear Branches）。
+    #[serde(default)]
+    pub collapse_linear: bool,
+    /// 提交图画长边（Show Long Edges），默认开。
+    #[serde(default = "default_true")]
+    pub show_long_edges: bool,
 }
 
 impl Default for BranchSettings {
@@ -187,6 +190,8 @@ impl Default for BranchSettings {
             group_by_directory: true,
             on_single_click: "none".to_string(),
             favorites: Vec::new(),
+            collapse_linear: false,
+            show_long_edges: true,
         }
     }
 }
@@ -430,6 +435,10 @@ impl Default for Settings {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_http_response() -> String {
     "split".to_string()
 }
@@ -606,7 +615,13 @@ mod tests {
         assert!(apply_patch(initial, &serde_json::json!({"browser":{"elementContent":"unknown"}})).is_err());
     }
 
-    /// 语言服务配置搬去 `lsp.json` 了，旧文件里残留的 `lsp` 段要能读、并且被忽略。
+    /// TODO(v1.4.0)：三版本后删除本测试。
+    ///
+    /// 语言服务（LSP）已在 1.1.2 整组移除，但老用户的 `settings.json` 里还残留着
+    /// 当年的 `lsp` 段。读入靠的是「结构体不认识的段落原样保留」这条通用容错
+    /// （见 `read_document`），这条测试只是给它钉的回归钉子。等 v1.1.2 之前的
+    /// 老配置基本换代完毕（约三个版本），这条测试就没有存在意义了；届时顺手把
+    /// `patch_touches_only_the_fields_it_names` 里的 `lsp` 夹具换成别的示例段。
     #[test]
     fn old_lsp_section_is_ignored() {
         let text = r#"{"theme":"dark","lsp":{"servers":{"gopls":{"mode":"lsp"}}}}"#;

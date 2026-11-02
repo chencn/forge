@@ -4,26 +4,16 @@
  */
 import type { GitChange } from "../../lib/git";
 import { changeMark, folderMarks, isDeletedMark } from "../../lib/git";
-import type { ChangelistsState } from "../../lib/changelists";
-import { DEFAULT_LIST_ID, listIdOf } from "../../lib/changelists";
 import { basenameOf } from "../../lib/format";
 
-export type GroupId = "conflicts" | "changes" | "unversioned";
+export type GroupId = "conflicts" | "staged" | "unstaged" | "unversioned";
 
 export const GROUP_LABEL: Record<GroupId, string> = {
   conflicts: "Merge Conflicts",
-  changes: "Changes",
+  staged: "Staged Changes",
+  unstaged: "Changes",
   unversioned: "Unversioned Files",
 };
-
-/**
- * 单个文件纳入提交的勾选状态：
- * - all: 提交前全部暂存并纳入
- * - none: 不纳入本次提交
- * - staged: 仅提交已暂存的块（部分暂存）
- * - hunks: 按块选择性提交
- */
-export type CheckState = "all" | "none" | "staged" | "hunks";
 
 export interface ChangeNode {
   key: string;
@@ -37,10 +27,6 @@ export interface ChangeNode {
   path?: string;
   /** 节点附加描述（如平铺模式下的父目录，或旧文件名） */
   detail?: string;
-  /** 所属变更列表 id */
-  changelist?: string;
-  /** 是否为活动变更列表 */
-  active?: boolean;
   /** 【保留项】文件行尾状态字母（如 M, U, A, D, R, C） */
   mark?: string;
   /** 【保留项】目录聚合变更状态（用于目录行尾圆点染色） */
@@ -50,13 +36,26 @@ export interface ChangeNode {
 }
 
 /**
- * 判断变更属于哪一组：
- * 冲突 -> conflicts, 未跟踪 -> unversioned, 其余 -> changes
+ * 判断变更属于哪一组（git 暂存区那套口径）：
+ * 冲突 -> conflicts, 未跟踪 -> unversioned,
+ * 索引位有内容 -> staged, 其余（只有工作区改动）-> unstaged。
+ * 部分暂存的文件在 staged 与 unstaged 两组各占一条，见 buildChangeTree。
  */
 export function groupOf(change: GitChange): GroupId {
   if (change.conflicted) return "conflicts";
   if (change.untracked) return "unversioned";
-  return "changes";
+  return isStaged(change) ? "staged" : "unstaged";
+}
+
+/**
+ * 按组取行尾状态字母：已暂存组读索引位，未暂存组读工作区位。
+ * 部分暂存文件两边各显示自己那一侧的字母，而不是混用一个。
+ * 组没覆盖到的那一侧（正常不存在）退回原 changeMark。
+ */
+export function groupMark(change: GitChange, group: GroupId): string {
+  if (group === "staged") return change.indexStatus.trim() || changeMark(change);
+  if (group === "unstaged") return change.workStatus.trim() || changeMark(change);
+  return changeMark(change);
 }
 
 /**
@@ -77,52 +76,69 @@ export function isPartiallyStaged(change: GitChange): boolean {
 }
 
 /**
- * 单个文件的初始勾选状态：
- * IDEA 规范：Unversioned Files 与冲突文件默认不勾选，普通变更默认勾选（部分暂存默认 staged）
+ * 勾选按「侧」独立存储：同一文件（部分暂存的）在已暂存与未暂存两组各有一条，
+ * 各有自己的复选框，互不联动。
+ * - `staged` 侧那条：勾 = 提交索引里的内容；不勾 = 取消暂存（unstage）
+ * - `worktree` 侧那条：勾 = 把工作区内容也暂存进来一起提交；不勾 = 工作区不动
+ * 未跟踪文件与冲突文件只出现在各自组里，复用 `worktree` 侧的键。
+ * 值就是布尔：勾或空。旧的 all/none/staged/hunks 四态模型按文件存一份，
+ * 在两侧两条的显示下必然联动，连「这条勾选管哪一半」都说不清，已整个废掉。
  */
-export function initialCheck(change: GitChange): CheckState {
-  const g = groupOf(change);
-  if (g !== "changes") return "none";
-  return isPartiallyStaged(change) ? "staged" : "all";
-}
+export type ChangeSide = "staged" | "worktree";
 
-export function checkOf(change: GitChange, checks: ReadonlyMap<string, CheckState>): CheckState {
-  return checks.get(change.path) ?? initialCheck(change);
+export type Checks = ReadonlyMap<string, boolean>;
+
+/** 某一侧复选框的存储键。 */
+export function checkKey(side: ChangeSide, path: string): string {
+  return `${side === "staged" ? "s" : "w"}:${path}`;
 }
 
 /**
- * 聚合一组文件的勾选状态（用于分组行和目录行的三态复选框）
+ * 某一侧的默认勾选：
+ * - 已暂存侧默认勾（有暂存内容通常就是要提交的）
+ * - 工作区侧默认跟随原语义：纯工作区变更默认带上（原 all），
+ *   部分暂存文件默认只提交暂存块（原 staged），不带工作区
+ * - 未跟踪与冲突文件默认不勾
  */
-export function aggregateCheck(files: readonly GitChange[], checks: ReadonlyMap<string, CheckState>) {
+export function defaultChecked(change: GitChange, side: ChangeSide): boolean {
+  if (change.untracked || change.conflicted) return false;
+  if (side === "staged") return true;
+  return !isPartiallyStaged(change);
+}
+
+/** 读取某一条的勾选状态；没动过就用默认值。 */
+export function isChecked(change: GitChange, side: ChangeSide, checks: Checks): boolean {
+  return checks.get(checkKey(side, change.path)) ?? defaultChecked(change, side);
+}
+
+/**
+ * 聚合一组文件某一侧的勾选状态（用于组行和目录行的三态复选框）。
+ * 勾 = 全部纳入，空 = 全部不纳入，横线 = 一部分纳入一部分不纳入。
+ */
+export function aggregateCheck(
+  files: readonly GitChange[],
+  side: ChangeSide,
+  checks: Checks
+) {
   if (files.length === 0) {
     return { checked: false, indeterminate: false, on: 0 };
   }
   let on = 0;
-  let partial = false;
   for (const f of files) {
-    const c = checkOf(f, checks);
-    if (c !== "none") on++;
-    if (c === "staged" || c === "hunks") partial = true;
+    if (isChecked(f, side, checks)) on++;
   }
   return {
-    checked: on > 0 && on === files.length && !partial,
-    indeterminate: (on > 0 && on < files.length) || partial,
+    checked: on === files.length,
+    indeterminate: on > 0 && on < files.length,
     on,
   };
-}
-
-/**
- * 单个勾选框切换后的下一个状态
- */
-export function toggledCheck(current: CheckState): CheckState {
-  return current === "none" ? "all" : "none";
 }
 
 /**
  * 构建平铺模式下的单个文件节点
  */
 function createFileNode(change: GitChange, group: GroupId, scope: string, flat: boolean): ChangeNode {
-  const mark = changeMark(change);
+  const mark = groupMark(change, group);
   const isDeleted = isDeletedMark(mark);
   const name = basenameOf(change.path);
   const dir = change.path.includes("/") ? change.path.slice(0, change.path.lastIndexOf("/")) : "";
@@ -237,35 +253,28 @@ function buildSubTree(
     cur.files.push(change);
   }
 
-  const dirMarks = folderMarks(files);
+  const dirMarks = folderMarks(files, (c) => groupMark(c, group));
   return createDirNodes(rootTrie, "", group, scope, dirMarks);
 }
 
-function tagChangelist(nodes: ChangeNode[], changelistId: string): ChangeNode[] {
-  for (const n of nodes) {
-    n.changelist = changelistId;
-    if (n.children) tagChangelist(n.children, changelistId);
-  }
-  return nodes;
-}
-
 /**
- * 构建完整的变更树（1:1 对标 IDEA，支持 Merge Conflicts、多 Changelist 拆分及 Unversioned Files）
+ * 构建完整的变更树（git 暂存区那套分组：Merge Conflicts、已暂存、未暂存、Unversioned Files）。
+ * 部分暂存的文件（porcelain 的 `AM`/`MM`/`AD`）在已暂存与未暂存两组各出现一条，
+ * 点开时各看各的那一半差异；空组不画。
  */
-export function buildChangeTree(
-  changes: GitChange[],
-  groupByDir: boolean,
-  lists?: ChangelistsState
-): ChangeNode[] {
+export function buildChangeTree(changes: GitChange[], groupByDir: boolean): ChangeNode[] {
   const conflicts: GitChange[] = [];
-  const changesGroup: GitChange[] = [];
+  const staged: GitChange[] = [];
+  const unstaged: GitChange[] = [];
   const unversioned: GitChange[] = [];
 
   for (const c of changes) {
-    const g = groupOf(c);
-    if (g === "conflicts") conflicts.push(c);
-    else if (g === "unversioned") unversioned.push(c);
-    else changesGroup.push(c);
+    if (c.conflicted) conflicts.push(c);
+    else if (c.untracked) unversioned.push(c);
+    else {
+      if (c.indexStatus.trim() !== "") staged.push(c);
+      if (c.workStatus.trim() !== "") unstaged.push(c);
+    }
   }
 
   const roots: ChangeNode[] = [];
@@ -282,74 +291,31 @@ export function buildChangeTree(
     });
   }
 
-  // 2. Changes 组（如果有 Changelist，按 Changelist 分组展示）
-  if (lists && lists.lists.length > 0) {
-    const byList = new Map<string, GitChange[]>();
-    byList.set(DEFAULT_LIST_ID, []);
-    for (const l of lists.lists) {
-      byList.set(l.id, []);
-    }
-
-    for (const c of changesGroup) {
-      const listId = listIdOf(lists, c.path);
-      const target = byList.get(listId) ?? byList.get(DEFAULT_LIST_ID)!;
-      target.push(c);
-    }
-
-    // 默认列表
-    const defaultChanges = byList.get(DEFAULT_LIST_ID) ?? [];
-    if (defaultChanges.length > 0 || lists.lists.length > 0) {
-      const defaultActive = lists.activeId === DEFAULT_LIST_ID;
-      roots.push({
-        key: `group:cl:${DEFAULT_LIST_ID}`,
-        type: "group",
-        label: GROUP_LABEL.changes,
-        group: "changes",
-        children: tagChangelist(
-          buildSubTree(defaultChanges, "changes", groupByDir, `cl:${DEFAULT_LIST_ID}`),
-          DEFAULT_LIST_ID
-        ),
-        files: defaultChanges,
-        changelist: DEFAULT_LIST_ID,
-        active: defaultActive,
-      });
-    }
-
-    // 自定义列表
-    for (const l of lists.lists) {
-      const listChanges = byList.get(l.id) ?? [];
-      const isActive = lists.activeId === l.id;
-      roots.push({
-        key: `group:cl:${l.id}`,
-        type: "group",
-        label: l.name,
-        group: "changes",
-        children: tagChangelist(
-          buildSubTree(listChanges, "changes", groupByDir, `cl:${l.id}`),
-          l.id
-        ),
-        files: listChanges,
-        changelist: l.id,
-        active: isActive,
-        detail: l.comment ? l.comment.split("\n")[0] : undefined,
-      });
-    }
-  } else {
-    // 无自定义变更列表，普通单一 Changes 组
-    if (changesGroup.length > 0) {
-      roots.push({
-        key: "group:changes",
-        type: "group",
-        label: GROUP_LABEL.changes,
-        group: "changes",
-        children: buildSubTree(changesGroup, "changes", groupByDir, "changes"),
-        files: changesGroup,
-        active: true,
-      });
-    }
+  // 2. 已暂存组：索引里有内容的就是已暂存（含部分暂存的暂存侧）
+  if (staged.length > 0) {
+    roots.push({
+      key: "group:staged",
+      type: "group",
+      label: GROUP_LABEL.staged,
+      group: "staged",
+      children: buildSubTree(staged, "staged", groupByDir, "staged"),
+      files: staged,
+    });
   }
 
-  // 3. Unversioned Files 组
+  // 3. 未暂存组：工作区有改动且索引侧已经算过账的（含部分暂存的工作区侧）
+  if (unstaged.length > 0) {
+    roots.push({
+      key: "group:unstaged",
+      type: "group",
+      label: GROUP_LABEL.unstaged,
+      group: "unstaged",
+      children: buildSubTree(unstaged, "unstaged", groupByDir, "unstaged"),
+      files: unstaged,
+    });
+  }
+
+  // 4. Unversioned Files 组
   if (unversioned.length > 0) {
     roots.push({
       key: "group:unversioned",
@@ -398,24 +364,43 @@ export interface CommitPlan {
 }
 
 /**
- * 计算提交计划：根据用户勾选状态，计算出纳入提交的文件和需操作的路径
+ * 计算提交计划：按两侧的勾选独立推导，提交的永远是索引本身。
+ * - 已暂存侧勾：索引内容纳入提交；不勾：unstage（那半不提交了）
+ * - 工作区侧勾：先 add 再纳入；不勾：那半不动
+ * 部分暂存文件两侧各自独立决策，组合出的四种提交范围都能表达：
+ *   s勾+w不勾=只提交暂存块；s勾+w勾=全部；s不勾+w勾=只提交工作区改动；都不勾=整个放弃并 unstage。
  */
-export function planCommit(
-  changes: readonly GitChange[],
-  checks: ReadonlyMap<string, CheckState>
-): CommitPlan {
+export function planCommit(changes: readonly GitChange[], checks: Checks): CommitPlan {
   const plan: CommitPlan = { included: [], stage: [], unstage: [] };
+  const includedPaths = new Set<string>();
   for (const c of changes) {
-    const check = checkOf(c, checks);
-    const staged = isStaged(c);
-    if (check === "none") {
-      if (staged) {
-        plan.unstage.push(c.path);
+    // 冲突文件不进计划：porcelain 的 `UU` 两边都有字母，按侧推导会对它跑
+    // restore --staged，把用户还没解决的冲突状态毁掉。提交门控挡着它们。
+    if (c.conflicted) continue;
+    if (c.untracked) {
+      if (isChecked(c, "worktree", checks)) {
+        plan.included.push(c);
+        plan.stage.push(c.path); // 未跟踪文件没有索引位，勾选即 add
       }
       continue;
     }
-    plan.included.push(c);
-    if (check === "all" && !staged) {
+    const hasStaged = c.indexStatus.trim() !== "";
+    const hasWork = c.workStatus.trim() !== "";
+    const stageSide = isChecked(c, "staged", checks);
+    const workSide = isChecked(c, "worktree", checks);
+    if (hasStaged) {
+      if (stageSide) {
+        includedPaths.add(c.path);
+        plan.included.push(c);
+      } else {
+        plan.unstage.push(c.path);
+      }
+    }
+    if (hasWork && workSide) {
+      if (!includedPaths.has(c.path)) {
+        includedPaths.add(c.path);
+        plan.included.push(c);
+      }
       plan.stage.push(c.path);
     }
   }

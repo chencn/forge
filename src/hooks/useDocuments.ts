@@ -422,7 +422,7 @@ export function useDocuments(
    *
    * 先生成内部键再进入文档列表；调用方永远不能把未知 scheme 原样当成路径交给
    * `readFile`、`writeFile` 或 `samePath` 的磁盘流程。普通 Git/HTTP 响应仍可继续使用
-   * `openVirtual`，它们没有 LSP URI 元数据。
+   * `openVirtual`，它们不是磁盘文件。
    */
   const openVirtualUri = useCallback(
     (uri: string, contents: string, language: string): string | null => {

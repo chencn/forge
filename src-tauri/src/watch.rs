@@ -5,12 +5,13 @@
 
 use crate::error::{err, err_parts};
 use crate::offload::{block, block_value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use notify::event::{CreateKind, RemoveKind};
 use notify::{EventKind, RecursiveMode, RecommendedWatcher, Watcher};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -33,6 +34,11 @@ const BATCH_CAP: usize = 256;
 pub struct FsChange {
     pub root: String,
     pub paths: Vec<String>,
+    /// `paths` 里「会改变目录清单」的那一部分：新增、删除、改名。
+    ///
+    /// 内容修改不在其中：文件树不显示大小与修改时间，把保存也算成清单变动，
+    /// 等于每次 Ctrl+S 都要重列一遍相关目录链。
+    pub structural: Vec<String>,
 }
 
 /// 多工作区常驻下按根目录索引的监听表：每个打开的工程根各占一槽，互不顶替。
@@ -69,10 +75,13 @@ fn interesting(kind: &EventKind) -> bool {
 /// 里的批量翻动（install、构建）只会造成无意义的刷新风暴。目录名单与文件树默认
 /// 排除共用一张表（`fs::is_default_excluded`）——树里看不见的目录，监听里也不报。
 ///
-/// 只看非末段：末段可能是恰好叫 `build` / `dist` 的普通文件而不是目录，按目录名排除
-/// 会把树里看得见的文件静默丢掉。目录自己的事件总以非末段出现在其内部文件的路径里
-/// （`build/foo.o` 的 `build`），所以目录排除不漏。
-fn under_default_excluded(root: &Path, path: &Path) -> bool {
+/// 中间各段必然是目录，一律按目录名判。末段要看 `is_dir`：恰好叫 `build` / `dist`
+/// 的普通文件不是目录，按目录名排除会把树里看得见的文件静默丢掉。
+///
+/// `is_dir` 只由「创建/删除一个目录」这类事件置真。目录里文件的翻动总让该目录以
+/// 中间段出现（`build/foo.o` 的 `build`），所以不缺判；但目录自身被创建/删除时，
+/// 路径里只有末段是它，不补这一条，`node_modules` 就能建出来而树里看不见它。
+fn under_default_excluded(root: &Path, path: &Path, is_dir: bool) -> bool {
     let Ok(rel) = path.strip_prefix(root) else {
         return false;
     };
@@ -80,10 +89,14 @@ fn under_default_excluded(root: &Path, path: &Path) -> bool {
         .components()
         .map(|component| component.as_os_str().to_string_lossy())
         .collect();
-    names.pop();
-    names
+    let last = names.pop();
+    if names
         .iter()
         .any(|name| crate::fs::is_default_excluded(name, true))
+    {
+        return true;
+    }
+    last.is_some_and(|name| crate::fs::is_default_excluded(&name, is_dir))
 }
 
 /// 这一条事件会不会改变「目录里有什么」。
@@ -98,6 +111,21 @@ fn changes_listing(kind: &EventKind) -> bool {
             | EventKind::Remove(_)
             | EventKind::Modify(notify::event::ModifyKind::Name(_))
     )
+}
+
+/// 内容修改里也要当「清单变动」对待的那一类：忽略规则文件。
+///
+/// 保存 `.gitignore` 的事件类型只是 `Modify(DataChange)`，但它决定目录里看得见哪些条目，
+/// 不跟清单一起上报，改完忽略规则后树就一直停在旧样子。
+fn rewrites_listing(path: &std::path::Path) -> bool {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some(".gitignore") | Some(".gitignore_global") => true,
+        // 仓库本地忽略表 `.git/info/exclude`：只有在 info 目录下才算，别把别处的 exclude 捎上。
+        Some("exclude") => {
+            path.parent().and_then(|dir| dir.file_name()).and_then(|name| name.to_str()) == Some("info")
+        }
+        _ => false,
+    }
 }
 
 /// 判断一条路径是否为应被忽略的 git 内部无用文件。
@@ -227,7 +255,8 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
         return Ok(());
     }
 
-    let (sender, receiver) = mpsc::channel::<Vec<std::path::PathBuf>>();
+    // 布尔标记这条批次会不会改变目录清单（新增/删除/改名），前端据此决定要不要重列目录。
+    let (sender, receiver) = mpsc::channel::<(Vec<std::path::PathBuf>, bool)>();
     let filter_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if let Ok(event) = event {
@@ -237,20 +266,29 @@ fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<
             // 关键的 Git 指针（如 HEAD、refs、index 等）与普通工作区文件均予放行，
             // 过滤无意义的内部对象（objects/）、提交日志（logs/）与未决的临时锁（*.lock）。
             // 默认排除目录（node_modules、构建产物等）之下的事件一并丢弃。
+            // 事件本身说明这是个目录（被创建 / 被删除）时，末段也要按目录名判排除，
+            // 否则 `node_modules`、`.cache` 这类目录能建出来，树里却永远看不见它。
+            let folder_event = matches!(
+                event.kind,
+                EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder)
+            );
             let paths: Vec<std::path::PathBuf> = event
                 .paths
                 .into_iter()
                 .filter(|path| !ignorable_git_internal(path))
-                .filter(|path| !under_default_excluded(Path::new(&filter_root), path))
+                .filter(|path| {
+                    !under_default_excluded(Path::new(&filter_root), path, folder_event)
+                })
                 .collect();
             if !paths.is_empty() {
+                let structural = changes_listing(&event.kind);
                 // 动到目录内容的那些事件顺手作废构建清单缓存：识别与依赖探测共用那一份，
                 // 不等它自己过期就把旧工程留在缓存里，新加的 `pom.xml` 会看不见。
-                if changes_listing(&event.kind) {
+                if structural {
                     crate::run::scan::invalidate_many(&paths);
                 }
                 // 转发线程已经退了就直接丢事件，不该让 notify 的回调报错。
-                let _ = sender.send(paths);
+                let _ = sender.send((paths, structural));
             }
         }
     })
@@ -305,26 +343,41 @@ fn fs_watch_stop_impl(app: AppHandle, root: String, generation: u64) {
     }
 }
 
+/// 攒批中的一批路径：全部受影响路径，以及其中「会改变目录清单」的那一子集。
+///
+/// 分两栏是因为前端只有清单变动才需要重列目录（重列一次 = 一次 IPC + 一遍
+/// .gitignore 匹配）；内容修改只需路径本身去刷 git 状态与编辑器外部变更，
+/// 混在一起就成了每按一次 Ctrl+S 都把整条目录链重列一遍。
+#[derive(Default)]
+struct Pending {
+    all: BTreeSet<String>,
+    structural: BTreeSet<String>,
+}
+
 /// 攒批并发的转发线程。收到第一条后继续等静默期，把这段时间内的都并进来再发。
-fn pump(app: AppHandle, root: String, receiver: mpsc::Receiver<Vec<std::path::PathBuf>>) {
-    let mut pending: BTreeSet<String> = BTreeSet::new();
+fn pump(
+    app: AppHandle,
+    root: String,
+    receiver: mpsc::Receiver<(Vec<std::path::PathBuf>, bool)>,
+) {
+    let mut pending = Pending::default();
     // 首批路径进集合的时刻，MAX_WAIT 从它起算：事件一直来时静默期永远打不满，
     // 没有这个起点就算不出「已经拖了多久」。
     let mut first_pending_at: Option<Instant> = None;
     loop {
         match receiver.recv() {
-            Ok(paths) => {
+            Ok((paths, structural)) => {
                 if first_pending_at.is_none() {
                     first_pending_at = Some(Instant::now());
                 }
-                soak(&mut pending, paths);
+                soak(&mut pending, paths, structural);
             }
             // 发送端随 watcher 一起没了：把最后一点攒着的发出去再收工。
             Err(_) => break,
         }
         loop {
             match receiver.recv_timeout(wait_duration(first_pending_at, Instant::now())) {
-                Ok(paths) => soak(&mut pending, paths),
+                Ok((paths, structural)) => soak(&mut pending, paths, structural),
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => {
                     flush(&app, &root, &mut pending);
@@ -351,26 +404,37 @@ fn wait_duration(first_pending_at: Option<Instant>, now: Instant) -> Duration {
     }
 }
 
-fn soak(pending: &mut BTreeSet<String>, paths: Vec<std::path::PathBuf>) {
+fn soak(pending: &mut Pending, paths: Vec<std::path::PathBuf>, structural: bool) {
     for path in paths {
         // 不设提前 return：满了就丢等于把用户刚保存的那条路径丢掉，前端从此认不出
         // 那个文件变了。BTreeSet 天然去重，真超上限也只是多占点内存，flush 按
         // BATCH_CAP 拆批发。
-        pending.insert(path.to_string_lossy().into_owned());
+        let key = path.to_string_lossy().into_owned();
+        // 同一批路径的事件类型一致（notify 每条只带一种 kind），整批一起进/不进结构栏。
+        if structural || rewrites_listing(&path) {
+            pending.structural.insert(key.clone());
+        }
+        pending.all.insert(key);
     }
 }
 
-fn flush(app: &AppHandle, root: &str, pending: &mut BTreeSet<String>) {
-    if pending.is_empty() {
+fn flush(app: &AppHandle, root: &str, pending: &mut Pending) {
+    if pending.all.is_empty() {
         return;
     }
-    let all: Vec<String> = std::mem::take(pending).into_iter().collect();
+    let all: Vec<String> = std::mem::take(&mut pending.all).into_iter().collect();
+    let structural: HashSet<String> = std::mem::take(&mut pending.structural).into_iter().collect();
     // soak 全收不丢，这里按 BATCH_CAP 拆开发，别把单条事件撑成几万条路径。
     for batch in all.chunks(BATCH_CAP) {
         let _ = app.emit(
             "fs://change",
             FsChange {
                 root: root.to_string(),
+                structural: batch
+                    .iter()
+                    .filter(|path| structural.contains(path.as_str()))
+                    .cloned()
+                    .collect(),
                 paths: batch.to_vec(),
             },
         );
@@ -381,12 +445,11 @@ mod tests {
     use super::ignorable_git_internal;
     use super::{
         allow_start_for_root, allow_stop_for_root, changes_listing, interesting, soak,
-        wait_duration, FsChange, BATCH_CAP, MAX_WAIT, SETTLE,
+        wait_duration, FsChange, Pending, BATCH_CAP, MAX_WAIT, SETTLE,
     };
     use notify::event::{
         AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
     };
-    use std::collections::BTreeSet;
     use std::path::Path;
     use std::time::{Duration, Instant};
 
@@ -415,45 +478,77 @@ mod tests {
         let change = FsChange {
             root: "D:/repo-a".to_string(),
             paths: vec!["D:/repo-a/src/main.rs".to_string()],
+            structural: vec!["D:/repo-a/src/main.rs".to_string()],
         };
         let json = serde_json::to_string(&change).unwrap();
         assert!(json.contains(r#""root":"D:/repo-a""#));
         assert!(json.contains(r#""paths":["D:/repo-a/src/main.rs"]"#));
+        // 前端读的是 camelCase 的 structural：漏了这个字段，保存也会当成清单变动。
+        assert!(json.contains(r#""structural":["D:/repo-a/src/main.rs"]"#));
     }
 
     #[test]
     fn events_under_default_excluded_dirs_are_dropped() {
+        // 第三参是「事件是否说明这条路径是目录」；下面同一段路径会按文件 / 目录两种身份各断言一次。
         let root = Path::new("/repo");
         // node_modules / 构建产物下的翻动（install、构建）不上报。
         // 路径全部走 Unix 风格：Windows 上 `C:\repo\...` 带 Prefix 组件，
         // strip_prefix("/repo") 匹配不上，断言测的就成了「前缀剥不动」而不是排除逻辑。
         assert!(super::under_default_excluded(
             root,
-            Path::new("/repo/node_modules/vite/esbuild.exe")
+            Path::new("/repo/node_modules/vite/esbuild.exe"),
+            false
         ));
         assert!(super::under_default_excluded(
             root,
-            Path::new("/repo/target/debug/forge.exe")
+            Path::new("/repo/target/debug/forge.exe"),
+            false
         ));
         assert!(super::under_default_excluded(
             root,
-            Path::new("/repo/dist/bundle.js")
+            Path::new("/repo/dist/bundle.js"),
+            false
         ));
         // 根下恰好叫 build / dist 的普通文件不是目录，不能按目录名排除掉：
         // 树里看得见，监听里也得报。
-        assert!(!super::under_default_excluded(root, Path::new("/repo/build")));
         assert!(!super::under_default_excluded(
             root,
-            Path::new("/repo/src/dist")
+            Path::new("/repo/build"),
+            false
         ));
-        // 排除目录本身被创建/删除同样过滤（树里看不见它）。
-        assert!(super::under_default_excluded(root, Path::new("/repo/.cache")));
+        assert!(!super::under_default_excluded(
+            root,
+            Path::new("/repo/src/dist"),
+            false
+        ));
+        // 排除目录自己出现（创建 / 删除目录事件）要过滤：树里看不见它，监听里也别报。
+        // 路径形状相同的 build 与 .cache 期望相反，差别只在事件说的身份上。
+        assert!(super::under_default_excluded(
+            root,
+            Path::new("/repo/.cache"),
+            true
+        ));
+        assert!(!super::under_default_excluded(
+            root,
+            Path::new("/repo/.cache"),
+            false
+        ));
+        assert!(super::under_default_excluded(
+            root,
+            Path::new("/repo/node_modules"),
+            true
+        ));
         // 正常源码路径放行；`src` 不在排除表里，与文件树行为一致。
         assert!(!super::under_default_excluded(
             root,
-            Path::new("/repo/src/main.rs")
+            Path::new("/repo/src/main.rs"),
+            false
         ));
-        assert!(!super::under_default_excluded(root, Path::new("/repo")));
+        assert!(!super::under_default_excluded(
+            root,
+            Path::new("/repo"),
+            true
+        ));
     }
 
     #[test]
@@ -544,21 +639,77 @@ mod tests {
 
     #[test]
     fn soak_keeps_paths_that_arrive_after_the_batch_cap() {
-        let mut pending: BTreeSet<String> = BTreeSet::new();
+        let mut pending = Pending::default();
         let full: Vec<std::path::PathBuf> = (0..BATCH_CAP)
             .map(|i| std::path::PathBuf::from(format!("/repo/file-{i}.txt")))
             .collect();
-        soak(&mut pending, full);
-        assert_eq!(pending.len(), BATCH_CAP);
+        soak(&mut pending, full, false);
+        assert_eq!(pending.all.len(), BATCH_CAP);
 
         // 满了再来的可能是用户刚保存的路径，丢了前端就永远不知道这个文件变了。
-        soak(&mut pending, vec![std::path::PathBuf::from("/repo/just-saved.txt")]);
-        assert!(pending.contains("/repo/just-saved.txt"), "超上限不能丢新路径");
-        assert_eq!(pending.len(), BATCH_CAP + 1);
+        soak(
+            &mut pending,
+            vec![std::path::PathBuf::from("/repo/just-saved.txt")],
+            false,
+        );
+        assert!(pending.all.contains("/repo/just-saved.txt"), "超上限不能丢新路径");
+        assert_eq!(pending.all.len(), BATCH_CAP + 1);
 
         // 集合天然去重：重复到达的路径不该翻倍。
-        soak(&mut pending, vec![std::path::PathBuf::from("/repo/just-saved.txt")]);
-        assert_eq!(pending.len(), BATCH_CAP + 1);
+        soak(
+            &mut pending,
+            vec![std::path::PathBuf::from("/repo/just-saved.txt")],
+            false,
+        );
+        assert_eq!(pending.all.len(), BATCH_CAP + 1);
+    }
+
+    /// 保存只改内容，不该被算进「目录清单变了」。这条是回归锁：一旦混进 structural，
+    /// 前端每次 Ctrl+S 都会重列目录链，白付一次 IPC 加一遍 .gitignore 匹配。
+    #[test]
+    fn soak_splits_structural_from_content_only_changes() {
+        let mut pending = Pending::default();
+        soak(
+            &mut pending,
+            vec![std::path::PathBuf::from("/repo/src/saved.txt")],
+            false,
+        );
+        soak(
+            &mut pending,
+            vec![std::path::PathBuf::from("/repo/src/new.txt")],
+            true,
+        );
+        // 忽略规则文件是例外：保存它只是内容修改，但目录里看得见什么跟着变。
+        soak(
+            &mut pending,
+            vec![std::path::PathBuf::from("/repo/.gitignore")],
+            false,
+        );
+        assert_eq!(pending.all.len(), 3, "三批路径都要上报");
+        assert_eq!(
+            pending.structural.into_iter().collect::<Vec<_>>(),
+            vec!["/repo/.gitignore".to_string(), "/repo/src/new.txt".to_string()],
+            "只有清单变动（含忽略规则）进 structural"
+        );
+    }
+
+    /// `.git/info/exclude` 只在 info 目录下才算忽略表，别处的同名文件不该被捎带进结构栏。
+    #[test]
+    fn only_ignore_rule_files_rewrite_the_listing() {
+        let cases = [
+            ("/repo/.gitignore", true),
+            ("/home/u/.gitignore_global", true),
+            ("/repo/.git/info/exclude", true),
+            ("/repo/build/exclude", false),
+            ("/repo/src/main.rs", false),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                super::rewrites_listing(Path::new(path)),
+                expected,
+                "{path} 的归类不该变"
+            );
+        }
     }
 }
 

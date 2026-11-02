@@ -37,7 +37,7 @@ import AiProviderIcon, { AiTabProviderIcon } from "../../src/components/AiProvid
 function installed(provider: AiProvider): AiCliStatus {
   return { provider, installed: true, version: "1.2.3", path: null, source: "external", latestVersion: null, latestSource: null,
     updateAvailable: false, canInstall: false, canUpdate: false, canUninstall: false,
-    prerequisiteError: null, probeError: null, latestError: "offline" };
+    launcherCount: 1, prerequisiteError: null, probeError: null, latestError: "offline" };
 }
 function render(sessions: AiSession[] = []) {
   return renderToStaticMarkup(createElement(Fragment, null,

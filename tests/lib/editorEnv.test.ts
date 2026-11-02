@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { languageCatalog, languageForPath, languageLabel } from "../../src/lib/editorEnv";
+import { languageForPath, languageLabel } from "../../src/lib/editorEnv";
 
 describe("languageForPath 路径到 Monaco 语言映射", () => {
   it("Kotlin 与 Kotlin Script (.kts) 文件正确识别为 kotlin", () => {
@@ -127,13 +127,5 @@ describe("languageForPath 路径到 Monaco 语言映射", () => {
     expect(languageLabel("groovy")).toBe("Groovy");
     expect(languageLabel("cmake")).toBe("CMake");
   });
-
-  it("语言目录是对标 IDE 的 72 门，id 与显示名一一对应", () => {
-    const catalog = languageCatalog();
-    expect(catalog).toHaveLength(72);
-    const ids = new Set(catalog.map((entry) => entry.id));
-    expect(ids.has("gomod")).toBe(true);
-    expect(ids.has("ocaml-interface")).toBe(true);
-    expect(ids.has("typescriptreact")).toBe(true);
-  });
 });
+

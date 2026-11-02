@@ -1,5 +1,4 @@
 import { listen } from "@tauri-apps/api/event";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { decodeChunk, termClose, termLayoutLoad, termLayoutSave, termOpen, termWrite } from "./term";
 import type { TermChunk, TermExit, TermLaunch, TermSessionId } from "./term";
 import { samePath } from "./format";
@@ -71,8 +70,6 @@ const activeIdByRoot = new Map<string, TermSessionId>();
 const sessionWatchers = new Set<Watcher>();
 /** 页签栏观察者：只在会话增删、激活切换、进程退出时通知，不受输出数据块干扰。 */
 const tabWatchers = new Set<Watcher>();
-/** 输出与退出的事件订阅，一条会话一对；关会话时按 id 摘掉。 */
-const unlisten = new Map<TermSessionId, UnlistenFn[]>();
 /** 每条会话当前的画面入口。 */
 const sinks = new Map<TermSessionId, TermSink>();
 /** 分屏组的排列方向；没登记的是左右排。 */
@@ -531,22 +528,40 @@ function specOf(source: TermSession): TermSpec {
   };
 }
 
-/** 已关闭会话的登记簿。listen 要一次 IPC 往返才 resolve，登记（关闭）可能赶在
- * 订阅返回之前——resolve 时查这张表，命中的监听当场解绑，不留成收不走的孤儿。
- *
- * 会话 id 单调递增、不会复用，所以老条目本身没有用处；常驻久了开关几十次终端就攒下一串。
- * 留最近 256 个足够覆盖往返窗口（毫秒级），更早的整批丢掉。 */
-const closed = new Set<TermSessionId>();
-const CLOSED_LIMIT = 256;
-
-function markClosed(id: TermSessionId) {
-  closed.add(id);
-  if (closed.size <= CLOSED_LIMIT) return;
-  for (const stale of [...closed].slice(0, closed.size - CLOSED_LIMIT)) closed.delete(stale);
-}
-
 /** 同一个根上正在开的那一条。面板挂载会被跑两遍，不能因此起两个 shell。 */
 const opening = new Map<string, Promise<TermSession>>();
+
+/**
+ * 输出与退出各全局订阅一次，按 payload.id 分发给会话。
+ *
+ * 早先是每条会话一对订阅：一条事件到达时所有回调都要跑一遍，会话数一多就是 O(n) 空转，
+ * 而绝大多数回调只做一次 id 比对就返回。订阅常驻进程之后，「IPC 往返期间会话被关掉、
+ * 解绑函数收不回来」那类竞态也随之消失——查不到会话的事件直接丢掉就是了。
+ */
+let wired = false;
+function wire(): void {
+  if (wired) return;
+  wired = true;
+  void listen<TermChunk>("term://output", (event) => {
+    const id = event.payload.id;
+    if (!sessions.some((item) => item.id === id)) return;
+    deliver(id, decodeChunk(event.payload.data));
+  });
+  void listen<TermExit>("term://exit", (event) => {
+    const id = event.payload.id;
+    const target = sessions.find((item) => item.id === id);
+    if (!target) return;
+    target.exited = true;
+    target.exitCode = event.payload.code;
+    startupCommands.delete(id);
+    // 敲 exit 正常退出就把页签收掉；非零退出留着最后一屏，让人看得见出了什么错。
+    if (event.payload.code === 0) {
+      void closeTerm(id);
+      return;
+    }
+    notifyAll();
+  });
+}
 
 /**
  * 起一条新会话，返回它。起完自动切成激活。
@@ -559,6 +574,8 @@ async function open(
   rows: number,
   group?: number
 ): Promise<TermSession> {
+  // 起会话之前先把事件订阅挂上，第一包输出才不会被漏掉。
+  wire();
   const dir = spec.dir && !sameCwd(spec.dir, cwd) ? spec.dir : null;
   const launch = spec.launch ?? undefined;
   let id: TermSessionId;
@@ -596,35 +613,6 @@ async function open(
     // 有的 shell 起来一声不吭（`-NoLogo` 加空提示符），等不到第一包也得敲。
     setTimeout(() => sendStartupCommand(id, 0), 2000);
   }
-  const offs: UnlistenFn[] = [];
-  const adopt = (off: UnlistenFn) => {
-    if (closed.has(id)) {
-      // 往返期间会话已被关掉：监听器当场解绑，不能推进没人认领的数组。
-      off();
-      return;
-    }
-    offs.push(off);
-  };
-  void listen<TermChunk>("term://output", (event) => {
-    if (event.payload.id !== id) return;
-    if (!sessions.some((item) => item.id === id)) return;
-    deliver(id, decodeChunk(event.payload.data));
-  }).then(adopt);
-  void listen<TermExit>("term://exit", (event) => {
-    if (event.payload.id !== id) return;
-    const target = sessions.find((item) => item.id === id);
-    if (!target) return;
-    target.exited = true;
-    target.exitCode = event.payload.code;
-    startupCommands.delete(id);
-    // 敲 exit 正常退出就把页签收掉；非零退出留着最后一屏，让人看得见出了什么错。
-    if (event.payload.code === 0) {
-      void closeTerm(id);
-      return;
-    }
-    notifyAll();
-  }).then(adopt);
-  unlisten.set(id, offs);
   notifyAll();
   return created;
 }
@@ -684,11 +672,7 @@ export async function closeTerm(id: TermSessionId): Promise<void> {
   const restSameRoot = sameRootList.filter((item) => item.id !== id);
   const index = sessions.indexOf(target);
   sessions = sessions.filter((item) => item.id !== id);
-  // 先登记再解绑：还挂在 IPC 往返上的订阅 resolve 时会查到这张表。
-  markClosed(id);
   forgetOutput(id);
-  for (const off of unlisten.get(id) ?? []) off();
-  unlisten.delete(id);
   if (restSameRoot.length === 0) forgottenRoots.add(key);
   if (activeIdByRoot.get(key) === id) {
     const fallbackRoot =
@@ -715,12 +699,7 @@ export async function closeTermsForRoot(cwd: string | null): Promise<void> {
   const doomedIds = new Set(doomed.map((item) => item.id));
   sessions = sessions.filter((item) => !doomedIds.has(item.id));
   restored.delete(rootKey(cwd));
-  for (const item of doomed) {
-    markClosed(item.id);
-    forgetOutput(item.id);
-    for (const off of unlisten.get(item.id) ?? []) off();
-    unlisten.delete(item.id);
-  }
+  for (const item of doomed) forgetOutput(item.id);
   if (activeId !== null && doomedIds.has(activeId)) {
     activeId = sessions[sessions.length - 1]?.id ?? null;
   }
@@ -736,12 +715,7 @@ export async function dropTermSession(): Promise<void> {
   activeId = null;
   activeIdByRoot.clear();
   restored.clear();
-  for (const item of all) {
-    markClosed(item.id);
-    forgetOutput(item.id);
-  }
-  for (const [, offs] of unlisten) for (const off of offs) off();
-  unlisten.clear();
+  for (const item of all) forgetOutput(item.id);
   notifyAll();
   await Promise.all(all.map((item) => termClose(item.id).catch(() => {})));
 }

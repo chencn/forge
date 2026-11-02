@@ -8,7 +8,7 @@
  * 4. Python: 探测 .venv 虚拟环境与 site-packages。
  */
 
-import { readFile, listDirectory } from "../../lib/fs";
+import { readFile, listDirectory, statEntries } from "../../lib/fs";
 
 export type LibraryKind =
   | "nodeModules"
@@ -47,6 +47,18 @@ export interface LibraryRoot {
 
 /** 缓存已探测的外部库结果：key 为 workspaceRoot */
 const librariesCache = new Map<string, LibraryGroup[]>();
+
+/**
+ * 一次 IPC 问出这些路径里哪些是目录。
+ *
+ * 原来每个依赖各调一次 `listDirectory`，40 个直接依赖就是 40 次 IPC，而且串行等在
+ * 挂载首帧的路径上。`statEntries` 一次就够，不存在的条目不回，正好当「装没装」用。
+ */
+async function existingDirectories(paths: readonly string[]): Promise<Set<string>> {
+  if (paths.length === 0) return new Set();
+  const kinds = await statEntries([...paths]);
+  return new Set(kinds.filter((entry) => entry.kind === "directory").map((entry) => entry.path));
+}
 
 /**
  * 探测工作区关联的外部依赖库（1:1 对齐 IntelliJ IDEA 逻辑）
@@ -96,27 +108,25 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
       const directRoots: LibraryRoot[] = [];
       let coreTypesRoot: LibraryRoot | null = null;
 
-      // 验证本地磁盘中确实存在的包
+      // 验证本地磁盘中确实存在的包：一次批量探测，别为每个依赖各开一次 IPC。
+      const installed = await existingDirectories(
+        [...depNames].map((name) => `${nodeModulesDir}/${name}`)
+      );
       for (const name of depNames) {
         const pkgPath = `${nodeModulesDir}/${name}`;
-        try {
-          const listing = await listDirectory(pkgPath);
-          if (listing.entries.length >= 0) {
-            const rootItem: LibraryRoot = {
-              id: `node:${name}`,
-              name,
-              path: pkgPath,
-              detail: "library root",
-              isDirectory: true,
-            };
-            if (name === "@types/node") {
-              coreTypesRoot = rootItem;
-            }
-            directRoots.push(rootItem);
-          }
-        } catch {
-          // 依赖尚未安装或在父级目录，跳过
+        // 依赖尚未安装或在父级目录：不存在就不进列表。
+        if (!installed.has(pkgPath)) continue;
+        const rootItem: LibraryRoot = {
+          id: `node:${name}`,
+          name,
+          path: pkgPath,
+          detail: "library root",
+          isDirectory: true,
+        };
+        if (name === "@types/node") {
+          coreTypesRoot = rootItem;
         }
+        directRoots.push(rootItem);
       }
 
       // 如果有 @types/node，单独抽出一组 < Node.js Core >（对标 IntelliJ IDEA）
@@ -238,50 +248,49 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   // -------------------------------------------------------------------------
   try {
     const venvDirs = [".venv", "venv", "env"];
-    for (const vd of venvDirs) {
-      const venvPath = `${normRoot}/${vd}`;
+    const venvPaths = venvDirs.map((vd) => `${normRoot}/${vd}`);
+    // 三个候选虚拟环境与它们的 site-packages 一次问完，别一层层串着等。
+    const present = await existingDirectories([
+      ...venvPaths,
+      ...venvPaths.map((venvPath) => `${venvPath}/Lib/site-packages`),
+    ]);
+    for (const [index, vd] of venvDirs.entries()) {
+      const venvPath = venvPaths[index];
+      if (!present.has(venvPath)) continue;
+      // 空目录不算虚拟环境（装到一半中断会留个空壳）：要真列得出内容来才作数。
       try {
         const listing = await listDirectory(venvPath);
-        if (listing.entries.length > 0) {
-          // 查找 site-packages
-          const sitePkgPath = `${venvPath}/Lib/site-packages`;
-          let hasSitePkg = false;
-          try {
-            const siteList = await listDirectory(sitePkgPath);
-            hasSitePkg = siteList.entries.length > 0;
-          } catch {
-            // ignore
-          }
-
-          const pyRoots: LibraryRoot[] = [];
-          if (hasSitePkg) {
-            pyRoots.push({
-              id: "python:site-packages",
-              name: "site-packages",
-              path: sitePkgPath,
-              detail: "library root",
-              isDirectory: true,
-            });
-          }
-          pyRoots.push({
-            id: "python:venv",
-            name: vd,
-            path: venvPath,
-            detail: "library root",
-            isDirectory: true,
-          });
-
-          groups.push({
-            id: "python",
-            label: `< Python (${vd}) >`,
-            kind: "python",
-            roots: pyRoots,
-          });
-          break;
-        }
+        if (listing.entries.length === 0) continue;
       } catch {
-        // 不存在当前虚拟环境目录
+        continue;
       }
+
+      const sitePkgPath = `${venvPath}/Lib/site-packages`;
+      const pyRoots: LibraryRoot[] = [];
+      if (present.has(sitePkgPath)) {
+        pyRoots.push({
+          id: "python:site-packages",
+          name: "site-packages",
+          path: sitePkgPath,
+          detail: "library root",
+          isDirectory: true,
+        });
+      }
+      pyRoots.push({
+        id: "python:venv",
+        name: vd,
+        path: venvPath,
+        detail: "library root",
+        isDirectory: true,
+      });
+
+      groups.push({
+        id: "python",
+        label: `< Python (${vd}) >`,
+        kind: "python",
+        roots: pyRoots,
+      });
+      break;
     }
   } catch {
     // ignore

@@ -135,7 +135,7 @@ describe("Codex 模型清单编辑器", () => {
 
   it("两个添加入口分别对应原生 GPT 与 OpenAI 兼容预设", () => {
     const pane = renderCatalog(emptyCodexCatalogIntent(), view(), null);
-    const buttons = collect(pane, (node) => node.props.className === "lsp-action" && typeof node.props.onClick === "function"
+    const buttons = collect(pane, (node) => node.props.className === "panel-action" && typeof node.props.onClick === "function"
       && String(node.props.children[1] ?? "").startsWith("ai.catalog.add"));
     expect(buttons.map((node) => node.props.children[1])).toEqual(["ai.catalog.addGpt", "ai.catalog.addCompat"]);
     buttons[0].props.onClick({});
@@ -174,7 +174,7 @@ describe("Codex 模型清单编辑器", () => {
   it("官方条目为空时依然允许添加自定义模型并保持按钮可用", () => {
     const emptyView = view({ models: [] });
     const pane = renderCatalog(emptyCodexCatalogIntent(), emptyView, null);
-    const buttons = collect(pane, (node) => node.props.className === "lsp-action" && typeof node.props.onClick === "function"
+    const buttons = collect(pane, (node) => node.props.className === "panel-action" && typeof node.props.onClick === "function"
       && String(node.props.children[1] ?? "").startsWith("ai.catalog.add"));
     expect(buttons[0].props.disabled).toBe(false);
     buttons[0].props.onClick({});

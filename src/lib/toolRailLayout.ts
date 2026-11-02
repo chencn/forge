@@ -17,8 +17,7 @@ export interface ToolRailLayout {
   right: Record<ToolRailGroup, ToolRailId[]>;
 }
 
-const STORAGE_KEY = "forge:tool-rail-layout:v3";
-const LEGACY_STORAGE_KEY = "forge:tool-rail-layout:v2";
+const STORAGE_KEY = "forge:tool-rail-layout:v1";
 
 export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   notifications: "top",
@@ -76,35 +75,15 @@ export function normalizeToolRailLayout(value: unknown): ToolRailLayout {
 export function loadToolRailLayout(): ToolRailLayout {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored !== null) {
-      const parsed = normalizeToolRailLayout(JSON.parse(stored));
-      // 1:1 对标 IntelliJ IDEA 规范 (anchor: "right", order: 0)：
-      // notifications 必须且永远置于右侧顶端第一位，严禁遗留在 bottom 或其他位置。
-      parsed.left.bottom = parsed.left.bottom.filter((id) => id !== "notifications");
-      parsed.right.bottom = parsed.right.bottom.filter((id) => id !== "notifications");
-      parsed.left.top = parsed.left.top.filter((id) => id !== "notifications");
-      parsed.right.top = ["notifications", ...parsed.right.top.filter((id) => id !== "notifications")];
-      saveToolRailLayout(parsed);
-      return parsed;
-    }
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY) ?? localStorage.getItem("forge:tool-rail-layout:v1");
-    if (legacy === null) return copyDefault();
-    const migrated = normalizeToolRailLayout(JSON.parse(legacy));
-    // 迁移升级：若旧版本中 ai 在左侧则迁至右侧；notifications 强制置于右侧顶端首位
-    const leftTopClean = migrated.left.top.filter((id) => id !== "notifications" && id !== "ai");
-    const rightTopClean = migrated.right.top.filter((id) => id !== "notifications" && id !== "ai");
-    const next: ToolRailLayout = {
-      left: {
-        top: leftTopClean,
-        bottom: migrated.left.bottom.filter((id) => id !== "notifications"),
-      },
-      right: {
-        top: ["notifications", "ai", ...rightTopClean],
-        bottom: migrated.right.bottom.filter((id) => id !== "notifications"),
-      },
-    };
-    saveToolRailLayout(next);
-    return next;
+    if (stored === null) return copyDefault();
+    const parsed = normalizeToolRailLayout(JSON.parse(stored));
+    // 1:1 对标 IntelliJ IDEA 规范 (anchor: "right", order: 0)：
+    // notifications 必须且永远置于右侧顶端第一位，严禁遗留在 bottom 或其他位置。
+    parsed.left.bottom = parsed.left.bottom.filter((id) => id !== "notifications");
+    parsed.right.bottom = parsed.right.bottom.filter((id) => id !== "notifications");
+    parsed.left.top = parsed.left.top.filter((id) => id !== "notifications");
+    parsed.right.top = ["notifications", ...parsed.right.top.filter((id) => id !== "notifications")];
+    return parsed;
   } catch {
     return copyDefault();
   }

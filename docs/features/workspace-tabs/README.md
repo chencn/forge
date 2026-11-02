@@ -63,12 +63,6 @@ asset 授权累积不撤销、运行配置本就按工程根分节）见 [../../
 
 监听范围是 `watchedRoots`（`openFolders`，没有它时退化成激活根那一颗），后台根的磁盘改动一样进得来。
 
-## 语言服务只跟激活根
-
-`reconcileLsp` 的入参仍是「一个根 + 该根的文档」，切根时未激活那几根的会话在「不再需要的会话收掉」这一步被停掉，
-这是拍板下来的口径：只加载当前激活项目的语言服务，未激活的自动回收。根解析的 `roots` 缓存跨根保留，
-切回去不必重扫标志文件。no-root 的跳过标记按**文件所在目录**记，带 TTL，不拿工作区根把一次「没查到」永久钉死。
-
 ## 持久化
 
 `History` 两个字段：`openFolders: string[]` 与 `activeFolder: string`。结构体级带
@@ -120,7 +114,7 @@ asset 授权累积不撤销、运行配置本就按工程根分节）见 [../../
 
 | 文件 | 内容 |
 | --- | --- |
-| `src/App.tsx` | `openFolders` `:394` 与激活根 `:397`、初值 `:393`；`rootKey` / `rootKeyRef` `:675-677`；`explorerPickByRoot` `:685`、`diffChainsByRoot` `:707`、`runConfigsTabByRoot` `:748`、`activeTabByRoot` `:753-754`、`tabOrderByRoot` `:907-913`、`findByRoot` `:1016`、`lastPlaceByRoot` `:1031`、按根暂存的监听批次 `:1413`；通知按根写回 `:410`；`reconcileLsp` effect `:597`；`watchedRoots` `:1628-1633`；`performCloseRoot` `:2097`、`requestCloseRoot` `:2194`、`switchOrAddFolder` `:2224`、`openFolder` `:2273`、`closeFolder` `:2284`、`folderStatusList` `:2290-2303`；`closeRoot` 确认分支 `:3757` |
+| `src/App.tsx` | `openFolders` `:394` 与激活根 `:397`、初值 `:393`；`rootKey` / `rootKeyRef` `:675-677`；`explorerPickByRoot` `:685`、`diffChainsByRoot` `:707`、`runConfigsTabByRoot` `:748`、`activeTabByRoot` `:753-754`、`tabOrderByRoot` `:907-913`、`findByRoot` `:1016`、`lastPlaceByRoot` `:1031`、按根暂存的监听批次 `:1413`；通知按根写回 `:410`；`watchedRoots` `:1628-1633`；`performCloseRoot` `:2097`、`requestCloseRoot` `:2194`、`switchOrAddFolder` `:2224`、`openFolder` `:2273`、`closeFolder` `:2284`、`folderStatusList` `:2290-2303`；`closeRoot` 确认分支 `:3757` |
 | `src/components/ProjectPicker.tsx` | `FolderStatusItem` `:10`、「已打开」分组与计数徽标的可见条件 `:60-64`、芯片上的绿点与徽标 `:96-97`、行结构 `:103-165` |
 | `src/hooks/useDocuments.ts` | `doc.root` 的归属判定 `belongsToRoot` `:115`、打开时记归属根 `:191-220`、`saveAllForRoot` `:584`、`closeForRoot` `:726`、`hasDirtyForRoot` `:757` |
 | `src/hooks/useFileWatch.ts` | 按根起停与代号 `generation`、一份全局订阅按 `payload.root` 分桶去抖 |

@@ -62,6 +62,20 @@ version = "0.1.0"
       }
       throw new Error(`Directory not found: ${path}`);
     }),
+    // 依赖是否存在走的是一次批量探测：不存在的条目不回，path 原样带回。
+    statEntries: vi.fn(async (paths: string[]) =>
+      paths
+        .filter((path) => {
+          const norm = path.replaceAll("\\", "/");
+          return (
+            norm.endsWith("/node_modules/clsx") ||
+            norm.endsWith("/node_modules/@tanstack/react-virtual") ||
+            norm.endsWith("/node_modules/@types/node") ||
+            norm.endsWith("/node_modules/typescript")
+          );
+        })
+        .map((path) => ({ path, kind: "directory" as const }))
+    ),
   };
 });
 

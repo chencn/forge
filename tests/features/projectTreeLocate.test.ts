@@ -27,6 +27,14 @@ vi.mock("../../src/lib/fs", async (original) => {
       const key = path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
       return Promise.resolve({ entries: h.listing.get(key) ?? [] });
     },
+    // 树走链式预取：测试只需要首层；返回单层即让延伸条件自然停下。
+    listDirectoryChain: (path: string) => {
+      h.loadCalls.push(path);
+      const key = path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+      return Promise.resolve([
+        { path, parent: null, entries: h.listing.get(key) ?? [], unreadable: [] },
+      ]);
+    },
   };
 });
 
@@ -37,6 +45,7 @@ vi.mock("../../src/lib/ignoredCache", () => ({
 
 vi.mock("../../src/features/project-tree/libraries", () => ({
   detectExternalLibraries: () => Promise.resolve([]),
+  invalidateLibrariesCache: () => {},
 }));
 
 vi.mock("../../src/features/project-tree/scratches", () => ({

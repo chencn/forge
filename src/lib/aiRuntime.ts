@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import type { AiSession } from "./aiSessions";
 import type { AiProvider } from "./aiCli";
 import { isAiTaskBackendActive, isAiTaskBackendStatus, isAiTaskLive, isAiTaskQueued, isAiTaskTerminal, type AiTaskStatus } from "./aiTaskStatus";
+import { errorCodeOf } from "./errors";
 import { normalizeAiUsage } from "./aiUsage";
 import type { AiUsage } from "./aiUsage";
 import { normalizeAiContext } from "./aiContext";
@@ -530,39 +531,74 @@ function markOwnedTask(id: string, runId: string, status: AiTaskStatus) {
     activities.delete(id);
   }
 }
+/** 两个运行 id 清单内容一致时视作无变化：长度相同且逐项相同。 */
+function sameRunIds(a: readonly string[] | undefined, b: readonly string[]): boolean {
+  if (a === b) return true;
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
 /** 一次批量查询只更新请求涉及的会话，不覆盖其他工程的状态。 */
 export async function refreshAiSessionActivity(workspace: string, sessionIds: string[]): Promise<void> {
   const workspaceKey = rootKey(workspace);
   const epoch = (activityEpochs.get(workspaceKey) ?? 0) + 1;
   activityEpochs.set(workspaceKey, epoch);
   const requested = new Set(sessionIds);
+  let pruned = false;
   for (const [id, root] of activityRoots) if (rootKey(root) === rootKey(workspace) && !requested.has(id)) {
     activityRoots.delete(id); activities.delete(id); activityQueued.delete(id); activityRunIds.delete(id); activityQueuedRunIds.delete(id);
+    pruned = true;
   }
-  if (!isTauri() || !sessionIds.length) { changed(); return; }
+  if (!isTauri() || !sessionIds.length) { if (pruned) changed(); return; }
   for (const id of sessionIds) activityRoots.set(id, workspace);
   try {
     const records = await invoke<Array<{ sessionId: string; state: AiSessionActivity; queuedCount?: number; activeRunId?: string | null; queuedRunIds?: string[] }>>("ai_runtime_activity", { workspace, sessionIds });
     // 慢请求后返回时不能把较新的 idle/external 又覆盖成旧 running。
     if (activityEpochs.get(workspaceKey) !== epoch) return;
+    // 探针是定时轮询：值跟上一轮完全一样时不能通知——空闲时每次 changed() 都会把整棵订阅树
+    // （含 useAiActiveProjects 的全工程汇总 + JSON.stringify）唤醒一遍，空闲 CPU 永远不归零。
+    let dirty = false;
     for (const record of records) {
       if (sessionIds.includes(record.sessionId) && ["idle", "running", "external", "conflict", "unknown"].includes(record.state)) {
-        activities.set(record.sessionId, record.state);
-        activityQueued.set(record.sessionId, Number.isSafeInteger(record.queuedCount) && (record.queuedCount ?? 0) > 0 ? record.queuedCount! : 0);
-        if (typeof record.activeRunId === "string" && record.activeRunId) activityRunIds.set(record.sessionId, record.activeRunId);
+        const state = record.state;
+        const queuedCount = Number.isSafeInteger(record.queuedCount) && (record.queuedCount ?? 0) > 0 ? record.queuedCount! : 0;
+        const activeRunId = typeof record.activeRunId === "string" && record.activeRunId ? record.activeRunId : null;
+        const queuedRunIds = Array.isArray(record.queuedRunIds)
+          ? record.queuedRunIds.filter((runId): runId is string => typeof runId === "string" && !!runId) : NO_RUN_IDS;
+        if (activities.get(record.sessionId) !== state) dirty = true;
+        if (activityQueued.get(record.sessionId) !== queuedCount) dirty = true;
+        if ((activityRunIds.get(record.sessionId) ?? null) !== activeRunId) dirty = true;
+        if (!sameRunIds(activityQueuedRunIds.get(record.sessionId), queuedRunIds)) dirty = true;
+        activities.set(record.sessionId, state);
+        activityQueued.set(record.sessionId, queuedCount);
+        if (activeRunId) activityRunIds.set(record.sessionId, activeRunId);
         else activityRunIds.delete(record.sessionId);
-        activityQueuedRunIds.set(record.sessionId, Array.isArray(record.queuedRunIds)
-          ? record.queuedRunIds.filter((runId): runId is string => typeof runId === "string" && !!runId) : NO_RUN_IDS);
+        activityQueuedRunIds.set(record.sessionId, queuedRunIds);
       }
     }
+    if (dirty) changed();
   } catch {
     if (activityEpochs.get(workspaceKey) !== epoch) return;
     // 探测失败不是“空闲”，不能把已知外部占用静默清除。
     // 探针失败时保留上一次控制权：网络/IO 错误不能凭空把仍在运行的停止按钮撤掉，
     // 更不能把未知任务认领到本窗口；activity 本身仍明确显示 unknown。
-    for (const id of sessionIds) activities.set(id, "unknown");
+    let dirty = false;
+    for (const id of sessionIds) {
+      if (activities.get(id) !== "unknown") dirty = true;
+      activities.set(id, "unknown");
+    }
+    if (dirty) changed();
   }
-  changed();
+}
+/**
+ * 还有没有值得按最短间隔一看的活动：运行中、外部占用、冲突、状态未知（等下一次探测
+ * 确认恢复），或者有排队任务（等外部 CLI 结束后接手）。全都空闲时轮询可以放慢——
+ * 每轮都要按会话读 meta.json，空闲状态下这纯是空转。
+ */
+export function hasLiveAiActivity(): boolean {
+  for (const state of activities.values()) if (state !== "idle") return true;
+  for (const count of activityQueued.values()) if (count > 0) return true;
+  return false;
 }
 let listening: Promise<void> | null = null;
 const notify = () => { for (const listener of listeners) listener(); };
@@ -712,10 +748,37 @@ function goalSummaryFromEvent(event: AiRuntimeEvent): AiGoalSummary | undefined 
 
 /** Complete messages replace deltas under the same provider item ID. */
 export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSnapshot = EMPTY, incremental = false): AiRuntimeSnapshot {
-  const entries: AiEntry[] = incremental ? previous.entries.map((entry) => ({ ...entry })) : [];
+  // 增量投影绝不原地改写上一帧的条目。流式期间每帧都会走到这里，把条目逐条浅拷贝一遍
+  // 会让所有条目的身份一起翻新，下游靠引用比较的 memo 就此全线失效，每帧重渲染整条时间线。
+  // 改成写时复制：数组本身换新（要追加/替换槽位），元素沿用上一帧的对象，只有这一批事件
+  // 真正碰过的条目才经 mut/mutReq 换身份——没变的行保持引用，memo 才拦得住。
+  const entries: AiEntry[] = incremental ? previous.entries.slice() : [];
   const byId = new Map<string, AiEntry>(entries.map((entry) => [entry.id, entry]));
-  const requests = new Map<string, AiRequest>(incremental ? previous.requests.map((request) => [request.requestId, { ...request }]) : []);
-  const tasks = new Map<string, AiTask>(incremental ? previous.tasks.map((task) => [task.runId, { ...task }]) : []);
+  /** 本批已经复制出来的条目：同一个条目被碰多次也只复制一次。 */
+  const copies = new Map<string, AiEntry>();
+  /** 写时复制一个时间线条目；副本立刻顶掉数组里的原位置，byId 也改指向它。 */
+  const mut = (entry: AiEntry): AiEntry => {
+    const already = copies.get(entry.id);
+    if (already) return already;
+    const copy = { ...entry };
+    copies.set(entry.id, copy);
+    byId.set(entry.id, copy);
+    const at = entries.indexOf(entry);
+    if (at >= 0) entries[at] = copy;
+    return copy;
+  };
+  const requests = new Map<string, AiRequest>(incremental ? previous.requests.map((request) => [request.requestId, request]) : []);
+  const requestCopies = new Map<string, AiRequest>();
+  /** 写时复制一条请求；上一帧的 requests 数组持有的对象不许被改写。 */
+  const mutReq = (request: AiRequest): AiRequest => {
+    const already = requestCopies.get(request.requestId);
+    if (already) return already;
+    const copy = { ...request };
+    requestCopies.set(request.requestId, copy);
+    requests.set(request.requestId, copy);
+    return copy;
+  };
+  const tasks = new Map<string, AiTask>(incremental ? previous.tasks.map((task) => [task.runId, task]) : []);
   // 每一轮的正文：只有真有状态事件的那一轮才配拿去当提示词（见下面 `user` 分支）。
   const prompts = new Map<string, string>();
   const seenRuns = new Set<string>();
@@ -761,7 +824,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         // 排队期间编辑的是任务提示词；启动时正文必须使用最后确认的版本。
         const prompt = tasks.get(event.runId)?.prompt;
         if (current && isAiTaskQueued(current.status) && typeof prompt === "string") for (const entry of entries) {
-          if (entry.runId === event.runId && entry.kind === "user") entry.text = prompt;
+          if (entry.runId === event.runId && entry.kind === "user") mut(entry).text = prompt;
         }
       }
       const terminal = taskStatus !== null && isAiTaskTerminal(taskStatus);
@@ -770,16 +833,16 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         runId = event.runId; status = "running"; error = null; staleContext(); contextUnavailable = undefined; background = undefined; permissionDenied = undefined;
       }
       else if (terminal && runId === event.runId && taskStatus) { status = taskStatus; error = typeof data.error === "string" ? data.error : null; background = undefined; }
-      if (terminal) for (const request of requests.values()) if (request.runId === event.runId) request.active = false;
+      if (terminal) for (const request of requests.values()) if (request.runId === event.runId) mutReq(request).active = false;
       if (terminal && taskStatus) {
         for (const entry of entries) {
           if (entry.kind === "tool" && entry.runId === event.runId && entry.status === "running") {
-            entry.status = taskStatus === "completed" ? "unknown" : taskStatus;
+            mut(entry).status = taskStatus === "completed" ? "unknown" : taskStatus;
           }
           if (entry.kind === "notice" && entry.name === "compaction" && entry.runId === event.runId) {
             const input = entry.input && typeof entry.input === "object" ? entry.input as Record<string, unknown> : {};
             if (input.status === "compacting" || input.status === "running") {
-              entry.input = { ...input, status: taskStatus === "cancelled" ? "interrupted" : taskStatus };
+              mut(entry).input = { ...input, status: taskStatus === "cancelled" ? "interrupted" : taskStatus };
             }
           }
         }
@@ -802,14 +865,17 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       const commandKey = `${key}:command`;
       let entry = byId.get(commandKey);
       if (!entry) { entry = { id: commandKey, runId: event.runId, kind: "command", text: "" }; byId.set(commandKey, entry); entries.push(entry); }
+      else entry = mut(entry);
       entry.text = data.text;
     }
     else if ((event.kind === "text" || event.kind === "message") && typeof data.id === "string" && typeof data.text === "string") {
       let entry = byId.get(key); if (!entry) { entry = { id: key, runId: event.runId, kind: "assistant", text: "" }; byId.set(key, entry); entries.push(entry); }
+      else entry = mut(entry);
       entry.text = event.kind === "message" ? data.text : entry.text + data.text;
       if (typeof data.parent === "string" && data.parent) entry.parent = data.parent;
     } else if (event.kind === "tool" && typeof data.id === "string") {
       let entry = byId.get(key); if (!entry) { entry = { id: key, runId: event.runId, kind: "tool", text: "" }; byId.set(key, entry); entries.push(entry); }
+      else entry = mut(entry);
       entry.toolId = data.id;
       if (typeof data.parent === "string" && data.parent) entry.parent = data.parent;
       if (typeof data.name === "string") entry.name = data.name;
@@ -849,6 +915,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       const draftKey = `plan-draft:${data.planId}`;
       let entry = byId.get(draftKey);
       if (!entry) { entry = { id: draftKey, runId: event.runId, seq: event.seq, kind: "notice", name: "plan_draft", text: "" }; entries.push(entry); byId.set(draftKey, entry); }
+      else entry = mut(entry);
       const text = typeof data.text === "string" ? data.text : "";
       entry.text = data.append === true ? entry.text + text : text;
       entry.input = { planId: data.planId, complete: data.complete === true };
@@ -858,14 +925,22 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       plans.set(`${plan.planId}:${plan.revision}`, { ...plan, seq: event.seq });
       // 同一次规划先有流式草稿、后有权威正文：合并成一条，不让同一份计划出现两次。
       const draftKey = `plan-draft:${plan.planId}`;
-      const entry = byId.get(draftKey) ?? { id: `${event.runId}:plan-review:${plan.planId}:${plan.revision}`, runId: event.runId, seq: event.seq, kind: "notice" as const, name: "plan_review", text: "" };
+      const draft = byId.get(draftKey);
+      // 命中流式草稿就地升级它（写时复制）；否则这是一条新卡片，直接进时间线。
+      let entry: AiEntry;
+      if (draft) entry = mut(draft);
+      else {
+        entry = { id: `${event.runId}:plan-review:${plan.planId}:${plan.revision}`, runId: event.runId, seq: event.seq, kind: "notice", name: "plan_review", text: "" };
+        byId.set(entry.id, entry);
+        entries.push(entry);
+      }
       entry.name = "plan_review"; entry.text = typeof plan.content === "string" ? plan.content : entry.text;
       entry.input = plan; entry.seq = event.seq;
-      if (!byId.has(entry.id)) { byId.set(entry.id, entry); entries.push(entry); }
     } else if (event.kind === "plan_decision") {
       const noticeKey = `${key}:plan-decision`;
       let entry = byId.get(noticeKey);
       if (!entry) { entry = { id: noticeKey, runId: event.runId, seq: event.seq, kind: "notice", name: "plan_decision", text: "" }; byId.set(noticeKey, entry); entries.push(entry); }
+      else entry = mut(entry);
       entry.input = data; entry.seq = event.seq;
     } else if (event.kind === "background") {
       background = { pending: Number.isSafeInteger(data.pending) && Number(data.pending) >= 0 ? Number(data.pending) : 0, settled: data.settled === true };
@@ -883,6 +958,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       const reasoningKey = `${key}:reasoning`;
       let entry = byId.get(reasoningKey);
       if (!entry) { entry = { id: reasoningKey, runId: event.runId, seq: event.seq, kind: "reasoning", text: "" }; byId.set(reasoningKey, entry); entries.push(entry); }
+      else entry = mut(entry);
       if (typeof data.parent === "string" && data.parent) entry.parent = data.parent;
       const text = typeof data.text === "string" ? data.text : typeof data.delta === "string" ? data.delta : "";
       // 完整思考块可能带着被 CLI 裁剪/签名后的空文本到来：空串不得洗掉已累计的增量，
@@ -894,17 +970,19 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       // TaskUpdate 可以来自后续回合；任务清单属于会话，不能按回合截断。
       const taskKey = "session:task-list";
       modelTasks = foldAiModelTaskList(modelTasks, event);
-      let entry = byId.get(taskKey);
+      const entry = byId.get(taskKey);
       const items = modelTasks.items;
       if (data.replace === true && items.length === 0) {
         // 清单清空就是删除当前快照，不能留下一个永远空着的“任务”壳。
         if (entry) entries.splice(entries.indexOf(entry), 1);
         byId.delete(taskKey);
       } else {
-        if (!entry) { entry = { id: taskKey, runId: event.runId, seq: event.seq, kind: "notice", name: "task_list", text: "" }; byId.set(taskKey, entry); }
-        else entries.splice(entries.indexOf(entry), 1);
-        // 这是会话级最新快照，但在时间线上仍必须归到产生本次更新的新回合和新位置。
-        entry.runId = event.runId; entry.input = { items }; entry.seq = event.seq; entries.push(entry);
+        // 这是会话级最新快照，但在时间线上仍必须归到产生本次更新的新回合和新位置：
+        // 先写时复制（首见则新建），再把副本从原位置摘掉、追加到末尾。
+        let target: AiEntry;
+        if (entry) { target = mut(entry); entries.splice(entries.indexOf(target), 1); }
+        else { target = { id: taskKey, runId: event.runId, seq: event.seq, kind: "notice", name: "task_list", text: "" }; byId.set(taskKey, target); }
+        target.runId = event.runId; target.input = { items }; target.seq = event.seq; entries.push(target);
       }
     } else if (event.kind === "goal") {
       // 清除与更新共用一个事件类型；坏载荷不能误清除当前 Goal。
@@ -934,7 +1012,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       if (event.kind !== "compaction") {
         const noticeKey = event.kind === "notice" ? `${key}:notice:${event.seq}` : `${key}:notice:${event.kind}`;
         const existing = byId.get(noticeKey);
-        if (existing) { existing.text = typeof data.text === "string" ? data.text : existing.text; existing.input = data; existing.seq = event.seq; }
+        if (existing) { const target = mut(existing); target.text = typeof data.text === "string" ? data.text : target.text; target.input = data; target.seq = event.seq; }
         else { const entry: AiEntry = { id: noticeKey, runId: event.runId, seq: event.seq, kind: "notice", name: event.kind, text: typeof data.text === "string" ? data.text : "", input: data }; entries.push(entry); byId.set(noticeKey, entry); }
       }
     }
@@ -948,6 +1026,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         return (summaryId && input?.summaryId === summaryId) || (episodeId && input?.episodeId === episodeId);
       });
       let existing = matches[0];
+      if (existing) existing = mut(existing);
       // 两个身份先各自到达，再收到关联事件时，收拢已存在的卡片。
       for (const duplicate of matches.slice(1)) {
         existing.input = { ...(existing.input as Record<string, unknown>), ...(duplicate.input as Record<string, unknown>) };
@@ -964,7 +1043,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         const newStart = starting && input?.status === "completed";
         // 无身份的原生边界只能补给同段尚无摘要的记录，不能吞掉下一次摘要。
         const compatible = (!episodeId || !input?.episodeId) && (!summaryId || !input?.summaryId);
-        if (current && compatible && !newStart && (!input?.summaryId || !data.metadata)) existing = current;
+        if (current && compatible && !newStart && (!input?.summaryId || !data.metadata)) existing = mut(current);
       }
       if (!existing) {
         existing = { id: `${event.runId}:compaction:${event.seq}`, runId: event.runId, seq: event.seq, kind: "notice", name: "compaction", text: "" };
@@ -992,11 +1071,12 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       const request = requests.get(data.requestId);
       // 答复带回来的那条失效事件留着答案：卡片据此分清「已处理」和「没等到答复就失效」，
       // 重开会话时也能把当时选的那几项显示出来，而不是重新摆一副还能点的样子。
-      if (request) { request.active = false; if (data.answer !== undefined && data.answer !== null) request.answer = data.answer as AiRequestAnswer; }
+      if (request) { const target = mutReq(request); target.active = false; if (data.answer !== undefined && data.answer !== null) target.answer = data.answer as AiRequestAnswer; }
     } else if (event.kind === "checkpoint" && typeof data.id === "string") {
       // 改动快照：批准写入工具 / 恢复动作各生成一条，时间线上按原样呈现可回退的链。
       let entry = byId.get(key);
       if (!entry) { entry = { id: key, runId: event.runId, seq: event.seq, kind: "notice", name: "checkpoint", text: "" }; byId.set(key, entry); entries.push(entry); }
+      else entry = mut(entry);
       entry.input = data; entry.seq = event.seq;
     }
   }
@@ -1035,7 +1115,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         .filter((label) => parts.includes(label) || joined.includes(label));
       if (labels.length) recovered[question.id] = labels;
     }
-    if (Object.keys(recovered).length) request.answer = { answers: recovered };
+    if (Object.keys(recovered).length) mutReq(request).answer = { answers: recovered };
   }
   const taskList = [...tasks.values()].sort((a, b) => a.seq - b.seq);
   const active = taskList.slice().reverse().find((task) => task.status === "running");
@@ -1568,8 +1648,46 @@ export async function stopAiRun(runId: string) {
   }
 }
 /** 本窗口这份快照里已经没有这一条待办了：要么已经开始或结束，要么状态还没刷回来。
- *  「不存在」太含糊——队列活在收下它的那个进程里，跨窗口的情况由后端那句更准的说明负责。 */
-const NOT_QUEUED_LOCALLY = "这一条已经不在本窗口的待办列表里（可能已经开始或结束了）";
+ *  带上与后端一致的 `NOT_QUEUED` 稳定码：组件层按码对账，不对句子做字符串匹配。 */
+const NOT_QUEUED_LOCALLY = "NOT_QUEUED\u{1}这一条已经不在本窗口的待办列表里（可能已经开始或结束了）";
+/** 后端（或本地闸门）回 `NOT_QUEUED`：这条任务已不属于本窗口的队列。 */
+export function isNotQueued(cause: unknown): boolean {
+  const text = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : String(cause);
+  return errorCodeOf(text) === "NOT_QUEUED";
+}
+/**
+ * 队列操作撞上 `NOT_QUEUED` 时调用：清掉本窗口的过期所有权登记，触发一轮 activity
+ * 对账并通知订阅者，让幽灵卡从队列区消失。没有这一步，用户点一次失败一次——登记、
+ * 快照、按钮全部冻结在点击前，同一个死按钮可以无限重复触发同一句后端拒绝。
+ * 返回是否命中稳定码；命中后组件层只贴一句短话，不再复读原文。
+ */
+export function reconcileStaleQueuedTask(runId: string, cause: unknown): boolean {
+  if (!isNotQueued(cause)) return false;
+  const workspaces = new Set<string>();
+  for (const [, state] of stores) {
+    if (state.snapshot.tasks.some((task) => task.runId === runId) && state.workspace) workspaces.add(state.workspace);
+  }
+  for (const workspace of workspaces) {
+    // refreshAiSessionActivity 会清掉不在请求列表里的其他会话登记：只传命中的那一个
+    // 会把同工程其他会话的队列按钮闪没，所以传该工程下全部已打开的会话。
+    const sessionIds = [...stores]
+      .filter(([, state]) => state.workspace && rootKey(state.workspace) === rootKey(workspace))
+      .map(([id]) => id);
+    void refreshAiSessionActivity(workspace, sessionIds).catch(() => {});
+  }
+  for (const [id, state] of stores) {
+    if (!state.snapshot.tasks.some((task) => task.runId === runId)) continue;
+    const queued = activityQueuedRunIds.get(id);
+    if (queued?.includes(runId)) {
+      const next = queued.filter((candidate) => candidate !== runId);
+      activityQueuedRunIds.set(id, next);
+      activityQueued.set(id, next.length);
+    }
+    if (activityRunIds.get(id) === runId) activityRunIds.delete(id);
+  }
+  changed();
+  return true;
+}
 function queuedTaskOwner(runId: string) {
   return [...stores].find(([id, state]) => activityQueuedRunIds.get(id)?.includes(runId)
     && state.snapshot.tasks.some((task) => task.runId === runId && isAiTaskQueued(task.status)));

@@ -91,7 +91,7 @@ cargo check --tests --all-targets   # 在 src-tauri/ 下，或 npm run check:rs
 `rust-version = "1.80"`。依赖 10 条：`tauri`（带 `tray-icon` 与 `protocol-asset` 两个特性，后者是本地图片进
 webview 的前提，见 [README.md](./README.md) 的 asset 一节）、`tauri-plugin-dialog`、`serde`、`serde_json`、
 `portable-pty 0.9.0`、`base64 0.23.1`、`notify 8`、`regex 1`、`walkdir 2`，unix 目标下另有 `libc 0.2`
-（`proc` / `lsp` 停会话按进程组整树收子进程用，Windows 构建不编译它）。后两条给工作区搜索用，
+（`proc` 停会话按进程组整树收子进程用，Windows 构建不编译它）。后两条给工作区搜索用，
 `Cargo.toml` 的注释写明它们已经在依赖树里，不额外下载。
 
 没有 `windows` / `winapi` crate，所有 Win32 调用都是 `extern "system"` 裸声明：

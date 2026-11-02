@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseConflicts, resolutionText, resolveWithChoices } from "../../src/features/vcs/conflicts";
+import { initialResult, parseConflicts, resolutionText } from "../../src/features/vcs/conflicts";
 
 const MERGED = [
   "top",
@@ -48,27 +48,46 @@ describe("parseConflicts 冲突标记解析", () => {
   });
 });
 
-describe("resolutionText / resolveWithChoices", () => {
+describe("resolutionText", () => {
   it("both 拼接时 ours 没有结尾换行要补一行", () => {
     expect(resolutionText({ ours: "a", base: null, theirs: "b" }, "both")).toBe("a\nb");
     expect(resolutionText({ ours: "a\n", base: null, theirs: "b" }, "both")).toBe("a\nb");
   });
 
-  it("逐块取舍拼全文，未取舍的块原样保留", () => {
-    const two = `${MERGED}\nmiddle\n${MERGED}`;
-    const out = resolveWithChoices(two, ["ours", undefined]);
-    expect(out).toContain("bottom"); // 第一块已按 ours 解决
-    expect(out).toContain("<<<<<<< HEAD"); // 第二块未取舍，标记保留
-  });
-
-  it("全部取舍后不再有标记", () => {
-    const out = resolveWithChoices(MERGED, ["theirs"]);
-    expect(out).toBe("top\ntheirs-1\nbottom");
-  });
-
-  it("base 取舍在 diff3 下取中段，没有 base 的块取不了", () => {
-    expect(resolveWithChoices(MERGED_DIFF3, ["base"])).toBe("a\nbase\nb");
+  it("base 取舍在两段式下取不了（没有 base 段）", () => {
     const [b] = parseConflicts(MERGED);
     expect(resolutionText(b!, "base")).toBe("");
+  });
+});
+
+describe("initialResult 三栏结果栏起步形态", () => {
+  it("diff3：冲突块填 base 段，范围与三方文本随块记录", () => {
+    const { text, conflicts } = initialResult(MERGED_DIFF3);
+    expect(text).toBe("a\nbase\nb");
+    expect(conflicts).toEqual([
+      { from: 2, to: 7, ours: "ours\n", base: "base\n", theirs: "theirs\n" },
+    ]);
+  });
+
+  it("两段式没有 base：块填空串，范围为空但不丢块", () => {
+    const { text, conflicts } = initialResult(MERGED);
+    expect(text).toBe("top\nbottom");
+    expect(conflicts).toEqual([
+      { from: 4, to: 4, ours: "ours-1\nours-2\n", base: null, theirs: "theirs-1\n" },
+    ]);
+  });
+
+  it("reversed：ours/theirs 对调（变基里 stage 2 是上游），base 段不变", () => {
+    const { text, conflicts } = initialResult(MERGED_DIFF3, true);
+    expect(text).toBe("a\nbase\nb");
+    expect(conflicts).toEqual([
+      { from: 2, to: 7, ours: "theirs\n", base: "base\n", theirs: "ours\n" },
+    ]);
+  });
+
+  it("无标记文本原样返回、零冲突", () => {
+    const r = initialResult("plain\n======\ntext");
+    expect(r.text).toBe("plain\n======\ntext");
+    expect(r.conflicts).toEqual([]);
   });
 });

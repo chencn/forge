@@ -14,7 +14,7 @@ describe("虚拟文档 URI 边界", () => {
   it("生成稳定的内部键，不暴露原始 URI 的路径分隔符", () => {
     const uri = "untitled://session/a.ts?view=1";
     const key = virtualDocumentKey(uri);
-    expect(key).toBe("virtual:lsp/untitled%3A%2F%2Fsession%2Fa.ts%3Fview%3D1");
+    expect(key).toBe("virtual:doc/untitled%3A%2F%2Fsession%2Fa.ts%3Fview%3D1");
     expect(key).toBe(virtualDocumentKey(uri));
     expect(isVirtualDocumentKey(key ?? "")).toBe(true);
     expect(virtualDocumentKey("file:///d%3A/work/a.ts")).toBeNull();

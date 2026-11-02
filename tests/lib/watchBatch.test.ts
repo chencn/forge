@@ -11,6 +11,7 @@ import {
 const plan = (input: Partial<Parameters<typeof planWorkspaceFlush>[0]>) =>
   planWorkspaceFlush({
     workspacePaths: [],
+    structuralPaths: [],
     gitPaths: [],
     bulk: false,
     finishedInstall: false,
@@ -18,8 +19,19 @@ const plan = (input: Partial<Parameters<typeof planWorkspaceFlush>[0]>) =>
     ...input,
   });
 
-it("保存一个源文件：精确作废目录缓存，顺带重取变更清单", () => {
-  expect(plan({ workspacePaths: ["D:/repo/src/App.tsx"] })).toEqual({
+it("保存一个源文件：只重取变更清单，不重列目录", () => {
+  // 内容改动不改目录里有什么；文件树也不显示大小/修改时间，重列纯属白读。
+  const saved = ["D:/repo/src/App.tsx"];
+  expect(plan({ workspacePaths: saved })).toEqual({
+    tree: "none",
+    configs: false,
+    git: "changes",
+  });
+});
+
+it("新建/删除/改名才精确作废目录缓存", () => {
+  const created = ["D:/repo/src/NewFile.tsx"];
+  expect(plan({ workspacePaths: created, structuralPaths: created })).toEqual({
     tree: "precise",
     configs: false,
     git: "changes",
@@ -39,7 +51,9 @@ it("构建产物风暴只精确作废，不再整树重来", () => {
     "D:/repo/target/debug/incremental/x.rs",
     "D:/repo/dist/app.js",
   ];
-  expect(plan({ workspacePaths: buildOutput, bulk: true })).toEqual({
+  expect(
+    plan({ workspacePaths: buildOutput, structuralPaths: buildOutput, bulk: true })
+  ).toEqual({
     tree: "precise",
     configs: false,
     git: "changes",

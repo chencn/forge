@@ -184,12 +184,12 @@ export default function SkillsPanel() {
           onChange={(next) => guard(() => setProvider(next))} />
         <input className="text-input" value={search} placeholder={t("skills.search")}
           aria-label={t("skills.search")} onChange={(event) => setSearch(event.target.value)} />
-        <button type="button" className="lsp-action" disabled={!desktop || busy}
+        <button type="button" className="panel-action" disabled={!desktop || busy}
           title={t("skills.refresh")} aria-label={t("skills.refresh")}
           onClick={() => guard(() => setReloadToken((value) => value + 1))}>
           <RefreshCw size={13} />
         </button>
-        <button type="button" className="lsp-action" disabled={!desktop || busy} onClick={() => guard(startNew)}>
+        <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => guard(startNew)}>
           <Plus size={13} />{t("skills.add")}
         </button>
       </div>
@@ -225,7 +225,7 @@ export default function SkillsPanel() {
                 {currentItem?.linked ? <span className="ai-cli-badge is-warn">{t("skills.linked")}</span> : null}
                 {dirty ? <span className="ai-cli-badge is-checking">{t("skills.unsaved")}</span> : null}
               </div>
-              <button type="button" className="lsp-action" onClick={() => setPreview((value) => !value)}>
+              <button type="button" className="panel-action" onClick={() => setPreview((value) => !value)}>
                 {preview ? <Pencil size={13} /> : <Eye size={13} />}
                 {preview ? t("skills.edit") : t("skills.preview")}
               </button>
@@ -260,11 +260,11 @@ export default function SkillsPanel() {
             <div className="ai-manage-foot">
               {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
               <div className="ai-cli-actions">
-                {!isNew && selected ? <button type="button" className="lsp-action" disabled={!desktop || busy}
+                {!isNew && selected ? <button type="button" className="panel-action" disabled={!desktop || busy}
                   onClick={() => { const item = list?.skills.find((entry) => entry.id === selected.id && entry.location === selected.location); if (item) setPendingDelete(item); }}>
                   <Trash2 size={13} />{t("skills.delete")}
                 </button> : null}
-                <button type="button" className="lsp-action" disabled={!desktop || busy || !id.trim()} onClick={() => void save()}>
+                <button type="button" className="panel-action" disabled={!desktop || busy || !id.trim()} onClick={() => void save()}>
                   {busy ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                   {busy ? t("ai.saving") : t("skills.save")}
                 </button>

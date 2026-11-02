@@ -38,6 +38,7 @@ mod imp {
     ///
     /// 若连接并发送成功，返回 true，表示当前进程应该直接退出；
     /// 若管道无法连接（没有主实例运行），返回 false。
+    // smoke 构建不做转发（见 lib.rs run），该函数在此配置下不参与编译用途。
     pub fn try_forward(args: &[String]) -> bool {
         let name = pipe_name();
         // 尝试打开已存在的命名管道；若不存在或失败则代表无主实例

@@ -62,7 +62,6 @@ import { type MatchResult,
   unfoldEffect,
   type LanguageSupport,
 } from "@codemirror/language";
-import { lintGutter, lintKeymap } from "@codemirror/lint";
 import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { showMinimap, type MinimapConfig } from "@replit/codemirror-minimap";
@@ -124,6 +123,8 @@ export interface EditorDoc {
   language: string;
   readOnly: boolean;
   tabSize: number;
+  /** 制表符缩进（宽度仍按 tabSize）；缺省用空格 × tabSize。状态栏的每文件缩进菜单写进来。 */
+  useTabs?: boolean;
   /**
    * 行号怎么写。默认就是行下标；补丁预览里模型从 1 起数、真实文件行号在外面，
    * 得由调用方给（hunk 之间跳过的区间不占号，不是加一个偏移就完事）。
@@ -322,8 +323,6 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     history(),
     Prec.lowest(foldGutter({ markerDOM: foldChevron })),
     codeFolding(),
-    // 出问题的行在行号左边点一颗标志；同 IDEA 那条红色波浪线旁边的记号。
-    lintGutter(),
     // 光标闪烁的样式统一在 styles.css：跟终端光标同一条淡入淡出（见 `forge-caret-blink`）。
     drawSelection(),
     // Ctrl+滚轮缩放字号（IDEA 的 zoom with Ctrl+Mouse Wheel），见下方 wheelZoom。
@@ -347,17 +346,23 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     rainbowSlot.of([]),
     highlightSelectionMatches(),
     copyLineOnEmpty,
-    // 补全浮层由 lib/cm/lsp.ts 那组装配（它要给候选列表装 LSP 那一路的来源），这里只留按键。
     syntaxHighlighting(forgeHighlightStyle),
     // 光标/选区汇报：状态栏的 Line:Column 段从这里拿数字（外部 store，不经 React 树）。
     EditorView.updateListener.of((update) => {
       if (!update.selectionSet && !update.docChanged) return;
+      // 只让持有焦点的视图汇报：分屏打开同一文档时，非焦点视图的编程性事务
+      // （外部重载）不能拿自己的旧选区覆盖状态栏数字。
+      if (!update.view.hasFocus) return;
       reportCaretOf(doc.path, update.state);
     }),
     forgeTheme,
     languageSlot.of(languageExtensions(doc)),
     readOnlySlot.of([EditorState.readOnly.of(doc.readOnly), EditorView.editable.of(!doc.readOnly)]),
-    tabSlot.of([EditorState.tabSize.of(doc.tabSize), indentUnit.of(" ".repeat(doc.tabSize))]),
+    tabSlot.of([
+      EditorState.tabSize.of(doc.tabSize),
+      // 制表符缩进的文件（.editorconfig 或状态栏菜单）用 \t 当一级缩进，宽度还是 tabSize。
+      indentUnit.of(doc.useTabs ? "\t" : " ".repeat(doc.tabSize)),
+    ]),
     // 默认不挂小地图：配置要随系统设置与改动标记变，由组件用 setMinimap 现派发。
     minimapSlot.of(showMinimap.of(null)),
     // 键位方案同理：换了方案不该把整台编辑器重配，只要换这一格。
@@ -379,7 +384,6 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
       // 折叠扣与问题导航属于引擎能力，三套键位方案都不该把它们换掉；
       // 方案里另有同名键时由 `Prec.high` 压过这里（见 cm/keymap.ts）。
       ...foldKeymap,
-      ...lintKeymap,
       indentWithTab,
     ]),
   ];
@@ -426,32 +430,6 @@ export function setMounted(path: string, view: EditorView | null): void {
 export function editorFor(path: string): EditorView | null {
   for (const [key, view] of mounted) if (samePath(key, path)) return view;
   return null;
-}
-
-interface EditorCommandHandlers {
-  formatDocument: (view: EditorView) => boolean;
-  findUsages: (view: EditorView) => boolean;
-  organizeImports?: (view: EditorView) => boolean;
-  gotoDefinition: (view: EditorView) => boolean;
-  gotoDeclaration: (view: EditorView) => boolean;
-  gotoTypeDefinition: (view: EditorView) => boolean;
-  gotoImplementation: (view: EditorView) => boolean;
-  showCodeActions: (view: EditorView) => boolean;
-  renameSymbol: (view: EditorView) => boolean;
-  showSignatureHelp: (view: EditorView) => boolean;
-  showDocumentSymbols: (view: EditorView) => boolean;
-  showWorkspaceSymbols: (view: EditorView) => boolean;
-  showIncomingCalls: (view: EditorView) => boolean;
-  showOutgoingCalls: (view: EditorView) => boolean;
-  showSuperTypes: (view: EditorView) => boolean;
-  showSubTypes: (view: EditorView) => boolean;
-}
-
-let commandHandlers: EditorCommandHandlers | null = null;
-
-/** LSP 命令实现依赖 cm/lsp；由 CodeEditor 注入，避免 cmEditor 与 lsp 互相静态引用。 */
-export function setEditorCommandHandlers(next: EditorCommandHandlers | null): void {
-  commandHandlers = next;
 }
 
 /**
@@ -618,7 +596,7 @@ export function setKeymap(view: EditorView, scheme: Extension): void {
 }
 
 
-/** 这篇 state 当时配的是哪门语言——LSP 按它选服务，也用它判断「配置换了没有」。 */
+/** 这篇 state 当时配的是哪门语言，用它判断「配置换了没有」。 */
 export function languageIdOf(state: EditorState): string {
   return state.facet(languageFacet);
 }
@@ -918,68 +896,5 @@ attachEditorBridge({
     }
     return "";
   },
-  formatDocument: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.formatDocument(view) ?? false : false;
-  },
-  findUsages: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.findUsages(view) ?? false : false;
-  },
-  organizeImports: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.organizeImports?.(view) ?? false : false;
-  },
-  gotoDefinition: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.gotoDefinition(view) ?? false : false;
-  },
-  gotoDeclaration: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.gotoDeclaration(view) ?? false : false;
-  },
-  gotoTypeDefinition: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.gotoTypeDefinition(view) ?? false : false;
-  },
-  gotoImplementation: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.gotoImplementation(view) ?? false : false;
-  },
-  showCodeActions: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showCodeActions(view) ?? false : false;
-  },
-  renameSymbol: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.renameSymbol(view) ?? false : false;
-  },
-  showSignatureHelp: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showSignatureHelp(view) ?? false : false;
-  },
-  showDocumentSymbols: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showDocumentSymbols(view) ?? false : false;
-  },
-  showWorkspaceSymbols: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showWorkspaceSymbols(view) ?? false : false;
-  },
-  showIncomingCalls: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showIncomingCalls(view) ?? false : false;
-  },
-  showOutgoingCalls: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showOutgoingCalls(view) ?? false : false;
-  },
-  showSuperTypes: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showSuperTypes(view) ?? false : false;
-  },
-  showSubTypes: (path: string) => {
-    const view = editorFor(path);
-    return view ? commandHandlers?.showSubTypes(view) ?? false : false;
-  },
 });
+

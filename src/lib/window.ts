@@ -4,12 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const win = getCurrentWindow();
 
-/**
- * 这个窗口的标签。
- *
- * 语言服务按它分会话身份：两个窗口开同一个工程各留一份进程，
- * 因为后端的 `lsp://message` 是全窗口广播，共用一条管道会把 JSON-RPC 的请求号串到别的窗口。
- */
+/** 这个窗口的标签。 */
 export const windowLabel = win.label;
 
 import type { ThemePreference } from "../themes/themeManager";
