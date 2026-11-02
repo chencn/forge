@@ -1,657 +1,210 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  Download,
-  GitBranch,
-  GitCommit,
-  GitPullRequestArrow,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Search,
-  Settings,
-  Star,
-  Tag,
-  Upload,
-} from "lucide-react";
-import Popover from "./Popover";
-import ContextMenu from "./ContextMenu";
-import type { MenuAnchor } from "./ContextMenu";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Download, GitBranch, GitCommit, GitPullRequestArrow, Plus, RefreshCw, Search, Settings, Star, Tag, Upload } from "lucide-react";
+import { Popup } from "../ui/Popup";
+import { List, firstSelectable, listNavigate } from "../ui/List";
+import { Menu, MenuList, type MenuItem as UiMenuItem } from "../ui/Menu";
+import { tooltipAttrs } from "../ui/Tooltip";
 import type { GitState } from "../hooks/useGitState";
-import type { GitBranch as GitBranchInfo, GitTag as GitTagInfo } from "../lib/git";
-import { buildRefMenu, upstreamOf } from "../lib/refMenu";
-import type { RefAction, RefTarget } from "../lib/refMenu";
+import { buildRefMenu, upstreamOf, type RefAction, type RefTarget } from "../lib/refMenu";
+import type { MenuItem } from "./ContextMenu";
+import { branchPopupRows, type BranchPopupRow } from "../lib/branchPopup";
 import { canPush, canUpdate, canFetch } from "../lib/gitGates";
-import type { BranchSettings } from "../lib/settings";
-import { withFavoriteToggled } from "../lib/settings";
+import { withFavoriteToggled, type BranchSettings } from "../lib/settings";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
+import "./BranchPicker.css";
 
-/** 弹层里能直接做的动作，具体执行留在 App。 */
-export type BranchAction =
-  | "update"
-  | "commit"
-  | "push"
-  | "fetch"
-  | "newBranch"
-  | "newTag"
-  | "checkoutRev"
-  | "initRepo";
-
+export type BranchAction = "update" | "commit" | "push" | "fetch" | "newBranch" | "newTag" | "checkoutRev" | "initRepo";
 interface BranchPickerProps {
   git: GitState;
-  /** 打开的那个文件夹；没开工程时是 null。没有仓库但有文件夹时，菜单给「创建 Git 仓库…」。 */
   folder: string | null;
-  /** 最近签出过的分支，新的在前。 */
   recent: string[];
-  onCheckout: (name: string) => void;
   onAction: (action: BranchAction) => void;
-  /** 行上右键那套引用动作，与日志的分支树共用一份。 */
   onRefAction: (action: RefAction, target: RefTarget) => void;
-  /** 「与当前比较」/「显示与工作树的差异」：改日志的两处筛选并把日志窗口叫出来。 */
   onRefInspect: (target: RefTarget, mode: "compare" | "worktree") => void;
-  /** 头部齿轮那几条显示开关，落在全局设置里。 */
   options: BranchSettings;
   onOptions: (next: BranchSettings) => void;
 }
+interface ActionRow { type: "action"; key: BranchAction; label: string; icon: ReactNode; aliases: string; disabled?: boolean; hint?: string }
+type Row = BranchPopupRow | ActionRow | { type: "separator"; key: string };
+const skipped = (row: Row) => row.type === "separator" || row.type === "action" && !!row.disabled;
+const ROW_HEIGHT = 24;
+const SEPARATOR_HEIGHT = 9;
 
-/** 一行分支或标签；左侧图标是收藏开关，右侧留给上游分支名。 */
-function RefRow({
-  label,
-  upstream,
-  current,
-  favorite = false,
-  depth = 0,
-  onPick,
-  onToggleFavorite,
-  onContextMenu,
-}: {
-  label: string;
-  upstream?: string;
-  current: boolean;
-  /** 收藏的那一行图标换成实心星。 */
-  favorite?: boolean;
-  depth?: number;
-  onPick: () => void;
-  /** 点左侧图标翻收藏；IDEA 的 handleIconClick 就是这个。 */
-  onToggleFavorite?: () => void;
-  onContextMenu?: (event: ReactMouseEvent) => void;
-}) {
-  const Icon = favorite ? Star : GitBranch;
-  return (
-    <button
-      type="button"
-      className={`branch-row${current ? " is-current" : ""}`}
-      style={{ paddingLeft: 8 + depth * 12 }}
-      onClick={(event) => {
-        const el = event.target as Element | null;
-        if (el?.closest("svg") && onToggleFavorite) onToggleFavorite();
-        else onPick();
-      }}
-      onContextMenu={onContextMenu}
-    >
-      <Icon size={13} className={favorite ? "ref-badge" : undefined} aria-hidden="true" />
-      <span className="branch-row-label">{label}</span>
-      {upstream ? (
-        <span className="branch-row-upstream" title={upstream}>
-          {upstream}
-        </span>
-      ) : null}
-    </button>
-  );
+/** 菜单模型沿用日志引用动作；弹窗只改变导航方式，不另写一套 Git 命令。 */
+function menuItems(items: MenuItem[]): UiMenuItem[] {
+  return items.map((item) => item.separator ? { kind: "separator" } : {
+    label: item.label ?? "", icon: item.icon, shortcut: item.shortcut, disabled: item.disabled,
+    hint: item.hint, checked: item.checked, danger: item.danger, run: item.onSelect,
+    submenu: item.children ? menuItems(item.children) : undefined,
+  });
 }
 
-/** 弹层里一个可折叠分节：IDEA 把这四节当树节点画，箭头在左、标题跟着。 */
-function Section({
-  title,
-  open,
-  onToggle,
-  children,
-}: {
-  title: string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <>
-      <button type="button" className="branch-section" aria-expanded={open} onClick={onToggle}>
-        {open ? (
-          <ChevronDown size={13} aria-hidden="true" />
-        ) : (
-          <ChevronRight size={13} aria-hidden="true" />
-        )}
-        <span>{title}</span>
-      </button>
-      {open ? children : null}
-    </>
-  );
-}
-
-/** 弹层没开时交回的那份空表：只读，所以整模块共用一个对象就够。 */
-const EMPTY_LISTS: {
-  locals: GitBranchInfo[];
-  remotes: GitBranchInfo[];
-  tags: GitTagInfo[];
-  recents: GitBranchInfo[];
-  groups: Map<string, GitBranchInfo[]>;
-} = {
-  locals: [],
-  remotes: [],
-  tags: [],
-  recents: [],
-  groups: new Map(),
-};
-
-/** IDEA 的分支芯片：一个搜索框同时管分支和管操作，下面按最近/本地/远程/标签分组。 */
-export default function BranchPicker({
-  git,
-  folder,
-  recent,
-  onCheckout,
-  onAction,
-  onRefAction,
-  onRefInspect,
-  options,
-  onOptions,
-}: BranchPickerProps) {
+export default function BranchPicker({ git, folder, recent, onAction, onRefAction, onRefInspect, options, onOptions }: BranchPickerProps) {
   const { t } = useI18n();
   const { settings } = useSettings();
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const [query, setQuery] = useState("");
-  /** 行上右键的菜单；弹层本身是 popover，菜单画在它上面一层。 */
-  const [menu, setMenu] = useState<MenuAnchor | null>(null);
-  /** 头部那颗抓取：跑起来时文案换成「抓取中…」，IDEA 同样只在这一颗上改字。 */
-  const [fetching, setFetching] = useState(false);
-  const gearRef = useRef<HTMLButtonElement>(null);
-  const [gearMenu, setGearMenu] = useState<MenuAnchor | null>(null);
-  /** 展开着的远程分组，按 remote 名记。 */
-  const [openRemotes, setOpenRemotes] = useState<Set<string>>(new Set());
-  /** IDEA 打开弹层时只摊开「最近」，本地/远程/标签都要人自己点开。 */
-  const [closedSections, setClosedSections] = useState<Set<string>>(
-    () => new Set(["local", "remote", "tag"])
-  );
-  const toggleSection = (key: string) =>
-    setClosedSections((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  const inputRef = useRef<HTMLInputElement>(null);
-  /** 弹层锚点用 ref 拿，别靠 event.currentTarget：updater 跑的时候它已经被清空。 */
   const chipRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [keyboard, setKeyboard] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [submenu, setSubmenu] = useState<{ anchor: HTMLElement; target: RefTarget } | null>(null);
+  const [gear, setGear] = useState<HTMLElement | null>(null);
+  const busy = git.operation?.phase === "running";
+  const needle = query.trim().toLocaleLowerCase();
 
   useEffect(() => {
-    if (anchor) inputRef.current?.focus();
-    else setQuery("");
-  }, [anchor]);
+    setAnchor(null); setSubmenu(null); setGear(null); setQuery(""); setExpanded(new Map());
+  }, [git.root]);
 
-  const status = git.status;
-  /** 一个远端都没配时抓取那颗点不动，IDEA 同样按 hasRemotes 关掉它。 */
-  const remoteCount = git.probe?.remotes.length ?? 0;
-  const needle = query.trim().toLowerCase();
-  const hit = (name: string) => needle === "" || name.toLowerCase().includes(needle);
-  /** 搜东西时不分节折叠：命中的行藏在收起的那节里就等于搜不到。 */
-  const sectionOpen = (key: string) => needle !== "" || !closedSections.has(key);
+  const close = () => { setAnchor(null); setSubmenu(null); setGear(null); setQuery(""); setActiveKey(null); };
+  const run = (action: BranchAction) => { close(); onAction(action); };
+  const toggleGroup = (row: Extract<BranchPopupRow, { type: "group" }>, open = !row.expanded) => {
+    if (!needle) setExpanded((previous) => new Map(previous).set(row.key, open));
+  };
 
-  /** 收藏的引用全名名单，和日志的分支树共用这一份。Set 化是为了排序时那次比较不用扫全名单。 */
-  const favorites = useMemo(() => new Set(options.favorites), [options.favorites]);
-  const isFavorite = (name: string) => favorites.has(name);
-  const toggleFavorite = (name: string) => onOptions(withFavoriteToggled(options, name));
-
-  /**
-   * 分组、过滤、排序都放进这里，并且弹层没开就直接交回空表。
-   *
-   * 原来这几段写在渲染体里：`Popover` 返回 null 只是不画，传给它的 children 表达式照样求值，
-   * 所以 App 每次重渲染（轮询、拖分割条、打字）都带着几百条分支和标签各扫一遍、
-   * 各排一遍、再各建一次 Map——而那会儿连浮层都还没露出来。
-   */
-  const lists = useMemo(() => {
-    if (!anchor) return EMPTY_LISTS;
-    /** 同一组里收藏的排前面，其余次序不动。 */
-    const favoritesFirst = (list: GitBranchInfo[]) =>
-      [...list].sort((a, b) => Number(favorites.has(b.name)) - Number(favorites.has(a.name)));
-    const locals = favoritesFirst(
-      git.branches.filter((branch) => !branch.remote && hit(branch.name))
-    );
-    const remotes = git.branches.filter((branch) => branch.remote && hit(branch.name));
-    const tags = git.tags.filter((tag) => hit(tag.name));
-    const localByName = new Map(locals.map((branch) => [branch.name, branch]));
-    // 收藏过的分支已经在自己那组里排到前面了，「最近」那一节不再重复列。
-    const recents: GitBranchInfo[] = recent
-      .map((name) => localByName.get(name))
-      .filter(
-        (branch): branch is GitBranchInfo =>
-          branch !== undefined && !branch.current && !favorites.has(branch.name)
-      );
-
-    const groups = new Map<string, GitBranchInfo[]>();
-    for (const branch of favoritesFirst(remotes)) {
-      const slash = branch.name.indexOf("/");
-      const remote = slash > 0 ? branch.name.slice(0, slash) : branch.name;
-      const list = groups.get(remote);
-      if (list) list.push(branch);
-      else groups.set(remote, [branch]);
+  const rows = useMemo<Row[]>(() => {
+    if (!anchor) return [];
+    const actions: ActionRow[] = [
+      { type: "action", key: "update", label: t("git.updateProject"), icon: <RefreshCw size={14} />, aliases: "update project pull merge", disabled: busy || !canUpdate(git), hint: !git.status?.upstream ? t("git.noUpstream") : undefined },
+      { type: "action", key: "commit", label: t("git.commit"), icon: <GitCommit size={14} />, aliases: "commit" },
+      { type: "action", key: "push", label: t("git.push"), icon: <Upload size={14} />, aliases: "push", disabled: busy || !canPush(git), hint: !canPush(git) ? t("git.noRemotes") : undefined },
+      { type: "action", key: "fetch", label: t("git.fetch"), icon: <Download size={14} />, aliases: "fetch", disabled: busy || !canFetch(git), hint: !canFetch(git) ? t("git.noRemotes") : undefined },
+      { type: "action", key: "newBranch", label: t("git.newBranch"), icon: <Plus size={14} />, aliases: "new branch", disabled: busy },
+      { type: "action", key: "newTag", label: t("git.newTag"), icon: <Tag size={14} />, aliases: "new tag", disabled: busy || git.lastCommit === null },
+      { type: "action", key: "checkoutRev", label: t("git.checkoutRev"), icon: <GitPullRequestArrow size={14} />, aliases: "checkout revision tag", disabled: busy || git.lastCommit === null },
+    ];
+    const out: Row[] = [];
+    for (const action of actions) {
+      if (needle && (!options.actionsInSearch || !`${action.label} ${action.aliases}`.toLocaleLowerCase().includes(needle))) continue;
+      if (action.key === "newBranch" && out.length && !needle) out.push({ type: "separator", key: "separator:actions" });
+      out.push(action);
     }
-    return { locals, remotes, tags, recents, groups };
-    // `hit` 只读 needle，而 needle 已在依赖里； favoritesFirst 只读 favorites。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anchor, git.branches, git.tags, recent, favorites, needle]);
-  const { locals, remotes, tags, recents, groups } = lists;
+    const tree = branchPopupRows(git.branches, git.tags, recent, query, options, expanded, {
+      recent: t("git.recentBranches"), local: t("git.localBranches"), remote: t("git.remoteBranches"), tag: t("git.tags"),
+    });
+    if (tree.length && out.length) out.push({ type: "separator", key: "separator:tree" });
+    return [...out, ...tree];
+  }, [anchor, busy, git, recent, query, needle, options, expanded, t]);
+  const activeIndex = rows.findIndex((row) => row.key === activeKey && !skipped(row));
+  const active = activeIndex >= 0 ? activeIndex : firstSelectable(rows, (row) => skipped(row) || !!needle && row.type === "group");
+  const setActive = (index: number) => setActiveKey(rows[index]?.key ?? null);
 
-  // 动作名跟着界面语言走，但人搜的多半是英文命令名，两边都进匹配串。
-  // 门禁判定由 gitGates 提供唯一真源：canPush / canUpdate / canFetch 分别看 remotes、
-  // detached、upstream，而不是在这里各写一遍——分支弹层、日志窗、命令面板共用同一份。
-  const sync: { key: BranchAction; label: string; icon: ReactNode; also: string; disabled?: boolean; hint?: string }[] = [
-    {
-      key: "update",
-      label: t("git.updateProject"),
-      icon: <RefreshCw size={14} />,
-      also: "update project pull merge",
-      disabled: !canUpdate(git),
-      hint: !canUpdate(git) ? (git.status?.upstream === "" ? t("git.noUpstream") : t("git.noRemotes")) : undefined,
-    },
-    { key: "commit", label: t("git.commit"), icon: <GitCommit size={14} />, also: "commit" },
-    {
-      key: "push",
-      label: t("git.push"),
-      icon: <Upload size={14} />,
-      also: "push",
-      disabled: !canPush(git),
-      hint: !canPush(git) ? t("git.noRemotes") : undefined,
-    },
-    {
-      key: "fetch",
-      label: t("git.fetch"),
-      icon: <Download size={14} />,
-      also: "fetch",
-      disabled: !canFetch(git),
-      hint: !canFetch(git) ? t("git.noRemotes") : undefined,
-    },
-  ];
-  const refs: { key: BranchAction; label: string; icon: ReactNode; also: string }[] = [
-    { key: "newBranch", label: t("git.newBranch"), icon: <Plus size={14} />, also: "branch new" },
-    { key: "newTag", label: t("git.newTag"), icon: <Tag size={14} />, also: "tag new" },
-    {
-      key: "checkoutRev",
-      label: t("git.checkoutRev"),
-      icon: <GitPullRequestArrow size={14} />,
-      also: "checkout revision tag",
-    },
-  ];
-  // IDEA 的「在搜索结果中加入操作」只管搜索那一档；没在搜的时候操作照常列。
-  const listActions = needle === "" || options.actionsInSearch;
-  const shownSync = listActions ? sync.filter((action) => hit(`${action.label} ${action.also}`)) : [];
-  const shownRefs = listActions ? refs.filter((action) => hit(`${action.label} ${action.also}`)) : [];
-  const shownRecents = options.showRecent ? recents : [];
-  const shownTags = options.showTags ? tags : [];
-  const nothingMatches =
-    shownSync.length +
-    shownRefs.length +
-    shownRecents.length +
-    locals.length +
-    remotes.length +
-    shownTags.length ===
-    0;
-
-  const pick = (name: string) => {
-    setAnchor(null);
-    onCheckout(name);
+  const openRefMenu = (row: Extract<BranchPopupRow, { type: "ref" }>, element?: HTMLElement) => {
+    if (busy) return;
+    const el = element ?? [...(listRef.current?.querySelectorAll<HTMLElement>("[data-ref-key]") ?? [])].find((node) => node.dataset.refKey === row.key)?.closest<HTMLElement>('[role="option"]');
+    if (el) setSubmenu({ anchor: el, target: row.target });
   };
-
-  const run = (action: BranchAction) => {
-    setAnchor(null);
-    onAction(action);
+  const activate = (row: Row, element?: HTMLElement) => {
+    if (row.type === "action" && !row.disabled) run(row.key);
+    else if (row.type === "group") toggleGroup(row);
+    else if (row.type === "ref") openRefMenu(row, element);
   };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if ((event.target as Element).closest("button")) return;
+    if (event.target !== inputRef.current && !(event.target as Element).closest('[role="listbox"]')) return;
+    setKeyboard(true);
+    const row = rows[active];
+    if (event.key === "Enter" && row) { event.preventDefault(); activate(row); return; }
+    const input = event.target === inputRef.current ? inputRef.current : null;
+    // 保留搜索文本的左右移动；只有光标到边界时才展开树或进入子菜单。
+    if (event.key === "ArrowRight" && (!input || input.selectionStart === input.value.length)) {
+      if (row?.type === "group") toggleGroup(row, true);
+      else if (row?.type === "ref") openRefMenu(row);
+      else return;
+      event.preventDefault(); return;
+    }
+    if (event.key === "ArrowLeft" && (!input || input.selectionStart === 0)) {
+      if (row?.type === "group" && row.expanded && !needle) toggleGroup(row, false);
+      else if (row && "parent" in row && row.parent) setActiveKey(row.parent);
+      else return;
+      event.preventDefault(); return;
+    }
+    if (input && (event.key === "Home" || event.key === "End")) return;
+    const next = listNavigate(event.key, { items: rows, active, isSection: skipped, wrap: true });
+    if (next !== null) { event.preventDefault(); setActive(next); }
+  };
+  const menu = submenu ? menuItems(buildRefMenu(submenu.target, {
+    t, keymapScheme: settings.editor.keymap, current: git.status?.branch ?? "", upstream: upstreamOf(git.branches, submenu.target),
+    detached: git.status?.detached ?? false, remotes: git.probe?.remotes.length ?? 0, fresh: git.lastCommit === null,
+    onAction: (action, target) => { close(); onRefAction(action, target); },
+    onCompareWith: (target) => { close(); onRefInspect(target, "compare"); },
+    onDiffWithWorktree: (target) => { close(); onRefInspect(target, "worktree"); },
+  })) : [];
+  const closeSubmenu = () => { setSubmenu(null); inputRef.current?.focus({ preventScroll: true }); };
+  if (!git.root && !folder) return null;
+  const status = git.status;
+  const operation = git.operation?.phase === "running" ? git.operation : null;
+  const title = operation ? `${t(`git.operation.${operation.kind}`)} · ${operation.target}` : [git.root ?? folder,
+    status?.ahead ? t("git.aheadN", { count: status.ahead }) : "", status?.behind ? t("git.behindN", { count: status.behind }) : ""].filter(Boolean).join(" · ");
+  const listHeight = Math.min(440, rows.reduce((height, row) => height + (row.type === "separator" ? SEPARATOR_HEIGHT : ROW_HEIGHT), 0));
 
-  /** 右键某行：菜单本体在 lib/refMenu，和日志的分支树是同一份。 */
-  const refMenuFor =
-    (target: RefTarget) =>
-    (event: ReactMouseEvent) => {
-      event.preventDefault();
-      /** 挑了动作就把弹层收掉：签出、改名这些做完留在弹层里没有意义。 */
-      const take = (act: () => void) => {
-        setAnchor(null);
-        act();
-      };
-      setMenu({
-        x: event.clientX,
-        y: event.clientY,
-        items: buildRefMenu(target, {
-          t,
-          keymapScheme: settings.editor.keymap,
-          current: git.status?.branch ?? "",
-          upstream: upstreamOf(git.branches, target),
-          detached: git.status?.detached ?? false,
-          remotes: git.probe?.remotes.length ?? 0,
-          fresh: git.lastCommit === null,
-          onAction: (action, held) => take(() => onRefAction(action, held)),
-          onCompareWith: (held) => take(() => onRefInspect(held, "compare")),
-          onDiffWithWorktree: (held) => take(() => onRefInspect(held, "worktree")),
-        }),
-      });
-    };
-
-  const item = (action: { key: BranchAction; label: string; icon: ReactNode; disabled?: boolean; hint?: string }) => (
-    <button
-      key={action.key}
-      type="button"
-      className="popover-item"
-      disabled={action.disabled}
-      title={action.disabled ? action.hint : undefined}
-      onClick={() => {
-        if (action.disabled) return;
-        run(action.key);
-      }}
-    >
-      {action.icon}
-      <span>{action.label}</span>
+  return <div className="toolbar-chip-host">
+    <button ref={chipRef} type="button" className={`toolbar-chip${anchor ? " is-open" : ""}`} {...tooltipAttrs(title ?? "")}
+      aria-label={t(git.root ? "panel.sourceControl" : "git.vcs")} aria-haspopup="dialog" aria-expanded={!!anchor}
+      onClick={(event) => {
+        if (anchor) { close(); return; }
+        setKeyboard(event.detail === 0); setAnchor(chipRef.current);
+      }}>
+      <GitBranch size={14} aria-hidden="true" />
+      <span className="toolbar-chip-label">{git.root ? status?.branch ?? "—" : t("git.vcs")}</span>
+      {!!status?.behind && <ArrowDownLeft size={12} aria-hidden="true" />}
+      {!!status?.ahead && <ArrowUpRight size={12} aria-hidden="true" />}
+      <ChevronDown size={13} aria-hidden="true" />
     </button>
-  );
-
-  /** IDEA 的分支控件只画箭头不写数字，条数挪到悬停提示里。 */
-  const ahead = status?.ahead ?? 0;
-  const behind = status?.behind ?? 0;
-  const syncText = [
-    ahead > 0 ? t("git.aheadN", { count: ahead }) : "",
-    behind > 0 ? t("git.behindN", { count: behind }) : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const baseTitle = git.root ?? t("git.noWorkspace");
-
-  /**
-   * 这里没有仓库，不等于「有仓库但一条分支都没有」：芯片不能摆成灰的 `—`，
-   * 换成 IDEA 那颗「版本控制」，菜单里给「创建 Git 仓库…」。
-   *
-   * IDEA 那张菜单还有「共享到平台」「其他 VCS」「本地历史记录」三项，这边三样能力都没有，
-   * 摆上去就是点了没反应的死控件，所以不给。连文件夹都没开时这一颗压根不画：
-   * 没有工程就没有可接的版本控制，而「打开文件夹」主工具栏左边已经有了，不在这里摆第二个入口。
-   */
-  if (!git.root) {
-    if (!folder) return null;
-    return (
-      <div className="toolbar-chip-host">
-        <button
-          type="button"
-          ref={chipRef}
-          className="toolbar-chip"
-          aria-label={t("git.vcs")}
-          aria-expanded={anchor !== null}
-          title={folder}
-          onClick={() => setAnchor((current) => (current ? null : chipRef.current))}
-        >
-          <GitBranch size={14} aria-hidden="true" />
-          <span className="toolbar-chip-label">{t("git.vcs")}</span>
-          <ChevronDown size={13} aria-hidden="true" />
-        </button>
-
-        <Popover anchor={anchor} onClose={() => setAnchor(null)} minWidth={260}>
-          <button
-            type="button"
-            className="popover-item"
-            onClick={() => {
-              setAnchor(null);
-              onAction("initRepo");
-            }}
-          >
-            <GitBranch size={14} aria-hidden="true" />
-            <span>{t("git.initRepo")}</span>
-          </button>
-        </Popover>
-      </div>
-    );
-  }
-
-  return (
-    <div className="toolbar-chip-host">
-      <button
-        type="button"
-        ref={chipRef}
-        className={`toolbar-chip${git.pushing ? " is-pushing" : ""}`}
-        aria-label={t("panel.sourceControl")}
-        aria-expanded={anchor !== null}
-        title={
-          git.pushing
-            ? `${baseTitle} · ${t("git.pushing")}`
-            : syncText
-              ? `${baseTitle} · ${syncText}`
-              : baseTitle
-        }
-        onClick={() => setAnchor((current) => (current ? null : chipRef.current))}
-      >
-        {git.pushing ? (
-          <Loader2
-            size={14}
-            className="is-spinning"
-            data-spin="true"
-            aria-hidden="true"
-            style={{
-              display: "inline-block",
-              transformOrigin: "50% 50%",
-              animation: "spin 1.4s linear infinite",
-            }}
-          />
-        ) : (
-          <GitBranch size={14} aria-hidden="true" />
-        )}
-        <span className="toolbar-chip-label">{status?.branch ?? "—"}</span>
-        {ahead + behind > 0 ? (
-          <span className="branch-sync" aria-hidden="true">
-            {behind > 0 ? (
-              <svg viewBox="0 0 16 16" className="sync-in">
-                <rect width="2" height="8.386" x="7.532" y="3.269" transform="rotate(45 8.532 7.462)" />
-                <polygon points="4 5 11 12 4 12" />
-              </svg>
-            ) : null}
-            {ahead > 0 ? (
-              <svg viewBox="0 0 16 16" className="sync-out">
-                <g transform="rotate(180 6 6.5)">
-                  <rect width="2" height="8.386" x="3.532" y=".269" transform="rotate(45 4.532 4.462)" />
-                  <polygon points="0 2 7 9 0 9" />
-                </g>
-              </svg>
-            ) : null}
-          </span>
-        ) : null}
-        <ChevronDown size={13} aria-hidden="true" />
-      </button>
-
-      <Popover anchor={anchor} onClose={() => setAnchor(null)} minWidth={320}>
-        {/* IDEA 的弹层头部只有两颗：抓取 + 齿轮，跟在搜索框右边。 */}
-        <div className="popover-head">
-          <label className="popover-search">
-            <Search size={13} aria-hidden="true" />
-            <input
-              ref={inputRef}
-              value={query}
-              placeholder={t("git.searchBranch")}
-              spellCheck={false}
-              onChange={(event) => setQuery(event.target.value)}
-            />
+    <Popup open={!!anchor} anchor={anchor} onClose={close} autoFocus
+      aria-label={t("git.branches")} className={`branch-popup${keyboard ? " is-keyboard" : ""}`}>
+      {!git.root ? <button type="button" className="popover-item" onClick={() => run("initRepo")}><GitBranch size={14} />{t("git.initRepo")}</button> : <div className="branch-popup-content" onKeyDown={onKeyDown}>
+        <div className="branch-popup-head">
+          <label className="branch-popup-search"><Search size={14} aria-hidden="true" />
+            <input ref={inputRef} data-autofocus value={query} placeholder={t("git.searchBranch")} aria-label={t("git.searchBranch")} spellCheck={false}
+              onChange={(event) => { setQuery(event.target.value); setActiveKey(null); setSubmenu(null); }} />
           </label>
-          {/* IDEA 的抓取动作在执行时仅置灰禁用，按钮图标保持静态不转圈。 */}
-          <button
-            type="button"
-            className="icon-button is-inline"
-            disabled={remoteCount === 0 || fetching}
-            onClick={() => {
-              setFetching(true);
-              void git.fetch().finally(() => setFetching(false));
-            }}
-            title={t(fetching ? "git.fetching" : "git.fetch")}
-          >
-            <Download size={14} />
-          </button>
-          <button
-            type="button"
-            ref={gearRef}
-            className="icon-button is-inline"
-            aria-haspopup="menu"
-            title={t("git.viewOptions")}
-            onClick={() => {
-              if (gearMenu) {
-                setGearMenu(null);
-                return;
-              }
-              const box = gearRef.current?.getBoundingClientRect();
-              if (!box) return;
-              setGearMenu({
-                x: box.right - 8,
-                y: box.bottom + 2,
-                items: [
-                  {
-                    label: t("git.actionsInSearch"),
-                    checked: options.actionsInSearch,
-                    onSelect: () => onOptions({ ...options, actionsInSearch: !options.actionsInSearch }),
-                  },
-                  { separator: true },
-                  {
-                    label: t("git.showRecentBranches"),
-                    checked: options.showRecent,
-                    onSelect: () => onOptions({ ...options, showRecent: !options.showRecent }),
-                  },
-                  {
-                    label: t("git.showTags"),
-                    checked: options.showTags,
-                    onSelect: () => onOptions({ ...options, showTags: !options.showTags }),
-                  },
-                ],
-              });
-            }}
-          >
-            <Settings size={14} />
-          </button>
+          <button type="button" className="icon-button is-inline" aria-label={t("git.fetch")} disabled={busy || !canFetch(git)} {...tooltipAttrs(t(git.operation?.kind === "fetch" && busy ? "git.fetching" : "git.fetch"))}
+            onClick={() => { void git.fetch(); }}><Download size={14} /></button>
+          <button type="button" className="icon-button is-inline" aria-label={t("git.viewOptions")} aria-haspopup="menu" aria-expanded={!!gear} {...tooltipAttrs(t("git.viewOptions"))}
+            onClick={(event) => setGear(gear ? null : event.currentTarget)}><Settings size={14} /></button>
         </div>
-
-        {shownSync.length > 0 ? shownSync.map(item) : null}
-        {shownRefs.length > 0 ? (
-          <>
-            <div className="popover-sep" />
-            {shownRefs.map(item)}
-          </>
-        ) : null}
-
-        {shownRecents.length > 0 ? (
-          <>
-            <div className="popover-sep" />
-            <Section
-              title={t("git.recentBranches")}
-              open={sectionOpen("recent")}
-              onToggle={() => toggleSection("recent")}
-            >
-              {shownRecents.map((branch) => (
-                <RefRow
-                  key={`recent-${branch.name}`}
-                  label={branch.name}
-                  upstream={branch.upstream}
-                  current={false}
-                  onPick={() => pick(branch.name)}
-                  onToggleFavorite={() => toggleFavorite(branch.name)}
-                  onContextMenu={refMenuFor({ name: branch.name, kind: "local" })}
-                />
-              ))}
-            </Section>
-          </>
-        ) : null}
-
-        {locals.length > 0 ? (
-          <Section
-            title={t("git.localBranches")}
-            open={sectionOpen("local")}
-            onToggle={() => toggleSection("local")}
-          >
-            {locals.map((branch) => (
-              <RefRow
-                key={`local-${branch.name}`}
-                label={branch.name}
-                upstream={branch.upstream}
-                current={branch.current}
-                favorite={isFavorite(branch.name)}
-                onPick={() => pick(branch.name)}
-                onToggleFavorite={() => toggleFavorite(branch.name)}
-                onContextMenu={refMenuFor({ name: branch.name, kind: "local" })}
-              />
-            ))}
-          </Section>
-        ) : null}
-
-        {groups.size > 0 ? (
-          <Section
-            title={t("git.remoteBranches")}
-            open={sectionOpen("remote")}
-            onToggle={() => toggleSection("remote")}
-          >
-            {[...groups.entries()].map(([remote, list]) => {
-              const open = openRemotes.has(remote) || needle !== "";
-              return (
-                <div key={`remote-${remote}`}>
-                  <button
-                    type="button"
-                    className="branch-group"
-                    onClick={() =>
-                      setOpenRemotes((current) => {
-                        const next = new Set(current);
-                        if (next.has(remote)) next.delete(remote);
-                        else next.add(remote);
-                        return next;
-                      })
-                    }
-                  >
-                    {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                    <span>{remote}</span>
-                  </button>
-                  {open
-                    ? list.map((branch) => (
-                        <RefRow
-                          key={branch.name}
-                          // 远程分支按短名切：git 会自动建同名跟踪分支。
-                          label={branch.name.slice(remote.length + 1)}
-                          current={false}
-                          depth={1}
-                          favorite={isFavorite(branch.name)}
-                          onPick={() => pick(branch.name.slice(remote.length + 1))}
-                          onToggleFavorite={() => toggleFavorite(branch.name)}
-                          onContextMenu={refMenuFor({ name: branch.name, kind: "remote" })}
-                        />
-                      ))
-                    : null}
-                </div>
-              );
-            })}
-          </Section>
-        ) : null}
-
-        {shownTags.length > 0 ? (
-          <Section
-            title={t("git.tags")}
-            open={sectionOpen("tag")}
-            onToggle={() => toggleSection("tag")}
-          >
-            {shownTags.map((tag) => (
-              <button
-                key={`tag-${tag.name}`}
-                type="button"
-                className="branch-row"
-                onClick={() => pick(tag.name)}
-                onContextMenu={refMenuFor({ name: tag.name, kind: "tag" })}
-              >
-                <Tag size={13} aria-hidden="true" />
-                <span className="branch-row-label">{tag.name}</span>
-                <span className="branch-row-upstream">{tag.target}</span>
-              </button>
-            ))}
-          </Section>
-        ) : null}
-
-        {nothingMatches ? <p className="popover-note">{t("git.searchNoHit")}</p> : null}
-      </Popover>
-
-      {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
-      {gearMenu ? <ContextMenu anchor={gearMenu} onClose={() => setGearMenu(null)} /> : null}
-    </div>
-  );
+        <div ref={listRef} className="branch-popup-list-wrap" style={{ height: Math.max(48, listHeight) }}>
+          <List items={rows} getKey={(row) => row.key} activeIndex={active} onActiveChange={(i) => { setActive(i); }}
+            rowHeight={ROW_HEIGHT} sectionHeightOf={(row) => row.type === "separator" ? SEPARATOR_HEIGHT : ROW_HEIGHT}
+            isSection={skipped} renderSection={(row) => row.type === "separator" ? <span className="branch-popup-separator" role="separator" /> : row.type === "action" ? <span className="branch-popup-row is-disabled" {...tooltipAttrs(row.hint ?? "")}>
+              {row.icon}<span>{row.label}</span></span> : null}
+            focusable={false} hoverSelects aria-label={t("git.branches")} className="branch-popup-list"
+            empty={<span>{t("git.searchNoHit")}</span>}
+            onActivate={(row, _, event) => { setKeyboard(event.type === "keydown"); activate(row, event.currentTarget as HTMLElement); }}
+            onContextMenu={(row, _, event) => { if (row.type === "ref") { event.preventDefault(); openRefMenu(row, event.currentTarget as HTMLElement); } }}
+            renderItem={(row) => {
+              if (row.type === "separator") return null;
+              if (row.type === "action") return <span className="branch-popup-row">{row.icon}<span>{row.label}</span></span>;
+              if (row.type === "group") return <span className="branch-popup-row branch-popup-group" style={{ paddingLeft: row.depth * 14 }}>
+                <ChevronRight size={13} className={row.expanded ? "is-expanded" : ""} aria-hidden="true" /><span>{row.label}</span></span>;
+              return <span data-ref-key={row.key} className={`branch-popup-row${row.current ? " is-current" : ""}`} style={{ paddingLeft: row.depth * 14 }} {...tooltipAttrs(row.target.name)}>
+                {row.target.kind === "tag" ? <Tag size={14} aria-hidden="true" /> : <button type="button" className={`branch-popup-star${row.favorite ? " is-favorite" : ""}`} aria-label={t("git.toggleFavorite")} aria-pressed={row.favorite}
+                  // 列表会阻止默认鼠标聚焦；星标保留按钮焦点，Enter 才会继续切换收藏。
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => { event.stopPropagation(); onOptions(withFavoriteToggled(options, row.target.name)); }}>
+                  <GitBranch size={14} className="branch-popup-branch-icon" /><Star size={14} className="branch-popup-star-icon" /></button>}
+                <span className="branch-popup-label">{row.label}</span>
+                {row.upstream && <span className="branch-popup-upstream">{row.upstream}</span>}
+                <ChevronRight size={13} className="branch-popup-sub-arrow" aria-hidden="true" />
+              </span>;
+            }} />
+        </div>
+      </div>}
+      {submenu && <Popup open anchor={submenu.anchor} placement="right-start" offset={2} autoFocus onClose={closeSubmenu} role="presentation" className="branch-popup-submenu">
+        <MenuList items={menu} onDone={() => setSubmenu(null)} onCloseLevel={closeSubmenu} aria-label={submenu.target.name} />
+      </Popup>}
+      {gear && <Menu open anchor={gear} placement="bottom-end" onClose={() => { setGear(null); inputRef.current?.focus(); }} aria-label={t("git.viewOptions")} items={[
+        { label: t("git.groupByDirectory"), checked: options.groupByDirectory, run: () => onOptions({ ...options, groupByDirectory: !options.groupByDirectory }) },
+        { label: t("git.actionsInSearch"), checked: options.actionsInSearch, run: () => onOptions({ ...options, actionsInSearch: !options.actionsInSearch }) },
+        { kind: "separator" },
+        { label: t("git.showRecentBranches"), checked: options.showRecent, run: () => onOptions({ ...options, showRecent: !options.showRecent }) },
+        { label: t("git.showTags"), checked: options.showTags, run: () => onOptions({ ...options, showTags: !options.showTags }) },
+      ]} />}
+    </Popup>
+  </div>;
 }

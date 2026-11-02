@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "../lib/fs";
 import { createCoalescer, type Coalescer } from "../lib/coalesce";
 import { joinPath, nativeSeparators, separator } from "../lib/format";
+import { translate } from "../i18n";
+import { notificationCenter } from "../lib/notifications";
 import {
   gitAmendTargets,
   gitCheckout,
@@ -67,6 +69,15 @@ import type {
 /** 状态还没回来时的空清单：每次给同一个数组，派生表的记忆才不会每帧失效。 */
 const EMPTY_CHANGES: GitChange[] = [];
 
+export type GitOperationKind = "fetch" | "pull" | "push" | "checkout" | "createBranch" | "createTag" | "merge" | "rebase";
+export interface GitOperation {
+  id: number;
+  root: string;
+  kind: GitOperationKind;
+  target: string;
+  phase: "running" | "success" | "error";
+}
+
 /** 已暂存：索引位有内容且不是冲突项。 */
 export function isIndexChange(change: GitChange): boolean {
   return !change.untracked && !change.conflicted && change.indexStatus.trim() !== "";
@@ -96,19 +107,58 @@ export function useGitState(
   /** stash 列表，最新在前；只在整轮刷新里拉（见 `refreshOnce`）。 */
   const [stashes, setStashes] = useState<GitStash[]>([]);
   const [shelves, setShelves] = useState<GitShelvedChangeList[]>([]);
-  /** 当前是否有向远端推送的操作正在进行 */
-  const [pushing, setPushing] = useState(false);
-  const pushingCountRef = useRef(0);
+  const [operations, setOperations] = useState<ReadonlyMap<string, GitOperation>>(new Map());
+  const operationTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  // 同仓库请求在 React 重渲染前就上锁，快速连点也不会排出第二个 Git 操作。
+  const operationLocks = useRef(new Set<string>());
+  const operationSequence = useRef(0);
   /** 已经发起过几次刷新，用来认出「我这一轮已经被更新的刷新超过了」。 */
   const seqRef = useRef(0);
   /** 缓存已知已探明的仓库根，用于解除全量刷新时 gitProbe 的串行等待。 */
   const repoRootRef = useRef<string | null>(null);
   /** 记录上一次刷新的 workspaceRoot，切换工作区时立即清空旧项目的 Git 状态与缓存根。 */
   const lastWorkspaceRef = useRef<string | null>(workspaceRoot);
+  const activeWorkspaceRef = useRef(workspaceRoot);
+  activeWorkspaceRef.current = workspaceRoot;
 
-  const root = probe?.repoRoot ?? null;
+  const root = lastWorkspaceRef.current === workspaceRoot ? probe?.repoRoot ?? null : null;
+  const operation = root ? operations.get(root) ?? null : null;
+  const pushing = operation?.kind === "push" && operation.phase === "running";
   // 同步根目录引用，供并发快速路径使用
   repoRootRef.current = root;
+
+  useEffect(() => () => { for (const timer of operationTimers.current) clearTimeout(timer); }, []);
+
+  const trackOperation = useCallback(async <T,>(kind: GitOperationKind, target: string, action: () => Promise<T>, blocked: T): Promise<T> => {
+    if (!root || operationLocks.current.has(root)) return blocked;
+    operationLocks.current.add(root);
+    const next: GitOperation = { id: ++operationSequence.current, root, kind, target, phase: "running" };
+    setOperations((current) => new Map(current).set(root, next));
+    let succeeded = false;
+    try {
+      const result = await action();
+      succeeded = result !== null && result !== false;
+      // 通知中心写入当前工程历史；旧工程后台完成时不能污染新工程。
+      if (succeeded && activeWorkspaceRef.current === workspaceRoot) notificationCenter.notify({
+        groupId: "git", groupTitle: "Git", projectRoot: root, level: "success",
+        title: `${translate(`git.operation.${kind}`)} · ${translate("git.operationDone")}`,
+        content: target, key: `git.operation:${root}`,
+      });
+      return result;
+    } finally {
+      operationLocks.current.delete(root);
+      setOperations((current) => current.get(root)?.id === next.id ? new Map(current).set(root, { ...next, phase: succeeded ? "success" : "error" }) : current);
+      // 对齐 OpenIDEA 的任务收尾：保留 600ms；每个仓库独立，切回时仍能看见运行状态。
+      const timer = setTimeout(() => {
+        operationTimers.current.delete(timer);
+        setOperations((current) => {
+          if (current.get(root)?.id !== next.id) return current;
+          const remaining = new Map(current); remaining.delete(root); return remaining;
+        });
+      }, 600);
+      operationTimers.current.add(timer);
+    }
+  }, [root, workspaceRoot]);
 
   /** 整轮 / 轻量两条队列：同一时刻各只跑一趟，多来的请求并成收尾的一次补跑。 */
   const fullQueueRef = useRef<Coalescer | null>(null);
@@ -117,13 +167,16 @@ export function useGitState(
   const lightQueue = (lightQueueRef.current ??= createCoalescer());
 
   const refreshOnce = useCallback(async () => {
+    // 老工程的网络任务可能晚于切换工程结束，旧闭包不能重新探回旧仓库。
+    if (activeWorkspaceRef.current !== workspaceRoot) return;
     // 监听一起来刷新会叠着跑，五次调用各自的回来顺序不保证。给每次刷新编号，
     // 只有最新那一次允许写状态，否则旧结果会把新结果盖掉，面板停在半路上。
     const ticket = (seqRef.current += 1);
-    const stale = () => ticket !== seqRef.current;
+    const stale = () => ticket !== seqRef.current || activeWorkspaceRef.current !== workspaceRoot;
     if (lastWorkspaceRef.current !== workspaceRoot) {
       lastWorkspaceRef.current = workspaceRoot;
       repoRootRef.current = null;
+      setProbe(null);
       // 换工作区时排在后面的那轮补跑作废：旧仓库的状态读回来也不该写进新面板。
       fullQueue.cancelTrailing();
       lightQueue.cancelTrailing();
@@ -259,7 +312,7 @@ export function useGitState(
    * 叠着跑既费进程又让后一次的读数盖不住前一次的写入顺序。补跑那轮读到的一定
    * 是最后一次请求之后的状态，所以合并丢不了东西。
    */
-  const refresh = useCallback(() => fullQueue.request(refreshOnce), [fullQueue, refreshOnce]);
+  const refresh = useCallback(() => activeWorkspaceRef.current === workspaceRoot ? fullQueue.request(refreshOnce) : Promise.resolve(), [fullQueue, refreshOnce, workspaceRoot]);
 
   useEffect(() => {
     void refresh();
@@ -270,8 +323,9 @@ export function useGitState(
    * 没必要每次都把另外三条 git 命令再跑一遍（Windows 上每条都要起一个进程）。
    */
   const refreshChangesOnce = useCallback(async () => {
+    if (activeWorkspaceRef.current !== workspaceRoot) return;
     const ticket = (seqRef.current += 1);
-    const stale = () => ticket !== seqRef.current;
+    const stale = () => ticket !== seqRef.current || activeWorkspaceRef.current !== workspaceRoot;
     if (!root) return;
     try {
       const nextStatus = await gitStatus(root);
@@ -280,12 +334,12 @@ export function useGitState(
     } catch (cause) {
       if (!stale()) reportError(errorText(cause));
     }
-  }, [reportError, root]);
+  }, [reportError, root, workspaceRoot]);
 
   /** 轻量刷新也排队：连点五次暂存只起两次 `git status`（手头那趟 + 收尾补一趟）。 */
   const refreshChanges = useCallback(
-    () => lightQueue.request(refreshChangesOnce),
-    [lightQueue, refreshChangesOnce]
+    () => activeWorkspaceRef.current === workspaceRoot ? lightQueue.request(refreshChangesOnce) : Promise.resolve(),
+    [lightQueue, refreshChangesOnce, workspaceRoot]
   );
 
   /** git 输出的是仓库相对正斜杠路径，界面与后端命令都要绝对路径。 */
@@ -388,25 +442,25 @@ export function useGitState(
   );
 
   const checkout = useCallback(
-    (branch: string) => (root ? run(() => gitCheckout(root, branch)) : Promise.resolve(false)),
-    [root, run]
+    (branch: string) => trackOperation("checkout", branch, () => root ? run(() => gitCheckout(root, branch)) : Promise.resolve(false), false),
+    [root, run, trackOperation]
   );
 
   /** 新建分支；`from` 非空时从那条引用起，andCheckout=true 顺带切过去。 */
   const createBranch = useCallback(
     (name: string, from: string, andCheckout: boolean) =>
-      root ? run(() => gitCreateBranch(root, name, from, andCheckout)) : Promise.resolve(false),
-    [root, run]
+      trackOperation("createBranch", name, () => root ? run(() => gitCreateBranch(root, name, from, andCheckout)) : Promise.resolve(false), false),
+    [root, run, trackOperation]
   );
 
   /** 合并 / 变基 / 改名 / 删除都动本地历史，失败要弹错、成功要刷新。 */
   const merge = useCallback(
-    (name: string) => (root ? run(() => gitMerge(root, name)) : Promise.resolve(false)),
-    [root, run]
+    (name: string) => trackOperation("merge", name, () => root ? run(() => gitMerge(root, name)) : Promise.resolve(false), false),
+    [root, run, trackOperation]
   );
   const rebase = useCallback(
-    (onto: string) => (root ? run(() => gitRebase(root, onto)) : Promise.resolve(false)),
-    [root, run]
+    (onto: string) => trackOperation("rebase", onto, () => root ? run(() => gitRebase(root, onto)) : Promise.resolve(false), false),
+    [root, run, trackOperation]
   );
   const renameBranch = useCallback(
     (name: string, to: string) =>
@@ -575,35 +629,27 @@ export function useGitState(
 
   const createTag = useCallback(
     (name: string, message: string, revision = "") =>
-      root ? run(() => gitCreateTag(root, name, message, revision)) : Promise.resolve(false),
-    [root, run]
+      trackOperation("createTag", name, () => root ? run(() => gitCreateTag(root, name, message, revision)) : Promise.resolve(false), false),
+    [root, run, trackOperation]
   );
 
   /** 网络类操作把 git 的进度文案回给调用方，成功时返回那段文本。 */
   const remote = useCallback(
-    async (action: (repo: string) => Promise<string>, actionKey?: string) => {
+    async (action: (repo: string) => Promise<string>, actionKey: "fetch" | "pull" | "push") => trackOperation(actionKey, status?.branch ?? "", async () => {
       if (!root) return null;
-      if (actionKey === "push") {
-        pushingCountRef.current += 1;
-        setPushing(true);
-      }
       try {
         const detail = await action(root);
-        // 抓取 / 拉取会推进远端引用，随后 watcher 那次回声明明是这次网络操作造的。
-        afterRepoWrite?.();
-        await refresh();
         return detail;
       } catch (cause) {
         reportError(errorText(cause), actionKey);
         return null;
       } finally {
-        if (actionKey === "push") {
-          pushingCountRef.current = Math.max(0, pushingCountRef.current - 1);
-          if (pushingCountRef.current === 0) setPushing(false);
-        }
+        // 更新失败也可能停在合并/变基冲突中，必须读回恢复状态。
+        afterRepoWrite?.();
+        await refresh();
       }
-    },
-    [afterRepoWrite, refresh, reportError, root]
+    }, null),
+    [afterRepoWrite, refresh, reportError, root, status?.branch, trackOperation]
   );
 
   /**
@@ -619,29 +665,28 @@ export function useGitState(
       options?: CommitRequestOptions
     ) => {
       if (!root) return false;
-      pushingCountRef.current += 1;
-      setPushing(true);
       let committed = false;
-      try {
-        await gitCommit(root, message, amend, paths, options);
-        committed = true;
-        await gitPush(root, setUpstream);
-        return true;
-      } catch (cause) {
-        reportError(errorText(cause), committed ? "push" : undefined);
-        return committed;
-      } finally {
-        afterRepoWrite?.();
-        await refresh();
-        pushingCountRef.current = Math.max(0, pushingCountRef.current - 1);
-        if (pushingCountRef.current === 0) setPushing(false);
-      }
+      await trackOperation("push", status?.branch ?? "", async () => {
+        try {
+          await gitCommit(root, message, amend, paths, options);
+          committed = true;
+          await gitPush(root, setUpstream);
+          return true;
+        } catch (cause) {
+          reportError(errorText(cause), committed ? "push" : undefined);
+          return false;
+        } finally {
+          afterRepoWrite?.();
+          await refresh();
+        }
+      }, false);
+      return committed;
     },
-    [afterRepoWrite, refresh, reportError, root]
+    [afterRepoWrite, refresh, reportError, root, status?.branch, trackOperation]
   );
 
   const fetch = useCallback(() => remote(gitFetch, "fetch"), [remote]);
-  const pull = useCallback(() => remote(gitPull, "pull"), [remote]);
+  const pull = useCallback((method: "ff-only" | "merge" | "rebase" = "ff-only") => remote((repo) => gitPull(repo, method), "pull"), [remote]);
   const push = useCallback(
     (setUpstream: boolean) => remote((repo) => gitPush(repo, setUpstream), "push"),
     [remote]
@@ -697,6 +742,7 @@ export function useGitState(
       tags,
       lastCommit,
       root,
+      operation: operation?.root === root ? operation : null,
       pushing,
       refresh,
       refreshChanges,
@@ -761,6 +807,7 @@ export function useGitState(
       tags,
       lastCommit,
       root,
+      operation,
       pushing,
       refresh,
       refreshChanges,

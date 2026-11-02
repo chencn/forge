@@ -26,7 +26,7 @@ function isDetached(git: GitState): boolean {
 
 /** 当前分支有没有跟踪的上游。更新（pull --ff-only）需要上游存在。 */
 function hasUpstream(git: GitState): boolean {
-  return git.status?.upstream?.trim() !== "" && git.status?.upstream !== undefined;
+  return !!git.status?.upstream?.trim();
 }
 
 /** 推送：至少有一个远端、HEAD 不在游离态、仓库不是空仓库。 */

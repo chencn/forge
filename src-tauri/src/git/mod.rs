@@ -982,17 +982,24 @@ fn git_fetch_impl(root: String) -> Result<String, String> {
 
 /// 拉取。没有上游的分支 git 会直接拒绝，把原因回给用户而不是替他猜。
 #[tauri::command]
-pub async fn git_pull(root: String) -> Result<String, String> {
-    block(move || git_pull_impl(root)).await
+pub async fn git_pull(root: String, method: Option<String>) -> Result<String, String> {
+    block(move || git_pull_impl(root, method.as_deref().unwrap_or("ff-only"))).await
 }
 
-fn git_pull_impl(root: String) -> Result<String, String> {
+fn git_pull_impl(root: String, method: &str) -> Result<String, String> {
     let root = ensure_root(&root)?;
+    // 只允许表单公开的三种策略；先校验再抓取，非法参数不能产生远端副作用。
+    let integrate: &[&str] = match method {
+        "ff-only" => &["merge", "--ff-only", "@{upstream}"],
+        "merge" => &["merge", "--ff", "--no-edit", "@{upstream}"],
+        "rebase" => &["rebase", "@{upstream}"],
+        _ => return Err(err("BAD_UPDATE_METHOD", method)),
+    };
     // 拆成 fetch + merge 两段：fetch 不在 MUTATING 名单里、不占本地写锁，
     // 网络再慢也只是它自己在等；整条 `pull` 占着写锁的话，一次凭据弹窗
     // 能把全应用的暂存 / 提交 / 切分支全部堵在队列里。语义与 pull --ff-only 一致。
     let fetched = remote_op(&root, &["fetch", "--all", "--prune", "--progress"])?;
-    let merged = remote_op(&root, &["merge", "--ff-only"])?;
+    let merged = remote_op(&root, integrate)?;
     let mut parts: Vec<&str> = vec![fetched.trim(), merged.trim()]
         .into_iter()
         .filter(|part| !part.is_empty())

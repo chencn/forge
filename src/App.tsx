@@ -66,6 +66,8 @@ import { CommitIcon, ProjectIcon, SearchIcon, VcsIcon } from "./components/ToolW
 import ProjectPicker from "./components/ProjectPicker";
 import type { FolderStatusItem } from "./components/ProjectPicker";
 import BranchPicker from "./components/BranchPicker";
+import GitActionDialog, { type GitActionRequest, type GitActionValues } from "./components/GitActionDialog";
+import GitOperationStatus from "./components/GitOperationStatus";
 import type { BranchAction } from "./components/BranchPicker";
 import ConflictWidget from "./components/ConflictWidget";
 import Popover from "./components/Popover";
@@ -683,6 +685,8 @@ export default function App() {
     refreshSystemClipboard();
   }, [refreshSystemClipboard]);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
+  const [gitDialog, setGitDialog] = useState<GitActionRequest | null>(null);
+  useEffect(() => setGitDialog(null), [workspaceRoot]);
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const { toggleMaximize } = useWindowControls();
   /** 编辑区页签栏里的比对，按根隔离，同一根内按打开顺序排。 */
@@ -5048,11 +5052,12 @@ export default function App() {
 
   /** 切分支成功才记进「最近」，失败的签出不该留在列表里。 */
   const checkoutBranch = useCallback(
-    (name: string) =>
-      git.checkout(name).then((done) => {
-        if (done) remember("recentBranches", name);
-        return done;
-      }),
+    async (name: string) => {
+      await saveAllRef.current();
+      const done = await git.checkout(name);
+      if (done) remember("recentBranches", name);
+      return done;
+    },
     [git, remember]
   );
 
@@ -5084,7 +5089,7 @@ export default function App() {
           break;
         }
         case "newBranch":
-          setDialog({ kind: "newBranch", name: "", from: target.name, dir: null, entry: null });
+          setGitDialog({ kind: "newBranch", from: target.name });
           break;
         case "worktree": {
           // 默认落在仓库旁边：往仓库里塞一份工作树，git 自己会当成未跟踪内容。
@@ -5120,7 +5125,7 @@ export default function App() {
           }
           break;
         case "push":
-          void git.pushRef(target.name);
+          setGitDialog({ kind: "push", target });
           break;
         case "delete":
           // 删远端分支是往服务器推一条删除引用，先问一句再动手。
@@ -5244,34 +5249,51 @@ export default function App() {
     (action: BranchAction) => {
       switch (action) {
         case "update":
-          void git.pull();
+          if (settings.vcs.showUpdateOptions) setGitDialog({ kind: "update" });
+          else void git.pull();
           break;
         case "fetch":
           void git.fetch();
           break;
         case "push":
-          void git.push(false);
+          setGitDialog({ kind: "push" });
           break;
         case "commit":
           openSideTool("git");
           setCommitFocus((value) => value + 1);
           break;
         case "newBranch":
-          setDialog({ kind: "newBranch", name: "", dir: null, entry: null });
+          setGitDialog({ kind: "newBranch" });
           break;
         case "newTag":
-          setDialog({ kind: "newTag", name: "", dir: null, entry: null });
+          setGitDialog({ kind: "newTag" });
           break;
         case "checkoutRev":
-          setDialog({ kind: "checkoutRev", name: "", dir: null, entry: null });
+          setGitDialog({ kind: "checkoutRev" });
           break;
         case "initRepo":
           void git.init();
           break;
       }
     },
-    [git, openSideTool]
+    [git, openSideTool, settings.vcs.showUpdateOptions]
   );
+
+  const submitGitAction = async (values: GitActionValues) => {
+    const request = gitDialog;
+    if (!request) return;
+    // 确认只发起一次；窗口退场后，真正的 Git 生命周期仍由底栏和通知中心承接。
+    setGitDialog(null);
+    if (request.kind !== "push") await saveAllRef.current();
+    if (request.kind === "update") await git.pull(values.method);
+    else if (request.kind === "push") {
+      if (request.target) await git.pushRef(request.target.name);
+      else await git.push(values.setUpstream);
+    } else if (request.kind === "newBranch") {
+      if (await git.createBranch(values.name, values.from, values.checkout) && values.checkout) remember("recentBranches", values.name);
+    } else if (request.kind === "newTag") await git.createTag(values.name, values.message, values.from);
+    else await git.checkout(values.name);
+  };
 
   /**
    * 递给 memo 过的三块面板（目录树 / 提交 / 日志）的回调。
@@ -5712,7 +5734,6 @@ export default function App() {
             recent={history.recentBranches}
             options={settings.branches}
             onOptions={(next) => patch({ branches: next })}
-            onCheckout={checkoutBranch}
             onAction={branchAction}
             onRefAction={refAction}
             onRefInspect={(target, mode) => {
@@ -6331,6 +6352,7 @@ export default function App() {
       </AiInputProvider>
 
       <footer className="global-status">
+        <GitOperationStatus operation={git.operation} />
         {deleteStatus ? (
           <span
             className={`status-note is-delete-status is-${deleteStatus.phase}`}
@@ -6484,6 +6506,8 @@ export default function App() {
       ) : null}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
       <ContextMenuGuardHost />
+      {gitDialog ? <GitActionDialog key={`${git.root}:${gitDialog.kind}:${gitDialog.target?.name ?? ""}`} request={gitDialog} git={git}
+        onCancel={() => setGitDialog(null)} onSubmit={(values) => { void submitGitAction(values).catch((cause) => reportError(errorText(cause))); }} /> : null}
       {dialog ? (
         <PromptDialog
           request={dialog}

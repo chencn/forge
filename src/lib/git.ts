@@ -288,8 +288,8 @@ export function gitFetch(root: string): Promise<string> {
   return invoke<string>("git_fetch", { root });
 }
 
-export function gitPull(root: string): Promise<string> {
-  return invoke<string>("git_pull", { root });
+export function gitPull(root: string, method: "ff-only" | "merge" | "rebase" = "ff-only"): Promise<string> {
+  return invoke<string>("git_pull", { root, method });
 }
 
 /** 当前分支没有上游时，后端退回 `push --set-upstream <第一个远端> HEAD`。 */

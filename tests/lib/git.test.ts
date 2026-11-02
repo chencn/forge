@@ -6,6 +6,7 @@ import {
   folderDeletePaths,
   folderMarks,
   gitCommit,
+  gitPull,
   ignoredRoots,
   isDeletedMark,
   markClass,
@@ -19,6 +20,14 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("Git 更新策略 IPC 契约", () => {
+  it.each(["ff-only", "merge", "rebase"] as const)("将 %s 策略传到实际更新命令", async (method) => {
+    vi.mocked(invoke).mockResolvedValue("updated");
+    await expect(gitPull("D:/repo", method)).resolves.toBe("updated");
+    expect(invoke).toHaveBeenCalledWith("git_pull", { root: "D:/repo", method });
+  });
 });
 
 describe("Git 提交 IPC 契约", () => {

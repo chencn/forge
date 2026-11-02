@@ -1,0 +1,49 @@
+/* 分支弹窗独立滚动列表，搜索与操作按钮始终留在顶端。 */
+.branch-popup {
+  width: 380px;
+  max-width: calc(100vw - 12px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font: 13px var(--font-ui);
+  --bg-tree-selected: var(--bg-active);
+  --bg-tree-hover: var(--bg-hover);
+  --bg-selected: var(--bg-active);
+}
+/* OpenIDEA 弹层定位后 80ms 入场，关闭直接卸载；不让菜单拖延下一个操作。 */
+.branch-popup[data-positioned] { animation: branch-popup-in var(--dur-fast, 80ms) var(--ease); }
+@keyframes branch-popup-in { from { opacity: 0; transform: translateY(-2px); } }
+.branch-popup.is-keyboard[data-positioned] { animation: none; }
+.branch-popup-content { display: flex; flex-direction: column; min-height: 0; }
+.branch-popup-head { display: flex; align-items: center; gap: 4px; padding: 6px; flex: none; border-bottom: 1px solid var(--border-popup); }
+.branch-popup-search { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 28px; padding: 0 7px; color: var(--fg-muted); border: 1px solid var(--border-popup); border-radius: var(--radius-sm); background: var(--bg-control); }
+.branch-popup-search:focus-within { border-color: var(--fg-subtle); }
+.branch-popup-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg-strong); font: inherit; }
+.branch-popup-head .icon-button { flex: none; }
+.branch-popup-list-wrap { display: flex; flex-direction: column; min-height: 0; padding: 4px 0; box-sizing: content-box; }
+.branch-popup-list { flex: 1; }
+.branch-popup-row { display: flex; align-items: center; gap: 7px; min-width: 0; width: 100%; height: 100%; box-sizing: border-box; font: 13px var(--font-ui); }
+.branch-popup-row > svg { flex: none; color: var(--fg-muted); }
+.branch-popup-group { color: var(--fg-muted); }
+.branch-popup-group > .is-expanded { transform: rotate(90deg); }
+.branch-popup-row.is-current { font-weight: 600; }
+.branch-popup-row.is-disabled { color: var(--fg-faint); cursor: default; }
+.branch-popup-row.is-disabled > svg { color: inherit; }
+.branch-popup-label { flex: 0 1 auto; min-width: 32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-popup-upstream { margin-left: auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; color: var(--fg-subtle); font-size: 11px; }
+.branch-popup-sub-arrow { margin-left: auto; }
+.branch-popup-upstream + .branch-popup-sub-arrow { margin-left: 0; }
+.branch-popup-star { position: relative; display: grid; place-items: center; flex: none; width: 16px; height: 20px; padding: 0; border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; }
+.branch-popup-star > svg { grid-area: 1 / 1; }
+.branch-popup-star-icon { visibility: hidden; }
+.branch-popup-star.is-favorite .branch-popup-branch-icon { visibility: hidden; }
+.branch-popup-star.is-favorite .branch-popup-star-icon { visibility: visible; fill: currentColor; }
+.branch-popup-separator { height: 1px; width: 100%; background: var(--border-popup); }
+.branch-popup-submenu { min-width: 220px; max-width: min(420px, calc(100vw - 12px)); padding: 4px 0; --bg-selected: var(--bg-active); }
+@media (hover: hover) and (pointer: fine) {
+  .branch-popup [role="option"]:hover .branch-popup-star-icon { visibility: visible; }
+  .branch-popup [role="option"]:hover .branch-popup-branch-icon { visibility: hidden; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .branch-popup[data-positioned] { animation: none; }
+}
