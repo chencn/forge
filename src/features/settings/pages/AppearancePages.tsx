@@ -1,14 +1,15 @@
+import { useEffect, useState } from "react";
 import { useSettings } from "../../../hooks/useSettings";
 import { useI18n, type Lang } from "../../../i18n";
 import Select from "../../../components/Select";
 import { AiAssistantsToggle } from "../../../components/AiCliSettingsPanel";
-import { requestNativeNotificationPermission } from "../../../lib/notifications";
+import { withShellFileToggle } from "../../../lib/settings";
+import { builtinShellExtensions } from "../../../lib/shellOpen";
+import { appendExtraExtension, normalizeExtraExtensions } from "../../../lib/shellWhitelist";
+import { IS_WINDOWS } from "../../../lib/sys";
 import type {
   CloseBehavior,
   HttpResponseLayout,
-  NotificationGroupRule,
-  NotificationPopupType,
-  NotificationPosition,
   WorkspaceMode,
 } from "../../../lib/settings";
 import type { ThemeMode } from "../../../lib/window";
@@ -55,24 +56,10 @@ const HTTP_LAYOUT_LABEL: Record<HttpResponseLayout, "httpResponse.split" | "http
   tab: "httpResponse.tab",
 };
 
-const NOTIFICATION_POSITION_OPTIONS: NotificationPosition[] = [
-  "bottom-right",
-  "top-right",
-  "bottom-left",
-  "top-left",
-];
-
-const NOTIFICATION_POSITION_LABEL: Record<
-  NotificationPosition,
-  | "notificationPosition.bottomRight"
-  | "notificationPosition.topRight"
-  | "notificationPosition.bottomLeft"
-  | "notificationPosition.topLeft"
-> = {
-  "bottom-right": "notificationPosition.bottomRight",
-  "top-right": "notificationPosition.topRight",
-  "bottom-left": "notificationPosition.bottomLeft",
-  "top-left": "notificationPosition.topLeft",
+const SWITCHES = ["yes", "no"] as const;
+const SWITCH_LABEL: Record<"yes" | "no", "common.yes" | "common.no"> = {
+  yes: "common.yes",
+  no: "common.no",
 };
 
 /**
@@ -132,6 +119,40 @@ export function AppearanceThemePage() {
 export function AppearanceSystemPage() {
   const { t } = useI18n();
   const { settings, patch } = useSettings();
+  /** 内置文本后缀。用来拦住用户把已有格式再追加一遍。 */
+  const [builtinExtensions, setBuiltinExtensions] = useState<string[]>([]);
+  const [extraDraft, setExtraDraft] = useState("");
+
+  // 右键菜单的「通过 Forge 打开」只在 Windows 生效，内置后缀也由后端给出。
+  useEffect(() => {
+    if (!IS_WINDOWS) return;
+    let cancelled = false;
+    void builtinShellExtensions()
+      .then((list) => {
+        if (!cancelled) setBuiltinExtensions(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 内置名单到手后把历史遗留的非法/重复后缀收干净，避免下拉里出现改不了的条目。
+  const extraKey = settings.shell.extraExtensions.join("\0");
+  useEffect(() => {
+    if (builtinExtensions.length === 0) return;
+    const cleaned = normalizeExtraExtensions(settings.shell.extraExtensions, builtinExtensions);
+    if (cleaned.join("\0") === extraKey) return;
+    patch({ shell: { ...settings.shell, extraExtensions: cleaned } });
+  }, [builtinExtensions, extraKey, patch, settings.shell]);
+
+  const addExtra = () => {
+    const next = appendExtraExtension(settings.shell.extraExtensions, extraDraft, builtinExtensions);
+    setExtraDraft("");
+    if (next !== settings.shell.extraExtensions) {
+      patch({ shell: { ...settings.shell, extraExtensions: next } });
+    }
+  };
 
   return (
     <div className="settings-rows">
@@ -183,210 +204,111 @@ export function AppearanceSystemPage() {
             onChange={(httpResponse) => patch({ httpResponse })}
           />
         </div>
-      </div>
-    </div>
-  );
-}
 
-const NOTIFICATION_POPUP_OPTIONS: { value: NotificationPopupType; label: string }[] = [
-  { value: "balloon", label: "气泡 (Balloon)" },
-  { value: "sticky", label: "常驻气泡 (Sticky)" },
-  { value: "none", label: "无气泡 (No popup)" },
-];
+        {/* 资源管理器右键菜单：只在 Windows 有这套集成，其它平台整块不渲染。 */}
+        {IS_WINDOWS ? (
+          <>
+            <div className="settings-row">
+              <span className="settings-label">{t("shellOpen.folder")}</span>
+              <Select
+                label={t("shellOpen.folder")}
+                placeholder="—"
+                value={settings.shell.openFolder ? "yes" : "no"}
+                options={SWITCHES.map((option) => ({
+                  value: option,
+                  label: t(SWITCH_LABEL[option]),
+                }))}
+                onChange={(next) =>
+                  patch({ shell: { ...settings.shell, openFolder: next === "yes" } })
+                }
+              />
+            </div>
 
-const NOTIFICATION_GROUP_LABELS: Record<string, string> = {
-  git: "Git 版本控制 (VCS)",
-  maven: "Maven 构建与依赖",
-  build: "运行与编译 (Run & Build)",
-  ai: "AI 助手会话与操作",
-  dependencies: "项目依赖同步 (Dependencies)",
-  terminal: "终端与会话 (Terminal)",
-  system: "系统与应用更新 (System)",
-};
+            <div className="settings-row">
+              <span className="settings-label">{t("shellOpen.file")}</span>
+              <Select
+                label={t("shellOpen.file")}
+                placeholder="—"
+                value={settings.shell.openFile ? "yes" : "no"}
+                options={SWITCHES.map((option) => ({
+                  value: option,
+                  label: t(SWITCH_LABEL[option]),
+                }))}
+                onChange={(next) =>
+                  patch({ shell: withShellFileToggle(settings.shell, next === "yes") })
+                }
+              />
+            </div>
 
-/**
- * 1:1 对标 IntelliJ IDEA 的通知设置页
- */
-export function AppearanceNotificationsPage() {
-  const { t } = useI18n();
-  const { settings, patch } = useSettings();
+            {settings.shell.openFile ? (
+              <div className="settings-row">
+                <span className="settings-label">{t("shellOpen.default")}</span>
+                <Select
+                  label={t("shellOpen.default")}
+                  placeholder="—"
+                  value={settings.shell.defaultFile ? "yes" : "no"}
+                  options={SWITCHES.map((option) => ({
+                    value: option,
+                    label: t(SWITCH_LABEL[option]),
+                  }))}
+                  onChange={(next) =>
+                    patch({ shell: { ...settings.shell, defaultFile: next === "yes" } })
+                  }
+                />
+              </div>
+            ) : null}
 
-  const handleGroupRuleChange = (
-    groupId: string,
-    field: keyof NotificationGroupRule,
-    val: unknown
-  ) => {
-    const current = settings.notificationGroups[groupId] ?? {
-      displayType: "balloon",
-      log: true,
-      system: false,
-    };
-    patch({
-      notificationGroups: {
-        ...settings.notificationGroups,
-        [groupId]: { ...current, [field]: val },
-      },
-    });
-  };
-
-  return (
-    <div className="settings-rows">
-      <div className="settings-rows-limit">
-        {/* 1. 全局停靠位置 */}
-        <div className="settings-row">
-          <span className="settings-label">{t("settings.notificationPosition")}</span>
-          <Select
-            label={t("settings.notificationPosition")}
-            placeholder="—"
-            value={settings.notificationPosition}
-            options={NOTIFICATION_POSITION_OPTIONS.map((pos) => ({
-              value: pos,
-              label: t(NOTIFICATION_POSITION_LABEL[pos]),
-            }))}
-            onChange={(notificationPosition) => patch({ notificationPosition })}
-          />
-        </div>
-        <p className="settings-hint">
-          {t("settings.notifyPositionHint")}
-        </p>
-
-        {/* 1b. 气泡总开关（对齐 IDEA「Display balloon notifications」） */}
-        <div style={{ marginBottom: 12 }}>
-          <label className="settings-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={settings.notificationBalloons}
-              onChange={(e) => patch({ notificationBalloons: e.target.checked })}
-            />
-            显示通知气泡 (Display balloon notifications)
-          </label>
-        </div>
-
-        {/* 1c. 通知提示音（对齐 IDEA「Play sound」） */}
-        <div style={{ marginBottom: 12 }}>
-          <label className="settings-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={settings.notificationSound}
-              onChange={(e) => patch({ notificationSound: e.target.checked })}
-            />
-            播放提示音 (Play sound)
-          </label>
-        </div>
-
-        {/* 2. 勿扰模式开关 */}
-        <div className="settings-row" style={{ marginTop: 16 }}>
-          <span className="settings-label">{t("settings.dndMode")}</span>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={settings.notificationDoNotDisturb}
-              onChange={(e) => patch({ notificationDoNotDisturb: e.target.checked })}
-            />
-            {t("settings.dndHint")}
-          </label>
-        </div>
-
-        {/* 3. 通知组独立配置表格 */}
-        <div style={{ marginTop: 24 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
-            通知组与弹出行为 (Notification Groups)
-          </div>
-          <p className="settings-hint" style={{ marginBottom: 12 }}>
-            {t("settings.notifyModesHint")}
-          </p>
-
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              fontSize: 12,
-              background: "var(--surface-island)",
-              border: "1px solid var(--border-subtle)",
-              borderRadius: 4,
-              overflow: "hidden",
-            }}
-          >
-            <thead>
-              <tr style={{ background: "var(--bg-hover)", borderBottom: "1px solid var(--border-subtle)", textAlign: "left" }}>
-                <th style={{ padding: "8px 12px", fontWeight: 600 }}>功能组</th>
-                <th style={{ padding: "8px 12px", fontWeight: 600, width: 170 }}>弹出形态 (Popup)</th>
-                <th style={{ padding: "8px 12px", fontWeight: 600, width: 80, textAlign: "center" }}>记入日志</th>
-                <th style={{ padding: "8px 12px", fontWeight: 600, width: 80, textAlign: "center" }}>系统通知</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.keys(NOTIFICATION_GROUP_LABELS).map((groupId) => {
-                const rule = settings.notificationGroups[groupId] ?? {
-                  displayType: "balloon",
-                  log: true,
-                  system: false,
-                };
-                return (
-                  <tr
-                    key={groupId}
-                    style={{
-                      borderBottom: "1px solid var(--border-subtle)",
-                    }}
-                  >
-                    <td style={{ padding: "8px 12px" }}>
-                      {NOTIFICATION_GROUP_LABELS[groupId] ?? groupId}
-                    </td>
-                    <td style={{ padding: "6px 12px" }}>
-                      <select
-                        value={rule.displayType}
-                        style={{
-                          width: "100%",
-                          padding: "4px 8px",
-                          borderRadius: 3,
-                          background: "var(--bg-tertiary)",
-                          color: "var(--text-primary)",
-                          border: "1px solid var(--border-subtle)",
-                          fontSize: 12,
-                        }}
-                        onChange={(e) =>
-                          handleGroupRuleChange(
-                            groupId,
-                            "displayType",
-                            e.target.value as NotificationPopupType
-                          )
-                        }
-                      >
-                        {NOTIFICATION_POPUP_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td style={{ padding: "6px 12px", textAlign: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={rule.log}
-                        onChange={(e) =>
-                          handleGroupRuleChange(groupId, "log", e.target.checked)
-                        }
-                      />
-                    </td>
-                    <td style={{ padding: "6px 12px", textAlign: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={rule.system}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          if (checked) {
-                            void requestNativeNotificationPermission();
-                          }
-                          handleGroupRuleChange(groupId, "system", checked);
-                        }}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            {settings.shell.openFile ? (
+              <div className="settings-row is-stack">
+                <span className="settings-label">{t("shellOpen.extra")}</span>
+                <div className="shell-extra">
+                  <div className="shell-extra-add">
+                    <input
+                      className="settings-input"
+                      value={extraDraft}
+                      placeholder={t("shellOpen.extraPlaceholder")}
+                      aria-label={t("shellOpen.extra")}
+                      onChange={(event) => setExtraDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        addExtra();
+                      }}
+                    />
+                    <button type="button" className="text-button" onClick={addExtra}>
+                      {t("shellOpen.extraAdd")}
+                    </button>
+                  </div>
+                  {settings.shell.extraExtensions.length > 0 ? (
+                    <ul className="shell-extra-list">
+                      {settings.shell.extraExtensions.map((ext) => (
+                        <li key={ext} className="shell-extra-chip">
+                          <span>.{ext}</span>
+                          <button
+                            type="button"
+                            aria-label={t("shellOpen.extraRemove", { ext })}
+                            onClick={() =>
+                              patch({
+                                shell: {
+                                  ...settings.shell,
+                                  extraExtensions: settings.shell.extraExtensions.filter(
+                                    (item) => item !== ext
+                                  ),
+                                },
+                              })
+                            }
+                          >
+                            ×
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : null}
       </div>
     </div>
   );

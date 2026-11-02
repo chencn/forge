@@ -22,6 +22,7 @@ import {
 } from "../lib/cm/diffView";
 import { buildChunkPatch } from "../lib/cm/chunkPatch";
 import { useI18n } from "../i18n";
+import { useSettings } from "../hooks/useSettings";
 
 /** 一次比对所属的那一串：F7 走到头再按一次就换到这一串的相邻一篇。 */
 export interface DiffGroup {
@@ -93,6 +94,7 @@ function DiffPane({
   onRefresh,
 }: DiffPaneProps) {
   const { t } = useI18n();
+  const { settings } = useSettings();
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<DiffView | null>(null);
   /** 差异条数与本篇可走情况；null 是那一份视图还没建起来的状态，此时既不报条数也不让走。 */
@@ -125,6 +127,7 @@ function DiffPane({
 
     const view = createDiffView({
       parent: host,
+      keymapScheme: settings.editor.keymap,
       original,
       modified,
       language,
@@ -154,6 +157,8 @@ function DiffPane({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landOn, language, modified, notice, original, path]);
+
+  useEffect(() => { viewRef.current?.setKeymap(settings.editor.keymap); }, [settings.editor.keymap]);
 
   /** 换排法：两栏与单栏是两台不同的视图，由这一层自己重建，React 这边只换档。 */
   const setMode = useCallback((next: boolean) => {

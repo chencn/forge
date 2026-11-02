@@ -65,7 +65,7 @@ import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 import Select from "./Select";
 import { collapsePackageDirs, isUnderJvmSourceRoot } from "../lib/jvm";
-import { MOD_LABEL } from "../lib/sys";
+import { contextShortcuts, formatContextShortcut, SHORTCUT_DEFS, ShortcutSequence } from "../lib/shortcuts";
 import type { GitState } from "../hooks/useGitState";
 import type { BranchSettings } from "../lib/settings";
 import { withFavoriteToggled } from "../lib/settings";
@@ -74,6 +74,12 @@ import { errorText } from "../lib/fs";
 import { buildRefMenu, upstreamOf } from "../lib/refMenu";
 import type { RefAction, RefTarget } from "../lib/refMenu";
 import { useI18n } from "../i18n";
+import { useSettings } from "../hooks/useSettings";
+
+const LOG_SHORTCUT_ACTIONS = new Set(['CopyReference', '$Copy', 'ChangesView.GroupBy.Directory', 'ChangesView.GroupBy.Module',
+  'Git.New.Branch.In.Log', 'Git.CreateNewBranch', 'Diff.ShowDiff', 'EditSource', 'Git.Rename.Local.Branch', '$Delete', 'git.push']);
+const LOG_SHORTCUTS = [...contextShortcuts([...LOG_SHORTCUT_ACTIONS].filter((id) => id !== 'git.push')),
+  ...SHORTCUT_DEFS.filter((definition) => definition.id === 'git.push')];
 
 /* 引用动作的类型与菜单本体都在 lib/refMenu：日志的分支树和主工具栏的分支弹层共用。 */
 export type { RefAction, RefTarget } from "../lib/refMenu";
@@ -378,6 +384,12 @@ function GitLogPane({
   setPathFilter,
 }: GitLogPaneProps) {
   const { t, locale } = useI18n();
+  const { settings } = useSettings();
+  const scheme = settings.editor.keymap;
+  const paneRef = useRef<HTMLDivElement>(null);
+  const sequence = useRef(new ShortcutSequence(LOG_SHORTCUTS)).current;
+  useEffect(() => { sequence.reset(); }, [scheme, sequence]);
+  const shortcut = (action: string) => formatContextShortcut(action, scheme);
   const [text, setText] = useState("");
   const [regex, setRegex] = useState(false);
   const [author, setAuthor] = useState("");
@@ -755,6 +767,8 @@ function GitLogPane({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      // 旧日志选区不能让本面板在其他视图获得焦点时继续抢键。
+      if (event.defaultPrevented || !target || !paneRef.current?.contains(target)) { sequence.reset(); return; }
       if (
         target &&
         (target.tagName === "INPUT" ||
@@ -763,37 +777,47 @@ function GitLogPane({
       ) {
         return;
       }
-      const key = event.key.toLowerCase();
-      /** 只选中一条时的那行；菜单上好几项和左右箭头都只作用在「恰好一条」上。 */
       const sole = picked.length === 1 ? (commits.find((row) => row.hash === picked[0]) ?? null) : null;
-      // 主修饰键按平台认：macOS 上是 Cmd（与 App 侧提交分组的同一对键位保持一致）。
-      const mod = event.ctrlKey || event.metaKey;
-      if (event.ctrlKey && event.altKey && event.shiftKey && !event.metaKey && key === "c") {
+      // 每栏只激活自己的选区；右侧文件焦点不能重命名左侧残留的分支选区。
+      const enabled = new Set(LOG_SHORTCUT_ACTIONS);
+      if (!target.closest('.log-refs') || !pickedRef) {
+        for (const id of ['Git.CreateNewBranch', 'Git.Rename.Local.Branch', '$Delete', 'git.push']) enabled.delete(id);
+      }
+      if (!target.closest('.log-list') || !picked.length) {
+        for (const id of ['CopyReference', '$Copy', 'Git.New.Branch.In.Log']) enabled.delete(id);
+      }
+      if (!sole) enabled.delete('Git.New.Branch.In.Log');
+      if (!activeFile) { enabled.delete('Diff.ShowDiff'); enabled.delete('EditSource'); }
+      const match = sequence.match(event, scheme, enabled);
+      if (match.pending) { event.preventDefault(); event.stopPropagation(); return; }
+      const action = match.id;
+      if (action) event.stopPropagation();
+      if ((action === 'CopyReference' || action === '$Copy') && picked.length && target.closest('.log-list')) {
         event.preventDefault();
         void navigator.clipboard.writeText(picked.join("\n"));
         return;
       }
-      if (mod && event.altKey && !event.shiftKey) {
-        if (key === "p") {
+      if (action === 'ChangesView.GroupBy.Directory' || action === 'ChangesView.GroupBy.Module' || action === 'Git.New.Branch.In.Log') {
+        if (action === 'ChangesView.GroupBy.Directory') {
           event.preventDefault();
           setGroupDir((value) => !value);
-        } else if (key === "m") {
+        } else if (action === 'ChangesView.GroupBy.Module') {
           event.preventDefault();
           setGroupModule((value) => !value);
-        } else if (key === "n" && sole) {
+        } else if (action === 'Git.New.Branch.In.Log' && sole) {
           event.preventDefault();
           onCommitAction("newBranch", sole);
         }
         return;
       }
-      if (event.ctrlKey && !event.altKey && !event.metaKey && key === "d") {
+      if (action === 'Diff.ShowDiff') {
         if (detail && activeFile) {
           event.preventDefault();
           onFileAction("diff", detail, activeFile);
         }
         return;
       }
-      if (event.key === "F12") {
+      if (action === 'EditSource') {
         if (activeFile) {
           event.preventDefault();
           onEditSource(activeFile.path);
@@ -803,7 +827,7 @@ function GitLogPane({
       if (
         !event.ctrlKey &&
         !event.altKey &&
-        !event.metaKey &&
+        !event.metaKey && !event.shiftKey &&
         (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
         sole
       ) {
@@ -821,15 +845,18 @@ function GitLogPane({
         return;
       }
       if (!pickedRef) return;
-      if (event.ctrlKey && event.shiftKey && !event.altKey && key === "k") {
+      if (action === 'Git.CreateNewBranch') {
+        event.preventDefault();
+        onRefAction('newBranch', pickedRef);
+      } else if (action === 'git.push') {
         event.preventDefault();
         onRefAction("push", pickedRef);
-      } else if (event.altKey && event.shiftKey && !event.ctrlKey && key === "r") {
+      } else if (action === 'Git.Rename.Local.Branch') {
         if (pickedRef.kind === "local") {
           event.preventDefault();
           onRefAction("rename", pickedRef);
         }
-      } else if (event.key === "Delete") {
+      } else if (action === '$Delete') {
         // 只认分支树里焦点落过的那一下：资源管理器侧也绑了 Delete，两边都接手会先弹出
         // 「永久删除文件」的确认框，删掉的是盘上的东西，不是这条引用。
         if (target?.closest(".log-refs")) {
@@ -837,13 +864,13 @@ function GitLogPane({
           event.stopImmediatePropagation();
           onRefAction("delete", pickedRef);
         }
-      } else if (event.key === "Enter") {
+      } else if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "Enter") {
         // 这条只管分支树里有焦点的那一下：回车把日志收到选中的那条引用上。
         if (target?.closest(".log-refs")) {
           event.preventDefault();
           setReference(pickedRef.name);
         }
-      } else if (key === " " && pickedRef.kind !== "tag") {
+      } else if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === " " && pickedRef.kind !== "tag") {
         // 空格翻收藏，同样只认分支树里的那一下按键。
         if (target?.closest(".log-refs")) {
           event.preventDefault();
@@ -851,9 +878,14 @@ function GitLogPane({
         }
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // 在冒泡到应用全局监听前消费上下文动作，不能依赖 window 监听器的注册顺序。
+    const pane = paneRef.current;
+    pane?.addEventListener("keydown", onKey);
+    return () => pane?.removeEventListener("keydown", onKey);
   }, [
+    root,
+    scheme,
+    sequence,
     commits,
     picked,
     detail,
@@ -961,7 +993,7 @@ function GitLogPane({
       {
         label: t("log.copyRevisionNumber"),
         icon: ClipboardCopy,
-        shortcut: `${MOD_LABEL}+Alt+Shift+C`,
+        shortcut: shortcut('CopyReference'),
         onSelect: () => void navigator.clipboard.writeText(current.join("\n")),
       },
       {
@@ -1076,7 +1108,7 @@ function GitLogPane({
       {
         label: t("git.newBranch"),
         icon: GitBranch,
-        shortcut: `${MOD_LABEL}+Alt+N`,
+        shortcut: shortcut('Git.New.Branch.In.Log'),
         disabled: needOne !== undefined,
         hint: needOne,
         onSelect: () => onCommitAction("newBranch", commit),
@@ -1173,6 +1205,7 @@ function GitLogPane({
   const refMenu = (target: RefTarget): MenuItem[] =>
     buildRefMenu(target, {
       t,
+      keymapScheme: scheme,
       current: git.status?.branch ?? "",
       upstream: upstreamOf(git.branches, target),
       detached: git.status?.detached ?? false,
@@ -1188,7 +1221,7 @@ function GitLogPane({
     const hasParent = commit.parents.length > 0;
     const act = (action: FileAction) => () => onFileAction(action, commit, file);
     return [
-      { label: t("log.diffShow"), icon: FileDiff, shortcut: "Ctrl+D", onSelect: act("diff") },
+      { label: t("log.diffShow"), icon: FileDiff, shortcut: shortcut('Diff.ShowDiff'), onSelect: act("diff") },
       { label: t("log.diffNewTab"), icon: FileDiff, onSelect: act("diffNewTab") },
       { label: t("log.diffWithLocal"), onSelect: act("diffLocal") },
       {
@@ -1196,7 +1229,7 @@ function GitLogPane({
         disabled: !hasParent,
         onSelect: act("diffParentLocal"),
       },
-      { label: t("log.editSource"), icon: Pencil, shortcut: "F12", onSelect: () => onEditSource(file.path) },
+      { label: t("log.editSource"), icon: Pencil, shortcut: shortcut('EditSource'), onSelect: () => onEditSource(file.path) },
       { label: t("log.openRepoVersion"), onSelect: act("openRepoVersion") },
       { separator: true },
       {
@@ -1368,7 +1401,7 @@ function GitLogPane({
               {
                 label: t("log.diffShow"),
                 icon: FileDiff,
-                shortcut: "Ctrl+D",
+                shortcut: shortcut('Diff.ShowDiff'),
                 onSelect: () => onCompareWork(compareRef, {
                   path: item.path,
                   oldPath: item.oldPath,
@@ -1378,7 +1411,7 @@ function GitLogPane({
               {
                 label: t("log.editSource"),
                 icon: Pencil,
-                shortcut: "F12",
+                shortcut: shortcut('EditSource'),
                 onSelect: () => onEditSource(item.path),
               },
             ]);
@@ -1677,7 +1710,9 @@ function GitLogPane({
   );
 
   return (
-    <div className="log-pane">
+    <div className="log-pane" ref={paneRef} onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) sequence.reset();
+    }}>
       {refTools}
 
       <aside className="log-refs" style={colStyle("refs")} hidden={refsHidden}>
@@ -2034,8 +2069,8 @@ function GitLogPane({
           minWidth={230}
         >
           <p className="popover-label">{t("git.groupBy")}</p>
-          {optionRow(t("git.groupDir"), groupDir, `${MOD_LABEL}+Alt+P`, () => setGroupDir((v) => !v))}
-          {optionRow(t("git.groupModule"), groupModule, `${MOD_LABEL}+Alt+M`, () =>
+          {optionRow(t("git.groupDir"), groupDir, shortcut('ChangesView.GroupBy.Directory'), () => setGroupDir((v) => !v))}
+          {optionRow(t("git.groupModule"), groupModule, shortcut('ChangesView.GroupBy.Module'), () =>
             setGroupModule((v) => !v)
           )}
           <div className="popover-sep" />

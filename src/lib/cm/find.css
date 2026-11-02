@@ -1,0 +1,151 @@
+/* 对齐 IntelliJ IDEA：左侧折叠列、460px 输入框、两行工具栏共用网格。 */
+.cm-editor .cm-panel.forge-find {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(120px, 460px) auto minmax(0, 1fr) 24px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 6px;
+  margin: 0 6px;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--border-editor-tabs, var(--border-color));
+  border-radius: 5px;
+  background: var(--bg-editor-inline, var(--bg-tertiary));
+  color: var(--text-primary);
+  font-family: var(--font-ui, sans-serif);
+  font-size: var(--fs-ui, 13px);
+  line-height: 20px;
+}
+
+.forge-find .forge-find-field {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: var(--h-field, 28px);
+  padding: 3px 4px;
+  border-radius: 4px;
+  background: var(--bg-field, var(--bg-primary));
+  box-shadow: inset 0 0 0 1px var(--border-button, var(--border-color));
+}
+.forge-find .forge-find-field:focus-within {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.forge-find .forge-find-field.is-invalid {
+  box-shadow: inset 0 0 0 1px var(--danger, var(--accent-red)), 0 0 0 1px var(--danger, var(--accent-red));
+}
+.forge-find .forge-find-input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  margin: 0;
+  padding: 0;
+  resize: none;
+  appearance: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg-strong, var(--text-primary));
+  font: inherit;
+  line-height: 20px;
+  user-select: text;
+}
+.forge-find .forge-find-input::placeholder { color: var(--fg-faint, var(--text-muted)); }
+.forge-find .forge-find-input:focus-visible { outline: none; }
+.forge-find .forge-find-actions,
+.forge-find .forge-find-replacements { display: flex; align-items: center; gap: 2px; }
+.forge-find .forge-find-field { grid-column: 2; grid-row: 1; }
+.forge-find .forge-find-field:has([name="replace"]) { grid-row: 2; }
+.forge-find .forge-find-actions { grid-column: 3; grid-row: 1; gap: 4px; }
+.forge-find .forge-find-replacements { grid-column: 3 / 5; grid-row: 2; gap: 6px; }
+
+/* 多一级面板选择器，覆盖 CodeMirror 动态主题给按钮添加的 margin。 */
+.cm-editor .cm-panel.forge-find .forge-find-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  margin: 0;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-muted, var(--text-secondary));
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cm-editor .cm-panel.forge-find .forge-find-button:hover:not(:disabled) { background: var(--bg-hover); }
+.cm-editor .cm-panel.forge-find .forge-find-button[aria-pressed="true"] {
+  background: var(--bg-selection, var(--accent-blue-bg));
+  color: var(--accent);
+}
+.cm-editor .cm-panel.forge-find .forge-find-button:disabled { color: var(--fg-faint, var(--text-muted)); cursor: default; }
+.cm-editor .cm-panel.forge-find .forge-find-close { grid-column: 5; grid-row: 1; justify-self: end; }
+.cm-editor .cm-panel.forge-find .forge-find-expand[aria-pressed] {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 20px;
+  padding: 0;
+  background: transparent;
+  color: var(--fg-muted, var(--text-secondary));
+}
+.forge-find .forge-find-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
+.forge-find .forge-find-button[name="wholeWord"] { text-decoration: underline; text-underline-offset: 2px; }
+.forge-find .forge-find-button[name="regexp"] { font-family: var(--font-mono, monospace); }
+.forge-find .forge-find-count {
+  min-width: 56px;
+  padding: 0 10px 0 16px;
+  color: var(--fg-subtle, var(--text-tertiary));
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.forge-find .forge-find-count.is-invalid { color: var(--danger, var(--accent-red)); }
+.cm-editor .cm-panel.forge-find .forge-find-replacements .forge-find-button {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-button, var(--border-color));
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-field, var(--bg-primary));
+  color: var(--text-primary);
+  font-size: var(--fs-ui, 13px);
+  white-space: nowrap;
+}
+.cm-editor .cm-panel.forge-find .forge-find-replacements .forge-find-button:disabled {
+  border-color: var(--border-color);
+  background: transparent;
+  color: var(--fg-faint, var(--text-muted));
+}
+.forge-find .forge-find-menu {
+  position: absolute;
+  z-index: 10;
+  min-width: 220px;
+  max-width: min(360px, 100%);
+  max-height: 280px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-island);
+  box-shadow: var(--island-shadow);
+}
+.cm-editor .cm-panel.forge-find .forge-find-menu .forge-find-button {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  height: auto;
+  min-height: 26px;
+  padding: 3px 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-ui, 13px);
+}
+.forge-find .forge-find-menu [aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
+.forge-find [hidden] { display: none !important; }
+
+@media (forced-colors: active) {
+  .forge-find .forge-find-field { border: 1px solid FieldText; }
+  .forge-find .forge-find-field:focus-within { outline: 2px solid Highlight; }
+}

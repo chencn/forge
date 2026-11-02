@@ -26,6 +26,7 @@ import type { RefAction, RefTarget } from "../lib/refMenu";
 import { canPush, canUpdate, canFetch } from "../lib/gitGates";
 import type { BranchSettings } from "../lib/settings";
 import { withFavoriteToggled } from "../lib/settings";
+import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
 
 /** 弹层里能直接做的动作，具体执行留在 App。 */
@@ -157,6 +158,7 @@ export default function BranchPicker({
   onOptions,
 }: BranchPickerProps) {
   const { t } = useI18n();
+  const { settings } = useSettings();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [query, setQuery] = useState("");
   /** 行上右键的菜单；弹层本身是 popover，菜单画在它上面一层。 */
@@ -320,6 +322,7 @@ export default function BranchPicker({
         y: event.clientY,
         items: buildRefMenu(target, {
           t,
+          keymapScheme: settings.editor.keymap,
           current: git.status?.branch ?? "",
           upstream: upstreamOf(git.branches, target),
           detached: git.status?.detached ?? false,

@@ -17,6 +17,7 @@ import {
   type Ref,
 } from "react";
 import { useI18n } from "../i18n";
+import { comboMatchesEvent } from "../lib/shortcuts";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Icon, type LucideIconType } from "./Icon";
@@ -74,6 +75,8 @@ export interface TreeProps<T> {
   multiSelect?: boolean;
 
   onActivate?: (node: T, e: KeyboardEvent | MouseEvent) => void;
+  /** 调用方提供当前方案的打开动作，基础 Enter 行为仍由树自身处理。 */
+  activateKeys?: readonly string[];
   activateExpandable?: boolean | ((node: T) => boolean);
   isOccurrence?: (node: T) => boolean;
   onContextMenu?: (node: T | null, selection: Set<string>, e: MouseEvent) => void;
@@ -120,6 +123,7 @@ export function Tree<T>(props: TreeProps<T>) {
     getColor,
     multiSelect = true,
     onActivate,
+    activateKeys = ['F4'],
     activateExpandable = false,
     onContextMenu,
     speedSearch = true,
@@ -347,8 +351,8 @@ export function Tree<T>(props: TreeProps<T>) {
     }
     const range = e.shiftKey && multiSelect;
 
-    // F4 或 Command+Down 快速跳转源
-    if (e.key === "F4" || (e.key === "ArrowDown" && e.metaKey && !e.shiftKey && !e.altKey)) {
+    // 精确匹配修饰键，Ctrl+F4 关闭标签不能被当成打开文件吞掉。
+    if (activateKeys.some((binding) => comboMatchesEvent(e.nativeEvent, binding))) {
       if (!row) return;
       setQuery("");
       activate(row, e);

@@ -14,48 +14,40 @@ export interface ShortcutHint {
 
 /**
  * `chords` 按方案给真实键位：某个方案没绑这条命令时就不画这一行，
- * 免得告示页承诺做不到的事。
+ * 免得告示页承诺做不到的事。应用级搜索/保存的键位与 `lib/shortcuts.ts` 保持一致。
  */
 export const SHORTCUT_HINTS: ShortcutHint[] = [
-  // 前三行是应用级的搜索入口，不吃编辑器那三档方案，三个方案里都是同一套键，
-  // 所以三档给同一个值。双击 Shift 取的是 IDEA 那条键盘手势（`shift SHIFT`）。
+  // 双击 Shift 是固定的键盘手势，三套方案都一样（`shift SHIFT`）。
   {
     label: "welcome.everywhere",
-    chords: { default: "Shift ×2", idea: "Shift ×2", eclipse: "Shift ×2" },
+    chords: { idea: "Shift ×2", vscode: "Shift ×2", eclipse: "Shift ×2" },
   },
   {
     label: "welcome.gotoFile",
-    chords: { default: "Ctrl+Shift+N", idea: "Ctrl+Shift+N", eclipse: "Ctrl+Shift+N" },
+    chords: { idea: "Ctrl+Shift+N", vscode: "Ctrl+P", eclipse: "Ctrl+Shift+R" },
   },
   {
     label: "welcome.findInFiles",
-    chords: { default: "Ctrl+Shift+F", idea: "Ctrl+Shift+F", eclipse: "Ctrl+Shift+F" },
+    chords: { idea: "Ctrl+Shift+F", vscode: "Ctrl+Shift+F", eclipse: "Ctrl+H" },
   },
   {
     label: "welcome.save",
-    chords: { default: "Ctrl+S", idea: "Ctrl+S", eclipse: "Ctrl+S" },
+    chords: { idea: "Ctrl+S", vscode: "Ctrl+S", eclipse: "Ctrl+S" },
   },
-  { label: "welcome.find", chords: { default: "Ctrl+F", idea: "Ctrl+F", eclipse: "Ctrl+F" } },
-  { label: "welcome.replace", chords: { default: "Ctrl+H", idea: "Ctrl+R" } },
-  {
-    label: "welcome.definition",
-    chords: { default: "F12", idea: "Ctrl+B", eclipse: "F3" },
-  },
-  {
-    label: "welcome.rename",
-    chords: { default: "F2", idea: "Shift+F6", eclipse: "Alt+Shift+R" },
-  },
-  {
-    label: "welcome.format",
-    chords: { default: "Shift+Alt+F", idea: "Ctrl+Alt+L", eclipse: "Ctrl+Shift+F" },
-  },
+  { label: "welcome.find", chords: { idea: "Ctrl+F", vscode: "Ctrl+F", eclipse: "Ctrl+F" } },
+  // Eclipse 的替换并进查找面板，没有独立键位，这一行不画。
+  { label: "welcome.replace", chords: { idea: "Ctrl+R", vscode: "Ctrl+H" } },
+  // 语言服务尚未提供定义跳转、语义重命名和格式化，不提示这些未实现的键位。
   {
     label: "welcome.comment",
-    chords: { default: "Ctrl+/", idea: "Ctrl+/", eclipse: "Ctrl+/" },
+    chords: { idea: "Ctrl+/", vscode: "Ctrl+/", eclipse: "Ctrl+/" },
   },
-  { label: "welcome.copyLine", chords: { idea: "Ctrl+D", eclipse: "Ctrl+Alt+Down" } },
+  {
+    label: "welcome.copyLine",
+    chords: { idea: "Ctrl+D", vscode: "Shift+Alt+Down", eclipse: "Ctrl+Alt+Down" },
+  },
   {
     label: "welcome.deleteLine",
-    chords: { default: "Ctrl+Shift+K", idea: "Ctrl+Y", eclipse: "Ctrl+D" },
+    chords: { idea: "Ctrl+Y", vscode: "Ctrl+Shift+K", eclipse: "Ctrl+D" },
   },
 ];

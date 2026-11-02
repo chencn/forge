@@ -108,14 +108,7 @@ function Balloon({ n }: { n: IdeNotification }) {
  * 1:1 对齐 IntelliJ IDEA：气泡源是 store 的活动气泡列表（toasts），点叉/超时即从中移除；
  * 当 Notifications 工具窗口打开时自动隐藏气泡
  */
-export function Balloons({
-  isListOpen = false,
-  position = "bottom-right",
-}: {
-  isListOpen?: boolean;
-  /** 屏幕四角位置：跟随 settings.notificationPosition（对齐位置设置语义）。 */
-  position?: import("../lib/settings").NotificationPosition;
-}) {
+export function Balloons({ isListOpen = false }: { isListOpen?: boolean }) {
   const { t } = useI18n();
   tRef.current = t;
   const balloons = useNotifications((s) => s.toasts);
@@ -125,7 +118,7 @@ export function Balloons({
 
   return (
     <div
-      className={`notification-toasts-host is-${position}${hover ? " is-hovering" : ""}`}
+      className={`notification-toasts-host is-bottom-right${hover ? " is-hovering" : ""}`}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
       aria-live="polite"

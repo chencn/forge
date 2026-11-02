@@ -25,7 +25,7 @@ pub struct EditorSettings {
     pub tab_size: u32,
     /// 是否显示右侧缩略图。
     pub minimap: bool,
-    /// 快捷键方案：default / idea / eclipse。
+    /// 内置快捷键方案：idea / vscode / eclipse，默认 idea。
     pub keymap: String,
     /// 代码保存策略：manual（只有手动）/ blur（失去焦点时自动保存）。
     pub save_policy: String,
@@ -51,7 +51,7 @@ impl Default for EditorSettings {
             font_size: 13,
             tab_size: 2,
             minimap: true,
-            keymap: "default".to_string(),
+            keymap: "idea".to_string(),
             save_policy: "blur".to_string(),
             save_on_exit: true,
             trim_trailing_whitespace: false,
@@ -347,15 +347,6 @@ impl Default for VcsSettings {
     }
 }
 
-/// 通知规则项
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NotificationGroupRule {
-    pub display_type: String,
-    pub log: bool,
-    pub system: bool,
-}
-
 /// 一份全局设置。缺字段时按 Default 补，改结构不用迁移旧文件。
 ///
 /// 这里只放偏好：主题、字号这类几个月不动一次的选择。用户做过的流水（上次开的项目、
@@ -386,8 +377,6 @@ pub struct Settings {
     pub explorer: ExplorerSettings,
     /// 资源管理器右键菜单。默认都不开。
     pub shell: ShellSettings,
-    /// 通知气泡弹出位置：bottom-right / top-right / bottom-left / top-left。
-    pub notification_position: String,
     /// 应用内更新：自动下载与安装前是否询问。
     pub updates: UpdateSettings,
     /// 运行工具窗口。
@@ -396,14 +385,6 @@ pub struct Settings {
     pub project_directory_roles: HashMap<String, HashMap<String, String>>,
     /// 版本控制完整配置
     pub vcs: VcsSettings,
-    /// 通知勿扰模式
-    pub notification_do_not_disturb: bool,
-    /// 通知气泡总开关
-    pub notification_balloons: bool,
-    /// 通知声音
-    pub notification_sound: bool,
-    /// 按组通知规则
-    pub notification_groups: HashMap<String, NotificationGroupRule>,
 }
 
 impl Default for Settings {
@@ -422,15 +403,10 @@ impl Default for Settings {
             branches: BranchSettings::default(),
             explorer: ExplorerSettings::default(),
             shell: ShellSettings::default(),
-            notification_position: "bottom-right".to_string(),
             updates: UpdateSettings::default(),
             run: RunSettings::default(),
             project_directory_roles: HashMap::new(),
             vcs: VcsSettings::default(),
-            notification_do_not_disturb: false,
-            notification_balloons: true,
-            notification_sound: false,
-            notification_groups: HashMap::new(),
         }
     }
 }

@@ -207,7 +207,6 @@ pub fn run() {
             tray::app_exit,
             tray::app_cancel_exit,
             sys::sys_memory,
-            sys::sys_notify,
             update::update_pending_load,
             update::update_pending_save,
             update::update_pending_clear,

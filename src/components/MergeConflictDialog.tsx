@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { EditorView, applyFontMetrics, detachedState, textOf, textReplacement } from "../lib/cmEditor";
+import { EditorView, applyFontMetrics, detachedState, setKeymap, textOf, textReplacement } from "../lib/cmEditor";
+import { forgeKeymap } from "../lib/cm/keymap";
+import type { KeymapScheme } from "../lib/settings";
+import { useSettings } from "../hooks/useSettings";
 import { errorText, readFile, type FileContent } from "../lib/fs";
 import { useI18n } from "../i18n";
 import {
@@ -40,8 +43,8 @@ interface MergeConflictDialogProps {
  */
 function mountPane(
   host: HTMLElement,
-  options: { text: string; language: string; readOnly: boolean; onChange?: (text: string) => void }
-): { set: (text: string) => void; destroy: () => void } {
+  options: { text: string; language: string; readOnly: boolean; keymap: KeymapScheme; onChange?: (text: string) => void }
+) {
   applyFontMetrics(host, 12);
   const extra = options.onChange
     ? [EditorView.updateListener.of((update) => { if (update.docChanged) options.onChange!(textOf(update.view)); })]
@@ -59,7 +62,9 @@ function mountPane(
     ),
     parent: host,
   });
+  setKeymap(view, forgeKeymap(options.keymap));
   return {
+    setKeymap: (scheme: KeymapScheme) => setKeymap(view, forgeKeymap(scheme)),
     set: (text: string) => {
       const transaction = textReplacement(view.state, text);
       if (transaction) view.dispatch(transaction);
@@ -85,6 +90,7 @@ export default function MergeConflictDialog({
   onCancel,
 }: MergeConflictDialogProps) {
   const { t } = useI18n();
+  const { settings } = useSettings();
   const oursHost = useRef<HTMLDivElement>(null);
   const theirsHost = useRef<HTMLDivElement>(null);
   const resultHost = useRef<HTMLDivElement>(null);
@@ -96,7 +102,8 @@ export default function MergeConflictDialog({
   const [merged, setMerged] = useState<MergeResult | null>(null);
 
   /** 结果格那台编辑器：三颗快捷按钮往它里换正文。 */
-  const resultRef = useRef<{ set: (text: string) => void; destroy: () => void } | null>(null);
+  const resultRef = useRef<ReturnType<typeof mountPane> | null>(null);
+  const readPanesRef = useRef<Array<ReturnType<typeof mountPane>>>([]);
 
   useEffect(() => {
     let disposed = false;
@@ -118,16 +125,20 @@ export default function MergeConflictDialog({
   useEffect(() => {
     if (!oursHost.current || !theirsHost.current) return;
     const ours = mountPane(oursHost.current, {
+      keymap: settings.editor.keymap,
       text: conflict.ours,
       language: conflict.language,
       readOnly: true,
     });
     const theirs = mountPane(theirsHost.current, {
+      keymap: settings.editor.keymap,
       text: disk ? disk.contents : "",
       language: conflict.language,
       readOnly: true,
     });
+    readPanesRef.current = [ours, theirs];
     return () => {
+      readPanesRef.current = [];
       ours.destroy();
       theirs.destroy();
     };
@@ -141,6 +152,7 @@ export default function MergeConflictDialog({
     if (!host) return;
     resultTextRef.current = initialResult;
     const pane = mountPane(host, {
+      keymap: settings.editor.keymap,
       text: initialResult,
       language: conflict.language,
       readOnly: false,
@@ -157,6 +169,12 @@ export default function MergeConflictDialog({
     // 依赖只认 initialResult：它在 merged 到位前一直是空串。
   }, [initialResult, conflict.language]);
 
+  // 三台视图只换键位；用户手改的合并结果和撤销栈必须保留。
+  useEffect(() => {
+    for (const pane of readPanesRef.current) pane.setKeymap(settings.editor.keymap);
+    resultRef.current?.setKeymap(settings.editor.keymap);
+  }, [settings.editor.keymap]);
+
   const overwrite = (text: string) => {
     resultRef.current?.set(text);
   };
@@ -164,7 +182,7 @@ export default function MergeConflictDialog({
   // Esc 关掉。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel();
+      if (!event.defaultPrevented && event.key === "Escape") onCancel();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

@@ -158,6 +158,7 @@ function locateButton(): HTMLElement {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   h.listing.clear();
   h.loadCalls.length = 0;
   pickCalls.length = 0;
@@ -180,9 +181,12 @@ beforeEach(() => {
   seedTree();
 });
 
-afterEach(() => {
-  // 单击行为测试往 localStorage 种的视图选项不能漏到后面的用例
-  localStorage.removeItem("forge:tree:options:d:/proj");
+afterEach(async () => {
+  // 卸载后再清理持久化状态，防抖写入不能在后面的用例中重新展开旧目录。
+  await act(async () => root.unmount());
+  container.remove();
+  for (const part of ['options', 'mode', 'expanded']) localStorage.removeItem(`forge:tree:${part}:d:/proj`);
+  vi.unstubAllGlobals();
 });
 
 describe("ProjectTree 选中回归", () => {
@@ -310,5 +314,37 @@ describe("ProjectTree 选中回归", () => {
     // 祖先 src 应以原文形态（大写盘符、正斜杠）加载，而非小写化路径
     expect(h.loadCalls).toContain("D:/proj/src");
     expect(h.loadCalls).not.toContain("d:/proj/src");
+  });
+});
+
+
+describe('目录树的方案快捷键', () => {
+  it('Eclipse 使用自己的打开源文件键，旧 F4 和附加修饰键不误触发', async () => {
+    const onOpenFile = vi.fn();
+    await mountTree({ keymapScheme: 'eclipse', onOpenFile });
+    const row = findRow('README.md')!;
+    await act(async () => { row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); });
+    const tree = container.querySelector<HTMLElement>('[role=tree]')!;
+    const press = (key: string, modifiers: KeyboardEventInit = {}) => act(async () => {
+      tree.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers }));
+    });
+    await press('F4');
+    await press('F12', { shiftKey: true });
+    expect(onOpenFile).not.toHaveBeenCalled();
+    await press('F12');
+    expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ path: 'D:\\proj\\README.md', kind: 'file' }));
+  });
+
+  it('VS Code F2 打开所选条目的行内重命名，IDEA Shift+F6 不再串入', async () => {
+    await mountTree({ keymapScheme: 'vscode' });
+    const row = findRow('README.md')!;
+    await act(async () => { row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); });
+    const tree = container.querySelector<HTMLElement>('[role=tree]')!;
+    await act(async () => { tree.dispatchEvent(new KeyboardEvent('keydown', { key: 'F6', shiftKey: true, bubbles: true, cancelable: true })); });
+    expect(container.querySelector('input')).toBeNull();
+    await act(async () => { tree.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true })); });
+    const input = container.querySelector<HTMLInputElement>('input');
+    expect(input?.value).toBe('README.md');
+    expect(document.activeElement).toBe(input);
   });
 });

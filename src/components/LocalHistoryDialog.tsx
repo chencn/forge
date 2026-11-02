@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { History, RotateCcw, X } from "lucide-react";
 import { applyFontMetrics } from "../lib/cmEditor";
-import { createDiffView } from "../lib/cm/diffView";
+import { createDiffView, type DiffView } from "../lib/cm/diffView";
 import { useI18n } from "../i18n";
+import { useSettings } from "../hooks/useSettings";
 import {
   getSnapshot,
   listSnapshots,
@@ -44,6 +45,7 @@ export default function LocalHistoryDialog({
   onClose,
 }: LocalHistoryDialogProps) {
   const { t } = useI18n();
+  const { settings } = useSettings();
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedAt, setSelectedAt] = useState<number | null>(null);
@@ -51,6 +53,7 @@ export default function LocalHistoryDialog({
   const [restoring, setRestoring] = useState(false);
 
   const diffHostRef = useRef<HTMLDivElement>(null);
+  const diffViewRef = useRef<DiffView | null>(null);
 
   // 挂载时拉取快照清单（最新在前）
   useEffect(() => {
@@ -99,14 +102,19 @@ export default function LocalHistoryDialog({
     applyFontMetrics(host, 12.5);
     const view = createDiffView({
       parent: host,
+      keymapScheme: settings.editor.keymap,
       original: selectedSnapshot ? selectedSnapshot.contents : "",
       modified: currentContent,
       language,
       path,
       mode: "side",
     });
-    return () => view.destroy();
+    diffViewRef.current = view;
+    return () => { diffViewRef.current = null; view.destroy(); };
   }, [currentContent, language, path, selectedSnapshot]);
+
+  // 历史比对与正文使用相同方案，切换时保留比对光标和滚动位置。
+  useEffect(() => { diffViewRef.current?.setKeymap(settings.editor.keymap); }, [settings.editor.keymap]);
 
   const handleRestore = useCallback(async () => {
     if (!selectedSnapshot || restoring) return;
@@ -123,7 +131,8 @@ export default function LocalHistoryDialog({
   // Esc 快捷键关闭
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      // 搜索栏先消费 Escape；同一次按键不能再把整个历史对话框关闭。
+      if (!event.defaultPrevented && event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

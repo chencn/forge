@@ -89,27 +89,13 @@ Monaco 与 xterm 的配色接口只认十六进制，而 `tokens.css` 里大量�
 
 ## 三套快捷键方案
 
-`default` / `idea` / `eclipse`。默认方案不装任何绑定，`applyKeymap` 查不到表就返回 `null`，剩下全交给 monaco 内置。
-IDEA 那套 26 条、Eclipse 那套 19 条，每条的 `command` 都是 monaco 已有的命令 id。表里只收 monaco 里有对应命令的那部分，
-IDEA 里有而 monaco 没对应命令的（重构那一族：抽取方法 / 内联变量）不进表，没列出来的键保持 monaco 默认。走的是动态键绑定服务
-`addKeybindingRules`，权重高于内置，所以同名键被覆盖而不是并存。换方案时先把上一套的 disposable 整体 `dispose()` 再装新的。
-`when` 子句分两类：会改文本的挂 `editorTextFocus && !editorReadonly`，跳转 / hover / quick fix 只要求 `editorTextFocus`
-（只读文档也能用），折叠那四条额外要 `foldingEnabled`。改的只是编辑器内的键位，终端和运行面板不受影响，那些键在 xterm
-与窗口级 handler 那里。
+当前方案为 `idea` / `vscode` / `eclipse`，默认 IDEA。设置页只保留选择器。
+编辑器已迁到 CodeMirror：完整来源表位于 `src/lib/keymaps/`，共享动作实现位于 `src/lib/cm/keymap.ts`，
+应用与焦点上下文经 `src/lib/shortcuts.ts` 匹配。切换方案通过 Compartment 重配，不重建正文和撤销历史。
 
-搜索那三个入口（双击 Shift、`Ctrl+Shift+N`、`Ctrl+Shift+F`）不进这两张表：它们不是 monaco 命令，由窗口级 handler 接，
-三套方案里同一套键。`SHORTCUT_HINTS` 顶上三条就是它们，空态那张告示页照这三条画，见 [../search/](../search/)。
-`Ctrl+Shift+F` 在这两张表之外还占着 Eclipse 的格式化，焦点在编辑器内时按上面那张表走。
-
-键位字符串自己解析（`parseKey`）：`ctrl` / `cmd` 都映射到 `CtrlCmd`，26 条具名键（`NAMED`），其余按规则推，单字母 →
-`Key<X>`、单数字 → `Digit<n>`、`f1`…`f12` → 大写后查 `KeyCode`。光有修饰键不算一条绑定。解析不出来的条目报一条
-`console.error` 就跳过，不让整套方案崩掉。
-
-几处刻意跟 monaco 默认不同的键：`Ctrl+D` 在 IDEA 是复制行、在 Eclipse 是删行。IDEA 的 `Ctrl+R` 是替换（monaco 默认
-`Ctrl+H`）、`Ctrl+Y` 删行、`Ctrl+Shift+A` 开命令面板（对 IDEA 的 Find Action）。Eclipse 的 `F2` 是 hover 而不是重命名
-（重命名 `Alt+Shift+R`）、`Ctrl+1` quick fix。空态那张告示页读的就是这三档的键位，当前方案没绑的那条命令整行不画
-（见 [../shell-layout/](../shell-layout/)）。保存不在任何方案里，是因为 monaco 没有保存这条命令，所以 `Ctrl+S`
-由编辑器自己用 `addCommand` 接，三套方案下都当场存得下去。
+IDEA 官方基表包含 422 个动作、443 条键盘绑定；导入数据与实际实现的行为分开统计。
+完整来源、继承规则、原生修正、当前覆盖和缺失功能见 [快捷键方案与实际覆盖范围](./keymaps.md)。
+本页其余 Monaco 描述属于旧引擎接入记录，不能作为当前快捷键实现依据。
 
 ## 编辑器内的右键菜单
 

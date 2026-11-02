@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import type { MenuItem } from "../components/ContextMenu";
 import type { TranslationKey } from "../i18n/lang/zh";
+import type { KeymapScheme } from "./settings";
+import { formatContextShortcut, formatShortcut } from "./shortcuts";
 
 /** 一条引用：日志的分支树和主工具栏的分支弹层用的是同一套目标。 */
 export interface RefTarget {
@@ -36,6 +38,7 @@ export type RefAction =
 
 /** 建菜单要的外部信息。 */
 export interface RefMenuDeps {
+  keymapScheme?: KeymapScheme;
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
   /** 当前分支名；游离 HEAD 时是空串。 */
   current: string;
@@ -179,7 +182,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refPush"),
               icon: ArrowUpToLine,
-              shortcut: "Ctrl+Shift+K",
+              shortcut: formatShortcut('git.push', deps.keymapScheme ?? 'idea'),
               disabled: !canPushRef,
               hint: !canPushRef ? (fresh ? freshHint : noRemotesHint) : undefined,
               onSelect: go("push"),
@@ -235,7 +238,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refRename"),
               icon: Pencil,
-              shortcut: "Alt+Shift+R",
+              shortcut: formatContextShortcut('Git.Rename.Local.Branch', deps.keymapScheme ?? 'idea'),
               onSelect: go("rename"),
             },
           ]
@@ -246,7 +249,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refDelete"),
               danger: true,
-              shortcut: "Delete",
+              shortcut: formatContextShortcut('$Delete', deps.keymapScheme ?? 'idea'),
               onSelect: go("delete"),
             },
           ]),

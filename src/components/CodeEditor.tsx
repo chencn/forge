@@ -211,7 +211,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   /**
    * 键位方案跟着设置走。
    *
-   * 「默认」档返回空扩展，也就是引擎自带那一套；换档只重配这一格，不重建编辑器。
+   * 每档提供自己的编辑键表；换档只重配这一格，文档和撤销历史保持原样。
    */
   const syncKeymap = useCallback(() => {
     const view = viewRef.current;
@@ -284,6 +284,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       // 这里给的是空色带，真色带由 syncMinimap 之后补上。
       minimapExtension(minimapConfig([])),
       saveKeymap(() => {
+        if (optionsRef.current.keymap === "idea") return false;
         const view = viewRef.current;
         saveRef.current(view ? view.state.doc.lineAt(view.state.selection.main.head).number : undefined);
       }),

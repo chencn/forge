@@ -4,12 +4,11 @@
  * 1:1 参照 IntelliJ IDEA 通知中心设计：
  * - 每个功能模块归属独立的 NotificationGroup（如 Git, Maven, Build, AI, System）；
  * - 支持 Action 操作按钮（如查看日志、重试、解决冲突）；
- * - 区分气泡形态（None / Balloon / Sticky）与是否记入工具窗口历史；
+ * - 气泡形态与位置已固化：右下角弹出、错误常驻、全部记入历史；「不再显示」仅当前会话静默；
  * - 每个项目独立持久化保留最近 7 天通知历史，过期自动清理；
  * - 统一单例事件总线，解耦全局组件与业务逻辑。
  */
 import { useSyncExternalStore, type ReactNode } from "react";
-import type { Settings } from "./settings";
 
 export type NotificationLevel = "error" | "warn" | "warning" | "info" | "success";
 
@@ -65,7 +64,7 @@ export interface NotifyOptions {
   sticky?: boolean;
   actions?: NotificationAction[];
   projectRoot?: string;
-  /** 是否以气泡弹出（默认为 true，若组配置为 None 则遵循配置） */
+  /** 是否以气泡弹出（默认为 true；本次会话内被「不再显示」静默的组除外） */
   balloon?: boolean;
   /** 是否记录到历史面板（默认为 true） */
   logged?: boolean;
@@ -82,24 +81,6 @@ export function balloonTimeout(n: Pick<AppNotification, "level" | "sticky" | "lo
     return n.logged === false ? null : STICKY_BALLOON_TIMEOUT;
   }
   return 10000;
-}
-
-/** 通知提示音（对齐 IDEA playSound：880Hz 短促一声）。 */
-let audio: AudioContext | null = null;
-export function playSound(): void {
-  try {
-    audio ??= new AudioContext();
-    const osc = audio.createOscillator();
-    const gain = audio.createGain();
-    osc.frequency.value = 880;
-    gain.gain.setValueAtTime(0.08, audio.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.25);
-    osc.connect(gain).connect(audio.destination);
-    osc.start();
-    osc.stop(audio.currentTime + 0.25);
-  } catch {
-    // 无音频输出时静默
-  }
 }
 
 /** 7 天的毫秒数，用于历史保留窗口。 */
@@ -156,83 +137,6 @@ export function saveNotifications(
   }
 }
 
-/** 当前全局设置缓存引用，用于联动勿扰模式和组系统通知开关 */
-let activeSettings: Settings | null = null;
-
-export interface NativeNotifyOptions {
-  body?: string;
-  tag?: string;
-}
-
-/**
- * 唤起操作系统原生通知中心（Windows Action Center / macOS / Linux）
- * 采用双通道优先机制：优先走 Tauri 原生 sys_notify 命令，降级回退到标准 Web Notification API。
- */
-export async function sendNativeNotification(
-  title: string,
-  options?: NativeNotifyOptions
-): Promise<boolean> {
-  // 1. 优先尝试 Tauri 后端原生命令
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("sys_notify", {
-      title,
-      body: options?.body ?? "",
-    });
-    return true;
-  } catch {
-    // 后端命令不可用时尝试 Webview 标准通知通道
-  }
-
-  // 2. 尝试标准 Web Notification API
-  if (typeof window !== "undefined" && "Notification" in window) {
-    try {
-      if (Notification.permission === "granted") {
-        const n = new Notification(title, {
-          body: options?.body,
-          tag: options?.tag,
-        });
-        n.onclick = () => {
-          window.focus();
-          try {
-            import("@tauri-apps/api/window")
-              .then(({ getCurrentWindow }) => {
-                const win = getCurrentWindow();
-                win.show().catch(() => {});
-                win.unminimize().catch(() => {});
-                win.setFocus().catch(() => {});
-              })
-              .catch(() => {});
-          } catch {}
-        };
-        return true;
-      }
-    } catch {
-      // 忽略沙箱限制抛错
-    }
-  }
-
-  return false;
-}
-
-/**
- * 请求系统原生通知权限
- */
-export async function requestNativeNotificationPermission(): Promise<boolean> {
-  if (typeof window !== "undefined" && "Notification" in window) {
-    try {
-      if (Notification.permission === "granted") return true;
-      if (Notification.permission !== "denied") {
-        const permission = await Notification.requestPermission();
-        return permission === "granted";
-      }
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
 /** 通知中心内部状态 */
 interface NotificationCenterState {
   projectRoot: string | null;
@@ -249,6 +153,12 @@ let state: NotificationCenterState = {
 };
 
 const listeners = new Set<() => void>();
+
+/**
+ * 本次会话里被「不再显示」的组。通知策略已固化，不再写设置；
+ * 重启后恢复默认（弹气泡 + 记历史），避免一次误点永久静默某个组。
+ */
+const suppressedGroups = new Set<string>();
 
 function emitChange() {
   for (const listener of listeners) {
@@ -285,28 +195,18 @@ export const notificationCenter = {
     }));
   },
 
-  /** 同步当前全局设置，用于联动勿扰模式和通知组的系统原生通知策略。 */
-  syncSettings: (settings: Settings | null) => {
-    activeSettings = settings;
-  },
-
   /** 发布通知 */
   notify: (opts: NotifyOptions): string => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const root = opts.projectRoot ?? state.projectRoot ?? "";
     const level = opts.level ?? "info";
     const groupId = opts.groupId ?? "system";
-    // 组配置在 store 里统一消费（1:1 对齐 IDEA 的 notificationPrefs）——
-    // 之前只有 App 的两条调用路径手动换算，其余调用全绕过设置页的开关。
-    const groupRule = activeSettings?.notificationGroups?.[groupId];
-    const displayType = groupRule?.displayType ?? "balloon";
-    const isSticky = opts.sticky ?? (displayType === "sticky" || level === "error");
-
-    // 勿扰或「气泡总开关」关闭时静默所有浮动气泡；组配置 display:none 同样不弹
-    const isDnd = activeSettings?.notificationDoNotDisturb === true;
-    const balloonsEnabled = activeSettings?.notificationBalloons !== false;
-    const isBalloon = balloonsEnabled && !isDnd && opts.balloon !== false && displayType !== "none";
-    const isLogged = groupRule?.log ?? (opts.logged !== false);
+    // 通知策略已固化为默认值：普通通知弹气泡并记历史，错误常驻；
+    // 只有用户在这次会话里点过「不再显示」的组才不弹气泡（历史照记）。
+    const displayType = suppressedGroups.has(groupId) ? "none" : "balloon";
+    const isSticky = opts.sticky ?? level === "error";
+    const isBalloon = opts.balloon !== false && displayType !== "none";
+    const isLogged = opts.logged !== false;
     const now = Date.now();
     const contentText = typeof opts.body === "string" ? opts.body : (opts.content ?? "");
 
@@ -350,28 +250,6 @@ export const notificationCenter = {
         toasts: nextToasts,
       };
     });
-
-    // 气泡 + 声音开关（对齐 IDEA：balloon && prefs.sound）
-    if (isBalloon && activeSettings?.notificationSound === true) {
-      playSound();
-    }
-
-    // 检查并调度操作系统原生通知：
-    // 条件：未开启勿扰、组配置开启了系统通知、且窗口处于非前台聚焦状态（最小化或后台失焦）
-    if (activeSettings && !isDnd) {
-      const groupRule = activeSettings.notificationGroups?.[groupId];
-      const shouldNotifySystem = groupRule?.system === true;
-      const isBackground =
-        typeof document !== "undefined" &&
-        (!document.hasFocus() || document.visibilityState === "hidden");
-
-      if (shouldNotifySystem && isBackground) {
-        void sendNativeNotification(opts.title, {
-          body: contentText,
-          tag: id,
-        });
-      }
-    }
 
     return id;
   },
@@ -438,23 +316,12 @@ export const notificationCenter = {
   },
 };
 
-/** 设置写回器：suppressGroup 要把「整组关闭」落进用户设置（App 挂载时注册 patch）。 */
-let settingsWriter: ((patch: Partial<import("./settings").Settings>) => void) | null = null;
-
-export function registerSettingsWriter(fn: (patch: Partial<import("./settings").Settings>) => void): void {
-  settingsWriter = fn;
-}
-
 /**
- * 「不再显示」（对齐 IDEA suppressGroup）：把该组的弹出形态改成 none——
- * 气泡立即收下、历史照记，写回设置持久化。
+ * 「不再显示」（对齐 IDEA suppressGroup）：本次会话内该组不再弹气泡，
+ * 气泡立即收下、历史照记。策略已固化，这里不写设置，重启即恢复默认。
  */
 export function suppressGroup(group: string): void {
-  const groups = { ...(activeSettings?.notificationGroups ?? {}) };
-  groups[group] = { ...(groups[group] ?? { displayType: "balloon", log: true, system: false }), displayType: "none" };
-  if (activeSettings) {
-    activeSettings = { ...activeSettings, notificationGroups: groups };
-  }
+  suppressedGroups.add(group);
   updateState((prev) => ({
     ...prev,
     items: prev.items.flatMap((x) =>
@@ -462,7 +329,6 @@ export function suppressGroup(group: string): void {
     ),
     toasts: prev.toasts.filter((t) => t.groupId !== group),
   }));
-  settingsWriter?.({ notificationGroups: groups });
 }
 
 /**

@@ -1,8 +1,9 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { parseToolDiff } from "../lib/aiTools";
 import { applyFontMetrics } from "../lib/cmEditor";
-import { createDiffView } from "../lib/cm/diffView";
+import { createDiffView, type DiffView } from "../lib/cm/diffView";
 import { languageForPath } from "../lib/editorEnv";
+import { useSettings } from "../hooks/useSettings";
 
 /**
  * 工具明细里的 diff：**Git 管理面板同款的比对视图**（同一份 `createDiffView`），
@@ -88,7 +89,9 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
   /** 独立标签打开后直接滚到首处改动，聊天行内预览保持原来的滚动行为。 */
   revealChange?: boolean;
 }) {
+  const { settings } = useSettings();
   const host = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<DiffView | null>(null);
   const sides = useMemo(() => {
     if (original !== undefined && modified !== undefined) return { original, modified, oldNos: [] as number[], newNos: [] as number[] };
     if (diff !== undefined) return alignDiffSides(diff);
@@ -108,6 +111,7 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
     const { oldNos, newNos } = sides;
     const view = createDiffView({
       parent: element,
+      keymapScheme: settings.editor.keymap,
       original: sides.original,
       modified: sides.modified,
       language: languageForPath(path),
@@ -122,9 +126,13 @@ export default memo(function AiDiffEditor({ diff, original, modified, path, side
           }
         : undefined,
     });
+    viewRef.current = view;
     if (revealChange) view.land("first");
-    return () => view.destroy();
+    return () => { viewRef.current = null; view.destroy(); };
   }, [sides, path, sideBySide, revealChange]);
+
+  // 更换键位只重配按键，不重建视图或丢失用户正在查看的位置。
+  useEffect(() => { viewRef.current?.setKeymap(settings.editor.keymap); }, [settings.editor.keymap]);
 
   return <div className="ai-diff-editor" style={{ height: height ?? contentHeight }} ref={host} />;
 });

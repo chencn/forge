@@ -17,13 +17,11 @@ import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
 import { DEFAULT_SETTINGS } from "../lib/settings";
 import {
-  AppearanceNotificationsPage,
   AppearanceSystemPage,
   AppearanceThemePage,
 } from "../features/settings/pages/AppearancePages";
 import {
   EditorCodeStylePage,
-  EditorColorSchemePage,
   EditorFileTypesPage,
   EditorFontPage,
   EditorGeneralPage,
@@ -146,13 +144,11 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
         return [
           { title: "settings.section.theme", content: <AppearanceThemePage /> },
           { title: "settings.section.system", content: <AppearanceSystemPage /> },
-          { title: "settings.section.notifications", content: <AppearanceNotificationsPage /> },
         ];
       case "editor":
         return [
           { title: "settings.section.editorGeneral", content: <EditorGeneralPage /> },
           { title: "settings.section.font", content: <EditorFontPage /> },
-          { title: "settings.section.colorScheme", content: <EditorColorSchemePage /> },
           { title: "settings.section.codeStyle", content: <EditorCodeStylePage /> },
           { title: "settings.section.fileTypes", content: <EditorFileTypesPage /> },
           { title: "settings.section.minimap", content: <EditorMinimapPage /> },
@@ -251,7 +247,6 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
               workspaceMode: DEFAULT_SETTINGS.workspaceMode,
               httpResponse: DEFAULT_SETTINGS.httpResponse,
               closeBehavior: DEFAULT_SETTINGS.closeBehavior,
-              notificationPosition: DEFAULT_SETTINGS.notificationPosition,
               explorer: { ...DEFAULT_SETTINGS.explorer },
               shell: { ...DEFAULT_SETTINGS.shell },
             });

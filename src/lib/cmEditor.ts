@@ -35,26 +35,12 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
-import {
-  addCursorAbove,
-  addCursorBelow,
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentLess,
-  indentMore,
-  indentWithTab,
-  insertBlankLine,
-  redo,
-  selectLine,
-  toggleTabFocusMode,
-} from "@codemirror/commands";
+import { history } from "@codemirror/commands";
 import { type MatchResult,
   bracketMatching,
   codeFolding,
   foldEffect,
   foldGutter,
-  foldKeymap,
   foldedRanges,
   indentOnInput,
   indentUnit,
@@ -62,13 +48,14 @@ import { type MatchResult,
   unfoldEffect,
   type LanguageSupport,
 } from "@codemirror/language";
-import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
-import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { showMinimap, type MinimapConfig } from "@replit/codemirror-minimap";
 import { samePath } from "./format";
 import { registerRetentionSweep } from "./modelRetention";
 import { attachEditorBridge } from "./editorEnv";
 import { cmPhrases } from "./cm/phrases";
+import { forgeKeymap, keymapLanguage } from "./cm/keymap";
 import { grammarSupport, loadGrammar, pathExtension } from "./cm/grammars";
 import { forgeHighlightStyle } from "./cm/highlight";
 import { indentGuides } from "./cm/indentGuides";
@@ -77,6 +64,7 @@ import { caretRowHighlight } from "./cm/caretRow";
 import { clearCaret, reportCaret } from "./caretStatus";
 import { stickyScroll } from "./cm/stickyScroll";
 import { forgeTheme } from "./cm/theme";
+import { forgeSearch } from "./cm/find";
 import { changeMarksField } from "./cm/changeMarks";
 import { overviewLane } from "./cm/overview";
 
@@ -333,6 +321,7 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     indentOnInput(),
     bracketMatching({ renderMatch }),
     closeBrackets(),
+    autocompletion({ defaultKeymap: false }),
     // 正文属性：禁掉系统拼写检查/自动纠正（不然代码被画红色拼写点），并给可达性一个标签。
   EditorView.contentAttributes.of({
     spellcheck: "false",
@@ -345,6 +334,8 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     // 括号按嵌套深度上色：IDEA 默认就是这样，只影视口，几千行的文件也扛得住。
     rainbowSlot.of([]),
     highlightSelectionMatches(),
+    // 文件内查找统一用 OpenIdea 风格的工具栏，不再让引擎临时安装默认面板。
+    forgeSearch,
     copyLineOnEmpty,
     syntaxHighlighting(forgeHighlightStyle),
     // 光标/选区汇报：状态栏的 Line:Column 段从这里拿数字（外部 store，不经 React 树）。
@@ -366,44 +357,22 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     // 默认不挂小地图：配置要随系统设置与改动标记变，由组件用 setMinimap 现派发。
     minimapSlot.of(showMinimap.of(null)),
     // 键位方案同理：换了方案不该把整台编辑器重配，只要换这一格。
-    keymapSlot.of([]),
+    keymapSlot.of(forgeKeymap("idea")),
+    keymapLanguage.of(doc.language),
     ...extra,
-    keymap.of([
+    // 跨文件事务撤销优先于方案的普通撤销；候选框内的导航键由引擎自己接。
+    Prec.highest(keymap.of([
       { key: "Mod-z", run: undoWorkspaceEdit, preventDefault: true },
+    ])),
+    Prec.highest(keymap.of([
       ...closeBracketsKeymap,
-      // defaultKeymap 里与 IDEA 语义冲突的键先丢掉（对齐 openidea baseKeymap.ts 的 DROPPED）：
-      // Ctrl+Enter 拆分行、Ctrl+M 滚到屏中、Ctrl+[ / ] 块级导航、Ctrl+Alt+↑↓ 上一/下一出现处。
-      // 这些键位归应用层/方案表管，落到引擎默认绑定只会制造语义分叉。
-      ...defaultKeymap.filter((binding) => !DROPPED_DEFAULT_BINDINGS.has(binding.run)),
-      ...searchKeymap,
-      ...historyKeymap,
-      // IDEA 的 Windows 重做是 Ctrl+Shift+Z（Ctrl+Y 已被删除行占用）；
-      // CodeMirror 只在 macOS/Linux 绑了它，Windows 必须补（对齐 IDEA baseKeymap）。
-      { win: "Ctrl-Shift-z", run: redo, preventDefault: true },
-      ...completionKeymap,
-      // 折叠扣与问题导航属于引擎能力，三套键位方案都不该把它们换掉；
-      // 方案里另有同名键时由 `Prec.high` 压过这里（见 cm/keymap.ts）。
-      ...foldKeymap,
-      indentWithTab,
-    ]),
+      // 启动补全的键归方案；其余绑定仅在候选框打开时生效。
+      ...completionKeymap.filter((binding) => binding.key !== "Ctrl-Space"),
+    ])),
   ];
 }
 
 // ---------------------------------------------------------------- 常驻 state
-
-/**
- * defaultKeymap 中与 IDEA 语义冲突、必须丢弃的命令（对齐 openidea baseKeymap.ts 的 DROPPED）。
- * 这些键在 IDEA 里属于 IDE 级动作：拆分行 / 滚到屏中 / 块级上下移 / 上一处下一处出现 / 块缩进。
- */
-const DROPPED_DEFAULT_BINDINGS = new Set<unknown>([
-  insertBlankLine, // Mod-Enter
-  toggleTabFocusMode, // Ctrl-m / Shift-Alt-m
-  selectLine, // Alt-l / Ctrl-l
-  addCursorAbove, // Mod-Alt-ArrowUp
-  addCursorBelow, // Mod-Alt-ArrowDown
-  indentLess, // Mod-[
-  indentMore, // Mod-]
-]);
 
 /** 文档 → 常驻 state：撤销栈与正文都在这份里，没在屏幕上也不丢。 */
 const held = new Map<string, EditorState>();
@@ -543,7 +512,6 @@ export function minimapConfigOf(view: EditorView): MinimapConfig | null {
   return view.state.facet(showMinimap) ?? null;
 }
 
-/** 换一套键位方案（`cm/keymap` 按设置里那三档算出来的那组绑定）。 */
 /** 括号彩虹上色开关（IDEA 默认关）：设置切换时不重建 state，只换这一格。 */
 export function setRainbowBrackets(view: EditorView, enabled: boolean): void {
   view.dispatch({ effects: rainbowSlot.reconfigure(enabled ? rainbowBrackets() : []) });
@@ -591,6 +559,7 @@ export function setShowWhitespace(view: EditorView, enabled: boolean): void {
   });
 }
 
+/** 换一套键位方案，只重配按键，不改动正文、选区和撤销栈。 */
 export function setKeymap(view: EditorView, scheme: Extension): void {
   view.dispatch({ effects: keymapSlot.reconfigure(scheme) });
 }
@@ -850,8 +819,9 @@ const wheelZoom = EditorView.domEventHandlers({
 });
 
 /** Ctrl+S 交回应用的保存，不落在引擎自己的按键表里。 */
-export function saveKeymap(onSave: () => void): Extension {
-  return keymap.of([{ key: "Mod-s", preventDefault: true, run: () => (onSave(), true) }]);
+export function saveKeymap(onSave: () => void | boolean): Extension {
+  // IDEA 的 SaveAll 交给工作区；返回 false 时不能预先 preventDefault，应用派发还要接手。
+  return keymap.of([{ key: "Mod-s", run: () => onSave() !== false }]);
 }
 
 /**

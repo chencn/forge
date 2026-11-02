@@ -81,10 +81,16 @@ import {
 } from "./viewState";
 import styles from "./ProjectTree.module.css";
 import { roleAtPath, type ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
+import type { KeymapScheme } from "../../lib/settings";
+import { contextShortcuts, ShortcutSequence } from "../../lib/shortcuts";
+import { presetKeys } from "../../lib/keymaps/idea";
+
+const TREE_SHORTCUT_ACTIONS = new Set(['NewElement', 'NewElementSamePlace', 'RenameElement', 'Move', '$Delete', 'CopyPaths']);
 
 const DRAG_THRESHOLD = 4;
 
 export interface ProjectTreeProps {
+  keymapScheme?: KeymapScheme;
   /** 工作区工程根目录（项目顶层） */
   readonly root: string;
   /** Git 仓库根目录 */
@@ -369,6 +375,7 @@ function useLazyChildren(
 }
 
 export function ProjectTree({
+  keymapScheme = 'idea',
   root,
   repoRoot,
   changes,
@@ -398,6 +405,8 @@ export function ProjectTree({
   onNewFolder: _onNewFolder,
 }: ProjectTreeProps) {
   const { t } = useI18n();
+  const shortcutSequence = useRef(new ShortcutSequence(contextShortcuts([...TREE_SHORTCUT_ACTIONS]))).current;
+  useEffect(() => { shortcutSequence.reset(); }, [keymapScheme, shortcutSequence]);
 
   // 1. 顶部 Header 状态（视图模式 + 选项）
   // 视图选项/模式/展开状态按工程根持久化（对齐 IDEA store 的 localStorage 层）
@@ -1202,10 +1211,14 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
 
   // 快捷键映射拦截
   const handleContainerKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (editing) return;
+    if (editing || e.defaultPrevented) return;
+    const match = shortcutSequence.match(e.nativeEvent, keymapScheme, TREE_SHORTCUT_ACTIONS);
+    if (match.pending) { e.preventDefault(); e.stopPropagation(); return; }
+    const action = match.id;
+    if (action) e.stopPropagation();
 
     // Alt+Insert / Command+N: 呼出新建悬浮窗
-    if ((e.altKey && e.key === "Insert") || (e.metaKey && e.key === "n")) {
+    if (action === 'NewElement' || action === 'NewElementSamePlace') {
       e.preventDefault();
       const rect = containerRef.current?.getBoundingClientRect();
       setNewPopupAnchor(
@@ -1218,14 +1231,14 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     }
 
     // Shift+F6: 行内就地激活重命名
-    if (e.shiftKey && e.key === "F6") {
+    if (action === 'RenameElement') {
       e.preventDefault();
       startRenameItem();
       return;
     }
 
     // Ctrl+Shift+C: 复制绝对路径
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") {
+    if (action === 'CopyPaths') {
       e.preventDefault();
       if (picked.length > 0) {
         void navigator.clipboard.writeText(picked.join("\n"));
@@ -1234,7 +1247,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     }
 
     // F6: 移动选中的条目
-    if (!e.shiftKey && e.key === "F6") {
+    if (action === 'Move') {
       const selectedEntries = picked
         .map((p) => treeModel.byKey.get(normalizeNodeKey(p))?.entry)
         .filter((e): e is FsEntry => !!e);
@@ -1251,7 +1264,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     }
 
     // Delete: 安全删除选中的条目
-    if (e.key === "Delete") {
+    if (action === '$Delete') {
       const selectedEntries = picked
         .map((p) => treeModel.byKey.get(normalizeNodeKey(p))?.entry)
         .filter((e): e is FsEntry => !!e);
@@ -1704,6 +1717,9 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
       ref={containerRef}
       className={styles.view}
       onKeyDown={handleContainerKeyDown}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) shortcutSequence.reset();
+      }}
     >
       {/* 顶部 Header 工具栏 (单层 1:1 工具视窗标准) */}
       <ProjectHeader
@@ -1783,6 +1799,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         selected={selectedSet}
         onSelectionChange={handleSelectionChange}
         onActivate={handleActivate}
+        activateKeys={presetKeys(keymapScheme, 'EditSource')}
         onContextMenu={handleContextMenu}
         empty={
           <div className={styles.empty}>

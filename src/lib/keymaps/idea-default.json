@@ -1,0 +1,2997 @@
+{
+  "source": "https://raw.githubusercontent.com/JetBrains/intellij-community/14e2fff0a9b351e49e1b4d0fded5d261ba235738/platform/platform-resources/src/keymaps/$default.xml",
+  "parent": "",
+  "license": "Apache-2.0; Copyright JetBrains s.r.o.; https://www.apache.org/licenses/LICENSE-2.0.txt",
+  "actions": {
+    "CodeFloatingToolbar.GotoNextMenu": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CodeFloatingToolbar.GotoPrevMenu": {
+      "keyboard": [
+        "shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RunAnything": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": [
+        {
+          "keystroke": "ctrl control",
+          "modifier": "dblClick"
+        }
+      ]
+    },
+    "SearchEverywhere": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": [
+        {
+          "keystroke": "shift SHIFT",
+          "modifier": "dblClick"
+        }
+      ]
+    },
+    "ShowNavBar": {
+      "keyboard": [
+        "alt HOME"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "OpenInRightSplit": {
+      "keyboard": [
+        "shift ENTER"
+      ],
+      "mouse": [
+        "alt button1 doubleClick"
+      ],
+      "gestures": []
+    },
+    "ShowSettings": {
+      "keyboard": [
+        "control alt S"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowProjectStructureSettings": {
+      "keyboard": [
+        "control alt shift S"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FullyExpandTreeNode": {
+      "keyboard": [
+        "MULTIPLY"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandTreeNode": {
+      "keyboard": [
+        "ADD"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseTreeNode": {
+      "keyboard": [
+        "SUBTRACT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SwitchCoverage": {
+      "keyboard": [
+        "control alt F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPageUpWithSelection": {
+      "keyboard": [
+        "shift PAGE_UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EvaluateExpression": {
+      "keyboard": [
+        "alt F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "QuickEvaluateExpression": {
+      "keyboard": [
+        "control alt F8"
+      ],
+      "mouse": [
+        "alt button1"
+      ],
+      "gestures": []
+    },
+    "ShowExecutionPoint": {
+      "keyboard": [
+        "alt F10"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorEscape": {
+      "keyboard": [
+        "ESCAPE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FocusEditor": {
+      "keyboard": [
+        "ESCAPE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "StepInto": {
+      "keyboard": [
+        "F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SmartStepInto": {
+      "keyboard": [
+        "shift F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ForceStepInto": {
+      "keyboard": [
+        "alt shift F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ForceStepOver": {
+      "keyboard": [
+        "alt shift F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindUsages": {
+      "keyboard": [
+        "alt F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowUsages": {
+      "keyboard": [
+        "control alt F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowSettingsAndFindUsages": {
+      "keyboard": [
+        "control shift alt F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageView.Include": {
+      "keyboard": [
+        "INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorJoinLines": {
+      "keyboard": [
+        "control shift J"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorChooseLookupItemDot": {
+      "keyboard": [
+        "control PERIOD"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorCompleteStatement": {
+      "keyboard": [
+        "control shift ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "DumpLookupElementWeights": {
+      "keyboard": [
+        "control alt shift W"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLookupUp": {
+      "keyboard": [
+        "control UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLookupDown": {
+      "keyboard": [
+        "control DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MethodOverloadSwitchUp": {
+      "keyboard": [
+        "control UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MethodOverloadSwitchDown": {
+      "keyboard": [
+        "control DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CloseGotItTooltip": {
+      "keyboard": [
+        "ESCAPE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ReformatCode": {
+      "keyboard": [
+        "control alt L"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowReformatFileDialog": {
+      "keyboard": [
+        "control shift alt L"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Generate": {
+      "keyboard": [
+        "alt INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorChooseLookupItemReplace": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextParameter": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PrevParameter": {
+      "keyboard": [
+        "shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ViewSource": {
+      "keyboard": [
+        "control ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CommentByBlockComment": {
+      "keyboard": [
+        "control shift SLASH",
+        "control shift DIVIDE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindWordAtCaret": {
+      "keyboard": [
+        "control F3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindPrevWordAtCaret": {
+      "keyboard": [
+        "control shift F3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SelectNextOccurrence": {
+      "keyboard": [
+        "alt J"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UnselectPreviousOccurrence": {
+      "keyboard": [
+        "alt shift J"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SelectAllOccurrences": {
+      "keyboard": [
+        "control alt shift J"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorAddOrRemoveCaret": {
+      "keyboard": [],
+      "mouse": [
+        "alt shift button1"
+      ],
+      "gestures": []
+    },
+    "EditorAddRectangularSelectionOnMouseDrag": {
+      "keyboard": [],
+      "mouse": [
+        "ctrl alt shift button1"
+      ],
+      "gestures": []
+    },
+    "EditorCreateRectangularSelectionOnMouseDrag": {
+      "keyboard": [],
+      "mouse": [
+        "alt button1",
+        "button2"
+      ],
+      "gestures": []
+    },
+    "EditorCreateRectangularSelection": {
+      "keyboard": [],
+      "mouse": [
+        "alt shift button2"
+      ],
+      "gestures": []
+    },
+    "EditorAddCaretPerSelectedLine": {
+      "keyboard": [
+        "shift alt G"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoDeclaration": {
+      "keyboard": [
+        "control B"
+      ],
+      "mouse": [
+        "ctrl button1"
+      ],
+      "gestures": []
+    },
+    "QuickImplementations": {
+      "keyboard": [
+        "control shift I"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoTypeDeclaration": {
+      "keyboard": [
+        "control shift B"
+      ],
+      "mouse": [
+        "ctrl shift button1"
+      ],
+      "gestures": []
+    },
+    "GotoBookmark0": {
+      "keyboard": [
+        "control 0"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark1": {
+      "keyboard": [
+        "control 1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark2": {
+      "keyboard": [
+        "control 2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark3": {
+      "keyboard": [
+        "control 3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark4": {
+      "keyboard": [
+        "control 4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark5": {
+      "keyboard": [
+        "control 5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark6": {
+      "keyboard": [
+        "control 6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark7": {
+      "keyboard": [
+        "control 7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark8": {
+      "keyboard": [
+        "control 8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoBookmark9": {
+      "keyboard": [
+        "control 9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark0": {
+      "keyboard": [
+        "control shift 0"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark1": {
+      "keyboard": [
+        "control shift 1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark2": {
+      "keyboard": [
+        "control shift 2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark3": {
+      "keyboard": [
+        "control shift 3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark4": {
+      "keyboard": [
+        "control shift 4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark5": {
+      "keyboard": [
+        "control shift 5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark6": {
+      "keyboard": [
+        "control shift 6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark7": {
+      "keyboard": [
+        "control shift 7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark8": {
+      "keyboard": [
+        "control shift 8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark9": {
+      "keyboard": [
+        "control shift 9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$Undo": {
+      "keyboard": [
+        "control Z",
+        "alt BACK_SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PreviousTemplateVariable": {
+      "keyboard": [
+        "shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorScrollUp": {
+      "keyboard": [
+        "control UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAll": {
+      "keyboard": [
+        "control ADD",
+        "control EQUALS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandExpandableComponent": {
+      "keyboard": [
+        "shift ENTER",
+        "control ADD",
+        "control EQUALS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoSuperMethod": {
+      "keyboard": [
+        "control U"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoTest": {
+      "keyboard": [
+        "control shift T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoRelated": {
+      "keyboard": [
+        "control alt HOME"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CloseActiveTab": {
+      "keyboard": [
+        "control shift F4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoClass": {
+      "keyboard": [
+        "control N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoChangedFile": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoSymbol": {
+      "keyboard": [
+        "control shift alt N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoAction": {
+      "keyboard": [
+        "control shift A"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "TextSearchAction": {
+      "keyboard": [
+        "control shift alt E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RunInspection": {
+      "keyboard": [
+        "control shift alt I"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileStructurePopup": {
+      "keyboard": [
+        "control F12"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowFilePath": {
+      "keyboard": [
+        "control alt F12"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorUnindentSelection": {
+      "keyboard": [
+        "shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PasteMultiple": {
+      "keyboard": [
+        "control shift V",
+        "control shift INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorBackSpace": {
+      "keyboard": [
+        "BACK_SPACE",
+        "shift BACK_SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Back": {
+      "keyboard": [
+        "control alt LEFT"
+      ],
+      "mouse": [
+        "button4"
+      ],
+      "gestures": []
+    },
+    "EditorScrollDown": {
+      "keyboard": [
+        "control DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CompileDirty": {
+      "keyboard": [
+        "control F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MethodHierarchy": {
+      "keyboard": [
+        "control shift H"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PreviousTab": {
+      "keyboard": [
+        "alt LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PreviousEditorTab": {
+      "keyboard": [
+        "alt shift LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorCodeBlockEnd": {
+      "keyboard": [
+        "control CLOSE_BRACKET"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorCodeBlockStartWithSelection": {
+      "keyboard": [
+        "control shift OPEN_BRACKET"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "IntroduceVariable": {
+      "keyboard": [
+        "control alt V"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RecentFiles": {
+      "keyboard": [
+        "control E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SwitcherRecentEditedChangedToggleCheckBox": {
+      "keyboard": [
+        "control E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SwitcherIterateItems": {
+      "keyboard": [
+        "control E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RecentChangedFiles": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "RecentLocations": {
+      "keyboard": [
+        "control shift E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "QuickChangeScheme": {
+      "keyboard": [
+        "control BACK_QUOTE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "OptimizeImports": {
+      "keyboard": [
+        "control alt O"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPreviousWord": {
+      "keyboard": [
+        "control LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorUpWithSelection": {
+      "keyboard": [
+        "shift UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "QuickJavaDoc": {
+      "keyboard": [
+        "control Q"
+      ],
+      "mouse": [
+        "alt button2"
+      ],
+      "gestures": []
+    },
+    "ToggleRenderedDocPresentation": {
+      "keyboard": [
+        "control alt Q"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowBookmarks": {
+      "keyboard": [
+        "shift F11"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowTypeBookmarks": {
+      "keyboard": [
+        "control shift F11"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "HighlightUsagesInFile": {
+      "keyboard": [
+        "control shift F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoFile": {
+      "keyboard": [
+        "control shift N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateTerminalToolWindow": {
+      "keyboard": [
+        "alt F12"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CloseContent": {
+      "keyboard": [
+        "control F4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Replace": {
+      "keyboard": [
+        "control R"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandRegion": {
+      "keyboard": [
+        "control ADD",
+        "control EQUALS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandRegionRecursively": {
+      "keyboard": [
+        "control alt ADD",
+        "control alt EQUALS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandToLevel1": {
+      "keyboard": [
+        "control MULTIPLY > 1",
+        "control MULTIPLY > NUMPAD1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandToLevel2": {
+      "keyboard": [
+        "control MULTIPLY > 2",
+        "control MULTIPLY > NUMPAD2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandToLevel3": {
+      "keyboard": [
+        "control MULTIPLY > 3",
+        "control MULTIPLY > NUMPAD3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandToLevel4": {
+      "keyboard": [
+        "control MULTIPLY > 4",
+        "control MULTIPLY > NUMPAD4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandToLevel5": {
+      "keyboard": [
+        "control MULTIPLY > 5",
+        "control MULTIPLY > NUMPAD5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAllToLevel1": {
+      "keyboard": [
+        "control shift MULTIPLY > 1",
+        "control shift MULTIPLY > NUMPAD1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAllToLevel2": {
+      "keyboard": [
+        "control shift MULTIPLY > 2",
+        "control shift MULTIPLY > NUMPAD2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAllToLevel3": {
+      "keyboard": [
+        "control shift MULTIPLY > 3",
+        "control shift MULTIPLY > NUMPAD3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAllToLevel4": {
+      "keyboard": [
+        "control shift MULTIPLY > 4",
+        "control shift MULTIPLY > NUMPAD4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAllToLevel5": {
+      "keyboard": [
+        "control shift MULTIPLY > 5",
+        "control shift MULTIPLY > NUMPAD5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLeftWithSelection": {
+      "keyboard": [
+        "shift LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Compile": {
+      "keyboard": [
+        "control shift F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$Cut": {
+      "keyboard": [
+        "control X",
+        "shift DELETE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExtractMethod": {
+      "keyboard": [
+        "control alt M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "InsertLiveTemplate": {
+      "keyboard": [
+        "control J"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDeleteToWordStart": {
+      "keyboard": [
+        "control BACK_SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "IntroduceConstant": {
+      "keyboard": [
+        "control alt C"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPageUp": {
+      "keyboard": [
+        "PAGE_UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$Copy": {
+      "keyboard": [
+        "control C",
+        "control INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CopyPaths": {
+      "keyboard": [
+        "control shift C"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorToggleInsertState": {
+      "keyboard": [
+        "INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorToggleColumnMode": {
+      "keyboard": [
+        "alt shift INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ParameterInfo": {
+      "keyboard": [
+        "control P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpressionTypeInfo": {
+      "keyboard": [
+        "control shift P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangeSignature": {
+      "keyboard": [
+        "control F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangeTypeSignature": {
+      "keyboard": [
+        "control shift F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "DebugClass": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "RunCoverage": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "IntroduceField": {
+      "keyboard": [
+        "control alt F"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowIntentionActions": {
+      "keyboard": [
+        "alt ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandAllRegions": {
+      "keyboard": [
+        "control shift ADD",
+        "control shift EQUALS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseAll": {
+      "keyboard": [
+        "control SUBTRACT",
+        "control MINUS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseExpandableComponent": {
+      "keyboard": [
+        "shift ENTER",
+        "control SUBTRACT",
+        "control MINUS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseRegion": {
+      "keyboard": [
+        "control SUBTRACT",
+        "control MINUS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseRegionRecursively": {
+      "keyboard": [
+        "control alt SUBTRACT",
+        "control alt MINUS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PreviousOccurence": {
+      "keyboard": [
+        "control alt UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindPrevious": {
+      "keyboard": [
+        "shift F3",
+        "control shift L"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDuplicate": {
+      "keyboard": [
+        "control D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CompareTwoFiles": {
+      "keyboard": [
+        "control D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.ShowDiff": {
+      "keyboard": [
+        "control D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Compare.SameVersion": {
+      "keyboard": [
+        "control D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.ShowSettingsPopup": {
+      "keyboard": [
+        "control shift D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SendEOF": {
+      "keyboard": [
+        "control D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorToggleCase": {
+      "keyboard": [
+        "control shift U"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoLine": {
+      "keyboard": [
+        "control G"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoCustomRegion": {
+      "keyboard": [
+        "control alt PERIOD"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindInPath": {
+      "keyboard": [
+        "control shift F"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorTextEndWithSelection": {
+      "keyboard": [
+        "control shift END"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "OverrideMethods": {
+      "keyboard": [
+        "control O"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorStartNewLine": {
+      "keyboard": [
+        "shift ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorStartNewLineBefore": {
+      "keyboard": [
+        "control alt ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLeft": {
+      "keyboard": [
+        "LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Stop": {
+      "keyboard": [
+        "control F2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "StopBackgroundProcesses": {
+      "keyboard": [
+        "control shift F2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorTextStartWithSelection": {
+      "keyboard": [
+        "control shift HOME"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Find": {
+      "keyboard": [
+        "control F",
+        "alt F3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorCodeBlockStart": {
+      "keyboard": [
+        "control OPEN_BRACKET"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Run": {
+      "keyboard": [
+        "shift F10"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CallHierarchy": {
+      "keyboard": [
+        "control alt H"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorTextEnd": {
+      "keyboard": [
+        "control END"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoImplementation": {
+      "keyboard": [
+        "control alt B"
+      ],
+      "mouse": [
+        "ctrl alt button1"
+      ],
+      "gestures": []
+    },
+    "EditorPageDown": {
+      "keyboard": [
+        "PAGE_DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExternalJavaDoc": {
+      "keyboard": [
+        "shift F1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "StepOut": {
+      "keyboard": [
+        "shift F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Resume": {
+      "keyboard": [
+        "F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDeleteLine": {
+      "keyboard": [
+        "control Y"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowErrorDescription": {
+      "keyboard": [
+        "control F1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorContextInfo": {
+      "keyboard": [
+        "alt Q"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextDiff": {
+      "keyboard": [
+        "F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.PrevChange": {
+      "keyboard": [
+        "alt shift LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.NextChange": {
+      "keyboard": [
+        "alt shift RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.FocusOppositePane": {
+      "keyboard": [
+        "control shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.FocusOppositePaneAndScroll": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.ApplyLeftSide": {
+      "keyboard": [
+        "control alt R"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Diff.ApplyRightSide": {
+      "keyboard": [
+        "control alt A"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Move": {
+      "keyboard": [
+        "F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MethodDown": {
+      "keyboard": [
+        "alt DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$Paste": {
+      "keyboard": [
+        "control V",
+        "shift INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPasteSimple": {
+      "keyboard": [
+        "control alt shift V"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CopyReference": {
+      "keyboard": [
+        "control alt shift C"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPasteFromX11": {
+      "keyboard": [],
+      "mouse": [
+        "button2"
+      ],
+      "gestures": []
+    },
+    "Vcs.RollbackChangedLines": {
+      "keyboard": [
+        "control alt Z"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.Revert": {
+      "keyboard": [
+        "control alt Z"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Vcs.MoveChangedLinesToChangelist": {
+      "keyboard": [
+        "alt shift M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.Move": {
+      "keyboard": [
+        "alt shift M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoNextError": {
+      "keyboard": [
+        "F2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPageDownWithSelection": {
+      "keyboard": [
+        "shift PAGE_DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SurroundWithLiveTemplate": {
+      "keyboard": [
+        "control alt J"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorTextStart": {
+      "keyboard": [
+        "control HOME"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Synchronize": {
+      "keyboard": [
+        "control alt Y"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorPreviousWordWithSelection": {
+      "keyboard": [
+        "control shift LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDownWithSelection": {
+      "keyboard": [
+        "shift DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "GotoPreviousError": {
+      "keyboard": [
+        "shift F2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorScrollToCenter": {
+      "keyboard": [
+        "control M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$Redo": {
+      "keyboard": [
+        "control shift Z",
+        "alt shift BACK_SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorMoveToPageTop": {
+      "keyboard": [
+        "control PAGE_UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorMoveToPageBottom": {
+      "keyboard": [
+        "control PAGE_DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorMoveToPageTopWithSelection": {
+      "keyboard": [
+        "control shift PAGE_UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorMoveToPageBottomWithSelection": {
+      "keyboard": [
+        "control shift PAGE_DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDown": {
+      "keyboard": [
+        "DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RunClass": {
+      "keyboard": [
+        "control shift F10"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindNext": {
+      "keyboard": [
+        "F3",
+        "control L"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ImplementMethods": {
+      "keyboard": [
+        "control I"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MethodUp": {
+      "keyboard": [
+        "alt UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextTab": {
+      "keyboard": [
+        "alt RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowContent": {
+      "keyboard": [
+        "alt DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextEditorTab": {
+      "keyboard": [
+        "alt shift RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditSource": {
+      "keyboard": [
+        "F4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditSourceInNewWindow": {
+      "keyboard": [
+        "shift F4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CodeCompletion": {
+      "keyboard": [
+        "control SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "HippieCompletion": {
+      "keyboard": [
+        "alt SLASH"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "HippieBackwardCompletion": {
+      "keyboard": [
+        "alt shift SLASH"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "TogglePopupHints": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorNextWordWithSelection": {
+      "keyboard": [
+        "control shift RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "JumpToLastChange": {
+      "keyboard": [
+        "control shift BACK_SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorNextWord": {
+      "keyboard": [
+        "control RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLineStart": {
+      "keyboard": [
+        "HOME"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorUnSelectWord": {
+      "keyboard": [
+        "control shift W"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ValidateXml": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleLineBreakpoint": {
+      "keyboard": [
+        "control F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleTemporaryLineBreakpoint": {
+      "keyboard": [
+        "control shift alt F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "XDebugger.SetValue": {
+      "keyboard": [
+        "F2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "XDebugger.NewWatch": {
+      "keyboard": [
+        "INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "XDebugger.AttachToProcess": {
+      "keyboard": [
+        "control alt F5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "XDebugger.JumpToTypeSource": {
+      "keyboard": [
+        "shift F4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmark": {
+      "keyboard": [
+        "F11"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleBookmarkWithMnemonic": {
+      "keyboard": [
+        "control F11"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveStatementDown": {
+      "keyboard": [
+        "control shift DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveStatementUp": {
+      "keyboard": [
+        "control shift UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveElementLeft": {
+      "keyboard": [
+        "control alt shift LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveElementRight": {
+      "keyboard": [
+        "control alt shift RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveLineDown": {
+      "keyboard": [
+        "alt shift DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveLineUp": {
+      "keyboard": [
+        "alt shift UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorEnter": {
+      "keyboard": [
+        "ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorRightWithSelection": {
+      "keyboard": [
+        "shift RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "TypeHierarchy": {
+      "keyboard": [
+        "control H"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorUp": {
+      "keyboard": [
+        "UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorTab": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExpandLiveTemplateByTab": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "IntroduceParameter": {
+      "keyboard": [
+        "control alt P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextOccurence": {
+      "keyboard": [
+        "control alt DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorCodeBlockEndWithSelection": {
+      "keyboard": [
+        "control shift CLOSE_BRACKET"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleReadOnlyAttribute": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "AutoIndentLines": {
+      "keyboard": [
+        "control alt I"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorSelectWord": {
+      "keyboard": [
+        "control W"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorChooseLookupItem": {
+      "keyboard": [
+        "ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Inline": {
+      "keyboard": [
+        "control alt N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CopyElement": {
+      "keyboard": [
+        "F5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ClassNameCompletion": {
+      "keyboard": [
+        "control alt SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "JumpToLastWindow": {
+      "keyboard": [
+        "F12"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "StepOver": {
+      "keyboard": [
+        "F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$SelectAll": {
+      "keyboard": [
+        "control A"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SaveAll": {
+      "keyboard": [
+        "control S"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SaveAs": {
+      "keyboard": [
+        "control shift S"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "$Delete": {
+      "keyboard": [
+        "DELETE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RestoreDefaultLayout": {
+      "keyboard": [
+        "shift F12"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "HideActiveWindow": {
+      "keyboard": [
+        "shift ESCAPE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "HideAllWindows": {
+      "keyboard": [
+        "control shift F12"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ResizeToolWindowLeft": {
+      "keyboard": [
+        "control alt shift LEFT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ResizeToolWindowRight": {
+      "keyboard": [
+        "control alt shift RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ResizeToolWindowUp": {
+      "keyboard": [
+        "control alt shift UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ResizeToolWindowDown": {
+      "keyboard": [
+        "control alt shift DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MaximizeToolWindow": {
+      "keyboard": [
+        "control shift QUOTE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "HideSideWindows": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowPopupMenu": {
+      "keyboard": [
+        "CONTEXT_MENU"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLineStartWithSelection": {
+      "keyboard": [
+        "shift HOME"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorRight": {
+      "keyboard": [
+        "RIGHT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ContextHelp": {
+      "keyboard": [
+        "F1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Forward": {
+      "keyboard": [
+        "control alt RIGHT"
+      ],
+      "mouse": [
+        "button5"
+      ],
+      "gestures": []
+    },
+    "CollapseAllRegions": {
+      "keyboard": [
+        "control shift SUBTRACT",
+        "control shift MINUS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SmartTypeCompletion": {
+      "keyboard": [
+        "control shift SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ReplaceInPath": {
+      "keyboard": [
+        "control shift R"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SurroundWith": {
+      "keyboard": [
+        "control alt T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Unwrap": {
+      "keyboard": [
+        "control shift DELETE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateProjectToolWindow": {
+      "keyboard": [
+        "alt 1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateFavoritesToolWindow": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateBookmarksToolWindow": {
+      "keyboard": [
+        "alt 2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateFindToolWindow": {
+      "keyboard": [
+        "alt 3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateRunToolWindow": {
+      "keyboard": [
+        "alt 4"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateDebugToolWindow": {
+      "keyboard": [
+        "alt 5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateProblemsViewToolWindow": {
+      "keyboard": [
+        "alt 6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateStructureToolWindow": {
+      "keyboard": [
+        "alt 7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateHierarchyToolWindow": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateServicesToolWindow": {
+      "keyboard": [
+        "alt 8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateVersionControlToolWindow": {
+      "keyboard": [
+        "alt 9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateCommitToolWindow": {
+      "keyboard": [
+        "alt 0"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NewElement": {
+      "keyboard": [
+        "alt INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NewElementSamePlace": {
+      "keyboard": [
+        "control alt INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorSplitLine": {
+      "keyboard": [
+        "control ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FindUsagesInFile": {
+      "keyboard": [
+        "control F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLineEndWithSelection": {
+      "keyboard": [
+        "shift END"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SelectIn": {
+      "keyboard": [
+        "alt F1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PreviousDiff": {
+      "keyboard": [
+        "shift F7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ExportToTextFile": {
+      "keyboard": [
+        "alt O"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorLineEnd": {
+      "keyboard": [
+        "END"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Debug": {
+      "keyboard": [
+        "shift F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorIndentSelection": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CommentByLineComment": {
+      "keyboard": [
+        "control SLASH",
+        "control DIVIDE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RunToCursor": {
+      "keyboard": [
+        "alt F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ForceRunToCursor": {
+      "keyboard": [
+        "control alt F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RenameElement": {
+      "keyboard": [
+        "shift F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SafeDelete": {
+      "keyboard": [
+        "alt DELETE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SelectVirtualTemplateElement": {
+      "keyboard": [
+        "Alt Shift O"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextTemplateVariable": {
+      "keyboard": [
+        "TAB",
+        "ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ViewBreakpoints": {
+      "keyboard": [
+        "control shift F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditBreakpoint": {
+      "keyboard": [
+        "control shift F8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDeleteToWordEnd": {
+      "keyboard": [
+        "control DELETE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChooseRunConfiguration": {
+      "keyboard": [
+        "alt shift F10"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChooseDebugConfiguration": {
+      "keyboard": [
+        "alt shift F9"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Refresh": {
+      "keyboard": [
+        "control F5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ForceRefresh": {
+      "keyboard": [
+        "control shift F5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Rerun": {
+      "keyboard": [
+        "control F5"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "RerunTests": {
+      "keyboard": [
+        "shift alt R"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseSelection": {
+      "keyboard": [
+        "control PERIOD"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CollapseBlock": {
+      "keyboard": [
+        "control shift PERIOD"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "StructuralSearchPlugin.StructuralSearchAction": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "StructuralSearchPlugin.StructuralReplaceAction": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "DuplicatesForm.SendToLeft": {
+      "keyboard": [
+        "control 1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "DuplicatesForm.SendToRight": {
+      "keyboard": [
+        "control 2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "VcsShowNextChangeMarker": {
+      "keyboard": [
+        "shift control alt DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "VcsShowPrevChangeMarker": {
+      "keyboard": [
+        "shift control alt UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Vcs.ToggleAmendCommitMode": {
+      "keyboard": [
+        "alt M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Vcs.ShowMessageHistory": {
+      "keyboard": [
+        "control M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.ShowCommitOptions": {
+      "keyboard": [
+        "control O"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "CodeInspection.OnEditor": {
+      "keyboard": [
+        "alt shift I"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.GoToParent": {
+      "keyboard": [
+        "BACK_SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.GoToRoot": {
+      "keyboard": [
+        "control BACK_SLASH"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.GotoHome": {
+      "keyboard": [
+        "control 1"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.GotoDesktop": {
+      "keyboard": [
+        "control D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.GotoProject": {
+      "keyboard": [
+        "control 2"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.GotoModule": {
+      "keyboard": [
+        "control 3"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.NewFolder": {
+      "keyboard": [
+        "alt INSERT",
+        "control N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "FileChooser.TogglePathBar": {
+      "keyboard": [
+        "control P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PopupHector": {
+      "keyboard": [
+        "ctrl alt shift H"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Switcher": {
+      "keyboard": [
+        "ctrl TAB",
+        "ctrl shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NextProjectWindow": {
+      "keyboard": [
+        "control alt CLOSE_BRACKET"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "PreviousProjectWindow": {
+      "keyboard": [
+        "control alt OPEN_BRACKET"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Vcs.QuickListPopupAction": {
+      "keyboard": [
+        "alt BACK_QUOTE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "VcsHistory.ShowAllAffected": {
+      "keyboard": [
+        "alt shift A"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.GroupBy.Directory": {
+      "keyboard": [
+        "control alt P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.GroupBy.Module": {
+      "keyboard": [
+        "control alt M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShelveChanges.UnshelveWithDialog": {
+      "keyboard": [
+        "control shift U"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShelvedChanges.Rename": {
+      "keyboard": [
+        "F2",
+        "Shift F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Console.Open": {
+      "keyboard": [
+        "control shift F10"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Console.Execute": {
+      "keyboard": [
+        "ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Console.Execute.Multiline": {
+      "keyboard": [
+        "control ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Console.History.Next": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "Console.History.Previous": {
+      "keyboard": [],
+      "mouse": [],
+      "gestures": []
+    },
+    "Console.History.Browse": {
+      "keyboard": [
+        "control alt E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Refactorings.QuickListPopupAction": {
+      "keyboard": [
+        "control alt shift T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "NewScratchFile": {
+      "keyboard": [
+        "control alt shift INSERT"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorMatchBrace": {
+      "keyboard": [
+        "control shift M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "QuickActionPopup": {
+      "keyboard": [
+        "control alt ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Git.Reword.Commit": {
+      "keyboard": [
+        "F2",
+        "Shift F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Git.Rename.Local.Branch": {
+      "keyboard": [
+        "F2",
+        "Shift F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Git.CreateNewBranch": {
+      "keyboard": [
+        "control alt N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "Git.New.Branch.In.Log": {
+      "keyboard": [
+        "control alt N"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.SetDefault": {
+      "keyboard": [
+        "control SPACE"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ChangesView.Rename": {
+      "keyboard": [
+        "F2",
+        "Shift F6"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "DirDiffMenu.SynchronizeDiff": {
+      "keyboard": [
+        "ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "DirDiffMenu.SynchronizeDiff.All": {
+      "keyboard": [
+        "control ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ServiceView.ShowServices": {
+      "keyboard": [
+        "control shift T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "BraceOrQuoteOut": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorFocusGutter": {
+      "keyboard": [
+        "alt shift 6 > F"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorShowGutterIconTooltip": {
+      "keyboard": [
+        "alt shift 6 > T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowFilterPopup": {
+      "keyboard": [
+        "control alt F"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ShowSearchHistory": {
+      "keyboard": [
+        "alt down"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SearchEverywhere.NextTab": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SearchEverywhere.PrevTab": {
+      "keyboard": [
+        "shift TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SearchEverywhere.CompleteCommand": {
+      "keyboard": [
+        "TAB"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SearchEverywhere.SelectItem": {
+      "keyboard": [
+        "Enter"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SearchEverywhere.NavigateToNextGroup": {
+      "keyboard": [
+        "PAGE_DOWN",
+        "control DOWN"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SearchEverywhere.NavigateToPrevGroup": {
+      "keyboard": [
+        "PAGE_UP",
+        "control UP"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "TodoViewGroupByShowModules": {
+      "keyboard": [
+        "control alt M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "TodoViewGroupByShowPackages": {
+      "keyboard": [
+        "control alt P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "TodoViewGroupByFlattenPackage": {
+      "keyboard": [
+        "control alt C"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ServiceView.GroupByContributor": {
+      "keyboard": [
+        "control alt T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ToggleFindInSelection": {
+      "keyboard": [
+        "control alt E"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageGrouping.Module": {
+      "keyboard": [
+        "control alt M"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageGrouping.Directory": {
+      "keyboard": [
+        "control alt P"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageGrouping.UsageType": {
+      "keyboard": [
+        "control alt T"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageGrouping.FlattenModules": {
+      "keyboard": [
+        "control alt O"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageGrouping.FileStructure": {
+      "keyboard": [
+        "control alt F"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageGrouping.DirectoryStructure": {
+      "keyboard": [
+        "control alt D"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageFiltering.ReadAccess": {
+      "keyboard": [
+        "control R"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageFiltering.WriteAccess": {
+      "keyboard": [
+        "control W"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "UsageFiltering.Imports": {
+      "keyboard": [
+        "control I"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "SwitchHeaderSource": {
+      "keyboard": [
+        "F10"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateUnitTestsToolWindow": {
+      "keyboard": [
+        "alt shift 8"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ActivateNuGetToolWindow": {
+      "keyboard": [
+        "alt shift 7"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MainMenuButton.ShowMenu": {
+      "keyboard": [
+        "alt BACK_SLASH"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorDecreaseFontSizeGlobal": {
+      "keyboard": [
+        "alt shift COMMA"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "EditorIncreaseFontSizeGlobal": {
+      "keyboard": [
+        "alt shift PERIOD"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ZoomInIdeAction": {
+      "keyboard": [
+        "shift alt EQUALS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ZoomOutIdeAction": {
+      "keyboard": [
+        "shift alt MINUS"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "ResetIdeScaleAction": {
+      "keyboard": [
+        "shift alt 0"
+      ],
+      "mouse": [],
+      "gestures": []
+    },
+    "MoveToolWindowTabToEditorAction": {
+      "keyboard": [
+        "alt shift ENTER"
+      ],
+      "mouse": [],
+      "gestures": []
+    }
+  }
+}

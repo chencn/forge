@@ -4,8 +4,16 @@ import type { ThemeMode } from "./window";
 import type { Lang } from "../i18n";
 import { normalizeProjectDirectoryRoles, type ProjectDirectoryRoles } from "./projectDirectoryRoles";
 
-/** 编辑器快捷键方案，对应 `lib/cm/keymap.ts` 里的三套。 */
-export type KeymapScheme = "default" | "idea" | "eclipse";
+/** 内置快捷键方案，对应 `lib/cm/keymap.ts` 与 `lib/shortcuts.ts` 里的三套；默认 IDEA。 */
+export type KeymapScheme = "idea" | "vscode" | "eclipse";
+
+/** 三套方案的展示顺序；设置页下拉也按这个顺序排。 */
+export const KEYMAP_SCHEMES: KeymapScheme[] = ["idea", "vscode", "eclipse"];
+
+/** 把历史配置或脏数据收进三档：认不出的一律当默认 IDEA。 */
+export function normalizeKeymapScheme(value: unknown): KeymapScheme {
+  return value === "vscode" || value === "eclipse" ? value : "idea";
+}
 
 /** 代码保存策略：只手动存，还是失去焦点时自动存。 */
 export type SavePolicy = "manual" | "blur";
@@ -248,6 +256,16 @@ export interface ShellSettings {
   extraExtensions: string[];
 }
 
+/**
+ * 切换「通过 Forge 打开文件」后的设置。
+ *
+ * 关掉文件右键时必须同时收回默认程序关联：否则设置页里开关已经消失，
+ * 系统里却还留着 `UserChoice` 指向 Forge，用户再也找不到地方改回来。
+ */
+export function withShellFileToggle(shell: ShellSettings, openFile: boolean): ShellSettings {
+  return { ...shell, openFile, defaultFile: openFile ? shell.defaultFile : false };
+}
+
 /** 资源管理器的显示偏好。 */
 export interface ExplorerSettings {
   /** 显示被 .gitignore 忽略的文件/目录。 */
@@ -267,26 +285,6 @@ export interface UpdateSettings {
   /** 镜像加速前缀地址，如 https://gh-proxy.com/。 */
   proxyUrl: string;
 }
-
-/** 通知弹窗气泡显示位置，对应 IDEA 的 NotificationLocation。 */
-export type NotificationPosition = "bottom-right" | "top-right" | "bottom-left" | "top-left";
-export type NotificationPopupType = "balloon" | "sticky" | "none";
-
-export interface NotificationGroupRule {
-  displayType: NotificationPopupType;
-  log: boolean;
-  system: boolean;
-}
-
-export const DEFAULT_NOTIFICATION_GROUPS: Record<string, NotificationGroupRule> = {
-  git: { displayType: "balloon", log: true, system: false },
-  maven: { displayType: "balloon", log: true, system: false },
-  build: { displayType: "balloon", log: true, system: false },
-  ai: { displayType: "balloon", log: true, system: false },
-  dependencies: { displayType: "balloon", log: true, system: false },
-  terminal: { displayType: "balloon", log: true, system: false },
-  system: { displayType: "balloon", log: true, system: false },
-};
 
 /**
  * 一份全局设置，落在系统配置目录的 settings.json。
@@ -316,16 +314,6 @@ export interface Settings {
   explorer: ExplorerSettings;
   /** 资源管理器右键菜单。默认都不开。 */
   shell: ShellSettings;
-  /** 通知弹窗气泡位置。 */
-  notificationPosition: NotificationPosition;
-  /** 通知勿扰模式：开启后静默所有浮动气泡，仅静默记录到工具窗口。 */
-  notificationDoNotDisturb: boolean;
-  /** 通知气泡总开关（对标 IDEA「Display balloon notifications」）。 */
-  notificationBalloons: boolean;
-  /** 通知提示音（对标 IDEA「Play sound」）。 */
-  notificationSound: boolean;
-  /** 按通知组配置的弹出模式与归档策略。 */
-  notificationGroups: Record<string, NotificationGroupRule>;
   /** 应用内更新。 */
   updates: UpdateSettings;
   /** 运行工具窗口。 */
@@ -385,7 +373,7 @@ export const DEFAULT_SETTINGS: Settings = {
     fontSize: 13,
     tabSize: 2,
     minimap: true,
-    keymap: "default",
+    keymap: "idea",
     savePolicy: "blur",
     saveOnExit: true,
     trimTrailingWhitespace: false,
@@ -417,11 +405,6 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   explorer: { showIgnored: true, showHidden: false },
   shell: { openFolder: false, openFile: false, defaultFile: false, extraExtensions: [] },
-  notificationPosition: "bottom-right",
-  notificationDoNotDisturb: false,
-  notificationBalloons: true,
-  notificationSound: false,
-  notificationGroups: DEFAULT_NOTIFICATION_GROUPS,
   updates: {
     autoDownload: false,
     autoPromptInstall: true,
@@ -467,6 +450,8 @@ function merge(raw: Partial<Settings> | null): Settings {
       ...raw?.editor,
       // 只认列出来的那两档，文件里写了别的值就退回默认。
       savePolicy: raw?.editor?.savePolicy === "manual" ? "manual" : "blur",
+      // 老配置里的 "default" 与未知值都归一成 IDEA。
+      keymap: normalizeKeymapScheme(raw?.editor?.keymap),
       fontFamily: typeof raw?.editor?.fontFamily === "string" ? raw.editor.fontFamily.trim() : "",
     },
     terminal: normalizeTerminal(raw?.terminal),
@@ -484,17 +469,6 @@ function merge(raw: Partial<Settings> | null): Settings {
     run: { ...DEFAULT_SETTINGS.run, ...raw?.run },
     projectDirectoryRoles: normalizeProjectDirectoryRoles(raw?.projectDirectoryRoles),
     vcs: { ...DEFAULT_VCS_SETTINGS, ...raw?.vcs },
-    notificationPosition:
-      raw?.notificationPosition === "top-right" ||
-      raw?.notificationPosition === "bottom-left" ||
-      raw?.notificationPosition === "top-left"
-        ? raw.notificationPosition
-        : "bottom-right",
-    notificationDoNotDisturb: raw?.notificationDoNotDisturb === true,
-    notificationGroups: {
-      ...DEFAULT_NOTIFICATION_GROUPS,
-      ...(raw?.notificationGroups && typeof raw.notificationGroups === "object" ? raw.notificationGroups : {}),
-    },
   };
 }
 

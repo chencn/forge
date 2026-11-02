@@ -81,11 +81,7 @@ import {
 import DepSyncToast from "./components/DepSyncToast";
 import { isManifestDeclarationFile } from "./lib/depSync";
 import { planWorkspaceFlush, type WorkspaceFlush } from "./lib/watchBatch";
-import {
-  notificationCenter,
-  registerSettingsWriter,
-  useNotificationCenter,
-} from "./lib/notifications";
+import { notificationCenter, useNotificationCenter } from "./lib/notifications";
 import { belongsToRoot, useDocuments } from "./hooks/useDocuments";
 import { applySaveActions } from "./lib/saveActions";
 import { clearEditorConfigCache } from "./lib/editorConfig";
@@ -114,14 +110,7 @@ import { AiInputProvider, type AiInputMenuFactory } from "./components/AiInputCo
 import StatusBreadcrumb from "./components/StatusBreadcrumb";
 import { shouldCopyDomSelection } from "./lib/copySelection";
 import { DoubleShiftDetector } from "./lib/doubleShift";
-import {
-  comboMatchesEvent,
-  effectiveShortcut,
-  formatShortcut,
-  loadShortcutOverrides,
-  subscribeShortcuts,
-  type ShortcutOverrides,
-} from "./lib/shortcuts";
+import { effectiveShortcut, formatShortcut, ShortcutSequence } from "./lib/shortcuts";
 import type { ForgeCommand } from "./lib/commands";
 import {
   disposeModel,
@@ -414,10 +403,6 @@ export default function App() {
   const { settings, patch, applied: resolved } = useSettings();
   const { history, patch: patchHistory, remember, forget } = useHistory();
 
-  // 同步 settings 到通知中心，保证勿扰模式与各组系统通知设置实时联动
-  useEffect(() => {
-    notificationCenter.syncSettings(settings);
-  }, [settings]);
   /** 终端会话增删或退出时递增，触发常驻文件夹运行态绿点重算。 */
   const [termRev, setTermRev] = useState(0);
   useEffect(() => watchTermTabs(() => setTermRev((value) => value + 1)), []);
@@ -460,9 +445,6 @@ export default function App() {
    * - 严格遵循用户设置的组行为规则（气泡形态 Balloon/Sticky/None、是否记入历史、勿扰模式）；
    * - 支持快捷处置动作（Actions）。
    */
-  // 「不再显示」要写回用户设置：把 patch 递给通知中心（注册一次，patch 引用稳定）。
-  useEffect(() => registerSettingsWriter((p) => patch(p)), [patch]);
-
   const reportError = useCallback(
     (raw: string, titleKey?: string) => {
       const desc = describeError(raw, t);
@@ -1018,6 +1000,10 @@ export default function App() {
   const sidePanelRef = useRef<HTMLElement | null>(null);
   const rightSidePanelRef = useRef<HTMLElement | null>(null);
   const bottomPanelRef = useRef<HTMLElement | null>(null);
+  // Ctrl+J 恢复最近的底部面板，不能不论当前窗口都打开 Run。
+  const lastBottomShortcutPane = useRef<BottomPane>("terminal");
+  const visibleBottomShortcutPane = BOTTOM_ORDER.find((pane) => pane !== "notifications" && places[pane] === "docked");
+  if (visibleBottomShortcutPane) lastBottomShortcutPane.current = visibleBottomShortcutPane;
   const splitDrag = useRef<{ startY: number; startHeight: number; live: number } | null>(null);
   const sideDrag = useRef<{ startX: number; startWidth: number; live: number } | null>(null);
   const rightSideDrag = useRef<{ startX: number; startWidth: number; live: number } | null>(null);
@@ -2059,10 +2045,6 @@ export default function App() {
     [dockPane, revealHit]
   );
 
-  // 键位覆盖跟着设置页走：存取都在 shortcuts.ts，这里只认订阅到的变更重挂监听。
-  const [shortcutOverrides, setShortcutOverrides] = useState<ShortcutOverrides>(loadShortcutOverrides);
-  useEffect(() => subscribeShortcuts(() => setShortcutOverrides(loadShortcutOverrides())), []);
-
   /** 跑选中的配置；没选就不空跑，直接把选择下拉打开（IDEA 在这儿弹「没有可运行的配置」）。 */
   const runSelectedConfig = useCallback(() => {
     const picked = configs.selected;
@@ -2097,7 +2079,7 @@ export default function App() {
   }, [places.run, hidePane, dockPane]);
 
   /**
-   * 搜索那三颗键位是应用级的，不走编辑器的键绑定，三个快捷键方案里都是同一套。
+   * 双击 Shift 是独立手势；其余应用快捷键由命令表统一分发。
    *
    * 双击 Shift 照 IDEA 那条键盘手势（`$default.xml` 里的 `shift SHIFT`）：两次轻击 Shift 的
    * 间隔不超过 350ms 才算，中间落了别的键就重新计。长按 Shift（持续按住或发生 repeat）
@@ -2117,20 +2099,7 @@ export default function App() {
         !!target &&
         !inEditor &&
         (target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA");
-      // 搜索的键位取自注册表（设置页可改绑），匹配要求修饰键精确相等。
-      if (comboMatchesEvent(event, effectiveShortcut("search.findInFiles", shortcutOverrides))) {
-        event.preventDefault();
-        detector.reset();
-        openEverywhere("text", selectedText());
-        return;
-      }
-      if (comboMatchesEvent(event, effectiveShortcut("search.gotoFile", shortcutOverrides))) {
-        event.preventDefault();
-        detector.reset();
-        openEverywhere("files");
-        return;
-      }
-      const disabled = inField || !!dialog || !!menu || resolveOpen || !!everywhere;
+      const disabled = event.defaultPrevented || event.isComposing || inField || !!dialog || !!menu || resolveOpen || !!everywhere;
       if (detector.handleKeyDown(event, disabled)) {
         event.preventDefault();
         openEverywhere("all");
@@ -2150,57 +2119,7 @@ export default function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [dialog, everywhere, menu, openEverywhere, resolveOpen, shortcutOverrides]);
-
-  /**
-   * 运行那几条键位和应用级的搜索键一样住在窗口上：工具窗口收着、焦点在终端里都按得到。
-   *
-   * 键位取 IDEA 的 Run 布局——`Shift+F10` 跑、`Ctrl+F5` 重跑、`Ctrl+F2` 停、
-   * `Alt+Shift+F10` 选配置、`Alt+4` 开 Run 窗口，全部可在设置的快捷键页改绑。
-   * 模态开着时整条不认，跟搜索那几颗一个规矩。
-   */
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (dialog || menu || resolveOpen || everywhere) return;
-      if (comboMatchesEvent(event, effectiveShortcut("run.chooseConfig", shortcutOverrides))) {
-        event.preventDefault();
-        chooseRunConfig();
-        return;
-      }
-      if (comboMatchesEvent(event, effectiveShortcut("run.run", shortcutOverrides))) {
-        event.preventDefault();
-        runSelectedConfig();
-        return;
-      }
-      if (comboMatchesEvent(event, effectiveShortcut("run.rerun", shortcutOverrides))) {
-        event.preventDefault();
-        rerunSelectedConfig();
-        return;
-      }
-      if (comboMatchesEvent(event, effectiveShortcut("run.stop", shortcutOverrides))) {
-        event.preventDefault();
-        stopAllRuns();
-        return;
-      }
-      if (comboMatchesEvent(event, effectiveShortcut("run.toggleTool", shortcutOverrides))) {
-        event.preventDefault();
-        toggleRunPane();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [
-    chooseRunConfig,
-    dialog,
-    everywhere,
-    menu,
-    rerunSelectedConfig,
-    resolveOpen,
-    runSelectedConfig,
-    shortcutOverrides,
-    stopAllRuns,
-    toggleRunPane,
-  ]);
+  }, [dialog, everywhere, menu, openEverywhere, resolveOpen, settings.editor.keymap]);
 
   /**
    * 彻底清理并移除一个常驻文件夹（在确认无脏文件/运行任务或用户已确认放弃后调用）。
@@ -2692,19 +2611,6 @@ export default function App() {
     docs.applyDiskVersion(fc.path, fc);
     pushUpdateNotice("info", t("menu.localHistory"), t("history.reverted"));
   }, [docs, pushUpdateNotice, t]);
-
-  // 窗口级 Ctrl+S / Cmd+S：焦点不在编辑器内（例如正看预览或点在侧栏/页签栏）时也能保存。
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (dialog || menu || resolveOpen || everywhere) return;
-      if (comboMatchesEvent(event, effectiveShortcut("file.save", shortcutOverrides))) {
-        event.preventDefault();
-        void saveActive();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [dialog, everywhere, menu, resolveOpen, saveActive, shortcutOverrides]);
 
   const closeDocTab = useCallback(
     (path: string) => {
@@ -4506,10 +4412,36 @@ export default function App() {
     const commands: ForgeCommand[] = [
       // 导航与搜索 (Navigate / Search)
       { id: "search.everywhere", label: `${t("command.searchEverywhere")} (Search Everywhere)`, run: () => openEverywhere("all") },
+      { id: "search.actions", label: `${t("search.tab.actions")} (Find Action)`, run: () => openEverywhere("actions") },
       { id: "search.gotoClass", label: `${t("command.gotoClass")} (Go to Class)`, run: () => openEverywhere("classes") },
       { id: "search.gotoSymbol", label: `${t("command.gotoSymbol")} (Go to Symbol)`, run: () => openEverywhere("symbols") },
-      { id: "search.gotoFile", label: `${t("shortcut.search.gotoFile")} (Go to File)`, shortcut: formatShortcut("search.gotoFile", shortcutOverrides), run: () => openEverywhere("files") },
-      { id: "search.findInFiles", label: `${t("shortcut.search.findInFiles")} (Find in Files)`, shortcut: formatShortcut("search.findInFiles", shortcutOverrides), run: () => openEverywhere("text", selectedText()) },
+      { id: "search.gotoFile", label: `${t("shortcut.search.gotoFile")} (Go to File)`, shortcut: formatShortcut("search.gotoFile", settings.editor.keymap), run: () => openEverywhere("files") },
+      { id: "search.findInFiles", label: `${t("shortcut.search.findInFiles")} (Find in Files)`, shortcut: formatShortcut("search.findInFiles", settings.editor.keymap), run: () => openEverywhere("text", selectedText()) },
+      // 切换与关闭复用标签栏入口，保留脏文档确认和面板/AI 标签的各自生命周期。
+      ...([1, -1] as const).map((direction) => ({
+        id: direction === 1 ? "navigate.nextTab" : "navigate.previousTab",
+        label: direction === 1 ? "下一个标签 (Next Tab)" : "上一个标签 (Previous Tab)",
+        enabled: tabs.length > 1,
+        run: () => selectTab(tabs[(Math.max(0, tabs.findIndex((tab) => tab.id === activeTab)) + direction + tabs.length) % tabs.length].id),
+      })),
+      { id: "view.focusEditor", label: "聚焦编辑器 (Focus Editor)", run: () => {
+        [...document.querySelectorAll<HTMLElement>(".cm-content")].find((content) => content.getClientRects().length > 0)?.focus();
+      } },
+      // 字号使用已有设置持久化入口，不能只缩放当前 DOM，切文件后又恢复。
+      ...([1, -1] as const).map((direction) => ({
+        id: direction === 1 ? "view.increaseEditorFont" : "view.decreaseEditorFont",
+        label: direction === 1 ? "增大编辑器字号 (Increase Editor Font Size)" : "减小编辑器字号 (Decrease Editor Font Size)",
+        run: () => patch({ editor: { ...settings.editor, fontSize: Math.max(8, Math.min(40, settings.editor.fontSize + direction)) } }),
+      })),
+      { id: "view.hideToolWindows", label: "隐藏工具窗口 (Hide Tool Windows)", run: () => {
+        setSidebarOpen(false);
+        setRightPanel(null);
+        for (const pane of ["terminal", "run", "log", "find", "notifications"] as BottomPane[]) hidePane(pane);
+      } },
+      { id: "view.toggleBottomPanel", label: "切换底部面板 (Toggle Panel)", run: () => {
+        if (visibleBottomShortcutPane) hidePane(visibleBottomShortcutPane);
+        else dockPane(lastBottomShortcutPane.current);
+      } },
       {
         id: "navigate.locateInSidebar",
         label: `${t("menu.locateInSidebar")} (Select in Project View)`,
@@ -4540,13 +4472,15 @@ export default function App() {
         label: `${t("menu.open")}... (Open Folder...)`,
         run: () => void openFolder(),
       },
-      { id: "file.save", label: `${t("shortcut.file.save")} (Save)`, shortcut: formatShortcut("file.save", shortcutOverrides), run: () => void saveActive() },
+      { id: "file.save", label: `${t("shortcut.file.save")} (Save)`, shortcut: formatShortcut("file.save", settings.editor.keymap), run: () => void saveActive() },
       { id: "file.saveAll", label: `${t("command.saveAll")} (Save All)`, run: () => void flushDirtyDocs() },
       {
         id: "file.closeActive",
         label: `关闭当前文件 (Close Active Editor)`,
+        enabled: !!activeTab,
         run: () => {
-          if (docs.activePath) closeDocTab(docs.activePath);
+          const tab = tabs.find((item) => item.id === activeTab);
+          if (tab) closeTab(tab.id, tab.kind);
         },
       },
       {
@@ -4696,11 +4630,11 @@ export default function App() {
       },
 
       // 运行菜单 (Run)
-      { id: "run.run", label: `${t("shortcut.run.run")} (Run)`, shortcut: formatShortcut("run.run", shortcutOverrides), run: runSelectedConfig },
-      { id: "run.rerun", label: `${t("shortcut.run.rerun")} (Rerun)`, shortcut: formatShortcut("run.rerun", shortcutOverrides), run: rerunSelectedConfig },
-      { id: "run.stop", label: `${t("shortcut.run.stop")} (Stop)`, shortcut: formatShortcut("run.stop", shortcutOverrides), run: stopAllRuns },
-      { id: "run.chooseConfig", label: `${t("shortcut.run.chooseConfig")} (Choose Configuration)`, shortcut: formatShortcut("run.chooseConfig", shortcutOverrides), run: chooseRunConfig },
-      { id: "run.toggleTool", label: `${t("shortcut.run.toggleTool")} (Toggle Run Window)`, shortcut: formatShortcut("run.toggleTool", shortcutOverrides), run: toggleRunPane },
+      { id: "run.run", label: `${t("shortcut.run.run")} (Run)`, shortcut: formatShortcut("run.run", settings.editor.keymap), run: runSelectedConfig },
+      { id: "run.rerun", label: `${t("shortcut.run.rerun")} (Rerun)`, shortcut: formatShortcut("run.rerun", settings.editor.keymap), run: rerunSelectedConfig },
+      { id: "run.stop", label: `${t("shortcut.run.stop")} (Stop)`, shortcut: formatShortcut("run.stop", settings.editor.keymap), run: stopAllRuns },
+      { id: "run.chooseConfig", label: `${t("shortcut.run.chooseConfig")} (Choose Configuration)`, shortcut: formatShortcut("run.chooseConfig", settings.editor.keymap), run: chooseRunConfig },
+      { id: "run.toggleTool", label: `${t("shortcut.run.toggleTool")} (Toggle Run Window)`, shortcut: formatShortcut("run.toggleTool", settings.editor.keymap), run: toggleRunPane },
       { id: "run.editConfigs", label: `编辑运行配置... (Edit Configurations...)`, run: openRunConfigsTab },
 
       // Git 菜单 (Git / Version Control)
@@ -4760,7 +4694,8 @@ export default function App() {
     for (const tool of ["explorer", "git", "ai", "browser", "maven", "notifications"] as Panel[]) {
       commands.push({ id: `tool.open.${tool}`, label: `视图: 工具窗口 - ${t(RAIL_LABEL[tool])}`, run: () => openSideTool(tool) });
     }
-    return commands;
+    // 展示与执行共用键位来源，避免命令面板仍显示另一套方案的按键。
+    return commands.map((command) => ({ ...command, shortcut: formatShortcut(command.id, settings.editor.keymap) || undefined }));
   }, [
     activeLeftPanel,
     activeRightPanel,
@@ -4771,17 +4706,20 @@ export default function App() {
     closeFolder,
     closeOtherTabs,
     closeSplit,
+    closeTab,
     dockPane,
     docs.activePath,
     docs.documents,
     flushDirtyDocs,
     git,
+    hidePane,
     openAiDraft,
     openEverywhere,
     openFolder,
     openRunConfigsTab,
     openSettingsTab,
     openSideTool,
+    patch,
     refreshTree,
     reloadMaven,
     rerunSelectedConfig,
@@ -4790,17 +4728,20 @@ export default function App() {
     rightPanelAvailable,
     runSelectedConfig,
     saveActive,
+    selectTab,
     setCollapseSignal,
     setCommitFocus,
     setDialog,
     setPanel,
     setRightPanel,
     setSidebarOpen,
-    shortcutOverrides,
+    settings.editor,
     showLocalHistory,
     splitEditor,
     stopAllRuns,
     t,
+    tabs,
+    visibleBottomShortcutPane,
     toggleMaximize,
     toggleRunPane,
     toolRailLayout.left.bottom,
@@ -4809,6 +4750,49 @@ export default function App() {
     toolRailLayout.right.top,
     workspaceRoot,
   ]);
+
+  /** 焦点上下文优先；引擎先处理编辑键，应用补接动作及跨编辑器/应用的多段键。 */
+  const dispatchShortcut = useStable((event: KeyboardEvent, sequence: ShortcutSequence) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const inEditor = !!target?.closest(".cm-content");
+    const inField = !inEditor && !!target?.closest("input, textarea, [contenteditable=true]");
+    if (dialog || menu || resolveOpen || everywhere || event.isComposing || (inField && !target?.closest(".xterm"))) {
+      sequence.reset();
+      return;
+    }
+    const available = paletteCommands.filter((command) => command.enabled !== false &&
+      // Escape 在编辑器内属于补全/选区；工具窗口里才用来回到编辑器。
+      (command.id !== "view.focusEditor" || (!inEditor && !inField)));
+    const match = sequence.match(event, settings.editor.keymap, new Set(available.map((command) => command.id)));
+    if (match.id) {
+      // CodeMirror 自己也会消费 Ctrl+K 前缀；完整的应用多段键仍须在此落到真实动作。
+      if (event.defaultPrevented && !effectiveShortcut(match.id, settings.editor.keymap).includes(" ")) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      available.find((command) => command.id === match.id)?.run();
+    } else if (match.pending) event.preventDefault();
+  });
+  useEffect(() => {
+    const sequence = new ShortcutSequence();
+    const onKey = (event: KeyboardEvent) => dispatchShortcut(event, sequence);
+    // xterm 会终止自己的按键事件；应用动作先接，普通 shell 按键仍交还终端。
+    const onTerminalKey = (event: KeyboardEvent) => {
+      if (!(event.target instanceof HTMLElement) || !event.target.closest(".xterm")) return;
+      dispatchShortcut(event, sequence);
+      if (event.defaultPrevented) event.stopPropagation();
+    };
+    const reset = () => sequence.reset();
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onTerminalKey, true);
+    window.addEventListener("blur", reset);
+    window.addEventListener("focusin", reset);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onTerminalKey, true);
+      window.removeEventListener("blur", reset);
+      window.removeEventListener("focusin", reset);
+    };
+  }, [dispatchShortcut, settings.editor.keymap, dialog, menu, resolveOpen, everywhere]);
 
   const terminalPlacement = (docked: boolean) => ({
     docked,
@@ -5638,6 +5622,7 @@ export default function App() {
         <NotificationsToolWindow isOpen={activeLeftPanel === "notifications" || activeRightPanel === "notifications"} />
       )
       : tool === "explorer" ? workspaceRoot ? <ProjectTree
+        keymapScheme={settings.editor.keymap}
         key={workspaceRoot}
         root={workspaceRoot} repoRoot={git.root} changes={git.status?.changes ?? EMPTY_CHANGES}
         collapseSignal={collapseSignal} refresh={treeRefresh} reveal={treeReveal}
@@ -5886,6 +5871,7 @@ export default function App() {
                 {panel === "maven" || panel === "notifications" || panel === "browser" ? sidePanelBody(panel) : panel === "explorer" ? (
                   workspaceRoot ? (
                     <ProjectTree
+                      keymapScheme={settings.editor.keymap}
                       key={workspaceRoot}
                       root={workspaceRoot}
                       repoRoot={git.root}
@@ -6259,6 +6245,7 @@ export default function App() {
                 {activeRightPanel === "explorer" ? (
                   workspaceRoot ? (
                     <ProjectTree
+                      keymapScheme={settings.editor.keymap}
                       key={workspaceRoot}
                       root={workspaceRoot}
                       repoRoot={git.root}
@@ -6440,11 +6427,9 @@ export default function App() {
         ) : null}
       </footer>
 
-      {/* IntelliJ 浮动通知气泡 (位置跟随 settings.notificationPosition，默认右下角) */}
-      {/* 1:1 对标 IntelliJ 规范：气泡堆叠于右下角，面板展开时自动隐退 */}
+      {/* IntelliJ 浮动通知气泡：固定右下角，面板展开时自动隐退 */}
       <Balloons
         isListOpen={activeRightPanel === "notifications" || activeLeftPanel === "notifications" || places.notifications !== "hidden"}
-        position={settings.notificationPosition}
       />
       {depSync.items.length > 0 ? (
         <div style={{ position: "fixed", right: 78, bottom: "calc(var(--h-statusbar, 24px) + 16px)", zIndex: "calc(var(--z-dialog, 900) - 1)" }}>

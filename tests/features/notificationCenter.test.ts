@@ -17,10 +17,8 @@ import {
   NOTIFICATION_MAX_AGE_MS,
   saveNotifications,
   loadNotifications,
-  sendNativeNotification,
-  requestNativeNotificationPermission,
+  suppressGroup,
 } from "../../src/lib/notifications";
-import { DEFAULT_SETTINGS } from "../../src/lib/settings";
 
 describe("NotificationCenter 核心总线与通知策略测试", () => {
   beforeEach(() => {
@@ -219,59 +217,17 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     expect(reloaded.find((n) => n.id === "expired")).toBeUndefined();
   });
 
-  it("原生系统通知接口：在无 Webview/无原生环境下优雅降级返回 false，不抛异常", async () => {
-    const res = await sendNativeNotification("测试标题", { body: "测试内容" });
-    expect(typeof res).toBe("boolean");
+  it("「不再显示」只在当前会话静默该组：不再弹气泡，但历史照记", () => {
+    suppressGroup("noisy");
 
-    const perm = await requestNativeNotificationPermission();
-    expect(typeof perm).toBe("boolean");
-  });
+    notificationCenter.notify({
+      title: "后台编译完成",
+      content: "耗时 3.2s",
+      groupId: "noisy",
+    });
 
-  it("原生系统通知策略联动：勿扰模式与后台状态控制", () => {
-    // 1. 同步包含 git 开启系统通知的 settings
-    const settings = {
-      ...DEFAULT_SETTINGS,
-      notificationDoNotDisturb: false,
-      notificationGroups: {
-        ...DEFAULT_SETTINGS.notificationGroups,
-        git: { displayType: "balloon" as const, log: true, system: true },
-      },
-    };
-    notificationCenter.syncSettings(settings);
-
-    // 2. 模拟失焦 (document.hasFocus 返回 false)
-    const origDoc = globalThis.document;
-    globalThis.document = {
-      hasFocus: () => false,
-      visibilityState: "hidden",
-    } as unknown as Document;
-
-    try {
-      const id = notificationCenter.notify({
-        title: "分支拉取完成",
-        content: "main 分支已更新",
-        groupId: "git",
-      });
-      expect(typeof id).toBe("string");
-      expect(notificationCenter.getState().toasts.length).toBe(1);
-
-      // 3. 勿扰模式开启时：静默气泡，也不唤起系统通知
-      notificationCenter.syncSettings({
-        ...settings,
-        notificationDoNotDisturb: true,
-      });
-      notificationCenter.clearHistory();
-
-      notificationCenter.notify({
-        title: "后台编译完成",
-        content: "耗时 3.2s",
-        groupId: "git",
-      });
-      // 勿扰模式下气泡数为 0，历史数为 1
-      expect(notificationCenter.getState().toasts.length).toBe(0);
-      expect(notificationCenter.getState().history.length).toBe(1);
-    } finally {
-      globalThis.document = origDoc;
-    }
+    // 通知策略已固化：被静默的组不弹气泡，历史仍保留一条。
+    expect(notificationCenter.getState().toasts.length).toBe(0);
+    expect(notificationCenter.getState().history.length).toBe(1);
   });
 });

@@ -1,7 +1,7 @@
 import { useSettings } from "../../../hooks/useSettings";
 import { useI18n } from "../../../i18n";
 import Select from "../../../components/Select";
-import { type KeymapScheme, type SavePolicy } from "../../../lib/settings";
+import type { SavePolicy } from "../../../lib/settings";
 
 const SWITCHES = ["yes", "no"] as const;
 const SWITCH_LABEL: Record<"yes" | "no", "common.yes" | "common.no"> = {
@@ -15,13 +15,6 @@ const SAVE_POLICIES: SavePolicy[] = ["manual", "blur"];
 const SAVE_POLICY_LABEL: Record<SavePolicy, "savePolicy.manual" | "savePolicy.blur"> = {
   manual: "savePolicy.manual",
   blur: "savePolicy.blur",
-};
-
-const KEYMAPS: KeymapScheme[] = ["default", "idea", "eclipse"];
-const KEYMAP_LABEL: Record<KeymapScheme, string> = {
-  default: "Forge (Default)",
-  idea: "IntelliJ IDEA",
-  eclipse: "Eclipse",
 };
 
 /** 常规编辑器设置页 */
@@ -174,20 +167,6 @@ export function EditorFontPage() {
   );
 }
 
-/** 配色方案页 */
-export function EditorColorSchemePage() {
-  const { t } = useI18n();
-  return (
-    <div className="settings-rows">
-      <div className="settings-rows-limit">
-        <p className="settings-hint">
-          {t("settings.colorSchemeHint")}
-        </p>
-      </div>
-    </div>
-  );
-}
-
 /** 代码样式设置页 */
 export function EditorCodeStylePage() {
   const { t } = useI18n();
@@ -204,20 +183,6 @@ export function EditorCodeStylePage() {
             value={settings.editor.tabSize}
             options={TAB_SIZES.map((size) => ({ value: size, label: String(size) }))}
             onChange={(size) => patch({ editor: { ...settings.editor, tabSize: size } })}
-          />
-        </div>
-
-        <div className="settings-row">
-          <span className="settings-label">{t("settings.keymap")}</span>
-          <Select
-            label={t("settings.keymap")}
-            placeholder="—"
-            value={settings.editor.keymap}
-            options={KEYMAPS.map((scheme) => ({
-              value: scheme,
-              label: KEYMAP_LABEL[scheme],
-            }))}
-            onChange={(keymap) => patch({ editor: { ...settings.editor, keymap } })}
           />
         </div>
       </div>

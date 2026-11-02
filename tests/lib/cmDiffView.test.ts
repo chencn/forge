@@ -348,3 +348,50 @@ describe("对标 IntelliJ IDEA 比对视图连线带与块提交复选框", () =
     expect(mergeEl!.scrollTop).toBe(100);
   });
 });
+
+
+describe('比对快捷键跟随方案与焦点', () => {
+  it('无外层回调时，导航当前侧改动并可切换两侧焦点', () => {
+    const { host, view } = mount({ original: ORIGINAL, modified: MODIFIED, language: '', mode: 'side' });
+    const right = readView(host);
+    const left = EditorView.findFromDOM(host.querySelector<HTMLElement>('.cm-merge-a')!)!;
+    const press = (editor: EditorView, key: string, modifiers: KeyboardEventInit = {}) => editor.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers }));
+    press(right, 'F7');
+    expect(caretLine(host)).toBe(2);
+    press(right, 'ArrowRight', { altKey: true, shiftKey: true });
+    expect(caretLine(host)).toBe(5);
+    right.focus();
+    press(right, 'Tab', { ctrlKey: true, shiftKey: true });
+    expect(left.hasFocus).toBe(true);
+    press(left, 'F7');
+    expect(left.state.doc.lineAt(left.state.selection.main.head).number).toBe(2);
+    expect(caretLine(host)).toBe(5);
+    view.setKeymap('vscode');
+    press(right, 'F5', { altKey: true, shiftKey: true });
+    expect(caretLine(host)).toBe(2);
+    view.destroy();
+  });
+
+  it('切换方案即时换差异导航键，保留光标和只读边界', () => {
+    const onStep = vi.fn();
+    const onJumpSource = vi.fn();
+    const { host, view } = mount({ original: ORIGINAL, modified: MODIFIED, language: '', mode: 'side', onStep, onJumpSource });
+    const editor = readView(host);
+    const press = (key: string, modifiers: KeyboardEventInit = {}) => editor.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers }));
+    press('F7');
+    expect(onStep).toHaveBeenLastCalledWith('next');
+    view.land('last');
+    const before = editor.state.selection.main.head;
+    view.setKeymap('vscode');
+    onStep.mockClear();
+    press('F7');
+    expect(onStep).not.toHaveBeenCalled();
+    press('F5', { altKey: true });
+    expect(onStep).toHaveBeenLastCalledWith('next');
+    expect(editor.state.selection.main.head).toBe(before);
+    expect(editor.state.readOnly).toBe(true);
+    press('F4');
+    expect(onJumpSource).toHaveBeenCalledOnce();
+    view.destroy();
+  });
+});

@@ -7,6 +7,7 @@
  */
 import {
   Compartment,
+  Prec,
   EditorState,
   RangeSet,
   RangeSetBuilder,
@@ -24,9 +25,9 @@ import {
   highlightSpecialChars,
   keymap,
   lineNumbers,
+  type Command,
 } from "@codemirror/view";
 import { bracketMatching, syntaxHighlighting } from "@codemirror/language";
-import { searchKeymap } from "@codemirror/search";
 import { Chunk, MergeView, getChunks, unifiedMergeView } from "@codemirror/merge";
 import type { Text } from "@codemirror/state";
 import { applyChangeMarks, changeMarksField, type ChangeMark } from "./changeMarks";
@@ -39,6 +40,10 @@ import { diffConfigFor, type DiffWhitespace } from "./lineDiff";
 export type { DiffWhitespace };
 import { buildChunkPatch } from "./chunkPatch";
 import { forgeTheme } from "./theme";
+import { forgeSearch } from "./find";
+import { forgeKeymap } from "./keymap";
+import { cmKey, presetKeys } from "../keymaps/idea";
+import type { KeymapScheme } from "../settings";
 
 /** 两种排法：并排两栏，或者一栏里上下摆改动。 */
 export type DiffMode = "side" | "unified";
@@ -57,6 +62,7 @@ export interface DiffNav {
 }
 
 export interface DiffViewOptions {
+  keymapScheme?: KeymapScheme;
   /** 挂正文的容器；两种排法都只占这一个元素。 */
   parent: HTMLElement;
   /** 左边 / 上边那一份（基线）。 */
@@ -102,6 +108,7 @@ export interface DiffViewOptions {
 }
 
 export interface DiffView {
+  setKeymap: (scheme: KeymapScheme) => void;
   canGo: (dir: DiffDir) => boolean;
   /** 走到本篇的下一处 / 上一处；不可走时什么都不做。 */
   go: (dir: DiffDir) => void;
@@ -176,8 +183,26 @@ const diffCheckboxGutter = gutter({
 });
 
 /** 一栏的扩展。 */
+const diffKeymapSlot = new Compartment();
+
+/** 比对焦点优先处理差异动作，其他移动/查找键复用当前方案。 */
+function diffShortcuts(options: DiffViewOptions, step: (dir: DiffDir, view: EditorView) => boolean, opposite: Command): Extension {
+  const scheme = options.keymapScheme ?? 'idea';
+  const bindings = [
+    ...(['NextDiff', 'PreviousDiff', 'Diff.NextChange', 'Diff.PrevChange'] as const).flatMap((action) => presetKeys(scheme, action).map((key) => ({
+      key: cmKey(key), run: (view: EditorView) => step(action === 'NextDiff' || action === 'Diff.NextChange' ? 'next' : 'previous', view),
+    }))),
+    ...presetKeys(scheme, 'Diff.FocusOppositePane').map((key) => ({ key: cmKey(key), run: opposite })),
+    ...(options.onJumpSource ? presetKeys(scheme, 'EditSource').map((key) => ({
+      key: cmKey(key), run: () => { options.onJumpSource?.(); return true; },
+    })) : []),
+  ];
+  return [Prec.highest(keymap.of(bindings)), forgeKeymap(scheme)];
+}
+
 function sideExtensions(
   options: DiffViewOptions,
+  shortcuts: Extension,
   format: ((line: number) => string) | undefined,
   language: Compartment,
   onCaret?: () => void,
@@ -185,17 +210,6 @@ function sideExtensions(
   onGeometryChange?: () => void
 ): Extension[] {
   const support = grammarSupport(options.language, pathExtension(options.path ?? ""));
-  const stepKeys: Extension[] = options.onStep
-    ? [
-        keymap.of([
-          { key: "F7", run: () => (options.onStep?.("next"), true) },
-          { key: "Shift-F7", run: () => (options.onStep?.("previous"), true) },
-        ]),
-      ]
-    : [];
-  const jumpKeys: Extension[] = options.onJumpSource
-    ? [keymap.of([{ key: "F4", run: () => (options.onJumpSource?.(), true) }])]
-    : [];
   return [
     EditorState.phrases.of(cmPhrases),
     EditorState.readOnly.of(true),
@@ -212,9 +226,9 @@ function sideExtensions(
     indentGuides,
     rainbowBrackets(),
     syntaxHighlighting(forgeHighlightStyle),
-    keymap.of([...searchKeymap]),
-    ...stepKeys,
-    ...jumpKeys,
+    // 比对侧与正文共用搜索栏；只读状态由面板负责隐藏替换入口。
+    forgeSearch,
+    diffKeymapSlot.of(shortcuts),
     forgeTheme,
     // 改动色带：比对的每一处改动画在装订线上（同 IDEA 的比对窗口；右侧概览条比对不挂）。
     changeMarksField,
@@ -262,6 +276,8 @@ function marksOf(chunks: readonly Chunk[], side: "a" | "b", doc: Text): ChangeMa
  * 箭头可走与否一开始就有值，没有「正在算」的那一档。
  */
 export function createDiffView(options: DiffViewOptions): DiffView {
+  // 配置留在本视图内，切换方案不修改调用方对象，也不重建丢失滚动位置。
+  options = { ...options };
   let mode = options.mode;
   let highlight: DiffHighlight = options.highlight ?? "words";
   let collapse = options.collapse ?? false;
@@ -497,6 +513,27 @@ export function createDiffView(options: DiffViewOptions): DiffView {
     jump(Math.min(chunk.fromB, read.state.doc.length));
   }
 
+  /** 嵌入式比对没有跨文件回调，仍须按当前焦点所在侧的坐标导航。 */
+  function step(dir: DiffDir, source: EditorView): boolean {
+    if (options.onStep) { options.onStep(dir); return true; }
+    const position = (chunk: Chunk) => Math.min(source === merge?.a ? chunk.fromA : chunk.fromB, source.state.doc.length);
+    const line = source.state.doc.lineAt(source.state.selection.main.head).number;
+    const ordered = dir === 'next' ? chunks : [...chunks].reverse();
+    const target = ordered.find((chunk) => dir === 'next'
+      ? source.state.doc.lineAt(position(chunk)).number > line
+      : source.state.doc.lineAt(position(chunk)).number < line);
+    if (!target) return false;
+    source.dispatch({ selection: { anchor: position(target) } });
+    revealFrom(source, position(target));
+    return true;
+  }
+
+  function focusOpposite(source: EditorView): boolean {
+    if (!merge) return false;
+    (source === merge.a ? merge.b : merge.a).focus();
+    return true;
+  }
+
   function build(): void {
     const slot = new Compartment();
     languageSlot = slot;
@@ -507,11 +544,11 @@ export function createDiffView(options: DiffViewOptions): DiffView {
       merge = new MergeView({
         a: {
           doc: options.original,
-          extensions: sideExtensions(options, options.numbers?.original, slot, undefined, false, scheduleRibbonRender),
+          extensions: sideExtensions(options, diffShortcuts(options, step, focusOpposite), options.numbers?.original, slot, undefined, false, scheduleRibbonRender),
         },
         b: {
           doc: options.modified,
-          extensions: sideExtensions(options, options.numbers?.modified, slot, reportNav, true, scheduleRibbonRender),
+          extensions: sideExtensions(options, diffShortcuts(options, step, focusOpposite), options.numbers?.modified, slot, reportNav, true, scheduleRibbonRender),
         },
         parent: options.parent,
         collapseUnchanged,
@@ -571,7 +608,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
       const state = EditorState.create({
         doc: options.modified,
         extensions: [
-          ...sideExtensions(options, options.numbers?.modified, slot, reportNav, true),
+          ...sideExtensions(options, diffShortcuts(options, step, focusOpposite), options.numbers?.modified, slot, reportNav, true),
           unifiedMergeView({
             original: options.original,
             // 只读视图不给接受 / 拒绝那两颗按钮；改动色块与左侧那条缝照旧。
@@ -640,6 +677,11 @@ export function createDiffView(options: DiffViewOptions): DiffView {
   reportNav();
 
   return {
+    setKeymap(scheme) {
+      if (destroyed || options.keymapScheme === scheme) return;
+      options.keymapScheme = scheme;
+      for (const pane of panes) pane.dispatch({ effects: diffKeymapSlot.reconfigure(diffShortcuts(options, step, focusOpposite)) });
+    },
     canGo,
     go,
     land,

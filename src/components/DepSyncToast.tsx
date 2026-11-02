@@ -2,7 +2,6 @@ import { memo } from "react";
 import { useI18n } from "../i18n";
 import { formatSyncCommand } from "../lib/depSync";
 import type { DepSyncPrompt } from "../lib/depSync";
-import type { NotificationPosition } from "../lib/settings";
 
 /**
  * IDEA New UI `AllIcons.General.BalloonInformation`（源自 `platform/icons/src/expui/status/info.svg`）。
@@ -68,14 +67,12 @@ function IdeaNotificationCloseIcon() {
  */
 const DepSyncToast = memo(function DepSyncToast({
   items,
-  position = "bottom-right",
   inline = false,
   onSync,
   onDismiss,
   onOpenManifest,
 }: {
   items: DepSyncPrompt[];
-  position?: NotificationPosition;
   /** 若为 `true`，代表已嵌入外层 `.notification-toasts-host` 堆栈流中，不再重复包裹 fixed 容器。 */
   inline?: boolean;
   onSync: (item: DepSyncPrompt) => void;
@@ -147,7 +144,7 @@ const DepSyncToast = memo(function DepSyncToast({
   }
 
   return (
-    <div className={`notification-toasts-host is-${position}`} role="region" aria-live="polite">
+    <div className="notification-toasts-host is-bottom-right" role="region" aria-live="polite">
       {cards}
     </div>
   );

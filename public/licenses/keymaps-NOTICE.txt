@@ -1,0 +1,29 @@
+Forge keymap data and editor commands — third-party notices
+
+IntelliJ Platform keymaps
+Copyright (C) JetBrains s.r.o. and contributors.
+This software includes code from IntelliJ IDEA.
+https://www.jetbrains.com/idea/
+Source: https://github.com/JetBrains/intellij-community
+Revision: 14e2fff0a9b351e49e1b4d0fded5d261ba235738
+Files: platform/platform-resources/src/keymaps/$default.xml,
+plugins/keymaps/vscode-keymap/resources/keymaps/VSCode.xml,
+plugins/keymaps/eclipse-keymap/resources/keymaps/Eclipse.xml
+Modified for Forge: XML converted to JSON; inheritance and DOM/CodeMirror key
+names adapted; supported actions connected to Forge commands.
+
+OpenIDEA
+Copyright 2026 OpenIDEA contributors
+Source: https://github.com/l0ng-ai/openidea
+Revision: 2d7726cf53a4478bf89e5969ac14481edbf468c1
+Adapted files in src/lib/cm/: editing.ts, caretCommands.ts, columnMode.ts,
+overwrite.ts, folding.ts, lines.ts, wordCompletion.ts.
+Original paths: src/editor/core/cm/* and src/editor/core/wordCompletion.ts.
+Modified for Forge: standalone commands extracted, unused service dependencies
+removed, language supplied by the document, whole-word occurrence selection
+preserved, and overwrite input made safe for Unicode code points.
+
+These materials are licensed under the Apache License, Version 2.0.
+The full license is included in keymaps-Apache-2.0.txt in this directory.
+IntelliJ and IntelliJ IDEA are trademarks of JetBrains s.r.o.
+Forge is not affiliated with, endorsed by or sponsored by JetBrains s.r.o.
