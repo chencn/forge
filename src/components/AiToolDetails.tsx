@@ -3,7 +3,8 @@ import type { AiEntry } from "../lib/aiRuntime";
 import { useI18n } from "../i18n";
 import { hasGrammar } from "../lib/cm/grammars";
 import { useGrammarsReady } from "../lib/cm/useGrammarsReady";
-import { describeAiTool, parseToolDiff, toolLineRange, toolLiveDiffCounts, toolObject, toolReadLines, toolText as show } from "../lib/aiTools";
+import { describeAiTool, parseToolDiff, toolLineRange, toolLiveDiffCounts, toolObject, toolText as show } from "../lib/aiTools";
+import { basenameOf } from "../lib/format";
 import type { ToolView } from "../lib/aiTools";
 import { AI_CLOCK_AFTER_MS, formatAiClock, useAiElapsed } from "../lib/aiClock";
 import { useAiDiffViewMode } from "../lib/aiDiffView";
@@ -15,14 +16,18 @@ import AiMarkdown from "./AiMarkdown";
 import { AiQuestionCard } from "./AiQuestionCard";
 import { useAiFilePreview } from "./AiFileLink";
 import { toolFilePreviews } from "../lib/aiFilePreview";
+import { TraceCollapsible, TraceCollapsibleTrigger, TraceCollapsibleContent } from "./ui/trace";
+import { CodeBlock } from "./ui/code-block";
+import AiToolResults from "./AiToolResults";
+import { aiToolError, aiToolTestSuites } from "../lib/aiToolResults";
 
-/** 摘要只有一个目标时才整行可点：多个时摘要拼在一起，点了不知道开哪个。 */
+/** 摘要只有一个目标时才提供文件入口，多个目标分别由各自的摘要定位。 */
 function summaryTarget(view: ToolView): { path: string; line?: number } | null {
   if (view.actions.length === 1 && view.actions[0].target) {
     return { path: view.actions[0].target, line: view.actions[0].start };
   }
   if (view.patches.length === 1 && view.patches[0].path) {
-    return { path: view.patches[0].path, line: view.patches[0].start };
+    return { path: view.patches[0].destination ?? view.patches[0].path, line: view.patches[0].start };
   }
   return null;
 }
@@ -115,7 +120,8 @@ function AiQuestionRecord({ entry }: { entry: AiEntry }) {
  */
 function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState<boolean | null>(null);
+  const phase = entry.status ?? "pending";
+  const [disclosure, setDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
   const input = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
   const agentName = String(input.subagent_type ?? input.agent_type ?? t("ai.tool.delegation"));
   const description = typeof input.description === "string" ? input.description : "";
@@ -125,8 +131,8 @@ function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiE
   const elapsed = useAiElapsed(running, entry.id);
   const status = running ? t("ai.runtime.running") : failed ? t("ai.runtime.failed")
     : entry.status === "completed" ? t("ai.runtime.completed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
-  // 展开默认：还在跑的子代理摊开（看得见它在动）；跑完的收起。
-  const expanded = open ?? running;
+  // 手动选择只属于当前阶段；子代理结束后恢复收起，与普通工具保持一致。
+  const expanded = disclosure?.phase === phase ? disclosure.open : running;
   // 当前动作（对照 ProgressLine）：优先在跑的工具摘要，其次最新一段正文的首行。
   const currentAction = useMemo(() => {
     if (!subagents?.length) return undefined;
@@ -139,8 +145,10 @@ function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiE
     return undefined;
   }, [subagents]);
   const lastAssistant = useMemo(() => [...(subagents ?? [])].reverse().find((child) => child.kind === "assistant" && child.text.trim()), [subagents]);
-  return <div className={`ai-delegation${running ? " is-running" : ""}${failed ? " is-failed" : ""}${expanded ? " is-open" : ""}`}>
-    <button type="button" className="ai-delegation-main" aria-expanded={expanded} onClick={() => setOpen(!expanded)}>
+  return <TraceCollapsible data-element="subagent" className={`ai-delegation${running ? " is-running" : ""}${failed ? " is-failed" : ""}${expanded ? " is-open" : ""}`} open={expanded} onOpenChange={(open) => setDisclosure({ phase, open })}>
+    {/* 折叠与跳转共享正常布局，窄面板中不再用绝对定位覆盖状态文字。 */}
+    <div className="ai-delegation-header">
+    <TraceCollapsibleTrigger className="ai-delegation-main">
       <span className="ai-delegation-marker" aria-hidden><Bot size={16} /></span>
       <span className="ai-delegation-body">
         <span className="ai-delegation-name"><strong>{agentName}</strong></span>
@@ -149,15 +157,15 @@ function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiE
       </span>
       {running && elapsed !== undefined && elapsed >= AI_CLOCK_AFTER_MS ? <span className="ai-delegation-clock">{formatAiClock(elapsed)}</span> : null}
       <span className="ai-delegation-status">{status}</span>
-      <ChevronRight size={14} className={`ai-detail-chevron${expanded ? " is-open" : ""}`} aria-hidden />
-    </button>
+    </TraceCollapsibleTrigger>
     {/* 子代理已升级为独立会话：这里给一个直达入口，与右栏子代理列表同源。 */}
     {agent && onOpenAgent ? <button type="button" className="ai-delegation-open"
       title={t("ai.agent.open")} aria-label={t("ai.agent.open")}
       onClick={() => onOpenAgent(agent.sessionId)}>
       {t("ai.agent.open")}<ArrowUpRight size={12} aria-hidden />
     </button> : null}
-    {expanded ? <div className="ai-delegation-detail">
+    </div>
+    <TraceCollapsibleContent className="ai-delegation-detail">
       {subagents?.length ? <div className="ai-delegation-timeline">
         {subagents.map((child) => {
           if (child.kind === "tool") return <AiToolCall key={child.id} entry={child} />;
@@ -178,8 +186,8 @@ function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiE
       {prompt ? <><p className="ai-delegation-label">{t("ai.tool.delegationTask")}</p><pre>{prompt}</pre></> : null}
       {entry.output !== undefined ? <><p className="ai-delegation-label">{t("ai.tool.delegationResult")}</p><pre className="ai-tool-output">{show(entry.output)}</pre></> : null}
       {(() => { const meta = describeAiTool(entry); return meta.exitCode !== undefined || meta.durationMs !== undefined ? <div className="ai-tool-execution-meta">{meta.exitCode !== undefined ? <span>{t("ai.chat.exitCode")}: {meta.exitCode}</span> : null}{meta.durationMs !== undefined ? <span>{t("ai.tool.duration")}: {(meta.durationMs / 1000).toFixed(2)} s</span> : null}</div> : null; })()}
-    </div> : null}
-  </div>;
+    </TraceCollapsibleContent>
+  </TraceCollapsible>;
 }
 
 /**
@@ -226,35 +234,30 @@ export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasReques
     </div>;
   }
   const status = entry.status === "failed" ? t("ai.runtime.failed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
-  // 文件操作整行打开独立预览；命令、搜索和审批等仍使用原有详情。
+  // 操作文字与箭头共用入口，文件名也可打开预览；行内空白和统计不接收点击。
   if (openPreview && (view.kind === "read" || fileEdit)) {
     const targets = toolFilePreviews(entry, false);
     if (targets.length) return <div className={`ai-tool is-${phase}`} data-kind={view.kind}>
-      {targets.map((target) => <button type="button" key={target.id} className="ai-row-head ai-file-target ai-file-preview-trigger"
-        title={target.path} onClick={() => {
+      {targets.map((target, index) => <div key={target.id} className="ai-row-head ai-tool-header">
+        <AiToolSummary entry={entry} fileIndex={index} onOpenFile={() => {
           const preview = toolFilePreviews(entry).find((item) => item.id === target.id);
           if (preview) openPreview(preview);
-        }}>
-        {targets.length === 1 ? <AiToolSummary entry={entry} /> : <><span aria-hidden className="ai-entry-dot" /><span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span><span className="ai-tool-name">{target.path}</span></>}
+        }} />
         <AiToolFigure entry={entry} view={view} />
         {status ? <span className="ai-tool-status">{status}</span> : null}
-        <ArrowUpRight size={14} aria-hidden />
-      </button>)}
+      </div>)}
     </div>;
   }
-  return <details className={`ai-tool is-${entry.status ?? "pending"}`} data-kind={view.kind} open={open}
-    onToggle={(event) => setDisclosure({ phase, open: event.currentTarget.open })}>
-    <summary className="ai-row-head">
-      {/* 命令行与思考行使用同一阅读顺序：类型 → 箭头 → 摘要。 */}
-      <AiToolSummary entry={entry} disclosure={view.kind === "command"
-        ? <ChevronRight className="ai-detail-chevron" size={14} aria-hidden />
-        : null} />
+  return <TraceCollapsible data-element="tool" className={`ai-tool is-${entry.status ?? "pending"}`} data-kind={view.kind} open={open}
+    onOpenChange={(open) => setDisclosure({ phase, open })}>
+    <div className="ai-row-head ai-tool-header">
+      {/* 操作文字与紧随其后的箭头一起展开，按钮不延伸到命令正文和行内空白。 */}
+      <AiToolSummary entry={entry} collapsible />
       <AiToolFigure entry={entry} view={view} />
       {status ? <span className="ai-tool-status">{status}</span> : null}
-      {view.kind !== "command" ? <ChevronRight className="ai-detail-chevron" size={14} aria-hidden /> : null}
-    </summary>
-    {open ? <AiToolDetails entry={entry} /> : null}
-  </details>;
+    </div>
+    <TraceCollapsibleContent>{open ? <AiToolDetails entry={entry} /> : null}</TraceCollapsibleContent>
+  </TraceCollapsible>;
 });
 
 /**
@@ -272,9 +275,9 @@ export function CodeText({ text, lang, startLine }: { text: string; lang?: strin
     () => (known || startLine !== undefined ? renderCodeBlock(text, clean, undefined, startLine ?? 1) : null),
     [text, clean, startLine, known, ready]
   );
-  return html
+  return <CodeBlock text={text}>{html
     ? <div className="ai-tool-source-code" dangerouslySetInnerHTML={{ __html: html }} />
-    : <pre>{text}</pre>;
+    : <pre>{text}</pre>}</CodeBlock>;
 }
 
 /** 原始结果可能含整份文件，只有主动展开才序列化；对象值按 JSON 高亮。 */
@@ -286,15 +289,22 @@ function RawDetails({ label, value }: { label: string; value: unknown }) {
 
 /**
  * 工具行的摘要文字，按场景分形态（对照参考实现的 command/edit/explore 行）：
- * 命令行走等宽截断、编辑行带 `L44–46` 行号、读取/搜索带可点路径。
+ * 文件行只展示文件名与真实行号，完整路径放在悬停提示；命令与搜索保留原摘要。
  * `icon` 为假时不画行内图标——过程行里状态环就是唯一图形，再叠一枚图标是重复。
  */
-export function AiToolSummary({ entry, icon = true, disclosure }: { entry: AiEntry; icon?: boolean; disclosure?: ReactNode }) {
+export function AiToolSummary({ entry, icon = true, collapsible = false, fileIndex, onOpenFile }: { entry: AiEntry; icon?: boolean; collapsible?: boolean; fileIndex?: number; onOpenFile?: () => void }) {
   const { t } = useI18n();
-  const view = useMemo(() => describeAiTool(entry, false), [entry]);
+  const view = useMemo(() => {
+    const view = describeAiTool(entry, false);
+    if (fileIndex === undefined) return view;
+    // 每个预览入口只使用对应文件的范围和统计，单文件与多文件共用一套摘要。
+    const patch = view.patches.filter((patch) => patch.path)[fileIndex];
+    if (patch) return { ...view, kind: patch.kind, patches: [patch], actions: [] };
+    const action = view.actions.filter((action) => action.kind === "read" && action.target)[fileIndex];
+    return action ? { ...view, kind: action.kind, patches: [], actions: [action] } : view;
+  }, [entry, fileIndex]);
   const running = entry.status === "running";
-  // 读取行数与改动增减行数（支持流式生成中动态变化）
-  const readLines = useMemo(() => view.kind === "read" ? toolReadLines(entry, view) : undefined, [entry, view]);
+  // 改动增减行数支持流式更新；读取范围直接跟在文件名后，不再重复显示行数徽标。
   const diffCounts = useMemo(() => ["edit", "add", "delete", "move"].includes(view.kind) ? toolLiveDiffCounts(entry, view) : undefined, [entry, view]);
   // 提问工具的摘要是第一个问题正文，不是工具名——行上那两个字该说的是「问了什么」。
   const questionSummary = QUESTION_TOOL.test(entry.name ?? "") ? questionToolItems(entry)[0]?.question : undefined;
@@ -304,30 +314,26 @@ export function AiToolSummary({ entry, icon = true, disclosure }: { entry: AiEnt
   const single = view.patches.length <= 1 && view.actions.length <= 1;
   const range = single && ["edit", "add", "delete", "move"].includes(view.kind) ? toolLineRange(view) : null;
   const commandText = view.kind === "command" ? view.summary : "";
-  // 目标形态：读取与改动文件为 inline，光标呈现指针样式；
-  // 在 summary 内部作为普通文本节点呈现，点击文件标题将直接跟随 summary 原生逻辑就地切换折叠/展开，
-  // 避免嵌套 button 拦截事件导致折叠失效。目录类目标（列目录/搜索根）为纯文本。
+  // 文件名按钮与展开按钮互为同级元素，不再把整行包进按钮。
   const targetKind = ["list", "search"].includes(view.kind) ? "plain" : "inline";
-  const TargetTitle = ({ children }: { children: ReactNode }) => (
-    <span
-      className={targetKind === "inline" ? "ai-file-target ai-tool-name" : "ai-tool-name"}
-      title={target ? `${target.path}${target.line !== undefined ? `:${target.line}` : ""}` : undefined}
-    >
-      {children}
-    </span>
-  );
+  const fileTarget = target && ["read", "edit", "add", "delete", "move"].includes(view.kind);
+  const TargetTitle = ({ children }: { children: ReactNode }) => {
+    const className = `${targetKind === "inline" ? "ai-file-target ai-tool-name" : "ai-tool-name"}${fileTarget ? " ai-tool-file" : ""}`;
+    const title = target ? `${target.path}${target.line !== undefined ? `:${target.line}` : ""}` : undefined;
+    return onOpenFile && fileTarget
+      ? <button type="button" className={`${className} ai-file-preview-trigger`} title={title} onClick={onOpenFile}>{children}</button>
+      : <span className={className} title={title}>{children}</span>;
+  };
   return <>
     {/* ai-tool-glyph：活动导轨上的行不需要这枚图标（环就是图形），CSS 在导轨内隐藏它。 */}
     {icon ? <Icon className="ai-tool-glyph" size={13} aria-hidden /> : null}
     <span aria-hidden className="ai-entry-dot" />
-    <span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span>
-    {disclosure}
-    {/* 读取文件：在文件名签名/前面显示读取的行数（如 128 行） */}
-    {readLines !== undefined ? (
-      <span className="ai-tool-inline-badge is-read">
-        {t("ai.chat.exploreLines", { count: readLines })}
-      </span>
-    ) : null}
+    {onOpenFile ? <button type="button" className="ai-tool-disclosure ai-file-target" onClick={onOpenFile}>
+      <span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span>
+      <ArrowUpRight size={14} className="ai-tool-navigation" aria-hidden />
+    </button> : collapsible ? <TraceCollapsibleTrigger className="ai-tool-disclosure">
+      <span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span>
+    </TraceCollapsibleTrigger> : <span className="ai-row-label">{t(`ai.tool.${view.kind}`)}</span>}
     {/* 修改文件：在文件名前面显示增减行数，流式修改中支持实时动态变化 */}
     {diffCounts && (diffCounts.additions > 0 || diffCounts.deletions > 0) ? (
       <span className={`ai-tool-inline-badge is-edit${running ? " is-live" : ""}`}>
@@ -341,10 +347,11 @@ export function AiToolSummary({ entry, icon = true, disclosure }: { entry: AiEnt
         ? <code className="ai-tool-cmd" dir="ltr" title={commandText}>{commandText}</code>
         // 有描述：行上说用途，悬浮提示给完整命令。
         : <span className="ai-tool-name" title={commandText}>{view.summary}</span>)
-      : target
-        ? <TargetTitle>{view.summary}{range?.start !== undefined
-          ? ` L${range.start}${range.end !== undefined && range.end !== range.start ? `–${range.end}` : ""}`
-          : ""}</TargetTitle>
+      : target && ["read", "edit", "add", "delete", "move"].includes(view.kind)
+        ? <TargetTitle><span className="ai-tool-file-label">{basenameOf(target.path)}</span>{target.line !== undefined
+          ? <span className="ai-tool-file-position">{`:${target.line}${view.kind === "read" && view.actions[0]?.end !== undefined && view.actions[0].end !== target.line ? `–${view.actions[0].end}` : ""}`}</span>
+          : null}</TargetTitle>
+        : target ? <TargetTitle>{view.summary}</TargetTitle>
         : <span className="ai-tool-name" title={view.summary}>{view.summary}{range?.start !== undefined
           ? ` L${range.start}${range.end !== undefined && range.end !== range.start ? `–${range.end}` : ""}`
           : ""}</span>}
@@ -484,9 +491,12 @@ export default function AiToolDetails({ entry }: AiToolDetailsProps) {
   const { t } = useI18n();
   const view = describeAiTool(entry);
   const known = !!view.command || !!view.source || view.actions.length > 0 || view.patches.length > 0;
+  const error = aiToolError(entry);
+  const suites = aiToolTestSuites(entry);
   return <div className="ai-tool-details">
     {view.cwd ? <div className="ai-tool-path">{t("ai.tool.cwd")} · {view.cwd}</div> : null}
-    {view.command ? <ToolSection title={t("ai.tool.command")}><CodeText text={view.command} lang="bash" /></ToolSection> : null}
+    {/* 执行类型已在工具行说明，命令直接进入内容区，避免再套分节与代码双重题头。 */}
+    {view.command ? <CodeText text={view.command} lang="bash" /> : null}
     {/* 单文件读取已在摘要行带全「路径 + 行范围」，「动作」分节再写一遍就是套娃。 */}
     {view.actions.length && !(view.source && view.actions.length === 1) ? <ToolSection title={t("ai.tool.actions")}>
       {view.actions.map((action, index) => <div key={index} className="ai-tool-path"><strong>{t(`ai.tool.${action.kind}`)}</strong> · {action.kind === "list" || action.kind === "search"
@@ -514,7 +524,11 @@ export default function AiToolDetails({ entry }: AiToolDetailsProps) {
         折叠块：那是同一段数据的 JSON 原文，视图失真需要核对原始数据时才有价值；
         认不出结构的条目（known 为假）仍给原文兜底。 */}
     {known && !view.source && view.kind !== "search" ? <RawDetails label={t("ai.chat.rawInput")} value={entry.input} /> : null}
-    {entry.output !== undefined && !view.source ? (view.kind === "search" ? <SearchHits output={show(entry.output)} /> : <pre className="ai-tool-output">{show(entry.output)}</pre>) : null}
+    {/* Terminal and error panels share the real output; a failed call must not print it twice. */}
+    {entry.output !== undefined && !view.source && show(entry.output) !== error?.message ? (suites.length
+      ? <RawDetails label={t("ai.tool.structuredResult")} value={entry.output} />
+      : view.kind === "search" ? <SearchHits output={show(entry.output)} /> : <CodeBlock text={show(entry.output)} terminal={view.kind === "command"} />) : null}
+    <AiToolResults entry={entry} suites={suites} />
     {view.exitCode !== undefined || view.durationMs !== undefined ? <div className="ai-tool-execution-meta">{view.exitCode !== undefined ? <span>{t("ai.chat.exitCode")}: {view.exitCode}</span> : null}{view.durationMs !== undefined ? <span>{t("ai.tool.duration")}: {(view.durationMs / 1000).toFixed(2)} s</span> : null}</div> : null}
     {entry.result !== undefined && !view.source && view.kind !== "search" ? <RawDetails label={t("ai.tool.structuredResult")} value={entry.result} /> : null}
   </div>;

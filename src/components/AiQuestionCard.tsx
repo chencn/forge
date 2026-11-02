@@ -4,6 +4,7 @@ import { useI18n } from "../i18n";
 import { seedQuestionAnswers } from "../lib/aiApprovals";
 import type { AiRequestAnswer } from "../lib/aiApprovals";
 import type { AiRequest } from "../lib/aiRuntime";
+import { Item } from "./ui/item";
 
 type Question = AiRequest["questions"][number];
 
@@ -154,7 +155,8 @@ export function AiQuestionCard({ request, readOnly = false, disabled = false, bu
         {state[item.id]?.other ? input(item) : null}
       </div>}
   </>;
-  return <div className={`ai-question${readOnly ? " is-read-only" : ""}${busy ? " is-busy" : ""}${collapsed ? " is-collapsed" : ""}`} role="group" aria-label={t("ai.runtime.question")}>
+  // Questionnaire keeps the original question IDs and option labels as the submission contract.
+  return <Item data-element="questionnaire" className={`ai-question${readOnly ? " is-read-only" : ""}${busy ? " is-busy" : ""}${collapsed ? " is-collapsed" : ""}`} role="group" aria-label={t("ai.runtime.question")}>
     {multi && !readOnly && !collapsed ? <div className="ai-question-progress" aria-hidden="true"><span style={{ width: `${Math.round((answeredCount / questions.length) * 100)}%` }} /></div> : null}
     <header className="ai-question-head">
       <span className="ai-question-icon" aria-hidden="true"><MessageCircleQuestionMark size={15} /></span>
@@ -188,7 +190,7 @@ export function AiQuestionCard({ request, readOnly = false, disabled = false, bu
       </button>
     </footer>}
     </>}
-  </div>;
+  </Item>;
 }
 
 /** 答完之后的样子：先收一行「提问回答：…」，点开才把整张卡按只读摆出来——版式和刚才答的那张一模一样。 */

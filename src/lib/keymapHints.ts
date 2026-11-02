@@ -6,48 +6,44 @@
  */
 import type { KeymapScheme } from "./settings";
 import type { TranslationKey } from "../i18n/lang/zh";
+import { formatContextShortcut, formatShortcut } from "./shortcuts";
 
 export interface ShortcutHint {
   label: TranslationKey;
-  chords: Partial<Record<KeymapScheme, string>>;
+  chord: string;
 }
 
 /**
- * `chords` 按方案给真实键位：某个方案没绑这条命令时就不画这一行，
- * 免得告示页承诺做不到的事。应用级搜索/保存的键位与 `lib/shortcuts.ts` 保持一致。
+ * 展示只声明动作，键位取自执行时使用的同一来源，避免方案更新后提示仍显示旧键。
+ * 方向键统一用箭头显示，内部绑定仍保留 DOM 键名。
  */
-export const SHORTCUT_HINTS: ShortcutHint[] = [
-  // 双击 Shift 是固定的键盘手势，三套方案都一样（`shift SHIFT`）。
-  {
-    label: "welcome.everywhere",
-    chords: { idea: "Shift ×2", vscode: "Shift ×2", eclipse: "Shift ×2" },
-  },
-  {
-    label: "welcome.gotoFile",
-    chords: { idea: "Ctrl+Shift+N", vscode: "Ctrl+P", eclipse: "Ctrl+Shift+R" },
-  },
-  {
-    label: "welcome.findInFiles",
-    chords: { idea: "Ctrl+Shift+F", vscode: "Ctrl+Shift+F", eclipse: "Ctrl+H" },
-  },
-  {
-    label: "welcome.save",
-    chords: { idea: "Ctrl+S", vscode: "Ctrl+S", eclipse: "Ctrl+S" },
-  },
-  { label: "welcome.find", chords: { idea: "Ctrl+F", vscode: "Ctrl+F", eclipse: "Ctrl+F" } },
-  // Eclipse 的替换并进查找面板，没有独立键位，这一行不画。
-  { label: "welcome.replace", chords: { idea: "Ctrl+R", vscode: "Ctrl+H" } },
-  // 语言服务尚未提供定义跳转、语义重命名和格式化，不提示这些未实现的键位。
-  {
-    label: "welcome.comment",
-    chords: { idea: "Ctrl+/", vscode: "Ctrl+/", eclipse: "Ctrl+/" },
-  },
-  {
-    label: "welcome.copyLine",
-    chords: { idea: "Ctrl+D", vscode: "Shift+Alt+Down", eclipse: "Ctrl+Alt+Down" },
-  },
-  {
-    label: "welcome.deleteLine",
-    chords: { idea: "Ctrl+Y", vscode: "Ctrl+Shift+K", eclipse: "Ctrl+D" },
-  },
-];
+export function shortcutHints(scheme: KeymapScheme): ShortcutHint[] {
+  const application: Array<[TranslationKey, string]> = [
+    ["welcome.gotoFile", "search.gotoFile"],
+    ["welcome.findInFiles", "search.findInFiles"],
+    // IDEA 的 Ctrl+S 实际保存全部，提示也须使用同一动作名称。
+    scheme === "idea" ? ["command.saveAll", "file.saveAll"] : ["welcome.save", "file.save"],
+  ];
+  const editor: Array<[TranslationKey, string]> = [
+    ["welcome.find", "Find"],
+    ["welcome.replace", "Replace"],
+    ["welcome.comment", "CommentByLineComment"],
+    ["welcome.copyLine", scheme === "idea" ? "EditorDuplicate" : "EditorDuplicateLines"],
+    ["welcome.deleteLine", "EditorDeleteLine"],
+  ];
+  return [
+    // 双击 Shift 由应用的 DoubleShiftDetector 固定处理，不是普通组合键。
+    { label: "welcome.everywhere" as const, chord: "Shift ×2" },
+    ...application.map(([label, action]) => ({ label, chord: formatShortcut(action, scheme) })),
+    ...editor.map(([label, action]) => ({ label, chord: formatContextShortcut(action, scheme) })),
+  ].filter(({ chord }) => chord !== "").map(({ label, chord }) => ({
+    label,
+    // 上游 XML 的修饰键顺序不固定；各段分别整理，不能打乱多段组合键。
+    chord: chord.split(" ").map((stroke) => {
+      const parts = stroke.split("+");
+      const modifiers = ["Ctrl", "Cmd", "Meta", "Alt", "Shift"].filter((part) => parts.includes(part));
+      return [...modifiers, ...parts.filter((part) => !modifiers.includes(part))].join("+");
+    }).join(" ").replace(/Arrow(Up|Down|Left|Right)/g, (_, direction: string) =>
+      ({ Up: "↑", Down: "↓", Left: "←", Right: "→" })[direction] ?? direction),
+  }));
+}

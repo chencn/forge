@@ -61,7 +61,8 @@ export function renderCodeBlock(text: string, lang: string | null | undefined, c
     : highlighted;
   const reset = startLine !== undefined && startLine > 1 ? ` style="counter-reset: ai-code-line ${startLine - 1}"` : "";
   const pre = `<pre><code class="${langClass.trim()}"${reset}>${body}</code></pre>`;
-  return `<div class="code-block-wrapper">${tag}${copy}${pre}</div>`;
+  // Code Block pattern stays HTML-based so the worker, sanitizer and delegated copy preserve their contracts.
+  return `<div class="code-block-wrapper" data-slot="code-block">${tag}${copy}${pre}</div>`;
 }
 
 let activeChatCopyLabel = "";

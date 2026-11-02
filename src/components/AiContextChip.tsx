@@ -10,6 +10,7 @@ import type { CompactDecision } from "../lib/aiCompact";
 import AiCompactPanel from "./AiCompactPanel";
 import AiContextDetails from "./AiContextDetails";
 import Popover from "./Popover";
+import { Item } from "./ui/item";
 
 /** 与弹层明细共用同一种格式：一位小数，整数值不带 .0，极小值不显示成 0%。 */
 function percentLabel(percent: number | undefined): string {
@@ -122,12 +123,13 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
     </button>
     {open ? (
       <Popover anchor={anchor} onClose={() => { setOpen(false); opener.current?.focus(); }} maxWidth={320} modal={false}>
-        <div ref={popover} className="ai-context-popover" role="dialog" aria-label={t("ai.chat.context")} tabIndex={-1}>
+        <Item render={<div ref={popover} />} data-element="context" className="ai-context-popover" role="dialog" aria-label={t("ai.chat.context")} tabIndex={-1}>
           <header className="ai-context-head">
             <strong>{t("ai.chat.contextWindow")}</strong>
             <span className="ai-context-percent">{chipLabel}</span>
           </header>
-          <div className="ai-context-bar" role="img" aria-label={chipLabel}>
+          <div className="ai-context-bar" role={percent === undefined ? "img" : "progressbar"} aria-label={chipLabel}
+            aria-valuemin={percent === undefined ? undefined : 0} aria-valuemax={percent === undefined ? undefined : 100} aria-valuenow={percent === undefined ? undefined : Math.min(100, Math.max(0, percent))}>
             <span style={{ width: `${Math.min(100, Math.max(0, percent ?? 0))}%` }} />
           </div>
           {contextTotal !== undefined || contextWindow !== undefined ? (
@@ -143,7 +145,7 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
           <div className="ai-context-details-scroll">
             <AiContextDetails provider={provider} context={shownContext} unavailable={contextUnavailable} />
           </div>
-        </div>
+        </Item>
       </Popover>
     ) : null}
   </div>;

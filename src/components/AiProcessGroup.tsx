@@ -1,11 +1,11 @@
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
 import { useI18n } from "../i18n";
 import { PROCESS_PAGE, pageProcess } from "../lib/aiTimeline";
 import { describeAiTool } from "../lib/aiTools";
 import { aiArrival, aiArrivalOf, formatAiClock } from "../lib/aiClock";
 import type { AiEntry } from "../lib/aiRuntime";
 import { AiExploreGroup, isExploreEntry } from "./AiToolDetails";
+import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceLine, TraceTitle } from "./ui/trace";
 
 interface AiProcessGroupProps {
   /** 一段连续的工具调用与想法。 */
@@ -102,25 +102,30 @@ export default memo(function AiProcessGroup({ entries, active, render }: AiProce
     });
   };
   return <section ref={group} className={`ai-process-group${expanded ? " is-open" : ""}${active ? " is-active" : ""}`} aria-label={breakdown}>
-    <button type="button" className="ai-process-head" aria-expanded={expanded} onClick={() => setOpen(!expanded)}>
-      <strong>{t("ai.chat.processTitle")}</strong>
-      <span className="ai-process-breakdown" title={breakdown}>{breakdown}</span>
-      {durationLabel ? <span className="ai-process-elapsed" aria-label={t("ai.tool.duration")}>{durationLabel}</span> : null}
-      {failedCount ? <span className="ai-process-failed" role="button" tabIndex={0}
+    <Trace data-element="chain-of-thought"><TraceCollapsible open={expanded} onOpenChange={setOpen}>
+    <div className="ai-process-heading">
+      <TraceCollapsibleTrigger className="ai-process-head">
+        <TraceLine status={active ? "running" : undefined}>
+          <TraceTitle>{t("ai.chat.processTitle")}</TraceTitle>
+          <TraceDescription className="ai-process-breakdown" title={breakdown}>{breakdown}</TraceDescription>
+          {durationLabel ? <TraceDescription className="ai-process-elapsed" aria-label={t("ai.tool.duration")}>{durationLabel}</TraceDescription> : null}
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      {/* Failure navigation is a separate button, never an interactive child of the trigger. */}
+      {failedCount ? <button type="button" className="ai-process-failed"
         title={t("ai.chat.jumpToFailure")} aria-label={t("ai.chat.jumpToFailure")}
-        onClick={(event) => { event.stopPropagation(); jumpToFailure(); }}
-        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); jumpToFailure(); } }}>
+        onClick={jumpToFailure}>
         {t("ai.chat.stepsFailed", { count: failedCount })}
-      </span> : null}
-      <ChevronRight size={14} className="ai-detail-chevron" aria-hidden="true" />
-    </button>
-    {expanded ? <>
+      </button> : null}
+    </div>
+    <TraceCollapsibleContent>
       <div className="ai-process-body">
         {clusters.map((cluster) => cluster.kind === "explore"
           ? <AiExploreGroup key={`explore:${cluster.entries[0].id}`} entries={cluster.entries} render={render} />
           : render(cluster.entry))}
       </div>
       {page.hidden > 0 ? <button type="button" className="ai-text-button" onClick={() => setShown(shown + PROCESS_PAGE)}>{t("ai.chat.showEarlierSteps", { count: page.hidden })}</button> : null}
-    </> : null}
+    </TraceCollapsibleContent>
+    </TraceCollapsible></Trace>
   </section>;
 });

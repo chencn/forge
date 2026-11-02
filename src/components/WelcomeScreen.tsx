@@ -1,4 +1,4 @@
-import { SHORTCUT_HINTS } from "../lib/keymapHints";
+import { shortcutHints } from "../lib/keymapHints";
 import type { KeymapScheme } from "../lib/settings";
 import { useI18n } from "../i18n";
 
@@ -15,14 +15,13 @@ interface WelcomeScreenProps {
  */
 export default function WelcomeScreen({ keymap, workspace }: WelcomeScreenProps) {
   const { t } = useI18n();
-  const rows = SHORTCUT_HINTS.map((hint) => ({ label: t(hint.label), chord: hint.chords[keymap] })).filter(
-    (row) => row.chord !== undefined
-  );
+  const rows = shortcutHints(keymap).map((hint) => ({ label: t(hint.label), chord: hint.chord }));
 
   return (
     <div className="welcome">
       {workspace ? null : <p className="welcome-title">{t("app.name")}</p>}
-      <p className="welcome-hint">{t("welcome.hint")}</p>
+      {/* 工程已打开时只缺少文件，不能继续提示用户选择项目文件夹。 */}
+      <p className="welcome-hint">{t(workspace ? "welcome.openFile" : "welcome.hint")}</p>
 
       {rows.length > 0 ? (
         <dl className="welcome-keys" aria-label={t("welcome.shortcuts")}>

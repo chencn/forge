@@ -19,6 +19,7 @@ import AiComposerShell from "./AiComposerShell";
 import AiComposerOptions, { type AiComposerHandle } from "./AiComposerOptions";
 import AiChatImage from "./AiChatImage";
 import AiImageDialog from "./AiImageDialog";
+import { Attachment, AttachmentGroup } from "./ui/attachment";
 import { watchAiInputDelivery } from "../lib/aiInputBridge";
 
 /** 选择器里的筛选提示；真正认格式的是后端的文件头嗅探，扩展名写错也骗不过去。 */
@@ -271,11 +272,11 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
               tall
               overlay={menuVisible ? <AiCommandMenu id={menuId} suggestions={suggestions} selected={selectedCommand}
                 onChoose={chooseCommand} menuRef={commandMenu} showDiscovery={provider === "claude"} /> : null}
-              attachments={images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
-                {images.map((image) => <figure key={image.path}><AiChatImage path={image.path} name={image.name} onPreview={setLightbox} onError={setError} /><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
-                  onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></figure>)}
-              </div> : null}
-              editor={<textarea
+              attachments={images.length ? <AttachmentGroup className="ai-image-attachments" aria-label={t("ai.chat.images")}>
+                {images.map((image) => <Attachment render={<figure />} key={image.path}><AiChatImage path={image.path} name={image.name} onPreview={setLightbox} onError={setError} /><button type="button" className="ai-image-remove" aria-label={`${t("ai.chat.removeImage")} ${image.name}`} title={t("ai.chat.removeImage")}
+                  onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button></Attachment>)}
+              </AttachmentGroup> : null}
+              editor={<textarea data-slot="input-group-control"
                 ref={input}
                 rows={2}
                 aria-label={t("ai.message")}
@@ -310,6 +311,11 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
                 <Send size={16} />
               </button>}
             />
+            {/* Suggestions prepare editable drafts and use the same validated send path as typed prompts. */}
+            {!draft.trim() && !images.length ? <div data-slot="suggestions" className="ai-element-suggestions" aria-label={t("ai.elements.suggestions")}>
+              {(["ai.elements.suggestStructure", "ai.elements.suggestReview", "ai.elements.suggestTests"] as const).map((key) => <button key={key} type="button" disabled={!provider || sending}
+                onClick={() => { updateDraft(t(key)); input.current?.focus(); }}>{t(key)}</button>)}
+            </div> : null}
           </div>
         </div>
         <div className="ai-welcome-spacer" />

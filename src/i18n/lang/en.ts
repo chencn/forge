@@ -2,6 +2,20 @@ import type { TranslationKey } from "./zh";
 
 export const en: Record<TranslationKey, string> = {
   "app.name": "Forge",
+  // AI Elements labels share the same reported tool facts across locales.
+  "ai.elements.sources": "Search sources",
+  "ai.elements.tests": "Test results",
+  "ai.elements.testCounts": "Passed {passed} / {total}",
+  "ai.elements.test.passed": "Passed",
+  "ai.elements.test.failed": "Failed",
+  "ai.elements.test.pending": "Pending",
+  "ai.elements.test.skipped": "Skipped",
+  "ai.elements.test.todo": "Todo",
+  "ai.elements.files": "Files",
+  "ai.elements.suggestions": "Suggestions",
+  "ai.elements.suggestStructure": "Explain this project's structure",
+  "ai.elements.suggestReview": "Review the current changes for potential issues",
+  "ai.elements.suggestTests": "Analyze test coverage and suggest which tests to add first",
   "browser.widen": "Expand / restore browser width",
   "browser.pickElement": "Pick element",
   "browser.cancelPick": "Cancel picking",
@@ -650,6 +664,7 @@ export const en: Record<TranslationKey, string> = {
   "explorer.deletedMany": "Deleted {count} files/directories",
 
   "welcome.hint": "Select a project folder",
+  "welcome.openFile": "Open a file in the project to start editing",
   "drop.pending": "Drop to open",
   "drop.file": "Drop to open temporarily",
   "drop.files": "Drop to open {count} files temporarily",

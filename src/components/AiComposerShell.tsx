@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { InputGroup, InputGroupAddon } from "./ui/input-group";
 
 /**
  * 会话输入框的外壳，对照参考实现的 composer 盒：单层圆角卡片（rounded-xl、
@@ -24,14 +25,15 @@ export default function AiComposerShell({ editor, attachments, toolbarLeft, tool
   /** 编辑区与动作行之间的补充行（如命令提示）。 */
   footer?: ReactNode;
 }) {
-  return <div className={`ai-composer${tall ? " is-tall" : ""}${attachments ? " has-attachments" : ""}`}>
+  // Prompt Input is a composition: editor state, IME, attachments and submission stay with the caller.
+  return <InputGroup data-element="prompt-input" className={`ai-composer${tall ? " is-tall" : ""}${attachments ? " has-attachments" : ""}`}>
     {overlay}
-    {attachments ? <div className="ai-composer-attachments">{attachments}</div> : null}
+    {attachments ? <InputGroupAddon align="block-start" className="ai-composer-attachments">{attachments}</InputGroupAddon> : null}
     <div className="ai-composer-editor">{editor}</div>
     {footer}
-    <div className="ai-composer-bar">
+    <InputGroupAddon align="block-end" className="ai-composer-bar">
       <div className="ai-composer-bar-left">{toolbarLeft}</div>
       <div className="ai-composer-bar-right">{toolbarRight}</div>
-    </div>
-  </div>;
+    </InputGroupAddon>
+  </InputGroup>;
 }

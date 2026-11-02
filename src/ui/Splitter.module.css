@@ -61,7 +61,7 @@
 .handle:hover,
 .handle:focus-visible,
 .active {
-  background: var(--border-strong, var(--accent, #3574f0));
+  background: var(--border-strong);
 }
 
 .invisible,
@@ -70,7 +70,8 @@
 }
 
 .invisible:focus-visible::after {
-  background: color-mix(in srgb, var(--focus-ring, #3574f0) 55%, transparent);
+  /* 隐形分隔条聚焦时仍有反馈，使用中性色竖线。 */
+  background: color-mix(in srgb, var(--text-tertiary) 55%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

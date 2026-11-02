@@ -5,11 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
 import { loadDraft, loadDraftImages, rememberPrompt, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
 
-const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, invoke: vi.fn(), send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
+const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, invoke: vi.fn(), send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), runNow: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 vi.mock("../../src/i18n", () => ({ useI18n: () => ({ t: (key: string, vars?: Record<string, unknown>) => key === "ai.chat.editedFiles" ? `Edited ${vars?.count} files` : key }) }));
 vi.mock("../../src/lib/aiCli", () => ({ AI_NAMES: { codex: "Codex" }, cliDesktopAvailable: () => h.desktop }));
-vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiCapabilities: h.models, loadAiMessages: () => Promise.resolve(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn(), stopAiAgent: vi.fn() }));
+vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOutline: () => h.outline, useAiSessionActivity: () => h.activity, useAiOwnedRunId: () => h.ownedRun, useAiOwnedQueuedRunIds: () => h.ownedQueued, loadAiCapabilities: h.models, loadAiMessages: () => Promise.resolve(), loadAiOutline: h.outlineLoad, loadAiMessagesThrough: h.through, loadOlderAiMessages: h.older, moveQueuedAiTask: h.moveQueued, runQueuedAiTaskNow: h.runNow, respondAiRequest: vi.fn(), sendAiMessage: h.send, stopAiRun: vi.fn(), stopAiAgent: vi.fn() }));
 vi.mock("../../src/lib/fs", () => ({ openExternal: vi.fn(), assetUrl: (path: string) => `asset://${path}` }));
 vi.mock("dompurify", () => ({ default: { sanitize: h.sanitize } }));
 import AiSessionPane from "../../src/components/AiSessionPane";
@@ -35,7 +35,7 @@ beforeEach(() => {
   h.ownedRun = null; h.ownedQueued = [];
   h.outline = { turns: [], complete: false, loaded: false, loading: false, error: null };
   h.invoke.mockReset(); h.invoke.mockResolvedValue(undefined);
-  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.models.mockReset(); h.models.mockResolvedValue({ models: [{ id: "catalog-default", isDefault: true }] }); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.openAgents.mockReset(); h.sanitize.mockClear();
+  sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.models.mockReset(); h.models.mockResolvedValue({ models: [{ id: "catalog-default", isDefault: true }] }); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.runNow.mockReset(); h.runNow.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.openAgents.mockReset(); h.sanitize.mockClear();
   h.state = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: true, hasOlder: false, cursor: 0, nativeId: null, plans: [], agents: [] };
 });
 function render() {
@@ -200,17 +200,6 @@ describe("AI conversation pane", () => {
     expect(html).toContain("+7");
     expect(html).toContain("-44");
   });
-  it("keeps tool calls and reasoning collapsed and gives them expansion affordances", () => {
-    h.state.entries = [
-      { id: "tool", runId: "run", kind: "tool", text: "", name: "Read", status: "completed" },
-      { id: "reasoning", runId: "run", kind: "reasoning", text: "summary" },
-    ];
-    const { html } = render();
-    expect(html).toContain('class="ai-tool is-completed"');
-    expect(html).toContain('class="ai-reasoning"');
-    expect(html.match(/<details[^>]*open/g)).toBeNull();
-    expect(html.match(/ai-detail-chevron/g)).toHaveLength(2);
-  });
   it("keeps unknown context honest and uses an accessible icon-only stop control", () => {
     h.state.status = "running"; h.state.runId = "run";
     h.state.tasks = [{ runId: "run", status: "running", seq: 1 }];
@@ -259,6 +248,17 @@ describe("AI conversation pane", () => {
     expect(toggle?.[1]).toBeTruthy();
     // aria-controls 必须指向实际正文；屏幕阅读器才能把按钮和被折叠区域对应起来。
     expect(html).toContain(`class="ai-task-queue-list" id="${toggle![1]}"`);
+  });
+  it("连续点击优先执行只发送一次请求", () => {
+    h.state.tasks = [{ runId: "queued", status: "queued", seq: 1, prompt: "later" }];
+    h.ownedQueued = ["queued"];
+    const { pane } = render();
+    const promote = findAll(pane, "button").find((button) => button.props.className === "ai-task-action");
+    expect(promote).toBeDefined();
+    promote?.props.onClick();
+    promote?.props.onClick();
+    expect(h.runNow).toHaveBeenCalledTimes(1);
+    expect(h.runNow).toHaveBeenCalledWith("queued");
   });
   it("用方向键按稳定 runId 调整自己的队列顺序", () => {
     h.state.tasks = [
@@ -551,7 +551,6 @@ describe("AI conversation pane", () => {
     h.activity = "running"; h.ownedRun = "run";
     const live = render();
     expect(live.html.match(/class="ai-reasoning/g)).toHaveLength(1);
-    expect(live.html).toContain('<details class="ai-reasoning" open="">');
     expect(live.html).toContain("ai.chat.reasoningLive");
     // 想完且有正文的，照常单独成行，正文摘要跟着走。
     h.state.status = "idle";
@@ -560,7 +559,6 @@ describe("AI conversation pane", () => {
     expect(told.html).toContain("先看目录结构");
     expect(told.html).toContain("ai.chat.reasoning");
     expect(told.html).not.toContain("ai.chat.reasoningLive");
-    expect(told.html).not.toContain('<details class="ai-reasoning" open="">');
   });
   it("marks the context chip when compacting is worth doing, and keeps the action there", () => {
     h.state.nativeId = "native";

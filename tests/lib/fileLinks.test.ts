@@ -75,6 +75,13 @@ describe("resolveFileLink", () => {
     );
   });
 
+  it("resolves a slash-prefixed Windows drive link without losing its location", () => {
+    const target = parseFileLink("/D:/app/forge/src/my%20file.ts:278:5")!;
+    expect(target).toEqual({ path: "/D:/app/forge/src/my file.ts", line: 278, column: 5 });
+    expect(resolveFileLink(target, "D:\\app\\forge")).toBe("D:\\app\\forge\\src\\my file.ts");
+    expect(resolveFileLink(target, "/repo")).toBe("/D:/app/forge/src/my file.ts");
+  });
+
   it("gives up on paths it cannot locate", () => {
     expect(resolveFileLink(parseFileLink("src/a.ts")!, null)).toBeNull();
     expect(resolveFileLink(parseFileLink("~/a.ts")!, "D:\\repo")).toBeNull();

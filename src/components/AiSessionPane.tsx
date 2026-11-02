@@ -1,9 +1,16 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArrowLeft, ArrowRight, Bot, Brain, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EyeOff, FilePenLine, FilePlus2, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Plane, Play, Plus, Send, Square, Target, Timer, X } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, Bot, Check, CheckCircle2, ChevronUp, CircleAlert, CircleDashed, ChevronDown, ChevronRight, ChevronsUp, Command, Copy, EyeOff, FilePenLine, FilePlus2, GripVertical, History, ListOrdered, Loader2, Paperclip, Pause, Pencil, Plane, Play, Plus, Send, Square, Target, Timer, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import AiApprovalCard from "./AiApprovalCard";
+import AiReasoningEntry from "./AiReasoningEntry";
+import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "./ui/item";
+import { FileTree } from "./ui/file-tree";
+import { Trace, TraceLine } from "./ui/trace";
+import { Message, MessageGroup } from "./ui/message";
+import { Marker } from "./ui/marker";
+import { Attachment, AttachmentGroup } from "./ui/attachment";
 import AiChatWidthHandles from "./AiChatWidthHandles";
 import { copyChatImage } from "../lib/chatImage";
 import AiImageDialog from "./AiImageDialog";
@@ -139,18 +146,18 @@ const AiCheckpointNotice = memo(function AiCheckpointNotice({ entry, onRestore }
   if (!id || files.length === 0) return null;
   const isRestore = data.source === "restore";
   const restoreOf = typeof data.restoreOf === "string" ? data.restoreOf : null;
-  return <section className="ai-checkpoint" data-checkpoint-id={id}>
-    <span className="ai-checkpoint-icon" aria-hidden><History size={14} /></span>
-    <div className="ai-checkpoint-body">
+  // Checkpoint restores file snapshots through the existing callback, not conversation history.
+  return <Marker render={<section />} data-element="checkpoint" className="ai-checkpoint" data-checkpoint-id={id}>
+    <ItemMedia className="ai-checkpoint-icon"><History size={14} /></ItemMedia>
+    <ItemContent className="ai-checkpoint-body">
       <strong>{isRestore ? t("ai.checkpoint.restored") : t("ai.checkpoint.title")}</strong>
       {restoreOf ? <small>{t("ai.checkpoint.restoreOf")}</small> : null}
-      <div className="ai-checkpoint-files">
-        {files.slice(0, 6).map((file) => <code key={file} title={file}>{file.split(/[\\/]/).pop()}</code>)}
-        {files.length > 6 ? <small>+{files.length - 6}</small> : null}
-      </div>
-    </div>
-    {onRestore ? <button type="button" className="button" onClick={() => onRestore(id)}>{t("ai.checkpoint.restore")}</button> : null}
-  </section>;
+      <details className="ai-checkpoint-files"><summary>{t("ai.elements.files")} · {files.length}</summary>
+        <FileTree label={t("ai.checkpoint.title")} files={files.map((file) => ({ path: file, content: <code title={file}>{file.split(/[\\/]/).pop()}</code> }))} />
+      </details>
+    </ItemContent>
+    {onRestore ? <ItemActions><button type="button" className="button" onClick={() => onRestore(id)}>{t("ai.checkpoint.restore")}</button></ItemActions> : null}
+  </Marker>;
 });
 
 const TimelineNotice = memo(function TimelineNotice({ entry, onRestoreCheckpoint }: { entry: AiEntry; onRestoreCheckpoint?: (id: string) => void }) {
@@ -168,15 +175,18 @@ const TimelineNotice = memo(function TimelineNotice({ entry, onRestoreCheckpoint
     const steps = Array.isArray(source) ? source.flatMap((item) => item && typeof item === "object" ? [item as Record<string, unknown>] : []).filter((item) => typeof (item.content ?? item.step) === "string") : [];
     const visible = steps.filter((step) => step.status !== "dropped");
     const completed = visible.filter((step) => step.status === "complete" || step.status === "completed").length;
-    return <section className="ai-plan-notice"><header><strong>{t("ai.chat.plan")}</strong><span>{t("ai.runtime.taskCompleted", { count: completed })} / {t("ai.runtime.taskTotal", { count: visible.length })}</span></header>
+    return <Trace data-element="plan" className="ai-plan-notice"><header><strong>{t("ai.chat.plan")}</strong><span>{t("ai.runtime.taskCompleted", { count: completed })} / {t("ai.runtime.taskTotal", { count: visible.length })}</span></header>
+      {visible.length ? <progress className="ai-element-plan-progress" aria-label={t("ai.chat.plan")} max={visible.length} value={completed} /> : null}
       <ol role="list">{visible.map((step, index) => <li key={String(step.id ?? index)} className={`is-${String(step.status)}`}>
+        <TraceLine data-element="task" status={step.status === "active" || step.status === "in_progress" ? "running" : undefined}>
         <span className="ai-plan-entry-icon" aria-hidden>
           {step.status === "complete" || step.status === "completed" ? <CheckCircle2 size={14} />
             : <CircleDashed size={14} />}
         </span>
         <span className="ai-plan-entry-text">{String(step.content ?? step.step)}{typeof step.detail === "string" && step.detail ? <small>{step.detail}</small> : null}</span>
+        </TraceLine>
       </li>)}</ol>
-    </section>;
+    </Trace>;
   }
   return <details className="ai-timeline-notice"><summary><ChevronRight className="ai-detail-chevron" size={13} />{entry.name === "retry" ? t("ai.chat.retry") : t("ai.chat.notice")}</summary>{entry.text ? <AiMarkdown text={entry.text} /> : <pre>{detail(entry.input)}</pre>}</details>;
 });
@@ -208,26 +218,30 @@ const RequestCard = memo(function RequestCard({ request, stopping, onBeforeAllow
   const isQuestion = request.kind === "question";
   // 提问卡：还能答才摆交互版；答完或失效就换成结果行（点开看当时选的那几项）。
   // 两种形态不同时出现，也就不会出现「按钮还在、结果也在」的自相矛盾。
-  const asking = !isQuestion || (request.active && !answered);
-  return <section className={`ai-request-card${isQuestion ? " is-question" : ""}`} aria-label={t(isQuestion ? "ai.runtime.question" : "ai.runtime.permission")}>
-    {/* 提问卡自带一行表头（图标 + 标题 + 进度），这里再叠一句同款标题就是同一件事说两遍。 */}
-    {isQuestion ? null : <strong>{t("ai.runtime.permission")} · {request.title}</strong>}
+  const asking = request.active && !answered;
+  // Confirmation composes Item + existing actions; the runtime remains the only approval authority.
+  if (!isQuestion) return <Item render={<section />} className="ai-request-card" aria-label={t("ai.runtime.permission")}>
+    <ItemMedia><CircleAlert size={16} aria-hidden /></ItemMedia>
+    <ItemContent>
+      <ItemTitle>{t("ai.runtime.permission")} · {request.title}</ItemTitle>
+      {toolEntry ? <div className="ai-request-tool"><div className="ai-request-tool-title"><AiToolSummary entry={toolEntry} /></div><AiToolDetails entry={toolEntry} /></div> : request.detail ? <pre>{request.detail}</pre> : null}
+      {request.reason ? <p className="ai-muted">{request.reason}</p> : null}
+      {request.blockedPath ? <code>{request.blockedPath}</code> : null}
+      <ItemActions><AiApprovalCard request={request} stopping={stopping} busy={busy || answered} onRespond={(answer) => void respond(answer)} /></ItemActions>
+      {!request.active || answered ? <span className="ai-muted">{t(request.answer || answered ? "ai.runtime.requestAnswered" : "ai.runtime.requestExpired")}</span> : null}
+      {error ? <p className="ai-error" role="alert">{error}</p> : null}
+    </ItemContent>
+  </Item>;
+  return <section className="ai-request-card is-question" aria-label={t("ai.runtime.question")}>
     {toolEntry ? <div className="ai-request-tool"><div className="ai-request-tool-title"><AiToolSummary entry={toolEntry} /></div><AiToolDetails entry={toolEntry} /></div> : request.detail ? <pre>{request.detail}</pre> : null}
     {request.reason ? <p className="ai-muted">{request.reason}</p> : null}
     {request.blockedPath ? <code>{request.blockedPath}</code> : null}
-    {isQuestion
-      ? request.questions.length === 0
+    {request.questions.length === 0
         // 后端两家都校验过非空；真到了这里也不该留一个空白壳卡片装作有内容。
         ? <p className="ai-muted">{t("ai.runtime.questionEmpty")}</p>
         : asking
           ? <AiQuestionCard request={request} disabled={disabled} busy={busy} onRespond={(answers) => void respond({ answers })} />
-          : <AiQuestionResult request={request} answer={request.answer ?? (submitted ? { answers: submitted } : undefined)} />
-      : <>
-        <AiApprovalCard request={request} stopping={stopping} busy={busy || answered} onRespond={(answer) => void respond(answer)} />
-        {/* 已处理和已失效是两件事：前者是用户答过了，后者是没等到答复这一轮就结束了。
-            混成一句「已处理或失效」等于两种情况都说不清。 */}
-        {!request.active || answered ? <span className="ai-muted">{t(request.answer || answered ? "ai.runtime.requestAnswered" : "ai.runtime.requestExpired")}</span> : null}
-      </>}
+          : <AiQuestionResult request={request} answer={request.answer ?? (submitted ? { answers: submitted } : undefined)} />}
     {error ? <p className="ai-error" role="alert">{error}</p> : null}
   </section>;
 });
@@ -292,7 +306,7 @@ const AiUserMessage = memo(function AiUserMessage({ text, images }: { text: stri
     }, () => { /* 剪贴板被拒就保持原样，不谎报已复制。 */ });
   };
   return <div className="ai-user-msg">
-    {images?.length ? <div className="ai-user-msg-images">{images.map((image) => <span key={image.key}>{image.node}</span>)}</div> : null}
+    {images?.length ? <AttachmentGroup className="ai-user-msg-images">{images.map((image) => <Attachment render={<span />} key={image.key}>{image.node}</Attachment>)}</AttachmentGroup> : null}
     {text ? <div className="ai-user-msg-row">
       <button type="button" className="ai-user-msg-copy" aria-label={copied ? t("action.copied") : t("action.copy")}
         title={copied ? t("action.copied") : t("action.copy")} onClick={copy}>
@@ -305,27 +319,6 @@ const AiUserMessage = memo(function AiUserMessage({ text, images }: { text: stri
     </div> : null}
     {long && expanded ? <button type="button" className="ai-user-msg-expand" onClick={() => setExpanded(false)}>{t("ai.chat.collapseMessage")}</button> : null}
   </div>;
-});
-
-/** 思考只在当前生成阶段自动展开；阶段结束后收起，历史正文仍可由用户手动打开。 */
-const AiReasoningEntry = memo(function AiReasoningEntry({ entry, live }: { entry: AiEntry; live: boolean }) {
-  const { t } = useI18n();
-  const phase = live ? "running" : "completed";
-  const [disclosure, setDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
-  const open = disclosure?.phase === phase ? disclosure.open : live;
-  const lines = entry.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const title = live ? lines.at(-1) ?? "" : lines[0] ?? "";
-  return <details className="ai-reasoning" open={open}
-    onToggle={(event) => setDisclosure({ phase, open: event.currentTarget.open })}>
-    <summary className="ai-row-head">
-      <Brain size={13} aria-hidden className="ai-entry-icon" />
-      <span aria-hidden className="ai-entry-dot" />
-      <span className="ai-row-label">{t(live ? "ai.chat.reasoningLive" : "ai.chat.reasoning")}</span>
-      <ChevronRight className="ai-detail-chevron" size={14} aria-hidden />
-      {entry.text ? <span className="ai-reasoning-title" aria-hidden={live ? "true" : undefined}>{title}</span> : null}
-    </summary>
-    <AiMarkdown text={entry.text} />
-  </details>;
 });
 
 /**
@@ -824,7 +817,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
     return request ? <RequestCard key={entry.id} request={request} stopping={stopping} onBeforeAllow={onBeforeAllow} /> : null;
   }
   const body = (
-    <article data-entry-id={entry.id} className={`ai-chat-entry is-${entry.kind}`}>
+    <Message render={<article />} align={entry.kind === "user" ? "end" : "start"} data-entry-id={entry.id} className={`ai-chat-entry is-${entry.kind}`}>
       {entry.kind === "user" ? (
         <AiUserMessage
           text={entry.text}
@@ -886,7 +879,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
       ) : entry.kind === "notice" ? (
         <TimelineNotice entry={entry} onRestoreCheckpoint={onRestoreCheckpoint} />
       ) : null}
-    </article>
+    </Message>
   );
 
   return artifacts ? (
@@ -1094,6 +1087,9 @@ export default function AiSessionPane({
   const [queueExpanded, setQueueExpanded] = useState(true);
   /** 当前拖拽落点只负责视觉反馈；真正排序仍用稳定 run id 交给后端原子完成。 */
   const [queueDrop, setQueueDrop] = useState<{ runId: string; edge: "before" | "after" } | null>(null);
+  /** 「优先执行」请求在后端确认队列状态前保持锁定，连续点击不会重复命中同一 run。 */
+  const queuePromoteLock = useRef(new Set<string>());
+  const [queuePromoteBusy, setQueuePromoteBusy] = useState<Set<string>>(new Set());
   /** 排队条拖拽排序的 FLIP：拖起时记下各行的位置，重排落地那一帧按差值反向平移再归位。 */
   const queueHost = useRef<HTMLElement>(null);
   const queueFlip = useRef<Map<string, DOMRect> | null>(null);
@@ -1573,11 +1569,41 @@ export default function AiSessionPane({
     finally { sendingRef.current = false; setSending(false); }
   };
   const queuedTasks = aiQueueOrder(runtime.tasks);
+  useEffect(() => {
+    // 成功插队后任务会离开 queuedTasks；这时才释放按钮，避免请求尚未反映到快照时再次发送。
+    setQueuePromoteBusy((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const runId of current) {
+        if (!queuedTasks.some((task) => task.runId === runId)) {
+          next.delete(runId);
+          queuePromoteLock.current.delete(runId);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [queuedTasks]);
   /** 队列操作失败：撞上 NOT_QUEUED（任务已开始/结束/别的窗口排的）就清掉本窗口的过期
    *  登记并刷新队列，红条用短话；其余错误按稳定码翻成人话。没有这一步，同一个
    *  幽灵按钮可以无限重复触发同一句后端拒绝。 */
   const failQueueAction = (runId: string, cause: unknown) => {
     setError(reconcileStaleQueuedTask(runId, cause) ? t("ai.queue.stale") : describeError(String(cause), t));
+  };
+  const promoteQueuedTask = (runId: string) => {
+    if (queuePromoteLock.current.has(runId)) return;
+    queuePromoteLock.current.add(runId);
+    setQueuePromoteBusy((current) => new Set(current).add(runId));
+    void runQueuedAiTaskNow(runId).catch((cause) => {
+      queuePromoteLock.current.delete(runId);
+      setQueuePromoteBusy((current) => {
+        if (!current.has(runId)) return current;
+        const next = new Set(current);
+        next.delete(runId);
+        return next;
+      });
+      failQueueAction(runId, cause);
+    });
   };
   const ownedQueued = useMemo(() => new Set(ownedQueuedRunIds), [ownedQueuedRunIds]);
   const ownedQueuedTasks = queuedTasks.filter((task) => ownedQueued.has(task.runId));
@@ -1890,7 +1916,7 @@ export default function AiSessionPane({
 
   const renderEntry = useCallback((entry: AiEntry): ReactNode => {
     if (entry.kind === "user") {
-      return <article key={entry.id} data-entry-id={entry.id} className="ai-chat-entry is-user">
+      return <Message render={<article />} align="end" key={entry.id} data-entry-id={entry.id} className="ai-chat-entry is-user">
         <AiUserMessage
           text={entry.text}
           images={entry.images?.map((path) => ({
@@ -1931,7 +1957,7 @@ export default function AiSessionPane({
             ),
           }))}
         />
-      </article>;
+      </Message>;
     }
     return <AiChatEntryRow
       key={entry.id}
@@ -2011,14 +2037,15 @@ export default function AiSessionPane({
     ) : null}
     {/* 列宽手柄挂在内容轴左右缘：命中区 12px、可见线 1px，拖拽对称放大。 */}
     <AiChatWidthHandles host={pane} />
-    <div ref={content} className="ai-session-content ai-chat-content" style={{ overflowAnchor: "none" }} onScroll={trackScroll}
+    {/* Chat / Message Scroller retain one owner for streaming follow and paginated history anchors. */}
+    <div data-slot="message-scroller" ref={content} className="ai-session-content ai-chat-content" style={{ overflowAnchor: "none" }} onScroll={trackScroll}
       onContextMenu={requestConversationMenu}
       onWheel={(event) => {
         // 内容不足一屏时没有 scroll 事件，向上滚轮仍应启动历史加载。
         olderScroll.current.intent(event.deltaY);
         prefetchEarlier();
       }}>
-      <div className="ai-conversation">
+      <MessageGroup data-element="chat" className="ai-conversation">
       {/* 父会话声明已启动子代理：点击展开右上角工作区浮岛卡片 */}
       {!isAgentSession && runtime.agents.length ? (() => {
         const liveAgents = runtime.agents.filter((agent) => agent.status === "running" || agent.status === "starting");
@@ -2107,7 +2134,7 @@ export default function AiSessionPane({
         ) : (
           <p className="ai-chat-empty">{t("ai.noWorkspace")}</p>
         ) : null}
-      </div>
+      </MessageGroup>
     </div>
     {/* 浮在滚动区下沿，所以放在滚动容器之外：往上翻页和流式增长都不该把它跟着推走。 */}
     {!atBottom ? <AiJumpToBottom unseen={unseen} onClick={jumpToBottom} /> : null}
@@ -2196,7 +2223,7 @@ export default function AiSessionPane({
           <p title={task.prompt}>{task.prompt || t("ai.runtime.queuedTask")}</p>
           {owned ? <span className="ai-task-queue-actions">
             {/* 队列是高频操作区：正文占主位，右侧只留图标；完整语义由 title 与 aria-label 承担。 */}
-            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} onClick={() => void runQueuedAiTaskNow(task.runId).catch((cause) => failQueueAction(task.runId, cause))}><Send size={14} aria-hidden /></button>
+            <button type="button" className="ai-task-action" aria-label={t("ai.runtime.runQueuedNow")} title={t("ai.runtime.runQueuedNow")} disabled={queuePromoteBusy.has(task.runId)} aria-busy={queuePromoteBusy.has(task.runId) || undefined} onClick={() => promoteQueuedTask(task.runId)}><Send size={14} aria-hidden /></button>
             <button type="button" className="ai-task-action" aria-label={t("ai.runtime.editQueued")} title={t("ai.runtime.editQueued")} onClick={() => beginQueuedEdit(task.runId, task.prompt ?? "")}><Pencil size={14} aria-hidden /></button>
             <button type="button" className="ai-task-action is-danger" aria-label={t("ai.runtime.cancelQueued")} title={t("ai.runtime.cancelQueued")} onClick={() => void stopAiRun(task.runId).catch((cause) => failQueueAction(task.runId, cause))}><X size={14} aria-hidden /></button>
           </span> : <small className="ai-task-queue-owner">{t("ai.runtime.otherWindow")}</small>}
@@ -2211,9 +2238,9 @@ export default function AiSessionPane({
           menuRef={commandMenu} showDiscovery={session.provider === "claude" && !runtime.commands} /> : null}
         {mentionVisible ? <AiMentionMenu id={`${menuId}-mention`} items={mentionItems} selected={Math.min(mentionIndex, mentionItems.length - 1)} onChoose={acceptMention} /> : null}
       </>}
-      attachments={!editingTask && images.length ? <div className="ai-image-attachments" aria-label={t("ai.chat.images")}>
+      attachments={!editingTask && images.length ? <AttachmentGroup className="ai-image-attachments" aria-label={t("ai.chat.images")}>
         {images.map((image) => (
-          <figure key={image.path}>
+          <Attachment render={<figure />} key={image.path}>
             <span className="ai-chat-image" onContextMenu={(event) => handleImageContextMenu(event, image.path)}>
               <button
                 type="button"
@@ -2239,10 +2266,10 @@ export default function AiSessionPane({
               </button>
             </span>
             <button type="button" className="ai-image-remove" aria-label={t("ai.chat.removeImage")} title={t("ai.chat.removeImage")} onClick={() => { updateImages((current) => current.filter((item) => item.path !== image.path)); void invoke("ai_runtime_delete_image", { path: image.path }).catch(() => {}); }}><X size={12} /></button>
-          </figure>
+          </Attachment>
         ))}
-      </div> : null}
-      editor={<textarea ref={input} rows={2} aria-label={t("ai.message")} placeholder={editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
+      </AttachmentGroup> : null}
+      editor={<textarea data-slot="input-group-control" ref={input} rows={2} aria-label={t("ai.message")} placeholder={editingTask ? t("ai.runtime.editingQueued") : `${t("ai.runtime.placeholder")} · ${t("ai.commands.hint")}`} value={draft} maxLength={16000}
         aria-autocomplete="list" aria-controls={menuVisible ? menuId : undefined} aria-expanded={menuVisible} aria-activedescendant={menuVisible ? `${menuId}-${selectedCommand}` : undefined}
               disabled={!workspace || !cliDesktopAvailable() || sending}
               onContextMenu={requestEditorMenu}
@@ -2353,7 +2380,11 @@ export default function AiSessionPane({
     <div className="ai-composer-caption"><span title={workspace ?? undefined}>{workspace?.split(/[\\/]/).filter(Boolean).pop() ?? t("ai.noWorkspace")}</span>
       {/* 本轮改过哪些文件属于「这一整趟的结果」，不属于某一条消息：收在底栏，点开往上浮。 */}
       {editSummary.fileCount ? <details className="ai-edit-summary"><summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t(editSummary.fileCount === 1 ? "ai.chat.editedFile" : "ai.chat.editedFiles", { count: editSummary.fileCount })}</strong>{editSummary.additions ? <span className="is-add">+{editSummary.additions}</span> : null}{editSummary.deletions ? <span className="is-delete">-{editSummary.deletions}</span> : null}</summary>
-        <ul>{editSummary.files.map((file) => <li key={file.path}>{file.kind ? <em className={`ai-edit-kind is-${file.kind}`}>{t(`ai.tool.${file.kind}`)}</em> : null}<button type="button" className="ai-file-target" disabled={!onPreviewFile} onClick={() => onPreviewFile?.(editedFilePreview(file, `${session.id}:summary`))}><code className="ai-file-path">{file.path}</code></button>{file.additions || file.deletions ? <span>{file.additions ? <b>+{file.additions}</b> : null} {file.deletions ? <i>-{file.deletions}</i> : null}</span> : null}</li>)}</ul>
+        <FileTree label={t("ai.elements.files")} files={editSummary.files.map((file) => ({ path: file.path, content: <>
+          {file.kind ? <em className={`ai-edit-kind is-${file.kind}`}>{t(`ai.tool.${file.kind}`)}</em> : null}
+          <button type="button" className="ai-file-target" title={file.path} disabled={!onPreviewFile} onClick={() => onPreviewFile?.(editedFilePreview(file, `${session.id}:summary`))}><code className="ai-file-path">{file.path.split(/[\\/]/).pop()}</code></button>
+          {file.additions || file.deletions ? <span>{file.additions ? <b>+{file.additions}</b> : null} {file.deletions ? <i>-{file.deletions}</i> : null}</span> : null}
+        </> }))} />
       </details> : null}
       {extraDirs.length ? <details className="ai-edit-summary">
         <summary><ChevronRight className="ai-detail-chevron" size={13} /><strong>{t("ai.chat.extraDirs", { count: extraDirs.length })}</strong></summary>

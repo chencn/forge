@@ -4,6 +4,22 @@
 
 ## 已实现流程
 
+### shadcn/ui AI Elements 接入
+
+- 使用新版 [AI Elements](https://ui.shadcn.com/docs/ai-elements) 的 Base Nova 源码和组合模式：Trace 用于连续工具过程，Reasoning 用于运行时提供的公开思考摘要，Confirmation 用 Item 组合现有权限操作。
+- `src/components/ui/` 只保留实际使用的插槽；官方 Tailwind 类转为 `ai-elements.css` 的局部规则，直接使用 Forge 的深浅及高对比主题变量。源码来源写在文件头，MIT 许可见 `public/licenses/shadcn-ui.txt`。
+- 唯一新增直接依赖为 `@base-ui/react`，按子路径导入 Collapsible、Preview Card 与 render 组合工具；不安装旧 `ai-elements` 包、AI SDK、Tailwind 或其他组件库。
+- 过程仍按最近 8 条分页，运行时默认展开，结束后默认收起，手动选择优先；失败跳转使用独立按钮。思考摘要沿用安全 Markdown，阶段结束收起；没有正文只显示运行状态，不提供空折叠按钮。
+- 工具详情与子代理过程使用 Trace 的可访问折叠，运行阶段结束后恢复默认折叠；命令输出使用 Terminal / Code Block 模式，提供原文复制。文件读取、补丁与独立文件预览继续沿用真实数据和操作。
+- Plan / Task / Queue 接到原有计划审核和 Agent 待办，进度只统计未丢弃的任务及真实完成项。Queue 不对应待发送消息；消息队列原有编辑、拖拽与执行逻辑保留。
+- Message / Chat 使用 Message 源码插槽；Message Scroller 继续由现有分页锚点和流式跟底状态机管理，不增加第二个滚动控制器。Prompt Input 使用 Input Group 组合已有 textarea、附件与工具栏；保留输入法、斜杠命令、草稿与发送契约。Attachment 和 Questionnaire 保留原有图片操作及问题 ID/答案提交格式。
+- 模型选择保留 CLI 能力和模型规范化，支持搜索框内方向键选择、Enter 确认；Context 使用真实 token 与窗口数据，未知用量不显示假百分比。欢迎页 Suggestion 填入可编辑草稿，由用户确认发送。
+- Checkpoint 使用 Marker 展示现有**文件快照**恢复入口，不表示对话回滚；File Tree 在快照和已执行的文件变更汇总里按目录分组，保留真实预览动作。
+- Sources / Inline Citation 只读取 `webSearch.result.results` 中有效且去重的 HTTP(S) 地址，支持悬停和键盘来源预览。当前原生协议没有正文引用锚点，所以不擅自把引用编号插进回复句子。
+- Test Results 接受完整的 Jest/Vitest JSON reporter 结构（`testResults[].assertionResults[]`），可从结构化结果、MCP `structuredContent` 或整段 JSON 输出读取；未知格式保留原始输出，不按命令退出码推算测试数。Stack Trace 显示实际 error/stack 原文，未提供帧数据时不虚构文件跳转。
+- 审批仍走原有 `permissionOffer`、允许前快照、`respondAiRequest` 和禁用状态。
+- 验证覆盖现有审批/文件入口/时间线测试，过程与思考测试使用真实 DOM 点击验证状态转换。浏览器使用 TEMP 中的真实组件与模拟数据验收，不调用模型或执行命令；不等同于完整桌面 CLI 链路验收。
+
 ### 1. 当前项目历史
 
 1. 总开关开启、项目打开后，侧栏查询 Forge 会话，并发现当前项目的原生会话。切换项目后只展示新项目；迟到的旧查询不更新新项目。

@@ -13,6 +13,8 @@ import {
 import { useI18n } from "../i18n";
 import type { AiAgentSummary, AiModelTaskList } from "../lib/aiRuntime";
 import { stopAiAgent } from "../lib/aiRuntime";
+import { Trace, TraceLine } from "./ui/trace";
+import { Item } from "./ui/item";
 
 /**
  * 任务清单侧栏工作区（像素级对照 6.png 的浮岛卡片 Task Dock 模式）：
@@ -63,7 +65,7 @@ export function AiTaskListDockPanel({
   const stepCount = hasTasks ? `${currentStep}/${visible.length}` : `${activeAgentStep}/${agents?.length ?? 0}`;
 
   return (
-    <div className={`ai-taskdock${allCompleted ? " is-all-completed" : ""}`} aria-label={titleLabel}>
+    <Trace data-element="queue" className={`ai-taskdock${allCompleted ? " is-all-completed" : ""}`} aria-label={titleLabel}>
       {/* 顶栏：纯文本「进程/智能体  M/N」 + 收起操作按钮 */}
       <header className="ai-taskdock-header">
         <div className="ai-taskdock-header-title">
@@ -84,6 +86,8 @@ export function AiTaskListDockPanel({
           ) : null}
         </div>
       </header>
+      {/* Queue represents the agent's actual todo list, independently of outgoing messages. */}
+      {hasTasks ? <progress className="ai-element-plan-progress" aria-label={titleLabel} max={visible.length} value={visible.filter((item) => item.status === "complete" || item.status === "completed").length} /> : null}
 
       {hasTasks ? (
         <div className="ai-taskdock-body">
@@ -108,7 +112,7 @@ export function AiTaskListDockPanel({
               const isActive = item.status === "in_progress" || item.status === "active";
               return (
                 <li key={item.id || index} className={`ai-taskdock-item${isActive ? " is-active" : ""}${isDone ? " is-done" : ""}`}>
-                  <button type="button" className="ai-taskdock-row" onClick={() => onJump("session:task-list")}>
+                  <TraceLine data-element="task" status={isActive ? "running" : isDone ? undefined : "pending"}><button type="button" className="ai-taskdock-row" onClick={() => onJump("session:task-list")}>
                     <span className="ai-taskdock-icon" aria-hidden>
                       {isActive ? (
                         <ArrowRight size={13} className="ai-taskdock-arrow" />
@@ -122,7 +126,7 @@ export function AiTaskListDockPanel({
                       <span className="ai-taskdock-content">{item.content}</span>
                       {item.detail ? <span className="ai-taskdock-detail">{item.detail}</span> : null}
                     </span>
-                  </button>
+                  </button></TraceLine>
                 </li>
               );
             })}
@@ -177,7 +181,7 @@ export function AiTaskListDockPanel({
           </div>
         </div>
       ) : null}
-    </div>
+    </Trace>
   );
 }
 
@@ -224,7 +228,7 @@ export function AiAgentDockPanel({ agents, provider, workspace, onOpen }: {
   return <div className="ai-agentdock-body" aria-label={t("ai.agent.nav")}>
     {error ? <p className="ai-msgnav-note" role="alert">{error}</p> : null}
     {rows.map((agent) => (
-      <div key={agent.key} className="ai-agentdock-rowwrap">
+      <Item key={agent.key} data-element="subagent" className="ai-agentdock-rowwrap">
         <button type="button" className="ai-agentdock-row" title={agent.result ?? agent.title}
           onClick={() => agent.sessionId && onOpen(agent.sessionId)}>
           <span className="ai-agent-subrow-dot" data-status={agent.status} aria-hidden />
@@ -243,7 +247,7 @@ export function AiAgentDockPanel({ agents, provider, workspace, onOpen }: {
           </button>
         ) : null}
         {agent.status === "failed" ? <CircleX size={12} className="ai-agentdock-failed" aria-hidden /> : null}
-      </div>
+      </Item>
     ))}
     {!rows.length ? <p className="ai-msgnav-empty">{t("ai.agent.empty")}</p> : null}
   </div>;

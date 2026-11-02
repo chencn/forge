@@ -2058,7 +2058,8 @@ span.entry-icon > svg {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
+    /* 真正禁用过渡；极短的 visibility 过渡仍会逐层延迟后代可聚焦的时机。 */
+    transition-duration: 0s !important;
   }
 
   /* 加载与生成指示器的旋转动画保留，确保用户能明确感知后台任务正在运行。
@@ -2637,7 +2638,8 @@ span.entry-icon > svg {
 }
 
 .panel-splitter:hover::after {
-  background: var(--accent-blue);
+  /* 分隔条用中性反馈，避免悬停时出现蓝色竖边。 */
+  background: var(--text-tertiary);
 }
 
 /* 底部一次只坐一块工具窗口，高度由上面那条缝定。只占编辑区这一列，侧栏仍接到顶栏和底栏。 */
@@ -3507,7 +3509,7 @@ body .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
 
 .term-side-resizer:hover,
 .term-pane-resizer:hover {
-  background: color-mix(in srgb, var(--accent-blue) 40%, transparent);
+  background: var(--border-strong);
 }
 
 .term-panes {
@@ -3956,7 +3958,7 @@ body .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
   bottom: 2px;
   width: 2px;
   border-radius: 1px;
-  background: var(--accent-blue);
+  background: var(--text-tertiary);
 }
 
 .term-tab.drop-before::before {
@@ -4557,7 +4559,7 @@ body.is-editor-tab-dragging * {
 
 .doc-split-divider:hover,
 .doc-split-divider:active {
-  background: var(--accent-blue-bg);
+  background: var(--border-strong);
 }
 
 /* 编辑区双栏并排拆分布局（Split Right / Split Down） */
@@ -4602,11 +4604,8 @@ body.is-editor-tab-dragging * {
 .ai-file-preview-editor, .ai-file-preview-patches { flex: 1; min-height: 0; overflow: auto; }
 .ai-file-preview-editor { height: 100%; }
 .ai-file-preview-pane > .ai-diff-editor { flex: 1; min-height: 0; }
-/* 读取记录使用整行底色和装订线标记，光标离开后仍能辨认读取范围。 */
-/* 读过的那一段：整行一条淡蓝，行号那一栏再留一条竖标。竖标只认行号槽——
-   gutterLineClass 会把类发给这一行的每一格，折叠扣那边跟着长一条就成两道杠了。 */
+/* 读取范围用整行底色表达，行号区不再重复绘制蓝色竖标。 */
 .ai-file-read-highlight { background: color-mix(in srgb, var(--accent-blue) 12%, transparent); }
-.cm-lineNumbers .ai-file-read-gutter { border-left: 3px solid var(--accent-blue); }
 .editor-pane-body {
   display: flex;
   flex-direction: column;
@@ -4638,7 +4637,7 @@ body.is-editor-tab-dragging * {
 
 .editor-split-divider:hover,
 .editor-split-divider:active {
-  background: var(--accent-blue-bg);
+  background: var(--border-strong);
 }
 
 .doc-preview-pane {
@@ -4763,13 +4762,13 @@ body.is-editor-tab-dragging * {
   text-decoration: underline;
 }
 
-/* 引用块 */
+/* 引用块以中性完整边框区分正文，禁止单侧蓝色强调边。 */
 :is(.markdown-body, .ai-message-markdown) blockquote {
   margin: 16px 0;
   padding: 10px 16px;
-  border-left: 3.5px solid var(--button-solid, #3574f0);
+  border: 1px solid var(--border-color);
   background: var(--bg-secondary);
-  border-radius: 0 6px 6px 0;
+  border-radius: 6px;
   color: var(--text-secondary);
 }
 

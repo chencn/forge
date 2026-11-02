@@ -162,6 +162,8 @@ export function resolveFileLink(target: FileLinkTarget, workspace: string | null
   if (path.startsWith("/")) {
     // Windows 上的 `/d/app/x` 是 Git Bash 的盘符写法。
     if (workspace && isWindowsPath(workspace)) {
+      // AI 回复也会用 `/D:/app/x`，去掉 URI 风格的前导斜杠再交给文件系统。
+      if (WINDOWS_ABSOLUTE.test(path.slice(1))) return nativeSeparators(path.slice(1));
       const msys = /^\/([A-Za-z])(\/.*)?$/.exec(path);
       return msys ? nativeSeparators(`${msys[1].toUpperCase()}:${msys[2] ?? "/"}`) : null;
     }

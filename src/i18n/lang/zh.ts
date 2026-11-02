@@ -1,5 +1,19 @@
 export const zh = {
   "app.name": "Forge",
+  // AI Elements 使用真实工具数据；未知结果保持未知。
+  "ai.elements.sources": "搜索来源",
+  "ai.elements.tests": "测试结果",
+  "ai.elements.testCounts": "通过 {passed} / {total}",
+  "ai.elements.test.passed": "通过",
+  "ai.elements.test.failed": "失败",
+  "ai.elements.test.pending": "待执行",
+  "ai.elements.test.skipped": "已跳过",
+  "ai.elements.test.todo": "待实现",
+  "ai.elements.files": "文件",
+  "ai.elements.suggestions": "快捷提问",
+  "ai.elements.suggestStructure": "解释这个项目的结构",
+  "ai.elements.suggestReview": "检查当前改动，找出潜在问题",
+  "ai.elements.suggestTests": "分析项目的测试覆盖，建议优先补哪些测试",
   "browser.widen": "展开 / 还原浏览器宽度",
   "browser.pickElement": "选取元素",
   "browser.cancelPick": "取消选取",
@@ -646,6 +660,7 @@ export const zh = {
   "explorer.deletedMany": "已删除 {count} 个文件/目录",
 
   "welcome.hint": "请选择项目文件夹",
+  "welcome.openFile": "打开项目中的文件以开始编辑",
   "drop.pending": "松开以打开",
   "drop.file": "松开以暂时打开",
   "drop.files": "松开以暂时打开 {count} 个文件",

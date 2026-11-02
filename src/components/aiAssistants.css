@@ -215,16 +215,9 @@
 /* 附件与斜杠按钮同尺寸同排；回形针是图标不是文字，所以靠 grid 居中。 */
 /* 拖拽悬停时盖住输入区的提示：输入框本身已经是定位父级，不再另套壳。 */
 .ai-composer-drop { position: absolute; inset: 4px; z-index: 20; display: flex; align-items: center; justify-content: center; border: 1px dashed color-mix(in srgb, var(--accent-blue) 50%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--bg-primary) 80%, transparent); color: var(--text-tertiary); font-size: 12px; pointer-events: none; }
-.ai-compaction-notice, .ai-plan-notice { margin: 6px 0; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; }
+.ai-compaction-notice { margin: 6px 0; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; }
 .ai-compaction-notice { display: flex; align-items: center; gap: 10px; }
-.ai-compaction-notice strong, .ai-plan-notice strong { color: var(--text-primary); }
-.ai-plan-notice header { display: flex; justify-content: space-between; gap: 12px; }
-.ai-plan-notice p { margin: 7px 0; color: var(--text-primary); }
-.ai-plan-notice ol { display: grid; gap: 5px; margin: 7px 0 0; padding: 0; list-style: none; }
-.ai-plan-notice li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 5px; }
-.ai-plan-notice li.is-completed, .ai-plan-notice li.is-complete { color: var(--text-tertiary); text-decoration: line-through; }
-.ai-plan-notice li.is-inProgress, .ai-plan-notice li.is-active { color: var(--text-primary); font-weight: 500; }
-.ai-plan-notice li small { display: block; margin-top: 2px; color: var(--text-tertiary); font-weight: 400; text-decoration: none; }
+.ai-compaction-notice strong { color: var(--text-primary); }
 .ai-request-tool { display: grid; gap: 6px; }
 .ai-request-tool-title { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
 .ai-model-catalog-list { display: grid; max-height: 230px; gap: 5px; overflow: auto; }
@@ -275,29 +268,21 @@
 .ai-detail-chevron { flex: none; color: var(--text-tertiary); }
 .ai-chat-entry details[open] > summary > .ai-detail-chevron { transform: rotate(90deg); }
 .ai-tool > summary:hover, .ai-reasoning > summary:hover, .ai-timeline-notice > summary:hover { color: var(--text-primary); }
-.ai-tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 20px; }
+.ai-tool-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-ui, var(--font-sans)); font-synthesis: none; letter-spacing: 0; font-size: 12.5px; line-height: 20px; }
 /* 路径能点开：摘要与明细里的目标都用同一条按钮样式，默认外观全部抹掉。 */
 .ai-file-target { appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
 .ai-file-target:hover { text-decoration: underline; text-underline-offset: 2px; }
-.ai-file-preview-trigger {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  padding: 2px 0;
-  min-height: 24px;
-  box-sizing: border-box;
-}
-.ai-file-preview-trigger > svg {
-  flex: none;
-  opacity: 0.7;
-  transition: opacity 150ms;
-}
-.ai-file-preview-trigger:hover > svg {
-  opacity: 1;
-}
+/* 操作文字与箭头组成局部按钮，文件名独立可点，空白区域不触发。 */
+.ai-row-head.ai-tool-header { cursor: default; }
+.ai-tool-header .ai-tool-disclosure { display: inline-flex; align-items: center; gap: 6px; flex: none; min-height: 20px; padding: 0; }
+.ai-tool-disclosure:hover .ai-row-label { color: var(--text-primary); }
+.ai-tool-navigation { flex: none; color: var(--text-tertiary); }
+.ai-file-preview-trigger { flex: 0 1 auto; min-width: 0; text-decoration: underline dotted; text-underline-offset: 3px; }
+.ai-file-preview-trigger:hover { text-decoration-style: solid; }
+/* 长文件名省略时仍保留行号，路径只通过 title 展示。 */
+.ai-tool-name.ai-tool-file { display: inline-flex; min-width: 0; }
+.ai-tool-file-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ai-tool-file-position { flex: none; }
 .ai-tool-target { color: var(--accent-blue-text); }
 .ai-tool-status { flex: none; font-size: 11px; color: var(--text-tertiary); }
 .ai-tool.is-failed .ai-tool-status { color: var(--accent-red-text); }
@@ -905,13 +890,16 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-composer-plan-exit { display: grid; place-items: center; width: 15px; height: 15px; padding: 0; margin-left: 2px;
   border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; opacity: 0.75; transition: opacity 120ms, background-color 120ms; }
 .ai-composer-plan-exit:hover { opacity: 1; background: color-mix(in srgb, currentColor 20%, transparent); }
-/* 分段控件：凹槽底 + 选中浮起，对照参考的 segmented。 */
-.ai-segmented { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg-tertiary); }
-.ai-segmented button { height: 24px; min-width: 0; flex: 1 1 auto; padding: 0 8px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--text-tertiary); font: inherit; font-size: 11px; font-weight: 500;
+/* 分段控件用中性凹槽和按钮表面区分状态，列表选中蓝不用于设置项。 */
+.ai-segmented { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1px solid var(--border-popup);
+  border-radius: 6px; background: var(--bg-elev); }
+.ai-segmented button { height: 26px; min-width: 0; flex: 1 1 auto; padding: 0 8px; border: 0; border-radius: 3px;
+  background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 500;
   cursor: pointer; transition: background-color 150ms, color 150ms, box-shadow 150ms; }
-.ai-segmented button:hover { color: var(--text-primary); }
-.ai-segmented button.is-on { background: var(--bg-primary); color: var(--text-primary); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.ai-segmented button:hover:not(:disabled):not(.is-on) { background: var(--bg-hover); color: var(--text-primary); }
+.ai-segmented button.is-on { background: var(--bg-popup); color: var(--text-primary); font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--border-strong), 0 1px 2px color-mix(in srgb, var(--text-primary) 8%, transparent); }
+.ai-segmented button:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
 .ai-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 10px;
   font-size: 12.5px; color: var(--text-primary); cursor: pointer; }
 .ai-switch-row > span { flex: 1; min-width: 0; }
@@ -1079,7 +1067,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 details[open] > .ai-row-head .ai-detail-chevron { opacity: 1; }
 details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
 /* 操作标签（如「修改文件」、「读取文件」）：采用与整行一致的 20px 行高，消除破坏中文字体基线的 line-height: 1 */
-.ai-row-label { flex: none; font-weight: 500; color: var(--text-tertiary); font-size: 13px; line-height: 20px; }
+.ai-row-label { flex: none; font-family: var(--font-ui, var(--font-sans)); font-synthesis: none; font-weight: 400; letter-spacing: 0; color: var(--text-tertiary); font-size: 12.5px; line-height: 20px; }
 /* 命令行的等宽正文（对照 Command 行）：截断出省略号，完整命令在明细里。 */
 .ai-tool-cmd { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secondary); line-height: 20px; }
@@ -1172,17 +1160,14 @@ details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
   .ai-process-group.is-active .ai-process-head strong { animation: none; color: var(--text-primary); background: none; }
 }
 .ai-tool > summary, .ai-reasoning > summary { padding: 5px 0 5px 0; }
-/* 明细卡：统一圆角表面 + 内滚动（对照 DetailBox 的 max-h-72=288px）。 */
-.ai-tool-details { position: relative; border: 1px solid var(--border-color); border-left: 1px solid var(--border-color);
-  border-radius: 10px; margin: 4px 0 10px 22px; padding: 10px 12px; background: var(--bg-secondary);
-  max-height: 288px; overflow-y: auto; }
-/* 单文件读取的明细体就是代码本体：外层明细容器整层让位——盒中盒加上各自限高滚动，
-   就是「进度条套进度条」。滚动权只属于代码块一个。 */
-.ai-tool-details:has(> .ai-tool-source-code) { border: 0; background: transparent; padding: 0;
-  margin-top: 0; max-height: none; overflow: visible; }
-/* 明细容器自己负责滚动时，内部的输出块与 diff 不再各存一份限高——滚动条只留最外一层。 */
-.ai-tool-details pre { max-height: none; overflow: visible; }
-.ai-tool-details .ai-tool-diff, .ai-tool-details .ai-tool-diff-col { max-height: none; overflow: visible; }
+.ai-tool > [data-slot="trace-collapsible-trigger"], .ai-delegation-main { font-family: var(--font-ui, var(--font-sans)); font-synthesis: none; letter-spacing: 0; }
+/* IDEA 工具窗口只保留一层内容边界；长代码自行滚动，外框不再截断报告与错误。 */
+.ai-tool-details { position: relative; min-width: 0; border: 1px solid var(--border-popup);
+  border-radius: 6px; margin: 6px 0 12px; padding: 10px 12px; background: var(--bg-elev);
+  color: var(--text-primary); }
+.ai-tool-details > :first-child { margin-top: 0; }
+.ai-tool-details > :last-child { margin-bottom: 0; }
+.ai-tool-details pre { background: transparent; }
 .ai-tool-details::before { content: none; }
 .ai-reasoning > .ai-message-markdown, .ai-timeline-notice > .ai-message-markdown { border-left: 1px solid var(--border-color);
   margin: 5px 0 12px 6px; padding-left: 14px; color: var(--text-secondary); }
@@ -1222,8 +1207,9 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 
 /* ===== 子代理委派卡片 / 排队条 / 审批卡（对照 codeg delegation card、queue、permission） ===== */
 /* 委派卡片：一行代理身份 + 任务一句话 + 状态，展开看任务原文与结果。 */
-.ai-delegation { margin: 2px 0 8px; border: 1px solid var(--border-color); border-radius: 10px;
-  background: var(--bg-secondary); overflow: hidden; min-width: 0; }
+.ai-delegation { margin: 6px 0 12px; border: 1px solid var(--border-popup); border-radius: 6px;
+  background: var(--bg-elev); overflow: hidden; min-width: 0; }
+.ai-delegation-header { display: flex; align-items: center; gap: 4px; min-width: 0; padding-right: 8px; }
 .ai-delegation-main { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
   border: 0; background: transparent; color: var(--text-primary); font: inherit; font-size: 13px;
   text-align: left; cursor: pointer; transition: background-color 150ms; }
@@ -1243,12 +1229,13 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-delegation-status { flex: none; font-size: 11px; color: var(--text-tertiary); }
 .ai-delegation.is-failed .ai-delegation-status { color: var(--accent-red-text); }
 .ai-delegation.is-running .ai-delegation-status { color: var(--text-secondary); }
-.ai-delegation-detail { border-top: 1px solid var(--border-color); padding: 8px 12px 10px; max-height: 288px; overflow-y: auto; }
-.ai-delegation-detail .ai-tool-details { max-height: none; overflow: visible; }
-.ai-delegation-detail .ai-tool-details pre { max-height: none; overflow: visible; }
+.ai-delegation-detail { border-top: 1px solid var(--border-popup); padding: 10px 12px; }
+/* 子代理已拥有外框，内部工具按行分区，避免再嵌套完整卡片。 */
+.ai-delegation-detail .ai-tool-details { border: 0; border-radius: 0; padding: 8px 0 0;
+  margin: 0 0 10px; border-top: 1px solid var(--border-color); background: transparent; }
 .ai-delegation-label { margin: 4px 0 4px; color: var(--text-tertiary); font-size: 11px; }
-.ai-delegation-detail pre { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg-primary);
-  border: 1px solid var(--border-color); font: 12px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-delegation-detail pre { margin: 0; padding: 6px 0; border-radius: 0; background: transparent;
+  border: 0; max-height: 320px; overflow: auto; font: 12px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 发送队列只属于输入区，不再混进模型 Task 清单。结构对齐 ccgui 的 composer queue card。 */
 .ai-task-queue { margin: 0 0 8px; overflow: hidden; border: 1px solid var(--border-color); border-radius: 14px;
@@ -1274,8 +1261,8 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   align-items: center; column-gap: 8px; min-height: 40px; padding: 6px; border-radius: 9px;
   background: transparent; transition: background-color 120ms ease; }
 .ai-task-queue-item:hover { background: var(--bg-tertiary); }
-.ai-task-queue-item.is-editing { background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent-blue); }
+/* 编辑态只用中性底色，遵循根目录 AGENTS.md 的全局竖边约束。 */
+.ai-task-queue-item.is-editing { background: var(--bg-tertiary); }
 .ai-task-queue-item.is-drop-before::before, .ai-task-queue-item.is-drop-after::after { content: ""; position: absolute;
   left: 6px; right: 6px; height: 2px; border-radius: 2px; background: var(--accent-blue); pointer-events: none; }
 .ai-task-queue-item.is-drop-before::before { top: -2px; }
@@ -1302,58 +1289,67 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   background: color-mix(in srgb, var(--accent-red-text) 10%, transparent); color: var(--accent-red-text); }
 
 /* 待答复的审批/提问卡：题头图标 + 标题行 + 动作区，对照 permission/question 卡。 */
-.ai-request-card { border: 1px solid color-mix(in srgb, var(--accent-yellow) 30%, transparent);
-  border-radius: 12px; background: var(--bg-primary); padding: 12px; margin: 4px 0 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06); }
+.ai-request-card { border: 1px solid var(--border-popup);
+  border-radius: 6px; background: var(--bg-elev); padding: 12px; margin: 4px 0 8px; }
 .ai-request-card > strong { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .ai-request-card > strong::before { content: ""; width: 18px; height: 18px; flex: none;
   border-radius: 6px; background: var(--accent-amber-bg); }
 .ai-request-card .ai-request-tool, .ai-request-card pre { margin-top: 8px; }
-.ai-request-card fieldset { border: 1px solid var(--border-color); border-radius: 8px; margin: 8px 0 0; padding: 8px 10px; }
+.ai-request-card fieldset { border: 0; border-top: 1px solid var(--border-popup); border-radius: 0; margin: 8px 0 0; padding: 8px 0 0; }
 /* 那圈边框是给审批卡的参数区分块的；提问卡自己已经是完整卡片，fieldset 再画一层
    就是截图里「外层卡 — 中间框 — 选项卡」三层套娃的中间那层。 */
 .ai-question fieldset { border: 0; margin: 0; padding: 0; }
 /* 旧规则 .ai-session-requests .ai-request-card 的特异性更高，这里同特异性补写覆盖。 */
-.ai-session-requests .ai-request-card { border-color: color-mix(in srgb, var(--accent-yellow) 30%, transparent); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06); }
+.ai-session-requests .ai-request-card { border-color: var(--border-popup); }
 
 /* ===== 设置弹层（对照 codeg session-settings-picker）与上下文用量卡（对照 composer-context-usage） ===== */
-/* 设置弹层：分节 + 分隔线；外层只留小内边距，节与节之间 4px。 */
-.ai-settings-popover { display: flex; flex-direction: column; gap: 4px; padding: 6px; max-height: min(60vh, 520px); overflow-y: auto; }
+/* 外框由 Popover 独占；内部用通栏分隔和留白分区，不再叠加模型卡片。 */
+.popover.ai-settings-popup { display: flex; flex-direction: column; padding: 0;
+  width: min(352px, calc(100vw - 12px)); min-width: 0;
+  border-color: var(--border-strong); background: var(--bg-popup);
+  box-shadow: var(--shadow-popup); overflow: hidden; }
+/* 只有 content 负责滚动；其子项按自然高度排布，避免纵向 flex 收缩裁掉底部控件。 */
+.ai-settings-popover { display: flex; flex-direction: column; gap: 0; padding: 0;
+  min-height: 0; max-height: min(560px, calc(100dvh - 16px)); overflow: hidden; }
+.ai-settings-content { min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
 .ai-settings-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 24px;
-  padding: 0 8px; color: var(--text-tertiary); font-size: 11px; font-weight: 500; flex: none; }
+  padding: 0; color: var(--text-secondary); font-size: 12px; font-weight: 500; flex: none; }
 .ai-settings-header span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-settings-aside { flex: none; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-settings-sep { height: 1px; margin: 0 8px; background: var(--border-color); flex: none; }
-.ai-settings-block { display: flex; flex-direction: column; gap: 4px; }
-/* 模型列表块：搜索行 + 列表收进同一个圆角边框卡。 */
-.ai-model-block { border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; flex: none; }
-.ai-model-search { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  border-bottom: 1px solid var(--border-color); color: var(--text-tertiary); background: transparent; }
+.ai-settings-sep { height: 1px; margin: 0; background: var(--border-popup); flex: none; }
+.ai-settings-block { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px 12px; }
+.ai-model-block { overflow: hidden; flex: none; }
+.ai-model-search { display: flex; flex: none; align-items: center; gap: 8px; padding: 12px;
+  border-bottom: 1px solid var(--border-popup); color: var(--text-tertiary); background: var(--bg-elev); }
+.ai-model-search:focus-within { box-shadow: inset 0 -1px var(--control-off); }
 .ai-model-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent;
   color: var(--text-primary); font: inherit; font-size: 13px; }
 .ai-model-search input::placeholder { color: var(--text-tertiary); }
-.ai-model-list { max-height: 208px; overflow-y: auto; padding: 4px; }
+.ai-model-list { padding: 6px; }
 .ai-model-section + .ai-model-section { margin-top: 2px; }
 .ai-model-group { margin: 8px 8px 2px; color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
 .ai-model-status { padding: 12px; color: var(--text-tertiary); font-size: 12.5px; text-align: center; }
-.ai-model-option { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 5px 8px;
+.ai-model-option { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 7px 8px;
   border: 0; border-radius: 6px; background: transparent; color: var(--text-primary);
-  font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
-.ai-model-option:hover, .ai-model-option-main:hover { background: var(--bg-tertiary); }
-.ai-model-option.is-selected { background: color-mix(in srgb, var(--accent-blue) 8%, transparent); }
+  appearance: none; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+/* hover 与鼠标/键盘高亮只改变表面，不动态插入描边，避免鼠标移动时边框闪烁。 */
+.ai-model-option:hover:not(:disabled):not(.is-selected),
+.ai-model-option.is-highlighted:not(:disabled):not(.is-selected),
+.ai-model-option-main:hover:not(:disabled) { background: var(--bg-control-hover); }
+/* 当前模型由勾选和浅灰表面标记，避免大面积强调色压过模型名称。 */
+.ai-model-option.is-selected { background: var(--bg-hover); }
 .ai-option-check { flex: none; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px;
-  margin-top: 2px; color: var(--text-primary); }
+  color: var(--text-primary); }
 .ai-option-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
 .ai-option-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .ai-option-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.ai-option-badge { flex: none; padding: 0 5px; border: 1px solid var(--border-color); border-radius: 999px;
-  font-size: 10px; color: var(--text-tertiary); }
+.ai-option-badge { flex: none; margin-left: auto; font-size: 11px; color: var(--text-tertiary); }
 /* id 提示独立成行：等宽小字，长了截断。 */
 .ai-option-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono); font-size: 10.5px; color: var(--text-tertiary); }
 .ai-option-desc { color: var(--text-tertiary); font-size: 11px; }
 /* 自定义模型行：主体可点选，行尾悬停出删除。 */
-.ai-model-option.is-custom-row { padding: 0; gap: 0; display: flex; background: color-mix(in srgb, var(--accent-blue) 8%, transparent); }
+.ai-model-option.is-custom-row { padding: 0; gap: 0; display: flex; background: var(--bg-hover); }
 .ai-model-option.is-custom-row .ai-model-option-main { display: flex; align-items: flex-start; gap: 8px; flex: 1;
   min-width: 0; padding: 5px 0 5px 8px; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .ai-option-remove { flex: none; display: grid; place-items: center; width: 22px; height: 22px; margin: 3px 4px 0 0;
@@ -1362,7 +1358,11 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-option-remove:disabled { opacity: .5; cursor: default; }
 /* 管理行（对照截图）：行内输入框 + 「+ 添加并使用自定义模型」 + 「⟳ 读取模型列表」。 */
 .ai-settings-source { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-tertiary); font-size: 10.5px; }
+  padding: 0 12px 8px; color: var(--text-tertiary); font-size: 10.5px; }
+.ai-settings-source:empty { display: none; }
+.ai-settings-note { margin: 0; padding: 0 12px 10px; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.ai-settings-content > .ai-switch-row { margin: 0; padding: 12px; }
+.ai-settings-content > .ai-error { margin: 0; padding: 8px 12px; overflow-wrap: anywhere; }
 
 /* 上下文用量弹层：紧凑卡（标题 + 进度条 + 已用/上限 + token 行），构成明细收滚动区。 */
 .ai-context-popover { display: flex; flex-direction: column; gap: 10px; padding: 12px;
@@ -1916,32 +1916,37 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 /* 空态：一行灰字。 */
 p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary); font-size: 12.5px; }
 
-/* 计划条目（参考 PlanEntriesList）：图标列 + 文本列，完成灰、进行中加重。 */
-.ai-plan-notice { margin: 6px 0 10px; padding: 0; border: 0; background: transparent; color: var(--text-primary); font-size: 13px; }
-.ai-plan-notice header { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-.ai-plan-notice header span { color: var(--text-tertiary); font-size: 11.5px; }
+/* 直接使用 IDEA 的表面、文字与完成色；完成项保持可读，不模拟禁用态或划除内容。 */
+.ai-plan-notice { box-sizing: border-box; margin: 8px 0 12px; padding: 10px 12px; border: 1px solid var(--border-popup); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 13px; }
+/* 完成数与总数紧随计划标题，不向行尾分散。 */
+.ai-plan-notice header { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 4px 10px; }
+.ai-plan-notice header strong { color: var(--fg-strong); }
+.ai-plan-notice header span { color: var(--fg-secondary); font-size: 11.5px; }
+.ai-plan-notice p { margin: 7px 0; }
 .ai-plan-notice ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .ai-plan-notice li { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.5; }
-.ai-plan-entry-icon { flex: none; margin-top: 3px; color: var(--text-tertiary); }
+.ai-plan-notice [data-slot="trace-line"] { color: inherit; }
+.ai-plan-entry-icon { flex: none; margin-top: 3px; color: var(--fg-muted); }
 .ai-plan-entry-text { min-width: 0; overflow-wrap: anywhere; }
-.ai-plan-notice li.is-complete .ai-plan-entry-text { color: var(--text-tertiary); }
-.ai-plan-notice li.is-active .ai-plan-entry-text { font-weight: 500; }
-.ai-plan-notice li.is-inProgress .ai-plan-entry-text { font-weight: 500; }
-.ai-plan-notice li small { display: block; color: var(--text-tertiary); font-size: 11px; }
+.ai-plan-notice li:is(.is-complete, .is-completed) .ai-plan-entry-icon { color: var(--success); }
+.ai-plan-notice li:is(.is-complete, .is-completed) .ai-plan-entry-text { color: var(--fg-secondary); }
+.ai-plan-notice li:is(.is-active, .is-inProgress, .is-in_progress) .ai-plan-entry-text { font-weight: 500; }
+.ai-plan-notice li small { display: block; margin-top: 2px; color: var(--fg-muted); font-size: 11px; font-weight: 400; }
 
 /* ===== 计划审阅、后台任务与权限拒绝 ===== */
-.ai-plan-approval { margin: 0 0 8px; padding: 11px 12px; border: 1px solid var(--border-color); border-left: 3px solid var(--accent-blue-text); border-radius: 9px; background: var(--bg-primary); display: grid; gap: 9px; }
+.ai-plan-approval { margin: 0 0 12px; padding: 11px 12px; border: 1px solid var(--border-popup); border-radius: 6px; background: var(--bg-elev); display: grid; gap: 10px; }
 .ai-plan-approval > header { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .ai-plan-approval > header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .ai-plan-revision { flex: none; padding: 1px 5px; border-radius: 4px; background: var(--bg-tertiary); color: var(--text-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; }
 .ai-plan-status { flex: none; color: var(--text-secondary); font-size: 10.5px; }
-.ai-plan-body { max-height: 280px; overflow: auto; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); font-size: 12px; }
+/* 计划正文与操作共享外框，横向分隔即可，不再套第二张卡片。 */
+.ai-plan-body { max-height: 360px; overflow: auto; padding: 10px 0 0; border-top: 1px solid var(--border-popup); font-size: 12px; }
 .ai-plan-body > :first-child { margin-top: 0; }
 .ai-plan-body > :last-child { margin-bottom: 0; }
-.ai-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border-popup); }
 .ai-plan-actions .button { display: inline-flex; align-items: center; gap: 5px; }
 .ai-plan-feedback { display: grid; gap: 6px; }
-.ai-plan-entry { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); font-size: 11.5px; }
+.ai-plan-entry { margin: 6px 0 12px; padding: 8px 12px; border: 1px solid var(--border-popup); border-radius: 6px; background: var(--bg-elev); font-size: 11.5px; }
 .ai-plan-entry > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; }
 .ai-plan-entry > summary::-webkit-details-marker { display: none; }
 .ai-plan-entry > summary strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1998,15 +2003,14 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   border-left: 1px dashed color-mix(in srgb, var(--text-primary) 18%, transparent); }
 .ai-explore-children .ai-chat-entry .ai-entry-dot { left: 25px; }
 
-/* 明细分块卡（对照 DetailBox 的分节题头）：命令/动作/读取/补丁各一节。 */
-.ai-tool-section { margin: 0 0 8px; border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
-  border-radius: 8px; overflow: hidden; background: color-mix(in srgb, var(--bg-primary) 60%, transparent); }
+/* 分节只负责标题与间距，内容边界由外层工具详情统一绘制。 */
+.ai-tool-section { min-width: 0; margin: 0 0 10px; }
 .ai-tool-section:last-child { margin-bottom: 0; }
-.ai-tool-section > header { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px;
-  color: var(--text-tertiary); font-size: 11px; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent); }
+.ai-tool-section > header { display: flex; align-items: center; gap: 6px; min-height: 24px;
+  color: var(--text-secondary); font-size: 11px; }
 .ai-tool-section > header > svg { color: var(--text-tertiary); }
 .ai-tool-section pre { margin: 0; border: 0; border-radius: 0; background: transparent; }
-.ai-tool-section .ai-tool-path { padding: 6px 10px; margin: 0; }
+.ai-tool-section .ai-tool-path { padding: 4px 0; margin: 0; }
 
 /* diff：模式切换（行内/分栏）与分栏双列同步滚动。 */
 .ai-tool-diff-wrap { min-width: 0; }
@@ -2062,9 +2066,9 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-width-handle.is-right { left: auto; right: calc(50% - min(var(--ai-content-width), 100% - 24px) / 2 - 6px); }
 .ai-width-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
   background: transparent; transition: background-color 150ms; }
-.ai-width-handle:hover, .ai-width-handle:focus-visible, .ai-width-handle[data-dragging] { background: color-mix(in srgb, var(--accent-blue) 6%, transparent); }
+.ai-width-handle:hover, .ai-width-handle:focus-visible, .ai-width-handle[data-dragging] { background: color-mix(in srgb, var(--text-primary) 6%, transparent); }
 .ai-width-handle:hover::after, .ai-width-handle:focus-visible::after { background: var(--border-color); }
-.ai-width-handle[data-dragging]::after { background: color-mix(in srgb, var(--accent-blue) 60%, transparent); }
+.ai-width-handle[data-dragging]::after { background: var(--text-tertiary); }
 .ai-width-handle:focus-visible { outline: none; }
 .ai-width-handle { display: none; }
 @container ai-chat (min-width: 560px) { .ai-width-handle { display: block; } }
@@ -2108,7 +2112,7 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-delegation-timeline { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 10px; }
 .ai-delegation-timeline .ai-tool,
 .ai-delegation-timeline .ai-chat-entry.is-reasoning { margin: 0; }
-.ai-delegation-text { padding: 4px 0 6px 26px; font-size: 13px; }
+.ai-delegation-text { padding: 6px 0; border-top: 1px solid var(--border-color); font-size: 13px; }
 .ai-delegation-text .ai-message-markdown > :first-child { margin-top: 0; }
 .ai-delegation-text .ai-message-markdown > :last-child { margin-bottom: 0; }
 .ai-delegation-detail .ai-reasoning { margin: 0; }
@@ -2229,12 +2233,13 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 /* 浏览文件预览：高度按视口自适应（约三分之一屏），不再固定 288px 满档。 */
 /* white-space 必须是 normal：行与行之间的换行文本节点在 pre 下会渲染成空行，
    每个代码行后面跟一个空行——「一行两行高」的真凶。行内容由块级 .cl 自己保持 pre。 */
-.ai-tool-details .ai-tool-source-code pre { margin: 0; padding: 8px 12px; max-height: min(240px, 34vh); overflow: auto;
+.ai-tool-details .ai-tool-source-code pre { margin: 0; padding: 8px 44px 8px 0; border: 0; border-radius: 0;
+  background: transparent; max-height: min(240px, 34vh); overflow: auto;
   font: 12px/1.5 var(--font-mono); white-space: normal; }
 
 /* Grep 命中按文件分组（对照参考实现的 search results）：文件头 + 行号对齐的命中行。 */
-.ai-search-hits { display: grid; gap: 6px; padding: 8px 10px; }
-.ai-search-hits-file { min-width: 0; border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); border-radius: 6px; overflow: hidden; }
+.ai-search-hits { display: grid; gap: 10px; padding: 8px 0; }
+.ai-search-hits-file { min-width: 0; overflow: hidden; }
 .ai-search-hits-file > header { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
   background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent); color: var(--text-secondary);
   font-family: var(--font-mono); font-size: 10.5px; }
@@ -2404,9 +2409,8 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-agent-strip-model { font-size: 11px; color: var(--text-tertiary); }
 .ai-agent-strip-note { margin-left: auto; font-size: 11px; color: var(--text-tertiary); }
 
-/* 委派卡上的「打开会话」直达入口（在主按钮之外，避免按钮嵌套）。 */
-.ai-delegation { position: relative; }
-.ai-delegation-open { position: absolute; top: 8px; right: 40px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-secondary); font: inherit; font-size: 11px; cursor: pointer; }
+/* 跳转入口留在主按钮之外，使用固定宽度参与标题行排版。 */
+.ai-delegation-open { display: inline-flex; flex: none; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border-popup); border-radius: 4px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
 .ai-delegation-open:hover { color: var(--text-primary); border-color: color-mix(in srgb, var(--text-tertiary) 40%, var(--border-color)); }
 
 /* 子代理空会话占位卡片：说明子代理状态并提供一键返回主会话操作。 */

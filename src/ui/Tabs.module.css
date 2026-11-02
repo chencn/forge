@@ -268,7 +268,7 @@
   padding: 0 10px 0 2px;
 }
 
-/* 拖拽反馈指示线 */
+/* 拖拽落点使用中性色，避免页签侧边出现蓝色竖条。 */
 .dragging {
   opacity: 0.5;
 }
@@ -280,7 +280,7 @@
   top: 4px;
   bottom: 4px;
   width: 2px;
-  background: var(--accent, #3574f0);
+  background: var(--text-tertiary);
   z-index: 1;
   pointer-events: none;
 }

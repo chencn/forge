@@ -12,7 +12,6 @@ import { type Range,
   EditorState,
   Facet,
   Prec,
-  RangeSetBuilder,
   StateEffect,
   StateField,
   Transaction,
@@ -23,8 +22,6 @@ import {
   Decoration,
   drawSelection,
   dropCursor,
-  GutterMarker,
-  gutterLineClass,
   highlightActiveLineGutter,
   highlightSpecialChars,
   keymap,
@@ -460,39 +457,21 @@ export function detachedState(doc: EditorDoc, extra: Extension[] = []): EditorSt
   });
 }
 
-/** 只给 elementClass：gutterLineClass 要的就是这个，带 toDOM 的标记会串进别的槽。 */
-class MarkStrip extends GutterMarker {
-  constructor(className: string) {
-    super();
-    this.elementClass = className;
-  }
-}
-
 /**
- * 给一段整行上色，并在行号那一栏留一条竖标：AI 读过的那一段在预览里要看得出来。
+ * 读取范围只用整行底色表达，不再生成行号区的装饰竖标。
  *
  * 行号按当前正文计，超出文档的行数收在最后一行。
  */
 export function highlightRange(startLine: number, endLine: number): Extension {
   return [
-    // 槽只认行首那个点：按行号当偏移给区间，一行都画不出来（同改动色带那里的口径）。
-    gutterLineClass.compute(["doc"], (state) => {
-      const mark = new MarkStrip("ai-file-read-gutter");
-      const builder = new RangeSetBuilder<GutterMarker>();
-      const lines = state.doc.lines;
-      const start = Math.min(Math.max(1, startLine), lines);
-      const end = Math.min(Math.max(start, endLine), lines);
-      for (let line = start; line <= end; line += 1) {
-        const at = state.doc.line(line).from;
-        builder.add(at, at, mark);
-      }
-      return builder.finish();
-    }),
-    EditorView.decorations.of((view) => {
-      const lines = view.state.doc.lines;
-      const from = view.state.doc.line(Math.min(Math.max(1, startLine), lines)).from;
-      const to = view.state.doc.line(Math.min(Math.max(1, endLine), lines)).to;
-      return Decoration.set([Decoration.line({ class: "ai-file-read-highlight" }).range(from, to)]);
+    EditorView.decorations.compute(["doc"], (state) => {
+      const start = Math.min(Math.max(1, startLine), state.doc.lines);
+      const end = Math.min(Math.max(start, endLine), state.doc.lines);
+      const mark = Decoration.line({ class: "ai-file-read-highlight" });
+      const ranges: Range<Decoration>[] = [];
+      // CodeMirror 的单行装饰必须是行首的零长度范围，多行读取逐行标记。
+      for (let line = start; line <= end; line += 1) ranges.push(mark.range(state.doc.line(line).from));
+      return Decoration.set(ranges);
     }),
   ];
 }

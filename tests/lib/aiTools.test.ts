@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AiEntry } from "../../src/lib/aiRuntime";
 import { describeAiTool, parseToolDiff, summarizeAiFileEdits, toolDiffCounts, toolLiveDiffCounts, toolReadLines } from "../../src/lib/aiTools";
+import { aiToolError, aiToolSources, aiToolTestSuites } from "../../src/lib/aiToolResults";
 
 const tool = (change: Partial<AiEntry>): AiEntry => ({
   id: "tool",
@@ -10,7 +11,67 @@ const tool = (change: Partial<AiEntry>): AiEntry => ({
   ...change,
 });
 
+// Result panels consume structured facts. Shell prose and response links never establish test/citation facts.
+describe("AI Elements 工具结果边界", () => {
+  it("来源只接受结构化搜索 URL，去重并拒绝脚本、凭据和伪造文本来源", () => {
+    expect(aiToolSources(tool({ name: "webSearch", result: { results: [
+      { url: "https://example.com", title: "文档" }, { url: "https://example.com/" },
+      { url: "javascript:alert(1)" }, { url: "https://user:secret@example.com/private" },
+      { url: "file:///secret" }, { title: "缺少地址" }, { url: "not a URL" },
+      { url: "https://docs.example.org/" },
+    ] } }))).toEqual([{ url: "https://example.com/", title: "文档" }, { url: "https://docs.example.org/", title: "docs.example.org" }]);
+    expect(aiToolSources(tool({ name: "exec", result: { results: [{ url: "https://example.com" }] } }))).toEqual([]);
+    expect(aiToolSources(tool({ name: "webSearch", output: "[来源](https://example.com)" }))).toEqual([]);
+  });
+  it("解析完整 Jest/Vitest JSON 报告，保留测试状态和失败原文", () => {
+    const report = { testResults: [{ name: "suite.ts", assertionResults: [
+      { fullName: "normalizes input", status: "passed" },
+      { fullName: "rejects invalid input", status: "failed", failureMessages: ["Error: invalid\n  at test.ts:2:1", 3] },
+      { title: "later", status: "pending" },
+    ] }] };
+    const expected = [{ name: "suite.ts", tests: [
+      { name: "normalizes input", status: "passed", errors: [] },
+      { name: "rejects invalid input", status: "failed", errors: ["Error: invalid\n  at test.ts:2:1"] },
+      { name: "later", status: "pending", errors: [] },
+    ] }];
+    expect(aiToolTestSuites(tool({ output: JSON.stringify(report) }))).toEqual(expected);
+    expect(aiToolTestSuites(tool({ result: { structuredContent: report } }))).toEqual(expected);
+    expect(aiToolTestSuites(tool({ result: { result: { structuredContent: report }, error: null, status: "completed" } }))).toEqual(expected);
+    expect(aiToolTestSuites(tool({ output: { structuredContent: report } }))).toEqual(expected);
+  });
+  it("拒绝部分报告、未知状态和命令退出码，不捏造通过率", () => {
+    expect(aiToolTestSuites(tool({ output: "12 tests passed", result: { exitCode: 0 } }))).toEqual([]);
+    expect(aiToolTestSuites(tool({ output: '{"testResults":[' }))).toEqual([]);
+    expect(aiToolTestSuites(tool({ result: { testResults: [{ name: "suite", assertionResults: [{ title: "x", status: "unknown" }] }] } }))).toEqual([]);
+    expect(aiToolTestSuites(tool({ result: { testResults: [{ name: "suite", assertionResults: [{ title: "x", status: ["passed"] }] }] } }))).toEqual([]);
+    expect(aiToolTestSuites(tool({ result: { testResults: [{ name: "suite" }] } }))).toEqual([]);
+  });
+  it("保留真实结构化错误，缺失堆栈时不虚构 frame", () => {
+    expect(aiToolError(tool({ status: "failed", result: { error: { message: "failed", stack: "Error: failed\n at fn (D:/src/a.ts:4:2)" } } }))).toEqual({ message: "failed", stack: "Error: failed\n at fn (D:/src/a.ts:4:2)" });
+    expect(aiToolError(tool({ result: { error: "denied" } }))).toEqual({ message: "denied" });
+    expect(aiToolError(tool({ status: "failed", output: "command failed" }))).toEqual({ message: "command failed" });
+    expect(aiToolError(tool({ output: "log contains Error" }))).toBeNull();
+  });
+});
+
 describe("AI 工具协议投影", () => {
+  it.each(["running", "completed"])("原生多文件补丁在 %s 摘要中保留各文件的增删行数", (status) => {
+    const entry = tool({ name: "apply_patch", status, input: [
+      "*** Begin Patch", "*** Update File: src/a.ts", "@@", "-old", "+new", "+extra",
+      "*** Update File: src/b.ts", "*** Move to: src/moved.ts", "@@", "-one", "-two", "+three",
+      "*** Add File: src/new.ts", "+first", "+second", "*** End Patch",
+    ].join("\n") });
+    const summary = describeAiTool(entry, false);
+    const details = describeAiTool(entry);
+    const expected = [{ additions: 2, deletions: 1 }, { additions: 1, deletions: 2 }, { additions: 2, deletions: 0 }];
+    expect(summary.patches.map((patch) => patch.destination ?? patch.path)).toEqual(["src/a.ts", "src/moved.ts", "src/new.ts"]);
+    for (let index = 0; index < expected.length; index++) {
+      expect(toolDiffCounts({ ...summary, patches: [summary.patches[index]] })).toEqual(expected[index]);
+      expect(toolDiffCounts({ ...details, patches: [details.patches[index]] })).toEqual(expected[index]);
+    }
+    expect(toolLiveDiffCounts(entry, summary)).toEqual({ additions: 5, deletions: 3 });
+  });
+
   it("Claude 成功编辑没有 structuredPatch 时仍计入文件汇总，失败与仅记录的请求不计入", () => {
     const edit = tool({ name: "Edit", status: "completed", input: { file_path: "a.ts", old_string: "old", new_string: "new" }, output: "updated" });
     expect(summarizeAiFileEdits([edit]).files).toMatchObject([{ path: "a.ts", kind: "edit" }]);

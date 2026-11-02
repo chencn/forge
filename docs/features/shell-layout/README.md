@@ -5,6 +5,7 @@
 auto 按 max-content 量，底部工具窗口一宽整条 body 就被顶出窗口。
 
 布局约定：每个元素先按 IDEA 排，IDEA 里没有对应物的才参考 VSCode。编辑器页签栏是 VSCode 那套。
+全系统的选中态、内容边界及竖向交互反馈遵循根目录 [AGENTS.md](../../../AGENTS.md) 的界面约束。
 图标资产的出处见 [tool-window-icons.md](tool-window-icons.md)。侧栏里画什么归
 [../file-explorer/](../file-explorer/) 与 [../git-commit/](../git-commit/)，底部五块里终端 / 运行 / Git 日志 / 查找
 的内容归 [../terminal/](../terminal/)、[../run/](../run/)、[../git-log/](../git-log/)、[../search/](../search/)，
@@ -86,7 +87,7 @@ auto 按 max-content 量，底部工具窗口一宽整条 body 就被顶出窗�
 ## 分隔条
 
 竖的在侧栏右缘：5px 宽、`--border-color` 上色、`col-resize`。横的在底部面板上方：5px 高、平时透明（看得见的那条线
-是 `.bottom-panel` 的 `border-top`）、`row-resize`。两条悬停都变 `--accent-blue-bg`。拖动用 pointer capture，范围：
+是 `.bottom-panel` 的 `border-top`）、`row-resize`。分隔条悬停与拖动反馈统一使用中性色。拖动用 pointer capture，范围：
 
 | 拖哪 | 默认 | 下限 | 上限 |
 | --- | --- | --- | --- |

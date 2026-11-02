@@ -14,7 +14,6 @@ describe("renderCodeBlock", () => {
     // 语法包懒加载：没装上之前出的是转义后的原文，装上之后同一份正文才有 tok-* 类。
     expect(await prepareHighlight(["typescript"])).toBe(true);
     const html = renderCodeBlock("const a = 1;", "TypeScript");
-    expect(html).toContain('<div class="code-block-wrapper">');
     expect(html).toContain('class="language-typescript"');
     expect(html).toContain('<span class="code-lang-tag">typescript</span>');
     expect(html).toContain("tok-keyword");

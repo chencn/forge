@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { CheckCircle2, ChevronRight, CircleDashed, Loader2, ListTodo } from "lucide-react";
+import { CheckCircle2, CircleDashed, Loader2, ListTodo } from "lucide-react";
+import { Item } from "./ui/item";
+import { TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger } from "./ui/trace";
 import AiMarkdown from "./AiMarkdown";
 import { useI18n } from "../i18n";
 import type { AiEntry, AiPlanReview } from "../lib/aiRuntime";
@@ -47,7 +49,7 @@ export default function AiPlanApproval({ plan, disabled = false, onApprove, onRe
     finally { setBusy(false); }
   };
   const locked = busy || disabled;
-  return <section className="ai-plan-approval" aria-label={t("ai.plan.title")}>
+  return <Item render={<section />} className="ai-plan-approval" data-element="plan" aria-label={t("ai.plan.title")}>
     <header>
       <ListTodo size={15} aria-hidden />
       <strong>{plan.title || t("ai.plan.title")}</strong>
@@ -73,7 +75,7 @@ export default function AiPlanApproval({ plan, disabled = false, onApprove, onRe
       <button type="button" className="button" disabled={locked} onClick={() => void run(onDefer)}>{t("ai.plan.defer")}</button>
     </div>}
     {error ? <p className="ai-error" role="alert">{error}</p> : null}
-  </section>;
+  </Item>;
 }
 
 /** 时间线里的一份计划：草稿随流式增长，完成后显示状态与可折叠全文。 */
@@ -84,19 +86,24 @@ export function AiPlanEntry({ entry }: { entry: AiEntry }) {
     && typeof (entry.input as Record<string, unknown>).revision === "number"
     ? entry.input as unknown as AiPlanReview : null;
   const status = record?.status;
+  const phase = status ?? "draft";
+  const [choice, setChoice] = useState<{ phase: string; open: boolean } | null>(null);
+  // A decision changes the phase, so an earlier manual choice cannot keep a finished plan open.
+  const open = choice?.phase === phase ? choice.open : status === "awaiting_review" || status === "deferred" || !record;
   const icon = !record ? <Loader2 size={14} className="is-spinning" aria-hidden />
     : status === "approved" ? <CheckCircle2 size={14} aria-hidden />
       : status === "awaiting_review" || status === "deferred" ? <CircleDashed size={14} aria-hidden />
         : <CircleDashed size={14} aria-hidden />;
-  return <details className={`ai-plan-entry is-${status ?? "draft"}`} open={status === "awaiting_review" || status === "deferred"}>
-    <summary>
-      <ChevronRight size={13} className="ai-detail-chevron" aria-hidden />
+  return <TraceCollapsible data-element="plan" className={`ai-plan-entry is-${phase}`} open={open} onOpenChange={(open) => setChoice({ phase, open })}>
+    <TraceCollapsibleTrigger>
       {icon}
       <strong>{record?.title || t("ai.plan.draft")}</strong>
       {record ? <span className="ai-plan-revision">v{record.revision}</span> : null}
       {record ? <span className="ai-plan-status">{statusLabel(t, record.status)}</span> : null}
-    </summary>
+    </TraceCollapsibleTrigger>
+    <TraceCollapsibleContent>
     <div className="ai-plan-body">{entry.text ? <AiMarkdown text={entry.text} /> : <p className="ai-muted">{t("ai.plan.drafting")}</p>}</div>
     {record && record.execution !== "not_started" ? <p className="ai-plan-execution">{t(`ai.plan.execution.${record.execution}` as Parameters<typeof t>[0])}</p> : null}
-  </details>;
+    </TraceCollapsibleContent>
+  </TraceCollapsible>;
 }

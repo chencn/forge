@@ -327,9 +327,9 @@ function GitPanel({
   // 同一文件（部分暂存的）在两组的复选框互不联动
   const [checks, setChecks] = useState<Map<string, boolean>>(new Map());
 
-  // 树折叠状态：默认 Unversioned Files 折叠
+  // 文件分组默认折叠，用户手动展开；刷新变更列表时保留当前展开状态。
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(
-    () => new Set(["group:unversioned"])
+    () => new Set(["group:staged", "group:unstaged", "group:unversioned"])
   );
   // 选中的节点 key 集合
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());

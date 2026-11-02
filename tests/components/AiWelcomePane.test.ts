@@ -72,6 +72,21 @@ beforeEach(() => {
 });
 
 describe("AI new-session composer", () => {
+  it("建议只填入持久化草稿，确认发送后才创建会话并交付原文", async () => {
+    const first = render();
+    const suggestion = nodes(first.tree).find((node) => node.type === "button" && node.props.children === "ai.elements.suggestStructure")!;
+    (suggestion.props.onClick as () => void)();
+    expect(h.launch).not.toHaveBeenCalled();
+    expect(loadDraft("D:/project", "draft")).toBe("ai.elements.suggestStructure");
+    const ready = render();
+    const input = nodes(ready.tree).find((node) => "editor" in node.props)!.props.editor as Node;
+    expect(input.props.value).toBe("ai.elements.suggestStructure");
+    (input.props.onKeyDown as (event: Record<string, unknown>) => void)({
+      key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+      nativeEvent: {}, preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    });
+    await vi.waitFor(() => expect(h.launch).toHaveBeenCalledExactlyOnceWith("codex", "ai.elements.suggestStructure", []));
+  });
   it("输入斜杠时提供与正式会话一致的命令列表", () => {
     const first = render();
     expect(first.html).not.toContain('role="listbox"');

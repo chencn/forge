@@ -6,12 +6,14 @@ import {
   applyChangeMarks,
   captureState,
   clearWorkspaceUndo,
+  detachedState,
   disposeModel,
   editorFor,
   emptyState,
   foldEffect,
   fromDiskText,
   gutterHost,
+  highlightRange,
   lineTop,
   lineText,
   minimapGutters,
@@ -77,6 +79,21 @@ function teardown(view: EditorView, ...paths: string[]): void {
   view.destroy();
   for (const path of paths) disposeModel(path);
 }
+
+describe("AI 读取文件预览", () => {
+  it.each([[1, 1], [1, 3], [2, 99], [99, 120]])("读取范围 %s–%s 能初始化只读编辑器并跳行", (start, end) => {
+    const state = detachedState(docOf({ readOnly: true }), [highlightRange(start, end)]);
+    let view: EditorView | undefined;
+    try {
+      // 真实构造视图会校验装饰范围；仅创建 state 无法覆盖点击预览时的异常。
+      view = new EditorView({ state, parent: document.body });
+      expect(textOf(view)).toBe("alpha\nbeta\ngamma");
+      expect(view.state.readOnly).toBe(true);
+      revealRange(view, Math.min(start, state.doc.lines), 0, 0);
+      expect(view.state.doc.lineAt(view.state.selection.main.head).number).toBe(Math.min(start, state.doc.lines));
+    } finally { view?.destroy(); }
+  });
+});
 
 describe("WorkspaceEdit 撤销栈", () => {
   it("后注册的先撤：连按 Ctrl+Z 逐级回放", async () => {

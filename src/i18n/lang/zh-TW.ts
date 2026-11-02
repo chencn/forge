@@ -2,6 +2,20 @@ import type { TranslationKey } from "./zh";
 
 export const zhTW: Record<TranslationKey, string> = {
   "app.name": "Forge",
+  // AI Elements 僅展示工具實際回報的結果。
+  "ai.elements.sources": "搜尋來源",
+  "ai.elements.tests": "測試結果",
+  "ai.elements.testCounts": "通過 {passed} / {total}",
+  "ai.elements.test.passed": "通過",
+  "ai.elements.test.failed": "失敗",
+  "ai.elements.test.pending": "待執行",
+  "ai.elements.test.skipped": "已略過",
+  "ai.elements.test.todo": "待實作",
+  "ai.elements.files": "檔案",
+  "ai.elements.suggestions": "快捷提問",
+  "ai.elements.suggestStructure": "解釋這個專案的結構",
+  "ai.elements.suggestReview": "檢查目前變更，找出潛在問題",
+  "ai.elements.suggestTests": "分析專案的測試覆蓋，建議優先補哪些測試",
   "browser.pickElement": "選取元素",
   "browser.cancelPick": "取消選取",
   "browser.pickHint": "選取頁面元素，標記問題並加入對話框",
@@ -631,6 +645,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "explorer.deletedOne": "已刪除「{name}」",
   "explorer.deletedMany": "已刪除 {count} 個檔案/目錄",
   "welcome.hint": "請選擇專案資料夾",
+  "welcome.openFile": "開啟專案中的檔案以開始編輯",
   "drop.pending": "放開以開啟",
   "drop.file": "放開以暫時開啟",
   "drop.files": "放開以暫時開啟 {count} 個檔案",

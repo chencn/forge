@@ -4991,7 +4991,7 @@ export default function App() {
           beforeSend={beforeAiSend}
           onSettings={() => openSettingsTab("aiCli")}
           onNew={openAiDraft}
-          onOpenFile={aiOpenFile}
+          onOpenFile={(path, line, column) => aiOpenFile(path, id!, line, column)}
           onPreviewFile={(file) => aiPreviewFile({ ...file, id: `${activeAiSession.id}:${file.id}` }, id!)}
           onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
           onOpenAgent={(agentId) => openAiSubagent(agentId, id!)}
@@ -5298,12 +5298,20 @@ export default function App() {
     const opened = line ? docs.openHit(path, line, column) : docs.open(path);
     void opened.catch((cause: unknown) => reportError(errorText(cause)));
   });
-  /** AI 回复里点中的文件路径：相对路径按工程根还原，带行号就跳过去。 */
-  const aiOpenFile = useStable((path: string, line?: number, column?: number) => {
+  /** 正文引用与工具预览一样在右侧打开，来源会话保留在主栏。 */
+  const aiOpenFile = useStable((path: string, sourceTab: string, line?: number, column?: number) => {
     const resolved = resolveFileLink({ path, line, column }, workspaceRoot);
     if (!resolved) return;
-    setActiveTab(`doc|${resolved}`);
-    const opened = line ? docs.openHit(resolved, line, column) : docs.open(resolved);
+    // 复用已打开文档的真实路径，避免大小写或分隔符差异使副栏标签被清理。
+    const target = docs.documents.find((doc) => samePath(doc.path, resolved))?.path ?? resolved;
+    const tabId = `doc|${target}`;
+    const opened = line ? docs.openHit(target, line, column) : docs.open(target);
+    setEditorSplit((split) => createEditorSplit(
+      [...tabCatalog.map((tab) => tab.id), tabId], sourceTab, tabId, "horizontal",
+      split ? { ...split, tabIds: split.tabIds.filter((id) => id !== sourceTab), primaryActiveId: sourceTab } : null,
+      50,
+    ).split);
+    setActiveTab(tabId);
     void opened.catch((cause: unknown) => reportError(errorText(cause)));
   });
   /** 子代理和文件预览都向右拆分，点开它的会话留在主栏。子代理默认左 7 右 3，文件预览各占一半。 */

@@ -141,6 +141,32 @@ describe("composer slash parameter execution", () => {
     await expect(render().execute("model", "invented")).rejects.toThrow("ai.commands.invalidArgs");
     await expect(render().execute("model", '"fast-model" extra')).rejects.toThrow("ai.commands.invalidArgs");
   });
+  it("reports the effective Codex default effort without persisting an explicit override", async () => {
+    h.load.mockResolvedValue({ ...catalog, models: [{ ...catalog.models[0], defaultEffort: "high" }] });
+    await render().execute("effort", "default");
+    onChange.mockClear();
+    const pane = renderOpened("codex");
+    const group = find(pane, (node) => node.props.role === "group" && node.props["aria-label"] === "ai.chat.effort")!;
+    expect(group.props.children.map((button: ReactElement<any>) => button.props["aria-pressed"]))
+      .toEqual([false, true]);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+  it("disables all option controls when editing becomes unavailable", async () => {
+    await render().execute("effort", "high");
+    renderOpened("codex");
+    const pane = render({}, true).pane;
+    // 发送中已展开的面板也要遵守禁用契约，不能只锁住入口按钮。
+    const controls = collect(pane, (node) => node.type === "button" || node.type === "input");
+    expect(controls.length).toBeGreaterThan(1);
+    expect(controls.every((node) => node.props.disabled)).toBe(true);
+  });
+  it("keeps model options out of the Tab order managed by the search combobox", async () => {
+    await render().execute("effort", "high");
+    const pane = renderOpened("codex");
+    const options = collect(pane, (node) => node.props.role === "option");
+    expect(options).toHaveLength(2);
+    expect(options.every((option) => option.props.tabIndex === -1)).toBe(true);
+  });
   it("keeps full permissions behind the existing explicit risk confirmation", async () => {
     await render().execute("permissions", "full");
     expect(onChange).not.toHaveBeenCalled();

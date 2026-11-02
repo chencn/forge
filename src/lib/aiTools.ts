@@ -83,9 +83,14 @@ export function describeAiTool(entry: AiEntry, details = true): ToolView {
     let current: ToolPatch | undefined;
     for (const line of entry.input.split(/\r?\n/)) {
       const header = /^\*\*\* (Update|Add|Delete) File: (.+)$/.exec(line);
-      if (header) { current = { path: header[2], kind: header[1] === "Add" ? "add" : header[1] === "Delete" ? "delete" : "edit", diff: "", proposed: !isExecutedToolStatus(entry.status) }; view.patches.push(current); }
+      if (header) { current = { path: header[2], kind: header[1] === "Add" ? "add" : header[1] === "Delete" ? "delete" : "edit", diff: "", proposed: !isExecutedToolStatus(entry.status), ...(!details ? { counts: { additions: 0, deletions: 0 } } : {}) }; view.patches.push(current); }
       else if (current && line.startsWith("*** Move to: ")) { current.kind = "move"; current.destination = line.slice(13); }
-      else if (details && current && !line.startsWith("*** ")) current.diff += `${line}\n`;
+      else if (current && !line.startsWith("*** ")) {
+        if (details) current.diff += `${line}\n`;
+        // 摘要按文件计数，无需构造完整 diff，也不能套用整次调用的总行数。
+        if (current.counts && line.startsWith("+")) current.counts.additions++;
+        if (current.counts && line.startsWith("-")) current.counts.deletions++;
+      }
     }
   }
   if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(entry.name ?? "")) {

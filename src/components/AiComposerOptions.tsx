@@ -12,6 +12,7 @@ import { aiNormalMode, resolveAiModel } from "../lib/aiOptions";
 import AiProviderIcon from "./AiProviderIcon";
 import Popover from "./Popover";
 import AiActionDialog from "./AiActionDialog";
+import { Item, ItemContent } from "./ui/item";
 export { readAiOptions } from "../lib/aiOptions";
 
 interface AiComposerOptionsProps {
@@ -63,7 +64,7 @@ const CLAUDE_MODE_ALIASES: Record<string, string> = { read: "plan", ask: "manual
 
 /**
  * 输入框的「设置芯片」：模型 / 强度 / 模式 / 权限收进一颗圆角芯片，点开向上弹出
- * 参考样式的设置面板——可搜索的模型列表（勾选、等宽 id 提示、默认徽标）、
+ * 可搜索的模型列表（勾选、必要的补充信息）、
  * 强度、模式和权限的分段控件、Fast 开关。模式档位来自 CLI 自己报出的取值，
  * 计划模式是其中一项而不是一个开关。自定义模型在设置页维护，
  * 输入框里只负责选择，不提供增删或手动刷新入口。
@@ -80,6 +81,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   const [pending, setPending] = useState<AiRunOptions | null>(null);
   const [open, setOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
+  const [highlightedModel, setHighlightedModel] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const chip = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
@@ -93,7 +95,6 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   const actualModelId = resolveAiModel(capabilities, actualModel);
   const effectiveModelId = selectedModelId || actualModelId;
   const model = capabilities?.models.find((item) => effectiveModelId ? item.id === effectiveModelId : item.isDefault);
-  const isCustomSelected = !model && !!configuredValue?.model;
   // 修正已保存的显示名/大小写变体；不重置强度、权限或未知自定义 ID。
   useEffect(() => {
     if (capabilities && value.model && selectedModelId !== value.model) onChange({ ...value, model: selectedModelId });
@@ -122,7 +123,10 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
         if (cancelled || revision !== catalogRevision.current) return;
         setCapabilities(data); setError(null);
       } catch (cause) {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && revision === catalogRevision.current) {
+          setError(t("ai.catalog.loadFailed", { message: cause instanceof Error ? cause.message : String(cause) }));
+          setLoading(false);
+        }
         return;
       }
       try {
@@ -141,13 +145,15 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     if (alive.current && revision === catalogRevision.current && data) setCapabilities(data);
   };
   useEffect(() => {
-    if (!open) { setModelQuery(""); return; }
-    popover.current?.focus();
+    if (!open) { setModelQuery(""); setHighlightedModel(null); return; }
     // 设置页随时可能增删自定义模型：每次打开都从 Forge 的目录缓存重读一次，
     // 只读磁盘、不探测 CLI，因此不会因为少了刷新按钮而看不到新模型。
     const revision = catalogRevision.current;
+    let cancelled = false;
     if (workspace) void loadAiCapabilities(provider, workspace)
-      .then((data) => { if (alive.current && revision === catalogRevision.current) setCapabilities(data); })
+      .then((data) => {
+        if (!cancelled && revision === catalogRevision.current) { setCapabilities(data); setError(null); }
+      })
       .catch(() => { /* 保留当前列表 */ });
     // 弹层经 Popover portal 到 body,不在 root 子树里;放行弹层内的 pointerdown,
     // 否则列表项点击会先关弹层、click 随之丢失,模型永远选不上。
@@ -162,7 +168,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     };
     window.addEventListener("pointerdown", dismiss, true);
     window.addEventListener("keydown", escape);
-    return () => { window.removeEventListener("pointerdown", dismiss, true); window.removeEventListener("keydown", escape); };
+    return () => { cancelled = true; window.removeEventListener("pointerdown", dismiss, true); window.removeEventListener("keydown", escape); };
   }, [open, provider, workspace]);
 
   const pickModel = async (nextId: string | undefined, targetModel = capabilities?.models.find((item) => nextId ? item.id === nextId : item.isDefault)) => {
@@ -214,7 +220,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     setError(t("ai.chat.modeRetired", { mode: value.mode }));
   }, [capabilities, value, provider, t]);
 
-  /** 模型列表按「默认 / 自定义 / 目录」分组，输入框按名称与 id 过滤。 */
+  /** 保留目录顺序，自定义模型另成一组；名称和 id 都可搜索。 */
   const query = modelQuery.trim().toLowerCase();
   const models = useMemo(() => {
     if (!capabilities) return [];
@@ -300,50 +306,72 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       <ChevronDown size={12} aria-hidden />
     </button>
     {open ? (
-      <Popover anchor={chip.current} onClose={close} minWidth={352} maxWidth={352} modal={false}>
-        <div ref={popover} className="ai-settings-popover" role="dialog" aria-label={t("ai.chat.settings")} tabIndex={-1}>
-          <div className="ai-model-block">
+      <Popover anchor={chip.current} onClose={close} maxWidth={352} role="dialog" aria-label={t("ai.chat.settings")} autoFocus modal={false} className="ai-settings-popup">
+        <div ref={popover} className="ai-settings-popover">
             <label className="ai-model-search">
               <Search size={14} aria-hidden />
-              <input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} role="combobox"
+              <input data-autofocus value={modelQuery} disabled={disabled} onChange={(event) => { setModelQuery(event.target.value); setHighlightedModel(null); }} role="combobox"
                 aria-expanded aria-controls={`${id}-models`} aria-label={t("ai.chat.searchModels")}
+                aria-autocomplete="list" aria-activedescendant={highlightedModel && modelGroups.some((group) => group.items.some((item) => item.id === highlightedModel)) ? `${id}-model-${encodeURIComponent(highlightedModel)}` : undefined}
+                onKeyDown={(event) => {
+                  // 搜索框统一管理列表焦点，Tab 直接进入后续设置，长目录不占用整条焦点链。
+                  if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || disabled) return;
+                  const choices = modelGroups.flatMap((group) => group.items);
+                  if (!choices.length) return;
+                  const index = choices.findIndex((item) => item.id === highlightedModel);
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    const next = index < 0 ? event.key === "ArrowDown" ? 0 : choices.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length;
+                    setHighlightedModel(choices[next].id);
+                    document.getElementById(`${id}-model-${encodeURIComponent(choices[next].id)}`)?.scrollIntoView?.({ block: "nearest" });
+                  } else if (event.key === "Enter" && index >= 0) {
+                    event.preventDefault(); void pickModel(choices[index].id);
+                  }
+                }}
                 placeholder={t("ai.chat.searchModels")} spellCheck={false} />
             </label>
+          {/* 模型和设置共用一个滚动区；搜索框留在滚动区外，窄窗口也能继续筛选。 */}
+          <div className="ai-settings-content">
+          <Item className="ai-model-block" data-element="model-selector"><ItemContent>
             <div className="ai-model-list" id={`${id}-models`} role="listbox" aria-label={t("ai.chat.model")}>
               {loading && !capabilities ? <p className="ai-model-status">{t("ai.chat.loading")}</p> : null}
               {modelGroups.map((group) => <div key={group.key} className="ai-model-section">
                 {group.label ? <p className="ai-model-group" role="presentation">{group.label}</p> : null}
                 {group.items.map((item) => {
                   const active = effectiveModelId ? item.id === effectiveModelId : item.isDefault;
-                  return <button key={item.id} type="button" role="option" aria-selected={active}
-                    className={`ai-model-option${active ? " is-selected" : ""}`}
+                  // 大小写、空格和连接符的差异不值得重复占一行；真正不同的别名目标仍需展示。
+                  const showId = item.id.replace(/[\s_-]/g, "").toLowerCase() !== item.name.replace(/[\s_-]/g, "").toLowerCase();
+                  return <button key={item.id} id={`${id}-model-${encodeURIComponent(item.id)}`} type="button" role="option" aria-selected={active} disabled={disabled} tabIndex={-1} title={item.id}
+                    className={`ai-model-option${active ? " is-selected" : ""}${highlightedModel === item.id ? " is-highlighted" : ""}`}
+                    onMouseMove={() => setHighlightedModel(item.id)}
                     onClick={() => void pickModel(item.id)}>
-                    <span className="ai-option-check" aria-hidden>{active ? <Check size={14} /> : null}</span>
                     <span className="ai-option-body">
                       <span className="ai-option-name">
                         <span className="ai-option-title">{item.name}</span>
-                        {item.isDefault ? <span className="ai-option-badge">{t("ai.chat.defaultModel")}</span> : null}
+                        {item.isDefault ? <span className="ai-option-badge">{t("ai.catalog.default")}</span> : null}
                       </span>
                       {item.customOption && item.description ? <span className="ai-option-hint" title={item.description}>{item.description}</span>
                         : item.customSlot ? <span className="ai-option-hint">{t("ai.chat.customSlotModel", { slot: item.customSlot })}</span>
                         : item.id === "default" && item.configuredModel ? <span className="ai-option-hint" title={item.configuredModel}>{item.configuredModel}</span>
-                        : item.id !== item.name ? <span className="ai-option-hint" title={item.id}>{item.id}</span> : null}
+                        : showId ? <span className="ai-option-hint" title={item.id}>{item.id}</span> : null}
                     </span>
+                    <span className="ai-option-check" aria-hidden>{active ? <Check size={14} /> : null}</span>
                   </button>;
                 })}
               </div>)}
-              {capabilities && !models.length && !isCustomSelected ? <p className="ai-model-status">{t("ai.chat.noModels")}</p> : null}
+              {!loading && !models.length && !error ? <p className="ai-model-status">{t("ai.chat.noModels")}</p> : null}
             </div>
-          </div>
+          </ItemContent></Item>
           {efforts.length ? <>
             <div className="ai-settings-sep" aria-hidden />
             <div className="ai-settings-block">
               <div className="ai-settings-header"><span>{t("ai.chat.effort")}</span></div>
               <div className="ai-segmented" role="group" aria-label={t("ai.chat.effort")}>
                 {(provider === "codex" ? [] : [{ value: "", label: t("ai.chat.defaultEffort") }]).concat(efforts.map((effort) => ({ value: effort, label: effortLabel(effort) }))).map((option) => {
-                  const effortValue = value.effort ?? "";
+                  // Codex 没有独立「默认」按钮，按目录默认值显示，且不写入显式覆盖。
+                  const effortValue = value.effort ?? (provider === "codex" ? model?.defaultEffort : "");
                   const active = effortValue === option.value;
-                  return <button key={option.value || "default"} type="button" aria-pressed={active} className={active ? "is-on" : ""}
+                  return <button key={option.value || "default"} type="button" disabled={disabled} aria-pressed={active} className={active ? "is-on" : ""}
                     onClick={() => onChange({ ...value, effort: option.value || undefined })}>
                     {option.label}
                   </button>;
@@ -376,7 +404,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
               </div>
             </div>
           </> : null}
-          {mode === "plan" ? <p className="ai-settings-source">{t("ai.chat.planModeHint")}</p> : null}
+          {mode === "plan" ? <p className="ai-settings-note">{t("ai.chat.planModeHint")}</p> : null}
           {provider === "codex" ? <>
             <div className="ai-settings-sep" aria-hidden />
             <label className="ai-switch-row" title={t(fastAvailable ? "ai.chat.fastHint" : "ai.chat.fastUnavailable")}>
@@ -389,6 +417,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
           </> : null}
           {error ? <p className="ai-error" role="alert">{error}</p> : null}
           <p className="ai-settings-source" title={catalogSource ?? undefined}>{catalogSource}</p>
+          </div>
         </div>
       </Popover>
     ) : null}

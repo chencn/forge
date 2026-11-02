@@ -16,10 +16,12 @@ export interface PopoverProps {
   boundary?: HTMLElement | null;
   /** 角色：对话框或工具提示 */
   role?: "dialog" | "tooltip";
+  "aria-label"?: string;
   /**
    * 默认带一层点击外部收起行为。
    */
   modal?: boolean;
+  autoFocus?: boolean;
   className?: string;
 }
 
@@ -35,7 +37,9 @@ export default function Popover({
   minWidth,
   maxWidth,
   role,
+  "aria-label": ariaLabel,
   modal = true,
+  autoFocus = false,
   className = "",
 }: PopoverProps) {
   const style = useMemo<CSSProperties>(
@@ -56,9 +60,10 @@ export default function Popover({
       placement="bottom-start"
       offset={4}
       role={role ?? (modal ? "dialog" : "tooltip")}
+      aria-label={ariaLabel}
       closeOnOutsideClick={modal}
       closeOnDeactivate={modal}
-      autoFocus={false}
+      autoFocus={autoFocus}
       unstyled={true}
       className={`popover is-anchored ${className}`.trim()}
       style={style}

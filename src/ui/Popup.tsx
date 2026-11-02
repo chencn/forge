@@ -173,7 +173,8 @@ function PopupInner({
   }, [anchor, closeOnDeactivate, closeOnOutsideClick, restoreFocus, trapFocus]);
 
   useEffect(() => {
-    if (!autoFocus) return;
+    // 定位完成前浮层不可见，此时 focus 会被浏览器忽略。
+    if (!autoFocus || !isPositioned) return;
     const el = elRef.current;
     if (!el) return;
     const target =
@@ -181,7 +182,7 @@ function PopupInner({
       el.querySelector<HTMLElement>(FOCUSABLE) ??
       el;
     target.focus({ preventScroll: true });
-  }, [autoFocus]);
+  }, [autoFocus, isPositioned]);
 
   // ref 回调必须引用稳定：内联箭头每次渲染都会被 React detach(null)/attach(node)，
   // floating 元素闪断成 null 会把弹层打回 (0,0) 一帧——"晃到左上角"就来自这里。

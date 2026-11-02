@@ -1,0 +1,138 @@
+/* shadcn/ui base-nova slots, mapped to Forge's existing themes without a global reset. */
+[data-slot="trace"], [data-slot="trace-collapsible"] { display: flex; width: 100%; min-width: 0; flex-direction: column; }
+[data-slot="trace"] { gap: 8px; }
+[data-slot="trace-line"] { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; color: var(--text-secondary); }
+[data-slot="trace-line"][data-status="error"] { color: var(--accent-red-text); }
+[data-slot="trace-line"][data-status="pending"] { opacity: .6; }
+[data-slot="trace-title"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-slot="trace-description"] { min-width: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+[data-slot="trace-icon"] { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
+[data-slot="trace-collapsible-trigger"] { display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 4px 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); font: inherit; text-align: left; cursor: pointer; }
+[data-slot="trace-collapsible-trigger"]:hover { color: var(--text-primary); }
+[data-slot="trace-collapsible-trigger"]:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
+[data-slot="trace-collapsible-trigger"] > [data-slot="trace-icon"] { transition: transform 150ms; }
+[data-slot="trace-collapsible-trigger"][aria-expanded="true"] > [data-slot="trace-icon"] { transform: rotate(90deg); }
+/* Large tool histories open immediately; keep panel lifecycle independent of ambient motion. */
+[data-slot="trace-collapsible-content"] { min-width: 0; transition: none; animation: none; }
+[data-slot="trace-collapsible-content-inner"] { min-width: 0; margin: 8px 0 4px 7px; padding: 0 4px 0 16px; border-left: 1px solid var(--border-color); color: var(--text-secondary); overflow-wrap: anywhere; }
+[data-slot="trace-line"][data-status="running"] > [data-slot="trace-title"] { background: linear-gradient(90deg, var(--text-tertiary), var(--text-primary), var(--text-tertiary)); background-size: 250% 100%; background-clip: text; color: transparent; animation: forge-trace-shimmer 1.6s linear infinite; }
+@keyframes forge-trace-shimmer { to { background-position: -250% 0; } }
+
+/* Keep one process rail: the existing child timeline already draws its own connectors. */
+.ai-process-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ai-process-heading .ai-process-head { flex: 1; width: auto; }
+.ai-process-head > [data-slot="trace-line"] { flex: 1; overflow: hidden; }
+.ai-process-heading .ai-process-head::after { content: none; }
+.ai-process-head [data-slot="trace-title"] { flex: none; font-weight: 600; }
+.ai-process-head [data-slot="trace-description"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-slot="trace-collapsible-content-inner"]:has(> .ai-process-body) { margin-left: 0; padding-left: 0; border: 0; }
+.ai-reasoning > [data-slot="trace-line"] { padding: 5px 0; }
+.ai-reasoning [data-slot="trace-collapsible-trigger"] { width: 100%; }
+.ai-reasoning [data-slot="trace-line"] { flex: 1; overflow: hidden; }
+.ai-reasoning [data-slot="trace-title"] { flex: none; }
+.ai-reasoning [data-slot="trace-description"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-reasoning [aria-expanded="true"] [data-slot="trace-description"] { display: none; }
+
+[data-slot="item"] { display: flex; box-sizing: border-box; width: 100%; min-width: 0; flex-wrap: wrap; align-items: flex-start; gap: 10px; border: 1px solid var(--border-popup); border-radius: 6px; padding: 12px; }
+[data-slot="item-media"] { display: flex; flex: none; align-items: center; justify-content: center; color: var(--text-secondary); padding-top: 2px; }
+[data-slot="item-content"] { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+[data-slot="item-title"] { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+[data-slot="item-actions"] { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ai-request-card[data-slot="item"] { box-sizing: border-box; }
+.ai-request-card [data-slot="item-actions"] > .ai-cli-actions { margin-top: 4px; }
+.ai-request-card [data-slot="item-actions"] { flex-direction: column; align-items: stretch; }
+/* Pattern composition keeps existing layout owners; no second chat scroller or input state. */
+.ai-chat-entry[data-slot="message"] { display: block; min-width: 0; }
+.ai-chat-entry.is-user[data-slot="message"] { width: fit-content; }
+.ai-composer[data-slot="input-group"] { flex-wrap: nowrap; align-items: stretch; gap: 0; padding: 0; }
+[data-slot="attachment-group"] { display: flex; min-width: 0; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; }
+.ai-image-attachments[data-slot="attachment-group"] { overflow: visible; }
+[data-slot="attachment"] { flex: none; min-width: 0; }
+.ai-element-hover-positioner { z-index: 1000; }
+.ai-element-hover-card { display: flex; flex-direction: column; gap: 5px; max-width: min(300px, 85vw); padding: 10px; border: 1px solid var(--border-popup); border-radius: 6px; background: var(--bg-popup); color: var(--text-primary); font-size: 12px; box-shadow: var(--shadow-popup); overflow-wrap: anywhere; }
+.ai-element-hover-card a { color: var(--accent-blue-text); }
+.ai-model-block[data-slot="item"] { border: 0; border-radius: 0; padding: 0; }
+/* Item 只负责模型区布局；选中、悬停和键盘高亮统一由 aiAssistants.css 管理。 */
+.ai-model-block > [data-slot="item-content"] { gap: 0; }
+.ai-question[data-slot="item"] { display: block; padding: 0; }
+.ai-context-popover[data-slot="item"] { display: flex; flex-wrap: nowrap; align-items: stretch; border: 0; border-radius: 0; box-sizing: border-box; }
+.ai-agentdock-rowwrap[data-slot="item"] { flex-wrap: nowrap; align-items: center; gap: 4px; border: 0; border-radius: 0; padding: 0; }
+.ai-plan-approval[data-slot="item"] { display: grid; gap: 10px; padding: 11px 12px; }
+.ai-plan-approval[data-slot="item"] > header { display: flex; align-items: center; gap: 7px; }
+.ai-plan-entry > [data-slot="trace-collapsible-trigger"] { width: 100%; font-size: inherit; }
+.ai-plan-entry > [data-slot="trace-collapsible-trigger"] strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-plan-entry.is-approved > [data-slot="trace-collapsible-trigger"] strong { color: var(--accent-green-text); }
+.ai-plan-notice [data-slot="trace-line"], .ai-taskdock [data-slot="trace-line"] { width: 100%; align-items: flex-start; }
+.ai-taskdock [data-slot="trace-line"] > button { width: 100%; }
+/* 已完成进度使用 IDEA 的成功色与进度轨道，聊天和侧栏保持一致，避免通用亮色覆盖主题。 */
+.ai-element-plan-progress { display: block; width: 100%; height: 3px; appearance: none; border: 0; border-radius: 4px; overflow: hidden; background: var(--bg-progress-track); accent-color: var(--success); }
+.ai-element-plan-progress::-webkit-progress-bar { background: var(--bg-progress-track); border-radius: 4px; }
+.ai-element-plan-progress::-webkit-progress-value { background: var(--success); border-radius: 4px; }
+.ai-element-plan-progress::-moz-progress-bar { background: var(--success); border-radius: 4px; }
+.ai-delegation-main[data-slot="trace-collapsible-trigger"] { box-sizing: border-box; flex: 1; width: auto; padding: 10px 12px; }
+.ai-delegation-detail[data-slot="trace-collapsible-content-inner"] { margin: 0; border-left: 0; }
+
+/* 工具、计划和报告已有明确分区，不重复绘制 Trace 的导轨与左缩进。 */
+.ai-tool > [data-slot="trace-collapsible-content"] > [data-slot="trace-collapsible-content-inner"],
+.ai-plan-entry > [data-slot="trace-collapsible-content"] > [data-slot="trace-collapsible-content-inner"],
+.ai-tool-results [data-slot="trace-collapsible-content-inner"] { margin: 0; padding: 0; border: 0; }
+
+.ai-element-code { position: relative; min-width: 0; margin: 8px 0; border: 1px solid var(--border-popup); border-radius: 6px; overflow: hidden; background: var(--bg-elev); }
+/* 复制是内容上的工具，不为一个按钮额外占据一整行空白题头。 */
+.ai-element-code > header { position: absolute; z-index: 1; top: 5px; right: 5px; display: flex; align-items: center; gap: 8px; color: var(--text-tertiary); font-size: 11px; background: var(--bg-elev); border-radius: 4px; }
+.ai-element-code > header > span:empty { display: none; }
+.ai-element-code > header button { display: inline-flex; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; padding: 4px; }
+.ai-element-code > header button:hover { color: var(--text-primary); background: var(--bg-hover); }
+.ai-element-code > header button:focus-visible, .ai-element-suggestions button:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+.ai-element-code > pre, .ai-element-code .code-block-wrapper { margin: 0; border: 0; border-radius: 0; }
+.ai-element-code > pre { padding: 10px 44px 10px 10px; overflow: auto; max-height: 320px; background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--font-mono); }
+/* 外框只由详情拥有；内部代码、JSON 与错误使用分隔线，不再生成卡片。 */
+.ai-tool-details .ai-element-code { border: 0; border-radius: 0; background: transparent; }
+.ai-tool-details .ai-element-code > pre { padding-left: 0; border: 0; border-radius: 0; }
+.ai-tool-details > .ai-element-code + .ai-element-code { padding-top: 8px; border-top: 1px solid var(--border-popup); }
+.ai-tool-details > .ai-element-code + .ai-element-code > header { top: 13px; }
+.ai-tool-details > .ai-tool-raw { padding-top: 6px; border-top: 1px solid var(--border-color); }
+.ai-tool-results { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-popup); font-size: 12px; }
+.ai-tool-results > [data-slot="trace"] { gap: 6px; }
+.ai-tool-results > [data-slot="trace"] > strong { font-size: 12px; font-weight: 600; }
+.ai-tool-results > [data-slot] + [data-slot] { padding-top: 10px; border-top: 1px solid var(--border-popup); }
+.ai-tool-results [data-slot="trace-collapsible-trigger"] { width: 100%; padding: 5px 0; }
+.ai-tool-results [data-slot="trace-collapsible-trigger"] > [data-slot="trace-icon"] { margin-left: auto; }
+.ai-tool-results [data-slot="trace-title"] { white-space: normal; overflow-wrap: anywhere; }
+.ai-tool-results [data-slot="trace-line"] { padding: 4px 0; }
+.ai-tool-results [data-slot="trace-line"] > svg { flex: none; }
+.ai-tool-results [data-slot="trace-line"] > span { flex: 1; }
+.ai-tool-results [data-slot="trace-line"] > small { flex: none; color: var(--text-tertiary); }
+.ai-tool-results .ai-element-code { margin: 4px 0 10px; padding-left: 10px; border-left: 2px solid var(--danger); }
+.ai-element-sources { padding: 0; margin: 0; list-style: none; }
+.ai-element-sources li { padding: 5px 0; }
+.ai-element-sources a { display: flex; align-items: baseline; gap: 7px; color: var(--accent-blue-text); text-decoration: none; overflow-wrap: anywhere; }
+.ai-element-sources a:hover { text-decoration: underline; }
+.ai-element-sources a > svg, .ai-element-sources sup { flex: none; }
+.ai-element-sources a > span { min-width: 0; }
+.ai-element-files { min-width: 0; }
+.ai-element-files ul { list-style: none; padding: 0 0 0 14px; margin: 0; }
+.ai-element-files > ul { padding-left: 0; }
+.ai-element-files li { display: block; min-width: 0; }
+.ai-element-files summary, .ai-element-files li.ai-element-file { display: flex; align-items: center; justify-content: flex-start; gap: 6px; min-width: 0; padding: 3px 0; }
+.ai-element-files summary { list-style: none; cursor: pointer; }
+.ai-element-files summary::-webkit-details-marker { display: none; }
+.ai-element-files summary > svg { flex: none; }
+.ai-element-files details[open] > summary > svg:first-child { transform: rotate(90deg); }
+.ai-element-files .ai-element-file > svg { flex: none; color: var(--text-tertiary); }
+.ai-checkpoint .ai-checkpoint-files { display: block; }
+.ai-edit-summary > .ai-element-files { position: absolute; z-index: 25; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); width: max-content; max-width: min(430px, 70vw); max-height: 320px; overflow: auto; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); box-shadow: 0 8px 28px rgb(0 0 0 / 16%); font-size: 11px; }
+/* Existing edit popovers positioned every ul; nested file trees have one popup owner. */
+.ai-edit-summary .ai-element-files ul { position: static; transform: none; width: auto; max-width: none; margin: 0; padding: 0 0 0 14px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.ai-edit-summary .ai-element-files > ul { padding-left: 0; }
+.ai-edit-summary .ai-element-files li { display: block; }
+.ai-edit-summary .ai-element-files li.ai-element-file { display: flex; justify-content: flex-start; gap: 6px; }
+.ai-element-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 12px; }
+.ai-element-suggestions button { max-width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); padding: 6px 10px; font: inherit; font-size: 11px; cursor: pointer; }
+.ai-element-suggestions button:hover { background: var(--bg-hover); color: var(--text-primary); }
+@media (prefers-reduced-motion: reduce) {
+  /* styles.css forces tiny nonzero durations globally; Base UI needs a true zero here. */
+  :root [data-slot="trace-collapsible"] [data-slot="trace-collapsible-content"] { animation-duration: 0s !important; transition-duration: 0s !important; }
+  [data-slot="trace-line"][data-status="running"] > [data-slot="trace-title"] { animation: none; background: none; color: var(--text-primary); }
+  [data-slot="trace-collapsible-trigger"] > [data-slot="trace-icon"] { transition: none; }
+}
