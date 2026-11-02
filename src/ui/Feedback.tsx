@@ -48,6 +48,7 @@ export function Spinner({
   return (
     <svg
       className={clsx(styles.spinner, className)}
+      data-ui-spinner=""
       width={size}
       height={size}
       viewBox="0 0 24 24"

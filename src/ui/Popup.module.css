@@ -15,7 +15,7 @@
 .popup[data-positioned] {
   visibility: visible;
   opacity: 1;
-  animation: popIn var(--dur-fast, 80ms) ease;
+  animation: popIn var(--dur-fast, 80ms) var(--ease);
 }
 
 .surface {

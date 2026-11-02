@@ -1,20 +1,28 @@
 .git-action-dialog { font: 13px var(--font-ui); }
-.git-action-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.git-action-route { margin: 0; overflow-wrap: anywhere; color: var(--fg-muted); }
-.git-action-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.git-action-field .text-input { width: 100%; box-sizing: border-box; }
-.git-action-method { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 12px; border: 1px solid var(--border-popup); border-radius: var(--radius-sm); }
-.git-action-method legend { padding: 0 4px; color: var(--fg-muted); }
-.git-action-method label { display: flex; align-items: flex-start; gap: 7px; cursor: pointer; }
-.git-action-method input { margin: 2px 0 0; }
-.git-action-commits { max-height: 300px; min-height: 100px; overflow: auto; border: 1px solid var(--border-popup); border-radius: var(--radius-sm); }
-.git-action-commits > p { margin: 12px; color: var(--fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-.git-action-commit { display: flex; align-items: center; gap: 10px; min-height: 28px; padding: 0 10px; }
-.git-action-commit > code { flex: none; font: 11px var(--font-mono); color: var(--fg-muted); }
-.git-action-commit > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-action-commit > span:nth-child(2) { flex: 1; }
-.git-action-commit > span:last-child { max-width: 25%; color: var(--fg-muted); font-size: 11px; }
-.git-action-commit:nth-child(even) { background: var(--bg-hover); }
-@media (prefers-reduced-motion: reduce) {
-  .git-action-dialog .is-spinning { animation: none; }
-}
+/* IDEA 操作窗口不压暗工作区；仅覆盖 Git 窗口，不改变其他对话框的布局。 */
+div:has(> .git-action-dialog) { background: transparent; }
+.git-action-dialog [data-dialog-titlebar], .git-action-dialog [data-dialog-footer] { border: 0; }
+.git-action-dialog [data-dialog-body] { padding: 0; }
+.git-action-form { display: flex; flex-direction: column; gap: 8px; padding: 14px; min-width: 0; }
+.git-action-form.is-push { gap: 0; padding: 0; }
+.git-action-route { margin: 0; overflow-wrap: anywhere; color: var(--fg-subtle); font-size: var(--fs-small, 12px); }
+.is-push > .git-action-route { padding: 10px 14px 4px; }
+.git-action-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.git-action-field > span, .git-action-field-label { color: var(--fg-secondary); font-size: var(--fs-small, 12px); }
+.git-action-field > input { width: 100%; }
+.git-action-message { resize: vertical; min-height: 48px; padding: 4px 8px; border: 1px solid var(--border-input, var(--border)); border-radius: var(--radius-control, 4px); background: var(--bg-input); color: var(--fg); font: inherit; }
+.git-action-message:focus { outline: none; border-color: var(--focus-ring); }
+.git-action-method { display: flex; flex-direction: column; }
+.git-action-method label { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; color: var(--fg); cursor: default; }
+.git-action-method input { margin: 2px 0 0; accent-color: var(--accent); }
+/* 固定预览高度，行高交给 List；滚动只发生在列表内，不挤走操作按钮。 */
+.git-action-commits { display: flex; flex-direction: column; height: 300px; min-height: 0; padding: 0 14px 14px; }
+.git-action-commits > p { margin: 12px; color: var(--fg-faint); text-align: center; white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-action-commits > [role="alert"] { color: var(--danger); }
+.git-action-commit-list { flex: 1; border: 1px solid var(--border); border-radius: var(--radius-control, 4px); --bg-tree-selected: var(--bg-active); --bg-tree-hover: var(--bg-hover); }
+.git-action-commit { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 100%; white-space: nowrap; }
+.git-action-commit > code { flex: none; font: var(--fs-small, 12px) var(--font-mono); color: var(--fg-subtle); }
+.git-action-commit > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-action-commit-subject { flex: 1; color: var(--fg); }
+.git-action-commit-meta { max-width: 25%; color: var(--fg-subtle); font-size: var(--fs-small, 12px); }
+.git-action-commit-time { flex: none; color: var(--fg-subtle); font-size: var(--fs-small, 12px); }

@@ -27,7 +27,7 @@
   border-radius: var(--radius-control, 4px);
   background: var(--bg-field, var(--bg-button, transparent));
   box-shadow: inset 0 0 0 1px var(--border-button, var(--border, #40434a));
-  transition: box-shadow var(--dur-fast, 80ms) ease;
+  transition: box-shadow var(--dur-fast, 80ms) var(--ease);
 }
 
 .framed:focus,

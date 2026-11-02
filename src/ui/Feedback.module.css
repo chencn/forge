@@ -13,13 +13,13 @@
   border-radius: inherit;
   background: var(--bg-button-primary, var(--accent, #3871e1));
   transform-origin: left center;
-  transition: transform var(--dur, 140ms) ease;
+  transition: transform var(--dur, 140ms) var(--ease);
 }
 
 .indeterminate .bar {
   width: 40%;
   transform: none;
-  animation: slide 1.1s ease infinite;
+  animation: slide 1.1s var(--ease) infinite;
 }
 
 @keyframes slide {

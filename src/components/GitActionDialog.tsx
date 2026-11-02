@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { Checkbox } from "../ui/Checkbox";
+import { Input } from "../ui/Input";
+import { List } from "../ui/List";
+import { Spinner } from "../ui/Feedback";
+import { commitStamp } from "../lib/format";
 import { gitLog, type GitCommit } from "../lib/git";
 import { errorText } from "../lib/fs";
 import type { GitState } from "../hooks/useGitState";
@@ -30,7 +33,7 @@ export default function GitActionDialog({ request, git, onCancel, onSubmit }: {
   onCancel: () => void;
   onSubmit: (values: GitActionValues) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const head = request.target?.name ?? git.status?.branch ?? "HEAD";
   const upstream = request.target ? git.branches.find((b) => !b.remote && b.name === head)?.upstream : git.status?.upstream;
   const [values, setValues] = useState<GitActionValues>({ name: "", from: request.from ?? "HEAD", message: "", checkout: true, method: "merge", setUpstream: !upstream });
@@ -58,36 +61,42 @@ export default function GitActionDialog({ request, git, onCancel, onSubmit }: {
     onSubmit({ ...values, name: values.name.trim(), from: values.from.trim() || "HEAD", message: values.message.trim() });
   };
   const field = (label: string, value: string, onChange: (value: string) => void, autofocus = false, list?: string) => (
-    <label className="git-action-field"><span>{label}</span><input className="text-input" value={value} data-autofocus={autofocus || undefined}
+    <label className="git-action-field"><span>{label}</span><Input mono value={value} data-autofocus={autofocus || undefined}
       spellCheck={false} list={list} onChange={(event) => onChange(event.target.value)} /></label>
   );
   const remote = upstream || `${git.probe?.remotes[0] ?? "origin"}/${head}`;
-  return <Dialog open title={title} onClose={onCancel} width={request.kind === "push" ? 620 : 460} className="git-action-dialog" buttons={[
+  return <Dialog open title={title} onClose={onCancel} width={request.kind === "push" ? 620 : request.kind === "newTag" ? 460 : 420} className="git-action-dialog"
+    footerStart={request.kind === "push" && !request.target && !upstream ? <Checkbox checked disabled onChange={() => {}} label={t("git.setUpstream")} /> : undefined} buttons={[
     { role: "default", autoFocus: !named, label: request.kind === "push" ? t("git.push") : request.kind === "update" ? t("dialog.ok") : request.kind === "checkoutRev" ? t("git.checkoutShort") : t("dialog.create"), disabled, onClick: submit },
     { role: "cancel", label: t("dialog.cancel") },
   ]}>
-    <div className="git-action-form">
+    <div className={`git-action-form${request.kind === "push" ? " is-push" : ""}`}>
       {request.kind === "update" && <>
         <p className="git-action-route">{head} ← {upstream}</p>
-        <fieldset className="git-action-method"><legend>{t("git.updateMethod")}</legend>
+        <div className="git-action-method" role="group" aria-label={t("git.updateMethod")}><span className="git-action-field-label">{t("git.updateMethod")}</span>
           {([ ["merge", "git.updateMerge"], ["rebase", "git.updateRebase"], ["ff-only", "git.updateFastForward"] ] as const).map(([method, label]) => (
             <label key={method}><input type="radio" name="update-method" checked={values.method === method} onChange={() => update({ method })} /><span>{t(label)}</span></label>
           ))}
-        </fieldset>
+        </div>
       </>}
       {request.kind === "push" && <>
         <p className="git-action-route">{head} → {remote}</p>
         <div className="git-action-commits" aria-label={t("git.outgoingCommits")} aria-busy={!commits && !error}>
-          {error ? <p role="alert">{error}</p> : commits === null ? <p role="status"><Loader2 size={14} className="is-spinning" aria-hidden="true" /> {t("common.loading")}</p> : commits.length === 0 ? <p>{t("git.noOutgoingCommits")}</p> : commits.map((commit) => (
-            <div key={commit.hash} className="git-action-commit" title={`${commit.subject}\n${commit.author}`}><code>{commit.short}</code><span>{commit.subject}</span><span>{commit.author}</span></div>
-          ))}
+          {error ? <p role="alert">{error}</p> : commits === null ? <p><Spinner size={14} label={t("common.loading")} /></p> : <List
+            items={commits} getKey={(commit) => commit.hash} rowHeight={22} className="git-action-commit-list" aria-label={t("git.outgoingCommits")}
+            empty={<span>{t("git.noOutgoingCommits")}</span>}
+            renderItem={(commit) => <span className="git-action-commit" title={`${commit.subject}\n${commit.author}`}>
+              <code>{commit.short}</code><span className="git-action-commit-subject">{commit.subject}</span><span className="git-action-commit-meta">{commit.author}</span>
+              <span className="git-action-commit-time">{commitStamp(commit.authoredMs, locale, t("time.today"), t("time.yesterday"))}</span>
+            </span>} />}
         </div>
-        {!request.target && !upstream && <Checkbox checked disabled onChange={() => {}} label={t("git.setUpstream")} />}
       </>}
       {named && field(request.kind === "checkoutRev" ? t("git.checkoutRev") : t("dialog.name"), values.name, (name) => update({ name }), true, request.kind === "checkoutRev" ? "git-action-refs" : undefined)}
       {(request.kind === "newBranch" || request.kind === "newTag") && field(t("git.branchStartPoint"), values.from, (from) => update({ from }), false, "git-action-refs")}
       {request.kind === "newBranch" && <Checkbox checked={values.checkout} onChange={(checkout) => update({ checkout })} label={t("git.checkoutAfterCreate")} />}
-      {request.kind === "newTag" && field(t("git.tagMessage"), values.message, (message) => update({ message }))}
+      {request.kind === "newTag" && <label className="git-action-field"><span>{t("git.tagMessage")}</span>
+        <textarea className="git-action-message" rows={4} value={values.message} onChange={(event) => update({ message: event.target.value })} />
+      </label>}
       <datalist id="git-action-refs"><option value="HEAD" />{git.branches.map((b) => <option key={`branch:${b.name}`} value={b.name} />)}{git.tags.map((tag) => <option key={`tag:${tag.name}`} value={tag.name} />)}</datalist>
     </div>
   </Dialog>;

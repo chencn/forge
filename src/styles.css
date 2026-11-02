@@ -2054,7 +2054,8 @@ span.entry-icon > svg {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *:not(.is-spinning):not([data-spin="true"]):not(.is-spinning *),
+  /* 基础 Spinner 自行降低转速，不能被极短时长覆盖成高速旋转。 */
+  *:not(.is-spinning):not([data-spin="true"]):not([data-ui-spinner]):not(.is-spinning *),
   *::before,
   *::after {
     animation-duration: 0.01ms !important;

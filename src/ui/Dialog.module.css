@@ -23,7 +23,7 @@
   color: var(--fg-strong, #dfe1e5);
   outline: none;
   overflow: hidden;
-  animation: rise var(--dur, 140ms) ease;
+  animation: rise var(--dur, 140ms) var(--ease);
   box-sizing: border-box;
 }
 

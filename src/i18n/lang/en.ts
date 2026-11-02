@@ -1067,6 +1067,7 @@ export const en: Record<TranslationKey, string> = {
   "git.deleteSelected": "Delete Branch",
   "git.compareWithCurrent": "Compare with Current",
   "git.toggleFavorite": "Mark/Unmark As Favorite",
+  "git.currentBranchBadge": "current",
   "git.logToSelected": "Navigate Log to Selected Branch Head",
   "git.onSingleClick": "On Single Click",
   "git.clickSelectOnly": "Select Only",

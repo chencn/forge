@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Download, GitBranch, GitCommit, GitPullRequestArrow, Plus, RefreshCw, Search, Settings, Star, Tag, Upload } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Download, Folder, GitBranch, GitCommit, GitPullRequestArrow, Plus, RefreshCw, Settings, Star, Tag, Upload } from "lucide-react";
 import { Popup } from "../ui/Popup";
 import { List, firstSelectable, listNavigate } from "../ui/List";
 import { Menu, MenuList, type MenuItem as UiMenuItem } from "../ui/Menu";
 import { tooltipAttrs } from "../ui/Tooltip";
+import { SearchField } from "../ui/Input";
+import { HighlightedText } from "../ui/HighlightedText";
+import { formatShortcut } from "../lib/shortcuts";
 import type { GitState } from "../hooks/useGitState";
 import { buildRefMenu, upstreamOf, type RefAction, type RefTarget } from "../lib/refMenu";
 import type { MenuItem } from "./ContextMenu";
@@ -55,6 +58,12 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
   const [gear, setGear] = useState<HTMLElement | null>(null);
   const busy = git.operation?.phase === "running";
   const needle = query.trim().toLocaleLowerCase();
+  // 与列表的连续子串过滤保持一致；目录前缀命中时，叶子名称不误标字符。
+  const highlighted = (label: string, className?: string) => {
+    const start = needle ? label.toLocaleLowerCase().indexOf(needle) : -1;
+    return <HighlightedText text={label} className={className} indices={start < 0 ? undefined : Array.from({ length: needle.length }, (_, i) => start + i)} />;
+  };
+  const shortcut = (action: BranchAction) => formatShortcut(`git.${action}`, settings.editor.keymap);
 
   useEffect(() => {
     setAnchor(null); setSubmenu(null); setGear(null); setQuery(""); setExpanded(new Map());
@@ -159,10 +168,8 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
       aria-label={t("git.branches")} className={`branch-popup${keyboard ? " is-keyboard" : ""}`}>
       {!git.root ? <button type="button" className="popover-item" onClick={() => run("initRepo")}><GitBranch size={14} />{t("git.initRepo")}</button> : <div className="branch-popup-content" onKeyDown={onKeyDown}>
         <div className="branch-popup-head">
-          <label className="branch-popup-search"><Search size={14} aria-hidden="true" />
-            <input ref={inputRef} data-autofocus value={query} placeholder={t("git.searchBranch")} aria-label={t("git.searchBranch")} spellCheck={false}
-              onChange={(event) => { setQuery(event.target.value); setActiveKey(null); setSubmenu(null); }} />
-          </label>
+          <SearchField className="branch-popup-search" ref={inputRef} data-autofocus value={query} placeholder={t("git.searchBranch")} aria-label={t("git.searchBranch")} spellCheck={false}
+            onChange={(value) => { setQuery(value); setActiveKey(null); setSubmenu(null); }} />
           <button type="button" className="icon-button is-inline" aria-label={t("git.fetch")} disabled={busy || !canFetch(git)} {...tooltipAttrs(t(git.operation?.kind === "fetch" && busy ? "git.fetching" : "git.fetch"))}
             onClick={() => { void git.fetch(); }}><Download size={14} /></button>
           <button type="button" className="icon-button is-inline" aria-label={t("git.viewOptions")} aria-haspopup="menu" aria-expanded={!!gear} {...tooltipAttrs(t("git.viewOptions"))}
@@ -172,25 +179,30 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
           <List items={rows} getKey={(row) => row.key} activeIndex={active} onActiveChange={(i) => { setActive(i); }}
             rowHeight={ROW_HEIGHT} sectionHeightOf={(row) => row.type === "separator" ? SEPARATOR_HEIGHT : ROW_HEIGHT}
             isSection={skipped} renderSection={(row) => row.type === "separator" ? <span className="branch-popup-separator" role="separator" /> : row.type === "action" ? <span className="branch-popup-row is-disabled" {...tooltipAttrs(row.hint ?? "")}>
-              {row.icon}<span>{row.label}</span></span> : null}
+              {row.icon}{highlighted(row.label, "branch-popup-label")}{shortcut(row.key) && <span className="branch-popup-keys">{shortcut(row.key)}</span>}</span> : null}
             focusable={false} hoverSelects aria-label={t("git.branches")} className="branch-popup-list"
             empty={<span>{t("git.searchNoHit")}</span>}
             onActivate={(row, _, event) => { setKeyboard(event.type === "keydown"); activate(row, event.currentTarget as HTMLElement); }}
             onContextMenu={(row, _, event) => { if (row.type === "ref") { event.preventDefault(); openRefMenu(row, event.currentTarget as HTMLElement); } }}
             renderItem={(row) => {
               if (row.type === "separator") return null;
-              if (row.type === "action") return <span className="branch-popup-row">{row.icon}<span>{row.label}</span></span>;
-              if (row.type === "group") return <span className="branch-popup-row branch-popup-group" style={{ paddingLeft: row.depth * 14 }}>
-                <ChevronRight size={13} className={row.expanded ? "is-expanded" : ""} aria-hidden="true" /><span>{row.label}</span></span>;
-              return <span data-ref-key={row.key} className={`branch-popup-row${row.current ? " is-current" : ""}`} style={{ paddingLeft: row.depth * 14 }} {...tooltipAttrs(row.target.name)}>
-                {row.target.kind === "tag" ? <Tag size={14} aria-hidden="true" /> : <button type="button" className={`branch-popup-star${row.favorite ? " is-favorite" : ""}`} aria-label={t("git.toggleFavorite")} aria-pressed={row.favorite}
+              if (row.type === "action") return <span className="branch-popup-row">{row.icon}{highlighted(row.label, "branch-popup-label")}{shortcut(row.key) && <span className="branch-popup-keys">{shortcut(row.key)}</span>}</span>;
+              if (row.type === "group") return <span className="branch-popup-row branch-popup-group" style={{ paddingLeft: row.depth * 16 }}>
+                <ChevronRight size={12} className={row.expanded ? "is-expanded" : ""} aria-hidden="true" />{row.depth > 0 && <Folder size={14} aria-hidden="true" />}<span className="branch-popup-label">{row.label}</span></span>;
+              return <span data-ref-key={row.key} className={`branch-popup-row${row.current ? " is-current" : ""}`} style={{ paddingLeft: row.depth * 16 }} {...tooltipAttrs(row.target.name)}>
+                {/* 当前分支使用参考窗口的斜向引用标记，与普通标签图标区分。 */}
+                {row.current ? <svg width={14} height={14} viewBox="0 0 16 16" className="branch-popup-current-icon" fill="none" aria-hidden="true">
+                  <path d="M8.6 2.5h4.9v4.9l-6.1 6.1a1 1 0 0 1-1.41 0L2.5 10.01a1 1 0 0 1 0-1.41L8.6 2.5Z" stroke="currentColor" strokeLinejoin="round" />
+                  <circle cx={11} cy={5} r={1} fill="currentColor" />
+                </svg> : row.target.kind === "tag" ? <Tag size={14} aria-hidden="true" /> : <button type="button" className={`branch-popup-star${row.favorite ? " is-favorite" : ""}`} aria-label={t("git.toggleFavorite")} aria-pressed={row.favorite}
                   // 列表会阻止默认鼠标聚焦；星标保留按钮焦点，Enter 才会继续切换收藏。
                   onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => { event.stopPropagation(); onOptions(withFavoriteToggled(options, row.target.name)); }}>
                   <GitBranch size={14} className="branch-popup-branch-icon" /><Star size={14} className="branch-popup-star-icon" /></button>}
-                <span className="branch-popup-label">{row.label}</span>
-                {row.upstream && <span className="branch-popup-upstream">{row.upstream}</span>}
-                <ChevronRight size={13} className="branch-popup-sub-arrow" aria-hidden="true" />
+                {highlighted(row.label, "branch-popup-label branch-popup-name")}
+                {row.current && <span className="branch-popup-current">{t("git.currentBranchBadge")}</span>}
+                {row.target.kind !== "tag" && row.upstream && <span className="branch-popup-upstream">{row.upstream}</span>}
+                <ChevronRight size={10} className="branch-popup-sub-arrow" aria-hidden="true" />
               </span>;
             }} />
         </div>

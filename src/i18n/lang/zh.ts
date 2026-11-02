@@ -1068,6 +1068,7 @@ export const zh = {
   "git.deleteSelected": "删除分支",
   "git.compareWithCurrent": "与当前比较",
   "git.toggleFavorite": "收藏 / 取消收藏",
+  "git.currentBranchBadge": "当前",
   "git.logToSelected": "日志定位到所选分支",
   "git.onSingleClick": "单击时",
   "git.clickSelectOnly": "仅选中",

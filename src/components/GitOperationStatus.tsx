@@ -1,8 +1,9 @@
-import { Check, CircleAlert, Loader2 } from "lucide-react";
+import { Check, CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { GitOperation } from "../hooks/useGitState";
 import { useI18n } from "../i18n";
 import { tooltipAttrs } from "../ui/Tooltip";
+import { ProgressBar, Spinner } from "../ui/Feedback";
 import "./GitOperationStatus.css";
 
 /** 进度直接跟随 Git Promise，后端尚无流式百分比时只显示不定进度。 */
@@ -20,8 +21,8 @@ export default function GitOperationStatus({ operation }: { operation: GitOperat
   const label = t(`git.operation.${operation.kind}`);
   const result = running ? "…" : ` · ${t(operation.phase === "success" ? "git.operationDone" : "git.operationFailed")}`;
   return <span className="git-operation-status" role="status" aria-live="polite" {...tooltipAttrs(`${label} · ${operation.target}${result}`)}>
-    {running ? <Loader2 size={12} className="is-spinning" aria-hidden="true" /> : operation.phase === "success" ? <Check size={12} aria-hidden="true" /> : <CircleAlert size={12} aria-hidden="true" />}
+    {running ? <Spinner size={12} label={label} /> : operation.phase === "success" ? <Check size={12} aria-hidden="true" /> : <CircleAlert size={12} aria-hidden="true" />}
     <span className="git-operation-label">{label}{result}</span>
-    {running && <span className="git-operation-progress" role="progressbar" aria-label={label}><span /></span>}
+    {running && <ProgressBar className="git-operation-progress" aria-label={label} />}
   </span>;
 }

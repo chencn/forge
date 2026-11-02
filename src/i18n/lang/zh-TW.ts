@@ -1045,6 +1045,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "git.deleteSelected": "刪除分支",
   "git.compareWithCurrent": "與當前比較",
   "git.toggleFavorite": "收藏 / 取消收藏",
+  "git.currentBranchBadge": "目前",
   "git.logToSelected": "日誌定位到所選分支",
   "git.onSingleClick": "單擊時",
   "git.clickSelectOnly": "僅選中",
