@@ -14,7 +14,8 @@
 [data-slot="trace-collapsible-trigger"][aria-expanded="true"] > [data-slot="trace-icon"] { transform: rotate(90deg); }
 /* Large tool histories open immediately; keep panel lifecycle independent of ambient motion. */
 [data-slot="trace-collapsible-content"] { min-width: 0; transition: none; animation: none; }
-[data-slot="trace-collapsible-content-inner"] { min-width: 0; margin: 8px 0 4px 7px; padding: 0 4px 0 16px; border-left: 1px solid var(--border-color); color: var(--text-secondary); overflow-wrap: anywhere; }
+/* Trace 内容靠留白分组，不绘制装饰竖向导轨。 */
+[data-slot="trace-collapsible-content-inner"] { min-width: 0; margin: 8px 0 4px; padding: 0 4px; color: var(--text-secondary); overflow-wrap: anywhere; }
 [data-slot="trace-line"][data-status="running"] > [data-slot="trace-title"] { background: linear-gradient(90deg, var(--text-tertiary), var(--text-primary), var(--text-tertiary)); background-size: 250% 100%; background-clip: text; color: transparent; animation: forge-trace-shimmer 1.6s linear infinite; }
 @keyframes forge-trace-shimmer { to { background-position: -250% 0; } }
 
@@ -103,7 +104,7 @@
 .ai-tool-results [data-slot="trace-line"] > svg { flex: none; }
 .ai-tool-results [data-slot="trace-line"] > span { flex: 1; }
 .ai-tool-results [data-slot="trace-line"] > small { flex: none; color: var(--text-tertiary); }
-.ai-tool-results .ai-element-code { margin: 4px 0 10px; padding-left: 10px; border-left: 2px solid var(--danger); }
+.ai-tool-results .ai-element-code { margin: 4px 0 10px; padding: 8px 10px; border: 1px solid var(--border-popup); }
 .ai-element-sources { padding: 0; margin: 0; list-style: none; }
 .ai-element-sources li { padding: 5px 0; }
 .ai-element-sources a { display: flex; align-items: baseline; gap: 7px; color: var(--accent-blue-text); text-decoration: none; overflow-wrap: anywhere; }

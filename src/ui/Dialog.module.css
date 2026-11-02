@@ -6,7 +6,8 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.45);
+  /* IDEA 独立窗口阻挡输入，但不压暗工作区。 */
+  background: transparent;
 }
 
 .top {

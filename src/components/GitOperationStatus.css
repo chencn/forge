@@ -1,5 +1,12 @@
-.git-operation-status { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 320px; color: var(--fg-muted); }
-.git-operation-status > svg { flex: none; }
+.git-operation-status { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden; }
+.git-operation-task { min-width: 0; max-width: 100%; font-family: var(--font-ui); }
 .git-operation-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 复用基础进度条，避免底栏另写动画而与弹窗加载状态不同步。 */
 .git-operation-progress { flex: none; width: 96px; }
+/* 任务浮层向上贴近底栏，复用 IDEA Popup 的表面与入场动效。 */
+.git-operation-list { width: 320px; max-width: calc(100vw - 24px); padding: 6px 0; font-family: var(--font-ui); }
+.git-operation-list-header { padding: 2px 12px 6px; color: var(--fg-faint); font-size: var(--fs-small); }
+.git-operation-row { display: flex; flex-direction: column; gap: 5px; padding: 6px 12px; }
+.git-operation-row-title { color: var(--fg-emphasis); }
+.git-operation-target { color: var(--fg-subtle); font-size: var(--fs-small); }
+.git-operation-row-title, .git-operation-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

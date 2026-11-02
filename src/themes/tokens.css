@@ -20,18 +20,17 @@
   --text-secondary: var(--fg-secondary, #374151);
   --text-tertiary: var(--fg-subtle, #6b7280);
   --text-muted: var(--fg-muted, #9ca3af);
-  --button-solid: var(--accent, #3574f0);
-  --button-solid-text: var(--fg-on-accent, #ffffff);
+  --button-solid: var(--bg-button-primary);
+  --button-solid-text: var(--fg-button-primary);
 
   color-scheme: light;
-  --bg-active: #e5e7eb;
   /* 浮层、菜单与弹出框一律采用 IDEA 风格的实心不透明背景，禁止透出底层文字。 */
-  --surface-island-muted: rgba(248, 250, 252, 0.72);
-  --island-shadow:
-    0 14px 34px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  --accent-green: #22c55e;
-  --accent-green-bg: #dcfce7;
-  --accent-green-text: #166534;
+  --surface-island-muted: var(--bg-elev);
+  --island-shadow: var(--shadow-popup);
+  /* 旧组件只做语义映射；不得再覆盖 IDEA 同名状态、焦点与滚动条变量。 */
+  --accent-green: var(--success);
+  --accent-green-bg: var(--bg-feedback-success);
+  --accent-green-text: var(--success);
   /* 运行/停止按钮，取 IDEA 新 UI 主题 expUI_light_with_light_header 的 RunWidget：
      runningBackground=Green5、stopBackground=Red5、runIconColor=Green5。 */
   --run-icon: #369650;
@@ -40,21 +39,21 @@
   /* 会话状态点取 IDEA 的 IconBadge：跑着绿、出错红；结束不再画点。 */
   --run-badge-running: #55a76a;
   --run-badge-error: #e55765;
-  --accent-red: #ef4444;
-  --accent-red-bg: #fee2e2;
-  --accent-red-text: #991b1b;
-  --accent-blue: #3b82f6;
-  --accent-blue-bg: #dbeafe;
-  --accent-blue-text: #1d4ed8;
+  --accent-red: var(--danger);
+  --accent-red-bg: var(--bg-feedback-error);
+  --accent-red-text: var(--danger);
+  --accent-blue: var(--accent);
+  --accent-blue-bg: var(--accent-soft);
+  --accent-blue-text: var(--link);
   /* 实心主按钮那档蓝由桥接供色（--accent），深浅两套都用白字；和上面那档用于选中态的蓝不是一回事。 */
   --accent-color: var(--text-primary);
-  --accent-amber-bg: #fef3c7;
-  --accent-amber-text: #92400e;
+  --accent-amber-bg: var(--bg-feedback-warning);
+  --accent-amber-text: var(--warning);
   /* 运行配置类型图标还差两档色：Go / Wails 那族用青，.NET 用紫。 */
   --accent-cyan-text: #0e7490;
   --accent-violet-text: #6d28d9;
   /* 分支标记用的实心黄：就是上面那档 amber 的本名，浅色下文字档太暗。 */
-  --accent-yellow: #f59e0b;
+  --accent-yellow: var(--warning);
   /* 被 .gitignore 忽略的文件在树里的文字色，取 IDEA 的 FILESTATUS_IDEA_FILESTATUS_IGNORED。 */
   --vcs-ignored: #8c4f00;
   /* 排除目录那一行的底色，对齐 IDEA 项目树里 dist / node_modules 的浅黄底。 */
@@ -73,12 +72,9 @@
   --idea-notification-info-icon: #4682fa;
   --idea-notification-close-icon: #6c707e;
   --idea-notification-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.06);
-  --focus-ring: rgba(17, 24, 39, 0.06);
-  --scrollbar-thumb: rgba(148, 163, 184, 0.58);
-  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.72);
-  --scrollbar-thumb-active: rgba(100, 116, 139, 0.58);
-  --selection-bg: rgba(59, 130, 246, 0.2);
-  --on-solid: #ffffff;
+  --scrollbar-thumb-active: var(--scrollbar-thumb-hover);
+  --selection-bg: var(--bg-editor-selection);
+  --on-solid: var(--fg-on-accent);
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -119,42 +115,7 @@
     "JetBrains Mono Variable", "JetBrains Mono", "SF Mono", Monaco,
     "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
     "Microsoft YaHei Mono", "Noto Sans Mono CJK SC", "MS Gothic", monospace;
-  /* 语法配色：IntelliJ Light（Default 方案）的一份来源，编辑器、md 预览、聊天代码块共用。
-     引擎换了也不改这里——Monaco 时代没有这组变量，语法色停在 VS Code 默认档，那是不像 IDEA 的主因。 */
-  --syn-keyword: #0033b3;
-  --syn-string: #067d17;
-  --syn-type: #000000;
-  --syn-function: #00627a;
-  --syn-function-call: #080808;
-  --syn-comment: #8c8c8c;
-  --syn-comment-style: italic;
-  --syn-doc-comment: #8c8c8c;
-  --syn-docstring: #067d17;
-  --syn-annotation: #9e880d;
-  --syn-decorator: #9e880d;
-  --syn-number: #1750eb;
-  --syn-punct: #080808;
-  --syn-variable: #080808;
-  --syn-param: #080808;
-  --syn-property: #871094;
-  --syn-constant: #871094;
-  --syn-builtin: #000080;
-  --syn-self: #94558d;
-  --syn-keyword-arg: #660099;
-  --syn-predefined: #b200b2;
-  --syn-escape: #0037a6;
-  --syn-regexp: #264eff;
-  --syn-tag: #0033b3;
-  --syn-attribute: #174ad4;
-  --syn-todo: #008dde;
-  --syn-link: #006dcc;
-  --syn-markup-heading: #871094;
-  --syn-markup-code: #067d17;
-  --syn-invalid: #f50000;
-  --syn-inline-value: #8c8c8c;
-  --syn-bracket-1: #0431fa;
-  --syn-bracket-2: #319331;
-  --syn-bracket-3: #7b3814;
+  /* 语法色由 ideaTokens 统一提供，保留高对比主题原值。 */
   /* 编辑器专属的方案色：这几档 forge 以前只在 JS 里硬编码，没有可覆写的变量。 */
   --bg-editor: var(--bg-primary);
   --bg-editor-gutter: var(--bg-editor);
@@ -205,18 +166,8 @@
   --text-secondary: var(--fg-secondary, #d4d4d4);
   --text-tertiary: var(--fg-subtle, #a3a3a3);
   --text-muted: var(--fg-muted, #737373);
-  --button-solid: var(--accent, #548af7);
-  --button-solid-text: var(--fg-on-accent, #ffffff);
 
   color-scheme: dark;
-  --bg-active: #2a2a2a;
-  /* 深色档浮层同样使用实心不透明底色。 */
-  --surface-island-muted: rgba(20, 20, 20, 0.68);
-  --island-shadow:
-    0 16px 40px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  --accent-green: #4ade80;
-  --accent-green-bg: rgba(34, 197, 94, 0.18);
-  --accent-green-text: #86efac;
   /* 深色档取 IDEA 新 UI 深色主题的 RunWidget：toolbar-run-bg=green-80、toolbar-stop-bg=red-80。 */
   --run-icon: #338555;
   --run-solid: #338555;
@@ -224,18 +175,9 @@
   /* IconBadge 深色档：successBackground=#5FAD65、errorBackground=#DB5C5C。 */
   --run-badge-running: #5fad65;
   --run-badge-error: #db5c5c;
-  --accent-red: #f87171;
-  --accent-red-bg: rgba(239, 68, 68, 0.18);
-  --accent-red-text: #fca5a5;
-  --accent-blue: #58a6ff;
-  --accent-blue-bg: rgba(59, 130, 246, 0.18);
-  --accent-blue-text: #93c5fd;
   --accent-color: var(--text-primary);
-  --accent-amber-bg: rgba(245, 158, 11, 0.18);
-  --accent-amber-text: #fcd34d;
   --accent-cyan-text: #67e8f9;
   --accent-violet-text: #c4b5fd;
-  --accent-yellow: #fcd34d;
   /* 被 .gitignore 忽略的文件在树里的文字色（深色档，取 IDEA 的 D69A6B）。 */
   --vcs-ignored: #d69a6b;
   /* 排除目录那一行的底色（深色档）。 */
@@ -254,11 +196,6 @@
   --idea-notification-info-icon: #548af7;
   --idea-notification-close-icon: #a8adbd;
   --idea-notification-shadow: 0 6px 20px rgba(0, 0, 0, 0.36), 0 2px 6px rgba(0, 0, 0, 0.24);
-  --focus-ring: rgba(212, 212, 212, 0.14);
-  --scrollbar-thumb: rgba(113, 113, 122, 0.68);
-  --scrollbar-thumb-hover: rgba(161, 161, 170, 0.82);
-  --scrollbar-thumb-active: rgba(212, 212, 216, 0.9);
-  --selection-bg: rgba(88, 166, 255, 0.28);
   --maven-fg: #d1d3d9;
   --maven-subtle: #8b8e94;
   --maven-primary: #3871e1;
@@ -282,43 +219,7 @@
   --sidebar-border: #33353b;
   --sidebar-stripe: #3871e1;
   --sidebar-stripe-fg: #ffffff;
-  --on-solid: #0a0a0a;
-  /* 语法配色：Islands Dark 方案，与浅色那一组同名同序。底色/字色/行号继续用 forge 自己的
-     --bg-primary / --text-primary / --text-muted，只覆写浅色档给过具体值的那几档编辑器方案色。 */
-  --syn-keyword: #cf8e6d;
-  --syn-string: #6aab73;
-  --syn-type: #bcbec4;
-  --syn-function: #56a8f5;
-  --syn-function-call: #bcbec4;
-  --syn-comment: #7a7e85;
-  --syn-comment-style: normal;
-  --syn-doc-comment: #5f826b;
-  --syn-docstring: #5f826b;
-  --syn-annotation: #b3ae60;
-  --syn-decorator: #b3ae60;
-  --syn-number: #2aacb8;
-  --syn-punct: #bcbec4;
-  --syn-variable: #bcbec4;
-  --syn-param: #bcbec4;
-  --syn-property: #c77dbb;
-  --syn-constant: #c77dbb;
-  --syn-builtin: #8888c6;
-  --syn-self: #94558d;
-  --syn-keyword-arg: #aa4926;
-  --syn-predefined: #b200b2;
-  --syn-escape: #cf8e6d;
-  --syn-regexp: #42c3d4;
-  --syn-tag: #d5b778;
-  --syn-attribute: #bcbec4;
-  --syn-todo: #8bb33d;
-  --syn-link: #548af7;
-  --syn-markup-heading: #cf8e6d;
-  --syn-markup-code: #6aab73;
-  --syn-invalid: #f75464;
-  --syn-inline-value: #868a91;
-  --syn-bracket-1: #e8c25b;
-  --syn-bracket-2: #d78bd6;
-  --syn-bracket-3: #4ea7f0;
+  /* 语法色由 ideaTokens 统一提供，保留高对比主题原值。 */
   --fg-line-number-current: #a1a3ab;
   --bg-editor-current-line: #1f2024;
   --bg-editor-selection: #214283;

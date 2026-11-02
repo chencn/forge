@@ -172,9 +172,10 @@
 .ai-settings-controls { display: flex; align-items: center; gap: 10px; }
 .ai-enable-switch { display: inline-flex; align-items: center; flex: none; width: 30px; height: 18px; padding: 2px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-tertiary); cursor: pointer; }
 .ai-enable-switch > span { width: 12px; height: 12px; border-radius: 50%; background: var(--text-tertiary); }
-.ai-enable-switch[aria-checked="true"] { background: var(--text-primary); border-color: var(--text-primary); }
-.ai-enable-switch[aria-checked="true"] > span { margin-left: auto; background: var(--bg-primary); }
-.ai-enable-switch:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 3px; }
+/* 开关与发送动作沿用 IDEA 的语义色，不使用黑白反色模拟 shadcn 主色。 */
+.ai-enable-switch[aria-checked="true"] { background: var(--bg-toggle-on); border-color: var(--bg-toggle-on); }
+.ai-enable-switch[aria-checked="true"] > span { margin-left: auto; background: var(--fg-toggle-on); }
+.ai-enable-switch:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
 .ai-enable-switch:disabled { opacity: .5; cursor: not-allowed; }
 .ai-muted { color: var(--text-tertiary); font-size: 12px; }
 .ai-cli-path { font-family: var(--font-mono); }
@@ -387,8 +388,11 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-compact-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ai-compact-panel-actions .button { padding: 4px 10px; font-size: 11px; }
 .ai-compact-panel-actions .ai-text-button { margin-left: auto; }
-.ai-send-button { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--text-primary); color: var(--bg-primary); cursor: pointer; }
-.ai-send-button.is-stop { background: var(--accent-red); color: var(--bg-primary); }
+.ai-send-button { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--bg-button-primary); color: var(--fg-button-primary); cursor: pointer; }
+.ai-send-button.is-stop { background: var(--stop-solid); color: var(--fg-on-accent); }
+@media (hover: hover) and (pointer: fine) {
+  .ai-send-button:not(.is-stop):not(:disabled):hover { background: var(--bg-button-primary-hover); }
+}
 .ai-send-button:disabled { background: var(--bg-tertiary); color: var(--text-tertiary); cursor: default; }
 .ai-send-button:active:not(:disabled) { transform: scale(.96); }
 .ai-composer-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 4px 0; font-size: 11px; line-height: 1; color: var(--text-tertiary); }

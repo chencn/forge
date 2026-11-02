@@ -1042,6 +1042,7 @@ export const en: Record<TranslationKey, string> = {
   "git.operation.merge": "Merge Branch",
   "git.operation.rebase": "Rebase",
   "git.operationDone": "Completed",
+  "git.backgroundTasks": "Background Tasks",
   "git.operationFailed": "Failed",
   "git.updateMethod": "Update method",
   "git.updateMerge": "Merge incoming changes into the current branch",

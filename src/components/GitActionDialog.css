@@ -1,6 +1,4 @@
 .git-action-dialog { font: 13px var(--font-ui); }
-/* IDEA 操作窗口不压暗工作区；仅覆盖 Git 窗口，不改变其他对话框的布局。 */
-div:has(> .git-action-dialog) { background: transparent; }
 .git-action-dialog [data-dialog-titlebar], .git-action-dialog [data-dialog-footer] { border: 0; }
 .git-action-dialog [data-dialog-body] { padding: 0; }
 .git-action-form { display: flex; flex-direction: column; gap: 8px; padding: 14px; min-width: 0; }

@@ -1019,6 +1019,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "git.operation.merge": "合併分支",
   "git.operation.rebase": "變基",
   "git.operationDone": "已完成",
+  "git.backgroundTasks": "背景工作",
   "git.operationFailed": "失敗",
   "git.updateMethod": "更新方式",
   "git.updateMerge": "將遠端變更合併到目前分支",

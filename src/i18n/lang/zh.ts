@@ -1042,6 +1042,7 @@ export const zh = {
   "git.operation.merge": "合并分支",
   "git.operation.rebase": "变基",
   "git.operationDone": "已完成",
+  "git.backgroundTasks": "后台任务",
   "git.operationFailed": "失败",
   "git.updateMethod": "更新方式",
   "git.updateMerge": "将远端改动合并到当前分支",

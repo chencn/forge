@@ -6352,7 +6352,6 @@ export default function App() {
       </AiInputProvider>
 
       <footer className="global-status">
-        <GitOperationStatus operation={git.operation} />
         {deleteStatus ? (
           <span
             className={`status-note is-delete-status is-${deleteStatus.phase}`}
@@ -6390,6 +6389,8 @@ export default function App() {
         ) : (
           <span className="status-spacer" />
         )}
+        {/* OpenIDEA 的后台任务位于弹性路径区之后、右侧状态控件之前。 */}
+        <GitOperationStatus operation={git.operation} />
         {activeDoc ? (
           <>
             <CaretStatus
