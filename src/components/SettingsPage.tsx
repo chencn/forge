@@ -31,7 +31,6 @@ import {
   VcsCommitPage,
   VcsConfirmationPage,
   VcsGitPage,
-  VcsIssueNavigationPage,
 } from "../features/settings/pages/VcsPages";
 import { ToolAboutPage, ToolTerminalPage } from "../features/settings/pages/ToolPages";
 
@@ -158,7 +157,6 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
           { title: "settings.section.commit", content: <VcsCommitPage /> },
           { title: "settings.section.gitExecutable", content: <VcsGitPage workspace={workspace} /> },
           { title: "settings.section.confirmations", content: <VcsConfirmationPage /> },
-          { title: "settings.section.issueNavigation", content: <VcsIssueNavigationPage /> },
         ];
       default:
         return [];
@@ -206,7 +204,7 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
         {moduleSections.length > 0 ? (
           <div className="settings-stack">
             {moduleSections.map((section) => (
-              <section key={section.title}>
+              <section key={section.title} className={module === "git" ? "settings-section is-vcs" : undefined}>
                 <h3 className="settings-section-title">{t(section.title)}</h3>
                 {section.content}
               </section>

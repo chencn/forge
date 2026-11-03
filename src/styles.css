@@ -1964,6 +1964,137 @@ span.entry-icon > svg {
 .settings-shortcut kbd.shortcut-capture { color: var(--accent-blue); border-color: var(--accent-blue); font-family: inherit; }
 .settings-note.is-error { color: var(--accent-red, #d13438); }
 
+/* Git 设置：一组一个标题，选项左对齐，数字和说明跟在同一行。
+   三节叠在同一条滚动里，不再各自垫出一块内边距。 */
+.settings-section.is-vcs .settings-section-title {
+  padding: 32px 18px 0;
+  font-size: 13px;
+  color: var(--fg-strong);
+}
+
+.settings-section.is-vcs:first-child .settings-section-title {
+  padding-top: 16px;
+}
+
+.settings-stack .vcs-settings {
+  flex: none;
+  overflow: visible;
+  gap: 0;
+  padding: 16px 18px 8px;
+}
+
+.settings-stack > section:last-child .vcs-settings {
+  padding-bottom: 28px;
+}
+
+.vcs-settings .settings-rows-limit {
+  gap: 28px;
+}
+
+.vcs-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vcs-group-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+
+.vcs-options,
+.vcs-choice,
+.vcs-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vcs-options { gap: 12px; }
+.vcs-choice { gap: 4px; }
+.vcs-stack { align-items: flex-start; gap: 8px; max-width: 640px; }
+
+.vcs-nested {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-left: 24px;
+}
+
+.vcs-inline,
+.vcs-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.vcs-field { gap: 12px; }
+
+.vcs-field-label {
+  flex: none;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+
+.vcs-field .select {
+  min-width: min(220px, 100%);
+  max-width: 100%;
+}
+
+.vcs-unit {
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+
+.vcs-number {
+  width: 72px;
+  flex: none;
+}
+
+.vcs-number:disabled {
+  opacity: 0.45;
+}
+
+.vcs-text {
+  width: min(520px, 100%);
+}
+
+.vcs-hint {
+  margin: 0;
+  max-width: 640px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vcs-hint.is-indent {
+  padding-left: 24px;
+}
+
+.vcs-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  max-width: 640px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.vcs-status svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.vcs-status.is-ok { color: var(--success); }
+.vcs-status.is-bad { color: var(--danger); }
+
 /* 按面板可用宽度换行；长命令和无空格路径不能撑宽设置页。 */
 .hooks-settings { min-width: 0; overflow-wrap: anywhere; }
 .hooks-toolbar { flex-wrap: wrap; }
