@@ -37,6 +37,7 @@ import {
   gitDiffText,
   markClass,
 } from "../lib/git";
+import { commitDraft, setCommitDraft, subscribeCommitDraft } from "../lib/commitDraft";
 import { readFile } from "../lib/fs";
 import { badCommitNames, isNewCommitPath } from "../features/vcs/commitChecks";
 import {
@@ -267,8 +268,19 @@ function GitPanel({
     };
   });
 
-  // 提交输入框状态
-  const [message, setMessage] = useState("");
+  // 提交说明按仓库留着：切走工具窗口会卸掉这个面板，不能只放在组件状态里。
+  const draftKey = git.root ?? workspaceRoot;
+  const [message, setMessageState] = useState(() => commitDraft(draftKey));
+  const setMessage = (next: string) => {
+    setCommitDraft(draftKey, next);
+    setMessageState(next);
+  };
+  useEffect(() => {
+    setMessageState(commitDraft(draftKey));
+    return subscribeCommitDraft(draftKey, (next) => {
+      setMessageState((prev) => (prev === next ? prev : next));
+    });
+  }, [draftKey]);
   const [emptyError, setEmptyError] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -885,7 +897,8 @@ function GitPanel({
         overrideProviderId: activeProvider.id,
       });
 
-      if (message.trim().length > 0) {
+      // 以仓库里的说明为准：生成期间面板可能已经卸掉，晚到的结果不能盖掉切回来后新打的字。
+      if (commitDraft(root).trim().length > 0) {
         setConfirmReplace(generated);
       } else {
         setMessage(generated);
