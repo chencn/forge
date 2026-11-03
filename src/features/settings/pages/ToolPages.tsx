@@ -61,7 +61,7 @@ export function ToolTerminalPage() {
   }, []);
 
   return (
-    <div className="settings-rows">
+    <div className="settings-rows is-terminal">
       <div className="settings-rows-limit">
         <div className="settings-row">
           <span className="settings-label">{t("settings.shell")}</span>
@@ -241,7 +241,7 @@ export function ToolAboutPage() {
   };
 
   return (
-    <div className="settings-rows">
+    <div className="settings-rows is-about">
       <div className="settings-rows-limit">
         <div className="settings-row">
           <span className="settings-label">{t("about.version")}</span>

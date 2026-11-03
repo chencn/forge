@@ -364,7 +364,7 @@ export default function McpPanel() {
   const marketExists = !!marketDetail && !!list?.servers.some((server) => server.id === marketDetail.serverId);
 
   return (
-    <div className="ai-manage-panel">
+    <div className="ai-manage-panel is-mcp">
       <div className="ai-manage-toolbar">
         <Select value={provider} label={t("mcp.provider")} placeholder={t("mcp.provider")}
           options={(["claude", "codex"] as AiProvider[]).map((item) => ({ value: item, label: AI_NAMES[item] }))}
@@ -395,7 +395,7 @@ export default function McpPanel() {
           </span>
         )}
         <span className="ai-cli-hint ai-manage-path">{tab === "local" ? (list?.path ?? "") : t("mcp.marketSourceHint")}</span>
-        <button type="button" className="panel-action" disabled={!desktop || busy}
+        <button type="button" className="panel-action ai-cli-icon-action" disabled={!desktop || busy}
           title={t("mcp.refresh")} aria-label={t("mcp.refresh")}
           onClick={() => guard(() => tab === "local" ? setReloadToken((value) => value + 1) : void runMarketSearch(marketQuery))}>
           <RefreshCw size={13} />
@@ -449,8 +449,8 @@ export default function McpPanel() {
                 <span className="ai-cli-badge is-idle">{String(server.spec.type ?? "stdio")}</span>
               </button>
             ))}
-            {!servers.length && tab === "local" ? <p className="ai-cli-list-note">{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("mcp.empty")) : t("ai.desktopOnly")}</p> : null}
-            {tab === "market" ? <p className="ai-cli-list-note">{marketLoading ? t("mcp.marketLoading") : marketError ? t("mcp.marketError", { message: marketError }) : marketResults?.length ? "" : t("mcp.marketEmpty")}</p> : null}
+            {!servers.length && tab === "local" ? <p className={desktop && !busy && notice?.error ? "ai-error" : "ai-cli-list-note"}>{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("mcp.empty")) : t("ai.desktopOnly")}</p> : null}
+            {tab === "market" ? <p className={!marketLoading && marketError ? "ai-error" : "ai-cli-list-note"}>{marketLoading ? t("mcp.marketLoading") : marketError ? t("mcp.marketError", { message: marketError }) : marketResults?.length ? "" : t("mcp.marketEmpty")}</p> : null}
           </div>
         </aside>
 
@@ -458,7 +458,7 @@ export default function McpPanel() {
           {tab === "market" ? (marketDetailLoading ? (
             <p className="ai-cli-empty">{t("mcp.marketLoadingDetail")}</p>
           ) : marketDetailError ? (
-            <p className="ai-cli-empty" role="alert">{t("mcp.marketDetailFailed", { message: marketDetailError })}</p>
+            <p className="ai-error" role="alert">{t("mcp.marketDetailFailed", { message: marketDetailError })}</p>
           ) : marketDetail ? (
             <>
               <header className="ai-cli-detail-head">
@@ -545,14 +545,14 @@ export default function McpPanel() {
               </div>
             </>
           ) : (
-            <p className="ai-cli-empty">{marketLoading ? t("mcp.marketLoading") : marketError ? t("mcp.marketError", { message: marketError }) : t("mcp.marketSelect")}</p>
+            <p className={!marketLoading && marketError ? "ai-error" : "ai-cli-empty"}>{marketLoading ? t("mcp.marketLoading") : marketError ? t("mcp.marketError", { message: marketError }) : t("mcp.marketSelect")}</p>
           )) : editing ? <>
             <header className="ai-cli-detail-head">
               <div className="ai-cli-detail-title">
                 <Server size={18} aria-hidden="true" />
                 <h3>{isNew ? t("mcp.new") : id}</h3>
                 <span className="ai-cli-badge is-idle">{AI_NAMES[provider]}</span>
-                {localDirty ? <span className="ai-cli-badge is-checking">{t("mcp.unsaved")}</span> : null}
+                {localDirty ? <span className="ai-cli-badge is-warn">{t("mcp.unsaved")}</span> : null}
               </div>
             </header>
             <div className="ai-cli-detail-body">
@@ -582,7 +582,7 @@ export default function McpPanel() {
                 {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void copyToOther()}>
                   <Copy size={13} />{t("mcp.copy", { name: AI_NAMES[other(provider)] })}
                 </button> : null}
-                {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy}
+                {!isNew ? <button type="button" className="panel-action is-danger" disabled={!desktop || busy}
                   onClick={() => { const item = list?.servers.find((server) => server.id === selectedId); if (item) setPendingDelete(item); }}>
                   <Trash2 size={13} />{t("mcp.delete")}
                 </button> : null}
@@ -592,7 +592,7 @@ export default function McpPanel() {
                 </button>
               </div>
             </div>
-          </> : <p className="ai-cli-empty">{desktop ? (notice?.error ? notice.text : t("mcp.selectHint")) : t("ai.desktopOnly")}</p>}
+          </> : <p className={desktop && notice?.error ? "ai-error" : "ai-cli-empty"}>{desktop ? (notice?.error ? notice.text : t("mcp.selectHint")) : t("ai.desktopOnly")}</p>}
         </section>
       </div>
 

@@ -93,7 +93,7 @@ export default function AiArchivedSessionsPanel({ workspace }: { workspace: stri
   };
 
   return (
-    <div className="ai-manage-panel" aria-label={t("settings.aiArchived")}>
+    <div className="ai-manage-panel is-archived" aria-label={t("settings.aiArchived")}>
       <div className="ai-manage-toolbar ai-archived-toolbar">
         <div className="ai-manage-tabs" role="group" aria-label={t("ai.archived.filter")}>
           <button type="button" className="panel-action" aria-pressed={provider === null}

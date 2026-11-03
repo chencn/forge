@@ -512,6 +512,9 @@ function GitLogPane({
     setLogLoading(true);
     // 新一轮查询重开分页；不用等结果回来，旧的「已到底」不该挡住续页判断。
     setLogDone(false);
+    // 文件或目录历史才吃「历史上限」；整条分支日志继续按页加载。
+    const historyCap = pathFilter && settings.vcs.limitHistoryRows > 0 ? settings.vcs.limitHistoryRows : Number.POSITIVE_INFINITY;
+    const pageLimit = Math.min(LOG_PAGE, historyCap);
     void gitLog(root, {
       text: settledText,
       regex,
@@ -519,16 +522,17 @@ function GitLogPane({
       reference,
       path: pathFilter,
       sinceMs: since ? Date.now() - SINCE_MS[since] : 0,
-      limit: LOG_PAGE,
+      limit: pageLimit,
     })
       .then((list) => {
         if (stale) return;
-        setCommits(list);
-        setLogDone(list.length < LOG_PAGE);
+        const shown = list.slice(0, historyCap);
+        setCommits(shown);
+        setLogDone(shown.length < pageLimit || shown.length >= historyCap);
         // 上一次选中的提交可能被过滤掉了，落到列表第一条。
         setPicked((current) => {
-          const kept = current.filter((hash) => list.some((commit) => commit.hash === hash));
-          return kept.length > 0 ? kept : list.slice(0, 1).map((commit) => commit.hash);
+          const kept = current.filter((hash) => shown.some((commit) => commit.hash === hash));
+          return kept.length > 0 ? kept : shown.slice(0, 1).map((commit) => commit.hash);
         });
       })
       .catch((cause: unknown) => {
@@ -547,7 +551,7 @@ function GitLogPane({
     };
     // HEAD 一动就得重查：引用留空那一档查的就是「当前分支」，签出别的分支或提交完
     // HEAD 前移，列表停在旧结果会让人拿别的分支的历史做重置、优选。
-  }, [root, settledText, regex, author, reference, pathFilter, since, signal, reportError, git.lastCommit?.hash, git.status?.branch]);
+  }, [root, settledText, regex, author, reference, pathFilter, since, signal, reportError, git.lastCommit?.hash, git.status?.branch, settings.vcs.limitHistoryRows]);
 
   // 滚动到底自动续一页。observer 只挂一次，回调经 ref 取最新的加载动作，
   // 免得每次筛选或追加提交都拆一遍 IntersectionObserver。
@@ -559,7 +563,13 @@ function GitLogPane({
   const loadingMoreRef = useRef(false);
   loadMoreRef.current = () => {
     if (!root || logDone || logLoading || loadingMoreRef.current) return;
+    const historyCap = pathFilter && settings.vcs.limitHistoryRows > 0 ? settings.vcs.limitHistoryRows : Number.POSITIVE_INFINITY;
+    if (commits.length >= historyCap) {
+      setLogDone(true);
+      return;
+    }
     loadingMoreRef.current = true;
+    const pageLimit = Math.min(LOG_PAGE, historyCap - commits.length);
     void gitLog(root, {
       text: settledText,
       regex,
@@ -568,11 +578,14 @@ function GitLogPane({
       path: pathFilter,
       sinceMs: since ? Date.now() - SINCE_MS[since] : 0,
       skip: commits.length,
-      limit: LOG_PAGE,
+      limit: pageLimit,
     })
       .then((page) => {
-        setCommits((current) => current.concat(page));
-        setLogDone(page.length < LOG_PAGE);
+        setCommits((current) => {
+          const next = current.concat(page);
+          return next.length > historyCap ? next.slice(0, historyCap) : next;
+        });
+        setLogDone(page.length < pageLimit || commits.length + page.length >= historyCap);
       })
       .catch((cause: unknown) => {
         // 续页失败不推翻已有列表，报错并把这一页停掉，滚动不会再触发。

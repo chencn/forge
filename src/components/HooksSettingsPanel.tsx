@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useI18n } from "../i18n";
@@ -176,13 +176,82 @@ function removeRow(doc: Json, row: HookRow): Json {
   return next;
 }
 
-/** 新增一条规则：`{ matcher, hooks: [{ type: "command", command }] }`。 */
-function appendRow(doc: Json, event: HookEvent, matcher: string, command: string): Json {
+/** 新增一条规则：`{ matcher, hooks: [{ type: "command", command, timeout?, async? }] }`。 */
+function appendRow(doc: Json, event: HookEvent, draft: { matcher: string; command: string; timeout: string; async: boolean }): Json {
+  const hook: Json = { type: "command", command: draft.command };
+  if (draft.timeout !== "") hook.timeout = Number(draft.timeout);
+  if (draft.async) hook.async = true;
   const next: Json = { ...doc };
   const rules = Array.isArray(next[event]) ? [...(next[event] as unknown[])] : [];
-  rules.push({ matcher, hooks: [{ type: "command", command }] });
+  rules.push({ matcher: draft.matcher, hooks: [hook] });
   next[event] = rules;
   return next;
+}
+
+function HookAddDialog({
+  event,
+  provider,
+  onCancel,
+  onAdd,
+}: {
+  event: HookEvent;
+  provider: AiProvider;
+  onCancel: () => void;
+  onAdd: (draft: { matcher: string; command: string; timeout: string; async: boolean }) => void;
+}) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const [matcher, setMatcher] = useState("");
+  const [command, setCommand] = useState("");
+  const [timeout, setTimeoutValue] = useState("");
+  const [asyncHook, setAsyncHook] = useState(false);
+  const matcherIgnored = provider === "codex" && !CODEX_MATCHER_EVENTS.includes(event);
+  const timeoutCap = provider === "codex" && (event === "SessionEnd" || event === "Interrupt") ? 3 : undefined;
+  const timeoutInvalid = timeout !== "" && (!/^\d+$/.test(timeout) || !Number.isSafeInteger(Number(timeout)) || (timeoutCap !== undefined && Number(timeout) > timeoutCap));
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+  return (
+    <dialog ref={ref} className="dialog hooks-add-dialog" aria-labelledby={titleId}
+      onCancel={(e) => { e.preventDefault(); onCancel(); }}>
+      <form onSubmit={(e) => { e.preventDefault(); onAdd({ matcher: matcherIgnored ? "" : matcher, command: command.trim(), timeout, async: asyncHook }); }}>
+        <h2 id={titleId} className="dialog-title">{t("hooks.addRule")}</h2>
+        <p className="dialog-body">{t(EVENT_LABEL[event])}</p>
+        <label className="dialog-field">
+          <span>{t("hooks.matcherLabel")}</span>
+          <input className="text-input" value={matcher} spellCheck={false} disabled={matcherIgnored}
+            title={matcherIgnored ? t("hooks.matcherIgnored") : undefined}
+            placeholder={t(provider === "codex" ? "hooks.codexMatcher" : "hooks.matcherPlaceholder")}
+            onChange={(e) => setMatcher(e.target.value)} />
+        </label>
+        <label className="dialog-field">
+          <span>{t("hooks.commandLabel")}</span>
+          <textarea className="text-input" rows={3} spellCheck={false} value={command} autoFocus
+            placeholder={t("hooks.commandPlaceholder")}
+            onChange={(e) => setCommand(e.target.value)} />
+        </label>
+        <label className="dialog-field">
+          <span>{t("hooks.timeoutLabel")}</span>
+          <input className="text-input" type="number" min={0} step={1} max={timeoutCap} value={timeout}
+            placeholder={t("hooks.timeoutPlaceholder")} title={t("hooks.timeoutTitle")}
+            onChange={(e) => setTimeoutValue(e.target.value)} />
+        </label>
+        {provider === "codex" && event !== "SessionEnd" ? (
+          <label className="dialog-field hooks-add-async">
+            <input type="checkbox" checked={asyncHook} onChange={(e) => setAsyncHook(e.target.checked)} />
+            <span>{t("hooks.async")}</span>
+          </label>
+        ) : null}
+        <div className="dialog-actions">
+          <button type="button" className="button" onClick={onCancel}>{t("dialog.cancel")}</button>
+          <button type="submit" className="button is-primary" disabled={!command.trim() || timeoutInvalid}>{t("hooks.addRule")}</button>
+        </div>
+      </form>
+    </dialog>
+  );
 }
 
 export default function HooksSettingsPanel() {
@@ -200,6 +269,7 @@ export default function HooksSettingsPanel() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null);
+  const [adding, setAdding] = useState<HookEvent | null>(null);
   const [reload, setReload] = useState(0);
   const generation = useRef(0);
   const saveLock = useRef(false);
@@ -283,7 +353,7 @@ export default function HooksSettingsPanel() {
     return <p className="settings-note">{t("hooks.desktopOnly")}</p>;
   }
   return (
-    <div className="settings-rows hooks-settings">
+    <div className="settings-rows is-hooks hooks-settings">
       <div className="settings-row hooks-toolbar">
         <span className="settings-label">{t("hooks.provider")}</span>
         <Select value={provider} label={t("hooks.provider")} placeholder={t("hooks.provider")} disabled={saving}
@@ -296,9 +366,9 @@ export default function HooksSettingsPanel() {
       <p className="settings-note">{t(provider === "codex" ? "hooks.codexIntro" : "hooks.intro")}</p>
       {path ? <p className="settings-note hooks-path">{path}</p> : null}
       {busy ? <p className="settings-note" role="status"><Loader2 size={12} className="is-spinning" aria-hidden /> {t("ai.runtime.loading")}</p> : null}
-      {error ? <p className="settings-note" role="alert">{error}</p> : null}
-      {notice ? <p className="settings-note" role="status">{notice}</p> : null}
-      {dirty && invalid ? <p className="settings-note" role="alert">{t("hooks.invalid")}</p> : null}
+      {error ? <p className="settings-note is-fail" role="alert">{error}</p> : null}
+      {notice ? <p className="settings-note is-pass" role="status">{notice}</p> : null}
+      {dirty && invalid ? <p className="settings-note is-fail" role="alert">{t("hooks.invalid")}</p> : null}
       <fieldset className="hooks-fields" disabled={doc === null || busy || saving}>
         {events.map((event) => {
           const eventRows = rows.filter((row) => row.event === event);
@@ -312,7 +382,7 @@ export default function HooksSettingsPanel() {
                   className="button"
                   aria-label={`${event} ${t("hooks.addRule")}`}
                   disabled={doc === null || saving}
-                  onClick={() => mutate(appendRow(doc!, event, "", ""))}
+                  onClick={() => setAdding(event)}
                 >
                   <Plus size={13} aria-hidden /> {t("hooks.addRule")}
                 </button>
@@ -385,13 +455,13 @@ export default function HooksSettingsPanel() {
         <p className="settings-note">{t("hooks.trustHint")}</p>
         {dirty ? <p className="settings-note">{t("hooks.statusAfterSave")}</p> : <>
           {checking ? <p className="settings-note" role="status">{t("hooks.checking")}</p> : null}
-          {statusError ? <p className="settings-note" role="alert">{t("hooks.statusFailed", { message: statusError })}</p> : null}
+          {statusError ? <p className="settings-note is-fail" role="alert">{t("hooks.statusFailed", { message: statusError })}</p> : null}
           {status?.data.map((entry) => <div className="hooks-status" key={entry.cwd}>
-            {entry.errors.map((item, index) => <div className="settings-note" role="alert" key={`error:${index}`}>
+            {entry.errors.map((item, index) => <div className="settings-note is-fail" role="alert" key={`error:${index}`}>
               <p className="hooks-path">{item.path}</p>
               <p>{item.message}</p>
             </div>)}
-            {entry.warnings.map((warning, index) => <p className="settings-note" role="status" key={`warning:${index}`}>{warning}</p>)}
+            {entry.warnings.map((warning, index) => <p className="settings-note is-warn" role="status" key={`warning:${index}`}>{warning}</p>)}
             {entry.hooks.map((hook) => <div className="settings-note hooks-status-item" key={hook.key}>
               <div className="hooks-status-meta">
                 <span>{hook.eventName}</span>
@@ -406,6 +476,8 @@ export default function HooksSettingsPanel() {
           </div>)}
         </>}
       </section> : null}
+      {adding && doc ? <HookAddDialog event={adding} provider={provider} onCancel={() => setAdding(null)}
+        onAdd={(draft) => { mutate(appendRow(doc, adding, draft)); setAdding(null); }} /> : null}
       {pendingLeave ? <AiActionDialog title={t("settings.unsavedTitle")} confirm={t("settings.unsavedConfirm")} danger
         onCancel={() => setPendingLeave(null)} onConfirm={() => { const action = pendingLeave; setPendingLeave(null); action(); }}>
         <p className="dialog-body">{t("settings.unsavedHint")}</p>

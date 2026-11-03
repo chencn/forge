@@ -28,9 +28,15 @@ import {
   EditorMinimapPage,
 } from "../features/settings/pages/EditorPages";
 import {
+  VcsChangesPage,
+  VcsCommitChecksPage,
   VcsCommitPage,
+  VcsCommitWarningsPage,
   VcsConfirmationPage,
   VcsGitPage,
+  VcsMessageInspectionsPage,
+  VcsPushPage,
+  VcsUpdatePage,
 } from "../features/settings/pages/VcsPages";
 import { ToolAboutPage, ToolTerminalPage } from "../features/settings/pages/ToolPages";
 
@@ -155,8 +161,14 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
       case "git":
         return [
           { title: "settings.section.commit", content: <VcsCommitPage /> },
+          { title: "vcs.messageInspections", content: <VcsMessageInspectionsPage /> },
+          { title: "vcs.commitChecksTitle", content: <VcsCommitChecksPage /> },
           { title: "settings.section.gitExecutable", content: <VcsGitPage workspace={workspace} /> },
+          { title: "vcs.commitWarnings", content: <VcsCommitWarningsPage /> },
+          { title: "vcs.pushSettings", content: <VcsPushPage /> },
+          { title: "vcs.updateTitle", content: <VcsUpdatePage /> },
           { title: "settings.section.confirmations", content: <VcsConfirmationPage /> },
+          { title: "vcs.changesTitle", content: <VcsChangesPage /> },
         ];
       default:
         return [];
@@ -204,7 +216,15 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
         {moduleSections.length > 0 ? (
           <div className="settings-stack">
             {moduleSections.map((section) => (
-              <section key={section.title} className={module === "git" ? "settings-section is-vcs" : undefined}>
+              <section
+                key={section.title}
+                className={
+                  module === "git" ? "settings-section is-vcs"
+                  : module === "general" ? "settings-section is-general"
+                  : module === "editor" ? "settings-section is-editor"
+                  : undefined
+                }
+              >
                 <h3 className="settings-section-title">{t(section.title)}</h3>
                 {section.content}
               </section>

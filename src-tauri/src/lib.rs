@@ -120,6 +120,7 @@ pub fn run() {
             git::git_probe,
             git::git_init,
             git::git_status,
+            git::git_config_get,
             git::git_show,
             git::git_index_show,
             git::git_stage,

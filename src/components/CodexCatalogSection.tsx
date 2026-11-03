@@ -279,7 +279,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
           <div className="ai-catalog-row-name">
             <strong>{nameOf(model)}</strong>
             <code>{slug}</code>
-            {isDefault ? <span className="ai-cli-badge is-checking">{t("ai.catalog.default")}</span> : null}
+            {isDefault ? <span className="ai-cli-badge is-default">{t("ai.catalog.default")}</span> : null}
             {draft.overrides[slug] ? <span className="ai-cli-badge is-idle">{t("ai.catalog.overridden")}</span> : null}
             {excluded ? <span className="ai-cli-badge is-warn">{t("ai.catalog.excludedLabel")}</span> : null}
           </div>
@@ -345,7 +345,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             <strong>{item.displayName.trim() || item.slug.trim() || t("ai.catalog.newCustom")}</strong>
             <code>{item.slug.trim() || "—"}</code>
             <span className="ai-cli-badge is-idle">{t("ai.catalog.custom")}</span>
-            {isDefault ? <span className="ai-cli-badge is-checking">{t("ai.catalog.default")}</span> : null}
+            {isDefault ? <span className="ai-cli-badge is-default">{t("ai.catalog.default")}</span> : null}
             {compat ? <span className="ai-cli-badge is-idle">{t("ai.catalog.presetCompat")}</span> : null}
             {item.contextWindow ? <span className="ai-cli-badge is-idle">{item.contextWindow} tok</span> : null}
             {item.base ? <em className="ai-cli-hint">{t("ai.catalog.baseOf", { name: item.base })}</em> : null}
@@ -445,9 +445,9 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
           <div>
             <strong>{t("ai.catalog.title")}</strong>
             <span className="ai-muted">{t(view?.active ? "ai.catalog.active" : "ai.catalog.inactive")}</span>
-            {dirty ? <span className="ai-cli-badge is-checking">{t("ai.unsaved")}</span> : null}
+            {dirty ? <span className="ai-cli-badge is-warn">{t("ai.unsaved")}</span> : null}
           </div>
-          <button type="button" className="panel-action" disabled={loading || busy} title={t("ai.catalog.reload")}
+          <button type="button" className="panel-action ai-cli-icon-action" disabled={loading || busy} title={t("ai.catalog.reload")}
             aria-label={t("ai.catalog.reload")} onClick={props.onReload}>
             <RefreshCw size={13} className={loading ? "is-spinning" : undefined} />
           </button>

@@ -190,6 +190,11 @@ export function gitStatus(root: string): Promise<GitStatus> {
   return invoke<GitStatus>("git_status", { root });
 }
 
+/** 读取 `core.autocrlf`。未设置时为空串。 */
+export function gitConfigGet(root: string, key: "core.autocrlf"): Promise<string> {
+  return invoke<string>("git_config_get", { root, key });
+}
+
 /** 取某版本下的文件内容，作为 diff 的基线一侧；该版本没有此文件时返回空串。 */
 export function gitShow(root: string, revision: string, path: string): Promise<string> {
   return invoke<string>("git_show", { root, revision, path });

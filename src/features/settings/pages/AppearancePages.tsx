@@ -104,10 +104,6 @@ export function AppearanceThemePage() {
             onChange={setLang}
           />
         </div>
-
-        <p className="settings-hint">
-          {t("settings.themeHint")}
-        </p>
       </div>
     </div>
   );

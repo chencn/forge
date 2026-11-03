@@ -729,6 +729,23 @@ pub async fn git_status(root: String) -> Result<GitStatus, String> {
     block(move || git_status_impl(root)).await
 }
 
+/// 读取一条 Git 配置。目前只开放提交检查用到的 `core.autocrlf`。
+#[tauri::command]
+pub async fn git_config_get(root: String, key: String) -> Result<String, String> {
+    block(move || {
+        if key != "core.autocrlf" {
+            return Err(err("GIT", "unsupported config key"));
+        }
+        let root = ensure_root(&root)?;
+        let output = run_git(&root, &["config", "--get", &key])?;
+        if !output.ok {
+            return Ok(String::new());
+        }
+        Ok(trim_line(&output.stdout))
+    })
+    .await
+}
+
 fn git_status_impl(root: String) -> Result<GitStatus, String> {
     let root = ensure_root(&root)?;
     let output = run_git(

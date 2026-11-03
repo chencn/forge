@@ -240,7 +240,7 @@ export default function AiCommitSettingsPanel() {
   );
 
   return (
-    <div className="settings-rows">
+    <div className="settings-rows is-ai-commit">
       <div className="settings-rows-limit">
       {/* 全局开关 */}
       <div className="settings-row">
@@ -261,7 +261,7 @@ export default function AiCommitSettingsPanel() {
 
       {/* 服务商管理板块 */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-        <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 600 }}>{t("aiCommit.providers")}</h3>
+        <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: "var(--fg-strong)" }}>{t("aiCommit.providers")}</h3>
         <button
           type="button"
           className="button is-small"
@@ -336,7 +336,7 @@ export default function AiCommitSettingsPanel() {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--fg-strong)" }}>
                   {activeProvider.name}{" "}
                   {activeProvider.id === config.activeProviderId
                     ? `(${t("aiCommit.activeProvider")})`
@@ -354,7 +354,7 @@ export default function AiCommitSettingsPanel() {
                   ) : null}
                   <button
                     type="button"
-                    className="icon-button"
+                    className="icon-button ai-commit-remove"
                     title={t("aiCommit.removeProvider")}
                     onClick={() => setProviderToDelete(activeProvider)}
                   >
@@ -424,12 +424,11 @@ export default function AiCommitSettingsPanel() {
                       />
                       <button
                         type="button"
-                        className="icon-button"
+                        className="icon-button ai-commit-disclosure"
                         style={{
                           position: "absolute",
                           right: 4,
                           padding: 2,
-                          opacity: 0.7,
                           height: 22,
                           width: 22,
                           display: "flex",
@@ -499,15 +498,15 @@ export default function AiCommitSettingsPanel() {
                             background: "var(--bg-secondary)",
                           }}
                         >
-                          <Search size={12} style={{ opacity: 0.5 }} />
+                          <Search size={12} style={{ color: "var(--fg-muted)" }} />
                           <input
                             type="text"
+                            className="ai-commit-model-search"
                             style={{
                               flex: 1,
                               border: "none",
                               background: "transparent",
                               fontSize: 12,
-                              color: "var(--text-primary)",
                               outline: "none",
                             }}
                             placeholder={t("aiCommit.searchModelPlaceholder")}
@@ -577,18 +576,16 @@ export default function AiCommitSettingsPanel() {
                                     alignItems: "center",
                                     justifyContent: "space-between",
                                     cursor: "pointer",
-                                    background: isSelected ? "var(--bg-secondary)" : "transparent",
-                                    color: isSelected
-                                      ? "var(--color-primary, #3b82f6)"
-                                      : "var(--text-primary)",
+                                    background: isSelected ? "var(--bg-active)" : "transparent",
+                                    color: isSelected ? "var(--fg-strong)" : "var(--fg)",
                                     fontFamily: "var(--font-mono)",
                                   }}
                                   onMouseEnter={(e) => {
-                                    e.currentTarget.style.background = "var(--bg-tertiary)";
+                                    e.currentTarget.style.background = "var(--bg-hover)";
                                   }}
                                   onMouseLeave={(e) => {
                                     e.currentTarget.style.background = isSelected
-                                      ? "var(--bg-secondary)"
+                                      ? "var(--bg-active)"
                                       : "transparent";
                                   }}
                                   onClick={() => {
@@ -629,7 +626,7 @@ export default function AiCommitSettingsPanel() {
                           >
                             <span>共 {availableModels.length} 个模型</span>
                             <span
-                              style={{ cursor: "pointer", textDecoration: "underline" }}
+                              className="ai-commit-retry"
                               onClick={() => void handleFetchModels()}
                             >
                               重新获取
@@ -645,7 +642,7 @@ export default function AiCommitSettingsPanel() {
                     <span
                       style={{
                         fontSize: 11.5,
-                        color: "var(--color-success, #22c55e)",
+                        color: "var(--success)",
                         display: "inline-flex",
                         alignItems: "center",
                         gap: 4,
@@ -656,7 +653,7 @@ export default function AiCommitSettingsPanel() {
                     </span>
                   ) : null}
                   {fetchError ? (
-                    <span style={{ fontSize: 11.5, color: "var(--color-danger, #ef4444)" }}>
+                    <span style={{ fontSize: 11.5, color: "var(--danger)" }}>
                       {t("aiCommit.fetchModelsFailed")}: {fetchError}
                     </span>
                   ) : null}
@@ -723,7 +720,7 @@ export default function AiCommitSettingsPanel() {
       <div style={{ height: 1, background: "var(--border-color)", margin: "8px 0" }} />
 
       {/* 提交说明规则偏好 */}
-      <h3 style={{ margin: "4px 0", fontSize: 13.5, fontWeight: 600 }}>{t("aiCommit.rules")}</h3>
+      <h3 style={{ margin: "4px 0", fontSize: 13.5, fontWeight: 600, color: "var(--fg-strong)" }}>{t("aiCommit.rules")}</h3>
 
       <div className="settings-row">
         <span className="settings-label">{t("aiCommit.language")}</span>
@@ -793,7 +790,7 @@ export default function AiCommitSettingsPanel() {
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Sparkles size={13} style={{ color: "var(--color-primary, #3b82f6)" }} />
+            <Sparkles size={13} style={{ color: "var(--fg-secondary)" }} />
             <span style={{ fontSize: 12, fontWeight: 600 }}>{t("aiCommit.formatPreview")}</span>
             <span
               style={{
@@ -923,7 +920,7 @@ export default function AiCommitSettingsPanel() {
           <span
             style={{
               fontSize: 12,
-              color: "var(--color-success, #22c55e)",
+              color: "var(--success)",
               display: "inline-flex",
               alignItems: "center",
               gap: 4,
@@ -937,7 +934,7 @@ export default function AiCommitSettingsPanel() {
           <span
             style={{
               fontSize: 12,
-              color: "var(--color-error, #ef4444)",
+              color: "var(--danger)",
               display: "inline-flex",
               alignItems: "center",
               gap: 4,

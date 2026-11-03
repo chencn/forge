@@ -322,8 +322,30 @@
   box-shadow: inset 0 0 0 1px var(--danger, #e53935);
 }
 
+/* 关掉「显示右边界」时不画参考线。 */
 .noMargin {
   background: var(--bg-island, var(--bg-app, var(--bg-primary)));
+}
+
+/* 模态提交：同一块提交区放到对话框里。 */
+.commit.isDialog {
+  position: fixed;
+  z-index: calc(var(--z-dialog) + 1);
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, calc(100vw - 48px));
+  height: min(440px, 70vh);
+  flex: none;
+  max-height: none;
+  border: 1px solid var(--border-dialog, var(--border-popup));
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-dialog);
+  background: var(--bg-dialog);
+}
+
+.commit.isHidden {
+  display: none;
 }
 
 /* 提示与检查错误 */

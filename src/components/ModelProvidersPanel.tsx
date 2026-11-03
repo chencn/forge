@@ -230,7 +230,7 @@ export default function ModelProvidersPanel() {
   };
 
   return (
-    <div className="ai-manage-page" aria-label={t("providers.title")}>
+    <div className="ai-manage-page is-providers" aria-label={t("providers.title")}>
       <aside className="ai-cli-list" aria-label={t("providers.title")}>
         <div className="ai-cli-list-head">
           <span>{t("providers.title")}</span>
@@ -263,7 +263,7 @@ export default function ModelProvidersPanel() {
               <Server size={18} aria-hidden="true" />
               <h3>{isNew ? t("providers.add") : t("providers.edit")}</h3>
               <span className="ai-cli-badge is-idle">{AI_NAMES[draft.kind]}</span>
-              {dirty ? <span className="ai-cli-badge is-checking">{t("providers.unsaved")}</span> : null}
+              {dirty ? <span className="ai-cli-badge is-warn">{t("providers.unsaved")}</span> : null}
             </div>
           </header>
           <div className="ai-cli-detail-body">
@@ -385,7 +385,7 @@ export default function ModelProvidersPanel() {
               {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void apply()}>
                 <Send size={13} />{t("providers.apply", { name: AI_NAMES[draft.kind] })}
               </button> : null}
-              {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => setPendingDelete(draft)}>
+              {!isNew ? <button type="button" className="panel-action is-danger" disabled={!desktop || busy} onClick={() => setPendingDelete(draft)}>
                 <Trash2 size={13} />{t("providers.delete")}
               </button> : null}
               <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void save()}>

@@ -7,7 +7,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  FileCode2,
   GripVertical,
   Loader2,
   Plus,
@@ -1057,10 +1056,10 @@ function EnabledAiCliSettingsPanel() {
                 <div>
                   <strong>{t("ai.env.title")}</strong>
                   <span className="ai-muted">{t(current === "claude" ? "ai.env.hintClaude" : "ai.env.hint")}</span>
-                  {current && envDirty(current) ? <span className="ai-cli-badge is-checking">{t("ai.unsaved")}</span> : null}
+                  {current && envDirty(current) ? <span className="ai-cli-badge is-warn">{t("ai.unsaved")}</span> : null}
                 </div>
               </div>
-              <textarea className="ai-cli-env" spellCheck={false} rows={4}
+              <textarea className="ai-cli-env is-source" spellCheck={false} rows={4}
                 value={envDrafts[current] ?? ""}
                 placeholder={t("ai.env.placeholder")}
                 onChange={(event) => setEnvDrafts((value) => ({ ...value, [current]: event.target.value }))} />
@@ -1084,7 +1083,7 @@ function EnabledAiCliSettingsPanel() {
                 <div>
                   <strong>{t("ai.cfg.title")}</strong>
                   <span className="ai-muted">{t(current === "claude" ? "ai.cfg.claudeHint" : "ai.cfg.codexHint")}</span>
-                  {manageUnsaved ? <span className="ai-cli-badge is-checking">{t("ai.unsaved")}</span> : null}
+                  {manageUnsaved ? <span className="ai-cli-badge is-warn">{t("ai.unsaved")}</span> : null}
                 </div>
               </div>
 
@@ -1519,13 +1518,12 @@ function EnabledAiCliSettingsPanel() {
                 <div>
                   <strong>{t("ai.config.title")}</strong>
                   <span className="ai-muted">{t("ai.config.hint", { backup: ".forge.bak" })}</span>
-                  {current && fileDirty(current) ? <span className="ai-cli-badge is-checking">{t("ai.unsaved")}</span> : null}
+                  {current && fileDirty(current) ? <span className="ai-cli-badge is-warn">{t("ai.unsaved")}</span> : null}
                 </div>
-                <button type="button" className="panel-action" disabled={!desktop || fileBusy === current}
+                <button type="button" className="panel-action ai-cli-disclosure" disabled={!desktop || fileBusy === current}
+                  aria-label={t(fileOpen[current] ? "ai.config.hide" : "ai.config.open")}
                   onClick={() => { if (fileOpen[current]) setFileOpen((value) => ({ ...value, [current]: false })); else void openFile(current); }}>
                   {fileOpen[current] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                  <FileCode2 size={13} />
-                  {t(fileOpen[current] ? "ai.config.hide" : "ai.config.open")}
                 </button>
               </div>
               {fileOpen[current] ? <div className="ai-cli-config">
@@ -1534,7 +1532,7 @@ function EnabledAiCliSettingsPanel() {
                   {files[current] && !files[current]?.exists ? <span className="ai-muted">{t("ai.config.missing")}</span> : null}
                 </div>
                 {files[current]?.error ? <p className="ai-error" role="alert">{files[current]?.error}</p> : null}
-                <textarea className="ai-cli-env ai-cli-config-text" spellCheck={false} rows={10}
+                <textarea className="ai-cli-env ai-cli-config-text is-source" spellCheck={false} rows={10}
                   value={fileDrafts[current] ?? ""}
                   aria-label={t("ai.config.title")}
                   onChange={(event) => setFileDrafts((value) => ({ ...value, [current]: event.target.value }))} />

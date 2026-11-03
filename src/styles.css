@@ -1940,6 +1940,181 @@ span.entry-icon > svg {
   border-color: var(--accent-blue);
 }
 
+/* 通用：只换颜色。标题、行名、输入值、占位、禁用各自一层，不改间距和尺寸。 */
+.settings-section.is-general .settings-section-title {
+  color: var(--fg-strong);
+}
+
+.settings-section.is-general .settings-label {
+  color: var(--fg);
+}
+
+.settings-section.is-general .settings-input {
+  border-color: var(--border-button);
+  background: var(--bg-field);
+  color: var(--fg-strong);
+}
+
+.settings-section.is-general .settings-input::placeholder {
+  color: var(--fg-faint);
+}
+
+.settings-section.is-general .settings-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.settings-section.is-general .settings-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
+}
+
+.settings-section.is-general .shell-extra-chip {
+  border-color: var(--border-button);
+  background: var(--bg-field);
+  color: var(--fg-strong);
+}
+
+/* 编辑器：标题和行名跟通用同一层；单位是附属文字，比输入值弱一档。 */
+.settings-section.is-editor .settings-section-title {
+  color: var(--fg-strong);
+}
+
+.settings-section.is-editor .settings-label {
+  color: var(--fg);
+}
+
+.settings-section.is-editor .settings-unit {
+  color: var(--fg-secondary);
+}
+
+.settings-section.is-editor .text-input::placeholder {
+  color: var(--fg-faint);
+}
+
+.settings-section.is-editor .text-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
+}
+
+/* 快捷键：这一页只有字段名和下拉。下拉与 Git 共用，不在这里改。 */
+.settings-rows.is-shortcuts .settings-label {
+  color: var(--fg);
+}
+
+/* 终端：字段名、输入值、占位、禁用、删除分开。配置档的边框和「添加」保持原样。 */
+.settings-rows.is-terminal .settings-label {
+  color: var(--fg);
+}
+
+.settings-rows.is-terminal .settings-input {
+  border-color: var(--border-button);
+  background: var(--bg-field);
+  color: var(--fg-strong);
+}
+
+.settings-rows.is-terminal .settings-input::placeholder {
+  color: var(--fg-faint);
+}
+
+.settings-rows.is-terminal .settings-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.settings-rows.is-terminal .settings-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
+}
+
+.settings-rows.is-terminal .term-profile-head .icon-button:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.settings-rows.is-terminal .term-profile-head .icon-button:disabled {
+  color: var(--fg-faint);
+  opacity: 1;
+}
+
+/* AI 提交：字段、输入、禁用按钮、删除和状态色只在这一页。 */
+.settings-rows.is-ai-commit .settings-label {
+  color: var(--fg);
+}
+
+.settings-rows.is-ai-commit .settings-input {
+  border-color: var(--border-button);
+  background: var(--bg-field);
+  color: var(--fg-strong);
+}
+
+.settings-rows.is-ai-commit .settings-input::placeholder {
+  color: var(--fg-faint);
+}
+
+.settings-rows.is-ai-commit .settings-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.settings-rows.is-ai-commit .settings-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
+}
+
+.settings-rows.is-ai-commit .button:disabled,
+.settings-rows.is-ai-commit .button.is-primary:disabled {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-faint);
+  opacity: 1;
+  cursor: default;
+}
+
+.settings-rows.is-ai-commit .ai-commit-disclosure {
+  color: var(--fg-secondary);
+  opacity: 1;
+}
+
+.settings-rows.is-ai-commit .ai-commit-disclosure:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.settings-rows.is-ai-commit .ai-commit-remove:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.settings-rows.is-ai-commit .ai-commit-remove:disabled {
+  color: var(--fg-faint);
+  opacity: 1;
+}
+
+.settings-rows.is-ai-commit .ai-commit-model-search {
+  color: var(--fg-strong);
+}
+
+.settings-rows.is-ai-commit .ai-commit-model-search::placeholder {
+  color: var(--fg-faint);
+}
+
+.settings-rows.is-ai-commit .ai-commit-retry {
+  color: var(--fg);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.settings-rows.is-ai-commit .ai-commit-retry:hover {
+  color: var(--fg-strong);
+}
+
 .settings-note {
   margin: 0;
   color: var(--text-muted);
@@ -1964,136 +2139,20 @@ span.entry-icon > svg {
 .settings-shortcut kbd.shortcut-capture { color: var(--accent-blue); border-color: var(--accent-blue); font-family: inherit; }
 .settings-note.is-error { color: var(--accent-red, #d13438); }
 
-/* Git 设置：一组一个标题，选项左对齐，数字和说明跟在同一行。
-   三节叠在同一条滚动里，不再各自垫出一块内边距。 */
-.settings-section.is-vcs .settings-section-title {
-  padding: 32px 18px 0;
-  font-size: 13px;
-  color: var(--fg-strong);
+/* Git：排版跟通用页一样，只补这一节的文字色。下拉不改。 */
+.settings-section.is-vcs .settings-section-title { color: var(--fg-strong); }
+.settings-section.is-vcs .settings-label { color: var(--fg); }
+.settings-section.is-vcs .settings-unit { color: var(--fg-secondary); }
+.settings-section.is-vcs .settings-note { color: var(--fg-muted); }
+.settings-section.is-vcs .settings-note.is-pass { color: var(--success); }
+.settings-section.is-vcs .settings-note.is-fail { color: var(--danger); }
+.settings-section.is-vcs .text-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
 }
-
-.settings-section.is-vcs:first-child .settings-section-title {
-  padding-top: 16px;
-}
-
-.settings-stack .vcs-settings {
-  flex: none;
-  overflow: visible;
-  gap: 0;
-  padding: 16px 18px 8px;
-}
-
-.settings-stack > section:last-child .vcs-settings {
-  padding-bottom: 28px;
-}
-
-.vcs-settings .settings-rows-limit {
-  gap: 28px;
-}
-
-.vcs-group {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.vcs-group-title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-strong);
-}
-
-.vcs-options,
-.vcs-choice,
-.vcs-stack {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.vcs-options { gap: 12px; }
-.vcs-choice { gap: 4px; }
-.vcs-stack { align-items: flex-start; gap: 8px; max-width: 640px; }
-
-.vcs-nested {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-left: 24px;
-}
-
-.vcs-inline,
-.vcs-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.vcs-field { gap: 12px; }
-
-.vcs-field-label {
-  flex: none;
-  color: var(--fg);
-  font-size: var(--fs-ui);
-}
-
-.vcs-field .select {
-  min-width: min(220px, 100%);
-  max-width: 100%;
-}
-
-.vcs-unit {
-  color: var(--fg-secondary);
-  font-size: var(--fs-ui);
-}
-
-.vcs-number {
-  width: 72px;
-  flex: none;
-}
-
-.vcs-number:disabled {
-  opacity: 0.45;
-}
-
-.vcs-text {
-  width: min(520px, 100%);
-}
-
-.vcs-hint {
-  margin: 0;
-  max-width: 640px;
-  color: var(--fg-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.vcs-hint.is-indent {
-  padding-left: 24px;
-}
-
-.vcs-status {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 0;
-  max-width: 640px;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.vcs-status svg {
-  flex: none;
-  margin-top: 1px;
-}
-
-.vcs-status.is-ok { color: var(--success); }
-.vcs-status.is-bad { color: var(--danger); }
 
 /* 按面板可用宽度换行；长命令和无空格路径不能撑宽设置页。 */
 .hooks-settings { min-width: 0; overflow-wrap: anywhere; }
@@ -2118,6 +2177,13 @@ span.entry-icon > svg {
 .hooks-async { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; white-space: nowrap; }
 .hooks-async input { margin: 0; }
 .hooks-actions { display: flex; justify-content: flex-end; }
+.hooks-add-dialog { width: min(480px, 100%); }
+.hooks-add-dialog form { display: flex; flex-direction: column; gap: 10px; }
+.hooks-add-dialog .dialog-title,
+.hooks-add-dialog .dialog-body { margin: 0; }
+.hooks-add-dialog .dialog-field > span { color: var(--fg); }
+.hooks-add-dialog textarea.text-input { height: auto; min-height: 72px; padding: 6px 8px; line-height: 1.5; resize: vertical; }
+.hooks-add-dialog .hooks-add-async { flex-direction: row; align-items: center; }
 .hooks-status { display: grid; gap: 10px; min-width: 0; }
 .hooks-status p { margin: 0; }
 .hooks-status-item { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
@@ -2125,11 +2191,72 @@ span.entry-icon > svg {
 .hooks-status-meta > :first-child { color: var(--text-secondary); }
 .hooks-status-command { margin: 0; min-width: 0; font-family: var(--font-mono); font-size: inherit; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
+/* Hooks：只改颜色。引擎下拉与按钮尺寸保持原样。 */
+.settings-rows.is-hooks .hooks-toolbar .settings-label { color: var(--fg); }
+.settings-rows.is-hooks .hooks-event-head .settings-label { color: var(--fg-strong); }
+.settings-rows.is-hooks .settings-note { color: var(--fg-muted); }
+.settings-rows.is-hooks .hooks-async { color: var(--fg); }
+.settings-rows.is-hooks .settings-note.is-fail { color: var(--danger); }
+.settings-rows.is-hooks .settings-note.is-pass { color: var(--success); }
+.settings-rows.is-hooks .settings-note.is-warn { color: var(--warning); }
+.settings-rows.is-hooks .hooks-status-meta > :first-child { color: var(--fg); }
+.settings-rows.is-hooks .hooks-status-command { color: var(--fg-strong); }
+.settings-rows.is-hooks .hooks-raw { color: var(--fg-muted); }
+.settings-rows.is-hooks .settings-input {
+  border-color: var(--border-button);
+  background: var(--bg-field);
+  color: var(--fg-strong);
+}
+.settings-rows.is-hooks .settings-input::placeholder { color: var(--fg-faint); }
+.settings-rows.is-hooks .settings-input:focus { border-color: var(--accent-blue); }
+.settings-rows.is-hooks .settings-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
+}
+.settings-rows.is-hooks .button:not(.is-primary) svg { color: var(--fg-muted); }
+.settings-rows.is-hooks .button:not(.is-primary):hover:not(:disabled) svg { color: var(--fg-strong); }
+.settings-rows.is-hooks .button:disabled,
+.settings-rows.is-hooks .button.is-primary:disabled,
+.settings-rows.is-hooks .button:disabled svg {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-faint);
+  opacity: 1;
+  cursor: default;
+}
+.settings-rows.is-hooks .icon-button.is-inline { color: var(--fg-secondary); }
+.settings-rows.is-hooks .icon-button.is-inline:hover:not(:disabled) { color: var(--danger); background: transparent; }
+.settings-rows.is-hooks .icon-button.is-inline:disabled { color: var(--fg-faint); opacity: 1; cursor: default; }
 
-/* 关于页：版本号这类纯文本值，字号与左侧标签一致。 */
+
+/* 关于页：版本号这类纯文本值，字号与左侧标签一致。颜色跟通用页。 */
 .about-value {
   font-size: 12.5px;
 }
+.settings-rows.is-about .settings-label { color: var(--fg); }
+.settings-rows.is-about .about-value,
+.settings-rows.is-about .settings-value { color: var(--fg-strong); }
+.settings-rows.is-about .settings-value.is-error { color: var(--danger); }
+.settings-rows.is-about .settings-input {
+  border-color: var(--border-button);
+  background: var(--bg-field);
+  color: var(--fg-strong);
+}
+.settings-rows.is-about .settings-input::placeholder { color: var(--fg-faint); }
+.settings-rows.is-about .settings-input:focus { border-color: var(--accent-blue); }
+.settings-rows.is-about .settings-input:disabled {
+  color: var(--fg-faint);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 1;
+  cursor: default;
+}
+.settings-rows.is-about .text-button { color: var(--fg-secondary); opacity: 1; }
+.settings-rows.is-about .text-button:hover:not(:disabled) { color: var(--fg); }
+.settings-rows.is-about .text-button:disabled { color: var(--fg-faint); opacity: 1; cursor: default; }
 
 /* 关于页的更新日志：发版说明按行写，保留换行；太长就内部滚动。 */
 .about-notes {

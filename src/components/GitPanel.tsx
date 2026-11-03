@@ -33,9 +33,12 @@ import Popover from "./Popover";
 import type { GitChange, GitCommitDetail, GitCommitFile } from "../lib/git";
 import {
   gitCommitDetail,
+  gitConfigGet,
   gitDiffText,
   markClass,
 } from "../lib/git";
+import { readFile } from "../lib/fs";
+import { badCommitNames, isNewCommitPath } from "../features/vcs/commitChecks";
 import {
   cancelAiCommit,
   collectFilesDiff,
@@ -272,6 +275,8 @@ function GitPanel({
   // 提交规范计算 (Commit Message Inspections)
   const firstLine = message.split("\n")[0] ?? "";
   const isSubjectTooLong = vcs.limitSubjectLine && firstLine.length > vcs.subjectLineLimit;
+  const marginChars = vcs.limitBodyLine ? vcs.bodyLineLimit : vcs.subjectLineLimit;
+  const showMargin = vcs.showRightMargin && (vcs.limitBodyLine || vcs.limitSubjectLine);
   const commitProblems = useMemo(() => {
     return messageProblems(message, {
       blankLineAfterSubject: vcs.blankLineAfterSubject,
@@ -342,21 +347,66 @@ function GitPanel({
 
   // 当前正在执行的动作
   const [committingAction, setCommittingAction] = useState<"commit" | "commitAndPush" | null>(null);
+  /** 关掉非模态提交后，提交区改成对话框，由「提交」或 Ctrl+K 打开。 */
+  const [commitDialog, setCommitDialog] = useState(false);
+  const pendingCaret = useRef<number | null>(null);
+  /** 模态提交刚打开时，下一帧再选中说明文字。 */
+  const selectAfterOpen = useRef(false);
+  const commitDialogRef = useRef(false);
+  commitDialogRef.current = commitDialog;
 
-  // 聚焦信号响应
   useEffect(() => {
-    if (focusSignal > 0) {
+    if (vcs.nonModalCommit) setCommitDialog(false);
+  }, [vcs.nonModalCommit]);
+
+  // 聚焦信号：非模态直接进说明框；模态先打开对话框，下一帧再聚焦。
+  useEffect(() => {
+    if (focusSignal <= 0) return;
+    if (!vcs.nonModalCommit) {
+      setCommitCollapsed(false);
+      setCommitDialog(true);
+      return;
+    }
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [focusSignal, vcs.nonModalCommit]);
+
+  useEffect(() => {
+    if (!commitDialog) return;
+    const select = selectAfterOpen.current;
+    selectAfterOpen.current = false;
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      if (select) inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [commitDialog]);
+
+  useEffect(() => {
+    const caret = pendingCaret.current;
+    if (caret == null || !inputRef.current) return;
+    pendingCaret.current = null;
+    const bounded = Math.min(caret, inputRef.current.value.length);
+    inputRef.current.setSelectionRange(bounded, bounded);
+  }, [message]);
+
+  // 日志里「编辑提交消息」：模态时先打开对话框，再把 HEAD 摊进说明框。
+  useEffect(() => {
+    if (rewordSignal <= 0) return;
+    if (!vcs.nonModalCommit) {
+      setCommitCollapsed(false);
+      if (commitDialogRef.current) {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      } else {
+        selectAfterOpen.current = true;
+        setCommitDialog(true);
+      }
+    } else {
       inputRef.current?.focus();
       inputRef.current?.select();
     }
-  }, [focusSignal]);
-
-  // 修正信号响应
-  useEffect(() => {
-    if (rewordSignal <= 0) return;
     if (!amend) switchAmend(true);
-    inputRef.current?.focus();
-    inputRef.current?.select();
   }, [rewordSignal]);
 
   // 取消 AI 生成
@@ -866,11 +916,9 @@ function GitPanel({
       return;
     }
 
-    // 1. 游离 HEAD 安全拦截 (warnDetachedHead)
-    if (vcs.warnDetachedHead && (git.status?.detached || git.status?.branch === "(detached)")) {
-      const confirmed = window.confirm(
-        "警告：当前仓库处于游离 HEAD (Detached HEAD) 状态，提交不会关联到任何本地分支。\n确定继续提交吗？"
-      );
+    // 游离 HEAD 或变基中提交。变基进行中 HEAD 不一定显示为游离。
+    if (vcs.warnDetachedHead && (git.recovery === "rebase" || git.status?.detached || git.status?.branch === "(detached)")) {
+      const confirmed = window.confirm(t(git.recovery === "rebase" ? "vcs.warnRebaseConfirm" : "vcs.warnDetachedConfirm"));
       if (!confirmed) return;
     }
 
@@ -939,18 +987,37 @@ function GitPanel({
       }
     }
 
-    // 5. 非法文件名检查 (warnBadFileNames 对标 IDEA)
-    if (vcs.warnBadFileNames && includedPaths.length > 0) {
-      const badFiles = includedPaths.filter((p) => {
-        const name = p.split(/[\\/]/).pop() ?? "";
-        return /[<>:"|?*\x00-\x1F]/.test(name);
-      });
-      if (badFiles.length > 0) {
-        const confirmed = window.confirm(
-          `警告：检测到待提交文件名包含跨平台/系统非法字符（如 < > : " | ? *）：\n${badFiles.map((p) => `• ${p}`).join("\n")}\n\n在某些操作系统（如 Windows）下签出可能会损坏。确定继续提交吗？`
-        );
-        if (!confirmed) return;
+    // CRLF：只有 core.autocrlf 不会替这次提交转换时才警告。
+    if (vcs.warnCrlf && git.root && includedPaths.length > 0) {
+      const autocrlf = (await gitConfigGet(git.root, "core.autocrlf").catch(() => "")).toLowerCase();
+      if (autocrlf !== "true" && autocrlf !== "input") {
+        const crlf: string[] = [];
+        for (const path of includedPaths) {
+          try {
+            const file = await readFile(absolute(path));
+            if (file.contents.includes("\r\n")) crlf.push(path);
+          } catch {
+            // 已删除或读不出文本的文件跳过。
+          }
+        }
+        if (crlf.length > 0) {
+          const confirmed = window.confirm(t("vcs.warnCrlfConfirm", { files: crlf.map((path) => `• ${path}`).join("\n") }));
+          if (!confirmed) return;
+        }
       }
+    }
+
+    // 只检查这次新加的路径，并同时拦 Windows 保留名与非法字符。
+    if (vcs.warnBadFileNames && includedPaths.length > 0) {
+      const byPath = new Map(rawChanges.map((change) => [change.path, change]));
+      const added = includedPaths.filter((path) => isNewCommitPath(byPath.get(path)));
+      const bad = badCommitNames(added);
+      const warn = async (key: "vcs.warnReservedConfirm" | "vcs.warnBadCharConfirm", files: string[]) => {
+        if (files.length === 0) return true;
+        return window.confirm(t(key, { files: files.map((path) => `• ${path}`).join("\n") }));
+      };
+      if (!(await warn("vcs.warnReservedConfirm", bad.reserved))) return;
+      if (!(await warn("vcs.warnBadCharConfirm", bad.invalid))) return;
     }
 
     // 6. Sign-off、作者与跳过 hooks 交给 Git 参数；提交说明按 Git 配置处理。
@@ -976,6 +1043,7 @@ function GitPanel({
       if (vcs.clearInitialCommitMessage !== false) {
         setMessage("");
       }
+      if (!vcs.nonModalCommit) setCommitDialog(false);
       setAmend(false);
       setAmendDetail(null);
       setEmptyError(false);
@@ -1319,6 +1387,11 @@ function GitPanel({
           disabled={rawChanges.length === 0}
           onClick={collapseAll}
         />
+        {!vcs.nonModalCommit && (
+          <Button size="small" onClick={() => { setCommitCollapsed(false); setCommitDialog(true); }}>
+            {t("git.commit")}
+          </Button>
+        )}
       </div>
 
       {/* 恢复状态横幅（变基/合并中间） */}
@@ -1503,8 +1576,8 @@ function GitPanel({
         </div>
       )}
 
-      {/* 【保留项 4】：提交区可拖拽自定义高度分隔条 */}
-      {!commitCollapsed && (
+      {/* 【保留项 4】：提交区可拖拽自定义高度分隔条。模态提交时改由对话框承载。 */}
+      {vcs.nonModalCommit && !commitCollapsed && (
         <div
           role="separator"
           aria-orientation="horizontal"
@@ -1529,11 +1602,20 @@ function GitPanel({
         />
       )}
 
-      {/* 提交面板区（1:1 对标 IDEA，支持折叠与自定义高度） */}
+      {!vcs.nonModalCommit && commitDialog && (
+        <div className="dialog-backdrop" onMouseDown={() => { if (committingAction === null) setCommitDialog(false); }} />
+      )}
+
+      {/* 提交面板区。非模态贴在变更列表下方；关掉后同一块改成对话框。 */}
       <div
         ref={commitBoxRef}
-        className={clsx(styles.commit, commitCollapsed && styles.isCollapsed)}
-        style={!commitCollapsed && commitHeight !== null ? { flex: "none", height: commitHeight } : undefined}
+        className={clsx(
+          styles.commit,
+          !vcs.nonModalCommit && styles.isDialog,
+          !vcs.nonModalCommit && !commitDialog && styles.isHidden,
+          vcs.nonModalCommit && commitCollapsed && styles.isCollapsed,
+        )}
+        style={vcs.nonModalCommit && !commitCollapsed && commitHeight !== null ? { flex: "none", height: commitHeight } : undefined}
       >
         {/* 提交头部工具行 */}
         <div className={styles.commitBar}>
@@ -1555,27 +1637,34 @@ function GitPanel({
 
           <span className={styles.grow} />
 
-          {/* 主题行长度与右边界指示器 (showRightMargin & limitSubjectLine 对标 IDEA) */}
-          {(vcs.limitSubjectLine || vcs.showRightMargin) && firstLine.length > 0 && (
+          {isSubjectTooLong && (
             <span
-              className={clsx(styles.lineLen, isSubjectTooLong && styles.lineLenWarn)}
-              title={t("git.subjectLineLength") ?? `主题行字数 (上限 ${vcs.subjectLineLimit})`}
+              className={clsx(styles.lineLen, styles.lineLenWarn)}
+              title={t("git.subjectLineLength")}
             >
               {firstLine.length}/{vcs.subjectLineLimit}
             </span>
           )}
 
-          {/* 【保留项 2】：收起提交区折叠按钮 */}
-          <IconButton
-            icon={commitCollapsed ? "chevron-up" : "chevron-down"}
-            size="small"
-            title={commitCollapsed ? t("git.expandCommit") : t("git.collapseCommit")}
-            onClick={() => setCommitCollapsed((folded) => !folded)}
-          />
+          {vcs.nonModalCommit ? (
+            <IconButton
+              icon={commitCollapsed ? "chevron-up" : "chevron-down"}
+              size="small"
+              title={commitCollapsed ? t("git.expandCommit") : t("git.collapseCommit")}
+              onClick={() => setCommitCollapsed((folded) => !folded)}
+            />
+          ) : (
+            <IconButton
+              icon="close"
+              size="small"
+              title={t("dialog.cancel")}
+              onClick={() => setCommitDialog(false)}
+            />
+          )}
         </div>
 
         {/* 提交输入框及操作按钮（折叠时隐藏） */}
-        {!commitCollapsed && (
+        {(!commitCollapsed || !vcs.nonModalCommit) && (
           <>
             {/* 修正上次提交详情提示 (联动 Issue Navigation 工单超链接) */}
             {amend && amendDetail && (
@@ -1593,7 +1682,8 @@ function GitPanel({
             {/* 平铺式等宽 Mono 输入框（1:1 对标 IDEA） */}
             <textarea
               ref={inputRef}
-              className={clsx(styles.message, emptyError && styles.messageError)}
+              className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
+              style={showMargin ? { ["--guide" as string]: `${Math.max(1, marginChars)}ch` } : undefined}
               value={message}
               placeholder={t("git.messagePlaceholder")}
               aria-label={t("git.messagePlaceholder")}
@@ -1603,6 +1693,7 @@ function GitPanel({
                 if (vcs.wrapRightMargin && vcs.limitBodyLine && e.target.selectionStart != null) {
                   const wrapped = wrapAtMargin(val, e.target.selectionStart, vcs.bodyLineLimit);
                   if (wrapped) {
+                    pendingCaret.current = wrapped.caret;
                     setMessage(wrapped.text);
                     if (emptyError) setEmptyError(false);
                     return;
@@ -1722,13 +1813,13 @@ function GitPanel({
         )}
       </div>
 
-      {/* 历史提交说明菜单 (联动 limitHistoryRows 与 Issue Navigation 工单超链接) */}
+      {/* 历史提交说明。行数上限只作用于文件历史，不裁这条菜单。 */}
       <Popover anchor={historyAnchor} onClose={() => setHistoryAnchor(null)} minWidth={280}>
         <p className="popover-label">{t("git.messageHistory")}</p>
         {history.length === 0 ? (
           <p className="popover-note">{t("git.noHistory")}</p>
         ) : (
-          history.slice(0, vcs.limitHistoryRows || 1000).map((item) => (
+          history.map((item) => (
             <button
               key={item}
               type="button"

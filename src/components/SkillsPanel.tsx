@@ -177,14 +177,14 @@ export default function SkillsPanel() {
   const missingFrontMatter = editing && content.trim() !== "" && !skillHasFrontMatter(content);
 
   return (
-    <div className="ai-manage-panel">
+    <div className="ai-manage-panel is-skills">
       <div className="ai-manage-toolbar">
         <Select value={provider} label={t("skills.provider")} placeholder={t("skills.provider")}
           options={(["claude", "codex"] as AiProvider[]).map((item) => ({ value: item, label: AI_NAMES[item] }))}
           onChange={(next) => guard(() => setProvider(next))} />
         <input className="text-input" value={search} placeholder={t("skills.search")}
           aria-label={t("skills.search")} onChange={(event) => setSearch(event.target.value)} />
-        <button type="button" className="panel-action" disabled={!desktop || busy}
+        <button type="button" className="panel-action ai-cli-icon-action" disabled={!desktop || busy}
           title={t("skills.refresh")} aria-label={t("skills.refresh")}
           onClick={() => guard(() => setReloadToken((value) => value + 1))}>
           <RefreshCw size={13} />
@@ -211,7 +211,7 @@ export default function SkillsPanel() {
                 {multiLocation ? <span className="ai-cli-badge is-idle">{locationLabel(item.location, t)}</span> : null}
               </button>
             ))}
-            {!skills.length ? <p className="ai-cli-list-note">{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("skills.empty")) : t("ai.desktopOnly")}</p> : null}
+            {!skills.length ? <p className={desktop && !busy && notice?.error ? "ai-error" : "ai-cli-list-note"}>{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("skills.empty")) : t("ai.desktopOnly")}</p> : null}
           </div>
         </aside>
 
@@ -223,7 +223,7 @@ export default function SkillsPanel() {
                 <h3>{isNew ? t("skills.new") : id}</h3>
                 <span className="ai-cli-badge is-idle">{locationLabel(location, t)}</span>
                 {currentItem?.linked ? <span className="ai-cli-badge is-warn">{t("skills.linked")}</span> : null}
-                {dirty ? <span className="ai-cli-badge is-checking">{t("skills.unsaved")}</span> : null}
+                {dirty ? <span className="ai-cli-badge is-warn">{t("skills.unsaved")}</span> : null}
               </div>
               <button type="button" className="panel-action" onClick={() => setPreview((value) => !value)}>
                 {preview ? <Pencil size={13} /> : <Eye size={13} />}
@@ -260,7 +260,7 @@ export default function SkillsPanel() {
             <div className="ai-manage-foot">
               {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
               <div className="ai-cli-actions">
-                {!isNew && selected ? <button type="button" className="panel-action" disabled={!desktop || busy}
+                {!isNew && selected ? <button type="button" className="panel-action is-danger" disabled={!desktop || busy}
                   onClick={() => { const item = list?.skills.find((entry) => entry.id === selected.id && entry.location === selected.location); if (item) setPendingDelete(item); }}>
                   <Trash2 size={13} />{t("skills.delete")}
                 </button> : null}
@@ -270,7 +270,7 @@ export default function SkillsPanel() {
                 </button>
               </div>
             </div>
-          </> : <p className="ai-cli-empty">{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("skills.selectHint")) : t("ai.desktopOnly")}</p>}
+          </> : <p className={desktop && !busy && notice?.error ? "ai-error" : "ai-cli-empty"}>{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("skills.selectHint")) : t("ai.desktopOnly")}</p>}
         </section>
       </div>
 

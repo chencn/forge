@@ -22,7 +22,7 @@ export default function ShortcutSettingsPanel() {
   const scheme = settings.editor.keymap;
 
   return (
-    <div className="settings-rows">
+    <div className="settings-rows is-shortcuts">
       <div className="settings-row">
         <span className="settings-label">{t("shortcuts.scheme")}</span>
         <Select

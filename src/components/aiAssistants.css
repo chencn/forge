@@ -152,6 +152,372 @@
 .ai-archived-status > p { margin: 0; font-size: 11px; }
 .ai-archived-failures { margin: 0 14px 12px; padding: 8px 10px 8px 26px; border-radius: 6px; background: var(--accent-red-bg); color: var(--accent-red-text); font-size: 11.5px; }
 .ai-archived-failures li { overflow-wrap: anywhere; }
+/* 归档会话：只改颜色。页签、行、删除和状态各自一档，不碰到模型 / 技能 / MCP。 */
+.ai-manage-panel.is-archived .ai-cli-row,
+.ai-manage-panel.is-archived .ai-cli-row-name { color: var(--fg-strong); }
+.ai-manage-panel.is-archived .ai-cli-grip,
+.ai-manage-panel.is-archived .ai-cli-row-meta,
+.ai-manage-panel.is-archived .ai-cli-list-note,
+.ai-manage-panel.is-archived .ai-cli-hint,
+.ai-manage-panel.is-archived .ai-muted { color: var(--fg-muted); }
+.ai-manage-panel.is-archived .ai-cli-badge.is-idle { color: var(--fg-muted); background: transparent; }
+.ai-manage-panel.is-archived .ai-manage-tabs {
+  border-color: var(--border-popup);
+  border-radius: 6px;
+  background: var(--bg-elev);
+}
+.ai-manage-panel.is-archived .ai-manage-tabs .panel-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  margin-left: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+.ai-manage-panel.is-archived .ai-manage-tabs .panel-action:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.ai-manage-panel.is-archived .ai-manage-tabs .panel-action[aria-pressed="true"] {
+  background: var(--bg-popup);
+  color: var(--fg-strong);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--border-strong), 0 1px 2px color-mix(in srgb, var(--fg-strong) 8%, transparent);
+}
+.ai-manage-panel.is-archived .ai-manage-tabs .ai-cli-badge {
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
+.ai-manage-panel.is-archived .ai-manage-tabs .panel-action[aria-pressed="true"] .ai-cli-badge.is-idle { color: var(--fg-secondary); }
+.ai-manage-panel.is-archived .ai-manage-tabs .panel-action:disabled,
+.ai-manage-panel.is-archived .ai-manage-tabs .panel-action:disabled .ai-cli-badge.is-idle { color: var(--fg-faint); opacity: 1; cursor: default; }
+.ai-manage-panel.is-archived .panel-action.is-danger { color: var(--fg-secondary); }
+.ai-manage-panel.is-archived .panel-action.is-danger:hover:not(:disabled) { color: var(--danger); background: transparent; }
+.ai-manage-panel.is-archived .panel-action.is-danger:disabled { color: var(--fg-faint); background: transparent; opacity: 1; cursor: default; }
+.ai-manage-panel.is-archived .ai-success { color: var(--success); }
+.ai-manage-panel.is-archived .ai-error,
+.ai-manage-panel.is-archived .ai-archived-failures,
+.ai-manage-panel.is-archived .ai-native-purge { color: var(--danger); }
+/* 模型供应商：只改这一页。下拉与技能 / MCP 共用，不在这里改。 */
+.ai-manage-page.is-providers .ai-cli-list-head,
+.ai-manage-page.is-providers .ai-cli-detail-title h3,
+.ai-manage-page.is-providers .ai-cli-row-name,
+.ai-manage-page.is-providers .ai-cli-subgroup-head strong,
+.ai-manage-page.is-providers .provider-model-id { color: var(--fg-strong); }
+.ai-manage-page.is-providers .ai-cli-row.is-active { color: var(--fg-strong); background: var(--bg-active); }
+.ai-manage-page.is-providers .ai-cli-detail-title > svg,
+.ai-manage-page.is-providers .ai-cli-grip,
+.ai-manage-page.is-providers .ai-provider-url,
+.ai-manage-page.is-providers .ai-muted,
+.ai-manage-page.is-providers .ai-cli-hint,
+.ai-manage-page.is-providers .ai-cli-list-note,
+.ai-manage-page.is-providers .ai-cli-empty { color: var(--fg-muted); }
+.ai-manage-page.is-providers .ai-cli-field > span { color: var(--fg); }
+.ai-manage-page.is-providers .ai-cli-badge.is-idle { color: var(--fg-muted); background: var(--bg-elev); }
+.ai-manage-page.is-providers .ai-cli-badge.is-default { color: var(--fg-strong); background: var(--bg-active); }
+.ai-manage-page.is-providers .text-input::placeholder { color: var(--fg-faint); }
+.ai-manage-page.is-providers .text-input:disabled { color: var(--fg-faint); background: transparent; border-color: var(--border); opacity: 1; cursor: default; }
+.ai-manage-page.is-providers .ai-cli-secret-toggle { color: var(--fg-secondary); }
+.ai-manage-page.is-providers .ai-cli-secret-toggle:hover { color: var(--fg); }
+.ai-manage-page.is-providers .ai-success { color: var(--success); }
+.ai-manage-page.is-providers .ai-error { color: var(--danger); }
+.ai-manage-page.is-providers .ai-catalog-star { color: var(--fg-muted); background: transparent; }
+.ai-manage-page.is-providers .ai-catalog-star[aria-pressed="true"],
+.ai-manage-page.is-providers .ai-catalog-presets .panel-action[aria-pressed="true"] { color: var(--fg-strong); background: var(--bg-active); }
+.ai-manage-page.is-providers .ai-catalog-list .panel-action:not(.ai-catalog-star) { color: var(--fg-muted); }
+.ai-manage-page.is-providers .ai-catalog-list .panel-action:not(.ai-catalog-star):hover:not(:disabled) { color: var(--fg-strong); }
+.ai-manage-page.is-providers .ai-catalog-list .panel-action:disabled { color: var(--fg-faint); opacity: 1; cursor: default; }
+.ai-manage-page.is-providers .provider-model-row .panel-action { color: var(--fg-secondary); }
+.ai-manage-page.is-providers .provider-model-row .panel-action:hover:not(:disabled) { color: var(--fg); }
+.ai-manage-page.is-providers .ai-cli-list-head .panel-action,
+.ai-manage-page.is-providers .ai-cli-form > .panel-action,
+.ai-manage-page.is-providers .ai-cli-field > .panel-action,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action,
+.ai-manage-page.is-providers .ai-manage-foot .panel-action,
+.ai-manage-page.is-providers .dialog-actions .panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--h-control);
+  min-width: 0;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--bg-button);
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-sizing: border-box;
+  cursor: default;
+}
+.ai-manage-page.is-providers .ai-cli-list-head .panel-action svg,
+.ai-manage-page.is-providers .ai-cli-form > .panel-action svg,
+.ai-manage-page.is-providers .ai-cli-field > .panel-action svg,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action svg,
+.ai-manage-page.is-providers .ai-manage-foot .panel-action svg,
+.ai-manage-page.is-providers .dialog-actions .panel-action svg { color: var(--fg-muted); }
+.ai-manage-page.is-providers .ai-cli-list-head .panel-action:hover:not(:disabled),
+.ai-manage-page.is-providers .ai-cli-form > .panel-action:hover:not(:disabled),
+.ai-manage-page.is-providers .ai-cli-field > .panel-action:hover:not(:disabled),
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action:hover:not(:disabled),
+.ai-manage-page.is-providers .ai-manage-foot .panel-action:hover:not(:disabled),
+.ai-manage-page.is-providers .dialog-actions .panel-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-button) 94%, var(--fg-strong));
+  color: var(--fg-strong);
+}
+.ai-manage-page.is-providers .ai-cli-list-head .panel-action:hover:not(:disabled) svg,
+.ai-manage-page.is-providers .ai-cli-form > .panel-action:hover:not(:disabled) svg,
+.ai-manage-page.is-providers .ai-cli-field > .panel-action:hover:not(:disabled) svg,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action:hover:not(:disabled) svg,
+.ai-manage-page.is-providers .ai-manage-foot .panel-action:hover:not(:disabled) svg,
+.ai-manage-page.is-providers .dialog-actions .panel-action:hover:not(:disabled) svg { color: var(--fg-strong); }
+.ai-manage-page.is-providers .ai-manage-foot .panel-action.is-danger,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action.is-danger { color: var(--fg-secondary); }
+.ai-manage-page.is-providers .ai-manage-foot .panel-action.is-danger svg,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action.is-danger svg { color: var(--fg-muted); }
+.ai-manage-page.is-providers .ai-manage-foot .panel-action.is-danger:hover:not(:disabled),
+.ai-manage-page.is-providers .ai-manage-foot .panel-action.is-danger:hover:not(:disabled) svg,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action.is-danger:hover:not(:disabled),
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action.is-danger:hover:not(:disabled) svg { color: var(--danger); }
+.ai-manage-page.is-providers .ai-cli-list-head .panel-action:disabled,
+.ai-manage-page.is-providers .ai-cli-form > .panel-action:disabled,
+.ai-manage-page.is-providers .ai-cli-field > .panel-action:disabled,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action:disabled,
+.ai-manage-page.is-providers .ai-manage-foot .panel-action:disabled,
+.ai-manage-page.is-providers .dialog-actions .panel-action:disabled,
+.ai-manage-page.is-providers .ai-cli-list-head .panel-action:disabled svg,
+.ai-manage-page.is-providers .ai-cli-form > .panel-action:disabled svg,
+.ai-manage-page.is-providers .ai-cli-field > .panel-action:disabled svg,
+.ai-manage-page.is-providers .ai-cli-section-foot .panel-action:disabled svg,
+.ai-manage-page.is-providers .ai-manage-foot .panel-action:disabled svg,
+.ai-manage-page.is-providers .dialog-actions .panel-action:disabled svg {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-faint);
+  opacity: 1;
+  cursor: default;
+}
+/* Skills：只改这一页。引擎下拉不在这里改。 */
+.ai-manage-panel.is-skills .ai-cli-list-head,
+.ai-manage-panel.is-skills .ai-cli-detail-title h3,
+.ai-manage-panel.is-skills .ai-cli-row-name,
+.ai-manage-panel.is-skills .ai-skill-preview :is(h1, h2, h3, h4, h5, h6) { color: var(--fg-strong); }
+.ai-manage-panel.is-skills .ai-cli-row.is-active { color: var(--fg-strong); background: var(--bg-active); }
+.ai-manage-panel.is-skills .ai-cli-detail-title > svg,
+.ai-manage-panel.is-skills .ai-cli-grip,
+.ai-manage-panel.is-skills .ai-cli-list-hint,
+.ai-manage-panel.is-skills .ai-cli-hint,
+.ai-manage-panel.is-skills .ai-cli-list-note,
+.ai-manage-panel.is-skills .ai-cli-empty { color: var(--fg-muted); }
+.ai-manage-panel.is-skills .ai-cli-field > span { color: var(--fg); }
+.ai-manage-panel.is-skills .ai-cli-badge.is-idle { color: var(--fg-muted); background: var(--bg-elev); }
+.ai-manage-panel.is-skills .ai-cli-warning { color: var(--warning); }
+.ai-manage-panel.is-skills .ai-success { color: var(--success); }
+.ai-manage-panel.is-skills .ai-error { color: var(--danger); }
+.ai-manage-panel.is-skills .text-input::placeholder { color: var(--fg-faint); }
+.ai-manage-panel.is-skills .text-input:disabled { color: var(--fg-faint); background: transparent; border-color: var(--border); opacity: 1; cursor: default; }
+.ai-manage-panel.is-skills .ai-skill-preview { color: var(--fg); border-color: var(--border-button); background: var(--bg-field); }
+.ai-manage-panel.is-skills textarea.ai-skill-text { border-color: var(--border-button); background: var(--bg-field); color: var(--fg-strong); }
+.ai-manage-panel.is-skills textarea.ai-skill-text:focus-visible { outline-color: var(--focus-ring); }
+.ai-manage-panel.is-skills .ai-cli-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+  cursor: default;
+}
+.ai-manage-panel.is-skills .ai-cli-icon-action:hover:not(:disabled) { background: var(--bg-toolbar-hover); color: var(--fg-strong); }
+.ai-manage-panel.is-skills .ai-cli-icon-action:disabled { color: var(--fg-faint); background: transparent; opacity: 1; cursor: default; }
+.ai-manage-panel.is-skills .ai-manage-toolbar .panel-action:not(.ai-cli-icon-action),
+.ai-manage-panel.is-skills .ai-cli-detail-head .panel-action,
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--h-control);
+  min-width: 0;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--bg-button);
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-sizing: border-box;
+  cursor: default;
+}
+.ai-manage-panel.is-skills .ai-manage-toolbar .panel-action:not(.ai-cli-icon-action) svg,
+.ai-manage-panel.is-skills .ai-cli-detail-head .panel-action svg,
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action svg { color: var(--fg-muted); }
+.ai-manage-panel.is-skills .ai-manage-toolbar .panel-action:not(.ai-cli-icon-action):hover:not(:disabled),
+.ai-manage-panel.is-skills .ai-cli-detail-head .panel-action:hover:not(:disabled),
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-button) 94%, var(--fg-strong));
+  color: var(--fg-strong);
+}
+.ai-manage-panel.is-skills .ai-manage-toolbar .panel-action:not(.ai-cli-icon-action):hover:not(:disabled) svg,
+.ai-manage-panel.is-skills .ai-cli-detail-head .panel-action:hover:not(:disabled) svg,
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action:hover:not(:disabled) svg { color: var(--fg-strong); }
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action.is-danger { color: var(--fg-secondary); }
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action.is-danger svg { color: var(--fg-muted); }
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action.is-danger:hover:not(:disabled),
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action.is-danger:hover:not(:disabled) svg { color: var(--danger); }
+.ai-manage-panel.is-skills .ai-manage-toolbar .panel-action:not(.ai-cli-icon-action):disabled,
+.ai-manage-panel.is-skills .ai-cli-detail-head .panel-action:disabled,
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action:disabled,
+.ai-manage-panel.is-skills .ai-manage-toolbar .panel-action:not(.ai-cli-icon-action):disabled svg,
+.ai-manage-panel.is-skills .ai-cli-detail-head .panel-action:disabled svg,
+.ai-manage-panel.is-skills .ai-manage-foot .panel-action:disabled svg {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-faint);
+  opacity: 1;
+  cursor: default;
+}
+/* MCP：只改这一页。引擎和下拉不在这里改。 */
+.ai-manage-panel.is-mcp .ai-cli-list-head,
+.ai-manage-panel.is-mcp .ai-cli-detail-title h3,
+.ai-manage-panel.is-mcp .ai-cli-row-name,
+.ai-manage-panel.is-mcp .ai-cli-subgroup-head strong { color: var(--fg-strong); }
+.ai-manage-panel.is-mcp .ai-cli-row.is-active { color: var(--fg-strong); background: var(--bg-active); }
+.ai-manage-panel.is-mcp .ai-cli-detail-title > svg,
+.ai-manage-panel.is-mcp .ai-cli-grip,
+.ai-manage-panel.is-mcp .ai-cli-list-hint,
+.ai-manage-panel.is-mcp .ai-cli-hint,
+.ai-manage-panel.is-mcp .ai-muted,
+.ai-manage-panel.is-mcp .ai-cli-list-note,
+.ai-manage-panel.is-mcp .ai-cli-empty,
+.ai-manage-panel.is-mcp .ai-market-server-id,
+.ai-manage-panel.is-mcp .ai-market-meta,
+.ai-manage-panel.is-mcp .ai-manage-code { color: var(--fg-muted); }
+.ai-manage-panel.is-mcp .ai-cli-field > span { color: var(--fg); }
+.ai-manage-panel.is-mcp .ai-cli-badge.is-idle,
+.ai-manage-panel.is-mcp .ai-cli-badge.is-unchecked { color: var(--fg-muted); background: var(--bg-elev); }
+.ai-manage-panel.is-mcp .ai-cli-badge.is-pass { color: var(--success); }
+.ai-manage-panel.is-mcp .ai-cli-warning { color: var(--warning); }
+.ai-manage-panel.is-mcp .ai-success { color: var(--success); }
+.ai-manage-panel.is-mcp .ai-error { color: var(--danger); }
+.ai-manage-panel.is-mcp .ai-market-icon { color: var(--fg-muted); border-color: var(--border-button); background: var(--bg-elev); }
+.ai-manage-panel.is-mcp .ai-market-link { color: var(--link); }
+.ai-manage-panel.is-mcp .ai-market-link:hover { color: var(--link-hover); }
+.ai-manage-panel.is-mcp .text-input::placeholder,
+.ai-manage-panel.is-mcp textarea.ai-cli-env::placeholder { color: var(--fg-faint); }
+.ai-manage-panel.is-mcp .text-input:disabled { color: var(--fg-faint); background: transparent; border-color: var(--border); opacity: 1; cursor: default; }
+.ai-manage-panel.is-mcp textarea.ai-cli-env { border-color: var(--border-button); background: var(--bg-field); color: var(--fg-muted); }
+.ai-manage-panel.is-mcp textarea.ai-cli-env:focus:not(:disabled) { color: var(--fg-strong); }
+.ai-manage-panel.is-mcp textarea.ai-cli-env:focus-visible { outline-color: var(--focus-ring); }
+.ai-manage-panel.is-mcp .ai-manage-tabs { border-color: var(--border-popup); border-radius: 6px; background: var(--bg-elev); }
+.ai-manage-panel.is-mcp .ai-manage-tabs .panel-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  margin-left: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+.ai-manage-panel.is-mcp .ai-manage-tabs .panel-action:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--bg-hover); color: var(--fg); }
+.ai-manage-panel.is-mcp .ai-manage-tabs .panel-action[aria-pressed="true"] {
+  background: var(--bg-popup);
+  color: var(--fg-strong);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--border-strong), 0 1px 2px color-mix(in srgb, var(--fg-strong) 8%, transparent);
+}
+.ai-manage-panel.is-mcp .ai-manage-tabs .panel-action:disabled { color: var(--fg-faint); opacity: 1; cursor: default; }
+.ai-manage-panel.is-mcp .ai-cli-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+  cursor: default;
+}
+.ai-manage-panel.is-mcp .ai-cli-icon-action:hover:not(:disabled) { background: var(--bg-toolbar-hover); color: var(--fg-strong); }
+.ai-manage-panel.is-mcp .ai-cli-icon-action:disabled { color: var(--fg-faint); background: transparent; opacity: 1; cursor: default; }
+.ai-manage-panel.is-mcp .ai-manage-toolbar > .panel-action:not(.ai-cli-icon-action),
+.ai-manage-panel.is-mcp .ai-manage-market .panel-action,
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--h-control);
+  min-width: 0;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--bg-button);
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-sizing: border-box;
+  cursor: default;
+}
+.ai-manage-panel.is-mcp .ai-manage-toolbar > .panel-action:not(.ai-cli-icon-action) svg,
+.ai-manage-panel.is-mcp .ai-manage-market .panel-action svg,
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action svg { color: var(--fg-muted); }
+.ai-manage-panel.is-mcp .ai-manage-toolbar > .panel-action:not(.ai-cli-icon-action):hover:not(:disabled),
+.ai-manage-panel.is-mcp .ai-manage-market .panel-action:hover:not(:disabled),
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-button) 94%, var(--fg-strong));
+  color: var(--fg-strong);
+}
+.ai-manage-panel.is-mcp .ai-manage-toolbar > .panel-action:not(.ai-cli-icon-action):hover:not(:disabled) svg,
+.ai-manage-panel.is-mcp .ai-manage-market .panel-action:hover:not(:disabled) svg,
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action:hover:not(:disabled) svg { color: var(--fg-strong); }
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action.is-danger { color: var(--fg-secondary); }
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action.is-danger svg { color: var(--fg-muted); }
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action.is-danger:hover:not(:disabled),
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action.is-danger:hover:not(:disabled) svg { color: var(--danger); }
+.ai-manage-panel.is-mcp .ai-manage-toolbar > .panel-action:not(.ai-cli-icon-action):disabled,
+.ai-manage-panel.is-mcp .ai-manage-market .panel-action:disabled,
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action:disabled,
+.ai-manage-panel.is-mcp .ai-manage-toolbar > .panel-action:not(.ai-cli-icon-action):disabled svg,
+.ai-manage-panel.is-mcp .ai-manage-market .panel-action:disabled svg,
+.ai-manage-panel.is-mcp .ai-manage-foot .panel-action:disabled svg {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-faint);
+  opacity: 1;
+  cursor: default;
+}
 .ai-skill-editor { flex: 1; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
 .ai-skill-text { min-height: 320px; height: 100%; }
 .ai-skill-preview { min-height: 320px; height: 100%; overflow: auto; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); }
@@ -170,13 +536,158 @@
 }
 
 .ai-settings-controls { display: flex; align-items: center; gap: 10px; }
-.ai-enable-switch { display: inline-flex; align-items: center; flex: none; width: 30px; height: 18px; padding: 2px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-tertiary); cursor: pointer; }
-.ai-enable-switch > span { width: 12px; height: 12px; border-radius: 50%; background: var(--text-tertiary); }
-/* 开关与发送动作沿用 IDEA 的语义色，不使用黑白反色模拟 shadcn 主色。 */
-.ai-enable-switch[aria-checked="true"] { background: var(--bg-toggle-on); border-color: var(--bg-toggle-on); }
-.ai-enable-switch[aria-checked="true"] > span { margin-left: auto; background: var(--fg-toggle-on); }
+.ai-enable-switch { display: inline-flex; align-items: center; flex: none; width: 30px; height: 18px; padding: 2px; border: 1px solid var(--border-toggle); border-radius: 10px; background: var(--bg-toggle-off); cursor: pointer; }
+.ai-enable-switch > span { width: 12px; height: 12px; border-radius: 50%; background: var(--bg-toggle-knob); }
+.ai-enable-switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.ai-enable-switch[aria-checked="true"] > span { margin-left: auto; background: var(--fg-button-primary); }
 .ai-enable-switch:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
-.ai-enable-switch:disabled { opacity: .5; cursor: not-allowed; }
+.ai-enable-switch:disabled,
+.ai-enable-switch[aria-checked="true"]:disabled { background: var(--bg-toggle-off); border-color: var(--border-toggle); opacity: 1; cursor: not-allowed; }
+.ai-enable-switch:disabled > span,
+.ai-enable-switch[aria-checked="true"]:disabled > span { background: var(--fg-faint); }
+
+/* AI 助手页：只改颜色。字号、圆角、间距保持原样。模型 / 技能 / MCP 不在 .ai-cli-page 里，不受这些规则影响。 */
+.ai-cli-page .ai-cli-list-head,
+.ai-cli-page .ai-cli-detail-title h3,
+.ai-cli-page .ai-cli-section-head strong,
+.ai-cli-page .ai-cli-subgroup-head strong { color: var(--fg-strong); }
+.ai-cli-page .ai-cli-list-hint,
+.ai-cli-page .ai-cli-list-note,
+.ai-cli-page .ai-muted,
+.ai-cli-page .ai-cli-hint,
+.ai-cli-page .ai-notice,
+.ai-cli-page .ai-cli-check-text span,
+.ai-cli-page .ai-cli-grip { color: var(--fg-muted); }
+.ai-cli-page .ai-cli-field > span,
+.ai-cli-page .ai-cli-row-switch > span,
+.ai-cli-page .ai-cli-switch-item > span,
+.ai-cli-page .ai-cli-check-text strong,
+.ai-cli-page .ai-cli-facts dt { color: var(--fg); }
+.ai-cli-page .ai-cli-facts dd,
+.ai-cli-page .ai-cli-check-value,
+.ai-cli-page .ai-cli-config-path code { color: var(--fg-strong); }
+.ai-cli-page .ai-cli-row.is-active { color: var(--fg-strong); }
+.ai-cli-page .ai-cli-badge.is-checking { color: var(--fg); background: var(--bg-elev); }
+.ai-cli-page .ai-cli-badge.is-unchecked { color: var(--fg-muted); background: var(--bg-elev); }
+.ai-cli-page .ai-cli-badge.is-disabled { color: var(--fg-faint); background: transparent; box-shadow: inset 0 0 0 1px var(--border); opacity: 1; }
+.ai-cli-page .ai-cli-badge.is-default { color: var(--fg-strong); background: var(--bg-active); }
+.ai-cli-page .ai-update-badge { color: var(--accent-amber-text); }
+.ai-cli-page .ai-cli-env { border-color: var(--border-button); background: var(--bg-field); color: var(--fg-strong); }
+.ai-cli-page .ai-cli-subgroup .ai-cli-env { background: var(--bg-field); }
+.ai-cli-page .ai-cli-env::placeholder,
+.ai-cli-page .text-input::placeholder { color: var(--fg-faint); }
+.ai-cli-page .ai-cli-env:focus-visible { outline-color: var(--focus-ring); }
+.ai-cli-page .ai-cli-env:disabled,
+.ai-cli-page .text-input:disabled { color: var(--fg-faint); background: transparent; border-color: var(--border); opacity: 1; cursor: default; }
+.ai-cli-page textarea.ai-cli-env.is-source,
+.ai-cli-page .ai-cli-config-path code { color: var(--fg-muted); }
+.ai-cli-page textarea.ai-cli-env.is-source:focus:not(:disabled) { color: var(--fg-strong); }
+.ai-cli-page textarea.ai-cli-env.is-source:disabled { color: var(--fg-faint); }
+.ai-cli-page .ai-cli-secret-toggle,
+.ai-cli-page .ai-cli-inline .panel-action.ai-cli-secret-toggle { color: var(--fg-secondary); }
+.ai-cli-page .ai-cli-secret-toggle:hover,
+.ai-cli-page .ai-cli-inline .panel-action.ai-cli-secret-toggle:hover { color: var(--fg); }
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action),
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action),
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action),
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action),
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--h-control);
+  min-width: 0;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--bg-button);
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-sizing: border-box;
+  cursor: default;
+}
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action) svg,
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action) svg,
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action) svg,
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action) svg,
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action) svg {
+  color: var(--fg-muted);
+}
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled),
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled),
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled),
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled),
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-button) 94%, var(--fg-strong));
+  color: var(--fg-strong);
+}
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled) svg,
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled) svg,
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled) svg,
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled) svg,
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):hover:not(:disabled) svg {
+  color: var(--fg-strong);
+}
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):focus-visible,
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):focus-visible,
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):focus-visible,
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):focus-visible,
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled,
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled,
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled,
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled,
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled,
+.ai-cli-page .ai-cli-actions .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled svg,
+.ai-cli-page .ai-cli-section-head .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled svg,
+.ai-cli-page .ai-cli-section-foot .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled svg,
+.ai-cli-page .ai-cli-field > .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled svg,
+.ai-cli-page .ai-custom-model-row .panel-action:not(.ai-cli-disclosure):not(.ai-cli-icon-action):disabled svg {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-faint);
+  opacity: 1;
+  cursor: default;
+}
+.ai-cli-page .ai-cli-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-secondary);
+  cursor: default;
+}
+.ai-cli-page .ai-cli-disclosure svg { color: var(--fg-muted); }
+.ai-cli-page .ai-cli-disclosure:hover:not(:disabled),
+.ai-cli-page .ai-cli-disclosure:hover:not(:disabled) svg { color: var(--fg); background: transparent; box-shadow: none; }
+.ai-cli-page .ai-cli-disclosure:disabled,
+.ai-cli-page .ai-cli-disclosure:disabled svg { color: var(--fg-faint); opacity: 1; cursor: default; }
+.ai-cli-page .ai-cli-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+  cursor: default;
+}
+.ai-cli-page .ai-cli-icon-action:hover:not(:disabled) { background: var(--bg-toolbar-hover); color: var(--fg-strong); }
+.ai-cli-page .ai-cli-icon-action:disabled { color: var(--fg-faint); background: transparent; opacity: 1; cursor: default; }
 .ai-muted { color: var(--text-tertiary); font-size: 12px; }
 .ai-cli-path { font-family: var(--font-mono); }
 .ai-update-badge { color: var(--accent-blue-text); font-size: 11px; margin-left: 10px; }
