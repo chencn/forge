@@ -843,9 +843,9 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-composer.is-tall { min-height: 120px; }
 .ai-composer:focus-within { border-color: var(--accent-blue);
   box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent-blue) 25%, transparent); }
-/* 编辑队列借用主输入框：边框只提示“正在改现有项”，不再弹出第二套编辑界面。 */
-.ai-composer-wrap.is-queue-editing .ai-composer { border-color: var(--accent-blue);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 30%, transparent); }
+/* 队列编辑态及其聚焦态使用中性完整边框，不继承普通输入框的蓝色焦点描边。 */
+.ai-composer-wrap.is-queue-editing .ai-composer { border-color: var(--border-strong);
+  box-shadow: none; }
 .ai-composer button, .ai-composer label, .ai-composer input, .ai-composer a { cursor: pointer; }
 .ai-composer textarea { cursor: text; }
 /* 附件缩略图条：有图才出现，出现后编辑区的起步高度让位。 */
@@ -1267,8 +1267,9 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-task-queue-item:hover { background: var(--bg-tertiary); }
 /* 编辑态只用中性底色，遵循根目录 AGENTS.md 的全局竖边约束。 */
 .ai-task-queue-item.is-editing { background: var(--bg-tertiary); }
+/* 拖拽插入线也保持中性，不能借强调色恢复队列的装饰标记。 */
 .ai-task-queue-item.is-drop-before::before, .ai-task-queue-item.is-drop-after::after { content: ""; position: absolute;
-  left: 6px; right: 6px; height: 2px; border-radius: 2px; background: var(--accent-blue); pointer-events: none; }
+  left: 6px; right: 6px; height: 2px; border-radius: 2px; background: var(--control-off); pointer-events: none; }
 .ai-task-queue-item.is-drop-before::before { top: -2px; }
 .ai-task-queue-item.is-drop-after::after { bottom: -2px; }
 .ai-task-queue-item .ai-task-drag { grid-area: drag; align-self: stretch; display: flex;

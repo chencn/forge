@@ -47,7 +47,7 @@
   align-items: center;
   gap: 8px;
   padding: 0 6px 0 14px;
-  cursor: move;
+  cursor: default;
   user-select: none;
   touch-action: none;
   border-bottom: 1px solid var(--border, #26282c);
@@ -67,7 +67,7 @@
   min-width: 0;
   color: var(--fg-strong, #dfe1e5);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -79,6 +79,11 @@
   overflow: auto;
   padding: 16px;
 }
+
+/* 内容容器与 List 使用相同的 10px 滚动条，避免短窗口出现原生宽轨道。 */
+.body::-webkit-scrollbar { width: 10px; height: 10px; }
+.body::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border: 2px solid transparent; border-radius: 5px; background-clip: content-box; }
+.body::-webkit-scrollbar-track, .body::-webkit-scrollbar-corner { background: transparent; }
 
 .footer {
   flex: none;

@@ -7,6 +7,17 @@ import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../../src/lib/sett
 beforeEach(() => { invoke.mockReset(); });
 
 describe("VCS 设置", () => {
+  it("更新策略归一化后可保存，旧值回到合并策略", async () => {
+    for (const [stored, expected] of [["rebase", "rebase"], ["merge", "merge"], ["invalid", "merge"], [undefined, "merge"]]) {
+      invoke.mockResolvedValue({ vcs: { updateMethod: stored, autoUpdateOnPushRejected: stored === "rebase" ? true : "true" } });
+      const loaded = await loadSettings();
+      expect(loaded.vcs.updateMethod).toBe(expected);
+      expect(loaded.vcs.autoUpdateOnPushRejected).toBe(stored === "rebase");
+    }
+    invoke.mockResolvedValue({ vcs: { updateMethod: "rebase" } });
+    expect((await saveSettings({ vcs: { ...DEFAULT_SETTINGS.vcs, updateMethod: "rebase" } })).vcs.updateMethod).toBe("rebase");
+    expect(invoke).toHaveBeenLastCalledWith("settings_save", { patch: { vcs: { ...DEFAULT_SETTINGS.vcs, updateMethod: "rebase" } } });
+  });
   it("读取及保存结果丢弃已移除的检查字段，并保留现有设置", async () => {
     const vcs = {
       checkAnalyzeCode: true, checkReformatCode: true, checkOptimizeImports: true, checkCleanup: true,

@@ -1177,7 +1177,7 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
     let session_id = request.session_id.clone();
     let spawned = std::thread::Builder::new().name("forge-ai-runtime".into()).spawn(move || {
         let session_lease = session_lease;
-        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: 0, compaction_index: 0, compaction_done: false, agents: HashMap::new(), agent_batches: HashMap::new(), broken_agents: HashSet::new() };
+        let mut worker = Worker { app, run: worker_run.clone(), store, pending: HashMap::new(), approvals: approvals::ApprovalMemory::default(), next_request: 0, batch: vec![], batch_bytes: 0, flushed: Instant::now(), plan_claim: None, plan_applied: None, native_turn_id: None, summary_start: None, history_warned: false, compaction_index: 0, compaction_done: false, agents: HashMap::new(), agent_batches: HashMap::new(), broken_agents: HashSet::new() };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.execute(request, controls, include_user)));
         let outcome = match result { Ok(result) => result, Err(_) => Err("AI 运行线程异常退出，未自动重发".into()) };
         if let Err(error) = &outcome { worker.fail_plan_claim(error); }
@@ -1404,7 +1404,9 @@ struct Worker {
     /// CLI 确认的原生回合 ID；Codex 断线后只能附着这个回合，绝不能新开一轮。
     native_turn_id: Option<String>,
     /// 原生摘要关联范围固定在进程启动前，不能用收到结束事件时的 EOF。
-    summary_start: u64,
+    summary_start: Option<u64>,
+    /// 同一轮原生历史故障只提示一次，补采仍继续重试。
+    history_warned: bool,
     compaction_index: u64,
     compaction_done: bool,
     /// 子代理 key → 子会话句柄。协议层产出 `agent` 事件与带 `agentKey` 的条目，
@@ -1503,7 +1505,8 @@ impl Worker {
                         if self.compaction_index == 0 || starting && self.compaction_done { self.compaction_index += 1; }
                         self.compaction_done = !starting;
                         data["episodeId"] = json!(format!("{}:{}", self.run.id, self.compaction_index));
-                        data["sourceStart"] = json!(self.summary_start);
+                        // 未读到原生边界时不能拿 0 冒充，否则旧摘要会被本轮认领。
+                        if let Some(start) = self.summary_start { data["sourceStart"] = json!(start); }
                     }
                     // 回合被 CLI 确认启动后，计划决策才算落地；批准不等于执行成功。
                     if kind == "turn" {
@@ -1853,6 +1856,15 @@ impl Worker {
         if request.command == Some(commands::CommandIntent::CodexCompact) && native.is_none() {
             return Err("请先建立会话，再压缩上下文".into());
         }
+        // 原生历史只是辅助数据，读取失败不能阻止 CLI resume；边界须早于进程启动。
+        self.summary_start = match history::summary_offset(&self.store) {
+            Ok(offset) => Some(offset),
+            Err(cause) => {
+                self.history_warned = true;
+                self.queue("notice", json!({"text":format!("原生历史边界读取失败，CLI 将继续运行：{cause}")}))?;
+                None
+            }
+        };
         // The host enforces read/plan permissions independently of CLI tool approval settings.
         let browser = crate::browser::attach(&self.app,crate::browser::Scope {
             workspace:self.run.workspace.clone(),session:request.session_id.clone(),run:request.run_id.clone(),
@@ -1892,7 +1904,6 @@ impl Worker {
             for snapshot in snapshots { self.queue("agent", snapshot)?; }
         }
         let mut protocol = runtime_protocol(&request, native, &service_tier, &codex_policy, &claude_mode, None, claude_agents,browser.is_some())?;
-        self.summary_start = history::summary_offset(&self.store)?;
         self.run.child_pid.store(process.id(), Ordering::Release);
         let handshake = protocol.start()?;
         if let Err(error) = self.actions(&mut *protocol, handshake, &mut process) {
@@ -1905,7 +1916,7 @@ impl Worker {
         let mut summary_poll = Instant::now();
         let mut agent_poll = Instant::now();
         let mut agent_discovery = Instant::now() - Duration::from_secs(2);
-        let mut summary_offset = self.summary_start;
+        let mut summary_offset = self.summary_start.unwrap_or(0);
         let mut connected = false;
         let mut reconnects = 0u8;
         loop {
@@ -1918,9 +1929,14 @@ impl Worker {
             // CLI 常常只把摘要写进原生历史；运行期间补采并广播，不等回合结束。
             if self.compaction_index > 0 && summary_poll.elapsed() >= Duration::from_secs(2) {
                 self.flush()?;
+                let result = {
+                    let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
+                    history::poll_summaries(&mut self.store, &mut summary_offset)
+                };
+                // 原生读取告警与真正的镜像失败分流；不要经 errors 通道误报 CLI 失败。
                 let events = {
                     let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-                    history::poll_summaries(&mut self.store, &mut summary_offset)?
+                    history_events(&mut self.store, &self.run.id, result, &mut self.history_warned)?
                 };
                 if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); }
                 summary_poll = Instant::now();
@@ -2154,21 +2170,15 @@ impl Worker {
                 let _ = self.app.emit("ai-runtime://errors", json!({"sessionId":route.store.meta.session_id,"runId":self.run.id,"error":cause}));
             }
         }
-        let history_result = self.flush().and_then(|_| {
+        let result = self.flush().and_then(|_| {
             let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-            let base = self.store.dir.parent().ok_or("会话路径无效")?.to_path_buf();
-            history::mark_current(&mut self.store, &base)
+            complete_turn(&mut self.store, &self.run.id, status, error, &mut self.history_warned)
         });
-        let data = match history_result {
-            Err(cause) => json!({"status":task_status::FAILED,"error":cause}),
-            Ok(events) => {
-                // 补采已落盘，但不广播就只能重开会话后才看见摘要。
-                if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); }
-                json!({"status":status,"error":error})
-            }
-        };
-        self.batch.push(("status".into(), data));
-        if let Err(error) = self.flush() {
+        if let Ok(events) = &result {
+            // 补采与终态都已落盘，统一广播才能让实时视图与重开历史一致。
+            let _ = self.app.emit(CHANNEL, events);
+        }
+        if let Err(error) = result {
             // 诊断信息不能占用未提交的序号：后面真正落盘的事件可能合法地用同一个号，
             // 所以这里直接走旁路通道发给前端，不经过事件存储。
             let _ = self.app.emit(
@@ -2182,6 +2192,26 @@ impl Worker {
     fn sync_native_title(&mut self) {
         let Ok(_io) = store::IO_LOCK.lock() else { return };
         let _ = push_codex_title(&mut self.store);
+    }
+}
+/// 收尾的存储边界独立于桌面窗口，CLI 结果和补采结果在这里落盘。
+fn complete_turn(target: &mut store::Store, run_id: &str, status: &str, error: Option<String>, warned: &mut bool) -> Result<Vec<events::Event>, String> {
+    let base = target.dir.parent().ok_or("会话路径无效")?.to_path_buf();
+    let result = history::mark_current(target, &base);
+    let mut events = history_events(target, run_id, result, warned)?;
+    events.extend(target.append(run_id, vec![("status".into(), json!({"status":status,"error":error}))])?);
+    Ok(events)
+}
+/// 调用方持有 IO_LOCK；辅助错误落普通通知，镜像错误继续中止，绝不伪造 CLI 终态。
+fn history_events(target: &mut store::Store, run_id: &str, result: Result<Vec<events::Event>, history::SupplementError>, warned: &mut bool) -> Result<Vec<events::Event>, String> {
+    match result {
+        Ok(events) => Ok(events),
+        Err(history::SupplementError::Mirror(cause)) => Err(cause),
+        Err(history::SupplementError::Source(cause)) if !*warned => {
+            *warned = true;
+            target.append(run_id, vec![("notice".into(), json!({"text":format!("原生历史补采失败，CLI 结果保持不变，后续将重试：{cause}")}))])
+        }
+        Err(history::SupplementError::Source(_)) => Ok(vec![]),
     }
 }
 /// 这条授权请求能否由本轮已记下的规则代答。
@@ -3032,6 +3062,49 @@ pub fn reap_all_for_exit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_history_failure_preserves_cli_result_but_mirror_failure_is_fatal() {
+        let temp = std::env::temp_dir().join(format!("forge-finish-history-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let mut target = store::Store::open(&base, "session", &workspace, Provider::Claude, "test", "").unwrap();
+        target.bind("native".into()).unwrap();
+        let native = temp.join("native.jsonl");
+        std::fs::write(&native, "broken JSON\n").unwrap();
+        let source = history::Source { provider: Provider::Claude, native_id: "native".into(), path: native.clone(), workspace: workspace.clone() };
+        std::fs::write(target.dir.join("native-source.json"), serde_json::to_vec(&source).unwrap()).unwrap();
+        let mut previous = 0;
+        let mut warned = false;
+        // 运行中读取失败不推进游标，只提示一次，继续处理 CLI 输出。
+        for expected_notices in [1, 0] {
+            let result = history::poll_summaries(&mut target, &mut previous);
+            assert!(matches!(&result, Err(history::SupplementError::Source(_))));
+            let events = history_events(&mut target, "poll", result, &mut warned).unwrap();
+            assert_eq!(events.iter().filter(|event| event.kind == "notice").count(), expected_notices);
+            assert_eq!(previous, 0);
+        }
+        for (run_id, status, error) in [("success", task_status::COMPLETED, None), ("failed", task_status::FAILED, Some("CLI error".to_owned())), ("cancelled", task_status::CANCELLED, None)] {
+            let events = complete_turn(&mut target, run_id, status, error.clone(), &mut false).unwrap();
+            assert!(events.iter().any(|event| event.kind == "notice"));
+            let terminal = events.iter().find(|event| event.kind == "status").unwrap();
+            assert_eq!(terminal.data["status"], status);
+            assert_eq!(terminal.data["error"], json!(error));
+        }
+        let page = store::Store::page(&base, "session", &workspace, store::Window::After(0), 500, false).unwrap();
+        assert!(page.events.iter().any(|event| event.run_id == "success" && event.kind == "status" && event.data["status"] == task_status::COMPLETED));
+        // 补采真的写不进去时必须报错，不能把持久化失败降成普通告警。
+        std::fs::write(&native, format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"native","isCompactSummary":true,"message":{"content":"summary"}}))).unwrap();
+        target.poisoned = true;
+        let result = history::poll_summaries(&mut target, &mut previous);
+        assert!(matches!(&result, Err(history::SupplementError::Mirror(_))));
+        assert!(history_events(&mut target, "poll", result, &mut warned).is_err());
+        assert_eq!(previous, 0);
+        assert!(complete_turn(&mut target, "storage-failed", task_status::COMPLETED, None, &mut warned).is_err());
+        drop(target);
+        std::fs::remove_dir_all(temp).unwrap();
+    }
     #[test]
     fn child_session_ids_are_stable_valid_and_scoped() {
         // 同一个 key 跨轮派生出同一个 id：live 路由与历史导入天然对齐。

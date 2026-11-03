@@ -221,7 +221,8 @@ function DialogInner({
         {!popup && (
           <div className={styles.titleBar} onPointerDown={drag} data-dialog-titlebar="">
             <span className={styles.title}>{title}</span>
-            <IconButton icon="close" size="small" title="关闭" onClick={onClose} />
+            {/* JetBrains close.svg（Apache-2.0）：16×16、1px 笔画；原版 Icon 的单色前景来自 fg-icon。 */}
+            <IconButton icon={<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 12.5L12.5 3.5M12.5 12.5L3.5 3.5" stroke="var(--fg-icon)" strokeLinecap="round" /></svg>} size="small" tabIndex={-1} title="关闭" onClick={onClose} />
           </div>
         )}
 

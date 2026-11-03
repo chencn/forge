@@ -25,7 +25,10 @@ import {
   gitMergeContinue,
   gitProbe,
   gitPull,
+  gitUpdateBranch,
   gitPush,
+  gitPushTarget,
+  isPushRejected,
   gitPushRef,
   gitPushUpTo,
   gitRebase,
@@ -54,7 +57,7 @@ import {
   gitUnstage,
   gitWorktreeAdd,
 } from "../lib/git";
-import type { GitShelfApplyOutcome, GitShelvedChangeList, ResetMode } from "../lib/git";
+import type { GitShelfApplyOutcome, GitShelvedChangeList, GitPushOptions, ResetMode } from "../lib/git";
 import { recoveryOf } from "../lib/git";
 import type {
   GitBranch,
@@ -76,6 +79,14 @@ export interface GitOperation {
   kind: GitOperationKind;
   target: string;
   phase: "running" | "success" | "error";
+  message?: string;
+  fraction?: number;
+}
+
+interface GitWorkflow {
+  beforeUpdate?: () => Promise<unknown>;
+  updateMethod?: "merge" | "rebase";
+  autoUpdateOnPushRejected?: boolean;
 }
 
 /** 已暂存：索引位有内容且不是冲突项。 */
@@ -96,8 +107,11 @@ export function useGitState(
    * 本地写仓库动作收尾时通知一次，让调用方把紧接着来的 watcher 回声压掉。
    * 这些命令自己会刷新状态，回声再刷一遍就是白起一个 git 进程。
    */
-  afterRepoWrite?: () => void
+  afterRepoWrite?: () => void,
+  workflow: GitWorkflow = {},
 ) {
+  const workflowRef = useRef(workflow);
+  workflowRef.current = workflow;
   const [probe, setProbe] = useState<GitProbe | null>(null);
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [branches, setBranches] = useState<GitBranch[]>([]);
@@ -129,14 +143,23 @@ export function useGitState(
 
   useEffect(() => () => { for (const timer of operationTimers.current) clearTimeout(timer); }, []);
 
-  const trackOperation = useCallback(async <T,>(kind: GitOperationKind, target: string, action: () => Promise<T>, blocked: T): Promise<T> => {
+  const trackOperation = useCallback(async <T,>(kind: GitOperationKind, target: string, action: (onProgress: (line: string) => void) => Promise<T>, blocked: T): Promise<T> => {
     if (!root || operationLocks.current.has(root)) return blocked;
     operationLocks.current.add(root);
     const next: GitOperation = { id: ++operationSequence.current, root, kind, target, phase: "running" };
     setOperations((current) => new Map(current).set(root, next));
     let succeeded = false;
     try {
-      const result = await action();
+      const result = await action((message) => {
+        // 每一阶段独立计数；没有百分比的输出恢复扫动，迟到输出不能改写下一个任务。
+        const match = /(\d{1,3})%/.exec(message);
+        const fraction = match && Number(match[1]) <= 100 ? Number(match[1]) / 100 : undefined;
+        setOperations((current) => {
+          const held = current.get(root);
+          return held?.id === next.id && held.phase === "running"
+            ? new Map(current).set(root, { ...held, message, fraction }) : current;
+        });
+      });
       succeeded = result !== null && result !== false;
       // 通知中心写入当前工程历史；旧工程后台完成时不能污染新工程。
       if (succeeded && activeWorkspaceRef.current === workspaceRoot) notificationCenter.notify({
@@ -147,7 +170,10 @@ export function useGitState(
       return result;
     } finally {
       operationLocks.current.delete(root);
-      setOperations((current) => current.get(root)?.id === next.id ? new Map(current).set(root, { ...next, phase: succeeded ? "success" : "error" }) : current);
+      setOperations((current) => {
+        const held = current.get(root);
+        return held?.id === next.id ? new Map(current).set(root, { ...held, phase: succeeded ? "success" : "error" }) : current;
+      });
       // 对齐 OpenIDEA 的任务收尾：保留 600ms；每个仓库独立，切回时仍能看见运行状态。
       const timer = setTimeout(() => {
         operationTimers.current.delete(timer);
@@ -635,10 +661,10 @@ export function useGitState(
 
   /** 网络类操作把 git 的进度文案回给调用方，成功时返回那段文本。 */
   const remote = useCallback(
-    async (action: (repo: string) => Promise<string>, actionKey: "fetch" | "pull" | "push") => trackOperation(actionKey, status?.branch ?? "", async () => {
+    async (action: (repo: string, onProgress: (line: string) => void) => Promise<string>, actionKey: "fetch" | "pull" | "push") => trackOperation(actionKey, status?.branch ?? "", async (onProgress) => {
       if (!root) return null;
       try {
-        const detail = await action(root);
+        const detail = await action(root, onProgress);
         return detail;
       } catch (cause) {
         reportError(errorText(cause), actionKey);
@@ -652,48 +678,95 @@ export function useGitState(
     [afterRepoWrite, refresh, reportError, root, status?.branch, trackOperation]
   );
 
-  /**
-   * 提交并推送。返回值只表示提交有没有落盘：落盘了说明框就要清掉，
-   * 哪怕后面的推送失败——那段文字已经写进提交里了。
-   */
-  const commitAndPush = useCallback(
-    async (
-      message: string,
-      amend: boolean,
-      setUpstream = false,
-      paths?: string[],
-      options?: CommitRequestOptions
-    ) => {
-      if (!root) return false;
-      let committed = false;
-      await trackOperation("push", status?.branch ?? "", async () => {
+  const fetch = useCallback(() => remote(gitFetch, "fetch"), [remote]);
+  const pull = useCallback((method: "ff-only" | "merge" | "rebase" = "merge") => remote((repo, onProgress) => gitPull(repo, method, onProgress), "pull"), [remote]);
+  const updateBranch = useCallback((branch: string) => remote((repo, onProgress) => gitUpdateBranch(repo, branch, onProgress), "pull"), [remote]);
+  const push = useCallback((options: GitPushOptions = {}) => {
+    // 重试绑定原仓库、源分支和目标；切换工程后旧通知不能操作新工程。
+    const request = { ...options, branch: options.branch ?? status?.branch };
+    const target = request.branch ?? "";
+    const execute = (method?: "merge" | "rebase"): Promise<string | null> => {
+      if (activeWorkspaceRef.current !== workspaceRoot) return Promise.resolve(null);
+      let autoUpdate: "merge" | "rebase" | undefined;
+      return trackOperation("push", target, async (onProgress) => {
+        if (!root) return null;
+        let updating = false;
+        let canUpdate = false;
         try {
-          await gitCommit(root, message, amend, paths, options);
-          committed = true;
-          await gitPush(root, setUpstream);
-          return true;
+          // 恢复推送前先保存编辑缓冲，再读取实际分支，等待保存时允许用户切换工程。
+          if (method) await workflowRef.current.beforeUpdate?.();
+          if (activeWorkspaceRef.current !== workspaceRoot) return null;
+          const destination = await gitPushTarget(root, request.branch);
+          request.remote ??= destination.remote;
+          request.target ??= destination.target;
+          setOperations((current) => {
+            const held = current.get(root);
+            return held ? new Map(current).set(root, { ...held, target: `${request.branch} → ${request.remote}/${request.target}` }) : current;
+          });
+          const current = await gitStatus(root);
+          if (activeWorkspaceRef.current !== workspaceRoot) return null;
+          canUpdate = !request.forceWithLease && !request.revision && !current.detached &&
+            current.branch === request.branch && destination.tracked &&
+            destination.remote === request.remote && destination.target === request.target;
+          if (method) {
+            // 只更新仍签出原分支且仍跟踪原目标的仓库；编辑过目标的推送不盲目 pull。
+            if (!canUpdate) throw new Error(translate("git.pushContextChanged"));
+            updating = true;
+            setOperations((current) => {
+              const held = current.get(root);
+              return held ? new Map(current).set(root, { ...held, kind: "pull" }) : current;
+            });
+            await gitPull(root, method, onProgress);
+            updating = false;
+            setOperations((current) => {
+              const held = current.get(root);
+              return held ? new Map(current).set(root, { ...held, kind: "push" }) : current;
+            });
+          }
+          return await gitPush(root, request, onProgress);
         } catch (cause) {
-          reportError(errorText(cause), committed ? "push" : undefined);
-          return false;
+          const message = errorText(cause);
+          if (activeWorkspaceRef.current === workspaceRoot) {
+            const rejected = !updating && isPushRejected(message);
+            // 每次用户推送最多自动更新一次；先释放操作锁，再开始恢复流程。
+            if (rejected && canUpdate && !method && workflowRef.current.autoUpdateOnPushRejected) {
+              autoUpdate = workflowRef.current.updateMethod ?? "merge";
+              return null;
+            }
+            notificationCenter.notify({
+              groupId: "git", groupTitle: "Git", projectRoot: root, level: "error",
+              key: `git.operation:${root}`,
+              title: translate(updating ? "notifications.pullFailed" : rejected ? "git.pushRejected" : "notifications.pushFailed"),
+              content: message,
+              actions: updating ? undefined : [
+                { label: translate("git.retryPush"), run: () => { void execute(); } },
+                ...(rejected && canUpdate ? (["merge", "rebase"] as const).map((method) => ({
+                  label: translate(method === "merge" ? "git.mergeAndPush" : "git.rebaseAndPush"),
+                  run: () => { void execute(method); },
+                })) : []),
+              ],
+            });
+          }
+          return null;
         } finally {
           afterRepoWrite?.();
           await refresh();
         }
-      }, false);
-      return committed;
-    },
-    [afterRepoWrite, refresh, reportError, root, status?.branch, trackOperation]
-  );
-
-  const fetch = useCallback(() => remote(gitFetch, "fetch"), [remote]);
-  const pull = useCallback((method: "ff-only" | "merge" | "rebase" = "ff-only") => remote((repo) => gitPull(repo, method), "pull"), [remote]);
-  const push = useCallback(
-    (setUpstream: boolean) => remote((repo) => gitPush(repo, setUpstream), "push"),
-    [remote]
-  );
+      }, null).then((result) => autoUpdate ? execute(autoUpdate) : result);
+    };
+    return execute();
+  }, [afterRepoWrite, refresh, root, status?.branch, trackOperation, workspaceRoot]);
+  /** 提交落盘与推送结果分开；推送复用相同的拒绝恢复和目标冻结。 */
+  const commitAndPush = useCallback(async (message: string, amend: boolean, setUpstream = false, paths?: string[], options?: CommitRequestOptions) => {
+    if (!root || operationLocks.current.has(root)) return false;
+    const branch = status?.branch;
+    if (!await commit(message, amend, paths, options)) return false;
+    if (activeWorkspaceRef.current === workspaceRoot) await push({ branch, setUpstream });
+    return true;
+  }, [root, status?.branch, commit, push, workspaceRoot]);
   /** 推指定分支或标签：网络类操作，成功时把 git 的进度文案回给调用方。 */
   const pushRef = useCallback(
-    (name: string) => remote((repo) => gitPushRef(repo, name), "push"),
+    (name: string) => remote((repo, onProgress) => gitPushRef(repo, name, onProgress), "push"),
     [remote]
   );
   /** 只推这条提交（含）以前那一段，同样是网络操作，把 git 的进度文案回给调用方。 */
@@ -743,6 +816,7 @@ export function useGitState(
       lastCommit,
       root,
       operation: operation?.root === root ? operation : null,
+      backgroundOperations: [...operations.values()],
       pushing,
       refresh,
       refreshChanges,
@@ -790,6 +864,7 @@ export function useGitState(
       shelfRename,
       fetch,
       pull,
+      updateBranch,
       push,
       pushRef,
       pushUpTo,
@@ -808,6 +883,7 @@ export function useGitState(
       lastCommit,
       root,
       operation,
+      operations,
       pushing,
       refresh,
       refreshChanges,
@@ -855,6 +931,7 @@ export function useGitState(
       shelfRename,
       fetch,
       pull,
+      updateBranch,
       push,
       pushRef,
       pushUpTo,

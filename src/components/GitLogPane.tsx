@@ -32,7 +32,6 @@ import {
   Tag,
   Trash2,
   Undo2,
-  Upload,
   X,
 } from "lucide-react";
 import type {
@@ -1099,7 +1098,7 @@ function GitLogPane({
       },
       {
         label: t("log.pushUpTo"),
-        icon: Upload,
+        icon: ArrowUpRight,
         disabled: !canPush || needOne !== undefined,
         hint: !canPush ? t("log.noRemoteBranch") : needOne,
         onSelect: () => onCommitAction("pushUpTo", commit),
@@ -1592,7 +1591,7 @@ function GitLogPane({
             disabled={!pickedRef || pickedUpstream === ""}
             onClick={() => pickedRef && onRefAction("update", pickedRef)}
           >
-            <RefreshCw size={15} />
+            <ArrowDownLeft size={15} />
           </button>
           <button
             type="button"

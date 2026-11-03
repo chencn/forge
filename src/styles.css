@@ -1,5 +1,7 @@
 /* ===== 基线与外壳 ===== */
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -18,9 +20,10 @@ body,
 body {
   background: var(--app-bg);
   color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 13.5px;
-  line-height: 1.45;
+  /* 与 OpenIDEA 的基础排版一致；控件继承同一字号与基线。 */
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
@@ -38,8 +41,33 @@ button {
   background: none;
   border: 0;
   padding: 0;
-  cursor: pointer;
+  cursor: default;
 }
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* 原生单选框在各系统尺寸不同；按 IDEA 的 16px 控件绘制全部状态。 */
+input[type="radio"] {
+  appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-radius: 50%;
+  background: var(--bg-checkbox, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--border-checkbox, var(--control-off));
+  cursor: default;
+  transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+input[type="radio"]:checked { background: radial-gradient(circle, var(--fg-button-primary) 0 2.5px, transparent 3px), var(--bg-button-primary); box-shadow: none; }
+input[type="radio"]:disabled { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+input[type="radio"]:disabled:checked { background: radial-gradient(circle, var(--fg-faint) 0 2.5px, transparent 3px), var(--border); }
+input[type="radio"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 :disabled {
   cursor: default;
@@ -1361,6 +1389,10 @@ span.entry-icon > svg {
 
 .button {
   /* 保留旧入口的类名，尺寸与颜色只读取基础 Button 使用的主题变量。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   height: var(--h-button);
   padding: 0 16px;
   border-radius: var(--radius-control);
@@ -1368,6 +1400,8 @@ span.entry-icon > svg {
   background: var(--bg-button);
   color: var(--fg-strong);
   font-size: var(--fs-ui);
+  line-height: 1;
+  white-space: nowrap;
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 
@@ -6503,22 +6537,28 @@ body.is-editor-tab-dragging * {
 .global-status {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 4px;
   height: var(--footer-height);
   box-sizing: border-box;
   flex: none;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 10px 0 12px;
   /* 底栏落在 IDEA 窗框底色上，避免与编辑内容共用岛屿底色。 */
   background-color: var(--bg-frame);
   color: var(--fg-muted);
-  font: var(--fs-ui) var(--font-ui);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
   white-space: nowrap;
   overflow: hidden;
 }
 
 .global-status > span {
   white-space: nowrap;
+}
+
+/* 原版每个微件另有 4px 内边距，不能只复制容器的 gap。 */
+.global-status > :not(.status-spacer):not(.status-crumbs) {
+  padding-inline: 4px;
 }
 
 /* 底栏左侧的路径条。段可以点：目录弹出这一层，文件段是当前文件。 */

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 /** 空树哈希：根提交没有父提交时拿它当差异的左侧，整份文件就是新增。 */
 export const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -75,6 +75,9 @@ export interface GitBranch {
   remote: boolean;
   /** 跟踪的上游分支短名；没有上游时为空串。 */
   upstream: string;
+  /** 相对该分支上游的同步数量。 */
+  ahead: number;
+  behind: number;
   /** 是否为该远端的默认分支（`<远端>/HEAD` 指向的那支）；本地分支恒为 false。 */
   defaultRef: boolean;
 }
@@ -206,11 +209,19 @@ export function gitUnstage(root: string, absolutePaths: string[]): Promise<void>
   return invoke<void>("git_unstage", { root, paths: absolutePaths });
 }
 
-/** 提交时透传给 `git commit` 的选项：Sign-off、作者、跳过 hooks。 */
+/** 文件的提交来源；worktreeOnly 仅包含索引之后的修改。 */
+export interface GitCommitSelection {
+  path: string;
+  oldPath: string | null;
+  source: "index" | "worktree" | "worktreeOnly";
+}
+
+/** 提交选项及明确的文件选择；不提供 selections 时沿用直接提交索引的调用。 */
 export interface CommitRequestOptions {
   signoff?: boolean;
   author?: string;
   noVerify?: boolean;
+  selections?: GitCommitSelection[];
 }
 
 /**
@@ -233,6 +244,7 @@ export function gitCommit(
     signoff: options?.signoff ?? false,
     author: options?.author ?? "",
     noVerify: options?.noVerify ?? false,
+    selections: options?.selections ?? null,
   });
 }
 
@@ -284,17 +296,62 @@ export function ignoredRoots(repoRoot: string, patterns: string[]): string[] {
   );
 }
 
-export function gitFetch(root: string): Promise<string> {
-  return invoke<string>("git_fetch", { root });
+/** 可选 Channel 保留命令最终返回值；实时行只负责进度。 */
+function progressArgs(onProgress?: (line: string) => void) {
+  if (!onProgress) return {};
+  const onOutput = new Channel<string>();
+  onOutput.onmessage = onProgress;
+  return { onOutput };
 }
 
-export function gitPull(root: string, method: "ff-only" | "merge" | "rebase" = "ff-only"): Promise<string> {
-  return invoke<string>("git_pull", { root, method });
+export function gitFetch(root: string, onProgress?: (line: string) => void): Promise<string> {
+  return invoke<string>("git_fetch", { root, ...progressArgs(onProgress) });
 }
 
-/** 当前分支没有上游时，后端退回 `push --set-upstream <第一个远端> HEAD`。 */
-export function gitPush(root: string, setUpstream: boolean): Promise<string> {
-  return invoke<string>("git_push", { root, setUpstream });
+export function gitPull(root: string, method: "ff-only" | "merge" | "rebase" = "merge", onProgress?: (line: string) => void): Promise<string> {
+  return invoke<string>("git_pull", { root, method, ...progressArgs(onProgress) });
+}
+
+/** 更新未签出的分支只允许快进，不能改变当前 HEAD 或工作区。 */
+export function gitUpdateBranch(root: string, branch: string, onProgress?: (line: string) => void): Promise<string> {
+  return invoke<string>("git_update_branch", { root, branch, ...progressArgs(onProgress) });
+}
+
+export interface GitPushOptions {
+  branch?: string;
+  remote?: string;
+  target?: string;
+  revision?: string;
+  forceWithLease?: boolean;
+  setUpstream?: boolean;
+  tags?: "all" | "currentBranch";
+}
+
+export interface GitPushTarget {
+  branch: string;
+  remote: string;
+  target: string;
+  tracked: boolean;
+}
+
+/** 直接读取分支配置；显示短名无法无歧义地拆出含斜杠的远端名称。 */
+export function gitPushTarget(root: string, branch?: string): Promise<GitPushTarget> {
+  return invoke<GitPushTarget>("git_push_target", { root, branch: branch ?? null });
+}
+
+/** 明确推送一条源分支到一条目标分支，不受 push.default 或同名标签影响。 */
+export function gitPush(root: string, options: GitPushOptions = {}, onProgress?: (line: string) => void): Promise<string> {
+  return invoke<string>("git_push", { root, options, ...progressArgs(onProgress) });
+}
+
+/** 设置页的分支 glob 与推送确认共用同一规则。 */
+export function isProtectedBranch(branch: string, patterns: string): boolean {
+  return !!branch && patterns.split(/[;,\s]+/).filter(Boolean).some((pattern) =>
+    new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(branch));
+}
+
+export function isPushRejected(message: string): boolean {
+  return /non-fast-forward|fetch first|updates were rejected/i.test(message);
 }
 
 /** `revision` 空串打在 HEAD 上，否则打在给定那条修订上。 */
@@ -446,8 +503,8 @@ export function gitDeleteTag(root: string, name: string): Promise<string> {
 }
 
 /** 推指定分支或标签，不动当前分支的上游设置。 */
-export function gitPushRef(root: string, name: string): Promise<string> {
-  return invoke<string>("git_push_ref", { root, name });
+export function gitPushRef(root: string, name: string, onProgress?: (line: string) => void): Promise<string> {
+  return invoke<string>("git_push_ref", { root, name, ...progressArgs(onProgress) });
 }
 
 /** 删除远端分支：往服务器推一条删除引用。 */
@@ -481,15 +538,17 @@ export function gitRestoreFile(root: string, revision: string, path: string): Pr
   return invoke<string>("git_restore_file", { root, revision, path });
 }
 
-/** 两侧版本之间某个文件的统一差异；right 空串表示工作区那一侧。 */
+/** 两侧版本的统一差异；right 空串为工作区，cached 时右侧为索引且 left 可留空。 */
 export function gitDiffText(
   root: string,
   left: string,
   right: string,
   path: string,
-  oldPath?: string
+  oldPath?: string,
+  cached = false,
+  worktreeOnly = false
 ): Promise<string> {
-  return invoke<string>("git_diff_text", { root, left, right, path, oldPath: oldPath ?? "" });
+  return invoke<string>("git_diff_text", { root, left, right, path, oldPath: oldPath ?? "", cached, worktreeOnly });
 }
 
 /** 引用与工作树之间改到的文件清单。 */

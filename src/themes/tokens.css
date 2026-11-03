@@ -10,7 +10,8 @@
   --bg-secondary: var(--bg-elev, #f9fafb);
   --bg-tertiary: var(--bg-control, #f3f4f6);
   --chrome-bg: var(--bg-frame, #f8fafc);
-  --app-bg: var(--bg-app, #eef2f7);
+  /* 外框承载工具栏与岛屿间隙；bg-app 是内容底色，不是 IDEA 的窗框色。 */
+  --app-bg: var(--bg-frame);
   --surface-island: var(--bg-island, #ffffff);
   --surface-island-strong: var(--bg-popup, #ffffff);
   --border-color: var(--border, #e5e7eb);
@@ -34,6 +35,9 @@
   /* 运行/停止按钮，取 IDEA 新 UI 主题 expUI_light_with_light_header 的 RunWidget：
      runningBackground=Green5、stopBackground=Red5、runIconColor=Green5。 */
   --run-icon: #369650;
+  /* changesUpdate / changesPush SVG 的主题语义色。 */
+  --git-incoming: #3574f0;
+  --git-outgoing: #369650;
   --run-solid: #369650;
   --stop-solid: #e55765;
   /* 会话状态点取 IDEA 的 IconBadge：跑着绿、出错红；结束不再画点。 */
@@ -150,13 +154,15 @@
 
 :root[data-theme="dark"],
 :root[data-theme="dark-hc"] {
+  --git-incoming: #548af7;
+  --git-outgoing: #57965c;
   /* 深色及多主题调色板桥接。dark-hc 与 dark 共享本块的 forge 侧色板，
      桥接源（--bg-island 等）由 ideaTokens 的 dark-hc 块给出真正的高对比度值。 */
   --bg-primary: var(--bg-island, #0a0a0a);
   --bg-secondary: var(--bg-elev, #111111);
   --bg-tertiary: var(--bg-control, #1a1a1a);
   --chrome-bg: var(--bg-frame, #141414);
-  --app-bg: var(--bg-app, #050505);
+  --app-bg: var(--bg-frame);
   --surface-island: var(--bg-island, #181818);
   --surface-island-strong: var(--bg-popup, #181818);
   --border-color: var(--border, #2b2b2b);

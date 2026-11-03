@@ -13,12 +13,12 @@
   line-height: 1;
   white-space: nowrap;
   border: none;
-  cursor: pointer;
+  cursor: default;
   box-sizing: border-box;
   transition:
-    background var(--dur-fast, 80ms) ease,
-    color var(--dur-fast, 80ms) ease,
-    box-shadow var(--dur-fast, 80ms) ease;
+    background var(--dur-fast, 80ms) var(--ease),
+    color var(--dur-fast, 80ms) var(--ease),
+    box-shadow var(--dur-fast, 80ms) var(--ease);
 }
 
 .button:focus-visible {
@@ -89,14 +89,15 @@
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-toolbar-button, 6px);
-  color: var(--fg-icon, var(--icon-color, var(--fg-muted, #6c707e)));
+  /* 按钮文字层沿用原版 muted；具体图标可使用自己的主题前景。 */
+  color: var(--fg-muted);
   background: transparent;
   border: none;
-  cursor: pointer;
+  cursor: default;
   box-sizing: border-box;
   transition:
-    background var(--dur-fast, 80ms) ease,
-    color var(--dur-fast, 80ms) ease;
+    background var(--dur-fast, 80ms) var(--ease),
+    color var(--dur-fast, 80ms) var(--ease);
 }
 
 .iconButton:focus-visible {
@@ -106,7 +107,7 @@
 
 .iconButton:not(:disabled):hover {
   background: var(--bg-toolbar-hover, color-mix(in srgb, var(--fg, currentColor) 8%, transparent));
-  color: var(--fg-emphasis, var(--fg-strong, #000000));
+  color: var(--fg-strong);
 }
 
 .iconButton:not(:disabled):active {
@@ -114,7 +115,7 @@
 }
 
 .iconButton:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 

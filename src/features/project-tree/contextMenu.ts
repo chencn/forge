@@ -20,6 +20,7 @@
  */
 
 import type { MenuItem } from "../../components/ContextMenu";
+import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { flatMenu } from "../../components/ContextMenu";
 import type { FsEntry } from "../../lib/fs";
 import type { GitChange } from "../../lib/git";
@@ -357,11 +358,13 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
       { separator: true },
       {
         label: t("git.push"),
+        icon: ArrowUpRight,
         shortcut: `${modKey}+Shift+K`,
         onSelect: () => git.push?.(),
       },
       {
-        label: t("git.pull"),
+        label: t("git.updateProject"),
+        icon: ArrowDownLeft,
         onSelect: () => git.pull?.(),
       },
       {

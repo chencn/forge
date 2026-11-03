@@ -9,11 +9,11 @@
   border-radius: var(--radius-control, 4px);
   color: var(--fg-strong, #dfe1e5);
   font-size: var(--fs-ui, 13px);
-  cursor: pointer;
+  cursor: default;
   border: none;
   transition:
-    background var(--dur-fast, 120ms) ease,
-    box-shadow var(--dur-fast, 120ms) ease;
+    background var(--dur-fast, 80ms) var(--ease),
+    box-shadow var(--dur-fast, 80ms) var(--ease);
 }
 
 .framed {
@@ -33,7 +33,7 @@
   background: transparent;
   color: var(--fg-faint, #5f6269);
   box-shadow: inset 0 0 0 1px var(--border, #33353b);
-  cursor: not-allowed;
+  cursor: default;
 }
 
 .ghost {
@@ -51,7 +51,7 @@
 
 .ghost:disabled {
   color: var(--fg-faint, #5f6269);
-  cursor: not-allowed;
+  cursor: default;
 }
 
 .value {
@@ -91,7 +91,7 @@
 }
 
 .check {
-  width: 14px;
+  width: 12px;
   flex: none;
   display: inline-flex;
   align-items: center;

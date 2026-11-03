@@ -201,6 +201,9 @@ export interface VcsSettings {
   checkTodo: boolean;
   /** 确认与操作行为 Confirmation Settings */
   showUpdateOptions: boolean;
+  /** 统一更新弹窗和跳过弹窗时使用的策略。 */
+  updateMethod: "merge" | "rebase";
+  autoUpdateOnPushRejected: boolean;
   highlightDirtyDirectories: boolean;
   onPatchCreated: "open" | "clipboard" | "file";
   limitHistoryRows: number;
@@ -332,6 +335,8 @@ export const DEFAULT_VCS_SETTINGS: VcsSettings = {
   wrapRightMargin: false,
   checkTodo: true,
   showUpdateOptions: true,
+  updateMethod: "merge",
+  autoUpdateOnPushRejected: false,
   highlightDirtyDirectories: true,
   onPatchCreated: "clipboard",
   limitHistoryRows: 1000,
@@ -464,6 +469,8 @@ function merge(raw: Partial<Settings> | null): Settings {
     vcs: {
       ...DEFAULT_VCS_SETTINGS,
       ...Object.fromEntries(Object.entries(raw?.vcs ?? {}).filter(([key]) => Object.hasOwn(DEFAULT_VCS_SETTINGS, key))),
+      updateMethod: raw?.vcs?.updateMethod === "rebase" ? "rebase" : "merge",
+      autoUpdateOnPushRejected: raw?.vcs?.autoUpdateOnPushRejected === true,
     },
   };
 }

@@ -13,7 +13,7 @@
  * 压缩本身是一次模型调用，所以默认只提示，用户点头才做；自动那档要用户自己打开。
  */
 import type { AiProvider } from "./aiCli";
-import type { AiContext } from "./aiContext";
+import { contextMatchesModel, type AiContext } from "./aiContext";
 import type { AiUsage } from "./aiUsage";
 import { recallContextWindow } from "./aiContextMemory";
 
@@ -71,8 +71,9 @@ export interface CompactNumbers {
 /** 用来算比例的分子与分母；凑不出一对可信数字时返回 null。 */
 export function compactNumbers(input: { provider: AiProvider; context?: AiContext; usage?: AiUsage; model?: string }): CompactNumbers | null {
   // 快照过期意味着分子分母都属于别的模型/配置，不能拿来当本轮占用。
-  const context = input.context && !input.context.stale ? input.context : undefined;
-  const usage = input.usage;
+  const context = input.context && !input.context.stale && contextMatchesModel(input.context, input.model) ? input.context : undefined;
+  // 旧快照失效后，不能再用同一旧模型的 usage 绕过模型校验。
+  const usage = input.usage && (!input.model || input.usage.model === input.model) ? input.usage : undefined;
   const total = context?.total ?? usage?.context;
   if (total === undefined) return null;
   const model = context?.model ?? usage?.model ?? input.model;

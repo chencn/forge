@@ -59,7 +59,7 @@
 .searchField {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   height: var(--h-field, 28px);
   min-width: 0;
   padding: 0 4px 0 8px;
@@ -70,7 +70,7 @@
   display: inline-flex;
   align-items: center;
   color: var(--fg-muted, #8c8f95);
-  margin-right: 2px;
+  margin-right: 4px;
 }
 
 .searchInput {
@@ -125,7 +125,7 @@
 }
 
 .large .searchInput {
-  font-size: 14px;
+  font-size: var(--fs-input-large);
   color: var(--fg-strong, #dfe1e5);
 }
 

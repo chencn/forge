@@ -292,6 +292,9 @@ pub struct VcsSettings {
     // 提交代码检查已移除；这里只保留不依赖语言服务的 TODO 检查。
     pub check_todo: bool,
     pub show_update_options: bool,
+    /// 更新弹窗与直接更新共用的默认策略。
+    pub update_method: String,
+    pub auto_update_on_push_rejected: bool,
     pub highlight_dirty_directories: bool,
     pub on_patch_created: String,
     pub limit_history_rows: u32,
@@ -320,6 +323,8 @@ impl Default for VcsSettings {
             wrap_right_margin: false,
             check_todo: true,
             show_update_options: true,
+            update_method: "merge".to_string(),
+            auto_update_on_push_rejected: false,
             highlight_dirty_directories: true,
             on_patch_created: "clipboard".to_string(),
             limit_history_rows: 1000,

@@ -1,5 +1,8 @@
-.git-operation-status { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden; }
-.git-operation-task { min-width: 0; max-width: 100%; font-family: var(--font-ui); }
+.git-operation-status { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+/* 与底栏文字一致；悬停和展开仍由 BarButton 的状态样式控制。 */
+.git-operation-status button { color: inherit; }
+.git-operation-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.git-operation-task { min-width: 0; max-width: 320px; font-family: var(--font-ui); }
 .git-operation-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 复用基础进度条，避免底栏另写动画而与弹窗加载状态不同步。 */
 .git-operation-progress { flex: none; width: 96px; }

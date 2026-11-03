@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Download, Folder, GitBranch, GitCommit, GitPullRequestArrow, Plus, RefreshCw, Settings, Star, Tag, Upload } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Download, Folder, GitBranch, GitCommit, GitPullRequestArrow, Plus, Settings, Star, Tag } from "lucide-react";
 import { Popup } from "../ui/Popup";
 import { List, firstSelectable, listNavigate } from "../ui/List";
 import { Menu, MenuList, type MenuItem as UiMenuItem } from "../ui/Menu";
@@ -18,6 +18,14 @@ import { useI18n } from "../i18n";
 import "./BranchPicker.css";
 
 export type BranchAction = "update" | "commit" | "push" | "fetch" | "newBranch" | "newTag" | "checkoutRev" | "initRepo";
+
+/** JetBrains changesUpdate/changesPush@12x12（Apache-2.0），保留参考实心轮廓。 */
+function BranchSyncIcon({ incoming = false, className }: { incoming?: boolean; className?: string }) {
+  return <svg width={12} height={12} viewBox="0 0 12 12" fill="currentColor" className={className} aria-hidden="true">
+    {incoming ? <path d="M9.23054 2.63093C8.92809 2.32848 8.50548 2.33677 8.17817 2.66408L4.76417 6.07808L4.07226 6.83629L4.15926 5.44831L4.16755 4.1142C4.17169 3.92776 4.12197 3.73717 3.97282 3.58801C3.69937 3.31456 3.28505 3.31456 2.98674 3.61287C2.85001 3.7496 2.77543 3.9319 2.76715 4.14735V8.34027C2.763 8.535 2.84587 8.73387 2.98674 8.87474C3.12346 9.01147 3.32234 9.09433 3.51707 9.09019L7.71413 9.09433C7.92958 9.08605 8.11188 9.01147 8.2486 8.87474C8.54692 8.57643 8.54692 8.16211 8.27346 7.88866C8.12017 7.73536 7.93372 7.68979 7.74313 7.68979L6.40902 7.69807L5.02519 7.78094L5.77926 7.09316L9.19325 3.67916C9.52057 3.35185 9.533 2.93339 9.23054 2.63093Z" />
+      : <path fillRule="evenodd" clipRule="evenodd" d="M3.75 3.5C3.75 3.08579 4.08579 2.75 4.5 2.75H8.5C8.91421 2.75 9.25 3.08579 9.25 3.5V7.5C9.25 7.91421 8.91421 8.25 8.5 8.25C8.08579 8.25 7.75 7.91421 7.75 7.5V5.31066L4.03033 9.03033C3.73744 9.32322 3.26256 9.32322 2.96967 9.03033C2.67678 8.73744 2.67678 8.26256 2.96967 7.96967L6.68934 4.25H4.5C4.08579 4.25 3.75 3.91421 3.75 3.5Z" />}
+  </svg>;
+}
 interface BranchPickerProps {
   git: GitState;
   folder: string | null;
@@ -78,9 +86,9 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
   const rows = useMemo<Row[]>(() => {
     if (!anchor) return [];
     const actions: ActionRow[] = [
-      { type: "action", key: "update", label: t("git.updateProject"), icon: <RefreshCw size={14} />, aliases: "update project pull merge", disabled: busy || !canUpdate(git), hint: !git.status?.upstream ? t("git.noUpstream") : undefined },
+      { type: "action", key: "update", label: t("git.updateProject"), icon: <ArrowDownLeft size={14} />, aliases: "update project pull merge", disabled: busy || !canUpdate(git), hint: !git.status?.upstream ? t("git.noUpstream") : undefined },
       { type: "action", key: "commit", label: t("git.commit"), icon: <GitCommit size={14} />, aliases: "commit" },
-      { type: "action", key: "push", label: t("git.push"), icon: <Upload size={14} />, aliases: "push", disabled: busy || !canPush(git), hint: !canPush(git) ? t("git.noRemotes") : undefined },
+      { type: "action", key: "push", label: t("git.push"), icon: <ArrowUpRight size={14} />, aliases: "push", disabled: busy || !canPush(git), hint: !canPush(git) ? t("git.noRemotes") : undefined },
       { type: "action", key: "fetch", label: t("git.fetch"), icon: <Download size={14} />, aliases: "fetch", disabled: busy || !canFetch(git), hint: !canFetch(git) ? t("git.noRemotes") : undefined },
       { type: "action", key: "newBranch", label: t("git.newBranch"), icon: <Plus size={14} />, aliases: "new branch", disabled: busy },
       { type: "action", key: "newTag", label: t("git.newTag"), icon: <Tag size={14} />, aliases: "new tag", disabled: busy || git.lastCommit === null },
@@ -160,8 +168,8 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
       }}>
       <GitBranch size={14} aria-hidden="true" />
       <span className="toolbar-chip-label">{git.root ? status?.branch ?? "—" : t("git.vcs")}</span>
-      {!!status?.behind && <ArrowDownLeft size={12} aria-hidden="true" />}
-      {!!status?.ahead && <ArrowUpRight size={12} aria-hidden="true" />}
+      {!!status?.behind && <BranchSyncIcon incoming className="git-sync-incoming" />}
+      {!!status?.ahead && <BranchSyncIcon className="git-sync-outgoing" />}
       <ChevronDown size={13} aria-hidden="true" />
     </button>
     <Popup open={!!anchor} anchor={anchor} onClose={close} autoFocus
@@ -201,6 +209,9 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
                   <GitBranch size={14} className="branch-popup-branch-icon" /><Star size={14} className="branch-popup-star-icon" /></button>}
                 {highlighted(row.label, "branch-popup-label branch-popup-name")}
                 {row.current && <span className="branch-popup-current">{t("git.currentBranchBadge")}</span>}
+                {/* 与参考分支行同序：同步计数紧跟名称，上游名称独立靠右。 */}
+                {row.behind > 0 && <span className="branch-popup-sync git-sync-incoming" {...tooltipAttrs(t("git.behindN", { count: row.behind }))}><BranchSyncIcon incoming />{row.behind}</span>}
+                {row.ahead > 0 && <span className="branch-popup-sync git-sync-outgoing" {...tooltipAttrs(t("git.aheadN", { count: row.ahead }))}><BranchSyncIcon />{row.ahead}</span>}
                 {row.target.kind !== "tag" && row.upstream && <span className="branch-popup-upstream">{row.upstream}</span>}
                 <ChevronRight size={10} className="branch-popup-sub-arrow" aria-hidden="true" />
               </span>;

@@ -294,6 +294,15 @@ export function VcsGitPage({ workspace }: { workspace?: string | null }) {
 
         <div style={{ height: 1, background: "var(--border-subtle, rgba(255, 255, 255, 0.08))", margin: "6px 0" }} />
 
+        {/* 默认策略同时供更新窗口和关闭确认窗口的入口使用。 */}
+        <Checkbox checked={v.autoUpdateOnPushRejected} onChange={(value) => update({ autoUpdateOnPushRejected: value })}
+          label={t("git.autoUpdateOnPushRejected")} />
+        <div className="settings-row">
+          <span className="settings-label">{t("git.updateMethod")}</span>
+          <Select value={v.updateMethod} label={t("git.updateMethod")} placeholder={t("git.updateMethod")}
+            onChange={(value) => update({ updateMethod: value === "rebase" ? "rebase" : "merge" })}
+            options={[{ value: "merge", label: t("git.updateMerge") }, { value: "rebase", label: t("git.updateRebase") }]} />
+        </div>
         <p className="settings-hint" style={{ margin: "0 0 6px 0" }}>
           项目更新（拉取远端并整合本地提交）走工具栏的更新动作；forge 的 Git 固定取系统
           PATH 中的可执行文件，无需配置路径。

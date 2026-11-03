@@ -30,7 +30,7 @@ const find = (items: ReturnType<typeof buildRefMenu>, key: TranslationKey) =>
 const local: RefTarget = { name: "feature/x", kind: "local" };
 
 describe("分支弹窗的引用导航", () => {
-  const branch = (name: string, current = false, remote = false): GitBranch => ({ name, current, remote, upstream: "", defaultRef: false });
+  const branch = (name: string, current = false, remote = false): GitBranch => ({ name, current, remote, upstream: "", defaultRef: false, ahead: 0, behind: 0 });
   const branches = [branch("main", true), branch("feature/one"), branch("feature/two"), branch("origin/main", false, true), branch("origin/HEAD", false, true)];
   const labels = { recent: "recent", local: "local", remote: "remote", tag: "tag" };
   const options = DEFAULT_SETTINGS.branches;

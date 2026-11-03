@@ -4,7 +4,7 @@ import type { RefTarget } from "./refMenu";
 
 export type BranchPopupRow =
   | { type: "group"; key: string; label: string; depth: number; expanded: boolean; parent?: string }
-  | { type: "ref"; key: string; label: string; depth: number; parent: string; target: RefTarget; current: boolean; favorite: boolean; upstream: string };
+  | { type: "ref"; key: string; label: string; depth: number; parent: string; target: RefTarget; current: boolean; favorite: boolean; upstream: string; ahead: number; behind: number };
 
 /** 沿用 OpenIDEA 的扁平树模型：搜索展开命中路径，退出搜索恢复用户自己的折叠状态。 */
 export function branchPopupRows(branches: readonly GitBranch[], tags: readonly GitTag[], recent: readonly string[], query: string,
@@ -56,13 +56,14 @@ export function branchPopupRows(branches: readonly GitBranch[], tags: readonly G
   const refsOf = (list: readonly GitBranch[], group: string): Extract<BranchPopupRow, { type: "ref" }>[] => list.map((b) => ({
     type: "ref", key: `${group}:${b.name}`, label: b.name, depth: 1, parent: `group:${group}`,
     target: { name: b.name, kind: b.remote ? "remote" : "local" }, current: b.current, favorite: favorite(b.name), upstream: b.upstream,
+    ahead: b.ahead, behind: b.behind,
   }));
   add("recent", refsOf(recents, "recent"), true);
   add("local", refsOf(locals, "local"), !recents.length);
   add("remote", refsOf(sorted.filter((b) => b.remote), "remote"), false);
   if (options.showTags) add("tag", [...tags].sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true })).map((tag) => ({
     type: "ref", key: `tag:${tag.name}`, label: tag.name, depth: 1, parent: "group:tag", target: { name: tag.name, kind: "tag" },
-    current: false, favorite: false, upstream: tag.target,
+    current: false, favorite: false, upstream: tag.target, ahead: 0, behind: 0,
   })), false);
   return rows;
 }

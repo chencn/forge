@@ -777,14 +777,12 @@ impl Protocol for Claude {
                         q["id"] = json!(index.to_string());
                         questions.push(q);
                     }
-                    // 原始请求 id（can_use_tool 的 request_id 就是 tool_use id）：前端拿它把
-                    // 工具条目与请求卡认成同一次提问，工具记录才能给请求卡让位——没有这个
-                    // 关联，两边各画一张卡，同一次提问就出现两次。
-                    json!({"title":"Claude Code","toolId":id,"questions":questions})
+                    // 工具关联用 tool_use_id；控制请求的回包、取消和 pending 仍用外层 id。
+                    json!({"title":"Claude Code","toolId":request["tool_use_id"],"questions":questions})
                 } else {
                     // canEdit 是服务端事实：Claude 的 can_use_tool 答复有 updatedInput 这个位置，
                     // Codex 没有，它自己会拒。
-                    json!({"title":request["tool_name"],"toolId":id,"toolName":request["tool_name"],"input":request["input"],"reason":request["decision_reason"],"blockedPath":request["blocked_path"],"canEdit":true})
+                    json!({"title":request["tool_name"],"toolId":request["tool_use_id"],"toolName":request["tool_name"],"input":request["input"],"reason":request["decision_reason"],"blockedPath":request["blocked_path"],"canEdit":true})
                 };
                 self.pending.insert(id.clone(), request.clone());
                 out.push(Action::Request {
@@ -1261,10 +1259,13 @@ mod tests {
     #[test]
     fn a_permission_answer_is_one_shot_and_an_edit_replaces_only_that_key() {
         let mut p = Claude::new("root".into(), "hello".into(), None);
-        p.receive(json!({"type":"control_request","request_id":"x","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"safe","timeout":5}}})).unwrap();
+        let actions = p.receive(json!({"type":"control_request","request_id":"x","request":{"subtype":"can_use_tool","tool_use_id":"bash-tool","tool_name":"Bash","input":{"command":"safe","timeout":5}}})).unwrap();
+        assert!(matches!(&actions[0], Action::Request { key, data, .. } if key == "x" && data["toolId"] == "bash-tool"));
+        assert!(p.respond("bash-tool", json!({"allow":true})).is_err());
         let result = p
             .respond("x", json!({"allow":true,"input":{"command":"changed"}}))
             .unwrap();
+        assert!(matches!(&result[0], Action::Write(v) if v["response"]["request_id"] == "x"));
         assert!(
             matches!(&result[0],Action::Write(v) if v["response"]["response"]["updatedInput"]["command"]=="changed")
         );
@@ -1281,11 +1282,13 @@ mod tests {
     #[test]
     fn questions_keep_answers_separate_from_tool_permissions() {
         let mut p = Claude::new("root".into(), "hi".into(), None);
-        p.receive(json!({"type":"control_request","request_id":"question","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"选择语言？","multiSelect":false,"options":[{"label":"中文"}]}]}}})).unwrap();
+        let actions = p.receive(json!({"type":"control_request","request_id":"question","request":{"subtype":"can_use_tool","tool_use_id":"question-tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"选择语言？","multiSelect":false,"options":[{"label":"中文"}]}]}}})).unwrap();
+        assert!(matches!(&actions[0], Action::Request { key, data, .. } if key == "question" && data["toolId"] == "question-tool"));
         assert!(p.respond("question", json!({"allow":true})).is_err());
         let out = p
             .respond("question", json!({"answers":{"0":["中文"]}}))
             .unwrap();
+        assert!(matches!(&out[0], Action::Write(v) if v["response"]["request_id"] == "question"));
         assert!(
             matches!(&out[0],Action::Write(v) if v["response"]["response"]["updatedInput"]["answers"]["选择语言？"]=="中文")
         );
@@ -1296,7 +1299,7 @@ mod tests {
     #[test]
     fn cancelled_requests_and_stopped_runs_cannot_grant_permissions() {
         let mut p = Claude::new("root".into(), "hi".into(), None);
-        let request = json!({"type":"control_request","request_id":"permission","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"safe"}}});
+        let request = json!({"type":"control_request","request_id":"permission","request":{"subtype":"can_use_tool","tool_use_id":"cancelled-tool","tool_name":"Bash","input":{"command":"safe"}}});
         p.receive(request.clone()).unwrap();
         let out = p
             .receive(json!({"type":"control_cancel_request","request_id":"permission"}))

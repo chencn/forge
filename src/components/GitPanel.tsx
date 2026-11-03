@@ -96,6 +96,9 @@ export type CommitFileAction =
 
 interface GitPanelProps {
   git: GitState;
+  /** 网络动作交给 App 的统一窗口和任务流程。 */
+  onUpdate: () => void;
+  onPush: (root: string, branch: string) => void;
   /** 工作区目录，用于在非仓库时给出上下文。 */
   workspaceRoot: string;
   onOpenChange: (change: GitChange, staged: boolean, siblings: GitChange[]) => void;
@@ -177,18 +180,6 @@ export function wrapAtMargin(text: string, caret: number, limit: number): { text
   return { text: `${text.slice(0, at)}\n${text.slice(at + 1)}`, caret };
 }
 
-/** 检查分支是否匹配受保护分支模式 */
-export function isProtectedBranch(branch: string, patterns: string): boolean {
-  if (!branch || !patterns) return false;
-  const parts = patterns.split(";").map((p) => p.trim()).filter(Boolean);
-  return parts.some((p) => {
-    const regex = new RegExp(
-      "^" + p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$"
-    );
-    return regex.test(branch);
-  });
-}
-
 /** 14px 三态复选框组件（1:1 对标 IDEA / IntelliJ IDEA） */
 function CheckMark({
   checked,
@@ -226,6 +217,8 @@ function CheckMark({
 
 function GitPanel({
   git,
+  onUpdate,
+  onPush,
   workspaceRoot,
   onOpenChange,
   onOpenFile,
@@ -812,7 +805,12 @@ function GitPanel({
       return;
     }
 
-    const targets = plan.included.length > 0 ? plan.included : rawChanges;
+    // AI 与提交共用文件来源，区分完整工作区和仅未暂存修改。
+    const targets = plan.included.length > 0
+      ? plan.included
+      : commitAllWhenNothingStaged ? rawChanges.filter((c) => !c.untracked && !c.conflicted) : [];
+    const selections = plan.included.length > 0 ? plan.selections
+      : targets.map((c) => ({ path: c.path, oldPath: c.oldPath, source: "worktree" as const }));
     if (targets.length === 0) {
       setAiError(t("aiCommit.noChanges"));
       return;
@@ -824,7 +822,7 @@ function GitPanel({
     generationIdRef.current = opId;
 
     try {
-      const files = await collectFilesDiff(root, targets, false);
+      const files = await collectFilesDiff(root, targets, selections);
       if (files.length === 0) {
         setAiError(t("aiCommit.AI_COMMIT_EMPTY_DIFF"));
         setIsGenerating(false);
@@ -856,9 +854,11 @@ function GitPanel({
     }
   };
 
-  // 提交执行逻辑（支持复选框勾选与 --only 语义提交，联动 VCS 安全策略与推送保护）
+  // 按文件来源提交，联动 VCS 安全策略与推送保护。
   const executeCommit = async (andPush: boolean) => {
-    if (committingAction !== null) return;
+    if (committingAction !== null || git.operation?.phase === "running") return;
+    const pushRoot = git.root;
+    const pushBranch = git.status?.branch ?? "";
     const text = message.trim();
     if (!text && !amend) {
       setEmptyError(true);
@@ -872,21 +872,6 @@ function GitPanel({
         "警告：当前仓库处于游离 HEAD (Detached HEAD) 状态，提交不会关联到任何本地分支。\n确定继续提交吗？"
       );
       if (!confirmed) return;
-    }
-
-    // 2. 受保护分支与推送确认 (protectedBranches & showPushDialog)
-    if (andPush) {
-      const branch = git.status?.branch ?? "";
-      const isProtected = isProtectedBranch(branch, vcs.protectedBranches);
-      if (isProtected) {
-        const confirmed = window.confirm(
-          `警告：分支「${branch}」属于受保护分支模式 (${vcs.protectedBranches})。\n确定要向受保护分支推送提交吗？`
-        );
-        if (!confirmed) return;
-      } else if (vcs.showPushDialog === "always") {
-        const confirmed = window.confirm(`确定向分支「${branch}」推送本次提交吗？`);
-        if (!confirmed) return;
-      }
     }
 
     // 计算提交目标路径
@@ -974,28 +959,16 @@ function GitPanel({
       signoff: commitOptions.signOff || vcs.signOffCommit,
       author: commitOptions.author,
       noVerify: !commitOptions.runHooks,
+      selections: stageAll
+        ? rawChanges.filter((c) => includedPaths.includes(c.path)).map((c) => ({ path: c.path, oldPath: c.oldPath, source: "worktree" as const }))
+        : plan.selections,
     };
 
     setCommittingAction(andPush ? "commitAndPush" : "commit");
     try {
-      // 按勾选整理索引后再提交索引本身：勾了但未暂存的先 add，取消勾选的已暂存文件先 unstage。
-      // 这样未暂存的块不会被 `git commit --only`（取的是工作区内容）顺手带上，部分暂存语义得以保留。
-      if (git.root) {
-        const toStage = (stageAll ? includedPaths : plan.stage).map((p) => absolute(p));
-        // silent：整理索引后紧跟着就是提交，提交那一步本来就要做一次全量刷新，
-        // 这里再各读回一次 `git status` 是白跑的。
-        if (toStage.length > 0) await git.stage(toStage, true);
-        const toUnstage = (stageAll ? [] : plan.unstage).map((p) => absolute(p));
-        if (toUnstage.length > 0) await git.unstage(toUnstage, true);
-      }
-
-      if (andPush) {
-        const committed = await git.commitAndPush(commitText, amend, false, undefined, commitOpts);
-        if (!committed) return;
-      } else {
-        const done = await git.commit(commitText, amend, undefined, commitOpts);
-        if (!done) return;
-      }
+      // 由后端一次构造提交索引并保留其余内容，前端不提前改动真实暂存区。
+      const done = await git.commit(commitText, amend, undefined, commitOpts);
+      if (!done) return;
 
       amendSeq.current += 1;
       messageBeforeAmend.current = "";
@@ -1006,6 +979,8 @@ function GitPanel({
       setAmend(false);
       setAmendDetail(null);
       setEmptyError(false);
+      // 提交已落盘后清理说明；取消或失败的推送不会撤销这次提交。
+      if (andPush && pushRoot) onPush(pushRoot, pushBranch);
     } finally {
       setCommittingAction(null);
     }
@@ -1244,6 +1219,7 @@ function GitPanel({
   const canCommit =
     (includedCount > 0 || amend || recovery === "merge") &&
     committingAction === null &&
+    git.operation?.phase !== "running" &&
     !isGenerating;
 
   void repoName;
@@ -1307,10 +1283,11 @@ function GitPanel({
           }}
         />
         <IconButton
-          icon="arrow-down-to-line"
+          icon="git-pull"
           title={t("git.updateProject")}
           size="small"
-          onClick={() => void git.refresh()}
+          disabled={git.operation?.phase === "running" || !git.status?.upstream || !!git.recovery}
+          onClick={onUpdate}
         />
         <IconButton
           ref={viewRef}
@@ -1694,7 +1671,7 @@ function GitPanel({
                 className={styles.pushButton}
                 disabled={!canCommit}
                 onClick={() => void executeCommit(true)}
-                title="Ctrl+Alt+Enter"
+                title={`${t("git.commitAndPush")} (Ctrl+Alt+Enter)`}
               >
                 {committingAction === "commitAndPush" ? (
                   <Loader2 size={13} className="is-spinning" style={{ marginRight: 6 }} />
@@ -1702,36 +1679,35 @@ function GitPanel({
                 <span>{t("git.commitAndPush")}</span>
               </Button>
 
-              <span className={styles.grow} />
+              {/* AI 与提交选项固定在行尾；宽度不够时只省略「提交并推送」的文字 */}
+              <div className={styles.commitActionsTail}>
+                {aiCommitEnabled && (
+                  <Button
+                    variant="secondary"
+                    className={styles.aiButton}
+                    disabled={committingAction !== null}
+                    onClick={isGenerating ? handleCancelAiCommit : () => void handleGenerateAiCommit()}
+                    title={t(isGenerating ? "aiCommit.cancel" : "aiCommit.generate")}
+                  >
+                    {isGenerating ? (
+                      <Loader2 size={12} className="is-spinning" />
+                    ) : (
+                      <Sparkles size={12} />
+                    )}
+                    <span>AI</span>
+                  </Button>
+                )}
 
-              {/* 【保留项 3】：AI 提交按钮 */}
-              {aiCommitEnabled && (
-                <Button
-                  variant="secondary"
-                  className={styles.aiButton}
-                  disabled={committingAction !== null}
-                  onClick={isGenerating ? handleCancelAiCommit : () => void handleGenerateAiCommit()}
-                  title={t(isGenerating ? "aiCommit.cancel" : "aiCommit.generate")}
-                >
-                  {isGenerating ? (
-                    <Loader2 size={12} className="is-spinning" />
-                  ) : (
-                    <Sparkles size={12} />
-                  )}
-                  <span>AI</span>
-                </Button>
-              )}
-
-              {/* 【核心改造项】：设置齿轮替换为 IDEA 的 CommitOptionsPopup */}
-              <IconButton
-                ref={commitOptionsRef}
-                icon="settings"
-                title={t("git.commitOptions")}
-                size="small"
-                aria-haspopup="dialog"
-                aria-expanded={commitOptionsOpen}
-                onClick={() => setCommitOptionsOpen((o) => !o)}
-              />
+                <IconButton
+                  ref={commitOptionsRef}
+                  icon="settings"
+                  title={t("git.commitOptions")}
+                  size="small"
+                  aria-haspopup="dialog"
+                  aria-expanded={commitOptionsOpen}
+                  onClick={() => setCommitOptionsOpen((o) => !o)}
+                />
+              </div>
 
               {/* 340px Commit Options 弹层 */}
               <CommitOptionsPopup

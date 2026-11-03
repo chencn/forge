@@ -55,8 +55,9 @@ export default function AiCommitSettingsPanel() {
   const [modelSearch, setModelSearch] = useState("");
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const [providerToDelete, setProviderToDelete] = useState<AiCommitProvider | null>(null);
-  const [subjectMaxLenInput, setSubjectMaxLenInput] = useState<string>("256");
-  const [maxDiffCharsInput, setMaxDiffCharsInput] = useState<string>("32000");
+  const [subjectMaxLenInput, setSubjectMaxLenInput] = useState(String(DEFAULT_AI_COMMIT_CONFIG.subjectMaximumLength));
+  const [maxDiffCharsInput, setMaxDiffCharsInput] = useState(String(DEFAULT_AI_COMMIT_CONFIG.maximumDiffCharacters));
+  const [maxOutputTokensInput, setMaxOutputTokensInput] = useState(String(DEFAULT_AI_COMMIT_CONFIG.maximumOutputTokens));
 
   useEffect(() => {
     let alive = true;
@@ -65,8 +66,9 @@ export default function AiCommitSettingsPanel() {
         if (!alive) return;
         setConfig(loaded);
         setSelectedProviderId(loaded.activeProviderId ?? loaded.providers[0]?.id ?? null);
-        setSubjectMaxLenInput(String(loaded.subjectMaximumLength ?? 256));
-        setMaxDiffCharsInput(String(loaded.maximumDiffCharacters ?? 32000));
+        setSubjectMaxLenInput(String(loaded.subjectMaximumLength));
+        setMaxDiffCharsInput(String(loaded.maximumDiffCharacters));
+        setMaxOutputTokensInput(String(loaded.maximumOutputTokens));
       })
       .catch(() => {
         // 加载失败时沿用默认配置
@@ -833,24 +835,22 @@ export default function AiCommitSettingsPanel() {
         <span className="settings-label">{t("aiCommit.subjectMaxLength")}</span>
         <input
           type="number"
-          min={10}
-          max={500}
+          min={0}
+          aria-label={t("aiCommit.subjectMaxLength")}
           className="settings-input"
           style={{ width: 110 }}
           value={subjectMaxLenInput}
           onChange={(e) => {
             const raw = e.target.value;
             setSubjectMaxLenInput(raw);
-            const val = parseInt(raw, 10);
-            if (!isNaN(val) && val >= 10 && val <= 500) {
+            const val = Number(raw);
+            if (raw.trim() && Number.isSafeInteger(val) && val >= 0) {
               updateConfig({ subjectMaximumLength: val });
             }
           }}
           onBlur={() => {
-            const val = parseInt(subjectMaxLenInput, 10);
-            const clamped = isNaN(val) ? 256 : Math.min(500, Math.max(10, val));
-            setSubjectMaxLenInput(String(clamped));
-            updateConfig({ subjectMaximumLength: clamped });
+            // 非法编辑恢复当前已保存值，不能把用户的大预算悄悄重置成小预算。
+            setSubjectMaxLenInput(String(config.subjectMaximumLength));
           }}
         />
       </div>
@@ -859,26 +859,44 @@ export default function AiCommitSettingsPanel() {
         <span className="settings-label">{t("aiCommit.maxDiffChars")}</span>
         <input
           type="number"
-          min={2000}
-          max={1000000}
-          step={5000}
+          min={0}
+          aria-label={t("aiCommit.maxDiffChars")}
           className="settings-input"
           style={{ width: 110 }}
           value={maxDiffCharsInput}
           onChange={(e) => {
             const raw = e.target.value;
             setMaxDiffCharsInput(raw);
-            const val = parseInt(raw, 10);
-            if (!isNaN(val) && val >= 2000 && val <= 1000000) {
+            const val = Number(raw);
+            if (raw.trim() && Number.isSafeInteger(val) && val >= 0) {
               updateConfig({ maximumDiffCharacters: val });
             }
           }}
           onBlur={() => {
-            const val = parseInt(maxDiffCharsInput, 10);
-            const clamped = isNaN(val) ? 64000 : Math.min(1000000, Math.max(2000, val));
-            setMaxDiffCharsInput(String(clamped));
-            updateConfig({ maximumDiffCharacters: clamped });
+            setMaxDiffCharsInput(String(config.maximumDiffCharacters));
           }}
+        />
+      </div>
+
+      <div className="settings-row">
+        <span className="settings-label">{t("aiCommit.maxOutputTokens")}</span>
+        <input
+          type="number"
+          min={0}
+          aria-label={t("aiCommit.maxOutputTokens")}
+          title={t("aiCommit.maxOutputTokensHint")}
+          className="settings-input"
+          style={{ width: 110 }}
+          value={maxOutputTokensInput}
+          onChange={(e) => {
+            const raw = e.target.value;
+            setMaxOutputTokensInput(raw);
+            const val = Number(raw);
+            if (raw.trim() && Number.isSafeInteger(val) && val >= 0) {
+              updateConfig({ maximumOutputTokens: val });
+            }
+          }}
+          onBlur={() => setMaxOutputTokensInput(String(config.maximumOutputTokens))}
         />
       </div>
 

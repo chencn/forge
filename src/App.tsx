@@ -126,9 +126,12 @@ import {
   gitApplyPatch,
   gitCommitFile,
   gitDiffText,
+  isProtectedBranch,
   gitIgnoreRule,
   gitIndexShow,
   gitShow,
+  gitStatus,
+  gitPushTarget,
   rollbackTargets,
 } from "./lib/git";
 import { forgetIgnoredUnder } from "./lib/ignoredCache";
@@ -555,7 +558,13 @@ export default function App() {
   const suppressGitEcho = useCallback(() => {
     gitEchoUntilRef.current = Date.now() + 800;
   }, []);
-  const git = useGitState(workspaceRoot, reportError, suppressGitEcho);
+  const saveAllRef = useRef<(requireSuccess?: boolean) => Promise<number>>(async () => 0);
+  const saveBeforeGitUpdate = useCallback(() => saveAllRef.current(true), []);
+  const git = useGitState(workspaceRoot, reportError, suppressGitEcho, {
+    beforeUpdate: saveBeforeGitUpdate,
+    updateMethod: settings.vcs.updateMethod,
+    autoUpdateOnPushRejected: settings.vcs.autoUpdateOnPushRejected,
+  });
   /**
    * 保存前动作的唯一入口：本地卫生动作走纯函数（裁行尾空白、补末尾换行）。
    * 每次 await 后都重新从 useDocuments 读取文档，防止等待期间的新编辑被旧快照覆盖。
@@ -578,17 +587,20 @@ export default function App() {
   }, [docs, prepareSave]);
 
   /** 全量存盘并同步刷新 Git 变更列表，供失焦自动保存、退出前保存与保存按钮共用。 */
-  const flushDirtyDocs = useCallback(async () => {
+  const flushDirtyDocs = useCallback(async (requireSuccess = false) => {
     let saved = 0;
     for (const doc of docs.documents) {
-      if (!doc.readOnly && doc.contents !== doc.baseline && await saveOne(doc.path)) saved += 1;
+      if (doc.readOnly || doc.contents === doc.baseline) continue;
+      if (await saveOne(doc.path)) saved += 1;
+      // Git 更新不能越过保存失败，否则编辑缓冲会与拉取后的磁盘内容错开。
+      else if (requireSuccess) throw new Error(t("git.updateSaveFailed"));
     }
     if (saved > 0) {
       suppressGitEcho();
       void git.refreshChanges();
     }
     return saved;
-  }, [docs.documents, git, saveOne, suppressGitEcho]);
+  }, [docs.documents, git, saveOne, suppressGitEcho, t]);
 
   const flushDirtyDocsForRoot = useCallback(async (root: string): Promise<number> => {
     let saved = 0;
@@ -602,7 +614,6 @@ export default function App() {
    * 这两个对象每次渲染都是新的（依赖 documents / status），进依赖就等于每次渲染
    * 摘挂一次监听——`listen` 那对还要走两趟 IPC。
    */
-  const saveAllRef = useRef(flushDirtyDocs);
   saveAllRef.current = flushDirtyDocs;
   const docsRef = useRef(docs);
   docsRef.current = docs;
@@ -686,7 +697,38 @@ export default function App() {
   }, [refreshSystemClipboard]);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
   const [gitDialog, setGitDialog] = useState<GitActionRequest | null>(null);
+  const activeGitContext = useRef({ root: git.root, branch: git.status?.branch });
+  activeGitContext.current = { root: git.root, branch: git.status?.branch };
   useEffect(() => setGitDialog(null), [workspaceRoot]);
+  // 所有更新入口共用保存、选项和默认策略，避免工具栏实际只刷新状态。
+  const updateProject = useStable(async (branch: string | undefined = git.status?.branch, originRoot: string | null = git.root) => {
+    if (!originRoot || originRoot !== git.root || git.operation?.phase === "running" || git.recovery) return;
+    const matches = () => activeGitContext.current.root === originRoot;
+    const current = await gitStatus(originRoot).catch(() => null);
+    if (!matches() || !current || current.detached || !current.upstream || current.branch !== branch) return;
+    if (settings.vcs.showUpdateOptions) {
+      setGitDialog({ kind: "update", target: { kind: "local", name: current.branch }, root: originRoot });
+      return;
+    }
+    try { await saveAllRef.current(true); }
+    catch (cause) { reportError(errorText(cause)); return; }
+    if (!matches()) return;
+    const saved = await gitStatus(originRoot).catch(() => null);
+    if (!matches() || !saved || saved.branch !== branch || saved.detached) return;
+    await git.pull(settings.vcs.updateMethod);
+  });
+  // 提交并推送也使用真实推送窗口；显式推送入口始终允许检查目标。
+  const pushCommitted = useStable(async (originRoot: string, branch: string) => {
+    // 等待提交 hooks 时可能切换工程；旧提交的回调不能推送新工程。
+    if (originRoot !== git.root || branch !== git.status?.branch || git.status?.detached) return;
+    try {
+      const destination = await gitPushTarget(originRoot, branch);
+      if (activeGitContext.current.root !== originRoot || activeGitContext.current.branch !== branch) return;
+      if (settings.vcs.showPushDialog === "always" || settings.vcs.showPushDialog === "protected" && isProtectedBranch(destination.target, settings.vcs.protectedBranches)) {
+        setGitDialog({ kind: "push", target: { kind: "local", name: branch }, root: originRoot });
+      } else void git.push({ branch, remote: destination.remote, target: destination.target });
+    } catch (cause) { if (activeGitContext.current.root === originRoot) reportError(errorText(cause)); }
+  });
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const { toggleMaximize } = useWindowControls();
   /** 编辑区页签栏里的比对，按根隔离，同一根内按打开顺序排。 */
@@ -3532,8 +3574,8 @@ export default function App() {
               },
               rollback: rollbackTreePaths,
               fetch: () => void git.fetch(),
-              push: () => void git.push(false),
-              pull: () => void git.pull(),
+              push: () => setGitDialog({ kind: "push" }),
+              pull: () => void updateProject(),
               branches: () => openSideTool("git"),
             }
           : undefined,
@@ -4653,12 +4695,12 @@ export default function App() {
       {
         id: "git.pull",
         label: `Git: 拉取 (Pull)`,
-        run: () => void git.pull(),
+        run: () => void updateProject(),
       },
       {
         id: "git.push",
         label: `Git: 推送 (Push)`,
-        run: () => void git.push(false),
+        run: () => setGitDialog({ kind: "push" }),
       },
       {
         id: "git.fetch",
@@ -4760,7 +4802,7 @@ export default function App() {
     const target = event.target instanceof HTMLElement ? event.target : null;
     const inEditor = !!target?.closest(".cm-content");
     const inField = !inEditor && !!target?.closest("input, textarea, [contenteditable=true]");
-    if (dialog || menu || resolveOpen || everywhere || event.isComposing || (inField && !target?.closest(".xterm"))) {
+    if (dialog || gitDialog || menu || resolveOpen || everywhere || event.isComposing || (inField && !target?.closest(".xterm"))) {
       sequence.reset();
       return;
     }
@@ -5074,7 +5116,7 @@ export default function App() {
           break;
         case "checkoutUpdate":
           void checkoutBranch(branchName).then((done) => {
-            if (done) void git.pull();
+            if (done) void updateProject(branchName, git.root);
           });
           break;
         case "checkoutRebase": {
@@ -5115,17 +5157,17 @@ export default function App() {
           if (!git.status?.detached) void git.rebase(target.name);
           break;
         case "update":
-          // 当前分支直接 pull；非当前分支先检出再 pull，避免误更新当前分支
+          // 普通更新不能隐式签出；只有 checkoutUpdate 才改变 HEAD。
           if (target.kind === "local" && git.status?.branch === target.name) {
-            void git.pull();
+            void updateProject(target.name, git.root);
           } else {
-            void checkoutBranch(target.name).then((ok) => {
-              if (ok) void git.pull();
-            });
+            void git.updateBranch(target.name);
           }
           break;
         case "push":
-          setGitDialog({ kind: "push", target });
+          // 完整标签引用避免与同名本地分支混淆。
+          if (target.kind === "tag") void git.pushRef(`refs/tags/${target.name}`);
+          else setGitDialog({ kind: "push", target });
           break;
         case "delete":
           // 删远端分支是往服务器推一条删除引用，先问一句再动手。
@@ -5198,14 +5240,7 @@ export default function App() {
       if (action === "pushUpTo") {
         const branch = git.status && !git.status.detached ? git.status.branch : "";
         if (branch === "") return;
-        setDialog({
-          kind: "pushUpTo",
-          name: commit.short,
-          from: branch,
-          revision: commit.hash,
-          dir: null,
-          entry: null,
-        });
+        setGitDialog({ kind: "push", target: { kind: "local", name: branch }, revision: commit.hash });
         return;
       }
       try {
@@ -5249,8 +5284,7 @@ export default function App() {
     (action: BranchAction) => {
       switch (action) {
         case "update":
-          if (settings.vcs.showUpdateOptions) setGitDialog({ kind: "update" });
-          else void git.pull();
+          void updateProject();
           break;
         case "fetch":
           void git.fetch();
@@ -5284,11 +5318,19 @@ export default function App() {
     if (!request) return;
     // 确认只发起一次；窗口退场后，真正的 Git 生命周期仍由底栏和通知中心承接。
     setGitDialog(null);
-    if (request.kind !== "push") await saveAllRef.current();
-    if (request.kind === "update") await git.pull(values.method);
+    if (request.kind !== "push") await saveAllRef.current(request.kind === "update");
+    if (request.kind === "update") {
+      if (!request.root || activeGitContext.current.root !== request.root) return;
+      const current = await gitStatus(request.root).catch(() => null);
+      if (activeGitContext.current.root !== request.root || current?.branch !== request.target?.name || current?.detached) {
+        reportError(t("git.updateContextChanged"));
+        return;
+      }
+      patch({ vcs: { ...settings.vcs, updateMethod: values.method === "rebase" ? "rebase" : "merge" } });
+      await git.pull(values.method);
+    }
     else if (request.kind === "push") {
-      if (request.target) await git.pushRef(request.target.name);
-      else await git.push(values.setUpstream);
+      await git.push(values.push);
     } else if (request.kind === "newBranch") {
       if (await git.createBranch(values.name, values.from, values.checkout) && values.checkout) remember("recentBranches", values.name);
     } else if (request.kind === "newTag") await git.createTag(values.name, values.message, values.from);
@@ -5672,6 +5714,7 @@ export default function App() {
       /> : null
       : workspaceRoot ? <Suspense fallback={null}><GitPanel
         key={workspaceRoot} git={git} workspaceRoot={workspaceRoot} onOpenChange={panelOpenChangeFromTree} onOpenFile={panelOpenFile}
+        onUpdate={() => void updateProject()} onPush={pushCommitted}
         focusSignal={commitFocus} rewordSignal={rewordSignal} history={history.commitMessages} onCommitted={panelCommitted}
         groupByDir={commitView.byDir} groupByModule={commitView.byModule} showIgnored={commitView.ignored}
         onToggleIgnored={panelToggleIgnored} repoName={basenameOf(git.root ?? workspaceRoot)} onFileAction={panelFileAction}
@@ -5947,6 +5990,7 @@ export default function App() {
                 ) : workspaceRoot ? (
                   <Suspense fallback={null}>
                     <GitPanel
+                      onUpdate={() => void updateProject()} onPush={pushCommitted}
                       key={workspaceRoot}
                       git={git}
                       workspaceRoot={workspaceRoot}
@@ -6390,7 +6434,7 @@ export default function App() {
           <span className="status-spacer" />
         )}
         {/* OpenIDEA 的后台任务位于弹性路径区之后、右侧状态控件之前。 */}
-        <GitOperationStatus operation={git.operation} />
+        <GitOperationStatus operations={git.backgroundOperations} />
         {activeDoc ? (
           <>
             <CaretStatus

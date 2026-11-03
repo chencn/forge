@@ -15,10 +15,30 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-/// 单行上限，与事件存储保持一致；原生历史里也可能混入超长行。
+/// Forge 镜像单行上限；只用于读取已经过 store 裁剪的事件。
 const MAX_LINE: u64 = 2 * 1024 * 1024;
-/// 单个原生历史文件上限。超过就跳过，避免为了列个标题去读几百 MB。
-const MAX_FILE: u64 = 256 * 1024 * 1024;
+/// 原生单行预算：CLI 会内联多张图片，不能套用镜像限制，也不能限制历史总长。
+const MAX_NATIVE_LINE: u64 = 256 * 1024 * 1024;
+/// 单次补采仍分批；允许最后一批完整记录跨过预算，游标保留实际位置。
+const MAX_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+
+/// 原生读取失败可以重试；Forge 自己的镜像损坏或写盘失败必须向运行层报错。
+#[derive(Debug)]
+pub enum SupplementError {
+    Source(String),
+    Mirror(String),
+}
+impl From<String> for SupplementError {
+    fn from(cause: String) -> Self { Self::Source(cause) }
+}
+impl From<&str> for SupplementError {
+    fn from(cause: &str) -> Self { Self::Source(cause.into()) }
+}
+impl std::fmt::Display for SupplementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Self::Source(cause) | Self::Mirror(cause) => f.write_str(cause) }
+    }
+}
 /// 历史投影检查点只是可重建缓存；卡住大小，坏文件直接退回事件日志重建。
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 const CHECKPOINT_VERSION: u32 = 1;
@@ -101,17 +121,17 @@ fn files(
     }
     Ok(())
 }
-fn bounded_line(reader: &mut impl BufRead) -> Result<Option<(Value, u64)>, String> {
+fn bounded_line(reader: &mut impl BufRead, limit: u64) -> Result<Option<(Value, u64)>, String> {
     let mut bytes = Vec::new();
     let count = reader
-        .take(MAX_LINE + 1)
+        .take(limit + 1)
         .read_until(b'\n', &mut bytes)
         .map_err(|e| e.to_string())?;
     if count == 0 {
         return Ok(None);
     }
-    if count as u64 > MAX_LINE {
-        return Err("原生历史单行超过 2 MiB".into());
+    if count as u64 > limit {
+        return Err(format!("历史单行超过 {} MiB", limit / (1024 * 1024)));
     }
     // CLI 可能还在写最后一行；原生文件只读，绝不能替它补全或修复。
     if bytes.last() != Some(&b'\n') {
@@ -245,9 +265,6 @@ fn candidate_cache(
 
 fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candidate>, String> {
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
-    if metadata.len() > MAX_FILE {
-        return Ok(None);
-    }
     // 一次列表刷新会把同一份原生历史问好几遍——发现、归属校验、补采摘要各问一次——
     // 而每一遍都要开文件往后读。长度加 mtime 就是这份文件的内容指纹：CLI 只有追加
     // 时它才变。指纹没变就直接复用上一遍的结论，「不属于本工程」这个否定结论也一起复用。
@@ -284,11 +301,7 @@ fn inspect_uncached(
     root: &str,
     metadata: &fs::Metadata,
 ) -> Result<Option<Candidate>, String> {
-    let mut reader = BufReader::new(
-        File::open(path)
-            .map_err(|e| e.to_string())?
-            .take(256 * 1024),
-    );
+    let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
     let mut native = None;
     let mut title = None;
     // Claude 会把自定义标题和 CLI 生成的标题追加在首条用户消息之后；必须继续扫描，
@@ -296,14 +309,19 @@ fn inspect_uncached(
     let mut custom_title = None;
     let mut ai_title = None;
     let mut belongs = false;
+    let mut identity_seen = false;
     let mut head_bytes = 0u64;
     for _ in 0..64 {
-        let Some((value, count)) = bounded_line(&mut reader)? else {
+        // 发现预算只能在记录之间停止；首条大图记录仍须完整核验归属。
+        // file-history-snapshot 可能先于身份记录，尚未见到身份时使用独立扫描预算。
+        if head_bytes >= MAX_SCAN_BYTES || identity_seen && head_bytes >= 256 * 1024 { break; }
+        let Some((value, count)) = bounded_line(&mut reader, MAX_NATIVE_LINE)? else {
             break;
         };
         head_bytes += count;
         if provider == Provider::Codex {
             if value["type"] == "session_meta" {
+                identity_seen = true;
                 let p = &value["payload"];
                 if p["source"].is_object() || p["source"] == "subagent" {
                     return Ok(None);
@@ -328,6 +346,7 @@ fn inspect_uncached(
                 continue;
             }
             if let Some(cwd) = value["cwd"].as_str() {
+                identity_seen |= value["sessionId"].is_string();
                 if !same_root(cwd, root) {
                     continue;
                 }
@@ -359,6 +378,9 @@ fn inspect_uncached(
     // 头部已经读到文件尾就不用再补读；没读到的部分才是改名可能落下的位置。
     if provider == Provider::Claude && head_bytes < metadata.len() {
         capture_tail_titles(path, &mut custom_title, &mut ai_title);
+    }
+    if native.is_none() && head_bytes < metadata.len() {
+        return Err("原生历史归属尚未确认：发现扫描未完成".into());
     }
     let Some(native_id) = native.filter(|id| store::valid_id(id) && id.len() <= 60) else {
         return Ok(None);
@@ -786,7 +808,6 @@ fn import_claude_subagents(base: &Path, parent_id: &str, native_path: &Path, nat
         if !path.extension().is_some_and(|extension| extension == "jsonl") { continue; }
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.starts_with("agent-") { continue; }
-        if fs::metadata(&path).map(|meta| meta.len() > MAX_FILE).unwrap_or(true) { continue; }
         let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_owned();
         if agent_id.is_empty() { continue; }
         let info: Value = fs::read(path.with_file_name(format!("agent-{agent_id}.meta.json")))
@@ -835,7 +856,7 @@ fn import_codex_subagent(
     let mut reader = BufReader::new(file.take(256 * 1024));
     let mut child_meta: Option<(Value, u64)> = None;
     let mut scanned = 0u64;
-    while let Ok(Some((value, count))) = bounded_line(&mut reader) {
+    while let Ok(Some((value, count))) = bounded_line(&mut reader, MAX_NATIVE_LINE) {
         if value["type"] == "session_meta" {
             let p = &value["payload"];
             let spawn = &p["source"]["subagent"]["thread_spawn"];
@@ -896,9 +917,13 @@ fn import_codex_subagent(
     if save_source(base, &child, &source).is_err() || target.bind(child_id.to_owned()).is_err() { return; }
     // 列表发现只能登记路径；运行中的游标由 Worker 独占并广播，避免抢先消费而漏通知。
     if super::registry::for_session(&parent_forge).is_some() { return; }
-    // 离线发现没有实时刷新循环，读完当前完整尾部再返回。
+    // 离线发现也遵守单次扫描预算，剩余部分由下次发现/打开子会话续采。
+    let Ok((start, _)) = checkpoint(base, &child) else { return; };
     while let Ok(events) = poll_codex_subagent(&mut target, &source, true) {
         if events.is_empty() { break; }
+        if events.iter().rev().find(|event| event.kind == "history_checkpoint")
+            .and_then(|event| event.data["offset"].as_u64())
+            .is_some_and(|offset| offset.saturating_sub(start) >= MAX_SCAN_BYTES) { break; }
     }
 }
 
@@ -911,7 +936,7 @@ fn poll_codex_subagent(target: &mut Store, source: &Source, follow_lifecycle: bo
     }
     let (mut offset, mut projection) = checkpoint(&base, &id)?;
     let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
-    if length > MAX_FILE || length < offset { return Err("子代理历史过大或已被截断；保留现有镜像".into()); }
+    if length < offset { return Err("子代理历史已被截断；保留现有镜像".into()); }
     if length == offset { return Ok(vec![]); }
     let mut file = File::open(&source.path).map_err(|e| e.to_string())?;
     file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
@@ -919,7 +944,7 @@ fn poll_codex_subagent(target: &mut Store, source: &Source, follow_lifecycle: bo
     let start = offset;
     let mut batch = vec![];
     let mut status = None;
-    while let Some((value, count)) = bounded_line(&mut reader)? {
+    while let Some((value, count)) = bounded_line(&mut reader, MAX_NATIVE_LINE)? {
         let seed = offset;
         offset += count;
         let payload = &value["payload"];
@@ -1035,7 +1060,7 @@ fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     file.seek(SeekFrom::Start(start))
         .map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
-    while let Some((event, _)) = bounded_line(&mut reader)? {
+    while let Some((event, _)) = bounded_line(&mut reader, MAX_LINE)? {
         if event["kind"] == "history_checkpoint" {
             offset = event["data"]["offset"].as_u64().ok_or("原生历史游标损坏")?;
             if let Some(projection) = event["data"].get("projection") {
@@ -1098,8 +1123,8 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     }
     let (mut offset, mut projection) = checkpoint(base, id)?;
     let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
-    if length > MAX_FILE || length < offset {
-        return Err("原生历史过大或已被截断；保留现有镜像".into());
+    if length < offset {
+        return Err("原生历史已被截断；保留现有镜像".into());
     }
     let size = complete_offset(&source.path)?;
     if size < offset {
@@ -1119,7 +1144,7 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     let mut bytes = 0;
     let mut scanned = 0;
     let mut projected = 0;
-    while let Some((value, count)) = bounded_line(&mut reader)? {
+    while let Some((value, count)) = bounded_line(&mut reader, MAX_NATIVE_LINE)? {
         // 会话与项目归属每一行都重新核对，不能只信第一行。
         if source.provider == Provider::Claude {
             if value["sessionId"]
@@ -1168,18 +1193,23 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
 fn complete_offset(path: &Path) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
-    let start = length.saturating_sub(MAX_LINE);
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| e.to_string())?;
-    let mut tail = Vec::new();
-    file.take(MAX_LINE)
-        .read_to_end(&mut tail)
-        .map_err(|e| e.to_string())?;
-    match tail.iter().rposition(|b| *b == b'\n') {
-        Some(i) => Ok(start + i as u64 + 1),
-        None if start > 0 => Err("原生历史末行超过 2 MiB".into()),
-        None => Ok(0),
+    // 大图片可能还未写完；固定缓冲区倒查完整行边界，不把合法半行当损坏记录。
+    let mut tail = [0; 64 * 1024];
+    let mut end = length;
+    let floor = length.saturating_sub(MAX_NATIVE_LINE + 1);
+    while end > 0 {
+        // 只定位尾行，历史再长也不做全文件倒查。
+        if end == floor { return Err("原生历史尾行超过 256 MiB".into()); }
+        let start = end.saturating_sub(tail.len() as u64).max(floor);
+        let count = (end - start) as usize;
+        file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+        file.read_exact(&mut tail[..count]).map_err(|e| e.to_string())?;
+        if let Some(index) = tail[..count].iter().rposition(|b| *b == b'\n') {
+            return Ok(start + index as u64 + 1);
+        }
+        end = start;
     }
+    Ok(0)
 }
 /// 运行开始前的原生边界，用于限定本轮摘要，避免旧摘要串到新压缩上。
 pub fn summary_offset(target: &Store) -> Result<u64, String> {
@@ -1191,7 +1221,7 @@ pub fn summary_offset(target: &Store) -> Result<u64, String> {
 }
 
 /// 运行中有新完整行才补采；调用者持有会话租约和 IO_LOCK。
-pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<super::events::Event>, String> {
+pub fn poll_summaries(target: &mut Store, previous: &mut u64) -> Result<Vec<super::events::Event>, SupplementError> {
     let base = target.dir.parent().ok_or("会话路径无效")?;
     let Some(source) = source(base, &target.meta.session_id, &target.meta.workspace)? else { return Ok(vec![]); };
     let offset = complete_offset(&source.path)?;
@@ -1223,14 +1253,14 @@ fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, 
     }
     let (mut offset, mut projection) = checkpoint(&base, &id)?;
     let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
-    if length > MAX_FILE || length < offset { return Err("子代理历史过大或已被截断；保留现有镜像".into()); }
+    if length < offset { return Err("子代理历史已被截断；保留现有镜像".into()); }
 
     // 镜像包含实时及旧版原生事件；按公开消息/工具 ID 合并，不以日志大小猜测完整性。
     let mut seen: HashMap<(String, String), (String, Value)> = HashMap::new();
     let mut task_prompt = None;
     let mut last_agent_status = None;
     let mut mirror = target.dir.join("events.jsonl").exists().then(|| File::open(target.dir.join("events.jsonl"))).transpose().map_err(|e| e.to_string())?.map(BufReader::new);
-    while let Some((event, _)) = match mirror.as_mut() { Some(reader) => bounded_line(reader)?, None => None } {
+    while let Some((event, _)) = match mirror.as_mut() { Some(reader) => bounded_line(reader, MAX_LINE)?, None => None } {
         let data = &event["data"];
         let kind = match event["kind"].as_str().unwrap_or("") { "text" => "message", "reasoning_delta" => "reasoning", kind => kind };
         if kind == "agent" { last_agent_status = data["status"].as_str().map(str::to_owned); }
@@ -1270,14 +1300,16 @@ fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, 
     file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file.take(length - offset));
     let mut emitted = vec![];
+    let scan_start = offset;
     let result = (|| -> Result<(), String> {
-        loop {
+        // 内层只负责批次落盘；整个调用也必须有预算，不能一直持锁排空长历史。
+        while offset - scan_start < MAX_SCAN_BYTES {
             let start = offset;
             let mut groups = vec![];
             let mut batch = vec![];
             let mut batch_run = "native".to_owned();
             let mut projected_count = 0;
-            while let Some((value, count)) = bounded_line(&mut reader)? {
+            while let Some((value, count)) = bounded_line(&mut reader, MAX_NATIVE_LINE)? {
                 let seed = offset;
                 offset += count;
                 // 子文件仍记录父 sessionId；串错文件必须报错而不是静默推进游标。
@@ -1464,6 +1496,7 @@ pub fn sync_codex_subagent(base: &Path, id: &str, root: &str, discover: bool, dr
         let mut target = Store::open(base, id, root, Provider::Codex, &meta.title, "")?;
         let follow_lifecycle = !meta.parent_session_id.as_deref().is_some_and(|parent| super::registry::for_session(parent).is_some());
         let mut events = vec![];
+        let (start, _) = checkpoint(base, id)?;
         loop {
             let batch = match poll_codex_subagent(&mut target, &source, follow_lifecycle) {
                 Ok(batch) => batch,
@@ -1472,8 +1505,11 @@ pub fn sync_codex_subagent(base: &Path, id: &str, root: &str, discover: bool, dr
                 Err(error) => return Err(error),
             };
             let done = batch.is_empty();
+            let budget_reached = batch.iter().rev().find(|event| event.kind == "history_checkpoint")
+                .and_then(|event| event.data["offset"].as_u64())
+                .is_some_and(|offset| offset.saturating_sub(start) >= MAX_SCAN_BYTES);
             events.extend(batch);
-            if !drain || done { return Ok(events); }
+            if !drain || done || budget_reached { return Ok(events); }
         }
     }
     if !discover || meta.native_id.as_deref() == Some(&agent.tool_id) { return Ok(vec![]); }
@@ -1502,18 +1538,18 @@ pub fn sync_codex_subagent(base: &Path, id: &str, root: &str, discover: bool, dr
     sync_codex_subagent(base, id, root, false, drain)
 }
 /// 跳过刚刚被 Forge 记录过的那段原生内容，避免同一轮消息显示两遍。
-pub fn mark_current(target: &mut Store, base: &Path) -> Result<Vec<super::events::Event>, String> {
+pub fn mark_current(target: &mut Store, base: &Path) -> Result<Vec<super::events::Event>, SupplementError> {
     let Some(source) = source(base, &target.meta.session_id, &target.meta.workspace)? else {
         return Ok(vec![]);
     };
     if source.path.exists() {
         let offset = complete_offset(&source.path)?;
-        // 收尾一次扫描补齐摘要，不按批重复读取整份事件日志和检查点。
+        // 收尾补采一批摘要，不按批重复读取整份镜像；独立摘要游标允许后续续采。
         let (mut events, _) = recover_summaries(target, &source, true)?;
         events.extend(target.append(
             "native",
             vec![("history_checkpoint".into(), json!({"offset":offset}))],
-        )?);
+        ).map_err(SupplementError::Mirror)?);
         return Ok(events);
     }
     Ok(vec![])
@@ -1521,7 +1557,7 @@ pub fn mark_current(target: &mut Store, base: &Path) -> Result<Vec<super::events
 
 /// 摘要有独立游标：实时协议不保证携带正文，不能跟随普通历史游标跳到 EOF。
 /// 调用方持有会话租约和 IO_LOCK；只消费完整行，失败时不提交扫描进度。
-fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Result<(Vec<super::events::Event>, bool), String> {
+fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Result<(Vec<super::events::Event>, bool), SupplementError> {
     if target.meta.provider != source.provider || target.meta.native_id.as_deref() != Some(&source.native_id) {
         return Err("原生摘要标识不匹配".into());
     }
@@ -1531,29 +1567,41 @@ fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Res
     let mut known = std::collections::HashSet::new();
     let mut legacy = std::collections::HashSet::new();
     let mut episodes: Vec<(String, u64)> = vec![];
+    let mut seen_episodes = std::collections::HashSet::new();
+    let mut uncertain_boundary = false;
     let mut resolved = std::collections::HashSet::new();
     let path = target.dir.join("events.jsonl");
-    if path.exists() {
-        let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
-        while let Some((event, _)) = bounded_line(&mut reader)? {
-            if event["kind"] == "summary_checkpoint" {
-                // 旧检查点可能已经跳过 meta 摘要，首次升级重扫；已有 summaryId 继续去重。
-                offset = if event["data"]["version"] == 1 { event["data"]["offset"].as_u64().ok_or("摘要游标损坏")? } else { 0 };
-            }
-            if event["kind"] == "compaction" {
-                if let Some(id) = event["data"]["episodeId"].as_str() {
-                    if let Some(start) = event["data"]["sourceStart"].as_u64() {
-                        if !episodes.iter().any(|(old, _)| old == id) { episodes.push((id.to_owned(), start)); }
-                    }
-                    if event["data"]["summaryId"].is_string() { resolved.insert(id.to_owned()); }
+    // 镜像属于 Forge 的事实源，读取/游标错误不能按原生历史缺失降级。
+    (|| -> Result<(), String> {
+        if path.exists() {
+            let mut reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
+            while let Some((event, _)) = bounded_line(&mut reader, MAX_LINE)? {
+                if event["kind"] == "summary_checkpoint" {
+                    // 旧检查点可能已经跳过 meta 摘要，首次升级重扫；已有 summaryId 继续去重。
+                    offset = if event["data"]["version"] == 1 { event["data"]["offset"].as_u64().ok_or("摘要游标损坏")? } else { 0 };
                 }
-                if let Some(id) = event["data"]["summaryId"].as_str() { known.insert(id.to_owned()); }
-                else if let Some(body) = event["data"]["text"].as_str().filter(|s| !s.is_empty()) { legacy.insert(body.to_owned()); }
+                if event["kind"] == "compaction" {
+                    if let Some(id) = event["data"]["episodeId"].as_str() {
+                        if !event["data"]["summaryId"].is_string() && seen_episodes.insert(id.to_owned()) {
+                            if let Some(start) = event["data"]["sourceStart"].as_u64() {
+                                episodes.push((id.to_owned(), start));
+                            } else {
+                                // 未知边界是关联屏障，不能让新摘要被更早的压缩认领。
+                                episodes.clear();
+                                uncertain_boundary = true;
+                            }
+                        }
+                        if event["data"]["summaryId"].is_string() { resolved.insert(id.to_owned()); }
+                    }
+                    if let Some(id) = event["data"]["summaryId"].as_str() { known.insert(id.to_owned()); }
+                    else if let Some(body) = event["data"]["text"].as_str().filter(|s| !s.is_empty()) { legacy.insert(body.to_owned()); }
+                }
             }
         }
-    }
+        Ok(())
+    })().map_err(SupplementError::Mirror)?;
     let length = fs::metadata(&source.path).map_err(|e| e.to_string())?.len();
-    if length > MAX_FILE || length < offset { return Err("原生历史过大或已被截断".into()); }
+    if length < offset { return Err("原生历史已被截断".into()); }
     let size = complete_offset(&source.path)?;
     if size < offset { return Err("原生历史尾部已变化".into()); }
     if size == offset { return Ok((vec![], false)); }
@@ -1562,7 +1610,10 @@ fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Res
     let mut reader = BufReader::new(file.take(size - offset));
     let start = offset;
     let mut batch = vec![];
-    while let Some((value, count)) = bounded_line(&mut reader)? {
+    let budget = if complete { MAX_SCAN_BYTES } else { 4 * 1024 * 1024 };
+    // 检查放在循环入口，外来记录的 continue 也不能绕过预算。
+    while offset - start < budget && (complete || batch.len() < 128) {
+        let Some((value, count)) = bounded_line(&mut reader, MAX_NATIVE_LINE)? else { break; };
         // 原生日志是 append-only 容器：外部 resume/continue 续接后会出现别的
         // sessionId / cwd 的行。整体报错只会让游标永远卡在同一行、每个回合
         // 收尾重复弹同一条错；跳过外来行、游标照常推进，摘要靠 summaryId
@@ -1588,17 +1639,18 @@ fn recover_summaries(target: &mut Store, source: &Source, complete: bool) -> Res
                     if let Some((episode, _)) = episodes.iter().find(|(id, floor)| Some(*floor) == start && !resolved.contains(id)) {
                         data["episodeId"] = json!(episode);
                         resolved.insert(episode.clone());
+                    } else if uncertain_boundary {
+                        // 独立身份同时阻止 Store 的旧版顺序配对，重开历史仍保持独立。
+                        data["episodeId"] = json!(format!("native-summary:{offset}"));
                     } else if legacy.contains(data["text"].as_str().unwrap_or_default()) { continue; }
                     batch.push((kind, data));
                 }
             }
         }
         offset += count;
-        // 界面补采保留分页预算；回合收尾扫描固定的、受 MAX_FILE 限制的快照。
-        if !complete && (offset - start >= 4 * 1024 * 1024 || batch.len() >= 128) { break; }
     }
     batch.push(("summary_checkpoint".into(), json!({"offset":offset,"version":1})));
-    Ok((target.append("native", batch)?, offset < size))
+    Ok((target.append("native", batch).map_err(SupplementError::Mirror)?, offset < size))
 }
 
 /// 空闲会话重开时补回旧版本已经跳过的摘要。
@@ -1606,7 +1658,7 @@ pub fn repair_summaries(base: &Path, id: &str, root: &str) -> Result<bool, Strin
     let Some(source) = source(base, id, root)? else { return Ok(false); };
     let meta = Store::metadata(&base.join(id), root)?;
     let mut target = Store::open(base, id, root, meta.provider, &meta.title, "")?;
-    recover_summaries(&mut target, &source, false).map(|(_, more)| more)
+    recover_summaries(&mut target, &source, false).map(|(_, more)| more).map_err(|cause| cause.to_string())
 }
 fn text(value: &Value) -> String {
     if let Some(text) = value.as_str() {
@@ -2201,6 +2253,135 @@ mod tests {
     }
 
     #[test]
+    fn compaction_recovers_summaries_across_large_native_records() {
+        let temp = std::env::temp_dir().join(format!("forge-summary-large-{}", super::super::now_ms()));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        let native = temp.join("session.jsonl");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&base).unwrap();
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let large = "a".repeat(2 * 1024 * 1024 + 1);
+        for provider in [Provider::Claude, Provider::Codex] {
+            let id = if provider == Provider::Claude { "large-claude" } else { "large-codex" };
+            let header = if provider == Provider::Claude {
+                json!({"type":"user","cwd":root,"sessionId":id,"message":{"content":"hello"}})
+            } else {
+                json!({"type":"session_meta","payload":{"id":id,"cwd":root,"source":"cli"}})
+            };
+            let image = if provider == Provider::Claude {
+                json!({"type":"user","cwd":root,"sessionId":id,"message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":large}}]}})
+            } else {
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":format!("data:image/png;base64,{large}")}]}})
+            };
+            let summary = if provider == Provider::Claude {
+                json!({"type":"user","cwd":root,"sessionId":id,"isCompactSummary":true,"isMeta":true,"message":{"content":"recovered summary"}})
+            } else {
+                json!({"type":"compacted","payload":{"message":"recovered summary"}})
+            };
+            // Claude 首条消息本身就可能带大图，归属发现不能在记录中间截断。
+            let snapshot = json!({"type":"file-history-snapshot","snapshot":{"data":&large[..300 * 1024]}});
+            let content = if provider == Provider::Claude { format!("{snapshot}\n{image}\n{summary}\n") } else { format!("{header}\n{image}\n{summary}\n") };
+            fs::write(&native, &content).unwrap();
+            let mut target = Store::open(&base, id, &workspace, provider, "test", "").unwrap();
+            target.bind(id.into()).unwrap();
+            save_source(&base, id, &Source { provider, native_id:id.into(), path:native.clone(), workspace:workspace.clone() }).unwrap();
+            let mut previous = 0;
+            let events = poll_summaries(&mut target, &mut previous).expect("大图片记录不能阻断压缩摘要补采");
+            let summaries: Vec<_> = events.iter().filter(|event| event.kind == "compaction").collect();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].data["text"], "recovered summary");
+            assert_eq!(previous, fs::metadata(&native).unwrap().len());
+            assert!(!mark_current(&mut target, &base).unwrap().iter().any(|event| event.kind == "compaction"));
+            assert_eq!(fs::read_to_string(&native).unwrap(), content);
+
+            // CLI 写到一半的大记录必须留给下次读取，不能报错或提前提交游标。
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new().append(true).open(&native).unwrap();
+            write!(file, "{{\"type\":\"tool_output\",\"text\":\"{large}").unwrap();
+            assert_eq!(summary_offset(&target).unwrap(), previous);
+            assert!(poll_summaries(&mut target, &mut previous).unwrap().is_empty());
+            writeln!(file, "\"}}").unwrap();
+            let events = mark_current(&mut target, &base).unwrap();
+            assert!(!events.iter().any(|event| event.kind == "compaction"));
+            assert_eq!(summary_offset(&target).unwrap(), fs::metadata(&native).unwrap().len());
+
+            // 大行也可能就是摘要，不能靠跳过整行来绕过读取上限。
+            let body = format!("large summary {large}");
+            let summary = if provider == Provider::Claude {
+                json!({"type":"user","cwd":root,"sessionId":id,"isCompactSummary":true,"isMeta":true,"message":{"content":body}})
+            } else {
+                json!({"type":"compacted","payload":{"message":body}})
+            };
+            writeln!(file, "{summary}").unwrap();
+            let events = mark_current(&mut target, &base).unwrap();
+            let summaries: Vec<_> = events.iter().filter(|event| event.kind == "compaction").collect();
+            assert_eq!(summaries.len(), 1);
+            let text = summaries[0].data["text"].as_str().unwrap();
+            assert!(text.starts_with("large summary "));
+            assert!(text.len() < 2 * 1024 * 1024);
+            assert!(!mark_current(&mut target, &base).unwrap().iter().any(|event| event.kind == "compaction"));
+
+            // 用稀疏文件验证原生文件总长不是镜像预算，也不需要分配整份文件。
+            // Windows 追加句柄没有调整长度的权限，使用独立可写句柄扩展。
+            fs::OpenOptions::new().write(true).open(&native).unwrap().set_len(MAX_NATIVE_LINE + 4096).unwrap();
+            writeln!(file).unwrap();
+            let length = file.metadata().unwrap().len();
+            assert_eq!(summary_offset(&target).expect("大原生文件不能阻断 CLI resume"), length);
+            assert_eq!(inspect(&native, provider, &workspace).unwrap().unwrap().source.native_id, id);
+            // 稀疏前缀代表已经消费过的旧历史；只读检查点之后的新摘要和新消息。
+            target.append("native", vec![
+                ("summary_checkpoint".into(), json!({"offset":length,"version":1})),
+                ("history_checkpoint".into(), json!({"offset":length})),
+            ]).unwrap();
+            let summary = if provider == Provider::Claude {
+                json!({"type":"user","cwd":root,"sessionId":id,"isCompactSummary":true,"message":{"content":"after history budget"}})
+            } else {
+                json!({"type":"compacted","payload":{"message":"after history budget"}})
+            };
+            writeln!(file, "{summary}").unwrap();
+            let events = poll_summaries(&mut target, &mut previous).unwrap();
+            assert!(events.iter().any(|event| event.kind == "compaction" && event.data["text"] == "after history budget"));
+            assert_eq!(previous, file.metadata().unwrap().len());
+            mark_current(&mut target, &base).unwrap();
+            let message = if provider == Provider::Claude {
+                json!({"type":"user","cwd":root,"sessionId":id,"message":{"content":"after large history"}})
+            } else {
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"after large history"}]}})
+            };
+            writeln!(file, "{message}").unwrap();
+            assert!(!sync(&base, id, &workspace).unwrap());
+            let page = Store::page(&base, id, &workspace, Window::After(0), 500, false).unwrap();
+            assert!(page.events.iter().any(|event| event.kind == "user" && event.data["text"] == "after large history"));
+        }
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn unknown_compaction_boundary_does_not_claim_an_earlier_episode() {
+        let temp = std::env::temp_dir().join(format!("forge-summary-unknown-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = temp.join("project");
+        let base = temp.join("mirror");
+        fs::create_dir_all(&root).unwrap();
+        let workspace = store::workspace(root.to_str().unwrap()).unwrap();
+        let native = temp.join("native.jsonl");
+        fs::write(&native, format!("{}\n", json!({"type":"user","cwd":root,"sessionId":"native","isCompactSummary":true,"message":{"content":"new summary"}}))).unwrap();
+        let mut target = Store::open(&base, "session", &workspace, Provider::Claude, "test", "").unwrap();
+        target.bind("native".into()).unwrap();
+        save_source(&base, "session", &Source { provider: Provider::Claude, native_id:"native".into(), path:native, workspace:workspace.clone() }).unwrap();
+        target.append("old", vec![("compaction".into(), json!({"episodeId":"old:1","sourceStart":0,"status":"completed"}))]).unwrap();
+        target.append("new", vec![("compaction".into(), json!({"episodeId":"new:1","status":"completed"}))]).unwrap();
+        let events = mark_current(&mut target, &base).unwrap();
+        let summary = events.iter().find(|event| event.kind == "compaction").unwrap();
+        assert_ne!(summary.data["episodeId"], "old:1");
+        assert_ne!(summary.data["episodeId"], "new:1");
+        // 重开历史也不能被 Store 的旧版顺序配对重新贴到旧压缩上。
+        let page = Store::page(&base, "session", &workspace, Window::After(0), 500, false).unwrap();
+        assert!(page.events.iter().any(|event| event.kind == "compaction" && event.data["summaryId"].is_string() && event.data["text"] == "new summary"));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
     fn finish_recovers_all_summary_batches_before_advancing_history() {
         let temp = std::env::temp_dir().join(format!("forge-summary-batches-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let root = temp.join("project");
@@ -2250,6 +2431,22 @@ mod tests {
         assert_eq!(summaries[1].data["text"], json!("summary-2"));
         // 游标推进越过外来行：重扫不再有新摘要，也不再报错。
         assert!(!mark_current(&mut target, &base).unwrap().iter().any(|event| event.kind == "compaction"));
+        // 连续外来记录也必须消耗扫描预算；第一批保留摘要，第二批再续采。
+        let source = source(&base, "summary-session", &workspace).unwrap().unwrap();
+        let mut previous = summary_offset(&target).unwrap();
+        let before = previous;
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().append(true).open(&source.path).unwrap();
+        let foreign = json!({"type":"user","cwd":root,"sessionId":"resumed-session","message":{"content":"x".repeat(2 * 1024 * 1024)}});
+        writeln!(file, "{foreign}\n{foreign}").unwrap();
+        writeln!(file, "{}", json!({"type":"user","cwd":root,"sessionId":"summary-session","isCompactSummary":true,"message":{"content":"after foreign batches"}})).unwrap();
+        assert!(!poll_summaries(&mut target, &mut previous).unwrap().iter().any(|event| event.kind == "compaction"));
+        assert_eq!(previous, before);
+        let events = poll_summaries(&mut target, &mut previous).unwrap();
+        assert_eq!(events.iter().filter(|event| event.kind == "compaction").count(), 1);
+        assert_eq!(events.iter().find(|event| event.kind == "compaction").unwrap().data["text"], "after foreign batches");
+        assert_eq!(previous, file.metadata().unwrap().len());
+        assert!(poll_summaries(&mut target, &mut previous).unwrap().is_empty());
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -2800,10 +2997,18 @@ mod tests {
             }
         }
         assert_eq!(users, 600);
+        // 大工具输出要完整读取原生记录，再由 Store 裁剪镜像，不能阻断后续消息。
+        let output = format!("tool output {}", "x".repeat(2 * 1024 * 1024));
+        let tool = json!({"type":"user","cwd":root,"sessionId":"claude-session","message":{"content":[{"type":"tool_result","tool_use_id":"large-tool","content":output}]}});
+        content.push_str(&format!("{tool}\n"));
         let last = json!({"type":"assistant","cwd":root,"sessionId":"claude-session","uuid":"last","message":{"id":"m","content":[{"type":"text","text":"done"}]}});
         fs::write(&path, format!("{content}{last}\n")).unwrap();
         assert!(!sync(&base, id, &workspace).unwrap());
         let page = Store::page(&base, id, &workspace, Window::After(after), 500, false).unwrap();
+        let output = page.events.iter().find(|event| event.kind == "tool" && event.data["id"] == "large-tool").unwrap();
+        let output = output.data["output"].as_str().unwrap();
+        assert!(output.starts_with("tool output "));
+        assert!(output.len() < 2 * 1024 * 1024);
         assert_eq!(
             page.events.iter().filter(|e| e.kind == "message").count(),
             1
@@ -2859,11 +3064,11 @@ mod tests {
     }
     #[test]
     fn partial_tail_is_left_untouched_and_oversize_is_rejected() {
-        assert!(bounded_line(&mut std::io::Cursor::new(b"{\"type\":"))
+        assert!(bounded_line(&mut std::io::Cursor::new(b"{\"type\":"), MAX_LINE)
             .unwrap()
             .is_none());
         assert!(
-            bounded_line(&mut std::io::Cursor::new(vec![b'x'; MAX_LINE as usize + 1])).is_err()
+            bounded_line(&mut std::io::Cursor::new(vec![b'x'; MAX_LINE as usize + 1]), MAX_LINE).is_err()
         );
     }
 

@@ -3,7 +3,7 @@
   align-items: center;
   gap: 8px;
   color: var(--fg-strong, #dfe1e5);
-  cursor: pointer;
+  cursor: default;
   user-select: none;
 }
 
@@ -30,7 +30,7 @@
   inset: 0;
   margin: 0;
   opacity: 0;
-  cursor: pointer;
+  cursor: default;
 }
 
 .disabled .native {
@@ -48,8 +48,8 @@
   box-shadow: inset 0 0 0 1px var(--border-checkbox, var(--control-off, #5f6269));
   color: var(--fg-button-primary, #ffffff);
   transition:
-    background var(--dur-fast, 80ms) ease,
-    box-shadow var(--dur-fast, 80ms) ease;
+    background var(--dur-fast, 80ms) var(--ease),
+    box-shadow var(--dur-fast, 80ms) var(--ease);
   pointer-events: none;
 }
 
@@ -87,14 +87,14 @@
   background: var(--bg-toggle-off, var(--bg-elev, #212326));
   box-shadow: inset 0 0 0 1px var(--border-toggle, var(--control-off, #5f6269));
   color: var(--fg-toggle-off, var(--fg-muted, #8c8f95));
-  font-size: 10px;
+  font-size: var(--fs-tiny);
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.02em;
-  cursor: pointer;
+  cursor: default;
   transition:
-    background var(--dur, 140ms) ease,
-    color var(--dur, 140ms) ease;
+    background var(--dur, 140ms) var(--ease),
+    color var(--dur, 140ms) var(--ease);
 }
 
 .switchOn {
@@ -128,7 +128,7 @@
   width: 16px;
   border-radius: 2px;
   background: var(--bg-toggle-knob, var(--control-off, #5f6269));
-  transition: transform var(--dur, 140ms) ease;
+  transition: transform var(--dur, 140ms) var(--ease);
 }
 
 .switchOn .knob {

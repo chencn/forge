@@ -205,21 +205,19 @@ describe("vcs changes 核心逻辑", () => {
       // 默认（s勾 w不勾）：只提交暂存块
       const onlyStaged = planCommit([partial], new Map());
       expect(onlyStaged.included.map((f) => f.path)).toEqual(["p.ts"]);
-      expect(onlyStaged.stage).toHaveLength(0);
-      expect(onlyStaged.unstage).toHaveLength(0);
+      expect(onlyStaged.selections).toEqual([{ path: "p.ts", oldPath: null, source: "index" }]);
 
       // s勾 w勾：全部内容提交
       const allChecks = new Map([[checkKey("worktree", partial.path), true]]);
       const everything = planCommit([partial], allChecks);
       expect(everything.included.map((f) => f.path)).toEqual(["p.ts"]);
-      expect(everything.stage).toEqual(["p.ts"]);
-      expect(everything.unstage).toHaveLength(0);
+      expect(everything.selections).toEqual([{ path: "p.ts", oldPath: null, source: "worktree" }]);
 
-      // s不勾 w不勾：整个放弃并 unstage
+      // s不勾 w不勾：不提交，也不改动真实索引
       const noneChecks = new Map([[checkKey("staged", partial.path), false]]);
       const dropped = planCommit([partial], noneChecks);
       expect(dropped.included).toHaveLength(0);
-      expect(dropped.unstage).toEqual(["p.ts"]);
+      expect(dropped.selections).toEqual([]);
 
       // s不勾 w勾：只提交工作区改动
       const workOnlyChecks = new Map([
@@ -228,34 +226,30 @@ describe("vcs changes 核心逻辑", () => {
       ]);
       const workOnly = planCommit([partial], workOnlyChecks);
       expect(workOnly.included.map((f) => f.path)).toEqual(["p.ts"]);
-      expect(workOnly.stage).toEqual(["p.ts"]);
-      expect(workOnly.unstage).toEqual(["p.ts"]);
+      expect(workOnly.selections).toEqual([{ path: "p.ts", oldPath: null, source: "worktreeOnly" }]);
     });
 
-    it("纯工作区变更勾选后先暂存再提交，取消勾选不动索引", () => {
+    it("纯工作区变更使用工作区来源，取消勾选不动索引", () => {
       const unstaged = change({ path: "mod.ts", workStatus: "M" });
 
       const on = planCommit([unstaged], new Map());
       expect(on.included.map((f) => f.path)).toEqual(["mod.ts"]);
-      expect(on.stage).toEqual(["mod.ts"]);
-      expect(on.unstage).toHaveLength(0);
+      expect(on.selections).toEqual([{ path: "mod.ts", oldPath: null, source: "worktree" }]);
 
       const off = new Map([[checkKey("worktree", unstaged.path), false]]);
       const skip = planCommit([unstaged], off);
       expect(skip.included).toHaveLength(0);
-      expect(skip.stage).toHaveLength(0);
-      expect(skip.unstage).toHaveLength(0);
+      expect(skip.selections).toEqual([]);
     });
 
     it("冲突文件不进提交计划：porcelain 的 UU 两边都有字母，不能对它跑 unstage", () => {
       const conflicted = change({ path: "c.ts", indexStatus: "U", workStatus: "U", conflicted: true });
       const plan = planCommit([conflicted], new Map());
       expect(plan.included).toHaveLength(0);
-      expect(plan.stage).toHaveLength(0);
-      expect(plan.unstage).toHaveLength(0);
+      expect(plan.selections).toEqual([]);
     });
 
-    it("已暂存文件取消勾选会 unstage，未跟踪文件勾选即 add", () => {
+    it("已暂存文件取消勾选保留原内容，未跟踪文件勾选才提交", () => {
       const stagedFile = change({ path: "s.ts", indexStatus: "M" });
       const untracked = change({ path: "new.ts", untracked: true });
 
@@ -266,8 +260,7 @@ describe("vcs changes 核心逻辑", () => {
       ]);
       const plan = planCommit([stagedFile, untracked], checks);
       expect(plan.included.map((f) => f.path)).toEqual(["new.ts"]);
-      expect(plan.stage).toEqual(["new.ts"]);
-      expect(plan.unstage).toEqual(["s.ts"]);
+      expect(plan.selections).toEqual([{ path: "new.ts", oldPath: null, source: "worktree" }]);
     });
   });
 

@@ -4,7 +4,7 @@ import { useI18n } from "../i18n";
 import type { AiProvider } from "../lib/aiCli";
 import { contextPercent, formatTokenCount } from "../lib/aiUsage";
 import type { AiUsage } from "../lib/aiUsage";
-import type { AiContext } from "../lib/aiContext";
+import { contextMatchesModel, type AiContext } from "../lib/aiContext";
 import { rememberContextWindow } from "../lib/aiContextMemory";
 import type { CompactDecision } from "../lib/aiCompact";
 import AiCompactPanel from "./AiCompactPanel";
@@ -52,7 +52,7 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
 
   const contextSelection = provider === "claude" ? selectedModel || actualModel : selectedModel;
   // 请求的模型与快照里的模型对不上时，快照按「过期」展示：数字还能看，但不能当决策依据。
-  const shownContext = context && contextSelection && contextSelection !== context.requestedModel && contextSelection !== context.model ? { ...context, stale: true } : context;
+  const shownContext = context && !contextMatchesModel(context, contextSelection) ? { ...context, stale: true } : context;
   const currentContext = shownContext && !shownContext.stale ? shownContext : undefined;
   // 没有正在跑的回合时，上一份快照就是用户唯一能看到的上下文：照常显示，
   // 过期只在弹层里标注。外面和弹层必须共用同一份数字，不能一个用快照、一个用本轮用量。

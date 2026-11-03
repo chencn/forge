@@ -14,6 +14,10 @@ export interface AiContext {
   categories: ContextRow[];
   sections: Partial<Record<"systemPrompt" | "systemTools" | "mcp" | "files" | "agents" | "skills" | "deferredTools" | "messages" | "attachments" | "toolCalls" | "toolResults", ContextItem[]>>;
 }
+/** CLI 可以把请求别名解析为实际模型；二者都能证明报告属于当前选择。 */
+export function contextMatchesModel(context: Pick<AiContext, "model" | "requestedModel">, selected?: string): boolean {
+  return !selected || selected === context.model || selected === context.requestedModel;
+}
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const number = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 function items(value: unknown, name = "name", source?: string, tokens = "tokens"): ContextItem[] | undefined {

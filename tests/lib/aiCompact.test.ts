@@ -69,6 +69,18 @@ describe("压缩用的分子与分母", () => {
 });
 
 describe("压缩判定", () => {
+  it("切换模型后不拿旧快照或旧用量自动压缩", () => {
+    const selected = state({ model: "new-model", prefs: { auto: true, threshold: 80 } });
+    const context = snapshot(190000, 200000, { model: "old-model" });
+    const usage: AiUsage = { context: 190000, window: 200000, model: "old-model" };
+    for (const data of [{ context }, { usage }, { context, usage }, { context: { ...context, stale: true }, usage }]) {
+      expect(compactDecision({ ...selected, ...data })).toMatchObject({ action: "none", reason: "ai.compact.blockNoNumbers" });
+    }
+  });
+  it("请求别名与实际模型不同仍使用对应的本轮快照", () => {
+    expect(compactDecision(state({ model: "sonnet", context: snapshot(190000, 200000, { requestedModel: "sonnet" }), prefs: { auto: true, threshold: 80 } })))
+      .toMatchObject({ action: "fire", model: "claude-sonnet-4-5" });
+  });
   it("还没到阈值就什么都不说", () => {
     expect(compactDecision(state({ context: snapshot(150000, 200000) }))).toMatchObject({ action: "none", percent: 75, noticeId: null, reason: null });
   });

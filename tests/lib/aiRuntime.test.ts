@@ -289,6 +289,24 @@ describe("AI runtime event store", () => {
     await runtime.sendAiMessage(session, "D:/project", "hello", true, { model: "test-model", effort: "high", permission: "auto", fast: true });
     expect(h.invoke).toHaveBeenCalledWith("ai_runtime_send", expect.objectContaining({ request: expect.objectContaining({ model: "test-model", effort: "high", permission: "auto", fast: true }) }));
   });
+  it("将无模型字段的 Codex 用量关联已报告配置，切换配置后等待新占用", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const { compactDecision } = await import("../../src/lib/aiCompact");
+    const usage = { tokenUsage: { last: { totalTokens: 95 }, total: { totalTokens: 500 }, modelContextWindow: 100 } };
+    const first = projectAiEvents([event(1, "status", { status: "running" }), event(2, "configuration", { model: "old" }), event(3, "usage", usage), event(4, "status", { status: "completed" })]);
+    expect(first.usage).toMatchObject({ model: "old", context: 95, window: 100 });
+    const decide = (state: typeof first, model: string) => compactDecision({ provider: "codex", status: state.status, stopping: false, boundSession: true, pendingRequests: 0, queuedTasks: 0, draft: "", usage: state.usage, model, prefs: { auto: true, threshold: 80 } });
+    expect(decide(first, "old").action).toBe("fire");
+    expect(decide(first, "new").action).toBe("none");
+    const changed = projectAiEvents([event(5, "configuration", { model: "new" })], first, true);
+    expect(changed.usage?.context).toBeUndefined();
+    expect(changed.usage?.window).toBeUndefined();
+    expect(decide(changed, "new").action).toBe("none");
+    const refreshed = projectAiEvents([event(6, "usage", usage)], changed, true);
+    expect(refreshed.usage).toMatchObject({ model: "new", context: 95, window: 100 });
+    expect(decide(refreshed, "new").action).toBe("fire");
+    expect(first.usage).toMatchObject({ model: "old", context: 95, window: 100 });
+  });
   it("passes pasted image paths to the backend instead of dropping them", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
     await (runtime.sendAiMessage as unknown as (...args: unknown[]) => Promise<void>)(

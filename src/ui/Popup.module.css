@@ -12,6 +12,11 @@
   outline: none;
 }
 
+/* Popup 与原版使用同一细轨道；嵌套列表不应出现两种滚动条。 */
+.popup::-webkit-scrollbar { width: 10px; height: 10px; }
+.popup::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border: 2px solid transparent; border-radius: 5px; background-clip: content-box; }
+.popup::-webkit-scrollbar-track, .popup::-webkit-scrollbar-corner { background: transparent; }
+
 .popup[data-positioned] {
   visibility: visible;
   opacity: 1;

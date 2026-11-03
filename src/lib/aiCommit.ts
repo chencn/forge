@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import type { GitChange } from "./git";
-import { gitIndexShow, gitShow } from "./git";
+import type { GitChange, GitCommitSelection } from "./git";
+import { gitDiffText } from "./git";
 import { readFile } from "./fs";
+import { describeError, errorCodeOf } from "./errors";
 
 export const COMMIT_FORMATS = [
   "conventional",
@@ -44,6 +45,7 @@ export interface AiCommitConfig {
   includeBody: boolean;
   subjectMaximumLength: number;
   maximumDiffCharacters: number;
+  maximumOutputTokens: number;
   reasoningEffort: CommitEffort;
 }
 
@@ -60,9 +62,11 @@ export const DEFAULT_AI_COMMIT_CONFIG: AiCommitConfig = {
   language: "simplifiedChinese",
   format: "conventional",
   customInstructions: "",
-  includeBody: false,
-  subjectMaximumLength: 256,
-  maximumDiffCharacters: 32_000,
+  includeBody: true,
+  // 0 表示不施加字符限制；输出预算交给服务商默认值。
+  subjectMaximumLength: 0,
+  maximumDiffCharacters: 0,
+  maximumOutputTokens: 0,
   reasoningEffort: "default",
 };
 
@@ -98,6 +102,7 @@ export async function loadAiCommitConfig(): Promise<AiCommitConfig> {
     activeId = filteredProviders[0].id;
   }
   const config: AiCommitConfig = {
+    ...DEFAULT_AI_COMMIT_CONFIG,
     ...loaded,
     providers: filteredProviders,
     activeProviderId: activeId,
@@ -311,112 +316,54 @@ export function isSensitiveCommitFile(path: string): boolean {
 
 /**
  * 为一组 GitChange 文件收集 diff 内容以供大模型分析。
- * 针对 staged 或 unstaged 文件分别读取基准内容并生成统一 diff 格式。
+ * 按提交计划读取 HEAD 到索引或工作区的真实差异，保留分散的修改块。
  */
 export async function collectFilesDiff(
   root: string,
   changes: GitChange[],
-  staged: boolean,
-  getEditorText?: (path: string) => string | null
+  selections: readonly GitCommitSelection[]
 ): Promise<AiCommitFileInput[]> {
   const results: AiCommitFileInput[] = [];
 
   for (const change of changes) {
-    if (isSensitiveCommitFile(change.path)) {
+    if (isSensitiveCommitFile(change.path) || (change.oldPath && isSensitiveCommitFile(change.oldPath))) {
       continue;
     }
     const absolute = `${root.replace(/[\\/]+$/, "")}/${change.path}`;
-    try {
-      let original = "";
-      let modified = "";
-
-      if (staged) {
-        // 已暂存：对比 HEAD 与 索引
-        if (change.indexStatus !== "A") {
-          original = await gitShow(root, "HEAD", absolute).catch(() => "");
-        }
-        if (change.indexStatus !== "D") {
-          modified = await gitIndexShow(root, absolute).catch(() => "");
-        }
+    const source = selections.find((selection) => selection.path === change.path)?.source;
+    if (!source) continue;
+    const worktree = source !== "index";
+    let diff: string;
+    if (source === "worktreeOnly") {
+      // 使用与实际提交相同的补丁重放；不能把原暂存修改混进生成输入。
+      diff = await gitDiffText(root, "HEAD", "", absolute, change.oldPath ?? undefined, false, true);
+    } else if (worktree && (change.untracked || change.indexStatus === "A")) {
+      // Git diff 不包含未跟踪文件；新增文件以空内容为基线，也适用于首个提交。
+      if (change.workStatus === "D") {
+        diff = "";
       } else {
-        // 未暂存：对比 索引 与 工作区
-        if (change.workStatus !== "A" && change.workStatus !== "?") {
-          original = await gitIndexShow(root, absolute).catch(() => "");
-        }
-        if (change.workStatus !== "D") {
-          const editorText = getEditorText ? getEditorText(absolute) : null;
-          if (editorText !== null) {
-            modified = editorText;
-          } else {
-            const fileRes = await readFile(absolute).catch(() => null);
-            modified = fileRes ? fileRes.contents : "";
-          }
+        const contents = (await readFile(absolute)).contents;
+        const lines = contents ? contents.split(/\r?\n/) : [];
+        if (lines.at(-1) === "") lines.pop();
+        diff = `--- /dev/null\n+++ ${JSON.stringify(`b/${change.path}`)}\n`;
+        if (lines.length > 0) {
+          diff += `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`;
         }
       }
-
-      // 组装简洁的行差异
-      const diffLines = buildUnifiedDiffLines(original, modified);
-      if (diffLines.trim()) {
-        results.push({
-          path: change.path,
-          changeKind: staged ? change.indexStatus : change.workStatus,
-          diff: diffLines,
-        });
-      }
-    } catch {
-      // 单个文件读取失败不中断其余文件
+    } else {
+      diff = await gitDiffText(root, worktree ? "HEAD" : "", "", absolute, change.oldPath ?? undefined, !worktree);
+    }
+    // 读取失败必须中止生成，不能悄悄漏文件后返回一条貌似完整的说明。
+    if (diff.trim()) {
+      results.push({
+        path: change.path,
+        changeKind: worktree ? change.workStatus.trim() || change.indexStatus : change.indexStatus,
+        diff,
+      });
     }
   }
 
   return results;
-}
-
-/**
- * 轻量生成基于原始与修改文本的差异文本（简化版 unified diff 格式）
- */
-function buildUnifiedDiffLines(original: string, modified: string): string {
-  if (original === modified) return "";
-  const origLines = original ? original.split(/\r?\n/) : [];
-  const modLines = modified ? modified.split(/\r?\n/) : [];
-
-  if (origLines.length === 0) {
-    return modLines.map((l) => `+${l}`).join("\n");
-  }
-  if (modLines.length === 0) {
-    return origLines.map((l) => `-${l}`).join("\n");
-  }
-
-  // 简单双指针找首尾相同行，中间作为修改块
-  let start = 0;
-  while (start < origLines.length && start < modLines.length && origLines[start] === modLines[start]) {
-    start++;
-  }
-
-  let origEnd = origLines.length - 1;
-  let modEnd = modLines.length - 1;
-  while (origEnd >= start && modEnd >= start && origLines[origEnd] === modLines[modEnd]) {
-    origEnd--;
-    modEnd--;
-  }
-
-  const chunks: string[] = [];
-  // 保留最多 3 行上下文
-  const ctxStart = Math.max(0, start - 3);
-  for (let i = ctxStart; i < start; i++) {
-    chunks.push(` ${origLines[i]}`);
-  }
-  for (let i = start; i <= origEnd; i++) {
-    chunks.push(`-${origLines[i]}`);
-  }
-  for (let i = start; i <= modEnd; i++) {
-    chunks.push(`+${modLines[i]}`);
-  }
-  const ctxEnd = Math.min(origLines.length - 1, origEnd + 3);
-  for (let i = origEnd + 1; i <= ctxEnd; i++) {
-    chunks.push(` ${origLines[i]}`);
-  }
-
-  return chunks.join("\n");
 }
 
 /**
@@ -427,6 +374,7 @@ export function formatAiCommitError(
   t: (key: any, values?: Record<string, string | number>) => string
 ): string {
   const code = error instanceof Error ? error.message : String(error);
+  if (errorCodeOf(code) === "PARTIAL_COMMIT_CONFLICT") return describeError(code, t);
 
   const httpMatch = /^AI_COMMIT_HTTP_(\d{3})$/.exec(code);
   if (httpMatch) {

@@ -6,11 +6,11 @@
   white-space: nowrap;
   background: transparent;
   border: none;
-  cursor: pointer;
+  cursor: default;
   border-radius: var(--radius-small, 4px);
   transition:
-    background var(--dur-fast, 120ms) ease,
-    color var(--dur-fast, 120ms) ease;
+    background var(--dur-fast, 80ms) var(--ease),
+    color var(--dur-fast, 80ms) var(--ease);
 }
 
 .button:not(:disabled):hover,

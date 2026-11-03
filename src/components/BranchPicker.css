@@ -50,3 +50,23 @@
 @media (prefers-reduced-motion: reduce) {
   .branch-popup[data-positioned] { animation: none; }
 }
+.branch-popup-sync {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+}
+/* 行间距为 8px；同时存在的两个同步计数按参考收紧到 4px。 */
+.branch-popup-sync + .branch-popup-sync { margin-left: -4px; }
+
+/* IDEA 的同步箭头有独立语义色；菜单动作仍跟随中性前景。 */
+.toolbar-chip .git-sync-incoming,
+.branch-popup-sync.git-sync-incoming > svg { color: var(--git-incoming); }
+.toolbar-chip .git-sync-outgoing,
+.branch-popup-sync.git-sync-outgoing > svg { color: var(--git-outgoing); }
+/* 参考 SVG 自带图标色，数字则分别使用 accent / success 文本色。 */
+.branch-popup-sync.git-sync-incoming { color: var(--accent); }
+.branch-popup-sync.git-sync-outgoing { color: var(--success); }
+

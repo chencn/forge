@@ -891,7 +891,8 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       const paths = Array.isArray(data.paths) ? data.paths.filter((path): path is string => typeof path === "string") : [];
       if (paths.length) entries.push({ id: key, runId: event.runId, kind: "files", text: "", paths });
     } else if (event.kind === "usage") {
-      usage = normalizeAiUsage(data, usage);
+      // Codex tokenUsage 不带模型名，使用同一协议流里已经报告的配置确定归属。
+      usage = normalizeAiUsage(data, configuration?.model ? { ...usage, model: configuration.model } : usage);
     } else if (event.kind === "context" && (!runId || runId === event.runId)) {
       const next = normalizeAiContext(data, event.runId);
       if (next) { context = next; contextUnavailable = false; }
@@ -903,7 +904,8 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       if (next) commands = next;
     } else if (event.kind === "configuration") {
       if (typeof data.model === "string" && context && data.model !== context.model) staleContext();
-      if (typeof data.model === "string" && data.model !== configuration?.model && usage) usage = { ...usage, window: undefined, model: data.model };
+      // 配置变化不等于新模型已经报告占用；保留累计费用，等待新 usage 再建立归属。
+      if (typeof data.model === "string" && data.model !== configuration?.model && usage) usage = { ...usage, context: undefined, window: undefined };
       configuration = { ...configuration,
         ...(typeof data.model === "string" ? { model: data.model } : {}),
         ...(typeof data.effort === "string" ? { effort: data.effort } : {}),

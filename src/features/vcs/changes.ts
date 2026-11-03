@@ -2,7 +2,7 @@
  * VCS 提交工具窗口核心模型：变更分组、目录树构建、纳入复选框聚合与提交计划。
  * 1:1 对标 IntelliJ IDEA / IDEA 的变更树模型，同时保留目录聚合圆点与行尾状态字母。
  */
-import type { GitChange } from "../../lib/git";
+import type { GitChange, GitCommitSelection } from "../../lib/git";
 import { changeMark, folderMarks, isDeletedMark } from "../../lib/git";
 import { basenameOf } from "../../lib/format";
 
@@ -78,8 +78,8 @@ export function isPartiallyStaged(change: GitChange): boolean {
 /**
  * 勾选按「侧」独立存储：同一文件（部分暂存的）在已暂存与未暂存两组各有一条，
  * 各有自己的复选框，互不联动。
- * - `staged` 侧那条：勾 = 提交索引里的内容；不勾 = 取消暂存（unstage）
- * - `worktree` 侧那条：勾 = 把工作区内容也暂存进来一起提交；不勾 = 工作区不动
+ * - `staged` 侧那条：勾 = 提交索引里的内容；不勾 = 保留它供以后提交
+ * - `worktree` 侧那条：勾 = 提交工作区这部分修改；不勾 = 保留工作区这部分修改
  * 未跟踪文件与冲突文件只出现在各自组里，复用 `worktree` 侧的键。
  * 值就是布尔：勾或空。旧的 all/none/staged/hunks 四态模型按文件存一份，
  * 在两侧两条的显示下必然联动，连「这条勾选管哪一半」都说不清，已整个废掉。
@@ -357,52 +357,28 @@ export function filesOf(nodes: readonly ChangeNode[]): GitChange[] {
 export interface CommitPlan {
   /** 纳入本次提交的文件 */
   included: GitChange[];
-  /** 需要暂存的路径 */
-  stage: string[];
-  /** 需要取消暂存的路径 */
-  unstage: string[];
+  /** 每个文件只有一个明确来源，不再拼接互相冲突的暂存／取消暂存操作。 */
+  selections: GitCommitSelection[];
 }
 
 /**
- * 计算提交计划：按两侧的勾选独立推导，提交的永远是索引本身。
- * - 已暂存侧勾：索引内容纳入提交；不勾：unstage（那半不提交了）
- * - 工作区侧勾：先 add 再纳入；不勾：那半不动
- * 部分暂存文件两侧各自独立决策，组合出的四种提交范围都能表达：
- *   s勾+w不勾=只提交暂存块；s勾+w勾=全部；s不勾+w勾=只提交工作区改动；都不勾=整个放弃并 unstage。
+ * 按两侧勾选选择索引、完整工作区或仅未暂存修改；未选内容保留原样。
  */
 export function planCommit(changes: readonly GitChange[], checks: Checks): CommitPlan {
-  const plan: CommitPlan = { included: [], stage: [], unstage: [] };
-  const includedPaths = new Set<string>();
+  const plan: CommitPlan = { included: [], selections: [] };
   for (const c of changes) {
-    // 冲突文件不进计划：porcelain 的 `UU` 两边都有字母，按侧推导会对它跑
-    // restore --staged，把用户还没解决的冲突状态毁掉。提交门控挡着它们。
+    // 冲突文件由提交门控拦截，不把未合并状态当成可提交来源。
     if (c.conflicted) continue;
-    if (c.untracked) {
-      if (isChecked(c, "worktree", checks)) {
-        plan.included.push(c);
-        plan.stage.push(c.path); // 未跟踪文件没有索引位，勾选即 add
-      }
-      continue;
-    }
-    const hasStaged = c.indexStatus.trim() !== "";
-    const hasWork = c.workStatus.trim() !== "";
-    const stageSide = isChecked(c, "staged", checks);
-    const workSide = isChecked(c, "worktree", checks);
-    if (hasStaged) {
-      if (stageSide) {
-        includedPaths.add(c.path);
-        plan.included.push(c);
-      } else {
-        plan.unstage.push(c.path);
-      }
-    }
-    if (hasWork && workSide) {
-      if (!includedPaths.has(c.path)) {
-        includedPaths.add(c.path);
-        plan.included.push(c);
-      }
-      plan.stage.push(c.path);
-    }
+    const hasStaged = !c.untracked && c.indexStatus.trim() !== "";
+    const stageSide = hasStaged && isChecked(c, "staged", checks);
+    const workSide = (c.untracked || c.workStatus.trim() !== "") && isChecked(c, "worktree", checks);
+    if (!stageSide && !workSide) continue;
+    plan.included.push(c);
+    plan.selections.push({
+      path: c.path,
+      oldPath: c.oldPath,
+      source: workSide ? hasStaged && !stageSide ? "worktreeOnly" : "worktree" : "index",
+    });
   }
   return plan;
 }

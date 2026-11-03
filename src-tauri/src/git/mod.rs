@@ -86,6 +86,9 @@ pub struct GitBranch {
     pub remote: bool,
     /// 跟踪的上游分支短名；没有上游时为空串。
     pub upstream: String,
+    /// 相对各自上游的同步数量；一次 for-each-ref 读取，避免逐分支起进程。
+    pub ahead: u64,
+    pub behind: u64,
     /// 是否为某个远端的默认分支，即 `<远端>/HEAD` 指向的那条。本地分支恒为 false。
     pub default_ref: bool,
 }
@@ -220,14 +223,36 @@ const GIT_OUTPUT_CEILING: usize = 64 * 1024 * 1024;
 
 /// 按块抽干一个管道，最多存 `ceiling` 字节；再多就只读不存——必须一路读到 EOF，
 /// 否则对端塞满管道缓冲会卡死在写操作上。返回 (字节, 是否超限)。
+#[cfg(test)]
 fn read_capped(reader: &mut impl std::io::Read, ceiling: usize) -> (Vec<u8>, bool) {
+    read_capped_output(reader, ceiling, None)
+}
+
+/// Git 用回车覆盖进度行；按字节保留跨块 UTF-8，超长单行丢弃到下个分隔符。
+fn read_capped_output(reader: &mut impl std::io::Read, ceiling: usize, on_line: Option<&dyn Fn(String)>) -> (Vec<u8>, bool) {
     let mut bytes: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
     let mut overflow = false;
+    let mut pending = Vec::new();
+    let mut oversized_line = false;
     loop {
         match reader.read(&mut chunk) {
             Ok(0) | Err(_) => break,
             Ok(count) => {
+                if let Some(send) = on_line {
+                    for &byte in &chunk[..count] {
+                        if byte == b'\r' || byte == b'\n' {
+                            if !pending.is_empty() && !oversized_line {
+                                send(String::from_utf8_lossy(&pending).into_owned());
+                            }
+                            pending.clear();
+                            oversized_line = false;
+                        } else if !oversized_line {
+                            if pending.len() < 64 * 1024 { pending.push(byte); }
+                            else { pending.clear(); oversized_line = true; }
+                        }
+                    }
+                }
                 if !overflow && bytes.len() + count <= ceiling {
                     bytes.extend_from_slice(&chunk[..count]);
                 } else {
@@ -235,6 +260,9 @@ fn read_capped(reader: &mut impl std::io::Read, ceiling: usize) -> (Vec<u8>, boo
                 }
             }
         }
+    }
+    if !pending.is_empty() && !oversized_line {
+        if let Some(send) = on_line { send(String::from_utf8_lossy(&pending).into_owned()); }
     }
     (bytes, overflow)
 }
@@ -250,8 +278,29 @@ fn run_git_raw_env(
     stdin: Option<&str>,
     extra_envs: &[(&str, &std::ffi::OsStr)],
 ) -> Result<GitOutput, String> {
+    run_git_raw_env_output(root, args, stdin, extra_envs, None)
+}
+
+fn run_git_raw_env_output(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+    extra_envs: &[(&str, &std::ffi::OsStr)],
+    on_output: Option<tauri::ipc::Channel<String>>,
+) -> Result<GitOutput, String> {
     // 读的一律放行，写的排队，免得两条同时落进 `.git` 撞锁。
     let _queued = mutates_repo(args).then(git_write_lock);
+    run_git_unlocked(root, args, stdin, extra_envs, on_output)
+}
+
+/// 多步提交事务已持有写锁，内部命令不能再次获取同一把锁。
+fn run_git_unlocked(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+    extra_envs: &[(&str, &std::ffi::OsStr)],
+    on_output: Option<tauri::ipc::Channel<String>>,
+) -> Result<GitOutput, String> {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -297,8 +346,13 @@ fn run_git_raw_env(
     let mut stderr_pipe = child.stderr.take().expect("git stderr piped");
     // 两条管道都要有人抽干，git 才不会塞满管道卡死在写操作上；stderr 挪去线程，
     // 主线程收 stdout。超限的字节继续读但不再存，落定后再判超限。
-    let stderr_task = std::thread::spawn(move || read_capped(&mut stderr_pipe, GIT_OUTPUT_CEILING));
-    let (stdout_bytes, stdout_over) = read_capped(&mut stdout_pipe, GIT_OUTPUT_CEILING);
+    let stderr_channel = on_output.clone();
+    let stderr_task = std::thread::spawn(move || {
+        let send = |line| { if let Some(channel) = &stderr_channel { let _ = channel.send(line); } };
+        read_capped_output(&mut stderr_pipe, GIT_OUTPUT_CEILING, stderr_channel.as_ref().map(|_| &send as &dyn Fn(String)))
+    });
+    let send = |line| { if let Some(channel) = &on_output { let _ = channel.send(line); } };
+    let (stdout_bytes, stdout_over) = read_capped_output(&mut stdout_pipe, GIT_OUTPUT_CEILING, on_output.as_ref().map(|_| &send as &dyn Fn(String)));
     let (stderr_bytes, stderr_over) = match stderr_task.join() {
         Ok(pair) => pair,
         Err(_) => return Err(err("GIT_SPAWN", "git stderr reader panicked")),
@@ -827,6 +881,18 @@ fn git_unstage_impl(root: String, paths: Vec<String>) -> Result<(), String> {
     stage_paths(root, &paths, true)
 }
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitSource { Index, Worktree, WorktreeOnly }
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSelection {
+    path: String,
+    old_path: Option<String>,
+    source: CommitSource,
+}
+
 #[tauri::command]
 pub async fn git_commit(
     root: String,
@@ -836,6 +902,7 @@ pub async fn git_commit(
     signoff: Option<bool>,
     author: Option<String>,
     no_verify: Option<bool>,
+    selections: Option<Vec<CommitSelection>>,
 ) -> Result<String, String> {
     block(move || {
         git_commit_impl(
@@ -846,6 +913,7 @@ pub async fn git_commit(
             signoff.unwrap_or(false),
             author,
             no_verify.unwrap_or(false),
+            selections,
         )
     })
     .await
@@ -859,6 +927,7 @@ fn git_commit_impl(
     signoff: bool,
     author: Option<String>,
     no_verify: bool,
+    selections: Option<Vec<CommitSelection>>,
 ) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let message = message.trim();
@@ -883,6 +952,12 @@ fn git_commit_impl(
     }
     if no_verify {
         args.push("--no-verify".into());
+    }
+    if let Some(selections) = selections {
+        if paths.as_ref().is_some_and(|paths| !paths.is_empty()) {
+            return Err(err("BAD_COMMIT_SELECTION", "paths and selections are mutually exclusive"));
+        }
+        return commit_selected(&root, &args, &selections);
     }
     // --only：只提交点名的那几条路径（取工作区内容），索引里其它文件的已暂存块不动——
     // 提交面板的复选框勾选语义就是它：勾了的提交，没勾的连索引都不碰。
@@ -921,6 +996,166 @@ fn git_commit_impl(
     Ok(trim_line(&output.stdout))
 }
 
+/// 事务内部统一检查 Git 的退出码，不能把补丁失败当作空选择继续提交。
+fn selected_git(root: &Path, args: &[&str], input: Option<&str>, index: Option<&TempIndex>) -> Result<String, String> {
+    let env = index.map(TempIndex::envs);
+    let output = run_git_unlocked(root, args, input, env.as_ref().map_or(&[], |env| &env[..]), None)?;
+    if !output.ok { return Err(fail(&output)); }
+    Ok(output.stdout)
+}
+
+fn real_index_path(root: &Path) -> Result<PathBuf, String> {
+    let path = selected_git(root, &["rev-parse", "--git-path", "index"], None, None)?;
+    let path = PathBuf::from(path.trim());
+    Ok(if path.is_absolute() { path } else { root.join(path) })
+}
+
+/// 直接取选中来源的索引项，避免改名的旧路径与另一个新文件相互覆盖。
+fn selected_path(root: &Path, index: &TempIndex, tree: &str, path: &str) -> Result<(), String> {
+    let entry = selected_git(root, &["--literal-pathspecs", "ls-tree", "-rz", "--full-tree", tree, "--", path], None, None)?;
+    let entry = if entry.is_empty() { format!("0 {}\t{path}\0", "0".repeat(tree.len())) } else { entry };
+    selected_git(root, &["update-index", "-z", "--index-info"], Some(&entry), Some(index))?;
+    Ok(())
+}
+
+/// C 是本次提交，J 是提交后的索引；J 保留未选内容，工作区文件不需要来回覆盖。
+/// 调用方必须持有 git_write_lock，真实提交还须独占 Git 的 index.lock。
+fn selected_indexes(root: &Path, selections: &[CommitSelection]) -> Result<(TempIndex, TempIndex), String> {
+    let committed = TempIndex::new(root);
+    let remaining = TempIndex::new(root);
+    let index_path = real_index_path(root)?;
+    match std::fs::copy(&index_path, &remaining.0) {
+        Ok(_) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            selected_git(root, &["read-tree", "--empty"], None, Some(&remaining))?;
+        },
+        Err(error) => return Err(err("FS", error)),
+    }
+    let index_tree = selected_git(root, &["write-tree"], None, Some(&remaining))?;
+    let mut seen = HashSet::new();
+    let mut paths = Vec::with_capacity(selections.len());
+    let mut working_paths = String::new();
+    for selection in selections {
+        let path = relative_path(root, &selection.path)?;
+        if !seen.insert(path.clone()) { return Err(err("BAD_COMMIT_SELECTION", "duplicate path")); }
+        let mut relatives = vec![path];
+        if let Some(old) = selection.old_path.as_deref().filter(|old| !old.is_empty()) {
+            let old = relative_path(root, old)?;
+            if old != relatives[0] { relatives.push(old); }
+        }
+        if !matches!(selection.source, CommitSource::Index) {
+            for (index, path) in relatives.iter().enumerate() {
+                // 已暂存的改名在原索引中已没有旧路径，不把不存在的 pathspec 再交给 add。
+                let tracked = index == 0 || run_git_unlocked(root, &["cat-file", "-e", &format!("{}:{path}", index_tree.trim())], None, &[], None)?.ok;
+                if tracked { working_paths.push_str(path); working_paths.push('\0'); }
+            }
+        }
+        paths.push(relatives);
+    }
+    // 只读一次所选工作区内容，C 与 J 从相同快照构造，避免分别 add 读到两份内容。
+    if !working_paths.is_empty() {
+        selected_git(root, &["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], Some(&working_paths), Some(&remaining))?;
+    }
+    let working_tree = selected_git(root, &["write-tree"], None, Some(&remaining))?;
+    if has_head(root)? {
+        selected_git(root, &["read-tree", "HEAD"], None, Some(&committed))?;
+    } else {
+        selected_git(root, &["read-tree", "--empty"], None, Some(&committed))?;
+    }
+    for (selection, paths) in selections.iter().zip(&paths) {
+        let tree = match selection.source {
+            CommitSource::Index => index_tree.trim(),
+            CommitSource::Worktree => working_tree.trim(),
+            CommitSource::WorktreeOnly => continue,
+        };
+        selected_path(root, &committed, tree, &paths[0])?;
+        for old in paths.iter().skip(1).filter(|old| !seen.contains(*old)) {
+            selected_path(root, &committed, tree, old)?;
+        }
+    }
+    for (selection, paths) in selections.iter().zip(&paths) {
+        if !matches!(selection.source, CommitSource::WorktreeOnly) { continue; }
+        let mut args = vec!["--literal-pathspecs", "diff", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--unified=3", index_tree.trim(), working_tree.trim(), "--"];
+        args.extend(paths.iter().map(String::as_str));
+        let patch = selected_git(root, &args, None, None)?;
+        if patch.is_empty() { continue; }
+        if selected_git(root, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(&patch), Some(&committed)).is_ok() { continue; }
+        // 以原索引为基准重放 B，允许补丁上下文含 A；union/custom driver 不能把冲突变成成功。
+        for path in paths {
+            let attributes = selected_git(root, &["--literal-pathspecs", "check-attr", "-z", "merge", "--", path], None, None)?;
+            if !matches!(attributes.split('\0').nth(2), Some("unspecified" | "set" | "text")) {
+                return Err(err("PARTIAL_COMMIT_CONFLICT", &selection.path));
+            }
+        }
+        let custom_text = run_git_unlocked(root, &["config", "--get", "merge.text.driver"], None, &[], None)?.ok;
+        if custom_text || selected_git(root, &["-c", "merge.default=text", "-c", "merge.renormalize=false", "apply", "--cached", "--3way", "--whitespace=nowarn", "-"], Some(&patch), Some(&committed)).is_err() {
+            return Err(err("PARTIAL_COMMIT_CONFLICT", &selection.path));
+        }
+    }
+    Ok((committed, remaining))
+}
+
+/// 使用 Git 的锁文件协议，防止事务期间其他进程写真实索引。
+struct CommitIndexLock { path: PathBuf, file: Option<std::fs::File>, installed: bool }
+
+impl CommitIndexLock {
+    fn acquire(index_path: &Path) -> Result<Self, String> {
+        let mut name = index_path.as_os_str().to_os_string();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| err("GIT_INDEX_LOCK", error))?;
+        Ok(Self { path, file: Some(file), installed: false })
+    }
+    fn prepare(&mut self, remaining: &TempIndex) -> Result<(), String> {
+        let mut source = std::fs::File::open(&remaining.0).map_err(|error| err("FS", error))?;
+        let file = self.file.as_mut().expect("index lock is open");
+        file.set_len(0).map_err(|error| err("FS", error))?;
+        std::io::Seek::seek(file, std::io::SeekFrom::Start(0)).map_err(|error| err("FS", error))?;
+        std::io::copy(&mut source, file).map_err(|error| err("FS", error))?;
+        file.sync_all().map_err(|error| err("FS", error))
+    }
+    fn install(mut self, index_path: &Path) -> Result<(), String> {
+        self.file.take();
+        std::fs::rename(&self.path, index_path).map_err(|error| err("COMMIT_INDEX_INSTALL", error))?;
+        self.installed = true;
+        Ok(())
+    }
+}
+
+impl Drop for CommitIndexLock {
+    fn drop(&mut self) {
+        self.file.take();
+        if !self.installed { let _ = std::fs::remove_file(&self.path); }
+    }
+}
+
+fn commit_selected(root: &Path, args: &[String], selections: &[CommitSelection]) -> Result<String, String> {
+    let _queued = git_write_lock();
+    let index_path = real_index_path(root)?;
+    let mut index_lock = CommitIndexLock::acquire(&index_path)?;
+    let (committed, mut remaining) = selected_indexes(root, selections)?;
+    let expected_tree = selected_git(root, &["write-tree"], None, Some(&committed))?;
+    // 提交前准备好剩余索引并落盘，hooks 或 commit 失败时只移除我们自己的锁文件。
+    index_lock.prepare(&remaining)?;
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = selected_git(root, &refs, None, Some(&committed))?;
+    // 提交已经完成：后续失败必须保留恢复索引，不能把它随临时文件一起清掉。
+    remaining.1 = true;
+    let finish = || -> Result<(), String> {
+        let actual_tree = selected_git(root, &["write-tree"], None, Some(&committed))?;
+        if actual_tree != expected_tree {
+            // 保留 hook 对索引的修改，同时保留未被选中的原暂存内容。
+            let patch = selected_git(root, &["diff", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", expected_tree.trim(), actual_tree.trim()], None, None)?;
+            selected_git(root, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(&patch), Some(&remaining))?;
+            index_lock.prepare(&remaining)?;
+        }
+        index_lock.install(&index_path)
+    };
+    finish().map_err(|error| err_parts("COMMIT_INDEX_RECOVERY", &[remaining.0.to_string_lossy().into_owned(), error]))?;
+    remaining.1 = false;
+    Ok(trim_line(&output))
+}
+
 /// 把一份统一差异打进去：cached=true 只动索引（按块暂存），false 落到工作区（按块回退）；
 /// reverse=true 反着打（`-R`，把补丁里的新增删回去）。
 #[tauri::command]
@@ -957,7 +1192,11 @@ fn git_apply_patch_impl(root: String, patch: String, cached: bool, reverse: bool
 
 /// 网络类操作共用的执行体：把 stderr 一并回给前端，进度文案都在那里。
 fn remote_op(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = run_git(root, args)?;
+    remote_op_output(root, args, None)
+}
+
+fn remote_op_output(root: &Path, args: &[&str], on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
+    let output = run_git_raw_env_output(root, args, None, &[], on_output)?;
     if !output.ok {
         return Err(fail(&output));
     }
@@ -970,36 +1209,48 @@ fn remote_op(root: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn git_fetch(root: String) -> Result<String, String> {
-    block(move || git_fetch_impl(root)).await
+pub async fn git_fetch(webview: tauri::Webview, root: String, on_output: Option<tauri::ipc::JavaScriptChannelId>) -> Result<String, String> {
+    // 可选 Channel 先反序列化为 ID；Option<Channel<T>> 不实现 Tauri 的 CommandArg。
+    let on_output = on_output.map(|id| id.channel_on::<_, String>(webview));
+    block(move || git_fetch_impl(root, on_output)).await
 }
 
-fn git_fetch_impl(root: String) -> Result<String, String> {
+fn git_fetch_impl(root: String, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     // IDEA 的抓取也是每个远端一次并带 --prune；标签不单独强拉，跟着 git 的默认走。
-    remote_op(&root, &["fetch", "--all", "--prune", "--progress"])
+    remote_op_output(&root, &["fetch", "--all", "--prune", "--progress"], on_output)
 }
 
 /// 拉取。没有上游的分支 git 会直接拒绝，把原因回给用户而不是替他猜。
 #[tauri::command]
-pub async fn git_pull(root: String, method: Option<String>) -> Result<String, String> {
-    block(move || git_pull_impl(root, method.as_deref().unwrap_or("ff-only"))).await
+pub async fn git_pull(webview: tauri::Webview, root: String, method: Option<String>, on_output: Option<tauri::ipc::JavaScriptChannelId>) -> Result<String, String> {
+    let on_output = on_output.map(|id| id.channel_on::<_, String>(webview));
+    block(move || git_pull_output(root, method.as_deref().unwrap_or("merge"), on_output)).await
 }
 
+#[cfg(test)]
 fn git_pull_impl(root: String, method: &str) -> Result<String, String> {
+    git_pull_output(root, method, None)
+}
+
+fn git_pull_output(root: String, method: &str, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     // 只允许表单公开的三种策略；先校验再抓取，非法参数不能产生远端副作用。
     let integrate: &[&str] = match method {
-        "ff-only" => &["merge", "--ff-only", "@{upstream}"],
-        "merge" => &["merge", "--ff", "--no-edit", "@{upstream}"],
-        "rebase" => &["rebase", "@{upstream}"],
+        "ff-only" => &["merge", "--ff-only", "--autostash", "@{upstream}"],
+        "merge" => &["merge", "--ff", "--no-edit", "--autostash", "@{upstream}"],
+        "rebase" => &["rebase", "--autostash", "@{upstream}"],
         _ => return Err(err("BAD_UPDATE_METHOD", method)),
     };
     // 拆成 fetch + merge 两段：fetch 不在 MUTATING 名单里、不占本地写锁，
     // 网络再慢也只是它自己在等；整条 `pull` 占着写锁的话，一次凭据弹窗
     // 能把全应用的暂存 / 提交 / 切分支全部堵在队列里。语义与 pull --ff-only 一致。
-    let fetched = remote_op(&root, &["fetch", "--all", "--prune", "--progress"])?;
-    let merged = remote_op(&root, integrate)?;
+    let fetched = remote_op_output(&root, &["fetch", "--all", "--prune", "--progress"], on_output.clone())?;
+    let merged = remote_op_output(&root, integrate, on_output)?;
+    // merge 的自动暂存恢复冲突可能仍返回 0；此时不能报告成功或继续重推。
+    let unresolved = run_git(&root, &["diff", "--name-only", "--diff-filter=U"])?;
+    if !unresolved.ok { return Err(fail(&unresolved)); }
+    if !unresolved.stdout.trim().is_empty() { return Err(err("GIT", &merged)); }
     let mut parts: Vec<&str> = vec![fetched.trim(), merged.trim()]
         .into_iter()
         .filter(|part| !part.is_empty())
@@ -1008,34 +1259,125 @@ fn git_pull_impl(root: String, method: &str) -> Result<String, String> {
     Ok(parts.join("\n"))
 }
 
-/// 推送。当前分支没有上游时退回 `push <远端> HEAD`，远端取第一个。
+/// 未签出的分支只快进引用；Git 同时拒绝更新任一工作树中已签出的分支。
 #[tauri::command]
-pub async fn git_push(root: String, set_upstream: bool) -> Result<String, String> {
-    block(move || git_push_impl(root, set_upstream)).await
+pub async fn git_update_branch(webview: tauri::Webview, root: String, branch: String, on_output: Option<tauri::ipc::JavaScriptChannelId>) -> Result<String, String> {
+    let on_output = on_output.map(|id| id.channel_on::<_, String>(webview));
+    block(move || git_update_branch_impl(root, branch, on_output)).await
 }
 
-fn git_push_impl(root: String, set_upstream: bool) -> Result<String, String> {
+fn git_update_branch_impl(root: String, branch: String, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    let head = run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    // 空仓库（还没有提交）这条 rev-parse 会失败：报 git 的原文，而不是把
-    // 空的 stdout 误判成游离 HEAD。
+    if !valid_branch_name(&branch) { return Err(err("BAD_BRANCH", &branch)); }
+    let destination = resolve_push_target(&root, Some(&branch))?;
+    if !destination.tracked { return Err(err("GIT", "Branch has no tracked branch")); }
+    let refspec = format!("refs/heads/{}:refs/heads/{branch}", destination.target);
+    remote_op_output(&root, &["fetch", "--progress", "--", &destination.remote, &refspec], on_output)
+}
+
+#[derive(Default, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct GitPushOptions {
+    branch: Option<String>,
+    remote: Option<String>,
+    target: Option<String>,
+    revision: Option<String>,
+    force_with_lease: bool,
+    set_upstream: bool,
+    tags: Option<PushTags>,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+enum PushTags { All, CurrentBranch }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushTarget {
+    branch: String,
+    remote: String,
+    target: String,
+    tracked: bool,
+}
+
+/// 目标来自 Git 的配置字段，不能按 upstream 的显示短名拆分远端。
+#[tauri::command]
+pub async fn git_push_target(root: String, branch: Option<String>) -> Result<GitPushTarget, String> {
+    block(move || resolve_push_target(&ensure_root(&root)?, branch.as_deref())).await
+}
+
+fn resolve_push_target(root: &Path, branch: Option<&str>) -> Result<GitPushTarget, String> {
+    let head = run_git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    let branch = branch.map(str::to_string).unwrap_or_else(|| trim_line(&head.stdout));
+    if branch.is_empty() { return Err(err("DETACHED_PUSH", "")); }
+    let source = format!("refs/heads/{branch}");
+    let head = run_git(root, &["show-ref", "--verify", &source])?;
     if !head.ok {
         return Err(fail(&head));
     }
-    let branch = trim_line(&head.stdout);
-    if branch.is_empty() || branch == "HEAD" {
-        return Err(err("DETACHED_PUSH", ""));
-    }
-    let tracked = run_git(&root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])?;
-    if tracked.ok && !set_upstream {
-        return remote_op(&root, &["push"]);
-    }
+    let configured_remote = run_git(root, &["config", "--get", &format!("branch.{branch}.remote")])?;
+    let configured_merge = run_git(root, &["config", "--get", &format!("branch.{branch}.merge")])?;
+    let remote = trim_line(&configured_remote.stdout);
+    let merge = trim_line(&configured_merge.stdout);
     let remotes = git_remotes_impl(root.to_string_lossy().into_owned())?;
-    let remote = remotes
-        .first()
-        .ok_or_else(|| err("NO_REMOTE", ""))?;
-    let args = vec!["push", "--set-upstream", remote.as_str(), branch.as_str()];
-    remote_op(&root, &args)
+    let tracked = configured_remote.ok && configured_merge.ok && remote != "." &&
+        remotes.contains(&remote) && merge.starts_with("refs/heads/");
+    let remote = if tracked { remote } else {
+        remotes.iter().find(|name| name.as_str() == "origin").or_else(|| remotes.first())
+            .cloned().ok_or_else(|| err("NO_REMOTE", ""))?
+    };
+    // 只接受已配置远端；禁止把 URL、路径或命令选项当作远端透传。
+    if !remotes.contains(&remote) { return Err(err("NO_REMOTE", &remote)); }
+    let target = if tracked { merge["refs/heads/".len()..].to_string() } else { branch.clone() };
+    Ok(GitPushTarget { branch, remote, target, tracked })
+}
+
+#[tauri::command]
+pub async fn git_push(webview: tauri::Webview, root: String, options: GitPushOptions, on_output: Option<tauri::ipc::JavaScriptChannelId>) -> Result<String, String> {
+    let on_output = on_output.map(|id| id.channel_on::<_, String>(webview));
+    block(move || git_push_output(root, options, on_output)).await
+}
+
+fn git_push_impl(root: String, options: GitPushOptions) -> Result<String, String> {
+    git_push_output(root, options, None)
+}
+
+fn git_push_output(root: String, options: GitPushOptions, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
+    let root = ensure_root(&root)?;
+    let destination = resolve_push_target(&root, options.branch.as_deref())?;
+    let remote = options.remote.as_deref().unwrap_or(&destination.remote);
+    let target = options.target.as_deref().unwrap_or(&destination.target);
+    let remotes = git_remotes_impl(root.to_string_lossy().into_owned())?;
+    if !remotes.iter().any(|name| name == remote) { return Err(err("NO_REMOTE", remote)); }
+    let target_ref = format!("refs/heads/{target}");
+    if !valid_branch_name(target) || !run_git(&root, &["check-ref-format", &target_ref])?.ok {
+        return Err(err("BAD_BRANCH", target));
+    }
+    let branch_ref = format!("refs/heads/{}", destination.branch);
+    let mut source = branch_ref.clone();
+    if let Some(revision) = &options.revision {
+        if !valid_rev(revision) { return Err(err("BAD_REV", revision)); }
+        let resolved = run_git(&root, &["rev-parse", "--verify", &format!("{revision}^{{commit}}")])?;
+        if !resolved.ok { return Err(fail(&resolved)); }
+        source = trim_line(&resolved.stdout);
+        if !run_git(&root, &["merge-base", "--is-ancestor", &source, &branch_ref])?.ok {
+            return Err(err("BAD_REV", revision));
+        }
+    }
+    let spec = format!("{source}:{target_ref}");
+    let mut args = vec!["push", "--progress"];
+    if options.force_with_lease { args.push("--force-with-lease"); }
+    // 部分历史推送不能把较早的提交误设为整条本地分支的跟踪关系。
+    if options.revision.is_none() && (options.set_upstream || !destination.tracked) { args.push("--set-upstream"); }
+    if matches!(options.tags, Some(PushTags::CurrentBranch)) { args.push("--follow-tags"); }
+    args.extend(["--", remote, &spec]);
+    let detail = remote_op_output(&root, &args, on_output.clone())?;
+    // 全部标签单独推送，分支强制选项不传播给标签。
+    if matches!(options.tags, Some(PushTags::All)) {
+        let tags = remote_op_output(&root, &["push", "--progress", "--tags", "--", remote], on_output)?;
+        return Ok(format!("{detail}\n{tags}"));
+    }
+    Ok(detail)
 }
 
 /// 打标签。`revision` 空串打在 HEAD 上；annotated 消息为空时退回轻量标签。
@@ -1115,6 +1457,9 @@ fn parse_refs(stdout: &str) -> GitRefs {
         // 标签那两列缺失就是空串，分支行用不到它们，别因此把分支整行丢掉。
         let target = fields.next().unwrap_or("");
         let created = fields.next().unwrap_or("");
+        let track = fields.next().unwrap_or("");
+        let count = |key: &str| track.trim_matches(['[', ']']).split(',')
+            .find_map(|part| part.trim().strip_prefix(key)?.parse::<u64>().ok()).unwrap_or(0);
 
         if let Some(name) = full.strip_prefix("refs/tags/").filter(|name| !name.is_empty()) {
             // 附注标签的 objectname 是标签对象自己的哈希，点层（*objectname）才是它指向的提交；
@@ -1158,6 +1503,8 @@ fn parse_refs(stdout: &str) -> GitRefs {
             current: !remote && is_current,
             remote,
             upstream: upstream.to_string(),
+            ahead: if remote { 0 } else { count("ahead ") },
+            behind: if remote { 0 } else { count("behind ") },
             default_ref: false,
         });
     }
@@ -1181,7 +1528,7 @@ fn git_refs_impl(root: String) -> Result<GitRefs, String> {
         &root,
         &[
             "for-each-ref",
-            "--format=%(HEAD)%1F%(refname)%1F%(upstream:short)%1F%(symref)%1F%(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)%1F%(creatordate:unix)",
+            "--format=%(HEAD)%1F%(refname)%1F%(upstream:short)%1F%(symref)%1F%(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)%1F%(creatordate:unix)%1F%(upstream:track)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
@@ -1622,15 +1969,16 @@ fn shelf_slug(name: &str) -> String {
     if s.is_empty() { "shelf".to_string() } else { s.to_string() }
 }
 
-/// `.git/forge-index-<pid>-<序号>` 临时索引文件，Drop 时连同 .lock 一起删。
-struct TempIndex(PathBuf);
+/// 临时索引放在用户 temp，兼容 .git 是文件的 linked worktree。
+struct TempIndex(PathBuf, bool);
 
 impl TempIndex {
-    fn new(root: &Path) -> Self {
+    fn new(_root: &Path) -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        TempIndex(root.join(".git").join(format!("forge-index-{}-{n}", std::process::id())))
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        TempIndex(std::env::temp_dir().join(format!("forge-index-{}-{stamp}-{n}", std::process::id())), false)
     }
     fn envs(&self) -> [(&str, &std::ffi::OsStr); 1] {
         [("GIT_INDEX_FILE", self.0.as_os_str())]
@@ -1639,7 +1987,7 @@ impl TempIndex {
 
 impl Drop for TempIndex {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if !self.1 { let _ = std::fs::remove_file(&self.0); }
         let _ = std::fs::remove_file(self.0.with_extension("lock"));
     }
 }
@@ -2070,18 +2418,27 @@ fn push_target(root: &Path, name: &str) -> Result<String, String> {
 
 /// 推送指定的分支或标签，不碰当前分支的上游设置。
 #[tauri::command]
-pub async fn git_push_ref(root: String, name: String) -> Result<String, String> {
-    block(move || git_push_ref_impl(root, name)).await
+pub async fn git_push_ref(webview: tauri::Webview, root: String, name: String, on_output: Option<tauri::ipc::JavaScriptChannelId>) -> Result<String, String> {
+    let on_output = on_output.map(|id| id.channel_on::<_, String>(webview));
+    block(move || git_push_ref_output(root, name, on_output)).await
 }
 
+#[cfg(test)]
 fn git_push_ref_impl(root: String, name: String) -> Result<String, String> {
+    git_push_ref_output(root, name, None)
+}
+
+fn git_push_ref_output(root: String, name: String, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     // 分支名或标签版本引用均可推送到远端
     if !valid_branch_name(&name) && !valid_rev(&name) {
         return Err(err("BAD_REV", &name));
     }
+    if run_git(&root, &["show-ref", "--verify", &format!("refs/heads/{name}")])?.ok {
+        return git_push_output(root.to_string_lossy().into_owned(), GitPushOptions { branch: Some(name), ..Default::default() }, on_output);
+    }
     let remote = push_target(&root, &name)?;
-    remote_op(&root, &["push", remote.as_str(), name.as_str()])
+    remote_op_output(&root, &["push", "--progress", "--", remote.as_str(), name.as_str()], on_output)
 }
 
 /// 删除远端分支：往服务器推一条删除引用，本地的远程跟踪引用跟着消失。
@@ -2221,7 +2578,7 @@ fn git_restore_file_impl(root: String, revision: String, path: String) -> Result
     Ok(relative)
 }
 
-/// 两侧版本之间的统一差异；`path` 留空取整条提交，右侧空串表示工作区那一侧。
+/// 两侧版本之间的统一差异；`path` 留空取整体，`cached` 时读取索引而非工作区。
 #[tauri::command]
 pub async fn git_diff_text(
     root: String,
@@ -2229,8 +2586,19 @@ pub async fn git_diff_text(
     right: String,
     path: String,
     old_path: Option<String>,
+    cached: Option<bool>,
+    worktree_only: Option<bool>,
 ) -> Result<String, String> {
-    block(move || git_diff_text_impl(root, left, right, path, old_path)).await
+    block(move || {
+        if worktree_only.unwrap_or(false) {
+            let root = ensure_root(&root)?;
+            let _queued = git_write_lock();
+            let (index, _) = selected_indexes(&root, &[CommitSelection { path, old_path, source: CommitSource::WorktreeOnly }])?;
+            selected_git(&root, &["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=3"], None, Some(&index))
+        } else {
+            git_diff_text_impl(root, left, right, path, old_path, cached.unwrap_or(false))
+        }
+    }).await
 }
 
 fn git_diff_text_impl(
@@ -2239,9 +2607,12 @@ fn git_diff_text_impl(
     right: String,
     path: String,
     old_path: Option<String>,
+    cached: bool,
 ) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    if !valid_rev(&left) || (!right.is_empty() && !valid_rev(&right)) {
+    if !(cached && left.is_empty() || valid_rev(&left))
+        || (!right.is_empty() && (cached || !valid_rev(&right)))
+    {
         return Err(err("BAD_REV", &left));
     }
     // 空 path 表示整条提交，不加路径限定；其余照旧。
@@ -2260,7 +2631,13 @@ fn git_diff_text_impl(
         }
     }
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff"];
-    args.push(left.as_str());
+    // --cached 不指定左侧时由 Git 使用 HEAD；未产生首个提交的仓库也能得到新增差异。
+    if cached {
+        args.push("--cached");
+    }
+    if !left.is_empty() {
+        args.push(left.as_str());
+    }
     if !right.is_empty() {
         args.push(right.as_str());
     }
@@ -2518,13 +2895,8 @@ pub async fn git_push_up_to(root: String, branch: String, revision: String) -> R
 }
 
 fn git_push_up_to_impl(root: String, branch: String, revision: String) -> Result<String, String> {
-    let root = ensure_root(&root)?;
-    if !valid_branch_name(&branch) || !valid_rev(&revision) {
-        return Err(err("BAD_REV", &revision));
-    }
-    let remote = push_target(&root, &branch)?;
-    let spec = format!("{revision}:refs/heads/{branch}");
-    remote_op(&root, &["push", remote.as_str(), spec.as_str()])
+    // 与完整推送共享上游解析和 refspec 校验，避免忽略上游的实际分支名。
+    git_push_impl(root, GitPushOptions { branch: Some(branch), revision: Some(revision), ..Default::default() })
 }
 
 /// 按一边了结一个冲突文件：取 stage 2（本地）或 stage 3（对方）覆盖工作区并暂存；
@@ -3036,7 +3408,8 @@ mod tests {
     use super::{
         forget_ignored, git_authors_impl, git_commit_detail_impl, git_ignored_impl, git_log_impl,
         git_probe_impl, git_restore_file_impl, git_show_impl, git_status_impl, merge_file_lists,
-        parse_log, parse_refs, parse_status, read_capped, valid_range, valid_rev, GitLogQuery,
+        parse_log, parse_refs, parse_status, read_capped, read_capped_output, valid_range, valid_rev, GitLogQuery,
+        git_push_impl, run_git, GitPushOptions, PushTags,
     };
     // relative_path 的用例直接拿 &Path 当根，这里补上类型导入。
     use std::path::Path;
@@ -3047,6 +3420,40 @@ mod tests {
         let (bytes, overflow) = read_capped(&mut data.as_slice(), 64 * 1024);
         assert!(!overflow);
         assert_eq!(bytes.len(), 4096);
+    }
+
+    #[test]
+    fn progress_frames_preserve_utf8_crlf_and_final_line() {
+        struct Fragmented<'a>(&'a [u8]);
+        impl std::io::Read for Fragmented<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.0.len().min(buffer.len()).min(2);
+                buffer[..count].copy_from_slice(&self.0[..count]);
+                self.0 = &self.0[count..];
+                Ok(count)
+            }
+        }
+        let data = "接收 25%\r接收 100%\r\n完成";
+        let lines = std::cell::RefCell::new(Vec::new());
+        let send = |line| lines.borrow_mut().push(line);
+        let (bytes, overflow) = read_capped_output(&mut Fragmented(data.as_bytes()), 1024, Some(&send));
+        assert_eq!(bytes, data.as_bytes());
+        assert!(!overflow);
+        assert_eq!(lines.into_inner(), ["接收 25%", "接收 100%", "完成"]);
+    }
+
+    #[test]
+    fn progress_discards_oversized_lines_and_drains_after_capture_limit() {
+        let mut data = vec![b'x'; 128 * 1024];
+        data.extend_from_slice(b"\rWriting 25%\nfinal");
+        let lines = std::cell::RefCell::new(Vec::new());
+        let send = |line| lines.borrow_mut().push(line);
+        let mut reader = data.as_slice();
+        let (bytes, overflow) = read_capped_output(&mut reader, 1024, Some(&send));
+        assert!(overflow);
+        assert!(bytes.len() <= 1024);
+        assert!(reader.is_empty());
+        assert_eq!(lines.into_inner(), ["Writing 25%", "final"]);
     }
 
     /// 拿真实测试项目走一遍读取链（探根、status、log、blob）。依赖本机路径，
@@ -3130,6 +3537,14 @@ mod tests {
         assert!(refs.branches[0].current);
         assert!(!refs.branches[0].default_ref);
         assert!(!refs.branches[1].current);
+    }
+
+    #[test]
+    fn branch_sync_counts_follow_each_upstream() {
+        let refs = parse_refs("*\u{1f}refs/heads/main\u{1f}origin/main\u{1f}\u{1f}abc\u{1f}1\u{1f}[ahead 2, behind 3]\n \u{1f}refs/heads/gone\u{1f}origin/gone\u{1f}\u{1f}abc\u{1f}1\u{1f}[gone]\n \u{1f}refs/remotes/origin/main\u{1f}\u{1f}\u{1f}abc\u{1f}1\u{1f}\n");
+        assert_eq!((refs.branches[0].ahead, refs.branches[0].behind), (2, 3));
+        assert_eq!((refs.branches[1].ahead, refs.branches[1].behind), (0, 0));
+        assert_eq!((refs.branches[2].ahead, refs.branches[2].behind), (0, 0));
     }
 
     /// 分支与标签共用一趟 `for-each-ref`：同一条输出里两种前缀各归各的，
@@ -3541,6 +3956,395 @@ mod tests {
         run(&["config", "user.name", "forge"]);
         run(&["config", "core.autocrlf", "false"]);
         (dir, run)
+    }
+
+    #[test]
+    fn commit_diff_preserves_separate_hunks_and_selected_side() {
+        let (dir, git) = git_sandbox("commit-diff");
+        let root = dir.to_string_lossy().into_owned();
+        let file = dir.join("a.txt");
+        let original: Vec<String> = (0..2_000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&file, original.concat()).unwrap();
+        git(&["add", "a.txt"]);
+        // 未产生首个提交时，--cached 也要返回真实新增内容。
+        let initial = super::git_diff_text_impl(root.clone(), "".into(), "".into(), "a.txt".into(), None, true).unwrap();
+        assert!(initial.lines().any(|line| line == "+line 1999"));
+        git(&["commit", "-qm", "base"]);
+
+        let mut staged = original.clone();
+        staged[0] = "staged first\n".into();
+        staged[1_999] = "staged last\n".into();
+        std::fs::write(&file, staged.concat()).unwrap();
+        git(&["add", "a.txt"]);
+        let mut working = staged;
+        working[1_000] = "working middle\n".into();
+        std::fs::write(&file, working.concat()).unwrap();
+
+        let added_lines = |patch: String| -> Vec<String> {
+            patch.lines().filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+                .map(str::to_owned).collect()
+        };
+        let index = super::git_diff_text_impl(root.clone(), "".into(), "".into(), "a.txt".into(), None, true).unwrap();
+        assert_eq!(added_lines(index), vec!["+staged first", "+staged last"]);
+        let working = super::git_diff_text_impl(root, "HEAD".into(), "".into(), "a.txt".into(), None, false).unwrap();
+        assert_eq!(added_lines(working), vec!["+staged first", "+working middle", "+staged last"]);
+    }
+
+    fn selected_commit(dir: &Path, source: super::CommitSource, no_verify: bool) -> Result<String, String> {
+        super::git_commit_impl(dir.to_string_lossy().into_owned(), "selected changes".into(), false, None, false, None, no_verify,
+            Some(vec![super::CommitSelection { path: "a.txt".into(), old_path: None, source }]))
+    }
+
+    #[test]
+    fn selected_commit_worktree_only_preserves_remaining_staged_changes() {
+        let (dir, git) = git_sandbox("selected-commit-worktree");
+        let original: Vec<String> = (0..40).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("a.txt"), original.concat()).unwrap();
+        std::fs::write(dir.join("other.txt"), "base\n").unwrap();
+        git(&["add", "a.txt", "other.txt"]);
+        git(&["commit", "-qm", "base"]);
+        let mut staged = original.clone();
+        staged[1] = "staged A\n".into();
+        std::fs::write(dir.join("a.txt"), staged.concat()).unwrap();
+        std::fs::write(dir.join("other.txt"), "unselected staged\n").unwrap();
+        git(&["add", "a.txt", "other.txt"]);
+        let mut working = staged;
+        working[35] = "working B\n".into();
+        std::fs::write(dir.join("a.txt"), working.concat()).unwrap();
+        let mut expected = original;
+        expected[35] = "working B\n".into();
+
+        selected_commit(&dir, super::CommitSource::WorktreeOnly, true).unwrap();
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), expected.concat().trim_end());
+        assert_eq!(git_stdout(&dir, &["show", ":a.txt"]), working.concat().trim_end());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), working.concat());
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:other.txt"]), "base");
+        assert_eq!(git_stdout(&dir, &["show", ":other.txt"]), "unselected staged");
+        assert!(!dir.join(".git/index.lock").exists());
+    }
+
+    #[test]
+    fn selected_commit_rejects_dependent_worktree_changes_without_mutation() {
+        let (dir, git) = git_sandbox("selected-commit-dependent");
+        std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(dir.join("a.txt"), "staged\n").unwrap();
+        git(&["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "working\n").unwrap();
+        let index = std::fs::read(dir.join(".git/index")).unwrap();
+        let head = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        let error = selected_commit(&dir, super::CommitSource::WorktreeOnly, true).unwrap_err();
+        assert_eq!(error.split(crate::error::SEP).next(), Some("PARTIAL_COMMIT_CONFLICT"));
+        assert_eq!(git_stdout(&dir, &["rev-parse", "HEAD"]), head);
+        assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), index);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "working\n");
+        assert!(!dir.join(".git/index.lock").exists());
+    }
+
+    #[test]
+    fn selected_commit_nearby_independent_changes_do_not_require_selecting_both_sides() {
+        let (dir, git) = git_sandbox("selected-commit-nearby");
+        let original: Vec<String> = (0..12).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("a.txt"), original.concat()).unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["config", "diff.noprefix", "true"]);
+        let mut working = original.clone();
+        working[1] = "staged A\n".into();
+        std::fs::write(dir.join("a.txt"), working.concat()).unwrap();
+        git(&["add", "a.txt"]);
+        working[3] = "working B\n".into();
+        std::fs::write(dir.join("a.txt"), working.concat()).unwrap();
+        selected_commit(&dir, super::CommitSource::WorktreeOnly, true).unwrap();
+        let mut expected = original;
+        expected[3] = "working B\n".into();
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), expected.concat().trim_end());
+        assert_eq!(git_stdout(&dir, &["show", ":a.txt"]), working.concat().trim_end());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), working.concat());
+    }
+
+    #[test]
+    fn selected_commit_merge_drivers_cannot_include_unselected_staged_content() {
+        for mode in ["attribute", "default", "custom-text"] {
+            let (dir, git) = git_sandbox(&format!("selected-commit-driver-{mode}"));
+            std::fs::write(dir.join("a.txt"), "root\ntail\n").unwrap();
+            git(&["add", "a.txt"]);
+            git(&["commit", "-qm", "base"]);
+            std::fs::write(dir.join("a.txt"), "root\nA\ntail\n").unwrap();
+            git(&["add", "a.txt"]);
+            std::fs::write(dir.join("a.txt"), "root\nA B\ntail\n").unwrap();
+            match mode {
+                "attribute" => std::fs::write(dir.join(".gitattributes"), "a.txt merge=union\n").unwrap(),
+                "default" => git(&["config", "merge.default", "union"]),
+                _ => git(&["config", "merge.text.driver", "true"]),
+            }
+            let index = std::fs::read(dir.join(".git/index")).unwrap();
+            let head = git_stdout(&dir, &["rev-parse", "HEAD"]);
+            let error = selected_commit(&dir, super::CommitSource::WorktreeOnly, true).unwrap_err();
+            assert_eq!(error.split(crate::error::SEP).next(), Some("PARTIAL_COMMIT_CONFLICT"));
+            assert_eq!(git_stdout(&dir, &["rev-parse", "HEAD"]), head);
+            assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), index);
+            assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "root\nA B\ntail\n");
+        }
+    }
+
+    #[test]
+    fn selected_commit_preserves_index_on_hook_failure_and_honors_both_other_sources() {
+        let (dir, git) = git_sandbox("selected-commit-hook");
+        std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(dir.join("a.txt"), "staged\n").unwrap();
+        git(&["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "working\n").unwrap();
+        std::fs::write(dir.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+        let index = std::fs::read(dir.join(".git/index")).unwrap();
+        let head = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        assert!(selected_commit(&dir, super::CommitSource::Index, false).is_err());
+        assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), index);
+        assert_eq!(git_stdout(&dir, &["rev-parse", "HEAD"]), head);
+        selected_commit(&dir, super::CommitSource::Index, true).unwrap();
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), "staged");
+        assert_eq!(git_stdout(&dir, &["show", ":a.txt"]), "staged");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "working\n");
+        selected_commit(&dir, super::CommitSource::Worktree, true).unwrap();
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), "working");
+        assert_eq!(git_stdout(&dir, &["show", ":a.txt"]), "working");
+        std::fs::write(dir.join("a.txt"), "needs formatting\n").unwrap();
+        std::fs::write(dir.join(".git/hooks/pre-commit"), "#!/bin/sh\nprintf 'formatted\\n' > a.txt\ngit add -- a.txt\n").unwrap();
+        selected_commit(&dir, super::CommitSource::Worktree, false).unwrap();
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), "formatted");
+        assert_eq!(git_stdout(&dir, &["show", ":a.txt"]), "formatted");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "formatted\n");
+    }
+
+    #[test]
+    fn selected_commit_handles_unborn_and_linked_worktree_indexes() {
+        let (dir, git) = git_sandbox("selected-commit-linked");
+        let original: Vec<String> = (0..40).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("a.txt"), original.concat()).unwrap();
+        selected_commit(&dir, super::CommitSource::Worktree, true).unwrap();
+        let main_head = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        let linked = dir.join("linked");
+        let linked_path = linked.to_string_lossy().into_owned();
+        git(&["worktree", "add", "-q", "-b", "linked", &linked_path]);
+        let mut staged = original.clone();
+        staged[1] = "staged A\n".into();
+        std::fs::write(linked.join("a.txt"), staged.concat()).unwrap();
+        git(&["-C", &linked_path, "add", "a.txt"]);
+        let mut working = staged;
+        working[35] = "working B\n".into();
+        std::fs::write(linked.join("a.txt"), working.concat()).unwrap();
+        selected_commit(&linked, super::CommitSource::WorktreeOnly, true).unwrap();
+        let mut expected = original;
+        expected[35] = "working B\n".into();
+        assert_eq!(git_stdout(&linked, &["show", "HEAD:a.txt"]), expected.concat().trim_end());
+        assert_eq!(git_stdout(&linked, &["show", ":a.txt"]), working.concat().trim_end());
+        assert_eq!(git_stdout(&dir, &["rev-parse", "HEAD"]), main_head);
+    }
+
+    #[test]
+    fn selected_commit_rename_and_recreated_old_path_do_not_overwrite_each_other() {
+        for working in [false, true] {
+            let (dir, git) = git_sandbox(if working { "selected-rename-working" } else { "selected-rename-index" });
+            std::fs::write(dir.join("a.txt"), "original\n").unwrap();
+            git(&["add", "a.txt"]);
+            git(&["commit", "-qm", "base"]);
+            git(&["mv", "a.txt", "b.txt"]);
+            std::fs::write(dir.join("a.txt"), "replacement\n").unwrap();
+            let selections = vec![
+                super::CommitSelection { path: "b.txt".into(), old_path: Some("a.txt".into()), source: if working { super::CommitSource::Worktree } else { super::CommitSource::Index } },
+                super::CommitSelection { path: "a.txt".into(), old_path: None, source: super::CommitSource::Worktree },
+            ];
+            super::git_commit_impl(dir.to_string_lossy().into_owned(), "rename and recreate".into(), false, None, false, None, true, Some(selections)).unwrap();
+            assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), "replacement");
+            assert_eq!(git_stdout(&dir, &["show", "HEAD:b.txt"]), "original");
+            assert!(git_stdout(&dir, &["diff", "--cached"]).is_empty());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn selected_commit_preserves_recovery_index_after_install_failure() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (dir, git) = git_sandbox("selected-commit-recovery");
+        std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(dir.join("a.txt"), "working\n").unwrap();
+        // 模拟另一个进程持有真实索引的句柄：可读，但拒绝安装新索引。
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(dir.join(".git/index")).unwrap();
+        let error = selected_commit(&dir, super::CommitSource::Worktree, true).unwrap_err();
+        let parts: Vec<&str> = error.split(crate::error::SEP).collect();
+        assert_eq!(parts[0], "COMMIT_INDEX_RECOVERY");
+        assert_eq!(git_stdout(&dir, &["show", "HEAD:a.txt"]), "working");
+        assert_eq!(git_stdout(&dir, &["show", ":a.txt"]), "base");
+        let recovery = super::TempIndex(std::path::PathBuf::from(parts[1]), false);
+        assert_eq!(super::selected_git(&dir, &["show", ":a.txt"], None, Some(&recovery)).unwrap(), "working\n");
+        assert!(!dir.join(".git/index.lock").exists());
+        drop(held);
+    }
+
+    #[test]
+    fn push_uses_configured_remote_and_target_for_explicit_branch() {
+        let (dir, git) = git_sandbox("push-target");
+        let remote = dir.join("remote.git").to_string_lossy().into_owned();
+        let backup = dir.join("backup.git").to_string_lossy().into_owned();
+        git(&["init", "--bare", "-q", &remote]);
+        git(&["init", "--bare", "-q", &backup]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        let base = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        git(&["branch", "topic"]);
+        git(&["commit", "--allow-empty", "-qm", "head-only"]);
+        git(&["remote", "add", "backup", &backup]);
+        git(&["remote", "add", "team/origin", &remote]);
+        git(&["config", "branch.topic.remote", "team/origin"]);
+        git(&["config", "branch.topic.merge", "refs/heads/review/topic"]);
+        git(&["config", "push.default", "matching"]);
+        let root = dir.to_string_lossy().into_owned();
+        git_push_impl(root, GitPushOptions { branch: Some("topic".into()), set_upstream: true, ..Default::default() }).unwrap();
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "rev-parse", "refs/heads/review/topic"]), base);
+        assert_eq!(git_stdout(&dir, &["--git-dir", &backup, "for-each-ref"]), "");
+        assert_eq!(git_stdout(&dir, &["config", "branch.topic.remote"]), "team/origin");
+        assert_eq!(git_stdout(&dir, &["config", "branch.topic.merge"]), "refs/heads/review/topic");
+    }
+
+    #[test]
+    fn updating_other_branch_fast_forwards_without_checkout_and_rejects_divergence() {
+        let (dir, git) = git_sandbox("update-other-branch");
+        let remote = dir.join("remote.git").to_string_lossy().into_owned();
+        git(&["init", "--bare", "-q", &remote]);
+        git(&["remote", "add", "team/origin", &remote]);
+        std::fs::write(dir.join("local.txt"), "base\n").unwrap();
+        git(&["add", "local.txt"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["branch", "topic"]);
+        git(&["config", "branch.topic.remote", "team/origin"]);
+        git(&["config", "branch.topic.merge", "refs/heads/main"]);
+        git(&["commit", "--allow-empty", "-qm", "remote advance"]);
+        git(&["push", "-qu", "team/origin", "main"]);
+        let root = dir.to_string_lossy().into_owned();
+        let head = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("local.txt"), "dirty\n").unwrap();
+        super::git_update_branch_impl(root.clone(), "topic".into(), None).unwrap();
+        assert_eq!(git_stdout(&dir, &["rev-parse", "topic"]), head);
+        assert_eq!(git_stdout(&dir, &["symbolic-ref", "--short", "HEAD"]), "main");
+        assert_eq!(std::fs::read_to_string(dir.join("local.txt")).unwrap(), "dirty\n");
+        assert!(super::git_update_branch_impl(root.clone(), "main".into(), None).is_err());
+        git(&["checkout", "-q", "topic"]);
+        git(&["commit", "--allow-empty", "-qm", "local topic"]);
+        let topic = git_stdout(&dir, &["rev-parse", "topic"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "remote diverges"]);
+        git(&["push", "-q", "team/origin", "main"]);
+        assert!(super::git_update_branch_impl(root, "topic".into(), None).is_err());
+        assert_eq!(git_stdout(&dir, &["rev-parse", "topic"]), topic);
+        assert_eq!(git_stdout(&dir, &["symbolic-ref", "--short", "HEAD"]), "main");
+    }
+
+    #[test]
+    fn push_tags_modes_and_revision_preserve_ref_contracts() {
+        let (dir, git) = git_sandbox("push-tags");
+        let remote = dir.join("remote.git").to_string_lossy().into_owned();
+        git(&["init", "--bare", "-q", &remote]);
+        git(&["remote", "add", "origin", &remote]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        let base = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        git(&["tag", "light"]);
+        git(&["tag", "-a", "annotated", "-m", "tag"]);
+        git(&["commit", "--allow-empty", "-qm", "tip"]);
+        let tip = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        let root = dir.to_string_lossy().into_owned();
+        git_push_impl(root.clone(), GitPushOptions { revision: Some(base.clone()), ..Default::default() }).unwrap();
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "rev-parse", "refs/heads/main"]), base);
+        assert!(!run_git(&dir, &["config", "--get", "branch.main.remote"]).unwrap().ok);
+        git_push_impl(root.clone(), GitPushOptions { tags: Some(PushTags::CurrentBranch), ..Default::default() }).unwrap();
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "tag", "--list"]), "annotated");
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "rev-parse", "refs/heads/main"]), tip);
+        git_push_impl(root.clone(), GitPushOptions { tags: Some(PushTags::All), ..Default::default() }).unwrap();
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "tag", "--list"]), "annotated\nlight");
+        for target in ["bad..name", "a//b", "bad.lock", "-option"] {
+            assert!(git_push_impl(root.clone(), GitPushOptions { target: Some(target.into()), ..Default::default() }).is_err());
+        }
+        assert!(git_push_impl(root, GitPushOptions { remote: Some("--all".into()), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn push_never_downgrades_an_expired_lease() {
+        let (dir, git) = git_sandbox("push-lease");
+        let remote = dir.join("remote.git").to_string_lossy().into_owned();
+        git(&["init", "--bare", "-q", &remote]);
+        git(&["remote", "add", "origin", &remote]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        let base = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        let root = dir.to_string_lossy().into_owned();
+        git_push_impl(root.clone(), GitPushOptions::default()).unwrap();
+        git(&["commit", "--allow-empty", "-qm", "remote tip"]);
+        let tip = git_stdout(&dir, &["rev-parse", "HEAD"]);
+        git_push_impl(root.clone(), GitPushOptions::default()).unwrap();
+        git(&["update-ref", "refs/remotes/origin/main", &base]);
+        let options = GitPushOptions { revision: Some(base.clone()), ..Default::default() };
+        assert!(git_push_impl(root.clone(), options.clone()).is_err());
+        assert!(git_push_impl(root.clone(), GitPushOptions { force_with_lease: true, ..options.clone() }).is_err());
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "rev-parse", "refs/heads/main"]), tip);
+        git(&["fetch", "-q", "origin"]);
+        git_push_impl(root, GitPushOptions { force_with_lease: true, ..options }).unwrap();
+        assert_eq!(git_stdout(&dir, &["--git-dir", &remote, "rev-parse", "refs/heads/main"]), base);
+    }
+
+    #[test]
+    fn update_restores_dirty_changes_and_reports_autostash_conflicts() {
+        for (name, method, conflict) in [("update-merge", "merge", false), ("update-rebase", "rebase", false), ("update-stash-conflict", "merge", true)] {
+            let (dir, git) = git_sandbox(name);
+            let root = dir.to_string_lossy().into_owned();
+            let remote = dir.join("remote.git").to_string_lossy().into_owned();
+            let peer = dir.join("peer").to_string_lossy().into_owned();
+            git(&["init", "--bare", "-q", &remote]);
+            git(&["remote", "add", "origin", &remote]);
+            std::fs::write(dir.join("shared.txt"), "base\n").unwrap();
+            std::fs::write(dir.join("local.txt"), "base\n").unwrap();
+            git(&["add", "shared.txt", "local.txt"]);
+            git(&["commit", "-qm", "base"]);
+            git(&["push", "-qu", "origin", "main"]);
+            git(&["clone", "-q", "--branch", "main", &remote, &peer]);
+            git(&["-C", &peer, "config", "user.email", "peer@forge.local"]);
+            git(&["-C", &peer, "config", "user.name", "peer"]);
+            std::fs::write(Path::new(&peer).join("shared.txt"), "remote\n").unwrap();
+            git(&["-C", &peer, "add", "shared.txt"]);
+            git(&["-C", &peer, "commit", "-qm", "remote change"]);
+            git(&["-C", &peer, "push", "-q", "origin", "main"]);
+            if !conflict { git(&["commit", "--allow-empty", "-qm", "local commit"]); }
+            let dirty = if conflict { "shared.txt" } else { "local.txt" };
+            std::fs::write(dir.join(dirty), "dirty\n").unwrap();
+            let result = super::git_pull_impl(root.clone(), method);
+            let status = git_status_impl(root).unwrap();
+            if conflict {
+                assert!(result.is_err(), "自动暂存恢复冲突不能作为成功更新返回");
+                assert!(status.changes.iter().any(|change| change.conflicted));
+                assert!(!git_stdout(&dir, &["stash", "list"]).is_empty(), "冲突改动必须保留在 stash");
+            } else {
+                result.unwrap();
+                assert_eq!(std::fs::read_to_string(dir.join(dirty)).unwrap(), "dirty\n");
+                assert!(std::fs::read_to_string(dir.join("shared.txt")).unwrap().starts_with("remote"));
+                assert!(status.changes.iter().any(|change| change.path == "local.txt"));
+                assert!(git_stdout(&dir, &["stash", "list"]).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn pushing_an_explicit_tag_does_not_push_a_same_named_branch() {
+        let (dir, git) = git_sandbox("push-tag-name");
+        let remote = dir.join("remote.git").to_string_lossy().into_owned();
+        git(&["init", "--bare", "-q", &remote]);
+        git(&["remote", "add", "origin", &remote]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["branch", "release"]);
+        git(&["tag", "release"]);
+        super::git_push_ref_impl(dir.to_string_lossy().into_owned(), "refs/tags/release".into()).unwrap();
+        assert!(run_git(&dir, &["--git-dir", &remote, "show-ref", "--verify", "refs/tags/release"]).unwrap().ok);
+        assert!(!run_git(&dir, &["--git-dir", &remote, "show-ref", "--verify", "refs/heads/release"]).unwrap().ok);
     }
 
     /// 在沙盒里跑一条有输出的 git 命令并取 stdout（取哈希用）。

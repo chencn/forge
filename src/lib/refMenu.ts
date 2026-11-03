@@ -1,5 +1,6 @@
 import {
-  ArrowUpToLine,
+  ArrowUpRight,
+  ArrowDownLeft,
   CornerUpRight,
   FileDiff,
   FolderGit2,
@@ -7,7 +8,6 @@ import {
   GitBranchPlus,
   GitMerge,
   Pencil,
-  RefreshCw,
   Tag as TagIcon,
   Undo2,
 } from "lucide-react";
@@ -65,7 +65,7 @@ export interface RefMenuDeps {
 export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
   const { t, current, upstream, detached, remotes, fresh, onAction, onCompareWith, onDiffWithWorktree } = deps;
   // 空仓库没有 ref 可推；没有远端推送无处可推。这两条与 BranchPicker / 日志窗共享同一门禁。
-  const canPushRef = !fresh && remotes > 0 && !detached;
+  const canPushRef = !fresh && remotes > 0 && (target.kind === "tag" || !detached);
   const noRemotesHint = remotes === 0 ? t("git.noRemotes") : undefined;
   const freshHint = fresh ? t("git.repoFresh") : undefined;
   const isBranch = target.kind !== "tag";
@@ -111,7 +111,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
         ? [
             {
               label: t("git.refCheckoutUpdate"),
-              icon: RefreshCw,
+              icon: ArrowDownLeft,
               disabled: upstream === "",
               hint: upstream === "" ? t("git.noUpstream") : undefined,
               onSelect: go("checkoutUpdate"),
@@ -170,7 +170,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
         ? [
             {
               label: t("git.refUpdate"),
-              icon: RefreshCw,
+              icon: ArrowDownLeft,
               disabled: upstream === "",
               hint: upstream === "" ? t("git.noUpstream") : undefined,
               onSelect: go("update"),
@@ -181,7 +181,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
         ? [
             {
               label: t("git.refPush"),
-              icon: ArrowUpToLine,
+              icon: ArrowUpRight,
               shortcut: formatShortcut('git.push', deps.keymapScheme ?? 'idea'),
               disabled: !canPushRef,
               hint: !canPushRef ? (fresh ? freshHint : noRemotesHint) : undefined,

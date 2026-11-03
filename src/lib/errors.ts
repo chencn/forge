@@ -75,6 +75,9 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   BAD_PATH: (p, t) => t("error.badPath", { path: p[0] ?? "" }),
   BAD_REGEX: (p, t) => t("error.badRegex", { pattern: p[0] ?? "", detail: p[1] ?? "" }),
   EMPTY_MESSAGE: (_p, t) => t("error.emptyMessage"),
+  // 部分暂存的两部分存在依赖时，拒绝扩大提交范围。
+  PARTIAL_COMMIT_CONFLICT: (p, t) => t("error.partialCommitConflict", { path: p[0] ?? "" }),
+  COMMIT_INDEX_RECOVERY: (p, t) => t("error.commitIndexRecovery", { path: p[0] ?? "", detail: p[1] ?? "" }),
   DETACHED_PUSH: (_p, t) => t("error.detachedPush"),
   NO_REMOTE: (_p, t) => t("error.noRemote"),
   NO_COMMAND: (_p, t) => t("error.noCommand"),

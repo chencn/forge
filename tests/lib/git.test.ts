@@ -7,6 +7,11 @@ import {
   folderMarks,
   gitCommit,
   gitPull,
+  gitFetch,
+  gitPush,
+  gitPushTarget,
+  isProtectedBranch,
+  isPushRejected,
   ignoredRoots,
   isDeletedMark,
   markClass,
@@ -16,10 +21,45 @@ import {
 import type { GitChange, GitProbe } from "../../src/lib/git";
 
 // 纯函数测试不碰 IPC，mock 掉 invoke 让模块加载不依赖 Tauri 运行时。
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class { onmessage = (_line: string) => {}; } }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("Git 推送契约", () => {
+  it("实时输出经 Channel 转发且保留最终命令返回值", async () => {
+    const output = vi.fn();
+    vi.mocked(invoke).mockImplementationOnce(async (_command, args) => {
+      (args as { onOutput: { onmessage: (line: string) => void } }).onOutput.onmessage("Receiving objects: 25%");
+      return "fetched";
+    });
+    await expect(gitFetch("D:/repo", output)).resolves.toBe("fetched");
+    expect(output).toHaveBeenCalledWith("Receiving objects: 25%");
+  });
+  it("推送目标、租约和标签完整传入后端", async () => {
+    vi.mocked(invoke).mockResolvedValue("pushed");
+    const options = { branch: "feature/a", remote: "team/origin", target: "review/a", forceWithLease: true, setUpstream: true, tags: "currentBranch" as const };
+    await expect(gitPush("D:/repo", options)).resolves.toBe("pushed");
+    expect(invoke).toHaveBeenCalledWith("git_push", { root: "D:/repo", options });
+    await gitPush("D:/repo");
+    expect(invoke).toHaveBeenLastCalledWith("git_push", { root: "D:/repo", options: {} });
+  });
+  it("目标解析不在前端猜测远端，后端错误原样传出", async () => {
+    vi.mocked(invoke).mockResolvedValue({ branch: "local", remote: "team/origin", target: "remote", tracked: true });
+    await expect(gitPushTarget("D:/repo", "local")).resolves.toMatchObject({ remote: "team/origin", target: "remote" });
+    expect(invoke).toHaveBeenCalledWith("git_push_target", { root: "D:/repo", branch: "local" });
+    vi.mocked(invoke).mockRejectedValue(new Error("non-fast-forward"));
+    await expect(gitPush("D:/repo")).rejects.toThrow("non-fast-forward");
+  });
+  it("保护分支规则支持分隔符和通配符，拒绝分类不误判网络错误", () => {
+    expect(isProtectedBranch("release/2", "main, master; release/* hotfix/?")).toBe(true);
+    expect(isProtectedBranch("hotfix/a", "main, master; release/* hotfix/?")).toBe(true);
+    expect(isProtectedBranch("feature/main", "main;release/*")).toBe(false);
+    expect(isPushRejected("[rejected] main -> main (fetch first)")).toBe(true);
+    expect(isPushRejected("Permission denied (publickey)")).toBe(false);
+    expect(isPushRejected("unable to access: network offline")).toBe(false);
+  });
 });
 
 describe("Git 更新策略 IPC 契约", () => {
@@ -46,6 +86,7 @@ describe("Git 提交 IPC 契约", () => {
       signoff: true,
       author: "作者 <author@example.com>",
       noVerify: true,
+      selections: null,
     });
   });
 
@@ -55,7 +96,15 @@ describe("Git 提交 IPC 契约", () => {
     expect(invoke).toHaveBeenCalledWith("git_commit", {
       root: "D:/repo", message: "更新代码", amend: false, paths: [],
       signoff: false, author: "", noVerify: false,
+      selections: null,
     });
+  });
+
+  it("提交明确传递每个文件的来源，不把只选工作区修改降级为整文件暂存", async () => {
+    vi.mocked(invoke).mockResolvedValue("提交成功");
+    const selections = [{ path: "a.ts", oldPath: null, source: "worktreeOnly" as const }];
+    await gitCommit("D:/repo", "只提交工作区修改", false, undefined, { selections });
+    expect(invoke).toHaveBeenCalledWith("git_commit", expect.objectContaining({ paths: [], selections }));
   });
 });
 
