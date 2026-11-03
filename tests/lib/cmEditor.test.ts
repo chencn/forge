@@ -150,6 +150,16 @@ describe("编辑器导航大纲", () => {
     expect(items[0].children[0].selectionFrom).toBe(contents.indexOf("run"));
   });
 
+  it("JSON 键名去掉语法树上的引号", async () => {
+    const contents = '{\n "scripts": {\n  "test.rs": "vitest"\n }\n}\n';
+    const path = "D:/proj/package.json";
+    await loadLanguage("json", path);
+    const state = detachedState(docOf({ language: "json", path, contents }));
+    const items = extractOutline(state);
+    expect(symbolChain(items, contents.indexOf("test.rs") + 1).map((item) => item.name)).toEqual(["scripts", "test.rs"]);
+    expect(items[0]?.children[0]?.selectionFrom).toBe(contents.indexOf("test.rs"));
+  });
+
   it("没有结构化语法的正文不伪造符号", () => {
     expect(extractOutline(detachedState(docOf({ contents: "function imaginary() {}" })))).toEqual([]);
   });

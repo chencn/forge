@@ -1321,6 +1321,9 @@ export const en: Record<TranslationKey, string> = {
   "depSync.dontAskAgain": "Don't ask again",
   "depSync.close": "Close notification",
 
+  "welcome.dropFiles": "Drop files here to open them",
+  "welcome.recentFiles": "Recent Files",
+  "welcome.navigationBar": "Navigation Bar",
   "welcome.shortcuts": "Shortcuts",
   "welcome.save": "Save",
   "welcome.find": "Find",

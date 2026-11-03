@@ -1320,6 +1320,9 @@ export const zh = {
   "depSync.dontAskAgain": "不再询问",
   "depSync.close": "关闭通知",
 
+  "welcome.dropFiles": "将文件拖放到此处以打开",
+  "welcome.recentFiles": "最近的文件",
+  "welcome.navigationBar": "导航栏",
   "welcome.shortcuts": "快捷键",
   "welcome.save": "保存",
   "welcome.find": "查找",

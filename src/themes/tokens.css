@@ -91,11 +91,12 @@
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 0px;
   --header-height: 2.5rem;
-  /* 对齐 OpenIDEA：默认 34px，紧凑模式 28px，跟随主题尺寸而非独立硬编码。 */
-  --footer-height: calc(var(--h-statusbar) + 4px);
+  /* 底栏就是状态条高度：默认 30px，紧凑模式 24px。 */
+  --footer-height: var(--h-statusbar);
   --island-radius: 10px;
   --workbench-gap: 6px;
   --rail-width: 38px;
+  --right-rail-width: 30px;
   /* Lithe Light 项目侧栏：surface 活动条、accent 悬停、selected 选中、stripe 蓝。 */
   --sidebar-rail: #e9eaee;
   --sidebar-fg: #000000;

@@ -31,9 +31,20 @@ export function extractOutline(state: EditorState): OutlineSymbol[] {
     }
     return fallback;
   };
-  const make = (node: SyntaxNode, name: SyntaxNode, kind: OutlineSymbol["kind"]): OutlineSymbol => ({
-    name: text(name), kind, from: node.from, to: node.to, selectionFrom: name.from, children: [],
-  });
+  const labelOf = (node: SyntaxNode) => {
+    const raw = text(node);
+    const quote = raw[0];
+    // JSON 的 PropertyName 就是带引号的字符串节点，导航里只显示键名。
+    const quoted = node.name === "PropertyName"
+      && raw.length >= 2
+      && (quote === "\"" || quote === "'")
+      && raw.endsWith(quote);
+    return { name: quoted ? raw.slice(1, -1) : raw, selectionFrom: quoted ? node.from + 1 : node.from };
+  };
+  const make = (node: SyntaxNode, name: SyntaxNode, kind: OutlineSymbol["kind"]): OutlineSymbol => {
+    const label = labelOf(name);
+    return { name: label.name, kind, from: node.from, to: node.to, selectionFrom: label.selectionFrom, children: [] };
+  };
   const visit = (node: SyntaxNode, into: OutlineSymbol[]) => {
     // JS/TS 的一次声明可包含多个绑定，每个绑定只管自己的初始化范围。
     if (node.name === "VariableDeclaration") {

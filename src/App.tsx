@@ -941,7 +941,7 @@ export default function App() {
   /** 底部工具窗口整体高度，拖动上面那条横分隔条改它。 */
   const [bottomHeight, setBottomHeight] = useState(260);
   /** 侧边工具窗口宽度，拖动它右缘那条竖分隔条改它。 */
-  const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [sidebarWidth, setSidebarWidth] = useState(330);
   /** 右侧工具窗口独立占一列，拖动它左缘的竖分隔条调整宽度。 */
   const [rightSidebarWidth, setRightSidebarWidth] = useState(320);
   const [browserSidebarWidth, setBrowserSidebarWidth] = useState(() => Math.max(320, Math.min(520, window.innerWidth - 420)));
@@ -5086,7 +5086,12 @@ export default function App() {
           changeBaseline={surfaceBaseline}
         />
       ) : (
-        <WelcomeScreen keymap={settings.editor.keymap} workspace={workspaceRoot !== null} />
+        <WelcomeScreen
+          keymap={settings.editor.keymap}
+          workspace={workspaceRoot !== null}
+          onSearchEverywhere={() => openEverywhere("all")}
+          onGotoFile={() => openEverywhere("files")}
+        />
       )}
     </>
     );
@@ -6395,7 +6400,7 @@ export default function App() {
       </div>
       </AiInputProvider>
 
-      <footer className="global-status">
+      <footer className={`global-status${sideHasVisibleTools("right") ? " has-right-rail" : ""}`}>
         {deleteStatus ? (
           <span
             className={`status-note is-delete-status is-${deleteStatus.phase}`}

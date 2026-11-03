@@ -440,7 +440,6 @@ svg.is-spinning,
 }
 
 .workbench-row {
-  --right-rail-width: 30px;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -5716,36 +5715,45 @@ body.is-editor-tab-dragging * {
   line-height: 1.6;
 }
 
-/* IDEA 在空编辑区列一份快捷键表，键名右对齐成一列；这张表不垫底、不描边。 */
-.welcome-keys {
-  margin: 26px 0 0;
-  min-width: 300px;
-}
-
-.welcome-keys-head {
-  margin: 0 0 8px;
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.welcome-key-row {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  padding: 2px 0;
-}
-
-.welcome-key-row dt {
-  flex: 1;
-  min-width: 0;
-  color: var(--text-secondary);
-  font-size: 12.5px;
-}
-
-.welcome-key-row dd {
+/* 空编辑区跟 OpenIDEA：两列，动作名右对齐，快捷键用链接色，不画按键框。 */
+.welcome-hints {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 16px;
+  row-gap: 8px;
   margin: 0;
+  color: var(--fg-muted);
+}
+
+.welcome-hint-row {
+  display: contents;
+}
+
+.welcome-hint-row dt {
+  text-align: right;
+}
+
+.welcome-hint-row:last-child dt {
+  grid-column: 1 / -1;
+  text-align: center;
+  margin-top: 6px;
+  color: var(--fg-faint);
+}
+
+.welcome-hint-button {
+  color: inherit;
+  border-radius: var(--radius-small);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.welcome-hint-button:hover {
+  color: var(--fg-secondary);
+}
+
+.welcome-hint-row dd {
+  margin: 0;
+  font-family: var(--font-keys);
+  color: var(--link);
 }
 
 /* 从系统拖文件或文件夹进来时盖住整个窗口。事件由宿主接管，这层只做提示，不吃点击。 */
@@ -5826,16 +5834,6 @@ body.is-editor-tab-dragging * {
   box-shadow: var(--island-shadow);
   color: var(--text-primary);
   font-size: 14px;
-}
-
-.welcome-key-row kbd {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--border-light);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
 }
 
 /* ===== diff 视图 ===== */
@@ -6800,7 +6798,8 @@ body.is-editor-tab-dragging * {
   box-sizing: border-box;
   flex: none;
   min-width: 0;
-  padding: 0 10px 0 12px;
+  /* 左右活动栏那一列归侧边栏，底栏文字从栏内侧再留原来的内边距。 */
+  padding: 0 10px 0 calc(var(--rail-width) + 12px);
   /* 底栏落在 IDEA 窗框底色上，避免与编辑内容共用岛屿底色。 */
   background-color: var(--bg-frame);
   color: var(--fg-muted);
@@ -6808,6 +6807,10 @@ body.is-editor-tab-dragging * {
   font-size: var(--fs-ui);
   white-space: nowrap;
   overflow: hidden;
+}
+
+.global-status.has-right-rail {
+  padding-right: calc(var(--right-rail-width) + 10px);
 }
 
 .global-status > span {

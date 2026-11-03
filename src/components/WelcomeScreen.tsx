@@ -7,35 +7,38 @@ interface WelcomeScreenProps {
   keymap: KeymapScheme;
   /** 工程已经开着时不再把应用名写一遍。 */
   workspace: boolean;
+  onSearchEverywhere?: () => void;
+  onGotoFile?: () => void;
 }
 
 /**
- * IDEA 的空编辑区是一张快捷键告示页，不是一片空白。
+ * 空编辑区跟 OpenIDEA 一样：几条导航提示，键名右对齐，没有标题和按键框。
  * 开工程这件事只有主工具栏那颗入口，这一页不重复摆按钮。
  */
-export default function WelcomeScreen({ keymap, workspace }: WelcomeScreenProps) {
+export default function WelcomeScreen({ keymap, workspace, onSearchEverywhere, onGotoFile }: WelcomeScreenProps) {
   const { t } = useI18n();
-  const rows = shortcutHints(keymap).map((hint) => ({ label: t(hint.label), chord: hint.chord }));
+  const rows = shortcutHints(keymap);
 
   return (
     <div className="welcome">
       {workspace ? null : <p className="welcome-title">{t("app.name")}</p>}
-      {/* 工程已打开时只缺少文件，不能继续提示用户选择项目文件夹。 */}
-      <p className="welcome-hint">{t(workspace ? "welcome.openFile" : "welcome.hint")}</p>
+      {workspace ? null : <p className="welcome-hint">{t("welcome.hint")}</p>}
 
-      {rows.length > 0 ? (
-        <dl className="welcome-keys" aria-label={t("welcome.shortcuts")}>
-          <p className="welcome-keys-head">{t("welcome.shortcuts")}</p>
-          {rows.map((row) => (
-            <div key={row.label} className="welcome-key-row">
-              <dt>{row.label}</dt>
-              <dd>
-                <kbd>{row.chord}</kbd>
-              </dd>
+      <dl className="welcome-hints">
+        {rows.map((row) => {
+          const run = row.action === "search" ? onSearchEverywhere : row.action === "gotoFile" ? onGotoFile : undefined;
+          return (
+            <div key={row.label} className="welcome-hint-row">
+              <dt>
+                {run ? (
+                  <button type="button" className="welcome-hint-button" onClick={run}>{t(row.label)}</button>
+                ) : t(row.label)}
+              </dt>
+              {row.chord ? <dd>{row.chord}</dd> : null}
             </div>
-          ))}
-        </dl>
-      ) : null}
+          );
+        })}
+      </dl>
     </div>
   );
 }
