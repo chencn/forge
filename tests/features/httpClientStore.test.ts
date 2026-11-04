@@ -147,6 +147,7 @@ describe("http client store", () => {
       method: "POST",
       url: "http://example.com/post?query={{literal}}",
       headers: [["Content-Type", "text/plain"], ["X-Item", "first"], ["X-Item", "second"]],
+      sentHeaders: [["host", "example.com"], ["content-length", "999"], ["accept", "*/*"]],
       body: "### literal body\n\n{{unchanged}}\n$raw\r\n",
     };
     let sent = false;
@@ -162,7 +163,10 @@ describe("http client store", () => {
     await retryHistoryEntry("original");
     expect(invoke).toHaveBeenCalledWith("http_send", {
       requestId: expect.any(String), path: original.entry.file, root: expect.any(String),
-      call: { ...original.request, body: [{ text: original.request.body }] },
+      call: {
+        name: original.request.name, method: original.request.method, url: original.request.url,
+        headers: original.request.headers, body: [{ text: original.request.body }],
+      },
     });
     expect(httpClientSnapshot().selected).toBe("resent");
     expect(httpClientSnapshot().history.map((item) => item.id)).toEqual(["resent", "original"]);

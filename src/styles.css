@@ -1,4 +1,5 @@
 /* ===== 基线与外壳 ===== */
+/* 动画统一由组件定义，不跟随系统偏好切换；构建中的 check:motion 防止隐式关闭任务反馈。 */
 *,
 *::before,
 *::after {
@@ -681,10 +682,6 @@ span.entry-icon > svg {
 @keyframes ws-running-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.82); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ws-dot.is-running { animation: none; }
 }
 
 .ws-dot.is-dirty {
@@ -2349,26 +2346,6 @@ span.entry-icon > svg {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  /* 基础 Spinner 自行降低转速，不能被极短时长覆盖成高速旋转。 */
-  *:not(.is-spinning):not([data-spin="true"]):not([data-ui-spinner]):not(.is-spinning *),
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    /* 真正禁用过渡；极短的 visibility 过渡仍会逐层延迟后代可聚焦的时机。 */
-    transition-duration: 0s !important;
-  }
-
-  /* 加载与生成指示器的旋转动画保留，确保用户能明确感知后台任务正在运行。
-     同样只转图标，避免容器和图标各转一圈。 */
-  svg.is-spinning,
-  .is-spinning svg,
-  [data-spin="true"] {
-    animation: spin 1.4s linear infinite !important;
-    animation-duration: 1.4s !important;
-  }
-}
-
 /* ===== 侧栏：活动条 + 工具窗口卡片 ===== */
 .activity-rail {
   flex: none;
@@ -3892,12 +3869,6 @@ body .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
   }
   to {
     opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .term-live-surface.is-bell::after {
-    animation-duration: 1ms;
   }
 }
 

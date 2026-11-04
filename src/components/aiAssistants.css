@@ -1101,7 +1101,6 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   background: color-mix(in srgb, var(--sidebar-hover) 60%, transparent);
   animation: ai-skeleton-pulse 1.6s ease-in-out infinite; }
 @keyframes ai-skeleton-pulse { 50% { opacity: .45; } }
-@media (prefers-reduced-motion: reduce) { .ai-sidebar-skeleton { animation: none; } }
 
 /* 外层只负责分区，禁止整体滚动；各章节的行列表在自己的高度预算内滚动。 */
 .ai-sidebar-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 6px 6px; }
@@ -1603,7 +1602,6 @@ details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.85; transform: scale(1.02); }
 }
-@media (prefers-reduced-motion: reduce) { .ai-tool-inline-badge.is-live { animation: none; } }
 /* 行尾数字列（对照 RowFigure）：+N −N 着色，退出码/时钟保持辅助色。 */
 .ai-tool-figure { display: inline-flex; gap: 6px; margin-left: auto; flex: none; font-size: 11px;
   font-variant-numeric: tabular-nums; }
@@ -1667,13 +1665,6 @@ details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
 .ai-process-body .ai-tool-details, .ai-process-body .ai-reasoning > .ai-message-markdown { margin-left: 0; }
 /* 运行中的工具行：图标轻微脉动，状态语义仍在行尾与过程组头上。 */
 .ai-tool.is-running .ai-tool-glyph, .ai-explore-group.is-active .ai-explore-head .ai-tool-glyph { animation: ai-live-pulse 1.4s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) {
-  .ai-tool.is-running .ai-tool-glyph, .ai-explore-group.is-active .ai-explore-head .ai-tool-glyph { animation: none; }
-  .ai-process-body .ai-chat-entry.is-tool.is-running .ai-entry-dot,
-  .ai-process-body .ai-chat-entry.is-tool .ai-tool.is-running .ai-entry-dot,
-  .ai-process-body .ai-explore-group.is-active .ai-explore-head .ai-entry-dot { animation: none; }
-  .ai-process-group.is-active .ai-process-head strong { animation: none; color: var(--text-primary); background: none; }
-}
 .ai-tool > summary, .ai-reasoning > summary { padding: 5px 0 5px 0; }
 .ai-tool > [data-slot="trace-collapsible-trigger"], .ai-delegation-main { font-family: var(--font-ui, var(--font-sans)); font-synthesis: none; letter-spacing: 0; }
 /* IDEA 工具窗口只保留一层内容边界；长代码自行滚动，外框不再截断报告与错误。 */
@@ -1985,9 +1976,6 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 @keyframes ai-sidedock-fade {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-side-dock { animation: none; }
 }
 
 /* 展开态：左侧保留 32px 消息导航槽，右侧预留 324px 避让卡片；两边都从正文宽度扣除。 */
@@ -2349,9 +2337,6 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
   gap: 8px;
   animation: ai-turn-pop 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-@media (prefers-reduced-motion: reduce) {
-  .ai-turn-popover { animation: none; }
-}
 .ai-turn-popover:hover {
   border-color: color-mix(in srgb, var(--accent-blue, #3b82f6) 40%, var(--border-color));
 }
@@ -2622,7 +2607,6 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   background: linear-gradient(90deg, color-mix(in srgb, var(--text-tertiary) 80%, transparent) 0%,
   var(--text-secondary) 50%, color-mix(in srgb, var(--text-tertiary) 80%, transparent) 100%);
   background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; }
-@media (prefers-reduced-motion: reduce) { .ai-delegation.is-running .ai-delegation-progress { animation: none; background: none; color: var(--text-tertiary); } }
 .ai-delegation-clock { flex: none; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--text-tertiary); }
 /* 子代理自己的时间线：虚线导轨缩进一档（对照 activity-child），正文不加大盒。 */
 .ai-delegation-timeline { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 10px; }
@@ -2861,9 +2845,6 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 @keyframes ai-figure-pop {
   from { opacity: 0; transform: translateY(3px) scale(0.6); }
   to { opacity: 1; transform: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-tool-figure > .is-add, .ai-tool-figure > .is-delete { animation: none; }
 }
 /* 运行中的编辑行：+ − 占位脉动，告诉用户行数正在路上。 */
 .ai-tool.is-running .ai-tool-figure { color: var(--text-tertiary); }

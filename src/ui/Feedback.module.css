@@ -222,17 +222,3 @@
   top: 8px;
   right: 8px;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .bar {
-    transition: none;
-  }
-  .indeterminate .bar {
-    animation: none;
-    left: 0;
-    opacity: 0.6;
-  }
-  .spinner {
-    animation-duration: 2.4s;
-  }
-}

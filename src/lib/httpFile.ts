@@ -92,6 +92,8 @@ export interface HttpSentRequest {
   url: string;
   headers: [string, string][];
   body: string | null;
+  /** 首次发送时补全默认值的请求头；重发仍使用原始 headers。 */
+  sentHeaders?: [string, string][];
   /** 非 UTF-8 请求正文的原始字节，仅用于无损重发。 */
   bodyBase64?: string;
 }
@@ -104,6 +106,8 @@ export interface HttpWireResponse {
   headers: [string, string][];
   contentType: string | null;
   body: string | null;
+  /** 完整 PDF 响应的原始字节；截断响应不提供可预览数据。 */
+  bodyBase64?: string;
   /** 解压后的字节数。 */
   size: number;
   truncated: boolean;

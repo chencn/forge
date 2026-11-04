@@ -1,0 +1,67 @@
+/* 工具栏跟随 IDEA 主题，PDF 纸张始终使用文档原色。 */
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  flex: none;
+  background: var(--bg-editor);
+  border-bottom: 1px solid var(--border);
+}
+
+.counter {
+  min-width: 56px;
+  text-align: center;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbar button[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-elev);
+}
+
+.viewport:focus-visible {
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
+}
+
+.page {
+  width: max-content;
+  min-width: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.page canvas {
+  display: block;
+  margin: 0 auto;
+  background: white;
+  box-shadow: 0 1px 5px #0003;
+}
+
+.message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

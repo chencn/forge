@@ -143,9 +143,3 @@
 .disabled {
   color: var(--fg-faint, #5f6269);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .trigger {
-    transition: none;
-  }
-}

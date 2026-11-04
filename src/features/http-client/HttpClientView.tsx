@@ -4,7 +4,7 @@
  * 移植自 openidea `features/http-client/HttpClientView.tsx`，按 forge 约定重写：
  * zustand → 外部 store，`@/ui` → forge `src/ui`，`tx` → `useI18n().t`。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import ContextMenu from "../../components/ContextMenu";
@@ -30,6 +30,14 @@ import {
   type HttpHistoryEntry,
 } from "./store";
 import styles from "./HttpClient.module.css";
+
+// 只有完整 PDF 正文才加载解析器；加载失败保留 HTTP 面板与其它页签。
+const PdfPreview = lazy(() => import("./PdfPreview").catch(() => ({
+  default: function PdfLoadError() {
+    const { t } = useI18n();
+    return <EmptyState title={t("http.pdfInvalid")} />;
+  },
+})));
 
 function useHttpClient() {
   return useSyncExternalStore(subscribeHttpClient, httpClientSnapshot);
@@ -145,6 +153,13 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
   const [tab, setTab] = useState<DetailTab>("body");
   const [raw, setRaw] = useState(false);
   const response = exchange.response;
+  // 新记录包含传输层补全的头；旧历史仍展示当时保存的请求头。
+  const requestHeaders = exchange.request.sentHeaders ?? exchange.request.headers;
+  // 请求行和全部头部集中展示，重复头按保存顺序保留；正文按自身类型单独高亮。
+  const requestHead = [
+    `${exchange.request.method} ${exchange.request.url}`,
+    ...requestHeaders.map(([name, value]) => `${name}: ${value}`),
+  ].join("\n");
   // 二进制正文是 null，不当成某种可美化的类型，美化按钮也不出现。
   const kind = useMemo(
     () => (response?.body == null ? "text" : bodyKind(response.contentType, response.body)),
@@ -217,10 +232,15 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
       <div className={styles.tabBody}>
         {tab === "body" ? (
           response ? (
-            response.body === null ? (
+            response.bodyBase64 && !response.truncated ? (
+              <Suspense fallback={<div className={styles.center}><Spinner /></div>}>
+                <PdfPreview base64={response.bodyBase64} />
+              </Suspense>
+            ) : response.body === null ? (
               <EmptyState title={t("http.binaryBody")}>
-                {/* 二进制没得展示，至少把类型与大小交代清楚。 */}
-                {`${response.contentType ?? t("http.unknownType")} · ${formatSize(response.size)}`}
+                {response.truncated ? t("http.pdfTruncated")
+                  : response.contentType?.split(";")[0].trim().toLowerCase() === "application/pdf" ? t("http.pdfMissingBytes")
+                  : `${response.contentType ?? t("http.unknownType")} · ${formatSize(response.size)}`}
               </EmptyState>
             ) : (
               <pre className={styles.pre} aria-label={t("http.tabBody")}>
@@ -239,7 +259,7 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
           <HeaderTable headers={response?.headers ?? []} />
         ) : (
           <pre className={styles.pre} aria-label={t("http.tabRequest")}>
-            <HighlightedBody text={formatRequestHead(exchange)} kind="http" />
+            <HighlightedBody text={requestHead} kind="http" />
             {exchange.request.body ? (
               <>
                 {"\n\n"}
@@ -251,13 +271,6 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
       </div>
     </div>
   );
-}
-
-/** 请求行、头部用 HTTP 语法，正文按 Content-Type 单独高亮，保持实际发送内容。 */
-function formatRequestHead(exchange: HttpExchange): string {
-  const lines = [`${exchange.request.method} ${exchange.request.url}`];
-  for (const [name, value] of exchange.request.headers) lines.push(`${name}: ${value}`);
-  return lines.join("\n");
 }
 
 export function HttpClientView() {

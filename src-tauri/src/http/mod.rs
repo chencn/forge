@@ -142,13 +142,13 @@ pub async fn http_send(
     };
     let _guard = request_id.map(CancelGuard);
     let base = path.as_deref().map(PathBuf::from);
-    let (sent, body) = block(move || {
+    let (mut sent, body) = block(move || {
         let dir = base.as_deref().and_then(Path::parent);
         exec::assemble(&call, dir)
     })
     .await?;
     let time_ms = now_ms();
-    let result = exec::send(&sent, &body, &mut rx).await;
+    let result = exec::send(&mut sent, &body, &mut rx).await;
     // 取消直接向上抛，不作为一次「失败的交换」记进历史。
     if let Err(e) = &result {
         if e.starts_with("HTTP_CANCELLED") {
@@ -292,9 +292,9 @@ mod tests {
             headers: vec![],
             body: vec![],
         };
-        let (sent, body) = exec::assemble(&call, None).unwrap();
+        let (mut sent, body) = exec::assemble(&call, None).unwrap();
         let (_tx, mut rx) = watch::channel(false);
-        let response = exec::send(&sent, &body, &mut rx).await.unwrap();
+        let response = exec::send(&mut sent, &body, &mut rx).await.unwrap();
         assert_eq!(sent.name.as_deref(), Some("ping"));
         assert_eq!(response.status, 200);
         assert_eq!(response.body.as_deref(), Some("{\"ok\":true}"));

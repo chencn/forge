@@ -128,9 +128,3 @@
   font-size: var(--fs-input-large);
   color: var(--fg-strong, #dfe1e5);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .framed {
-    transition: none;
-  }
-}

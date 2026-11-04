@@ -170,7 +170,3 @@
   .browser-access-badge > span:not(.browser-running-dot) { display: none; }
   .browser-sheet { padding-inline: 14px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .browser-panel *, .browser-panel *::before { transition: none !important; }
-  .browser-progress > span { width: 100%; animation: none; opacity: .65; }
-}

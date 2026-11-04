@@ -37,9 +37,3 @@
     transform: translateY(-2px);
   }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .popup[data-positioned] {
-    animation: none;
-  }
-}

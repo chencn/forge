@@ -292,11 +292,3 @@
 .dropAfter::after {
   right: -2px;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .tab,
-  .close,
-  .closeSlot .modified {
-    transition: none;
-  }
-}

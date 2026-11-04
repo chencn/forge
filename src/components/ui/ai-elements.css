@@ -131,9 +131,3 @@
 .ai-element-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 12px; }
 .ai-element-suggestions button { max-width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); padding: 6px 10px; font: inherit; font-size: 11px; cursor: pointer; }
 .ai-element-suggestions button:hover { background: var(--bg-hover); color: var(--text-primary); }
-@media (prefers-reduced-motion: reduce) {
-  /* styles.css forces tiny nonzero durations globally; Base UI needs a true zero here. */
-  :root [data-slot="trace-collapsible"] [data-slot="trace-collapsible-content"] { animation-duration: 0s !important; transition-duration: 0s !important; }
-  [data-slot="trace-line"][data-status="running"] > [data-slot="trace-title"] { animation: none; background: none; color: var(--text-primary); }
-  [data-slot="trace-collapsible-trigger"] > [data-slot="trace-icon"] { transition: none; }
-}

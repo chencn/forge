@@ -151,10 +151,3 @@
 .tone-accent {
   color: var(--accent, #3871e1);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .button,
-  .iconButton {
-    transition: none;
-  }
-}

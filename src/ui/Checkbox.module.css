@@ -144,11 +144,3 @@
   opacity: 0.5;
   cursor: default;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .box,
-  .knob,
-  .switch {
-    transition: none;
-  }
-}

@@ -61,9 +61,3 @@
   color: var(--fg-strong, #dfe1e5);
   font-weight: 600;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .button {
-    transition: none;
-  }
-}

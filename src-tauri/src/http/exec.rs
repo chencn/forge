@@ -63,6 +63,9 @@ pub struct SentRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
+    /// 首次发送时补全默认值的头；原始 headers 单独保留，避免历史重发固化传输头。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_headers: Option<Vec<(String, String)>>,
     /// 拼装后的正文文本；正文文件不是 UTF-8 时按有损转换。
     pub body: Option<String>,
     /// 非 UTF-8 正文保留原始字节，文本请求不重复存储。
@@ -80,6 +83,9 @@ pub struct HttpResponse {
     pub content_type: Option<String>,
     /// 文本正文件（有损 UTF-8）；二进制正文为 `None`。
     pub body: Option<String>,
+    /// PDF 保留原始字节供前端预览和历史回放，不能经过有损 UTF-8 转换。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
     /// 解压后实际收到的字节数。
     pub size: f64,
     pub truncated: bool,
@@ -103,6 +109,7 @@ pub fn assemble(
         method: call.method.trim().to_uppercase(),
         url,
         headers: call.headers.clone(),
+        sent_headers: None,
         body: if body.is_empty() {
             None
         } else {
@@ -262,7 +269,7 @@ async fn wait_cancelled(cancel: &mut watch::Receiver<bool>) {
 
 /// 发送 `req`（正文为 `body`）；`cancel` 触发时中止。
 pub async fn send(
-    req: &SentRequest,
+    req: &mut SentRequest,
     body: &[u8],
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<HttpResponse, String> {
@@ -290,9 +297,36 @@ pub async fn send(
     if !body.is_empty() || (method != reqwest::Method::GET && method != reqwest::Method::HEAD) {
         builder = builder.body(body.to_vec());
     }
-    let request = builder
+    let mut request = builder
         .build()
         .map_err(|e| err("HTTP_URL", format!("invalid request: {e}")))?;
+    // 默认值在 execute/解压中间件里才补齐；先显式设置，让发送和历史共享同一份值。
+    use reqwest::header::{HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
+    request.headers_mut().entry(ACCEPT).or_insert(HeaderValue::from_static("*/*"));
+    // 与 Cargo.toml 启用的 gzip/deflate/brotli 以及 tower-http 协商顺序保持一致。
+    request.headers_mut().entry(ACCEPT_ENCODING).or_insert(HeaderValue::from_static("gzip,deflate,br"));
+    // 正文已完整拼装，发送前固定长度，使 HTTP/1 和 HTTP/2 的记录一致。
+    // 显式 chunked 仍优先；空正文没有 chunk 可发送，移除无效的传输编码。
+    if body.is_empty() {
+        request.headers_mut().remove(TRANSFER_ENCODING);
+    }
+    if request.headers().contains_key(TRANSFER_ENCODING) {
+        request.headers_mut().remove(CONTENT_LENGTH);
+    } else if request.body().is_some() {
+        request.headers_mut().entry(CONTENT_LENGTH).or_insert(HeaderValue::from(body.len()));
+    }
+    let mut sent_headers = request.headers().clone();
+    // Host 只补到首次请求快照中；写入实际请求会让跨域重定向沿用错误的 Host。
+    // HTTP/2 使用对应的 :authority，这里统一按可读的 HTTP 头展示。
+    let url = request.url();
+    let host = match url.port() {
+        Some(port) => format!("{}:{port}", url.host_str().unwrap_or("")),
+        None => url.host_str().unwrap_or("").to_owned(),
+    };
+    sent_headers.entry(HOST).or_insert(HeaderValue::from_str(&host).map_err(|e| err("HTTP_URL", e))?);
+    req.sent_headers = Some(sent_headers.iter().map(|(name, value)| (
+        name.as_str().to_owned(), String::from_utf8_lossy(value.as_bytes()).into_owned(),
+    )).collect());
     let started = Instant::now();
     let sending = client.execute(request);
     let mut response = tokio::select! {
@@ -339,7 +373,11 @@ pub async fn send(
         bytes.extend_from_slice(&chunk);
     }
     let total = started.elapsed();
-    let body = if looks_textual(content_type.as_deref(), &bytes) {
+    // PDF 即使只有 ASCII 也必须按二进制处理；下载接口可能只声明 octet-stream。
+    let pdf = content_type.as_deref().is_some_and(|ct| {
+        ct.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("application/pdf")
+    }) || bytes.starts_with(b"%PDF-");
+    let body = if !pdf && looks_textual(content_type.as_deref(), &bytes) {
         Some(String::from_utf8_lossy(&bytes).into_owned())
     } else {
         None
@@ -352,6 +390,7 @@ pub async fn send(
         headers,
         content_type,
         body,
+        body_base64: (pdf && !stopped_early).then(|| STANDARD.encode(&bytes)),
         size,
         truncated: stopped_early,
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
@@ -496,7 +535,7 @@ mod tests {
             reader.read_line(&mut line).await.unwrap();
             assert_eq!(line, "POST /echo HTTP/1.1\r\n");
             let mut length = None;
-            let mut headers = std::collections::HashMap::new();
+            let mut headers = Vec::new();
             // 按 Content-Length 读完整正文，避免依赖 TCP 一次 read 恰好收到整条请求。
             loop {
                 line.clear();
@@ -506,39 +545,142 @@ mod tests {
                 if name.eq_ignore_ascii_case("content-length") {
                     length = Some(value.trim().parse::<usize>().unwrap());
                 }
-                headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+                headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
             }
             let mut payload = vec![0; length.unwrap()];
             reader.read_exact(&mut payload).await.unwrap();
-            assert_eq!(headers["content-type"], "application/json");
-            assert_eq!(headers["x-name"], "中文");
+            assert!(headers.contains(&("content-type".into(), "application/json".into())));
+            assert!(headers.contains(&("x-name".into(), "中文".into())));
             let body = "{\"ok\":true}";
             let resp = format!(
                 "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-A: b\r\n\r\n{body}",
                 body.len()
             );
             reader.get_mut().write_all(resp.as_bytes()).await.unwrap();
-            serde_json::from_slice::<serde_json::Value>(&payload).unwrap()
+            (serde_json::from_slice::<serde_json::Value>(&payload).unwrap(), headers)
         });
         // 与 http_send 接收的正文格式一致，覆盖 JSON 解码到实际 POST 的路径。
         let c: HttpRequestCall = serde_json::from_value(serde_json::json!({
             "method": "POST",
             "url": format!("http://{addr}/echo"),
-            "headers": [["Content-Type", "application/json"], ["X-Name", "中文"]],
+            "headers": [["Content-Type", "application/json"], ["X-Name", "中文"],
+                ["X-Item", "one"], ["X-Item", "two"]],
             "body": [{ "text": "{\"id\":7}" }],
         }))
         .unwrap();
-        let (sent, body) = assemble(&c, None).unwrap();
+        let (mut sent, body) = assemble(&c, None).unwrap();
         // 无 requestId 的命令不会保留取消发送端，关闭通道不代表用户取消。
         let mut rx = watch::channel(false).1;
-        let r = send(&sent, &body, &mut rx).await.unwrap();
-        assert_eq!(server.await.unwrap(), serde_json::json!({ "id": 7 }));
+        let r = send(&mut sent, &body, &mut rx).await.unwrap();
+        let (payload, mut wire_headers) = server.await.unwrap();
+        assert_eq!(payload, serde_json::json!({ "id": 7 }));
+        let mut recorded = sent.sent_headers.clone().unwrap();
+        recorded.sort();
+        wire_headers.sort();
+        assert_eq!(recorded, wire_headers);
+        assert!(recorded.contains(&("host".into(), addr.to_string())));
+        assert!(recorded.contains(&("accept".into(), "*/*".into())));
+        assert!(recorded.contains(&("user-agent".into(), "Forge".into())));
+        assert!(recorded.contains(&("accept-encoding".into(), "gzip,deflate,br".into())));
+        assert_eq!(recorded.iter().filter(|(name, _)| name == "x-item").count(), 2);
+        // 历史 JSON 同时保留实际头和原始头，不能把默认值混进重发配置。
+        let saved: SentRequest = serde_json::from_value(serde_json::to_value(&sent).unwrap()).unwrap();
+        assert_eq!(saved.sent_headers, sent.sent_headers);
+        assert_eq!(saved.headers, c.headers);
         assert_eq!(r.status, 201);
         assert_eq!(r.status_text, "Created");
         assert_eq!(r.body.as_deref(), Some("{\"ok\":true}"));
         assert!(r.headers.iter().any(|(k, v)| k == "x-a" && v == "b"));
         assert_eq!(r.final_url, format!("http://{addr}/echo"));
         assert!(r.total_ms >= r.ttfb_ms);
+    }
+
+    #[tokio::test]
+    async fn records_empty_requests_and_explicit_header_overrides() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        for method in ["GET", "POST", "HEAD"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let mut headers = Vec::new();
+                loop {
+                    line.clear();
+                    assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" { break; }
+                    let (name, value) = line.split_once(':').unwrap();
+                    headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
+                }
+                reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
+                headers
+            });
+            let mut c = call(method, &format!("http://user:password@{addr}/"));
+            c.headers = vec![
+                ("User-Agent".into(), "custom-agent".into()),
+                ("Accept".into(), "application/pdf".into()),
+                ("Accept-Encoding".into(), "identity".into()),
+                ("Range".into(), "bytes=0-99".into()),
+            ];
+            let (mut sent, body) = assemble(&c, None).unwrap();
+            let mut rx = watch::channel(false).1;
+            send(&mut sent, &body, &mut rx).await.unwrap();
+            let mut wire = server.await.unwrap();
+            let mut recorded = sent.sent_headers.unwrap();
+            wire.sort();
+            recorded.sort();
+            assert_eq!(recorded, wire, "{method}");
+            assert!(recorded.contains(&("authorization".into(), "Basic dXNlcjpwYXNzd29yZA==".into())));
+            assert!(recorded.contains(&("user-agent".into(), "custom-agent".into())));
+            assert!(recorded.contains(&("accept-encoding".into(), "identity".into())));
+            assert_eq!(sent.headers, c.headers);
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_initial_headers_without_leaking_host_or_auth_to_redirects() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        async fn serve(listener: tokio::net::TcpListener, response: String) -> Vec<(String, String)> {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let mut headers = Vec::new();
+            loop {
+                line.clear();
+                assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" { break; }
+                let (name, value) = line.split_once(':').unwrap();
+                headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
+            }
+            reader.get_mut().write_all(response.as_bytes()).await.unwrap();
+            headers
+        }
+        let initial = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let initial_addr = initial.local_addr().unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let target_url = format!("http://{target_addr}/final");
+        let first = tokio::spawn(serve(initial, format!(
+            "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\n\r\n"
+        )));
+        let last = tokio::spawn(serve(target, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".into()));
+        let mut c = call("GET", &format!("http://{initial_addr}/start"));
+        c.headers = vec![("Authorization".into(), "Bearer fixture".into())];
+        let (mut sent, body) = assemble(&c, None).unwrap();
+        let mut rx = watch::channel(false).1;
+        let response = send(&mut sent, &body, &mut rx).await.unwrap();
+        let mut first_headers = first.await.unwrap();
+        let mut recorded = sent.sent_headers.unwrap();
+        first_headers.sort();
+        recorded.sort();
+        assert_eq!(recorded, first_headers);
+        let final_headers = last.await.unwrap();
+        assert!(final_headers.contains(&("host".into(), target_addr.to_string())));
+        assert!(!final_headers.iter().any(|(name, _)| name == "authorization"));
+        assert_eq!(response.final_url, target_url);
     }
 
     #[tokio::test]
@@ -572,12 +714,72 @@ mod tests {
                 sent.headers.push(("Accept-Encoding".into(), "gzip".into()));
             }
             let (_tx, mut rx) = watch::channel(false);
-            let response = send(&sent, &body, &mut rx).await.unwrap();
+            let response = send(&mut sent, &body, &mut rx).await.unwrap();
             let request = server.await.unwrap();
             let accept = request.lines().find_map(|line| line.strip_prefix("accept-encoding: ")).unwrap();
             assert!(accept.split(',').any(|value| value.trim() == encoding), "{accept}");
             assert_eq!(serde_json::from_str::<serde_json::Value>(response.body.as_deref().unwrap()).unwrap(), serde_json::json!({ "ok": true }));
             assert_eq!(response.size, 11.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn preserves_complete_pdf_bytes_through_wire_and_history() {
+        use super::super::history::{History, HttpExchange};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // 包含 ASCII PDF、二进制 PDF、下载接口、错误类型和截断边界。
+        let cases = [
+            ("Application/PDF; version=1.7", b"%PDF-1.7\nASCII PDF".to_vec(), true, false),
+            ("application/pdf", b"%PDF-1.7\n\xff\x00\x80".to_vec(), true, false),
+            ("application/octet-stream", b"%PDF-1.7\nDownloaded PDF".to_vec(), true, false),
+            ("application/json", br#"{"ok":true}"#.to_vec(), false, false),
+            ("application/octet-stream", vec![0, 255, 128], false, false),
+            ("application/pdf", vec![b'x'; MAX_BODY + 1], true, true),
+        ];
+        let tmp = temp_dir("pdf-history");
+        for (index, (content_type, bytes, pdf, truncated)) in cases.into_iter().enumerate() {
+            let expected = bytes.clone();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                socket.read(&mut buf).await.unwrap();
+                let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n", bytes.len());
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                // 截断时客户端主动停读，服务端可能收到连接关闭。
+                let _ = socket.write_all(&bytes).await;
+            });
+            let (mut sent, body) = assemble(&call("GET", &format!("http://{addr}/")), None).unwrap();
+            let (_tx, mut rx) = watch::channel(false);
+            let response = send(&mut sent, &body, &mut rx).await.unwrap();
+            server.await.unwrap();
+            assert_eq!(response.truncated, truncated);
+            assert_eq!(response.size, expected.len() as f64);
+            if pdf { assert!(response.body.is_none()); }
+            let wire = serde_json::to_value(&response).unwrap();
+            if pdf && !truncated {
+                assert_eq!(STANDARD.decode(wire["bodyBase64"].as_str().unwrap()).unwrap(), expected);
+            } else {
+                assert!(wire.get("bodyBase64").is_none());
+            }
+            let id = format!("pdf-{index}");
+            let exchange: HttpExchange = serde_json::from_value(serde_json::json!({
+                "entry": {"id": id, "timeMs": 1, "name": null, "method": "GET", "url": sent.url,
+                    "status": 200, "totalMs": 1, "file": null, "error": null},
+                "request": sent, "response": wire,
+            })).unwrap();
+            History::new(tmp.clone()).add(&exchange).unwrap();
+            let reopened = History::new(tmp.clone()).get(&id).unwrap().response.unwrap();
+            assert_eq!(reopened.body_base64, response.body_base64);
+            assert_eq!(reopened.body, response.body);
+            assert_eq!(reopened.truncated, response.truncated);
+            assert_eq!(reopened.size, response.size);
+            assert_eq!(History::new(tmp.clone()).get(&id).unwrap().request.sent_headers, sent.sent_headers);
+            // 已存在的历史不含 bodyBase64，仍可读取且不会伪造原始字节。
+            let mut old = wire;
+            old.as_object_mut().unwrap().remove("bodyBase64");
+            assert!(serde_json::from_value::<HttpResponse>(old).unwrap().body_base64.is_none());
         }
     }
 
@@ -590,13 +792,13 @@ mod tests {
             let _conn = listener.accept().await;
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         });
-        let (sent, body) = assemble(&call("GET", &format!("http://{addr}/")), None).unwrap();
+        let (mut sent, body) = assemble(&call("GET", &format!("http://{addr}/")), None).unwrap();
         let (tx, mut rx) = watch::channel(false);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let _ = tx.send(true);
         });
-        let error = send(&sent, &body, &mut rx).await.unwrap_err();
+        let error = send(&mut sent, &body, &mut rx).await.unwrap_err();
         assert!(error.starts_with("HTTP_CANCELLED"), "{error}");
     }
 
@@ -606,7 +808,7 @@ mod tests {
             let (mut sent, body) = assemble(&call("GET", "http://example.com/"), None).unwrap();
             sent.headers.push((name.into(), value.into()));
             let (_tx, mut rx) = watch::channel(false);
-            let error = send(&sent, &body, &mut rx).await.unwrap_err();
+            let error = send(&mut sent, &body, &mut rx).await.unwrap_err();
             assert!(error.starts_with("HTTP_HEADER"), "{error}");
             assert!(error.contains(name), "{error}");
         }

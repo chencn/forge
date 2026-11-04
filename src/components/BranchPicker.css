@@ -47,9 +47,6 @@
   .branch-popup [role="option"]:hover .branch-popup-star-icon { visibility: visible; }
   .branch-popup [role="option"]:hover .branch-popup-branch-icon { visibility: hidden; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .branch-popup[data-positioned] { animation: none; }
-}
 .branch-popup-sync {
   flex: none;
   display: inline-flex;

@@ -28,9 +28,3 @@
   font-size: var(--fs-ui, 12px);
   color: color-mix(in srgb, var(--fg-tooltip, #d1d3d9) 62%, transparent);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .tooltip[data-placed] {
-    transition: none;
-  }
-}

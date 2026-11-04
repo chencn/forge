@@ -119,9 +119,3 @@
     transform: translateY(4px) scale(0.995);
   }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .dialog {
-    animation: none;
-  }
-}

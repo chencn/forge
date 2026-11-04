@@ -175,6 +175,7 @@ mod tests {
                 method: "GET".into(),
                 url: "http://x".into(),
                 headers: vec![],
+                sent_headers: None,
                 body: None,
                 body_base64: None,
             },
