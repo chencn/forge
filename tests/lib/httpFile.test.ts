@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearHttpCookies,
+  createHttpRunSession,
   executeHttpRequest,
   formatHttpExchange,
+  httpRequestAtLine,
   httpRequestLabel,
   isHttpFile,
   parseHttpFile,
@@ -44,6 +46,29 @@ async function sendOf(fileText: string, line: number, options: Parameters<typeof
 }
 
 describe("parseHttpFile", () => {
+  it("ignores preamble text and method names without a target", () => {
+    expect(parseHttpFile("hello world\n").requests).toEqual([]);
+    expect(parseHttpFile("GET\n").requests).toEqual([]);
+    const file = parseHttpFile("# @name health\nnotes for this request\nGET http://localhost:9000\n");
+    expect(file.requests).toHaveLength(1);
+    expect(file.requests[0]).toMatchObject({ name: "health", method: "GET", url: "http://localhost:9000" });
+  });
+
+  it("skips a response handler directly after the headers", () => {
+    const file = parseHttpFile('GET http://localhost:9000\n> {%\nclient.log("hidden");\n%}\n');
+    expect(file.requests[0]!.body).toBe("");
+  });
+
+  it("accepts name= metadata and URL path continuations", () => {
+    const file = parseHttpFile("# @name=health\nGET http://localhost:9000\n  /status\n  ?full=true\n");
+    expect(file.requests[0]).toMatchObject({ name: "health", url: "http://localhost:9000/status?full=true", body: "" });
+  });
+
+  it("excludes response directives and indented handlers from the sent body", () => {
+    const file = parseHttpFile('POST http://localhost:9000\n\n{"ok":true}\n  > {%\nclient.log("hidden");\n  %}\n<> old.json\n  >> saved.json\n');
+    expect(JSON.parse(file.requests[0]!.body)).toEqual({ ok: true });
+  });
+
   it("parses requests, comments, default GET and the HTTP version", () => {
     const file = parseHttpFile(`# comment
 GET https://example.com/comments/1 HTTP/1.1
@@ -68,8 +93,10 @@ client.test()
       url: "https://example.com/comments/1",
       body: "",
     });
+    expect(file.requests[0]).toMatchObject({ startLine: 1, endLine: 2 });
     expect(file.requests[1]).toMatchObject({
       line: 5,
+      startLine: 5,
       method: "GET",
       title: "List",
       url: "https://example.com/topics/1",
@@ -77,6 +104,23 @@ client.test()
     expect(file.requests[2].body).toBe('{"name":"sample"}\n# kept in the body');
     expect(file.requests[2].headers).toEqual([{ name: "Content-Type", value: "application/json" }]);
     expect(httpRequestLabel(file.requests[1])).toBe("List");
+  });
+
+  it("treats a caret inside the request block as that request", () => {
+    const file = parseHttpFile(`# comment
+GET https://example.com/a
+
+### Next
+POST https://example.com/b
+Content-Type: text/plain
+
+hello
+`);
+    expect(file.requests[0]).toMatchObject({ line: 2, startLine: 1, endLine: 2 });
+    expect(file.requests[1]).toMatchObject({ line: 5, startLine: 5, endLine: 8 });
+    expect(httpRequestAtLine(file, 1)?.line).toBe(2);
+    expect(httpRequestAtLine(file, 6)?.method).toBe("POST");
+    expect(httpRequestAtLine(file, 8)?.method).toBe("POST");
   });
 
   it("joins query lines and folded header values", () => {
@@ -113,6 +157,42 @@ describe("executeHttpRequest", () => {
     clearHttpCookies();
   });
 
+  it("resolves relative URLs against the substituted Host header", async () => {
+    const { calls } = await sendOf("GET /status\nhOsT: {{host}}\n", 1, { envVars: { host: "localhost:9000" } });
+    expect(calls[0]!.url).toBe("http://localhost:9000/status");
+    await expect(sendOf("GET /status\n", 1)).rejects.toContain("HTTP_URL");
+  });
+
+  it.each([
+    "GET https://{{host}}/status\n",
+    "POST http://localhost:9000\nAuthorization: Bearer {{token}}\n\n{}\n",
+    'POST http://localhost:9000\n\n{"id":"{{id}}"}\n',
+  ])("rejects unresolved variables before sending: %s", async (text) => {
+    const send = vi.fn(async () => result());
+    const file = parseHttpFile(text);
+    await expect(executeHttpRequest(file, file.requests[0]!, { send })).rejects.toContain("HTTP_VARIABLE");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("supports the original dynamic variables and seconds timestamp", async () => {
+    const now = new Date("2020-01-02T03:04:05.678Z");
+    const { calls } = await sendOf('POST http://localhost:9000\n\n{"uuid":"{{$random.uuid}}","iso":"{{$isoTimestamp}}","n":{{$random.integer()}},"other":{{$random.integer}},"default":{{$randomInt}},"time":{{$timestamp}}}\n', 1, { now });
+    const body = JSON.parse(calls[0]!.body[0]!.text!);
+    expect(body.uuid).toMatch(/^[0-9a-f-]{36}$/);
+    expect(body.iso).toBe("2020-01-02T03:04:05Z");
+    for (const value of [body.n, body.other, body.default]) {
+      expect(Number.isInteger(value)).toBe(true);
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThan(1000);
+    }
+    expect(body.time).toBe(Math.floor(now.getTime() / 1000));
+  });
+
+  it("recognizes indented file includes", async () => {
+    const { calls } = await sendOf("POST http://localhost:9000\n\n  < ./payload.json\n", 1);
+    expect(calls[0]!.body).toEqual([{ file: "/tmp/api/payload.json" }]);
+  });
+
   it("substitutes file variables, system variables and prompts", async () => {
     const now = new Date("2020-01-02T03:04:05.678Z");
     vi.spyOn(Math, "random").mockReturnValue(0);
@@ -144,7 +224,7 @@ Content-Type: application/json
     const call = calls[0];
     expect(call.url).toBe("https://example.com/api/users");
     const body = call.body[0]?.text ?? "";
-    expect(body).toContain(`"at": "${now.getTime()}"`);
+    expect(body).toContain(`"at": "${Math.floor(now.getTime() / 1000)}"`);
     expect(body).toContain('"day": "2020-01-02"');
     expect(body).toContain('"n": "5"');
     expect(body).toContain('"who": "ada-prompt"');
@@ -186,6 +266,43 @@ X-From: {{login.response.headers.X-Auth}}
     expect(calls[1].headers).toEqual([
       { name: "Authorization", value: "abc" },
       { name: "X-From", value: "yes" },
+    ]);
+  });
+
+  it("forwards resolved response data containing literal template braces", async () => {
+    const { calls } = await sendOf("# @name first\nGET http://localhost:9000/first\n\n###\n@payload = {{first.response.body.*}}\nPOST http://localhost:9000/next\n\n{{payload}}\n", 6, {
+      send: async (call) => result({ finalUrl: call.url, body: "{{literal}}" }),
+    });
+    expect(calls[1]!.body).toEqual([{ text: "{{literal}}" }]);
+  });
+
+  it("reports unresolved names nested in file and environment variables", async () => {
+    const send = vi.fn(async () => result());
+    const file = parseHttpFile("@auth = {{token}}\nGET http://localhost:9000\nAuthorization: {{auth}}\n");
+    await expect(executeHttpRequest(file, file.requests[0]!, { send, envVars: { token: "{{missing}}" } })).rejects.toBe("HTTP_VARIABLE\u0001missing");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("reuses a named response from the same run instead of sending it again", async () => {
+    const session = createHttpRunSession();
+    const text = `# @name login
+POST https://example.com/login
+
+###
+GET https://example.com/users/{{login.response.body.$.id}}
+`;
+    const file = parseHttpFile(text);
+    const send = vi.fn(async (call: HttpCall) => {
+      if (call.url.endsWith("/login")) {
+        return result({ finalUrl: call.url, body: '{"id":7}' });
+      }
+      return result({ finalUrl: call.url, body: "ok" });
+    });
+    await executeHttpRequest(file, file.requests[0]!, { dir: "/tmp/api", send, session });
+    await executeHttpRequest(file, file.requests[1]!, { dir: "/tmp/api", send, session });
+    expect(send.mock.calls.map(([call]) => call.url)).toEqual([
+      "https://example.com/login",
+      "https://example.com/users/7",
     ]);
   });
 
@@ -281,6 +398,25 @@ X-User: {{$processEnv USER}}
     );
     expect(readText).not.toHaveBeenCalled();
     expect(calls[0].body).toEqual([{ file: "/tmp/api/demo.bin" }]);
+  });
+
+  it("stops before the next send once the run is cancelled", async () => {
+    let sent = 0;
+    const send = vi.fn(async () => {
+      sent += 1;
+      return result({ body: "token" });
+    });
+    const file = parseHttpFile(
+      "# @name login\nGET https://example.com/login\n\n###\nGET https://example.com/me\nAuthorization: Bearer {{login.response.body}}\n"
+    );
+    await expect(
+      executeHttpRequest(file, file.requests[1]!, {
+        dir: "/tmp/api",
+        send,
+        isCancelled: () => sent > 0,
+      })
+    ).rejects.toContain("HTTP_CANCELLED");
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a non-http URL and a non-utf8 include", async () => {

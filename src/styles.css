@@ -448,6 +448,11 @@ svg.is-spinning,
   background-color: var(--app-bg);
 }
 
+/* 底部横向分隔条独占一条缝，上排侧栏与编辑器不再重复留底边距。 */
+.workbench-column.has-bottom-panel > .workbench-row > :is(.tool-window, .editor-stack) {
+  margin-bottom: 0;
+}
+
 .island {
   border-radius: var(--island-radius);
   box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
@@ -1614,6 +1619,11 @@ span.entry-icon > svg {
 /* 右侧工具窗口是工作区中的正常一列，宽度由自己的拖拽状态控制。 */
 .tool-window.is-right {
   margin: var(--workbench-gap) 0;
+}
+
+/* 右侧活动栏位于整列之外，上排工具窗与全宽底部面板保持相同右侧留白。 */
+.workbench-row > .tool-window.is-right {
+  margin-right: var(--workbench-gap);
 }
 
 /* Maven 内容铺在 panel-body 里，自身不再当岛。 */
@@ -2904,7 +2914,8 @@ span.entry-icon > svg {
   background: transparent;
 }
 
-.panel-splitter::after {
+.panel-splitter::after,
+.editor-split-divider::after {
   content: "";
   position: absolute;
   left: 10px;
@@ -2915,7 +2926,8 @@ span.entry-icon > svg {
   background: transparent;
 }
 
-.panel-splitter.is-vertical::after {
+.panel-splitter.is-vertical::after,
+.editor-split-divider.is-horizontal::after {
   left: 2px;
   right: auto;
   top: 10px;
@@ -2924,12 +2936,14 @@ span.entry-icon > svg {
   height: auto;
 }
 
-.panel-splitter:hover::after {
+.panel-splitter:hover::after,
+.editor-split-divider:hover::after,
+.editor-split-divider:active::after {
   /* 分隔条用中性反馈，避免悬停时出现蓝色竖边。 */
   background: var(--text-tertiary);
 }
 
-/* 底部一次只坐一块工具窗口，高度由上面那条缝定。只占编辑区这一列，侧栏仍接到顶栏和底栏。 */
+/* 底部一次只坐一块工具窗口，横跨上排全部内容，高度由上面那条缝定。 */
 .bottom-panel {
   flex: none;
   z-index: 1;
@@ -2937,6 +2951,7 @@ span.entry-icon > svg {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  margin: 0 var(--workbench-gap) var(--workbench-gap);
   background: var(--bg-primary);
   overflow: hidden;
 }
@@ -3412,6 +3427,24 @@ span.entry-icon > svg {
 
 .run-gutter-run:hover::before {
   transform: translate(-40%, -50%) scale(1.15);
+}
+
+/* `.http` 请求行的 ▶：IDEA 那颗绿三角，16px 热区，悬停只铺一层中性底。 */
+.run-gutter-run.http-gutter-run {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.run-gutter-run.http-gutter-run::before {
+  content: none;
+}
+
+.run-gutter-run.http-gutter-run:hover {
+  background: var(--bg-hover);
 }
 
 /* 运行与停止照 IDEA 的 RunWidget：跑绿、停红，圆角实心底 + 白图标。
@@ -4298,7 +4331,7 @@ body .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
 }
 
 /* ===== 编辑器区 ===== */
-/* 编辑区和它下面的工具窗口收成一列，四周留出底色，才不会用一条横线把顶栏底栏切开。 */
+/* 编辑区位于上排中央；停靠的底部工具窗口由 workbench-column 统一排列。 */
 .editor-stack {
   flex: 1;
   min-width: 0;
@@ -4850,6 +4883,13 @@ body.is-editor-tab-dragging * {
 }
 
 /* 编辑区双栏并排拆分布局（Split Right / Split Down） */
+/* 拆分后由每块面板独立绘制、裁剪圆角，外壳透出工作台底色作为分隔缝。 */
+.editor-region:has(> .editor-split-container) {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .editor-split-container {
   display: flex;
   flex: 1;
@@ -4875,15 +4915,9 @@ body.is-editor-tab-dragging * {
   min-height: 0;
   overflow: hidden;
   position: relative;
-}
-
-.editor-split-pane.is-secondary {
-  border-left: 1px solid var(--border-color);
-}
-
-.editor-split-container.is-vertical .editor-split-pane.is-secondary {
-  border-left: none;
-  border-top: 1px solid var(--border-color);
+  border-radius: var(--island-radius);
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--border-color) 85%, transparent);
 }
 
 .ai-file-preview-pane { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
@@ -4904,27 +4938,22 @@ body.is-editor-tab-dragging * {
 }
 
 .editor-split-divider {
+  position: relative;
   flex: none;
-  background: var(--border-color);
-  transition: background 150ms ease-out;
+  background: transparent;
   z-index: 2;
 }
 
 .editor-split-divider.is-horizontal {
-  width: 5px;
+  width: var(--workbench-gap);
   height: 100%;
   cursor: col-resize;
 }
 
 .editor-split-divider.is-vertical {
-  height: 5px;
+  height: var(--workbench-gap);
   width: 100%;
   cursor: row-resize;
-}
-
-.editor-split-divider:hover,
-.editor-split-divider:active {
-  background: var(--border-strong);
 }
 
 .doc-preview-pane {
@@ -5501,98 +5530,98 @@ body.is-editor-tab-dragging * {
   color: var(--text-tertiary);
 }
 
-/* Lezer classHighlighter 的 token 色：正文代码块、md 预览、工具源码三处共用。
+/* Lezer classHighlighter 的 token 色：正文、预览、工具源码和 HTTP 正文共用。
    类名来自 @lezer/highlight 的 classHighlighter，颜色与编辑器里的 HighlightStyle 同源
    （见 lib/cm/highlight.ts）——同一批 tag，只是一个落成 class、一个落成内联样式。 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-comment {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-comment {
   color: var(--syn-comment);
   font-style: var(--syn-comment-style, italic);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-keyword,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-atom,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-bool,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-literal {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-keyword,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-atom,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-bool,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-literal {
   color: var(--syn-keyword);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-string,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-string2 {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-string,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-string2 {
   color: var(--syn-string);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-number {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-number {
   color: var(--syn-number);
 }
 
 /* 定义处的函数名蓝，调用处按 IDEA 保持正文色：classHighlighter 用两个类名区分。 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName.tok-definition {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-variableName.tok-definition {
   color: var(--syn-function);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-typeName,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-className,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-namespace {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-typeName,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-className,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-namespace {
   color: var(--syn-type);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-propertyName {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-propertyName {
   color: var(--syn-property);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName2 {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-variableName2 {
   color: var(--syn-constant);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-meta,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-macroName {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-meta,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-macroName {
   color: var(--syn-annotation);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-labelName {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-labelName {
   color: var(--syn-constant);
 }
 
 /* var() / rgb() / url() 这类函数名在 Lezer 里落在普通变量名上，与正文同色：
    IDEA 也不单独给它们一档色，原来靠 highlight.js 的 built_in 才显出来。 */
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-variableName.tok-local {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-variableName,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-variableName.tok-local {
   color: var(--syn-variable);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-operator,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-punctuation {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-operator,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-punctuation {
   color: var(--syn-punct);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-link,
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-url {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-link,
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-url {
   color: var(--syn-link);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-heading {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-heading {
   color: var(--syn-markup-heading);
   font-weight: 700;
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-inserted {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-inserted {
   color: var(--accent-green);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-deleted {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-deleted {
   color: var(--accent-red);
   background-color: var(--accent-red-bg);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-invalid {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-invalid {
   color: var(--syn-invalid);
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-emphasis {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-emphasis {
   font-style: italic;
 }
 
-:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code) .tok-strong {
+:is(.markdown-body, .ai-message-markdown, .ai-tool-source-code, .syntax-highlight) .tok-strong {
   font-weight: bold;
 }
 

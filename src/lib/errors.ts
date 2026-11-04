@@ -105,6 +105,8 @@ const CODES: Record<string, (parts: string[], t: Translate) => string> = {
   HTTP_BODY: (p, t) => t("error.httpBody", { detail: p[0] ?? "" }),
   HTTP_CYCLE: (p, t) => t("error.httpCycle", { name: p[0] ?? "" }),
   HTTP_ENCODING: (p, t) => t("error.httpEncoding", { encoding: p[0] ?? "" }),
+  // 准备阶段拒绝未解析的变量，避免把占位符发进鉴权头和正文。
+  HTTP_VARIABLE: (p, t) => t("error.httpVariable", { names: p[0] ?? "" }),
   // 内置浏览器：宿主能力、页面生命周期与截图边界。文案只在界面这一侧有一份。
   BROWSER_DISABLED: (_p, t) => t("error.browserDisabled"),
   BROWSER_SESSION: (_p, t) => t("error.browserSession"),

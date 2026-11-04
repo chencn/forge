@@ -56,7 +56,7 @@ pub struct SnapshotInfo {
 }
 
 /// FNV-1a 64 位稳定哈希。与 `DefaultHasher` 不同，它的输出不会随 Rust 实现或版本变化。
-fn stable_hash(value: &str) -> u64 {
+pub(crate) fn stable_hash(value: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in value.as_bytes() {
         hash ^= u64::from(*byte);
@@ -66,7 +66,7 @@ fn stable_hash(value: &str) -> u64 {
 }
 
 /// 路径参与持久化哈希前统一分隔符；Windows 文件系统大小写不敏感，也统一成小写。
-fn path_key(path: &Path) -> String {
+pub(crate) fn path_key(path: &Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
         normalized.to_lowercase()
@@ -76,7 +76,7 @@ fn path_key(path: &Path) -> String {
 }
 
 /// 工作区根 → 分桶目录名。带上根路径稳定哈希，避免不同工程重名撞桶。
-fn bucket_name(root: &Path) -> String {
+pub(crate) fn bucket_name(root: &Path) -> String {
     let name = root
         .file_name()
         .and_then(|value| value.to_str())

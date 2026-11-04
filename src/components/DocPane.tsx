@@ -1,11 +1,10 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Code2, Columns2, Eye, Search } from "lucide-react";
 import CodeEditor, { type CodeEditorHandle } from "./CodeEditor";
 import ImagePreview from "./ImagePreview";
 import PaneNotice from "./PaneNotice";
 import { canPreview } from "../hooks/useDocuments";
 import { retainEditorModels } from "../lib/modelRetention";
-import { disposeModel } from "../lib/editorEnv";
 import type { DocView, OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import type { DocKind } from "../lib/docKind";
 import { describeError } from "../lib/errors";
@@ -41,11 +40,6 @@ interface DocPaneProps {
   onRunScript: (path: string) => void;
   /** 点了 `.http` / `.rest` 请求行上的 ▶。 */
   onRunHttp: (path: string, line: number, contents: string) => void;
-  /**
-   * 左右分栏时这一份请求对应的响应正文。
-   * 为 null 表示不在右边挂响应（还没发送，或设置成了单独页签）。
-   */
-  httpResponse: string | null;
   /** 相对上次提交的基线。null 表示这篇不画改动。只给源码那台编辑器。 */
   changeBaseline: ChangeBaseline | null;
 }
@@ -85,7 +79,6 @@ export default function DocPane({
   onRunConfig,
   onRunScript,
   onRunHttp,
-  httpResponse,
   changeBaseline,
 }: DocPaneProps) {
   const { t } = useI18n();
@@ -98,53 +91,8 @@ export default function DocPane({
   }, [doc.loading, doc.path, openKey]);
   const sourceCapable = doc.kind !== "image" && doc.kind !== "binary";
   const markdownSplit = doc.kind === "markdown" && doc.view === "split";
-  const httpSplit = httpResponse !== null;
-  const layoutSplit = markdownSplit || httpSplit;
-  const responseDoc = useMemo<OpenDocument | null>(() => {
-    if (httpResponse === null) return null;
-    return {
-      path: `${doc.path}#response`,
-      root: doc.root,
-      name: "response.http",
-      kind: "text",
-      view: "source",
-      contents: httpResponse,
-      baseline: httpResponse,
-      lineEnding: "lf",
-      hasBom: false,
-      encoding: "utf-8",
-      language: "http",
-      readOnly: true,
-      loading: false,
-      error: null,
-      diskMs: 0,
-      stamp: 0,
-      onDisk: false,
-    };
-  }, [doc.path, doc.root, httpResponse]);
   const showPreview = canPreview(doc) && (doc.view === "preview" || markdownSplit);
   const hideSource = showPreview && !markdownSplit;
-
-  /**
-   * 响应那台编辑器用的是自己造的一份「虚拟文档」，不在 `openPaths` 名单里，
-   * `retainEditorModels` 不认识它，关掉分栏后它那篇文档的 state 会一直留在内存里
-   * （还带着整份响应正文）。这里跟着响应路径走：换了或没了就把它关掉。
-   */
-  const responsePath = responseDoc?.path ?? null;
-  const responsePathRef = useRef<string | null>(null);
-  useEffect(() => {
-    const previous = responsePathRef.current;
-    responsePathRef.current = responsePath;
-    if (previous !== null && previous !== responsePath) disposeModel(previous);
-  }, [responsePath]);
-  useEffect(
-    () => () => {
-      const held = responsePathRef.current;
-      responsePathRef.current = null;
-      if (held !== null) disposeModel(held);
-    },
-    []
-  );
 
   /** 分栏模式下左侧编辑器的宽度百分比（默认 50%，支持 20%~80% 范围拖动调节）。 */
   const [splitRatio, setSplitRatio] = useState(50);
@@ -218,13 +166,14 @@ export default function DocPane({
 
   return (
     <div className="doc-pane">
-      <div className={`doc-body${layoutSplit ? " is-split" : ""}`} ref={bodyRef}>
+      {/* 只有 Markdown 预览使用分栏；HTTP 响应由底部工具窗口展示。 */}
+      <div className={`doc-body${markdownSplit ? " is-split" : ""}`} ref={bodyRef}>
         {sourceCapable ? (
           // 藏起来而不是卸载：编辑器实例留着，撤销栈和光标才不会丢；分栏模式下按比例划分宽度。
           <div
             className="doc-source"
             hidden={hideSource}
-            style={layoutSplit ? { width: `${splitRatio}%`, flex: "none" } : undefined}
+            style={markdownSplit ? { width: `${splitRatio}%`, flex: "none" } : undefined}
           >
             <CodeEditor
               ref={editorHandleRef}
@@ -245,7 +194,7 @@ export default function DocPane({
           </div>
         ) : null}
 
-        {layoutSplit ? (
+        {markdownSplit ? (
           <div
             role="separator"
             aria-orientation="vertical"
@@ -290,26 +239,6 @@ export default function DocPane({
                 onScrollRatio={handlePreviewScrollRatio}
               />
             </Suspense>
-          </div>
-        ) : null}
-
-        {responseDoc ? (
-          <div
-            className="doc-preview-pane"
-            style={{ width: `${100 - splitRatio}%`, flex: "none" }}
-          >
-            <CodeEditor
-              document={responseDoc}
-              onChange={() => {}}
-              onSave={() => {}}
-              reveal={null}
-              onRevealDone={() => {}}
-              runConfigs={[]}
-              projectRoot={projectRoot}
-              onRunConfig={() => {}}
-              onRunScript={() => {}}
-              onRunHttp={() => {}}
-            />
           </div>
         ) : null}
 

@@ -3,7 +3,7 @@ mod browser;
 mod ai_runtime;
 mod ai_commit;
 mod error;
-mod http_exchange;
+mod http;
 mod fs;
 mod git;
 mod history;
@@ -298,8 +298,16 @@ pub fn run() {
             ai_commit::ai_commit_generate,
             ai_commit::ai_commit_cancel,
             ai_commit::ai_commit_list_models,
-            http_exchange::http_exchange,
-            http_exchange::http_env,
+            http::http_environments,
+            http::http_env_variables,
+            http::http_send,
+            http::http_cancel,
+            http::http_finish,
+            http::http_history,
+            http::http_history_get,
+            http::http_history_clear,
+            http::http_history_remove,
+            http::http_env,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

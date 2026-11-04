@@ -8,7 +8,7 @@
  * 只认「这门语言」本身；Twig/FreeMarker/Handlebars 这类走 Jinja 近似、Razor 走 HTML、
  * MDX/reST 走 Markdown 的，写在 `grammars.ts` 的 SPELLINGS 里，说明也放那边。
  */
-import { LanguageSupport, StreamLanguage } from "@codemirror/language";
+import { LanguageSupport, StreamLanguage, type StreamParser } from "@codemirror/language";
 import { simpleMode } from "@codemirror/legacy-modes/mode/simple-mode";
 // 官方 legacy 模式里现成的几门：直接包一层补齐 IDEA 有而 language-data 没有的语言。
 import { diff } from "@codemirror/legacy-modes/mode/diff";
@@ -281,6 +281,151 @@ const TYPESPEC = stream({
 });
 
 /**
+ * `.http` / `.rest` 请求文件：`###` 分隔线、注释与 `# @name`、`@var = value`、请求行、
+ * 头部、`{{变量}}`、`< file` 引用与 `> {% %}` 处理块。
+ *
+ * 移植自 openidea `features/http-client/language.ts`。其余语言多是 `simpleMode` 正则切片，
+ * 这门要跨行状态（前导 → 头部 → 正文、handler 块），所以用完整 `StreamParser`。
+ */
+interface HttpState {
+  phase: "preamble" | "headers" | "body";
+  /** 是否在 `> {% … %}` 处理脚本里。 */
+  handler: boolean;
+  part: "start" | "url" | "headerValue" | "rest";
+}
+
+const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+
+function httpVariable(stream: Parameters<StreamParser<HttpState>["token"]>[0]): string | null {
+  if (stream.match("{{")) {
+    stream.match(/^[^}]*/);
+    stream.match("}}");
+    return "variableName.special";
+  }
+  return null;
+}
+
+const httpParser: StreamParser<HttpState> = {
+  name: "http",
+  startState: () => ({ phase: "preamble", handler: false, part: "start" }),
+  copyState: (s) => ({ ...s }),
+  blankLine(state) {
+    if (state.phase === "headers" || (state.phase === "preamble" && state.part === "url")) state.phase = "body";
+  },
+  token(stream, state) {
+    if (stream.sol()) {
+      // 请求行的下一行开始是头部。
+      if (state.phase === "preamble" && state.part === "url") state.phase = "headers";
+      state.part = "start";
+      if (stream.match(/^\s*###/)) {
+        stream.skipToEnd();
+        state.phase = "preamble";
+        state.handler = false;
+        return "heading";
+      }
+    }
+    if (state.handler) {
+      if (stream.match(/^.*%\}/)) {
+        state.handler = false;
+        return "meta";
+      }
+      stream.skipToEnd();
+      return "comment";
+    }
+    const v = httpVariable(stream);
+    if (v) return v;
+
+    if (state.phase === "preamble") {
+      if (state.part === "start") {
+        if (stream.eatSpace()) return null;
+        if (stream.match(/^(#|\/\/)\s*@name\b/)) {
+          state.part = "rest";
+          return "meta";
+        }
+        if (stream.match(/^(#|\/\/)/)) {
+          stream.skipToEnd();
+          return "comment";
+        }
+        if (stream.match(/^@[\w.-]+/)) {
+          state.part = "rest";
+          return "variableName.definition";
+        }
+        const method = stream.match(new RegExp(`^(${HTTP_METHODS.join("|")})(?=\\s)`));
+        if (method) {
+          state.part = "url";
+          return "keyword";
+        }
+        if (stream.match(/^(https?:\/\/|\/)/, false)) {
+          state.part = "url";
+          return null;
+        }
+        stream.skipToEnd();
+        return null;
+      }
+      if (state.part === "url") {
+        if (stream.match(/^\s+HTTP\/[\d.]+\s*$/)) return "meta";
+        if (stream.eatSpace()) return null;
+        if (!stream.match(/^[^\s{]+/)) stream.next();
+        return "link";
+      }
+      // `@name` / `@var` 的剩余部分。
+      if (stream.match(/^\s*=\s*/)) return "operator";
+      if (!stream.match(/^[^{]+/)) stream.next();
+      return "string";
+    }
+
+    if (state.phase === "headers") {
+      if (state.part === "start") {
+        if (stream.match(/^\s+[?&/]/)) {
+          state.part = "url";
+          return "link";
+        }
+        if (stream.match(/^(#|\/\/)/)) {
+          stream.skipToEnd();
+          return "comment";
+        }
+        if (stream.match(/^[^:\s]+(?=:)/)) {
+          state.part = "headerValue";
+          return "propertyName";
+        }
+        stream.skipToEnd();
+        return null;
+      }
+      if (state.part === "url") {
+        if (!stream.match(/^[^\s{]+/)) stream.next();
+        return "link";
+      }
+      if (stream.eat(":")) return "punctuation";
+      if (!stream.match(/^[^{]+/)) stream.next();
+      return "string";
+    }
+
+    // 正文。
+    if (state.part === "start") {
+      state.part = "rest";
+      if (stream.match(/^\s*>\s*\{%/)) {
+        state.handler = !stream.match(/^.*%\}\s*$/);
+        if (!state.handler) return "meta";
+        stream.skipToEnd();
+        return "meta";
+      }
+      if (stream.match(/^\s*(<>|>>|>|<)\s/)) {
+        stream.skipToEnd();
+        return "meta";
+      }
+    }
+    if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return "string";
+    if (stream.match(/^-?\d+(\.\d+)?([eE][+-]?\d+)?\b/)) return "number";
+    if (stream.match(/^(true|false|null)\b/)) return "atom";
+    if (!stream.match(/^[^"{\d\-tfn]+/)) stream.next();
+    return null;
+  },
+  languageData: { commentTokens: { line: "#" } },
+};
+
+const HTTP = new LanguageSupport(StreamLanguage.define(httpParser));
+
+/**
  * 名字 → 语法。键是 `describeGrammar` 归一化之后的名字（SPELLINGS 的结果），
  * 不是文件后缀。
  */
@@ -288,6 +433,7 @@ const legacy = (mode: Parameters<typeof StreamLanguage.define>[0]) =>
   new LanguageSupport(StreamLanguage.define(mode));
 
 const EXTRA: Record<string, () => LanguageSupport> = {
+  http: () => HTTP,
   batch: () => BATCH,
   diff: () => legacy(diff),
   haskell: () => legacy(haskell),

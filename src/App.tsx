@@ -62,7 +62,7 @@ import type { DiffGroup } from "./components/DiffPane";
 import RunControls from "./components/RunControls";
 import type { SearchTab } from "./components/SearchEverywhere";
 import FindPane from "./components/FindPane";
-import { CommitIcon, ProjectIcon, SearchIcon, VcsIcon } from "./components/ToolWindowIcons";
+import { CommitIcon, HttpClientIcon, ProjectIcon, SearchIcon, VcsIcon } from "./components/ToolWindowIcons";
 import ProjectPicker from "./components/ProjectPicker";
 import type { FolderStatusItem } from "./components/ProjectPicker";
 import BranchPicker from "./components/BranchPicker";
@@ -80,6 +80,15 @@ import {
   Balloons,
   useUnreadNotifications,
 } from "./workbench/Notifications";
+import { HttpClientView, HttpClientHeaderActions } from "./features/http-client/HttpClientView";
+import {
+  loadEnvironments,
+  runAll as runAllHttp,
+  runRequest as runHttpRequest,
+  setHttpRoot,
+  subscribeHttpClientReveal,
+  subscribeHttpEditor,
+} from "./features/http-client/store";
 import DepSyncToast from "./components/DepSyncToast";
 import { isManifestDeclarationFile } from "./lib/depSync";
 import { planWorkspaceFlush, type WorkspaceFlush } from "./lib/watchBatch";
@@ -185,13 +194,7 @@ import {
   scriptKindOf,
   scriptTerminalLabel,
 } from "./lib/scriptRun";
-import {
-  executeHttpRequest,
-  formatHttpExchange,
-  httpRequestLabel,
-  httpResponsePath,
-  parseHttpFile,
-} from "./lib/httpFile";
+import { formatHttpExchange, httpRequestAtLine, httpRequestLabel, httpResponsePath, isHttpCancelled, isHttpFile, parseHttpFile } from "./lib/httpFile";
 import type { FileContent, FsEntry, SearchOptions, TextHit, TextPage } from "./lib/fs";
 import { basenameOf, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolvePath, samePath } from "./lib/format";
 import { resolveFileLink } from "./lib/fileLinks";
@@ -330,7 +333,7 @@ type Panel = "explorer" | "git" | "ai" | "browser" | "maven" | "notifications";
 type RightDockPanel = Panel;
 
 /** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。通知不占底部，停靠时进右侧工具窗口。 */
-type BottomPane = "terminal" | "run" | "log" | "find" | "notifications";
+type BottomPane = "terminal" | "run" | "log" | "find" | "httpClient" | "notifications";
 
 /** 一块工具窗口待在哪。底部是排他的，选项卡那边可以并存。 */
 type Placement = "hidden" | "docked" | "tabbed";
@@ -345,7 +348,16 @@ const RAIL_LABEL: Record<Panel, TranslationKey> = {
 };
 
 /** 并排时的固定次序，不受点开顺序影响。 */
-const BOTTOM_ORDER: BottomPane[] = ["terminal", "run", "log", "find", "notifications"];
+const BOTTOM_ORDER: BottomPane[] = ["terminal", "run", "httpClient", "log", "find", "notifications"];
+
+/**
+ * 活动栏上属于底部的几块（「查找」没有栏位，通知走侧栏）。
+ * 剩下的 ToolRailId 正好就是 `Panel`，所以侧栏判据写在这个函数里，不必到处列一遍。
+ */
+type BottomRailId = "terminal" | "run" | "log" | "httpClient";
+const BOTTOM_RAIL_IDS: readonly BottomRailId[] = ["terminal", "run", "log", "httpClient"];
+const isBottomRailId = (id: ToolRailId): id is BottomRailId => BOTTOM_RAIL_IDS.includes(id as BottomRailId);
+const sideToolId = (id: ToolRailId): Panel | null => (isBottomRailId(id) ? null : (id as Panel));
 
 /**
  * 活动栏下端那排入口的次序，比 BOTTOM_ORDER 少一块「查找」。
@@ -354,6 +366,7 @@ const BOTTOM_ORDER: BottomPane[] = ["terminal", "run", "log", "find", "notificat
 const BOTTOM_LABEL: Record<BottomPane, TranslationKey> = {
   terminal: "panel.terminal",
   run: "panel.run",
+  httpClient: "http.title",
   log: "panel.log",
   find: "panel.find",
   notifications: "notifications.title",
@@ -363,6 +376,7 @@ const BOTTOM_LABEL: Record<BottomPane, TranslationKey> = {
 const PANE_ICON: Record<BottomPane, ReactNode> = {
   terminal: <SquareTerminal size={13} className="entry-icon" aria-hidden="true" />,
   run: <Play size={13} className="entry-icon" aria-hidden="true" />,
+  httpClient: <HttpClientIcon size={13} className="entry-icon" />,
   log: <VcsIcon size={13} className="entry-icon" />,
   find: <SearchIcon size={13} className="entry-icon" aria-hidden="true" />,
   notifications: <Bell size={13} className="entry-icon" aria-hidden="true" />,
@@ -383,6 +397,19 @@ const EMPTY_FIND: FindState = {
   page: null,
   replaceWith: null,
 };
+/** 新 HTTP 请求草稿的起手式：一条能直接改的示例。 */
+// 新建 HTTP 请求的初始正文，照 openidea `NEW_REQUEST_TEMPLATE` 来：
+// 把环境变量的来源写在注释里（`.http` 里最容易踩的就是不知道 {{host}} 从哪来），
+// 顺手带一个 Accept，末尾留 `###` 好接着写第二条。
+const HTTP_REQUEST_TEMPLATE = [
+  "### 新请求",
+  "# 变量来自本文件旁边或工程根目录的 http-client.env.json / http-client.private.env.json：{{host}}",
+  "GET https://example.com/",
+  "Accept: application/json",
+  "",
+  "###",
+  "",
+].join("\n");
 const EMPTY_DIFFS: DiffTab[] = [];
 const EMPTY_PICK: FsEntry[] = [];
 /** 目录树在没有仓库状态时拿到的那份空清单：必须是同一个数组，否则 memo 白装。 */
@@ -391,6 +418,7 @@ const EMPTY_TAB_ORDER: string[] = [];
 const DEFAULT_PLACES: Record<BottomPane, Placement> = {
   terminal: "hidden",
   run: "hidden",
+  httpClient: "hidden",
   log: "hidden",
   find: "hidden",
   notifications: "hidden",
@@ -398,6 +426,7 @@ const DEFAULT_PLACES: Record<BottomPane, Placement> = {
 const DEFAULT_LAST_PLACE: Record<BottomPane, "docked" | "tabbed"> = {
   terminal: "docked",
   run: "docked",
+  httpClient: "docked",
   log: "docked",
   find: "docked",
   notifications: "docked",
@@ -938,8 +967,8 @@ export default function App() {
       return { ...prev, [key]: next };
     });
   }, []);
-  /** 底部工具窗口整体高度，拖动上面那条横分隔条改它。 */
-  const [bottomHeight, setBottomHeight] = useState(260);
+  /** 各底部工具窗口独立记住拖动高度；默认 380px，HTTP 取工作区一半且至少 380px。 */
+  const [bottomHeights, setBottomHeights] = useState<Partial<Record<BottomPane, number>>>({});
   /** 侧边工具窗口宽度，拖动它右缘那条竖分隔条改它。 */
   const [sidebarWidth, setSidebarWidth] = useState(330);
   /** 右侧工具窗口独立占一列，拖动它左缘的竖分隔条调整宽度。 */
@@ -1101,7 +1130,7 @@ export default function App() {
   }, [activeLeftPanel]);
   const sideHasVisibleTools = (side: ToolRailSide) =>
     (["top", "bottom"] as const).some((group) => toolRailLayout[side][group].some((id) => {
-      if (id === "terminal" || id === "run" || id === "log") return true;
+      if (isBottomRailId(id)) return true;
       return rightPanelAvailable[id];
     }));
   const isSideToolOpen = useCallback((tool: Panel) => (
@@ -1716,8 +1745,6 @@ export default function App() {
         next[key] = "docked";
         return next;
       });
-      // 日志是三栏并排，太矮就没法看。
-      if (key === "log") setBottomHeight((height) => Math.max(height, 380));
     },
     [getLastPlace, setPlaces]
   );
@@ -1819,56 +1846,119 @@ export default function App() {
     [focusPane, reportError, workspaceRoot]
   );
 
-  /** 同一条请求连点时，只采纳最后一次的响应。键是文件路径（分栏）或响应页签路径。 */
-  const httpGenRef = useRef(new Map<string, number>());
-  /** 左右分栏时挂在请求文件右边的响应正文。换文件就按路径对上，不另开页签。 */
-  const [httpSide, setHttpSide] = useState<{ path: string; text: string } | null>(null);
+  /** 同一个响应页签只采纳最后一次发送。底部详情由 HTTP store 管理。 */
+  const httpGenRef = useRef(new Map<string, string>());
+  /** 只记录开始时明确选择单独页签的请求，中途改设置不改变结果的落点。 */
+  const httpPaneRef = useRef(new Map<string, string>());
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  /**
+   * 单条运行和运行全部都从 `runRequest` 往这里送结果。
+   * 默认只在底部展示；明确选择单独页签时才打开额外文档。
+   */
+  useEffect(() => {
+    return subscribeHttpEditor((event) => {
+      if (event.phase === "start") {
+        if (settingsRef.current.httpResponse !== "tab") return;
+        const key = httpResponsePath(event.path, event.line);
+        httpGenRef.current.set(key, event.id);
+        httpPaneRef.current.set(event.id, key);
+      }
+      const pane = httpPaneRef.current.get(event.id);
+      if (!pane) return;
+      if (httpGenRef.current.get(pane) !== event.id) {
+        httpPaneRef.current.delete(event.id);
+        return;
+      }
+      const show = (text: string) => {
+        docsRef.current.openVirtual(pane, text, "plaintext");
+      };
+      if (event.phase === "start") {
+        setActiveTab(`doc|${pane}`);
+        show(t("http.sending", { name: event.label }));
+        return;
+      }
+      httpPaneRef.current.delete(event.id);
+      if (event.phase === "cancelled") {
+        show(t("http.cancelled"));
+        return;
+      }
+      if (event.phase === "failed") {
+        show(describeError(event.error ?? "", t));
+        return;
+      }
+      if (event.result) {
+        show(
+          formatHttpExchange(event.result, {
+            binary: t("http.binary", { size: event.result.bodyBytes }),
+            truncated: t("http.truncated", { size: event.result.body.length }),
+          })
+        );
+      }
+    });
+  }, [setActiveTab, t]);
   /**
    * `.http` / `.rest` 装订线那颗 ▶：解析编辑器里的当前正文，发出这一条请求。
    *
-   * 引用了还没跑过的具名请求时会先把依赖发出去。
-   * 左右分栏把响应留在这份文件右边；单独页签才开只读页。两种都不写回磁盘。
+   * 引用了还没跑过的具名请求时会先把依赖发出去。响应交给 HTTP store 展示。
    */
   const runHttp = useCallback(
     (path: string, line: number, contents: string) => {
       const file = parseHttpFile(contents);
       const request = file.requests.find((item) => item.line === line);
       if (!request) return;
-      const dir = parentPath(path) ?? workspaceRoot ?? "";
-      const split = settings.httpResponse === "split";
-      const key = split ? path : httpResponsePath(path, line);
-      const label = httpRequestLabel(request);
-      const gen = (httpGenRef.current.get(key) ?? 0) + 1;
-      httpGenRef.current.set(key, gen);
-      const sending = t("http.sending", { name: label });
-      const show = (text: string) => {
-        if (split) {
-          setHttpSide({ path, text });
+      void runHttpRequest({ path, text: contents, line, label: httpRequestLabel(request) }).catch((cause: unknown) => {
+        const raw = errorText(cause);
+        if (!isHttpCancelled(raw)) reportError(raw);
+      });
+    },
+    [reportError]
+  );
+
+  /**
+   * 命令面板的「运行光标处请求」：光标行当场问编辑器要，不在 App 里另存一份光标状态。
+   * 编辑器按需加载，所以这里跟 `CodeBreadcrumbs` 一样走动态 import。
+   */
+  const runHttpAtCaret = useCallback(
+    (path: string, contents: string) => {
+      void import("./lib/cmEditor").then(({ editorFor }) => {
+        const view = editorFor(path);
+        const text = view ? view.state.doc.toString() : contents;
+        const line = view ? view.state.doc.lineAt(view.state.selection.main.head).number : 1;
+        const request = httpRequestAtLine(parseHttpFile(text), line);
+        if (!request) {
+          notificationCenter.notify({
+            key: "http-run",
+            groupId: "system",
+            title: t("http.title"),
+            content: t("http.noRequestAtCaret"),
+            level: "info",
+          });
           return;
         }
-        docsRef.current.openVirtual(key, text, "http");
-      };
-      if (!split) setActiveTab(`doc|${key}`);
-      show(sending);
-      void executeHttpRequest(file, request, { dir, workspace: workspaceRoot })
-        .then((result) => {
-          if (httpGenRef.current.get(key) !== gen) return;
-          show(
-            formatHttpExchange(result, {
-              binary: t("http.binary", { size: result.bodyBytes }),
-              truncated: t("http.truncated", { size: result.body.length }),
-            })
-          );
-        })
-        .catch((cause: unknown) => {
-          if (httpGenRef.current.get(key) !== gen) return;
-          const raw = errorText(cause);
-          show(describeError(raw, t));
-          reportError(raw);
-        });
+        runHttp(path, request.line, text);
+      });
     },
-    [reportError, setActiveTab, settings.httpResponse, t, workspaceRoot]
+    [runHttp, t]
   );
+
+  /** 当前这份 `.http` / `.rest`：工具窗口的环境下拉与 Run All 都对着它。 */
+  const activeHttpDoc = useMemo(() => {
+    const path = docs.activePath;
+    if (!path || !isHttpFile(path)) return null;
+    return docs.documents.find((item) => samePath(item.path, path)) ?? null;
+  }, [docs.activePath, docs.documents]);
+  const activeHttpPath = activeHttpDoc?.path ?? null;
+
+  /** 换工作区清掉运行态并重拉历史；当前 `.http` 再读一遍环境（含 `$shared` 所在的项目根）。 */
+  useEffect(() => {
+    setHttpRoot(workspaceRoot);
+  }, [workspaceRoot]);
+  useEffect(() => subscribeHttpClientReveal(() => focusPane("httpClient")), [focusPane]);
+  useEffect(() => {
+    if (!activeHttpPath) return;
+    void loadEnvironments(activeHttpPath).catch((cause: unknown) => reportError(errorText(cause)));
+  }, [activeHttpPath, workspaceRoot, reportError]);
 
   /** 挪进页签栏：好几块能同时开着，切换着看。 */
   const tabPane = useCallback(
@@ -4482,7 +4572,7 @@ export default function App() {
       { id: "view.hideToolWindows", label: "隐藏工具窗口 (Hide Tool Windows)", run: () => {
         setSidebarOpen(false);
         setRightPanel(null);
-        for (const pane of ["terminal", "run", "log", "find", "notifications"] as BottomPane[]) hidePane(pane);
+        for (const pane of BOTTOM_ORDER) hidePane(pane);
       } },
       { id: "view.toggleBottomPanel", label: "切换底部面板 (Toggle Panel)", run: () => {
         if (visibleBottomShortcutPane) hidePane(visibleBottomShortcutPane);
@@ -4622,7 +4712,7 @@ export default function App() {
             setSidebarOpen(false);
           } else {
             const next = [...toolRailLayout.left.top, ...toolRailLayout.left.bottom].find(
-              (id): id is Panel => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id]
+              (id): id is Panel => !isBottomRailId(id) && rightPanelAvailable[id]
             );
             if (next) {
               setPanel(next);
@@ -4639,7 +4729,7 @@ export default function App() {
             setRightPanel(null);
           } else {
             const next = [...toolRailLayout.right.top, ...toolRailLayout.right.bottom].find(
-              (id): id is Panel => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id]
+              (id): id is Panel => !isBottomRailId(id) && rightPanelAvailable[id]
             );
             if (next) setRightPanel(next);
           }
@@ -4731,10 +4821,52 @@ export default function App() {
       { id: "settings.shortcuts", label: `${t("command.openShortcutSettings")} (Keymap)`, run: () => openSettingsTab("shortcuts") },
       { id: "settings.ai", label: `设置: AI 助手设置 (AI Assistant Settings)`, run: () => openSettingsTab("aiCli") },
       { id: "tools.reloadMaven", label: `${t("maven.reload")} (Reload Maven Project)`, run: reloadMaven },
+
+      // HTTP 客户端 (HTTP Client)
+      ...(activeHttpDoc
+        ? [
+            {
+              id: "http.runRequest",
+              label: `${t("http.runAtCaret")} (Run HTTP Request at Caret)`,
+              run: () => runHttpAtCaret(activeHttpDoc.path, activeHttpDoc.contents),
+            },
+            {
+              id: "http.runAll",
+              label: `${t("http.runAllTitle")} (Run All Requests)`,
+              run: () => {
+                const path = activeHttpDoc.path;
+                const fallback = activeHttpDoc.contents;
+                void import("./lib/cmEditor")
+                  .then(({ editorFor }) => {
+                    const view = editorFor(path);
+                    return runAllHttp(path, view ? view.state.doc.toString() : fallback);
+                  })
+                  .catch((cause: unknown) => {
+                    const raw = errorText(cause);
+                    if (!isHttpCancelled(raw)) reportError(raw);
+                  });
+              },
+            },
+          ]
+        : []),
+      {
+        id: "http.newRequest",
+        label: `${t("http.newRequest")} (New HTTP Request)`,
+        run: () => {
+          void createScratchFile({ id: "http", name: "HTTP Request", ext: "http" })
+            .then(async (entry) => {
+              await writeFile(entry.path, HTTP_REQUEST_TEMPLATE, "lf", false, "utf-8");
+              setActiveTab(`doc|${entry.path}`);
+              await docsRef.current.open(entry.path);
+              refreshTree();
+            })
+            .catch((cause: unknown) => reportError(errorText(cause)));
+        },
+      },
     ];
 
     // 面板与侧栏入口照活动栏的文案与顺序来，不另起一套名字。
-    for (const pane of ["terminal", "run", "log", "find", "notifications"] as BottomPane[]) {
+    for (const pane of BOTTOM_ORDER) {
       commands.push({ id: `pane.open.${pane}`, label: `视图: 工具窗口 - ${t(BOTTOM_LABEL[pane])}`, run: () => dockPane(pane) });
     }
     for (const tool of ["explorer", "git", "ai", "browser", "maven", "notifications"] as Panel[]) {
@@ -4743,6 +4875,9 @@ export default function App() {
     // 展示与执行共用键位来源，避免命令面板仍显示另一套方案的按键。
     return commands.map((command) => ({ ...command, shortcut: formatShortcut(command.id, settings.editor.keymap) || undefined }));
   }, [
+    activeHttpDoc,
+    reportError,
+    setActiveTab,
     activeLeftPanel,
     activeRightPanel,
     activeTab,
@@ -4772,6 +4907,7 @@ export default function App() {
     resolveActiveDirectory,
     revealInTree,
     rightPanelAvailable,
+    runHttpAtCaret,
     runSelectedConfig,
     saveActive,
     selectTab,
@@ -4855,6 +4991,8 @@ export default function App() {
       />
     ) : key === "run" ? (
       <RunPane run={run} dark={resolved === "dark"} onOpenFile={terminalOpenFile} />
+    ) : key === "httpClient" ? (
+      <HttpClientView />
     ) : key === "find" ? (
       <FindPane
         root={workspaceRoot}
@@ -4900,7 +5038,8 @@ export default function App() {
       className={`${docked ? "bottom-panel island" : "pane-body"}${key === "notifications" ? " is-notifications" : ""}`}
       // 只有停在底部的那块归分割条管，挪进页签栏的那块没有可调的边。
       ref={docked ? bottomPanelRef : null}
-      style={docked ? { height: bottomHeight } : undefined}
+      // 百分比相对扣除顶栏、状态栏后的工作区计算；HTTP 默认高度最低为 380px。
+      style={docked ? { height: bottomHeights[key] ?? (key === "httpClient" ? "max(50%, 380px)" : 380) } : undefined}
     >
       <header className="tool-window-head">
         <span className="tool-window-title">{t(BOTTOM_LABEL[key])}</span>
@@ -4913,6 +5052,7 @@ export default function App() {
         {key === "notifications" ? (
           <NotificationsHeaderActions />
         ) : null}
+        {key === "httpClient" ? <HttpClientHeaderActions /> : null}
         <span className="status-spacer" />
         {key === "run" && run.notice ? (
           <span className="run-status">
@@ -5076,13 +5216,6 @@ export default function App() {
           }}
           onRunScript={runScript}
           onRunHttp={runHttp}
-          httpResponse={
-            settings.httpResponse === "split" &&
-            httpSide !== null &&
-            samePath(httpSide.path, activeDoc.path)
-              ? httpSide.text
-              : null
-          }
           changeBaseline={surfaceBaseline}
         />
       ) : (
@@ -5532,8 +5665,8 @@ export default function App() {
     setRailDragSource(null);
   };
   const renderRailButton = (side: ToolRailSide, id: ToolRailId) => {
-    const bottomTool: "terminal" | "run" | "log" | null = id === "terminal" || id === "run" || id === "log" ? id : null;
-    const sideTool: Panel | null = bottomTool ? null : id as Panel;
+    const bottomTool: BottomPane | null = isBottomRailId(id) ? id : null;
+    const sideTool: Panel | null = sideToolId(id);
     if (sideTool && !rightPanelAvailable[sideTool]) return null;
     const label = sideTool ? t(RAIL_LABEL[sideTool]) : t(BOTTOM_LABEL[bottomTool!]);
     const active = sideTool
@@ -5547,13 +5680,14 @@ export default function App() {
       : id === "maven" ? <MavenIcon size={18} />
       : id === "terminal" ? <SquareTerminal size={18} />
       : id === "run" ? <Play size={17} />
+      : id === "httpClient" ? <HttpClientIcon size={18} />
       : id === "log" ? <VcsIcon size={18} />
       : <Bell size={18} />;
     const activate = () => {
-      if (id === "terminal" || id === "run" || id === "log") { railPane(id); return; }
+      if (bottomTool) { railPane(bottomTool); return; }
       if (id === "notifications" && places.notifications === "tabbed") { setActiveTab("pane|notifications"); return; }
       if (id === "notifications" && !isSideToolOpen("notifications")) markAllNotificationsRead();
-      toggleSideTool(side, id);
+      if (sideTool) toggleSideTool(side, sideTool);
     };
     return <span
       key={id}
@@ -5746,11 +5880,11 @@ export default function App() {
         onToggleSidebar={() => {
           if (activeLeftPanel) { setSidebarOpen(false); return; }
           const next = [...toolRailLayout.left.top, ...toolRailLayout.left.bottom]
-            .find((id): id is Panel => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id]);
+            .find((id): id is Panel => !isBottomRailId(id) && rightPanelAvailable[id]);
           if (next) { setPanel(next); setSidebarOpen(true); }
         }}
         rightSidebarAvailable={[...toolRailLayout.right.top, ...toolRailLayout.right.bottom]
-          .some((id) => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id])}
+          .some((id) => !isBottomRailId(id) && rightPanelAvailable[id])}
         rightSidebarOpen={activeRightPanel !== null}
         onToggleRightSidebar={() => {
           if (activeRightPanel) {
@@ -5759,7 +5893,7 @@ export default function App() {
           }
           // 收起后从顶栏恢复时，打开当前工作区第一个实际可用的右侧工具窗口。
           const next = [...toolRailLayout.right.top, ...toolRailLayout.right.bottom]
-            .find((id): id is Panel => id !== "terminal" && id !== "run" && id !== "log" && rightPanelAvailable[id]);
+            .find((id): id is Panel => !isBottomRailId(id) && rightPanelAvailable[id]);
           if (next) setRightPanel(next);
         }}
         project={
@@ -5839,7 +5973,7 @@ export default function App() {
             {toolRailLayout.left.bottom.map((id) => renderRailButton("left", id))}
           </nav>
 
-        <div className="workbench-column">
+        <div className={`workbench-column${dockedPane ? " has-bottom-panel" : ""}`}>
           <div className={`workbench-row${activeRightPanel && rightPanelExpanded ? " has-expanded-right-panel" : ""}`}>
           {activeLeftPanel ? (
             <section
@@ -6067,11 +6201,8 @@ export default function App() {
                 <div
                   className="editor-split-pane is-primary"
                   onPointerDownCapture={() => { if (primaryTab && activeTab !== primaryTab) selectTab(primaryTab); }}
-                  style={
-                    editorSplit.direction === "horizontal"
-                      ? { width: `${editorSplit.ratio}%`, flex: "none" }
-                      : { height: `${editorSplit.ratio}%`, flex: "none" }
-                  }
+                  // 按扣除分隔缝后的空间分配比例，避免末端圆角被挤出容器。
+                  style={{ flex: editorSplit.ratio }}
                 >
                   <EditorTabs
                       tabs={editorGroups.primary}
@@ -6144,11 +6275,7 @@ export default function App() {
                 <div
                   className="editor-split-pane is-secondary"
                   onPointerDownCapture={() => { if (secondaryTab && activeTab !== secondaryTab) selectTab(secondaryTab); }}
-                  style={
-                    editorSplit.direction === "horizontal"
-                      ? { width: `${100 - editorSplit.ratio}%`, flex: "none" }
-                      : { height: `${100 - editorSplit.ratio}%`, flex: "none" }
-                  }
+                  style={{ flex: 100 - editorSplit.ratio }}
                 >
                   <EditorTabs
                       tabs={editorGroups.secondary}
@@ -6208,37 +6335,6 @@ export default function App() {
               </>
             )}
           </main>
-          {/* 底部工具窗口只占编辑区这一列，侧栏继续接到顶栏和底栏上。 */}
-          {dockedPane ? (
-            <>
-              <div
-                role="separator"
-                aria-orientation="horizontal"
-                className="panel-splitter"
-                onPointerDown={(event) => {
-                  splitDrag.current = {
-                    startY: event.clientY,
-                    startHeight: bottomHeight,
-                    live: bottomHeight,
-                  };
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                }}
-                onPointerMove={(event) => {
-                  const drag = splitDrag.current;
-                  if (!drag) return;
-                  const grown = drag.startHeight + drag.startY - event.clientY;
-                  drag.live = Math.max(120, Math.min(window.innerHeight - 240, grown));
-                  if (bottomPanelRef.current) bottomPanelRef.current.style.height = `${drag.live}px`;
-                }}
-                onPointerUp={() => {
-                  const drag = splitDrag.current;
-                  splitDrag.current = null;
-                  if (drag) setBottomHeight(drag.live);
-                }}
-              />
-              {paneFrame(dockedPane, true)}
-            </>
-          ) : null}
           </div>
           {/* 右侧工具窗口参与横向布局；左边这条分隔缝只调整右栏自己的宽度。 */}
           {activeRightPanel && !rightPanelExpanded ? (
@@ -6388,6 +6484,42 @@ export default function App() {
               </div>
             </section>
           ) : null}
+          </div>
+          {/* 底部面板与整排侧栏、编辑器并列，统一横跨两侧工具窗口的宽度。 */}
+          {dockedPane ? (
+            <>
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                className="panel-splitter"
+                onPointerDown={(event) => {
+                  const height = bottomPanelRef.current?.getBoundingClientRect().height;
+                  if (height === undefined) return;
+                  splitDrag.current = {
+                    startY: event.clientY,
+                    startHeight: height,
+                    live: height,
+                  };
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  const drag = splitDrag.current;
+                  if (!drag) return;
+                  const grown = drag.startHeight + drag.startY - event.clientY;
+                  drag.live = Math.max(120, Math.min(window.innerHeight - 240, grown));
+                  if (bottomPanelRef.current) bottomPanelRef.current.style.height = `${drag.live}px`;
+                }}
+                onPointerUp={() => {
+                  const drag = splitDrag.current;
+                  splitDrag.current = null;
+                  if (drag) setBottomHeights((heights) => ({ ...heights, [dockedPane]: drag.live }));
+                }}
+              />
+              {paneFrame(dockedPane, true)}
+            </>
+          ) : null}
+        </div>
+          {/* 两侧活动栏贯穿工作区全高，底部面板只占两条活动栏之间的内容区。 */}
           {sideHasVisibleTools("right") ? (
             <nav className="activity-rail is-right" aria-label={t("panel.rightTools")}>
               {toolRailLayout.right.top.map((id) => renderRailButton("right", id))}
@@ -6395,8 +6527,6 @@ export default function App() {
               {toolRailLayout.right.bottom.map((id) => renderRailButton("right", id))}
             </nav>
           ) : null}
-          </div>
-        </div>
       </div>
       </AiInputProvider>
 

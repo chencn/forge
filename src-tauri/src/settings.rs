@@ -363,7 +363,7 @@ pub struct Settings {
     pub language: String,
     /// 工作区模式：multi（多工作区常驻）/ single（单工作区）。
     pub workspace_mode: String,
-    /// HTTP 响应放哪：split 左边请求右边响应，tab 单独页签。
+    /// HTTP 响应放哪：bottom 底部面板，tab 单独页签。
     #[serde(default = "default_http_response")]
     pub http_response: String,
     /// 点关闭做什么：tray 收进托盘，quit 直接退应用。
@@ -414,7 +414,7 @@ fn default_true() -> bool {
 }
 
 fn default_http_response() -> String {
-    "split".to_string()
+    "bottom".to_string()
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -674,7 +674,7 @@ mod tests {
     fn workspace_mode_and_close_behavior_defaults() {
         let def: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
         assert_eq!(def.workspace_mode, "multi");
-        assert_eq!(def.http_response, "split");
+        assert_eq!(def.http_response, "bottom");
         assert_eq!(def.close_behavior, "tray");
 
         let custom: Settings = serde_json::from_str(

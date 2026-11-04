@@ -10,6 +10,7 @@ export type ToolRailId =
   | "terminal"
   | "run"
   | "log"
+  | "httpClient"
   | "notifications";
 
 export interface ToolRailLayout {
@@ -29,10 +30,11 @@ export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   terminal: "bottom",
   run: "bottom",
   log: "bottom",
+  httpClient: "bottom",
 };
 
 export const DEFAULT_TOOL_RAIL_LAYOUT: ToolRailLayout = {
-  left: { top: ["explorer", "git"], bottom: ["terminal", "run", "log"] },
+  left: { top: ["explorer", "git"], bottom: ["terminal", "run", "httpClient", "log"] },
   right: { top: ["notifications", "ai", "browser", "maven"], bottom: [] },
 };
 

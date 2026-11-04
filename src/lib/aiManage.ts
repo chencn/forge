@@ -364,7 +364,8 @@ export function codexCustomFromEndpoint(id: string, baseModel: Record<string, un
 /**
  * 拉取供应商端点的可用模型清单（`GET {base}/v1/models`）。
  * Claude 走 Anthropic 鉴权头，Codex 走标准 Bearer；两家响应都是 `data[].id`。
- * 页面 CSP 只放行自家地址，浏览器 fetch 到不了任意端点，所以请求交给后端 `http_exchange`。
+ * 页面 CSP 只放行自家地址，浏览器 fetch 到不了任意端点，所以请求交给后端 `http_send`。
+ * 不传 root 就不进 HTTP 历史——这不是 `.http` 里的一条请求，只是借个传输。
  */
 export async function listProviderModels(kind: AiProvider, apiUrl: string, apiKey: string): Promise<string[]> {
   const base = apiUrl.trim().replace(/\/+$/, "");
@@ -377,13 +378,27 @@ export async function listProviderModels(kind: AiProvider, apiUrl: string, apiKe
         { name: "anthropic-version", value: "2023-06-01" },
       ]
     : [{ name: "Authorization", value: `Bearer ${apiKey.trim()}` }];
-  const result = await invoke<{ status: number; reason: string; body: string; binary: boolean }>("http_exchange", {
-    request: { method: "GET", url, headers, body: [] },
+  const exchange = await invoke<{
+    entry: { error: string | null };
+    response: { status: number; statusText: string; body: string | null } | null;
+  }>("http_send", {
+    requestId: null,
+    path: null,
+    root: null,
+    call: {
+      name: null,
+      method: "GET",
+      url,
+      headers: headers.map((header) => [header.name, header.value]),
+      body: [],
+    },
   });
+  const result = exchange.response;
+  if (!result) throw new Error(exchange.entry.error ?? "请求失败");
   if (result.status < 200 || result.status >= 300) {
-    throw new Error(`HTTP ${result.status} ${result.reason}`.trim());
+    throw new Error(`HTTP ${result.status} ${result.statusText}`.trim());
   }
-  if (result.binary) throw new Error("响应不是文本");
+  if (result.body === null) throw new Error("响应不是文本");
   const parsed = JSON.parse(result.body) as { data?: unknown; models?: unknown };
   const list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed.models) ? parsed.models : [];
   const ids = list

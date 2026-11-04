@@ -61,13 +61,19 @@ import { basenameOf, samePath } from "../lib/format";
 import { indentOverrideOf, indentRevision, subscribeIndent } from "../lib/indentOverride";
 import { gutterTargets } from "../lib/runMarkers";
 import { scriptKindOf } from "../lib/scriptRun";
-import { httpRequestLabel, isHttpFile, parseHttpFile } from "../lib/httpFile";
+import { describeError } from "../lib/errors";
+import { errorText } from "../lib/fs";
+import { httpRequestAtLine, httpRequestLabel, isHttpCancelled, isHttpFile, parseHttpFile } from "../lib/httpFile";
+import { notificationCenter } from "../lib/notifications";
+import { runAll as runAllHttp } from "../features/http-client/store";
 import type { RunConfiguration } from "../lib/runConfigs";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
 import type { OpenDocument, RevealTarget } from "../hooks/useDocuments";
 import ContextMenu from "./ContextMenu";
 import CodeBreadcrumbs from "./CodeBreadcrumbs";
+import HttpEditorToolbar, { RunAllIcon } from "../features/http-client/HttpEditorToolbar";
+import { MOD_LABEL } from "../lib/sys";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useAiInputMenu } from "./AiInputContext";
 import { changeBaselineKey, gutterChanges, headFile, type ChangeBaseline } from "../lib/lineChanges";
@@ -596,12 +602,57 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       name: httpRequestLabel(request),
     }));
   }, [doc, httpPath]);
+  /** 工具栏取最新正文：不等文档同步，刚敲完就点 Run All 也能跑全。 */
+  const httpContents = useCallback(() => {
+    const view = viewRef.current;
+    return view ? toDiskText(textOf(view), endingRef.current) : doc?.contents ?? "";
+  }, [doc]);
   const scriptPathRef = useRef(scriptPath);
   scriptPathRef.current = scriptPath;
   const httpPathRef = useRef(httpPath);
   httpPathRef.current = httpPath;
   const httpTargetsRef = useRef(httpTargets);
   httpTargetsRef.current = httpTargets;
+
+  const reportHttp = useCallback((cause: unknown) => {
+    const raw = errorText(cause);
+    if (isHttpCancelled(raw)) return;
+    notificationCenter.notify({
+      key: "http-client",
+      groupId: "system",
+      title: t("notifications.error"),
+      content: describeError(raw, t),
+      level: "error",
+    });
+  }, [t]);
+
+  const runHttpFromCaret = useCallback(() => {
+    const path = httpPathRef.current;
+    const view = viewRef.current;
+    if (!path || !view) return;
+    const text = toDiskText(textOf(view), endingRef.current);
+    const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+    const request = httpRequestAtLine(parseHttpFile(text), line);
+    if (!request) {
+      notificationCenter.notify({
+        key: "http-run",
+        groupId: "system",
+        title: t("http.title"),
+        content: t("http.noRequestAtCaret"),
+        level: "info",
+      });
+      return;
+    }
+    onRunHttp(path, request.line, text);
+  }, [onRunHttp, t]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onHttpRun = () => runHttpFromCaret();
+    host.addEventListener("forge-http-run", onHttpRun);
+    return () => host.removeEventListener("forge-http-run", onHttpRun);
+  }, [runHttpFromCaret]);
 
   /**
    * 计算装订线运行标记落点的纯读取函数。
@@ -635,10 +686,18 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         : null;
 
     const httpNext: GutterPin[] = [];
+    const httpPin = 16;
+    const httpLeft = gutterWidth(view) - httpPin - 1;
     for (const target of httpTargetsRef.current) {
       const top = lineTop(view, target.line);
       if (top === null) continue;
-      httpNext.push({ line: target.line, top, left, tip: translateRef.current("run.gutter.runHttp", { name: target.name }) });
+      const block = view.lineBlockAt(view.state.doc.line(target.line).from);
+      httpNext.push({
+        line: target.line,
+        top: top + Math.max(0, (block.height - httpPin) / 2),
+        left: httpLeft,
+        tip: translateRef.current("run.gutter.runHttp", { name: target.name }),
+      });
     }
 
     return { pins: next, scriptPin: nextScriptPin, httpPins: httpNext };
@@ -723,6 +782,24 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     const startLine = selection?.line ?? caretLine;
     const endLine = selection?.endLine ?? caretLine;
     const items: MenuItem[] = [
+      ...(httpPath && !readOnly
+        ? [
+            {
+              label: t("http.runAtCaret"),
+              icon: "run",
+              shortcut: `${MOD_LABEL}+Enter`,
+              onSelect: runHttpFromCaret,
+            },
+            {
+              label: t("http.runAllTitle"),
+              icon: <RunAllIcon />,
+              onSelect: () => {
+                void runAllHttp(httpPath, httpContents()).catch(reportHttp);
+              },
+            },
+            { separator: true as const },
+          ]
+        : []),
       ...(selection
         ? [
             // 复制出去的那段带这篇文档的行尾：粘到编辑器外的 CRLF 文件里不该变成 LF
@@ -761,6 +838,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
 
   return (
     <div className="code-host">
+      {httpPath ? <HttpEditorToolbar path={httpPath} getContents={httpContents} /> : null}
       <div ref={hostRef} className="code-editor" onContextMenuCapture={menuAt} />
       {doc && !doc.loading && !doc.error ? <CodeBreadcrumbs path={doc.path} /> : null}
       {pinHost
@@ -791,7 +869,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
                 <button
                   key={`http-${pin.line}`}
                   type="button"
-                  className="run-gutter-run"
+                  className="run-gutter-run http-gutter-run"
                   style={{ top: pin.top, left: pin.left }}
                   data-tip={pin.tip}
                   aria-label={pin.tip}
@@ -802,7 +880,11 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
                     const contents = view ? toDiskText(textOf(view), endingRef.current) : (doc?.contents ?? "");
                     onRunHttp(path, pin.line, contents);
                   }}
-                />
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                    <path d="M12 6.134C12.667 6.519 12.667 7.481 12 7.866L3 13.062C2.333 13.447 1.5 12.966 1.5 12.196V1.804C1.5 1.034 2.333.553 3 .938L12 6.134Z" fill="#F2FCF3" stroke="#208A3C" />
+                  </svg>
+                </button>
               ))}
             </div>,
             pinHost

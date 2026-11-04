@@ -24,6 +24,7 @@ export const SCRATCH_LANGUAGES: readonly ScratchLanguage[] = [
   { id: "rust", name: "Rust", ext: "rs" },
   { id: "python", name: "Python", ext: "py" },
   { id: "html", name: "HTML", ext: "html" },
+  { id: "http", name: "HTTP Request", ext: "http" },
   { id: "css", name: "CSS", ext: "css" },
   { id: "sql", name: "SQL", ext: "sql" },
   { id: "shell", name: "Shell Script", ext: "sh" },

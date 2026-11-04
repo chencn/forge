@@ -6,6 +6,25 @@ import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "../../src/lib/sett
 
 beforeEach(() => { invoke.mockReset(); });
 
+describe("HTTP 响应显示设置", () => {
+  it("默认使用底部面板，已移除的分栏值与无效值回到底部", async () => {
+    expect(DEFAULT_SETTINGS.httpResponse).toBe("bottom");
+    for (const httpResponse of [undefined, "split", "invalid", "bottom"]) {
+      invoke.mockResolvedValue({ httpResponse });
+      expect((await loadSettings()).httpResponse).toBe("bottom");
+    }
+  });
+
+  it("底部面板和单独页签均可保存并重新读取", async () => {
+    for (const httpResponse of ["bottom", "tab"] as const) {
+      invoke.mockResolvedValue({ httpResponse });
+      expect((await saveSettings({ httpResponse })).httpResponse).toBe(httpResponse);
+      expect(invoke).toHaveBeenLastCalledWith("settings_save", { patch: { httpResponse } });
+      expect((await loadSettings()).httpResponse).toBe(httpResponse);
+    }
+  });
+});
+
 describe("VCS 设置", () => {
   it("更新策略归一化后可保存，旧值回到合并策略", async () => {
     for (const [stored, expected] of [["rebase", "rebase"], ["merge", "merge"], ["invalid", "merge"], [undefined, "merge"]]) {

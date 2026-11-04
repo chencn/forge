@@ -50,9 +50,9 @@ const WORKSPACE_MODE_LABEL: Record<WorkspaceMode, "workspaceMode.single" | "work
   multi: "workspaceMode.multi",
 };
 
-const HTTP_LAYOUTS: HttpResponseLayout[] = ["split", "tab"];
-const HTTP_LAYOUT_LABEL: Record<HttpResponseLayout, "httpResponse.split" | "httpResponse.tab"> = {
-  split: "httpResponse.split",
+const HTTP_LAYOUTS: HttpResponseLayout[] = ["bottom", "tab"];
+const HTTP_LAYOUT_LABEL: Record<HttpResponseLayout, "httpResponse.bottom" | "httpResponse.tab"> = {
+  bottom: "httpResponse.bottom",
   tab: "httpResponse.tab",
 };
 

@@ -24,8 +24,8 @@ export type CloseBehavior = "tray" | "quit";
 /** 工作区模式：一个窗口同时常驻多个文件夹（multi），还是只留一个（single）。 */
 export type WorkspaceMode = "multi" | "single";
 
-/** HTTP 响应放哪：左边请求右边响应，或单独开一个页签。 */
-export type HttpResponseLayout = "split" | "tab";
+/** HTTP 响应放哪：底部面板，或单独开一个页签。 */
+export type HttpResponseLayout = "bottom" | "tab";
 
 /** 编辑器偏好，对应 Rust `EditorSettings`。 */
 export interface EditorSettings {
@@ -302,7 +302,7 @@ export interface Settings {
   language: Lang | "";
   /** 工作区模式：多工作区常驻或单工作区。 */
   workspaceMode: WorkspaceMode;
-  /** `.http` / `.rest` 的响应显示：左右分栏或单独页签。 */
+  /** `.http` / `.rest` 的响应显示：底部面板或单独页签。 */
   httpResponse: HttpResponseLayout;
   /** 点关闭按钮做什么。 */
   closeBehavior: CloseBehavior;
@@ -362,7 +362,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   language: "",
   workspaceMode: "multi",
-  httpResponse: "split",
+  httpResponse: "bottom",
   closeBehavior: "tray",
   editor: {
     rainbowBrackets: false,
@@ -440,7 +440,7 @@ function merge(raw: Partial<Settings> | null): Settings {
       elementContent: raw?.browser?.elementContent === "code" || raw?.browser?.elementContent === "screenshot" ? raw.browser.elementContent : "both",
     },
     workspaceMode: raw?.workspaceMode === "single" ? "single" : "multi",
-    httpResponse: raw?.httpResponse === "tab" ? "tab" : "split",
+    httpResponse: raw?.httpResponse === "tab" ? "tab" : "bottom",
     closeBehavior: raw?.closeBehavior === "quit" ? "quit" : "tray",
     editor: {
       ...DEFAULT_SETTINGS.editor,

@@ -6,6 +6,10 @@
  * `?` `&` 续行、`# @name` 以及 `{{name.response...}}`。系统变量覆盖 `$guid`、
  * `$timestamp`、`$datetime`、`$randomInt`、`$dotenv`、`$processEnv`。
  * 正文里的 `> {% ... %}` 是响应脚本，不发出去，也不在这里执行。
+ *
+ * 分工：`.http` 的语言模型（解析 + 变量替换 + 依赖链 + cURL 导入）在这一层，
+ * 环境文件（`http-client.env.json`）、发送与响应历史在 Rust 的 `src-tauri/src/http`。
+ * 这里只把拼装好的请求交给后端 `http_send`，拿回一条交换记录。
  */
 import { invoke } from "@tauri-apps/api/core";
 import { codedError } from "./errors";
@@ -31,6 +35,12 @@ export interface HttpVariable {
 export interface HttpRequest {
   /** 请求行的 1-based 行号，装订线箭头落在这一行。 */
   line: number;
+  /**
+   * 这一段请求在文件里的范围（1-based，含请求行前后的注释和正文）。
+   * 光标落在块内任意一行都应运行这一条，不必正好点在请求行上。
+   */
+  startLine: number;
+  endLine: number;
   /** `# @name` / `// @name`。 */
   name: string | null;
   /** `###` 后面的标题。 */
@@ -54,13 +64,15 @@ export interface HttpBodyPiece {
 
 /** 发给后端的一条已经替换完变量的请求。 */
 export interface HttpCall {
+  /** `# @name` / `###` 标题，只进历史，不参与发送。 */
+  name: string | null;
   method: string;
   url: string;
   headers: HttpHeader[];
   body: HttpBodyPiece[];
 }
 
-/** 后端 `http_exchange` 的返回。 */
+/** 响应预览用的形状（`toHttpResult` 由一次交换收出来）。 */
 export interface HttpResult {
   status: number;
   reason: string;
@@ -73,11 +85,98 @@ export interface HttpResult {
   finalUrl: string;
 }
 
+/** 实际发出去的那条请求（后端 `http_send` 的回执）。 */
+export interface HttpSentRequest {
+  name: string | null;
+  method: string;
+  url: string;
+  headers: [string, string][];
+  body: string | null;
+  /** 非 UTF-8 请求正文的原始字节，仅用于无损重发。 */
+  bodyBase64?: string;
+}
+
+/** 后端读回来的响应。文本正文为字符串，二进制为 `null`。 */
+export interface HttpWireResponse {
+  status: number;
+  statusText: string;
+  version: string;
+  headers: [string, string][];
+  contentType: string | null;
+  body: string | null;
+  /** 解压后的字节数。 */
+  size: number;
+  truncated: boolean;
+  ttfbMs: number;
+  totalMs: number;
+  /** 跟随重定向之后的最终地址。 */
+  finalUrl: string;
+}
+
+/** 历史条目里不含正文的那部分（列表用）。 */
+export interface HttpHistoryEntry {
+  id: string;
+  /** Unix 纪元毫秒。 */
+  timeMs: number;
+  name: string | null;
+  method: string;
+  url: string;
+  status: number | null;
+  totalMs: number | null;
+  file: string | null;
+  error: string | null;
+}
+
+/** 后端 `http_send` / `http_history_get` 的返回：一次请求及其结果。 */
+export interface HttpExchange {
+  entry: HttpHistoryEntry;
+  request: HttpSentRequest;
+  response: HttpWireResponse | null;
+}
+
+/** 后端 `http_cancel` 回的就是这个码，没有分段符。停止不是失败。 */
+export function isHttpCancelled(text: string): boolean {
+  return text.split("\u0001")[0] === "HTTP_CANCELLED";
+}
+
+/** 已记录的传输失败与准备失败分开，运行全部才能继续后面的独立请求。 */
+export class HttpExchangeError extends Error {}
+
+/** 把一次交换收成响应预览用的形状；没有响应时抛出那次失败。 */
+export function toHttpResult(exchange: HttpExchange): HttpResult {
+  const response = exchange.response;
+  if (!response) throw new HttpExchangeError(exchange.entry.error ?? "HTTP_NETWORK");
+  return {
+    status: response.status,
+    reason: response.statusText,
+    headers: response.headers.map(([name, value]) => ({ name, value })),
+    body: response.body ?? "",
+    binary: response.body === null,
+    truncated: response.truncated,
+    bodyBytes: response.size,
+    elapsedMs: response.totalMs,
+    finalUrl: response.finalUrl,
+  };
+}
+
 export interface HttpExecuteOptions {
   /** `.http` 文件所在目录，相对路径的正文文件和 `.env` 都相对它。 */
   dir?: string;
   /** 工程根。正文文件在 http 文件旁边找不到时，再按这个根找一次。 */
   workspace?: string | null;
+  /** `.http` 文件路径，随这次请求记进历史。 */
+  path?: string | null;
+  /** 取消这次请求用的 id（配合后端 `http_cancel`）。 */
+  requestId?: string | null;
+  /** `http-client.env.json` 里选中的环境的变量，优先级低于文件变量。未选环境时仍带 `$shared`。 */
+  envVars?: Record<string, string> | null;
+  /**
+   * 同一次「运行全部」共用的具名响应。
+   * 后面的请求引用 `{{name.response…}}` 时直接用这里的结果，不再把依赖重发一遍。
+   */
+  session?: HttpRunSession;
+  /** 这次的交换（历史里也有一份）。工具窗口据此高亮最新一条。 */
+  onExchange?: (exchange: HttpExchange) => void;
   /** 某个路径在不在磁盘上。测试注入；缺省问文件系统。 */
   exists?: (path: string) => Promise<boolean>;
   readText?: (path: string) => Promise<string>;
@@ -87,12 +186,39 @@ export interface HttpExecuteOptions {
   processEnv?: (name: string) => Promise<string | null>;
   /** 系统时间。测试用固定时钟，缺省为当前时间。 */
   now?: Date;
+  /**
+   * 用户已经点了停止。依赖请求是一条接一条发出去的，两条之间后端的取消通道已经拆掉，
+   * 所以每次真正 `send` 之前都要再问一次。
+   */
+  isCancelled?: () => boolean;
 }
 
 interface Captured {
   call: HttpCall;
   bodyText: string;
   result: HttpResult;
+}
+
+/**
+ * 一次连续发送（运行全部）的响应缓存。
+ * 空对象即可，真正的表放在模块里，避免把 `Captured` 漏到外面。
+ */
+export type HttpRunSession = object;
+
+const runSessions = new WeakMap<HttpRunSession, Map<string, Captured>>();
+
+/** 开一次「运行全部」用的会话。单条请求不用这个。 */
+export function createHttpRunSession(): HttpRunSession {
+  return {};
+}
+
+function sessionCache(session: HttpRunSession): Map<string, Captured> {
+  let cache = runSessions.get(session);
+  if (!cache) {
+    cache = new Map();
+    runSessions.set(session, cache);
+  }
+  return cache;
 }
 
 const cookiesByHost = new Map<string, Map<string, string>>();
@@ -119,6 +245,20 @@ export function httpResponsePath(path: string, line: number): string {
   return `${path}#${line}`;
 }
 
+/**
+ * 光标所在行属于哪一条请求。行号 1-based，和解析结果、装订线一致。
+ * 先看块范围（请求行、头、正文、前后注释），对不上就取光标上方最近的一条。
+ */
+export function httpRequestAtLine(file: HttpFile, line: number): HttpRequest | null {
+  let best: HttpRequest | null = null;
+  for (const request of file.requests) {
+    const end = Math.max(request.endLine, request.line);
+    if (request.startLine <= line && line <= end) return request;
+    if (request.line <= line) best = request;
+  }
+  return best ?? file.requests[0] ?? null;
+}
+
 export function parseHttpFile(text: string): HttpFile {
   const source = text.replace(/^\uFEFF/, "");
   const lines = source.split(/\r?\n/);
@@ -130,6 +270,8 @@ export function parseHttpFile(text: string): HttpFile {
   let name: string | null = null;
   let prompts: HttpPrompt[] = [];
   let draft: HttpRequest | null = null;
+  /** 当前这段从哪一行开始（分隔符的下一行；文件开头是第 1 行）。 */
+  let blockStart = 1;
   let seenHeader = false;
   // 正文可以从空行开始。不能用「正文是不是空串」判断已经开始，否则第一行空白会被吃掉。
   let bodyStarted = false;
@@ -145,6 +287,9 @@ export function parseHttpFile(text: string): HttpFile {
   const finish = () => {
     if (!draft) return;
     draft.body = draft.body.replace(/\n$/, "");
+    while (draft.endLine > draft.line && (lines[draft.endLine - 1] ?? "").trim() === "") {
+      draft.endLine -= 1;
+    }
     requests.push(draft);
     draft = null;
     seenHeader = false;
@@ -163,19 +308,29 @@ export function parseHttpFile(text: string): HttpFile {
       name = null;
       prompts = [];
       mode = "preamble";
+      blockStart = index + 2;
       continue;
     }
 
+    if (draft) draft.endLine = index + 1;
+
+    // 无正文的请求也可以直接跟响应指令，不要求额外插入空行。
+    if (mode === "headers" && /^(?:>\s|>>|<>)/.test(trimmed)) mode = "body";
     if (mode === "body" && draft) {
-      if (line.startsWith(">")) {
-        mode = "script";
+      // 响应指令允许缩进；只跳过脚本区间，不能把指令或脚本当请求正文。
+      if (trimmed.startsWith("> {%")) {
+        if (!trimmed.endsWith("%}")) mode = "script";
         continue;
       }
+      if (/^(?:<>|>>|>\s)/.test(trimmed)) continue;
       draft.body = bodyStarted ? `${draft.body}\n${line}` : line;
       bodyStarted = true;
       continue;
     }
-    if (mode === "script") continue;
+    if (mode === "script") {
+      if (trimmed.endsWith("%}")) mode = "body";
+      continue;
+    }
 
     if (trimmed === "") {
       if (mode === "headers") mode = "body";
@@ -184,7 +339,7 @@ export function parseHttpFile(text: string): HttpFile {
 
     if (trimmed.startsWith("#") || trimmed.startsWith("//")) {
       if (mode === "preamble") {
-        const named = /^(?:#|\/\/)\s*@name\s+(\S+)/.exec(trimmed);
+        const named = /^(?:#|\/\/)\s*@name[ \t=]+(.+?)\s*$/.exec(trimmed);
         if (named) name = named[1];
         const prompted = /^(?:#|\/\/)\s*@prompt\s+(\S+)(?:\s+(.+))?$/.exec(trimmed);
         if (prompted) {
@@ -211,13 +366,21 @@ export function parseHttpFile(text: string): HttpFile {
           chunk.push(lines[index] ?? "");
         }
         const meta = takeMeta();
-        requests.push(parseCurl(chunk.join("\n"), index + 1 - (chunk.length - 1), meta));
+        const requestLine = index + 1 - (chunk.length - 1);
+        requests.push({
+          ...parseCurl(chunk.join("\n"), requestLine, meta),
+          startLine: Math.min(blockStart, requestLine),
+          endLine: index + 1,
+        });
         continue;
       }
       const parsed = parseRequestLine(trimmed);
+      if (!parsed) continue;
       const meta = takeMeta();
       draft = {
         line: index + 1,
+        startLine: Math.min(blockStart, index + 1),
+        endLine: index + 1,
         name: meta.name,
         title: meta.title,
         method: parsed.method,
@@ -232,7 +395,7 @@ export function parseHttpFile(text: string): HttpFile {
     }
 
     if (mode === "headers" && draft) {
-      if (!seenHeader && /^[?&]/.test(trimmed)) {
+      if (!seenHeader && (/^[?&]/.test(trimmed) || /^[ \t]+\//.test(line))) {
         let extra = trimmed;
         if (extra.startsWith("?") && draft.url.includes("?")) extra = `&${extra.slice(1)}`;
         draft.url += extra;
@@ -267,7 +430,7 @@ export async function executeHttpRequest(
   const workspace = options.workspace ?? null;
   const exists = options.exists ?? defaultExists;
   const readText = options.readText ?? defaultReadText;
-  const send = options.send ?? defaultSend;
+  const send = options.send ?? ((call: HttpCall) => defaultSend(call, options));
   const ask = options.prompt ?? defaultPrompt;
   const processEnv = options.processEnv ?? defaultProcessEnv;
   const now = options.now ?? new Date();
@@ -275,7 +438,7 @@ export async function executeHttpRequest(
   for (const item of file.requests) {
     if (item.name) byName.set(item.name, item);
   }
-  const cache = new Map<string, Captured>();
+  const cache = options.session ? sessionCache(options.session) : new Map<string, Captured>();
   const env = new Map<string, string | null>();
   let dotenv = new Map<string, string>();
   let dotenvLoaded = false;
@@ -303,9 +466,16 @@ export async function executeHttpRequest(
     for (const key of pending) env.set(key, await processEnv(key));
   };
 
+  const ensureCurrent = () => {
+    if (options.isCancelled?.()) throw codedError("HTTP_CANCELLED");
+  };
+
   const runOne = async (current: HttpRequest, stack: string[]): Promise<Captured> => {
+    ensureCurrent();
     if (current.name && cache.has(current.name)) return cache.get(current.name)!;
     const prepared = await prepare(current, stack);
+    // 准备依赖、读正文的这段时间里用户可能已经点了停止。停在发出去之前。
+    ensureCurrent();
     const result = await send(prepared.call);
     rememberCookies(result.finalUrl || prepared.call.url, result.headers);
     const captured = { call: prepared.call, bodyText: prepared.bodyText, result };
@@ -346,7 +516,9 @@ export async function executeHttpRequest(
     await ensureDynamics(
       [...file.variables.map((item) => item.value), current.url, current.body].join("\n")
     );
-    const vars = resolveFileVars(file, cache, dotenv, env, now);
+    const vars = resolveFileVars(file, options.envVars);
+    // 依赖和动态变量加载都可能让出执行权，停止后不能再准备下一条请求。
+    ensureCurrent();
     return materialize(current, vars, {
       dir,
       workspace,
@@ -417,11 +589,13 @@ export function parseDotEnv(text: string): Map<string, string> {
   return map;
 }
 
-function parseRequestLine(line: string): { method: string; url: string } {
+function parseRequestLine(line: string): { method: string; url: string } | null {
   const stripped = line.replace(/\s+HTTP\/\d+(?:\.\d+)?$/i, "").trim();
-  const method = /^([A-Za-z][A-Za-z0-9+.-]*)\s+(\S[\s\S]*)$/.exec(stripped);
+  // 与原版一样只把请求行认作请求，说明文字和没有目标的方法名留在前导区。
+  const method = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT|GRAPHQL)\s+(\S[\s\S]*)$/i.exec(stripped);
   if (method) return { method: method[1].toUpperCase(), url: method[2].trim() };
-  return { method: "GET", url: stripped };
+  if (/^(?:[a-z][a-z0-9+.-]*:\/\/|\{\{|\/)/i.test(stripped)) return { method: "GET", url: stripped };
+  return null;
 }
 
 function parseCurl(
@@ -505,6 +679,8 @@ function parseCurl(
   }
   return {
     line,
+    startLine: line,
+    endLine: line,
     name: meta.name,
     title: meta.title,
     method,
@@ -612,22 +788,14 @@ function missingNames(
 
 function resolveFileVars(
   file: HttpFile,
-  cache: Map<string, Captured>,
-  dotenv: Map<string, string>,
-  env: Map<string, string | null>,
-  now: Date
+  envVars?: Record<string, string> | null
 ): Map<string, string> {
   const raw = new Map<string, string>();
+  // 环境文件的变量垫底，文件里的 `@var` 覆盖它——和 IDEA 的取值次序一致。
+  for (const [key, value] of Object.entries(envVars ?? {})) raw.set(key, value);
   for (const variable of file.variables) raw.set(variable.name, variable.value);
-  let resolved = new Map(raw);
-  for (let pass = 0; pass < 8; pass++) {
-    const next = new Map<string, string>();
-    for (const [key, value] of raw) {
-      next.set(key, substitute(value, resolved, cache, dotenv, env, now, null, new Map()));
-    }
-    resolved = next;
-  }
-  return resolved;
+  // 使用时递归解析，保留模板与外部响应数据的边界，不重复解释已经替换出的数据。
+  return raw;
 }
 
 interface MaterializeContext {
@@ -650,8 +818,13 @@ async function materialize(
 ): Promise<Captured> {
   // 提示变量只在这一条请求里有效，不带给后面的请求。
   const answers = new Map<string, string>();
-  const fill = (text: string) =>
-    substitute(text, vars, ctx.cache, ctx.dotenv, ctx.env, ctx.now, request.prompts, answers, ctx.ask);
+  const fill = (text: string) => {
+    const missing = new Set<string>();
+    const value = substitute(text, vars, ctx.cache, ctx.dotenv, ctx.env, ctx.now, request.prompts, answers, ctx.ask, missing);
+    // 只报告解析模板时缺失的名字；外部响应与提示输入不再作为新模板扫描。
+    if (missing.size) throw codedError("HTTP_VARIABLE", [...missing].sort().join(", "));
+    return value;
+  };
   let method = request.method;
   const headers = request.headers.map((header) => ({
     name: fill(header.name),
@@ -679,9 +852,14 @@ async function materialize(
       headers.push({ name: "Content-Type", value: "application/json" });
     }
   }
-  const url = normalizeUrl(fill(request.url));
+  const target = fill(request.url).trim();
+  // 原始 HTTP 请求行可只写路径，此时必须用已经替换变量的 Host 头补齐地址。
+  const host = headers.find((header) => header.name.toLowerCase() === "host")?.value;
+  if (target.startsWith("/") && !host) throw codedError("HTTP_URL", target);
+  const url = target.startsWith("/") ? `http://${host}${target}` : normalizeUrl(target);
   assertHttp(url);
   const call: HttpCall = {
+    name: request.name ?? request.title,
     method,
     url,
     headers: applyCookies(url, headers),
@@ -701,7 +879,7 @@ async function expandIncludes(
   let buf = "";
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index] ?? "";
-    const include = /^<(@([A-Za-z0-9._-]*))?[ \t]+(.+?)\s*$/.exec(line);
+    const include = /^[ \t]*<(@([A-Za-z0-9._-]*))?[ \t]+(.+?)\s*$/.exec(line);
     const newline = index < lines.length - 1 ? "\n" : "";
     if (!include) {
       buf += line + newline;
@@ -837,32 +1015,41 @@ function substitute(
   now: Date,
   prompts: HttpPrompt[] | null,
   answers: Map<string, string>,
-  ask?: (name: string, description: string) => string | null
+  ask?: (name: string, description: string) => string | null,
+  missing?: Set<string>,
+  depth = 0
 ): string {
   return text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (token, raw: string) => {
     const expr = raw.trim();
+    const unresolved = () => {
+      missing?.add(expr);
+      return token;
+    };
     const ref = /^([\w.-]+)\.(response|request)\.(body|headers)\.([\s\S]+)$/.exec(expr);
     if (ref) {
       const captured = cache.get(ref[1]);
-      if (!captured) return token;
+      if (!captured) return unresolved();
       const value = lookupCaptured(captured, ref[2] as "response" | "request", ref[3] as "body" | "headers", ref[4]);
-      return value === null ? token : value;
+      return value === null ? unresolved() : value;
     }
     if (expr.startsWith("$")) {
       const value = systemValue(expr, dotenv, env, now);
-      return value === null ? token : value;
+      return value === null ? unresolved() : value;
     }
     const prompt = prompts?.find((item) => item.name === expr);
     if (prompt) {
       if (!answers.has(expr)) {
         const answer = ask?.(expr, prompt.description);
-        if (answer === null || answer === undefined) return token;
+        if (answer === null || answer === undefined) return unresolved();
         answers.set(expr, answer);
       }
       return answers.get(expr) ?? token;
     }
-    if (vars.has(expr)) return vars.get(expr) ?? "";
-    return token;
+    if (vars.has(expr)) {
+      if (depth >= 8) return unresolved();
+      return substitute(vars.get(expr) ?? "", vars, cache, dotenv, env, now, prompts, answers, ask, missing, depth + 1);
+    }
+    return unresolved();
   });
 }
 
@@ -893,6 +1080,10 @@ function systemValue(
   now: Date
 ): string | null {
   const body = expr.slice(1).trim();
+  // IDEA 原有动态变量与 REST Client 的带参数写法共用同一条替换路径。
+  if (body === "random.uuid") return crypto.randomUUID();
+  if (body === "isoTimestamp") return now.toISOString().replace(/\.\d{3}Z$/, "Z");
+  if (["randomInt", "random.integer", "random.integer()"].includes(body)) return String(Math.floor(Math.random() * 1000));
   const name = /^([A-Za-z]+)/.exec(body)?.[1] ?? "";
   const rest = body.slice(name.length).trim();
   if (name === "guid" || name === "uuid") return crypto.randomUUID();
@@ -904,7 +1095,7 @@ function systemValue(
     if (!Number.isInteger(min) || !Number.isInteger(max) || max <= min) return null;
     return String(Math.floor(Math.random() * (max - min)) + min);
   }
-  if (name === "timestamp") return String(shift(now, rest).getTime());
+  if (name === "timestamp") return String(Math.floor(shift(now, rest).getTime() / 1000));
   if (name === "datetime" || name === "localDatetime") {
     const parsed = splitFormat(rest);
     return formatDate(shift(now, parsed.offset), parsed.format, name === "datetime");
@@ -1157,8 +1348,25 @@ async function defaultReadText(path: string): Promise<string> {
   return file.contents;
 }
 
-function defaultSend(call: HttpCall): Promise<HttpResult> {
-  return invoke<HttpResult>("http_exchange", { request: call });
+/**
+ * 交给 Rust 发送。取消走 `requestId` + `http_cancel`；回来的那条交换既是历史也是
+ * 这次的响应，所以顺手让调用方看一眼（工具窗口据此高亮最新一条）。
+ */
+async function defaultSend(call: HttpCall, options: HttpExecuteOptions): Promise<HttpResult> {
+  const exchange = await invoke<HttpExchange>("http_send", {
+    requestId: options.requestId ?? null,
+    path: options.path ?? null,
+    root: options.workspace ?? null,
+    call: {
+      name: call.name,
+      method: call.method,
+      url: call.url,
+      headers: call.headers.map((header) => [header.name, header.value]),
+      body: call.body,
+    },
+  });
+  options.onExchange?.(exchange);
+  return toHttpResult(exchange);
 }
 
 function defaultPrompt(name: string, description: string): string | null {

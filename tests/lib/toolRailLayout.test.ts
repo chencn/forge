@@ -40,7 +40,7 @@ describe("活动栏布局", () => {
       right: { top: ["maven"], bottom: [] },
     });
     expect(layout.left.top).toEqual(["git", "explorer"]);
-    expect(layout.left.bottom).toEqual(["run", "terminal", "log"]);
+    expect(layout.left.bottom).toEqual(["run", "terminal", "log", "httpClient"]);
     expect(layout.right.top).toEqual(["maven", "notifications", "ai", "browser"]);
   });
 
@@ -57,7 +57,7 @@ describe("活动栏布局", () => {
     }));
     const layout = loadToolRailLayout();
     expect(layout.left.top).toEqual(["explorer", "ai", "git"]);
-    expect(layout.left.bottom).toEqual(["terminal", "run", "log"]);
+    expect(layout.left.bottom).toEqual(["terminal", "run", "log", "httpClient"]);
     expect(layout.right.top).toEqual(["notifications", "maven", "browser"]);
   });
 

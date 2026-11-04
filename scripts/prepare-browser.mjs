@@ -27,8 +27,14 @@ const sources = targets.map((buildTarget) => {
   return resolve(targetRoot, ...(buildTarget ? [buildTarget] : []), release ? "release" : "debug", `forge-browser-mcp${suffix}`);
 });
 const destination = resolve(binaries, `forge-browser-mcp-${triple}${suffix}`);
-if (sources.length === 2) run("lipo", ["-create", ...sources, "-output", destination]);
-else copyFileSync(sources[0], destination);
+if (sources.length === 2) {
+  // Each `cargo build --target <arch>` checks binaries/forge-browser-mcp-<arch>.
+  // Bundling `--target universal-apple-darwin` then expects the fat binary.
+  targets.forEach((arch, index) => {
+    copyFileSync(sources[index], resolve(binaries, `forge-browser-mcp-${arch}${suffix}`));
+  });
+  run("lipo", ["-create", ...sources, "-output", destination]);
+} else copyFileSync(sources[0], destination);
 if (args.includes("--frontend")) run("npm", ["run", "build"]);
 if (args.includes("--vite")) {
   const child = spawn("npm", ["run", "dev"], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });

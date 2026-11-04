@@ -363,6 +363,15 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     // 跨文件事务撤销优先于方案的普通撤销；候选框内的导航键由引擎自己接。
     Prec.highest(keymap.of([
       { key: "Mod-z", run: undoWorkspaceEdit, preventDefault: true },
+      // `.http` 里 Mod+Enter 发送光标所在请求，盖过拆行。别的语言交还给方案。
+      {
+        key: "Mod-Enter",
+        run: (view) => {
+          if (view.state.readOnly || view.state.facet(keymapLanguage) !== "http") return false;
+          view.dom.dispatchEvent(new CustomEvent("forge-http-run", { bubbles: true }));
+          return true;
+        },
+      },
     ])),
     Prec.highest(keymap.of([
       ...closeBracketsKeymap,

@@ -297,6 +297,13 @@ describe("键位方案", () => {
     view.destroy();
   });
 
+  it("HTTP 文件里 Ctrl+Enter 留给发送请求，不拆行", () => {
+    const view = mount("GET https://example.com\n", "idea", 0, false, "http");
+    pressKey(view, "Mod-Enter");
+    expect(view.state.doc.toString()).toBe("GET https://example.com\n");
+    view.destroy();
+  });
+
   it("切换方案后 Ctrl+Enter 从 IDEA 拆行变成 VS Code 行下插入，撤销仍可用", () => {
     const view = mount("alpha\nbeta", "idea", 2);
     pressKey(view, "Ctrl-Enter");
