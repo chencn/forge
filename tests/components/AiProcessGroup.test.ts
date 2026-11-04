@@ -54,6 +54,22 @@ describe("AiProcessGroup 的公开交互", () => {
     expect(visibleEntries()).toEqual([]);
     expect(button("ai.chat.processTitle").getAttribute("aria-expanded")).toBe("false");
   });
+  it("历史的手动折叠不影响开始执行后的默认展开", async () => {
+    await render(tools(3), false);
+    await click(button("ai.chat.processTitle"));
+    await click(button("ai.chat.processTitle"));
+    await render(tools(3), true);
+    expect(button("ai.chat.processTitle").getAttribute("aria-expanded")).toBe("true");
+    expect(visibleEntries()).toHaveLength(3);
+  });
+  it("运行时手动展开不阻止结束后默认折叠", async () => {
+    await render(tools(3), true);
+    await click(button("ai.chat.processTitle"));
+    await click(button("ai.chat.processTitle"));
+    await render(tools(3), false);
+    expect(button("ai.chat.processTitle").getAttribute("aria-expanded")).toBe("false");
+    expect(visibleEntries()).toEqual([]);
+  });
   it("失败跳转独立可访问，并展开所有条目以显示失败目标", async () => {
     const entries = tools(20);
     entries[0].status = "failed";

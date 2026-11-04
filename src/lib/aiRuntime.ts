@@ -7,7 +7,7 @@ import { isAiTaskBackendActive, isAiTaskBackendStatus, isAiTaskLive, isAiTaskQue
 import { errorCodeOf } from "./errors";
 import { normalizeAiUsage } from "./aiUsage";
 import type { AiUsage } from "./aiUsage";
-import { normalizeAiContext } from "./aiContext";
+import { contextMatchesModel, normalizeAiContext } from "./aiContext";
 import type { AiContext } from "./aiContext";
 import { normalizeCommandCatalog } from "./aiCommands";
 import type { AiCommandCatalog } from "./aiCommands";
@@ -645,6 +645,15 @@ export function subscribeAiAgentOrder(listener: () => void) {
 export function getAiAgentOrderVersion(): number { return agentOrderVersion; }
 /** 读取某个会话的快照；不存在的会话返回空快照，保证组件首帧不崩。 */
 export function useAiRuntime(id: string): AiRuntimeSnapshot { return useSyncExternalStore(subscribeAiChanges, () => stores.get(id)?.snapshot ?? EMPTY); }
+/** 运行中的绑定优先于列表快照；未绑定时绝不回退到 Forge 主键。 */
+export function getAiNativeSessionId(session: Pick<AiSession, "id" | "nativeId">): string | null {
+  return stores.get(session.id)?.snapshot.nativeId || session.nativeId || null;
+}
+/** 只订阅原生身份，避免侧栏详情随每个流式文本片段重渲染。 */
+export function useAiNativeSessionId(session: Pick<AiSession, "id" | "nativeId">): string | null {
+  // 静态渲染从会话记录取快照；客户端再订阅 CLI 的实时绑定。
+  return useSyncExternalStore(subscribeAiChanges, () => getAiNativeSessionId(session), () => session.nativeId || null);
+}
 /** 当前（或最近）一轮的 run id；停止按钮要用它。 */
 export function getAiRunId(id: string) { return stores.get(id)?.snapshot.runId ?? null; }
 /** 该会话是否正在运行；关闭标签前的判断靠它。 */
@@ -790,6 +799,15 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   const staleContext = () => { if (context) context = { ...context, stale: true }; };
   let commands = incremental ? previous.commands : undefined;
   let configuration = incremental ? previous.configuration : undefined;
+  // 旧回合结束后允许新报告先到；已结束的其他回合不能用迟到报告覆盖当前显示。
+  const acceptsContext = (id: string) => !runId || runId === id || (status !== "running" && !isAiTaskTerminal(tasks.get(id)?.status ?? "submitting"));
+  const usageForRun = (id: string): AiUsage | undefined => {
+    if (usage?.runId === id) return usage;
+    if (!usage && !context) return undefined;
+    // 配置切换已经作废的窗口不能从旧分类里复活，模型别名仍按 CLI 报告匹配。
+    const window = context && (context.runId === id || contextMatchesModel(context, configuration?.model)) ? context.window : undefined;
+    return { runId: id, window: usage?.window ?? window, model: configuration?.model ?? usage?.model ?? context?.model, total: usage?.total, cost: usage?.cost };
+  };
   const plans = new Map<string, AiPlanReview>(incremental ? previous.plans.map((plan) => [`${plan.planId}:${plan.revision}`, { ...plan }]) : []);
   let background = incremental ? previous.background : undefined;
   let permissionDenied = incremental ? previous.permissionDenied : undefined;
@@ -830,7 +848,11 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
       const terminal = taskStatus !== null && isAiTaskTerminal(taskStatus);
       if (taskStatus === "running") {
         if (runId !== event.runId) mcpServers = undefined;
-        runId = event.runId; status = "running"; error = null; staleContext(); contextUnavailable = undefined; background = undefined; permissionDenied = undefined;
+        // 新请求只继承已知窗口与累计统计；旧输入和分类不能继续冒充本轮上下文。
+        // 本轮报告可能先于 running 到达，按归属判断，不能把刚刷新的数据再次清掉。
+        usage = usageForRun(event.runId);
+        if (context && context.runId !== event.runId) context = undefined;
+        runId = event.runId; status = "running"; error = null; contextUnavailable = undefined; background = undefined; permissionDenied = undefined;
       }
       else if (terminal && runId === event.runId && taskStatus) { status = taskStatus; error = typeof data.error === "string" ? data.error : null; background = undefined; }
       if (terminal) for (const request of requests.values()) if (request.runId === event.runId) mutReq(request).active = false;
@@ -890,14 +912,15 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
     } else if (event.kind === "files") {
       const paths = Array.isArray(data.paths) ? data.paths.filter((path): path is string => typeof path === "string") : [];
       if (paths.length) entries.push({ id: key, runId: event.runId, kind: "files", text: "", paths });
-    } else if (event.kind === "usage") {
+    } else if (event.kind === "usage" && acceptsContext(event.runId)) {
       // Codex tokenUsage 不带模型名，使用同一协议流里已经报告的配置确定归属。
-      usage = normalizeAiUsage(data, configuration?.model ? { ...usage, model: configuration.model } : usage);
-    } else if (event.kind === "context" && (!runId || runId === event.runId)) {
+      const previousUsage = usageForRun(event.runId);
+      usage = { ...normalizeAiUsage(data, configuration?.model ? { ...previousUsage, model: configuration.model } : previousUsage), runId: event.runId };
+    } else if (event.kind === "context" && acceptsContext(event.runId)) {
       const next = normalizeAiContext(data, event.runId);
       if (next) { context = next; contextUnavailable = false; }
       else { staleContext(); contextUnavailable = true; }
-    } else if (event.kind === "context_unavailable" && (!runId || runId === event.runId)) {
+    } else if (event.kind === "context_unavailable" && acceptsContext(event.runId)) {
       staleContext(); contextUnavailable = true;
     } else if (event.kind === "commands" && (!runId || runId === event.runId)) {
       const next = normalizeCommandCatalog(data);

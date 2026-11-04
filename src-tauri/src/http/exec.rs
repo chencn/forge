@@ -303,7 +303,7 @@ pub async fn send(
     // 默认值在 execute/解压中间件里才补齐；先显式设置，让发送和历史共享同一份值。
     use reqwest::header::{HeaderValue, ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
     request.headers_mut().entry(ACCEPT).or_insert(HeaderValue::from_static("*/*"));
-    // 与 Cargo.toml 启用的 gzip/deflate/brotli 以及 tower-http 协商顺序保持一致。
+    // 与 Cargo.toml 启用的 gzip/deflate/brotli 保持一致。
     request.headers_mut().entry(ACCEPT_ENCODING).or_insert(HeaderValue::from_static("gzip,deflate,br"));
     // 正文已完整拼装，发送前固定长度，使 HTTP/1 和 HTTP/2 的记录一致。
     // 显式 chunked 仍优先；空正文没有 chunk 可发送，移除无效的传输编码。
@@ -383,6 +383,11 @@ pub async fn send(
         None
     };
     let size = response_size(&headers, bytes.len(), stopped_early);
+    // 截断、206 部分内容和空正文都不是完整 PDF，预览只会报文件损坏；只为能完整渲染的响应保存字节。
+    let previewable = pdf
+        && !stopped_early
+        && !bytes.is_empty()
+        && status != reqwest::StatusCode::PARTIAL_CONTENT;
     Ok(HttpResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").to_owned(),
@@ -390,7 +395,7 @@ pub async fn send(
         headers,
         content_type,
         body,
-        body_base64: (pdf && !stopped_early).then(|| STANDARD.encode(&bytes)),
+        body_base64: previewable.then(|| STANDARD.encode(&bytes)),
         size,
         truncated: stopped_early,
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
@@ -727,17 +732,21 @@ mod tests {
     async fn preserves_complete_pdf_bytes_through_wire_and_history() {
         use super::super::history::{History, HttpExchange};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        // 包含 ASCII PDF、二进制 PDF、下载接口、错误类型和截断边界。
+        // 包含 ASCII PDF、二进制 PDF、下载接口、错误类型、截断、部分内容和空正文。
+        // (类型, 字节, 是否按 PDF 处理, 是否截断, 状态码, 是否保存可预览字节)
         let cases = [
-            ("Application/PDF; version=1.7", b"%PDF-1.7\nASCII PDF".to_vec(), true, false),
-            ("application/pdf", b"%PDF-1.7\n\xff\x00\x80".to_vec(), true, false),
-            ("application/octet-stream", b"%PDF-1.7\nDownloaded PDF".to_vec(), true, false),
-            ("application/json", br#"{"ok":true}"#.to_vec(), false, false),
-            ("application/octet-stream", vec![0, 255, 128], false, false),
-            ("application/pdf", vec![b'x'; MAX_BODY + 1], true, true),
+            ("Application/PDF; version=1.7", b"%PDF-1.7\nASCII PDF".to_vec(), true, false, 200, true),
+            ("application/pdf", b"%PDF-1.7\n\xff\x00\x80".to_vec(), true, false, 200, true),
+            ("application/octet-stream", b"%PDF-1.7\nDownloaded PDF".to_vec(), true, false, 200, true),
+            ("application/json", br#"{"ok":true}"#.to_vec(), false, false, 200, false),
+            ("application/octet-stream", vec![0, 255, 128], false, false, 200, false),
+            ("application/pdf", vec![b'x'; MAX_BODY + 1], true, true, 200, false),
+            // Range 请求只拿到片段，不能当完整 PDF 预览。
+            ("application/pdf", b"%PDF-1.7\npartial".to_vec(), true, false, 206, false),
+            ("application/pdf", Vec::new(), true, false, 200, false),
         ];
         let tmp = temp_dir("pdf-history");
-        for (index, (content_type, bytes, pdf, truncated)) in cases.into_iter().enumerate() {
+        for (index, (content_type, bytes, pdf, truncated, status, previewable)) in cases.into_iter().enumerate() {
             let expected = bytes.clone();
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
@@ -745,7 +754,8 @@ mod tests {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 4096];
                 socket.read(&mut buf).await.unwrap();
-                let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n", bytes.len());
+                let reason = if status == 206 { "Partial Content" } else { "OK" };
+                let headers = format!("HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n", bytes.len());
                 socket.write_all(headers.as_bytes()).await.unwrap();
                 // 截断时客户端主动停读，服务端可能收到连接关闭。
                 let _ = socket.write_all(&bytes).await;
@@ -755,10 +765,11 @@ mod tests {
             let response = send(&mut sent, &body, &mut rx).await.unwrap();
             server.await.unwrap();
             assert_eq!(response.truncated, truncated);
+            assert_eq!(response.status, status);
             assert_eq!(response.size, expected.len() as f64);
             if pdf { assert!(response.body.is_none()); }
             let wire = serde_json::to_value(&response).unwrap();
-            if pdf && !truncated {
+            if previewable {
                 assert_eq!(STANDARD.decode(wire["bodyBase64"].as_str().unwrap()).unwrap(), expected);
             } else {
                 assert!(wire.get("bodyBase64").is_none());
@@ -766,7 +777,7 @@ mod tests {
             let id = format!("pdf-{index}");
             let exchange: HttpExchange = serde_json::from_value(serde_json::json!({
                 "entry": {"id": id, "timeMs": 1, "name": null, "method": "GET", "url": sent.url,
-                    "status": 200, "totalMs": 1, "file": null, "error": null},
+                    "status": status, "totalMs": 1, "file": null, "error": null},
                 "request": sent, "response": wire,
             })).unwrap();
             History::new(tmp.clone()).add(&exchange).unwrap();

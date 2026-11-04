@@ -366,6 +366,8 @@ pub struct Settings {
     /// HTTP 响应放哪：bottom 底部面板，tab 单独页签。
     #[serde(default = "default_http_response")]
     pub http_response: String,
+    /// HTTP 历史保留天数；0 表示永不清理。启动时清掉超过这个天数的条目。
+    pub http_history_retention_days: u32,
     /// 点关闭做什么：tray 收进托盘，quit 直接退应用。
     pub close_behavior: String,
     pub editor: EditorSettings,
@@ -394,6 +396,7 @@ impl Default for Settings {
             language: String::new(),
             workspace_mode: "multi".to_string(),
             http_response: default_http_response(),
+            http_history_retention_days: 31,
             close_behavior: "tray".to_string(),
             editor: EditorSettings::default(),
             terminal: TerminalSettings::default(),
@@ -675,6 +678,7 @@ mod tests {
         let def: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
         assert_eq!(def.workspace_mode, "multi");
         assert_eq!(def.http_response, "bottom");
+        assert_eq!(def.http_history_retention_days, 31);
         assert_eq!(def.close_behavior, "tray");
 
         let custom: Settings = serde_json::from_str(
@@ -683,6 +687,14 @@ mod tests {
         .unwrap();
         assert_eq!(custom.workspace_mode, "single");
         assert_eq!(custom.close_behavior, "quit");
+    }
+
+    /// 历史保留天数缺省 31 天；0 表示永不清理，设置文件往返后保持原值。
+    #[test]
+    fn http_history_retention_defaults_and_round_trips() {
+        let custom: Settings = serde_json::from_str(r#"{"httpHistoryRetentionDays":0}"#).unwrap();
+        assert_eq!(custom.http_history_retention_days, 0);
+        assert_eq!(serde_json::to_value(custom).unwrap()["httpHistoryRetentionDays"], 0);
     }
 
     /// 项目目录角色是设置文件的一部分，重启后必须保留项目根与相对目录映射。

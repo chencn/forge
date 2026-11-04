@@ -1,9 +1,11 @@
 import type { AiProvider } from "./aiCli";
 
-/** 一条本地会话记录。`id` 由后端生成的 CLI 会话 id，前后端共用同一个值。 */
+/** 一条本地会话记录；Forge 主键与 CLI 原生会话身份分别保存。 */
 export interface AiSession {
-  /** CLI 会话 id，同时用作本地存储与标签 id 的一部分。 */
+  /** Forge 会话主键，同时用作本地存储与标签 id 的一部分。 */
   id: string;
+  /** Claude session ID / Codex thread ID；CLI 首次建立会话后才有值。 */
+  nativeId?: string;
   /** 该会话属于哪个 CLI，决定图标与恢复时走哪套协议。 */
   provider: AiProvider;
   /** 列表里显示的名字；新建还没发过消息时为空串，界面按「未命名会话」显示；用户可重命名，最长 120 字符。 */
@@ -99,8 +101,10 @@ export function parseAiSessions(raw: string | null): AiSessionState {
       seen.add(item.id);
       return true;
       // 归档位/置顶位缺失或写成别的值都按未归档/未置顶处理；老缓存不需要迁移脚本。
-    }).map(({ id, provider, title, createdAt, archived, pinned, pinnedAt, lastActivity, parentSessionId, agent }) => ({
+    }).map(({ id, nativeId, provider, title, createdAt, archived, pinned, pinnedAt, lastActivity, parentSessionId, agent }) => ({
       id, provider, title, createdAt,
+      // 原生身份只能来自独立字段，禁止拿 Forge 主键冒充尚未建立的 CLI 会话。
+      ...(typeof nativeId === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(nativeId) ? { nativeId } : {}),
       ...(archived === true ? { archived: true } : {}),
       ...(pinned === true ? { pinned: true, ...(Number.isFinite(pinnedAt) && (pinnedAt as number) > 0 ? { pinnedAt: pinnedAt as number } : {}) } : {}),
       ...(Number.isFinite(lastActivity) && (lastActivity as number) > 0 ? { lastActivity: lastActivity as number } : {}),

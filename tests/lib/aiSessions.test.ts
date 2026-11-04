@@ -5,6 +5,23 @@ import type { AiSession } from "../../src/lib/aiSessions";
 const session: AiSession = { id: "session-1", title: "Claude Code 会话 1", provider: "claude", createdAt: 1000 };
 
 describe("AI 会话本地状态", () => {
+  it("恢复列表和本地缓存时保留原生身份，不从 Forge 主键推断", () => {
+    const records = [
+      { ...session, nativeId: "claude-native" },
+      { ...session, id: "codex-forge", provider: "codex", nativeId: "codex-thread" },
+      { ...session, id: "unbound", nativeId: null },
+      { ...session, id: "invalid-native", nativeId: "../bad" },
+    ];
+    const restored = parseAiSessions(JSON.stringify({ sessions: records })).sessions;
+    expect(restored.map(({ id, nativeId }) => ({ id, nativeId }))).toEqual([
+      { id: session.id, nativeId: "claude-native" },
+      { id: "codex-forge", nativeId: "codex-thread" },
+      { id: "unbound", nativeId: undefined },
+      { id: "invalid-native", nativeId: undefined },
+    ]);
+    expect(parseAiSessions(JSON.stringify({ sessions: restored })).sessions).toEqual(restored);
+  });
+
   it("新建即打开；关闭标签保留记录，再次打开不会重复", () => {
     let state = reduceAiSessions(EMPTY_AI_SESSIONS, { type: "create", session });
     expect(state.openIds).toEqual([session.id]);

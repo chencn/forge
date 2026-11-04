@@ -4,6 +4,8 @@
  * 数值一律以 CLI 的报告为准，不从模型名或累计用量反推。
  */
 export interface AiUsage {
+  /** 报告所属回合；切换请求时据此丢弃上一轮占用，保留已知窗口。 */
+  runId?: string;
   /** 本次请求的输入 token；单条消息的 input 不含缓存读写，需另加。 */
   input?: number;
   /** 本次请求的输出 token。 */

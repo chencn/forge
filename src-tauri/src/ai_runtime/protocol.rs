@@ -56,7 +56,7 @@ pub trait Protocol: Send {
     fn set_goal_status(&mut self, _status: &str) -> Result<Vec<Action>, String> {
         Err("当前 CLI 不支持 Goal 状态控制".into())
     }
-    /// 回合完成后、关闭 stdin 前获取只读上下文快照；不发模型消息。
+    /// 回合进行期间获取只读上下文快照；不发模型消息，不阻塞终态。
     fn request_context(&mut self) -> Vec<Action> { vec![] }
     /// 诊断失败不能改变对话的成功终态。
     fn context_timeout(&mut self) -> Vec<Action> { vec![] }

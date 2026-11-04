@@ -2889,7 +2889,8 @@ pub async fn ai_runtime_list(app: AppHandle, workspace: String) -> Result<Vec<Va
                     .map(|duration| duration.as_millis() as u64)
                     .filter(|ts| *ts > 0)
                     .unwrap_or(meta.created_at);
-                sessions.push(json!({"id":meta.session_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&native).map(|v|v["status"].clone()),"parentSessionId":meta.parent_session_id,"agent":meta.agent}));
+                // 对外复制使用原生身份；Forge 主键继续只负责记录与标签关联。
+                sessions.push(json!({"id":meta.session_id,"nativeId":meta.native_id,"provider":meta.provider,"title":meta.title,"createdAt":meta.created_at,"archived":meta.archived,"pinned":meta.pinned,"pinnedAt":meta.pinned_at,"lastActivity":last_activity,"status":codex_by_id.get(&native).map(|v|v["status"].clone()),"parentSessionId":meta.parent_session_id,"agent":meta.agent}));
             }
         }
         if !to_sync.is_empty() {

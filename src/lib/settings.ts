@@ -104,6 +104,8 @@ export interface TerminalProfile {
 
 export const TERMINAL_FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
 export const TERMINAL_SCROLLBACK_RANGE = { min: 1_000, max: 100_000 } as const;
+/** HTTP 历史保留天数：0 表示永不清理。 */
+export const HTTP_HISTORY_RETENTION_DAYS_RANGE = { min: 0, max: 3_650 } as const;
 export const TERMINAL_CURSOR_STYLES: readonly TerminalCursorStyle[] = ["bar", "block", "underline"];
 export const TERMINAL_TAB_LAYOUTS: readonly TerminalTabLayout[] = ["horizontal", "vertical"];
 export const TERMINAL_BELLS: readonly TerminalBell[] = ["visual", "sound", "none"];
@@ -304,6 +306,8 @@ export interface Settings {
   workspaceMode: WorkspaceMode;
   /** `.http` / `.rest` 的响应显示：底部面板或单独页签。 */
   httpResponse: HttpResponseLayout;
+  /** HTTP 历史保留天数；0 表示永不清理。启动时清掉超过这个天数的条目。 */
+  httpHistoryRetentionDays: number;
   /** 点关闭按钮做什么。 */
   closeBehavior: CloseBehavior;
   editor: EditorSettings;
@@ -363,6 +367,7 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "",
   workspaceMode: "multi",
   httpResponse: "bottom",
+  httpHistoryRetentionDays: 31,
   closeBehavior: "tray",
   editor: {
     rainbowBrackets: false,
@@ -441,6 +446,11 @@ function merge(raw: Partial<Settings> | null): Settings {
     },
     workspaceMode: raw?.workspaceMode === "single" ? "single" : "multi",
     httpResponse: raw?.httpResponse === "tab" ? "tab" : "bottom",
+    httpHistoryRetentionDays: clampInt(
+      raw?.httpHistoryRetentionDays,
+      HTTP_HISTORY_RETENTION_DAYS_RANGE,
+      DEFAULT_SETTINGS.httpHistoryRetentionDays
+    ),
     closeBehavior: raw?.closeBehavior === "quit" ? "quit" : "tray",
     editor: {
       ...DEFAULT_SETTINGS.editor,

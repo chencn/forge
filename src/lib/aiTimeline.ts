@@ -45,8 +45,8 @@ export function liveThinking(entries: readonly AiEntry[], running: boolean): AiE
   return last && last.kind === "reasoning" ? last : null;
 }
 
-export function groupAiTimeline(entries: readonly AiEntry[], running = false): AiTimelineItem[] {
-  const live = liveThinking(entries, running);
+export function groupAiTimeline(entries: readonly AiEntry[], runningRunId?: string | null): AiTimelineItem[] {
+  const live = liveThinking(entries, Boolean(runningRunId && entries.at(-1)?.runId === runningRunId));
   const rows = entries.filter((entry) => entry.kind !== "reasoning" || entry.text.trim().length > 0 || entry === live);
   const items: AiTimelineItem[] = [];
   let run: AiEntry[] = [];
@@ -54,7 +54,8 @@ export function groupAiTimeline(entries: readonly AiEntry[], running = false): A
   const flush = () => {
     if (!run.length) return;
     if (run.length >= MIN_PROCESS) {
-      items.push({ kind: "process", key: `process:${run[0].id}`, runId: run[0].runId, entries: run, active: run.some((entry) => entry.status === "running") });
+      // 运行状态属于回合：思考或工具间隙也在执行，历史工具残留 running 不能撑开旧过程。
+      items.push({ kind: "process", key: `process:${run[0].id}`, runId: run[0].runId, entries: run, active: run[0].runId === runningRunId });
     } else {
       for (const entry of run) items.push({ kind: "entry", key: entry.id, entry });
     }

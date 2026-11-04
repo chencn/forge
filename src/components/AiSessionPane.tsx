@@ -1753,8 +1753,8 @@ export default function AiSessionPane({
   const goalKey = goal ? `${goal.threadId}:${goal.createdAt}:${goal.objective}` : null;
   const visibleGoal = goal && goalKey !== hiddenGoalKey ? goal : null;
   // 先折叠再开窗：反过来会把一整段过程劈成两半，两段各自都够不上折叠门槛，就都摊在屏幕上。
-  // 传 running 是为了只留「正在想」那一条空思考：空正文的历史思考块摆成一排「思考」却点不出东西。
-  const timeline = useMemo(() => windowAiTimeline(groupAiTimeline(timelineEntries, running), timelineLimit), [timelineEntries, running, timelineLimit]);
+  // 按可见的运行回合默认展开过程；是否拥有停止权限不影响执行过程的展示。
+  const timeline = useMemo(() => windowAiTimeline(groupAiTimeline(timelineEntries, visualRunning ? runtime.runId ?? ownedRunId : null), timelineLimit), [timelineEntries, visualRunning, runtime.runId, ownedRunId, timelineLimit]);
   // 「正在思考」只能给真正在动的那一条：本轮还在跑时它是末尾那条思考，其余都是想完的。
   const liveThinkingId = useMemo(() => liveThinking(timelineEntries, running)?.id ?? null, [timelineEntries, running]);
   const entryIds = useMemo(() => runtime.entries.map((entry) => entry.id), [runtime.entries]);

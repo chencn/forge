@@ -4,6 +4,7 @@ import { useI18n } from "../i18n";
 import { AI_NAMES } from "../lib/aiCli";
 import type { AiSession } from "../lib/aiSessions";
 import type { AiSessionActivity } from "../lib/aiRuntime";
+import { useAiNativeSessionId } from "../lib/aiRuntime";
 import AiProviderIcon from "./AiProviderIcon";
 import CopyButton from "./CopyButton";
 
@@ -52,6 +53,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
   onArchive: (session: AiSession) => void;
 }) {
   const { t } = useI18n();
+  const nativeId = useAiNativeSessionId(session);
   const row = useRef<HTMLDivElement>(null);
   const [hoverOpen, setHoverOpen] = useState(false);
   const openTimer = useRef<number | null>(null);
@@ -191,8 +193,9 @@ export const AiSidebarCard = memo(function AiSidebarCard({
                 <div className="ai-scard-hover-fact">
                   <dt>{t("ai.sidebar.factSessionId")}</dt>
                   <dd dir="ltr" className="ai-scard-hover-mono ai-scard-hover-id-row">
-                    <span className="ai-scard-hover-id-text">{session.id}</span>
-                    <CopyButton text={session.id} />
+                    {/* 尚未建立原生会话时只显示占位，不提供错误的内部 ID。 */}
+                    <span className="ai-scard-hover-id-text">{nativeId ?? "—"}</span>
+                    {nativeId ? <CopyButton text={nativeId} /> : null}
                   </dd>
                 </div>
               ) : null}

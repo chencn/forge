@@ -10,7 +10,7 @@ import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigg
 interface AiProcessGroupProps {
   /** 一段连续的工具调用与想法。 */
   entries: AiEntry[];
-  /** 段里还有在跑的工具；这时默认摊开。 */
+  /** 过程所属回合仍在运行；这时默认摊开。 */
   active: boolean;
   /** 逐条怎么渲染由会话面板决定——这里不复制它那一串分支。 */
   render: (entry: AiEntry) => ReactNode;
@@ -26,11 +26,13 @@ interface AiProcessGroupProps {
  */
 export default memo(function AiProcessGroup({ entries, active, render }: AiProcessGroupProps) {
   const { t } = useI18n();
-  // null 表示用户没表过态：跑着的段摊开，跑完的段收起来。
-  const [open, setOpen] = useState<boolean | null>(null);
+  // 手动开关只保留在当前运行阶段；阶段变化立即恢复默认，历史选择不会串到新阶段。
+  const [disclosure, setDisclosure] = useState({ active, open: active });
+  if (disclosure.active !== active) setDisclosure({ active, open: active });
+  const setOpen = (open: boolean) => setDisclosure({ active, open });
   const [shown, setShown] = useState(PROCESS_PAGE);
   const group = useRef<HTMLElement>(null);
-  const expanded = open ?? active;
+  const expanded = disclosure.active === active ? disclosure.open : active;
   const page = expanded ? pageProcess(entries, shown) : { visible: [] as AiEntry[], hidden: entries.length };
   // 细分（对照参考 ActivityHeader）：总步数 + 按类计数，等宽字体排在一行；失败数单独
   // 成按钮，点了展开整段并滚到第一条失败——错误埋在折叠里等于没报。

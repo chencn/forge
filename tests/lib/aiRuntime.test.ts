@@ -15,6 +15,18 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("AI runtime event store", () => {
+  it("原生身份读取支持未打开的历史，实时绑定优先于旧列表，未绑定不返回内部 ID", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    expect(runtime.getAiNativeSessionId(session)).toBeNull();
+    const listed = { ...session, nativeId: "listed-native" };
+    expect(runtime.getAiNativeSessionId(listed)).toBe("listed-native");
+    await runtime.ensureAiRuntimeListener();
+    emit(event(1, "bound", { nativeId: "live-native" }));
+    expect(runtime.getAiNativeSessionId(listed)).toBe("live-native");
+    emit(event(2, "bound", { nativeId: "rebound-native" }));
+    expect(runtime.getAiNativeSessionId(listed)).toBe("rebound-native");
+  });
+
   // 流式期间每帧都会做一次增量投影。下面两条盯住写时复制的两条底线：没被这一批事件
   // 碰过的条目必须原样保留身份（否则下游 memo 每帧全线失效），被碰过的也绝不能回头
   // 改写上一帧快照里的对象（否则 React 会认为这一帧什么都没变）。
@@ -273,16 +285,60 @@ describe("AI runtime event store", () => {
     const events = [event(1, "status", { status: "running" }), event(2, "context", data), event(3, "usage", { input_tokens: 9999 }), event(4, "status", { status: "completed" })];
     const state = projectAiEvents(events);
     expect(state.context?.total).toBe(100); expect(state.context?.stale).toBe(false);
-    for (const next of [event(5, "status", { status: "running" }, "new"), event(5, "configuration", { model: "changed" }), event(5, "compaction", {}), event(5, "context_unavailable", {})]) {
+    for (const next of [event(5, "configuration", { model: "changed" }), event(5, "compaction", {}), event(5, "context_unavailable", {})]) {
       expect(projectAiEvents([next], state, true).context?.stale).toBe(true);
       expect(projectAiEvents([...events, next])).toEqual(projectAiEvents([next], state, true));
     }
     const newTurn = projectAiEvents([event(5, "status", { status: "running" }, "new"), event(6, "context", data)], state, true);
-    expect(newTurn.context?.stale).toBe(true); // Old run cannot refresh the current turn.
+    expect(newTurn.context).toBeUndefined(); // 旧回合不能刷新新请求的上下文。
+    expect(newTurn.usage?.context).toBeUndefined();
     const refreshed = projectAiEvents([event(7, "context", data, "new")], newTurn, true);
     expect(refreshed.context?.runId).toBe("new"); expect(refreshed.context?.stale).toBe(false);
     const invalid = projectAiEvents([event(8, "context", {}, "new")], refreshed, true);
     expect(invalid.contextUnavailable).toBe(true); expect(invalid.context?.stale).toBe(true);
+  });
+  it("新请求等待本轮占用，收到用量与分类后立即更新，重放与增量一致", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const data = { detail: "summary", capturedAt: 1, model: "fixture", totalTokens: 100, rawMaxTokens: 1000, categories: [{ name: "Messages", tokens: 100, kind: "used" }] };
+    const history = [event(1, "status", { status: "running" }), event(2, "usage", { input_tokens: 100, output_tokens: 20 }), event(3, "context", data), event(4, "status", { status: "completed" })];
+    const first = projectAiEvents(history);
+    const start = event(5, "status", { status: "running" }, "next");
+    const waiting = projectAiEvents([start], first, true);
+    expect(waiting.context).toBeUndefined();
+    expect(waiting.usage).toMatchObject({ window: 1000 });
+    expect(waiting.usage?.context).toBeUndefined();
+    expect(waiting.usage?.input).toBeUndefined();
+    expect(waiting.usage?.output).toBeUndefined();
+    const usage = event(6, "usage", { input_tokens: 25, cache_read_input_tokens: 175, output_tokens: 0 }, "next");
+    const streaming = projectAiEvents([usage], waiting, true);
+    expect(streaming.usage?.context).toBe(200);
+    expect(streaming.context).toBeUndefined();
+    const context = event(7, "context", { ...data, totalTokens: 220, categories: [{ name: "Messages", tokens: 220, kind: "used" }] }, "next");
+    const refreshed = projectAiEvents([context], streaming, true);
+    expect(refreshed.context).toMatchObject({ runId: "next", stale: false, total: 220 });
+    expect(refreshed).toEqual(projectAiEvents([...history, start, usage, context]));
+    expect(first.context?.total).toBe(100);
+    expect(first.usage?.context).toBe(100);
+  });
+  it("本轮分类或用量先于 running 到达时不会再次被清空或标为过期", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const events = [event(3, "context", { detail: "summary", capturedAt: 1, model: "fixture", totalTokens: 200, rawMaxTokens: 1000, categories: [{ name: "Messages", tokens: 200, kind: "used" }] }), event(4, "usage", { input_tokens: 200 }), event(5, "status", { status: "running" })];
+    for (const history of [[], [event(1, "status", { status: "running" }, "old"), event(2, "status", { status: "completed" }, "old")]]) {
+      const state = projectAiEvents([...history, ...events]);
+      expect(state.context).toMatchObject({ runId: "run", total: 200, stale: false });
+      expect(state.usage?.context).toBe(200);
+      expect(projectAiEvents(events.slice(2), projectAiEvents([...history, ...events.slice(0, 2)]), true)).toEqual(state);
+    }
+  });
+  it("换模型后不能把旧分类窗口继承给本轮用量", async () => {
+    const { projectAiEvents } = await import("../../src/lib/aiRuntime");
+    const history = [event(1, "status", { status: "running" }), event(2, "configuration", { model: "old" }), event(3, "context", { detail: "summary", capturedAt: 1, model: "old", totalTokens: 200, rawMaxTokens: 1000, categories: [{ name: "Messages", tokens: 200, kind: "used" }] }), event(4, "status", { status: "completed" })];
+    const events = [event(5, "configuration", { model: "new" }, "next"), event(6, "status", { status: "running" }, "next"), event(7, "usage", { input_tokens: 300 }, "next")];
+    const state = projectAiEvents([...history, ...events]);
+    expect(state.usage).toMatchObject({ model: "new", context: 300 });
+    expect(state.usage?.window).toBeUndefined();
+    expect(state.context).toBeUndefined();
+    expect(projectAiEvents(events, projectAiEvents(history), true)).toEqual(state);
   });
   it("passes selected model and effort to the backend", async () => {
     const runtime = await import("../../src/lib/aiRuntime");

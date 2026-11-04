@@ -3,7 +3,7 @@ import { useSettings } from "../../../hooks/useSettings";
 import { useI18n, type Lang } from "../../../i18n";
 import Select from "../../../components/Select";
 import { AiAssistantsToggle } from "../../../components/AiCliSettingsPanel";
-import { withShellFileToggle } from "../../../lib/settings";
+import { HTTP_HISTORY_RETENTION_DAYS_RANGE, withShellFileToggle } from "../../../lib/settings";
 import { builtinShellExtensions } from "../../../lib/shellOpen";
 import { appendExtraExtension, normalizeExtraExtensions } from "../../../lib/shellWhitelist";
 import { IS_WINDOWS } from "../../../lib/sys";
@@ -199,6 +199,26 @@ export function AppearanceSystemPage() {
             }))}
             onChange={(httpResponse) => patch({ httpResponse })}
           />
+        </div>
+
+        <div className="settings-row">
+          <span className="settings-label" title={t("settings.httpHistoryRetentionHint")}>
+            {t("settings.httpHistoryRetention")}
+          </span>
+          <input
+            type="number"
+            className="text-input"
+            min={HTTP_HISTORY_RETENTION_DAYS_RANGE.min}
+            max={HTTP_HISTORY_RETENTION_DAYS_RANGE.max}
+            value={settings.httpHistoryRetentionDays}
+            onChange={(event) => {
+              if (event.target.value === "") return;
+              const days = Number(event.target.value);
+              if (!Number.isInteger(days) || days < HTTP_HISTORY_RETENTION_DAYS_RANGE.min || days > HTTP_HISTORY_RETENTION_DAYS_RANGE.max) return;
+              patch({ httpHistoryRetentionDays: days });
+            }}
+          />
+          <span className="settings-unit">{t("settings.days")}</span>
         </div>
 
         {/* 资源管理器右键菜单：只在 Windows 有这套集成，其它平台整块不渲染。 */}

@@ -25,6 +25,19 @@ describe("HTTP 响应显示设置", () => {
   });
 });
 
+describe("HTTP 历史保留设置", () => {
+  it("默认 31 天，越界与非法值夹回范围，0 表示永不清理", async () => {
+    expect(DEFAULT_SETTINGS.httpHistoryRetentionDays).toBe(31);
+    const cases: [unknown, number][] = [
+      [undefined, 31], [0, 0], [90, 90], [-1, 0], [99999, 3650], ["60", 31], [12.6, 13],
+    ];
+    for (const [stored, expected] of cases) {
+      invoke.mockResolvedValue({ httpHistoryRetentionDays: stored });
+      expect((await loadSettings()).httpHistoryRetentionDays).toBe(expected);
+    }
+  });
+});
+
 describe("VCS 设置", () => {
   it("更新策略归一化后可保存，旧值回到合并策略", async () => {
     for (const [stored, expected] of [["rebase", "rebase"], ["merge", "merge"], ["invalid", "merge"], [undefined, "merge"]]) {

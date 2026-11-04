@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendAiInputText,
+  buildCopySessionIdMenuItem,
   buildSendSessionIdMenuItem,
   deliverAiInput,
   deliverAiSessionId,
@@ -31,6 +32,24 @@ beforeEach(() => {
 afterEach(() => { flushDraft(); vi.unstubAllGlobals(); });
 
 describe("AI 输入投递路由", () => {
+  it.each(["claude-session-id", "codex-thread-id"])("复制菜单将原生身份 %s 写入剪贴板", (nativeId) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const item = buildCopySessionIdMenuItem(nativeId, (key) => key);
+    expect(item.disabled).toBe(false);
+    item.onSelect?.();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(nativeId);
+  });
+
+  it("尚未绑定原生会话时禁用复制且不改动剪贴板", () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const item = buildCopySessionIdMenuItem(null, (key) => key);
+    expect(item.disabled).toBe(true);
+    item.onSelect?.();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
   it("没有标签禁用、单标签直发、多标签交给二级菜单选择", () => {
     const first = { id: "one", title: "会话一" };
     const second = { id: "two", title: "会话二" };

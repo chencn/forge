@@ -30,12 +30,22 @@ function pdfResources(): Plugin {
       }
     },
     configureServer(server) {
-      server.middlewares.use("/pdfjs/", (req, res, next) => {
+      server.middlewares.use("/pdfjs/", (req, res) => {
         const file = assets.get((req.url ?? "").split("?")[0].replace(/^\//, ""));
-        if (!file) return next();
+        // 未命中的资源明确 404，不能落到 SPA 回退拿回 index.html。
+        if (!file) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
         res.setHeader("Content-Type", file.pathname.endsWith(".wasm") ? "application/wasm"
           : file.pathname.endsWith(".js") ? "text/javascript" : "application/octet-stream");
-        createReadStream(fileURLToPath(file)).on("error", next).pipe(res);
+        const stream = createReadStream(fileURLToPath(file));
+        stream.on("error", () => {
+          res.statusCode = 500;
+          res.end();
+        });
+        stream.pipe(res);
       });
     },
   };

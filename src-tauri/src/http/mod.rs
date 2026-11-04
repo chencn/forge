@@ -94,6 +94,22 @@ fn history_for(app: &AppHandle, root: &str) -> Result<History, String> {
     Ok(History::new(history_dir(app, root)?))
 }
 
+/// 启动时清理各工作区分桶里超过保留天数的历史；`days == 0` 表示保留全部。
+/// 清理失败不阻塞启动，删不掉的条目下次启动再试。
+pub fn purge_history(app: &AppHandle, days: u32) {
+    if days == 0 {
+        return;
+    }
+    let Ok(base) = app.path().app_config_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(base.join("http-history")) else { return };
+    let cutoff_ms = now_ms() - f64::from(days) * 86_400_000.0;
+    for entry in entries.flatten() {
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            let _ = History::new(entry.path()).purge_before(cutoff_ms);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 命令
 
 /// 作用于 `path` 的 `http-client(.private).env.json` 里的环境名。

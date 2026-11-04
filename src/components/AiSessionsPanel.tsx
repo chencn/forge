@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, ChevronsUp, Copy, Crosshair, Ellipsis, Eye, ListChevronsDownUp, ListChevronsUpDown, Loader2, RefreshCw, Search, Settings, SquarePen, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsUp, Crosshair, Ellipsis, Eye, ListChevronsDownUp, ListChevronsUpDown, Loader2, RefreshCw, Search, Settings, SquarePen, X } from "lucide-react";
 import { useI18n } from "../i18n";
 import { AI_NAMES, cliDesktopAvailable, refreshAiCli, useAiCli } from "../lib/aiCli";
 import type { AiSession, AiSessionAction } from "../lib/aiSessions";
 import { loadNativePurgeDefault, saveNativePurgeDefault } from "../lib/aiSessions";
 import { AI_SEARCH_MIN_QUERY, isSearchQueryActive } from "../lib/aiSearch";
 import { useAiSessionSearch } from "../hooks/useAiSessionSearch";
-import { getAiSessionActivity, subscribeAiChanges } from "../lib/aiRuntime";
+import { getAiNativeSessionId, getAiSessionActivity, subscribeAiChanges } from "../lib/aiRuntime";
 import {
   formatAiRelativeTime,
   moveAiSidebarSection,
@@ -31,7 +31,7 @@ import ContextMenu, { flatMenu } from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import Popover from "./Popover";
 import { refreshAiSessionHistory } from "../hooks/useAiSessions";
-import { buildSendSessionIdMenuItem } from "../lib/aiInputBridge";
+import { buildCopySessionIdMenuItem, buildSendSessionIdMenuItem } from "../lib/aiInputBridge";
 
 /**
  * AI 会话侧栏列表。结构与视觉对照参考实现（codeg 的 sidebar + conversation list）：
@@ -143,9 +143,9 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       [
         // Codex 的改名会同步写回原生线程名；Claude 没有写入口，只落 Forge 侧并加锁。
         { label: t("menu.rename"), onSelect: () => setPending({ action: "rename", session }) },
-        // 跨会话提问要把另一条会话的 ID 贴进来；子代理不具备独立会话身份，禁止复制或向外发送
+        // 对外复制 CLI 原生身份；子代理不提供复制入口。
         ...(!isSubagent
-          ? [{ icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) }]
+          ? [buildCopySessionIdMenuItem(getAiNativeSessionId(session), t)]
           : []),
         ...(sendItem ? [sendItem] : []),
         pinnedNow

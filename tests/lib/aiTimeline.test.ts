@@ -39,11 +39,19 @@ describe("AI 时间线折叠", () => {
     expect(items.map((item) => item.kind)).toEqual(["process", "entry", "process"]);
     expect(items[2].kind === "process" && items[2].runId).toBe("r2");
   });
-  it("段里有还在跑的工具就标记 active，界面据此整段展开", () => {
+  it("当前回合的过程保持 active，思考和工具间隙也默认展开", () => {
     const idle = groupAiTimeline(tools(3));
-    const busy = groupAiTimeline([entry("a", "tool"), entry("b", "tool", { status: "running" }), entry("c", "tool")]);
+    const busy = groupAiTimeline([entry("a", "tool", { status: "completed" }), entry("b", "tool", { status: "completed" }), entry("c", "reasoning", { text: "继续分析" })], "r1");
     expect(idle[0].kind === "process" && idle[0].active).toBe(false);
     expect(busy[0].kind === "process" && busy[0].active).toBe(true);
+  });
+  it("只展开运行回合，历史残留 running 不改变默认折叠", () => {
+    const rows = [...tools(3, "old"), entry("next", "user", { runId: "current" }), ...tools(3, "current")];
+    rows[0].status = "running";
+    const processes = (runId?: string) => groupAiTimeline(rows, runId).filter((item) => item.kind === "process").map((item) => ({ runId: item.runId, active: item.active }));
+    expect(processes("current")).toEqual([{ runId: "old", active: false }, { runId: "current", active: true }]);
+    expect(processes()).toEqual([{ runId: "old", active: false }, { runId: "current", active: false }]);
+    expect(processes("not-yet-visible").every((item) => !item.active)).toBe(true);
   });
   it("空输入不产生任何项", () => {
     expect(groupAiTimeline([])).toEqual([]);
@@ -86,15 +94,15 @@ describe("没有正文的思考块", () => {
   });
   it("还在跑的那轮只留末尾这一条空的，它就是「正在想」的唯一凭证", () => {
     const running = [entry("u", "user"), thought("r-old", ""), thought("r-live", "")];
-    expect(groupAiTimeline(running, true).map((item) => item.kind === "entry" ? item.entry.id : item.kind)).toEqual(["u", "r-live"]);
+    expect(groupAiTimeline(running, "r1").map((item) => item.kind === "entry" ? item.entry.id : item.kind)).toEqual(["u", "r-live"]);
     expect(liveThinking(running, true)?.id).toBe("r-live");
     // 不在末尾的空思考已经想完了：想完了却没正文，就没有可显示的东西。
-    expect(groupAiTimeline([entry("u", "user"), thought("r-live", ""), thought("t", "tool-ish")], true)).toHaveLength(2);
+    expect(groupAiTimeline([entry("u", "user"), thought("r-live", ""), thought("t", "tool-ish")], "r1")).toHaveLength(2);
   });
   it("本轮停下来之后，刚才那条占位也跟着收掉，不留一条永远点不出的思考", () => {
     const rows = [entry("u", "user"), thought("r-live", "")];
-    expect(groupAiTimeline(rows, true)).toHaveLength(2);
-    expect(groupAiTimeline(rows, false)).toHaveLength(1);
+    expect(groupAiTimeline(rows, "r1")).toHaveLength(2);
+    expect(groupAiTimeline(rows)).toHaveLength(1);
     expect(liveThinking(rows, false)).toBeNull();
     expect(liveThinking([entry("u", "user")], true)).toBeNull();
   });

@@ -54,10 +54,10 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
   // 请求的模型与快照里的模型对不上时，快照按「过期」展示：数字还能看，但不能当决策依据。
   const shownContext = context && !contextMatchesModel(context, contextSelection) ? { ...context, stale: true } : context;
   const currentContext = shownContext && !shownContext.stale ? shownContext : undefined;
-  // 没有正在跑的回合时，上一份快照就是用户唯一能看到的上下文：照常显示，
-  // 过期只在弹层里标注。外面和弹层必须共用同一份数字，不能一个用快照、一个用本轮用量。
-  const contextTotal = shownContext?.total ?? usage?.context;
-  const contextWindow = shownContext?.window ?? usage?.window;
+  // 过期分类不能压住 CLI 新报的占用；尚无新用量时才回看旧快照。
+  // 芯片和弹层概览始终共用这对数字。
+  const contextTotal = currentContext?.total ?? usage?.context ?? shownContext?.total;
+  const contextWindow = currentContext?.window ?? usage?.window ?? shownContext?.window;
   const percent = contextPercent({ context: contextTotal, window: contextWindow });
   // 芯片只报占用比例；拿不到比例时退回报累计 token（对照参考的 Coins 分支）。
   const chipLabel = percent !== undefined ? percentLabel(percent) : usage?.total !== undefined ? formatTokenCount(usage.total) : percentLabel(undefined);

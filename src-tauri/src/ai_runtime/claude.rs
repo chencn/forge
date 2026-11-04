@@ -202,7 +202,9 @@ pub struct Claude {
     pending: HashMap<String, Value>,
     /// 工具 id → 工具块。工具结果回来时要查它的名字，判断是否改了文件。
     tools: HashMap<String, Value>,
-    /// 成功回合后是否正在等待只读上下文分类。
+    /// 本轮是否已经尝试采集分类；避免每个消息块重复查询或失败后反复重试。
+    context_requested: bool,
+    /// 回合进行期间是否正在等待只读上下文分类。
     context_pending: bool,
     command: Option<super::commands::CommandIntent>,
     commands: Vec<Value>,
@@ -237,6 +239,7 @@ impl Claude {
             had_text: false,
             pending: HashMap::new(),
             tools: HashMap::new(),
+            context_requested: false,
             context_pending: false,
             command: None,
             commands: vec![],
@@ -473,8 +476,6 @@ impl Protocol for Claude {
                         json!(blocks)
                     };
                     out.push(Action::Write(json!({"type":"user","session_id":self.native.as_deref().unwrap_or(""),"message":{"role":"user","content":content},"parent_tool_use_id":null,"origin":{"kind":"human"}})));
-                    // 上下文摘要是辅助缓存：在回合进行期间机会式刷新，不能等结果出来后再阻塞终态。
-                    out.extend(self.request_context());
                 }
             }
             "system" => match value["subtype"].as_str().unwrap_or("") {
@@ -567,6 +568,21 @@ impl Protocol for Claude {
                             .as_str()
                             .ok_or("Claude 流消息缺少 ID")?;
                         self.messages.insert(scope.clone(), id.into());
+                        // 首个流式信封已包含本次输入（含缓存）；无需等整条回复结束才刷新占用。
+                        // 子代理的模型和窗口独立，不能覆盖主会话。
+                        if scope.is_empty() {
+                            if event["message"]["model"].is_string() {
+                                out.push(Action::Emit { kind: "configuration", data: json!({"model":event["message"]["model"]}) });
+                            }
+                            if event["message"]["usage"].is_object() {
+                                out.push(Action::Emit { kind: "usage", data: event["message"]["usage"].clone() });
+                            }
+                            // 实际模型与本轮输入已就绪后再查询，避免初始化阶段采到上轮摘要。
+                            out.extend(self.request_context());
+                        }
+                    }
+                    "message_delta" if scope.is_empty() && event["usage"].is_object() => {
+                        out.push(Action::Emit { kind: "usage", data: event["usage"].clone() });
                     }
                     "content_block_start" => {
                         let block = &event["content_block"];
@@ -680,6 +696,8 @@ impl Protocol for Claude {
                         data: message["usage"].clone(),
                     });
                 }
+                // 未发送流式 message_start 的 CLI 版本从完整消息边界采集。
+                if scope.is_empty() { out.extend(self.request_context()); }
             }
             "user" => {
                 let blocks = value["message"]["content"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -916,7 +934,8 @@ impl Protocol for Claude {
         Ok(vec![Self::reply(key, response)])
     }
     fn request_context(&mut self) -> Vec<Action> {
-        if self.stopped || self.context_pending { return vec![]; }
+        if self.stopped || self.context_requested { return vec![]; }
+        self.context_requested = true;
         self.context_pending = true;
         // 官方 SDK 的 summary 路径不做逐分类 token-count API 调用。
         vec![Action::Write(json!({"type":"control_request","request_id":"forge-context-summary","request":{"subtype":"get_context_usage","detail":"summary"}}))]
@@ -1098,8 +1117,10 @@ mod tests {
     #[test]
     fn context_summary_is_read_only_and_excludes_consumption_data() {
         let mut p = Claude::new("root".into(), "hi".into(), None);
-        let actions = p.request_context();
-        assert!(matches!(&actions[0], Action::Write(v) if v["request"]["subtype"] == "get_context_usage" && v["request"]["detail"] == "summary"));
+        let initialized = p.receive(command_init(json!([]))).unwrap();
+        assert!(!initialized.iter().any(|a| matches!(a, Action::Write(v) if v["request"]["subtype"] == "get_context_usage")));
+        let actions = p.receive(json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"fixture","usage":{"input_tokens":100}}}})).unwrap();
+        assert!(actions.iter().any(|a| matches!(a, Action::Write(v) if v["request"]["subtype"] == "get_context_usage" && v["request"]["detail"] == "summary")));
         assert!(p.request_context().is_empty());
         let response = json!({"type":"control_response","response":{"request_id":"forge-context-summary","subtype":"success","response":{
             "categories":[{"name":"System prompt","tokens":100,"kind":"used"}],
@@ -1110,6 +1131,9 @@ mod tests {
         assert!(matches!(&actions[0], Action::Emit{kind:"context",data} if data["categories"][0]["tokens"] == 100 && data["systemPromptSections"][0]["tokens"] == 100 && data.get("apiUsage").is_none() && data.get("secret").is_none()));
         assert!(!p.context_pending());
         assert!(p.receive(response).unwrap().is_empty());
+        // 同轮后续消息不会重复分类查询，收到过回复后也不能复用请求 ID。
+        let actions = p.receive(json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"next"}}})).unwrap();
+        assert!(!actions.iter().any(|a| matches!(a, Action::Write(v) if v["request"]["subtype"] == "get_context_usage")));
     }
     #[test]
     fn context_failure_timeout_and_cancel_are_nonterminal_and_ignore_late_replies() {
@@ -1133,6 +1157,22 @@ mod tests {
         assert!(p.receive(json!({"type":"control_response","response":{"request_id":"forge-context-summary","subtype":"success","response":{"categories":[]}}})).unwrap().is_empty());
     }
     #[test]
+    fn streaming_usage_is_reported_before_the_complete_message_and_excludes_children() {
+        let mut p = Claude::new("root".into(), "hi".into(), None);
+        let actions = p.receive(json!({"type":"stream_event","event":{"type":"message_start","message":{
+            "id":"m","model":"effective","usage":{"input_tokens":25,"cache_read_input_tokens":175,"output_tokens":0}
+        }}})).unwrap();
+        assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"configuration",data} if data["model"] == "effective")));
+        assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"usage",data} if data["input_tokens"] == 25 && data["cache_read_input_tokens"] == 175)));
+        let actions = p.receive(json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":10}}})).unwrap();
+        assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"usage",data} if data["output_tokens"] == 10 && data.get("input_tokens").is_none())));
+        // 子代理有独立的窗口，不能覆盖主会话占用。
+        for event in [json!({"type":"message_start","message":{"id":"child","model":"child-model","usage":{"input_tokens":999}}}), json!({"type":"message_delta","usage":{"output_tokens":999}})] {
+            let actions = p.receive(json!({"type":"stream_event","parent_tool_use_id":"child-tool","event":event})).unwrap();
+            assert!(!actions.iter().any(|a| matches!(a, Action::Emit {kind:"configuration" | "usage",..})));
+        }
+    }
+    #[test]
     fn public_thinking_usage_and_effective_model_are_retained_without_redacted_data() {
         let mut p = Claude::new("root".into(), "hi".into(), None);
         let out=p.receive(json!({"type":"assistant","message":{"id":"m","model":"effective","content":[{"type":"thinking","thinking":"public"},{"type":"redacted_thinking","data":"secret"},{"type":"text","text":"answer"}],"usage":{"input_tokens":3}}})).unwrap();
@@ -1142,6 +1182,7 @@ mod tests {
         assert!(out.iter().any(
             |a| matches!(a,Action::Emit{kind:"configuration",data} if data["model"]=="effective")
         ));
+        assert!(out.iter().any(|a| matches!(a, Action::Write(v) if v["request"]["subtype"] == "get_context_usage")));
         assert!(!format!("{out:?}").contains("secret"));
         let out=p.receive(json!({"type":"assistant","parent_tool_use_id":"child","message":{"id":"child-message","model":"child-model","content":[],"usage":{"input_tokens":999}}})).unwrap();
         assert!(!out.iter().any(|a| matches!(

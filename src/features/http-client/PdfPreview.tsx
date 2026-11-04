@@ -9,6 +9,14 @@ import styles from "./PdfPreview.module.css";
 // 本模块由正文页签懒加载；Worker 和解析器不会进入普通 HTTP 响应的加载路径。
 GlobalWorkerOptions.workerSrc = workerUrl;
 
+/** atob 后再逐字符回调在 16MB 上限下会明显卡住主线程；预分配后单次循环快一个量级。 */
+function decodeBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 export default function PdfPreview({ base64 }: { base64: string }) {
   const { t } = useI18n();
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
@@ -34,6 +42,8 @@ export default function PdfPreview({ base64 }: { base64: string }) {
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!document || event.defaultPrevented || event.nativeEvent.isComposing || event.altKey) return;
+    // Ctrl/Cmd 组合留给工作台级快捷键；滚轮缩放由原生监听单独处理。
+    if (event.ctrlKey || event.metaKey) return;
     const target = event.target;
     if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable]")) return;
     if (event.key === "+" || event.key === "=" || event.code === "NumpadAdd") {
@@ -41,8 +51,8 @@ export default function PdfPreview({ base64 }: { base64: string }) {
     } else if (event.key === "-" || event.code === "NumpadSubtract") {
       zoomBy(-1);
     } else {
-      // 翻页只接管普通按键，带修饰键的工作台快捷键仍交给外层。
-      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+      // 翻页只接管普通按键，带 Shift 的输入仍交给外层。
+      if (event.shiftKey) return;
       if (event.key === "ArrowLeft" || event.key === "PageUp") {
         setPage((current) => Math.max(1, current - 1));
       } else if (event.key === "ArrowRight" || event.key === "PageDown") {
@@ -80,7 +90,7 @@ export default function PdfPreview({ base64 }: { base64: string }) {
     let task: ReturnType<typeof getDocument>;
     try {
       task = getDocument({
-        data: Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)),
+        data: decodeBase64(base64),
         cMapUrl: `${resources}cmaps/`,
         cMapPacked: true,
         standardFontDataUrl: `${resources}standard_fonts/`,
@@ -113,15 +123,24 @@ export default function PdfPreview({ base64 }: { base64: string }) {
   useEffect(() => {
     const node = scrollRef.current;
     if (!node) return;
-    const measure = () => setSize((previous) => {
-      const width = node.clientWidth;
-      const height = node.clientHeight;
-      return previous.width === width && previous.height === height ? previous : { width, height };
-    });
+    let frame = 0;
+    // 拖动分隔条会连续触发尺寸变化；合并到下一帧，避免整页反复栅格化。
+    const measure = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const width = node.clientWidth;
+        const height = node.clientHeight;
+        setSize((previous) => previous.width === width && previous.height === height ? previous : { width, height });
+      });
+    };
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     measure();
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, []);
 
   useEffect(() => {

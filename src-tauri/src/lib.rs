@@ -66,6 +66,12 @@ pub fn run() {
         .manage(shell_open::Pending::default())
         .setup(move |app| {
             ai_cli::settings::init(app.handle());
+            // HTTP 历史可能含整段二进制；超过保留天数的条目在后台清掉，不拖慢启动。
+            let retention_days = settings::read(app.handle()).http_history_retention_days;
+            if retention_days > 0 {
+                let handle = app.handle().clone();
+                let _ = std::thread::spawn(move || http::purge_history(&handle, retention_days));
+            }
             // 浏览器起不来只让浏览器自己不可用；它的原因记在宿主状态里，不能拖着整个应用一起退出。
             browser::init(app.handle());
             tray::build(&app.handle().clone())?;

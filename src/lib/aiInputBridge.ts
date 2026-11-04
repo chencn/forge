@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { SendHorizontal } from "lucide-react";
+import { Copy, SendHorizontal } from "lucide-react";
 import type { AiProvider } from "./aiCli";
 import type { TranslationKey } from "../i18n/lang/zh";
 import type { MenuItem } from "../components/ContextMenu";
@@ -9,6 +9,19 @@ import { aiSessionStorageKey } from "./aiSessions";
 export interface AiInputTarget {
   id: string;
   title: string;
+}
+
+/** 所有会话菜单只复制 CLI 原生 ID；尚未绑定时禁用，也不写入空值。 */
+export function buildCopySessionIdMenuItem(
+  nativeId: string | null,
+  t: (key: TranslationKey) => string,
+): MenuItem {
+  return {
+    icon: Copy,
+    label: t("ai.copySessionId"),
+    disabled: !nativeId,
+    onSelect: () => { if (nativeId) void navigator.clipboard.writeText(nativeId); },
+  };
 }
 
 export interface AiOngoingTargetCandidate {

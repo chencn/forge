@@ -264,6 +264,7 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
               language: DEFAULT_SETTINGS.language,
               workspaceMode: DEFAULT_SETTINGS.workspaceMode,
               httpResponse: DEFAULT_SETTINGS.httpResponse,
+              httpHistoryRetentionDays: DEFAULT_SETTINGS.httpHistoryRetentionDays,
               closeBehavior: DEFAULT_SETTINGS.closeBehavior,
               explorer: { ...DEFAULT_SETTINGS.explorer },
               shell: { ...DEFAULT_SETTINGS.shell },

@@ -9,7 +9,6 @@ import {
   Bell,
   Globe,
   Check,
-  Copy,
   FilePlus,
   FolderPlus,
   FileDiff,
@@ -207,13 +206,13 @@ import AiSessionsPanel, { AiSessionsToolbar } from "./components/AiSessionsPanel
 import { AiTabProviderIcon } from "./components/AiProviderIcon";
 import { forgetAiSessionWorkspace, refreshAiSessionHistory, useAiSessions } from "./hooks/useAiSessions";
 import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
-import { ensureAiRuntimeListener, filterAiProjectEvents, getAiAgentOrderVersion, getAiProjectActivitySummary, getAiSessionActivity, getAiSessionAgents, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, subscribeAiAgentOrder, useAiActiveProjects } from "./lib/aiRuntime";
+import { ensureAiRuntimeListener, filterAiProjectEvents, getAiAgentOrderVersion, getAiNativeSessionId, getAiProjectActivitySummary, getAiSessionActivity, getAiSessionAgents, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, subscribeAiAgentOrder, useAiActiveProjects } from "./lib/aiRuntime";
 import type { AiRuntimeEvent } from "./lib/aiRuntime";
 import { AI_NAMES } from "./lib/aiCli";
 import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
 import type { AiProvider } from "./lib/aiCli";
 import { subagentOrdinal, type AiSession } from "./lib/aiSessions";
-import { buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputPayload, type AiInputTarget } from "./lib/aiInputBridge";
+import { buildCopySessionIdMenuItem, buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputPayload, type AiInputTarget } from "./lib/aiInputBridge";
 import {
   TOOL_RAIL_GROUP,
   loadToolRailLayout,
@@ -4528,7 +4527,7 @@ export default function App() {
         : null;
       return [
         ...(!isSubagent
-          ? [{ icon: Copy, label: t("ai.copySessionId"), onSelect: () => void navigator.clipboard.writeText(session.id) }]
+          ? [buildCopySessionIdMenuItem(getAiNativeSessionId(session), t)]
           : []),
         ...(sendItem ? [sendItem] : []),
         archivedNow

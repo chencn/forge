@@ -183,6 +183,14 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
     request: t("http.tabRequest"),
   };
 
+  // 二进制正文没得展示：截断、部分响应、空正文和旧历史（没有保存字节）分开说明。
+  const binaryHint = !response ? ""
+    : response.truncated ? t("http.pdfTruncated")
+    : response.size === 0 ? t("http.noBody")
+    : response.status === 200 && response.contentType?.split(";")[0].trim().toLowerCase() === "application/pdf"
+      ? t("http.pdfMissingBytes")
+    : `${response.contentType ?? t("http.unknownType")} · ${formatSize(response.size)}`;
+
   return (
     <div className={styles.exchange}>
       <div className={styles.statusLine}>
@@ -232,16 +240,12 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
       <div className={styles.tabBody}>
         {tab === "body" ? (
           response ? (
-            response.bodyBase64 && !response.truncated ? (
+            response.bodyBase64 ? (
               <Suspense fallback={<div className={styles.center}><Spinner /></div>}>
                 <PdfPreview base64={response.bodyBase64} />
               </Suspense>
             ) : response.body === null ? (
-              <EmptyState title={t("http.binaryBody")}>
-                {response.truncated ? t("http.pdfTruncated")
-                  : response.contentType?.split(";")[0].trim().toLowerCase() === "application/pdf" ? t("http.pdfMissingBytes")
-                  : `${response.contentType ?? t("http.unknownType")} · ${formatSize(response.size)}`}
-              </EmptyState>
+              <EmptyState title={t("http.binaryBody")}>{binaryHint}</EmptyState>
             ) : (
               <pre className={styles.pre} aria-label={t("http.tabBody")}>
                 <HighlightedBody text={shown} kind={kind} />

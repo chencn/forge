@@ -119,6 +119,26 @@ impl History {
         Ok(())
     }
 
+    /// 删除 `time_ms` 早于 `cutoff_ms` 的条目，返回删掉的条数。
+    /// 目录不存在或索引读不出来时什么也不做，启动清理不能因此报错。
+    pub fn purge_before(&self, cutoff_ms: f64) -> Result<usize, String> {
+        let _g = history_io();
+        let (kept, removed): (Vec<_>, Vec<_>) = self
+            .read_index()
+            .into_iter()
+            .partition(|entry| entry.time_ms >= cutoff_ms);
+        if removed.is_empty() {
+            return Ok(0);
+        }
+        for old in &removed {
+            if let Ok(path) = self.file(&old.id) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        self.write_index(&kept)?;
+        Ok(removed.len())
+    }
+
     pub fn clear(&self) -> Result<(), String> {
         let _g = history_io();
         for e in self.read_index() {
@@ -227,6 +247,26 @@ mod tests {
         reopened.remove("second").unwrap();
         assert!(reopened.remove("../first").is_err());
         assert_eq!(reopened.list().len(), 2);
+    }
+
+    #[test]
+    fn purges_entries_older_than_cutoff() {
+        let tmp = temp_dir("purge");
+        let history = History::new(tmp.clone());
+        for (id, time) in [("old", 1_000.0), ("edge", 5_000.0), ("new", 9_000.0)] {
+            let mut item = exchange(id);
+            item.entry.time_ms = time;
+            history.add(&item).unwrap();
+        }
+        assert_eq!(history.purge_before(5_000.0).unwrap(), 1);
+        let reopened = History::new(tmp.clone());
+        assert_eq!(reopened.list().iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), vec!["new", "edge"]);
+        assert!(reopened.get("old").is_err());
+        assert!(!tmp.join("old.json").exists());
+        // 没有可删的条目时既不改索引也不报错。
+        assert_eq!(reopened.purge_before(0.0).unwrap(), 0);
+        assert_eq!(History::new(tmp.join("missing")).purge_before(1.0).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
