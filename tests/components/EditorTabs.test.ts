@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({ states: [] as unknown[], index: 0 }));
 
@@ -38,7 +38,7 @@ function nodes(root: unknown): Node[] {
   return Array.isArray(root) ? root.flatMap(nodes) : [];
 }
 
-function splitMenu(kind: TabKind) {
+function splitMenu(kind: TabKind, overrides: Partial<TabItem> = {}) {
   h.index = 0;
   const tab: TabItem = {
     id: kind === "doc" ? "doc|D:/project/a.ts" : `${kind}|sample`,
@@ -46,6 +46,7 @@ function splitMenu(kind: TabKind) {
     name: kind,
     title: kind,
     dirty: false,
+    ...overrides,
   };
   const onSplitRight = vi.fn(), onSplitDown = vi.fn();
   const props = {
@@ -74,13 +75,38 @@ function splitMenu(kind: TabKind) {
   h.index = 0;
   const opened = EditorTabs(props) as Node;
   const menu = nodes(opened).find((node) => "anchor" in node.props)!;
-  const anchor = menu.props.anchor as { items: Array<{ label: string; onSelect: () => void }> };
+  const anchor = menu.props.anchor as { items: Array<{ label: string; disabled?: boolean; onSelect: () => void }> };
   return { items: anchor.items, onSplitRight, onSplitDown, id: tab.id };
 }
 
 beforeEach(() => {
   h.states = [];
   h.index = 0;
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("页签复制真实文件路径", () => {
+  it.each(["doc", "diff"] as const)("%s 复制绝对路径并统一 Windows 分隔符", (kind) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const menu = splitMenu(kind, {
+      id: kind === "doc" ? "doc|d:/Project/src\\App.tsx" : "diff|sample",
+      title: "src/App.tsx",
+      filePath: "d:/Project/src\\App.tsx",
+    });
+    menu.items.find((item) => item.label === "menu.copyPath")!.onSelect();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("d:\\Project\\src\\App.tsx");
+  });
+
+  it("没有物理文件的比对禁用复制，不能把标题当文件路径", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const copy = splitMenu("diff", { title: "src/App.tsx" }).items.find((item) => item.label === "menu.copyPath")!;
+    expect(copy.disabled).toBe(true);
+    copy.onSelect();
+    expect(writeText).not.toHaveBeenCalled();
+  });
 });
 
 describe("编辑区标签拆分菜单", () => {

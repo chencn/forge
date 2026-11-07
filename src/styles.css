@@ -2425,6 +2425,12 @@ span.entry-icon > svg {
   transition: opacity 120ms ease-out;
 }
 
+/* 右侧提示向工作区内展开；透明的伪元素也会撑宽页面，导致页签定位时整屏横移。 */
+.activity-rail.is-right .rail-button[data-tip]::after {
+  left: auto;
+  right: calc(100% + 8px);
+}
+
 .rail-button[data-tip]:hover::after,
 .rail-button[data-tip]:focus-visible::after,
 .run-gutter-run[data-tip]:hover::after,
@@ -6071,6 +6077,43 @@ body.is-editor-tab-dragging * {
   overflow-y: auto !important;
 }
 
+/* 共用纵向滚动时，横向条留在视口底部，不能跟着正文落到文件末尾。 */
+.cm-mergeViewEditors {
+  min-height: calc(100% - 11px);
+}
+
+.forge-diff-scrollbars {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex: none;
+  height: 11px;
+  background: var(--bg-editor, var(--bg-primary));
+}
+
+.forge-diff-scrollbar {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 11px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.forge-diff-scrollbar-gap {
+  flex: 0 0 30px;
+}
+
+.forge-diff-scrollbar-track {
+  height: 1px;
+}
+
+/* 隐藏正文末尾的重复横向条；正文仍是实际的横向滚动容器。 */
+.cm-mergeView .cm-scroller::-webkit-scrollbar {
+  height: 0;
+}
+
 /* 解除比对视图子编辑器对滚轮滚动的截断，确保滚轮能通畅驱动外层滚动 */
 .cm-editor.forge-diff .cm-scroller {
   overscroll-behavior: auto !important;
@@ -6299,7 +6342,13 @@ body.is-editor-tab-dragging * {
 /* 「不同步滚动」：两栏各自成滚动列，外框不滚（默认同步时外框才是一条滚动条）。 */
 .forge-diff-unsynced .cm-mergeView {
   display: flex;
-  overflow: hidden;
+  flex-direction: column;
+  overflow-y: hidden !important;
+}
+
+.forge-diff-unsynced .cm-mergeViewEditors {
+  flex: 1;
+  min-height: 0;
 }
 
 .forge-diff-unsynced .cm-mergeViewEditor {
@@ -7639,9 +7688,12 @@ body.is-editor-tab-dragging * {
   flex: none;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  height: 32px;
+  min-width: 0;
+  overflow: hidden;
   gap: 5px;
-  padding: 5px 6px;
+  padding: 0 6px;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -7717,7 +7769,7 @@ body.is-editor-tab-dragging * {
 
 .log-commit {
   width: 100%;
-  height: 24px;
+  height: 22px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -7734,8 +7786,9 @@ body.is-editor-tab-dragging * {
 }
 
 .log-commit.is-on {
-  background: var(--accent-blue-bg);
-  color: var(--accent-blue-text);
+  /* 历史选区使用 IDEA 中性底色，图中的 Git 数据保留语义颜色。 */
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  color: var(--text-primary);
 }
 
 .log-dot {
@@ -7775,8 +7828,15 @@ body.is-editor-tab-dragging * {
   text-overflow: ellipsis;
 }
 
+.log-hash {
+  flex: 0 0 72px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
 .log-author {
-  flex: 0 1 72px;
+  flex: 0 1 130px;
   min-width: 0;
   color: var(--text-muted);
   font-size: 11.5px;
@@ -7787,7 +7847,7 @@ body.is-editor-tab-dragging * {
 
 .log-time {
   flex: none;
-  width: 84px;
+  width: 120px;
   text-align: right;
   color: var(--text-muted);
   font-size: 11.5px;

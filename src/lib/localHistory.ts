@@ -2,10 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { FileContent } from "./fs";
 
 /**
- * 本地历史的前端封装，对应后端 `src-tauri/src/local_history.rs` 那四条命令。
- *
- * 只在「保存成功」那一刻打一条快照；列历史、比对、恢复各一条。快照按工作区分桶，
- * 所以每条命令都要带上工作区根与文件绝对路径两样。根为空（工程外打开的文件）时不记。
+ * 历史按文档所属工作区持久化；读取失败与空历史必须分别呈现。
  */
 
 /** 一条快照的元信息（不含正文），列清单用，对应 Rust `SnapshotInfo`。 */
@@ -21,6 +18,7 @@ export interface SnapshotInfo {
 
 /** 一条完整快照（含正文、不含字数），取详情与记录时用，对应 Rust `Snapshot`。 */
 export interface SnapshotFull {
+  event?: string;
   savedAt: number;
   contents: string;
   lineEnding: string;
@@ -28,19 +26,19 @@ export interface SnapshotFull {
   encoding: string;
 }
 
-/** 保存成功后打一条快照。失败静默：历史是兜底，不该因为它把保存这条主路报错。 */
+/** 记录磁盘或编辑器版本；恢复前的保护快照失败时，调用方必须停止恢复。 */
 export function recordSnapshot(
   root: string,
   path: string,
   snapshot: SnapshotFull
 ): Promise<void> {
   if (!root) return Promise.resolve();
-  return invoke<void>("local_history_record", { root, path, snapshot }).catch(() => {});
+  return invoke<void>("local_history_record", { root, path, snapshot });
 }
 
 /** 列一个文件的历史（最新在前，不含正文）。 */
 export function listSnapshots(root: string, path: string): Promise<SnapshotInfo[]> {
-  return invoke<SnapshotInfo[]>("local_history_list", { root, path }).catch(() => []);
+  return invoke<SnapshotInfo[]>("local_history_list", { root, path });
 }
 
 /** 取某一条快照的完整正文；没有那条时回 null。 */
@@ -49,9 +47,7 @@ export function getSnapshot(
   path: string,
   savedAt: number
 ): Promise<SnapshotFull | null> {
-  return invoke<SnapshotFull | null>("local_history_get", { root, path, savedAt }).catch(
-    () => null
-  );
+  return invoke<SnapshotFull | null>("local_history_get", { root, path, savedAt });
 }
 
 /**
@@ -61,7 +57,52 @@ export function getSnapshot(
 export function restoreSnapshot(
   root: string,
   path: string,
-  savedAt: number
+  savedAt: number,
+  expectModifiedMs?: number,
 ): Promise<FileContent> {
-  return invoke<FileContent>("local_history_restore", { root, path, savedAt });
+  return invoke<FileContent>("local_history_restore", { root, path, savedAt, ...(expectModifiedMs === undefined ? {} : { expectModifiedMs }) });
+}
+
+export interface HistoryEntry {
+  path: string;
+  savedAt: number;
+  chars: number;
+  label: string;
+  kind: "snapshot" | "label";
+}
+
+export interface DirectoryHistory { entries: HistoryEntry[]; deleted: string[] }
+
+export function listDirectoryHistory(root: string, path: string): Promise<DirectoryHistory> {
+  return invoke("local_history_list_dir", { root, path });
+}
+
+export function captureHistory(root: string, path: string, event: string): Promise<void> {
+  return invoke("local_history_capture", { root, path, event });
+}
+
+export function putHistoryLabel(root: string, path: string, label: string, snapshots: (SnapshotFull & { path: string })[] = []): Promise<void> {
+  return invoke("local_history_put_label", { root, path, label, ...(snapshots.length ? { snapshots } : {}) });
+}
+
+/** 标签取时刻之前每个文件的最后修订；多选修订只允许在同一文件内比较。 */
+export function snapshotsBefore(entries: HistoryEntry[], label: HistoryEntry, scope: string): HistoryEntry[] {
+  const key = (path: string) => path.replace(/\\/g, "/").toLowerCase().replace(/\/$/, "");
+  const scopeKey = key(scope);
+  const labelKey = key(label.path);
+  const versions = new Map<string, HistoryEntry>();
+  for (const entry of entries) {
+    const path = key(entry.path);
+    if (entry.kind !== "snapshot" || entry.savedAt >= label.savedAt || (path !== scopeKey && !path.startsWith(`${scopeKey}/`))) continue;
+    if (path !== labelKey && !path.startsWith(`${labelKey}/`)) continue;
+    const previous = versions.get(path);
+    if (!previous || previous.savedAt < entry.savedAt) versions.set(path, entry);
+  }
+  return [...versions.values()];
+}
+
+export function revisionRange(entries: HistoryEntry[]): [HistoryEntry, HistoryEntry] | null {
+  const snapshots = entries.filter((entry) => entry.kind === "snapshot").sort((a, b) => a.savedAt - b.savedAt);
+  if (snapshots.length < 2 || snapshots.some((entry) => entry.path !== snapshots[0].path)) return null;
+  return [snapshots[0], snapshots[snapshots.length - 1]];
 }

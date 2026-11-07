@@ -3,8 +3,8 @@ use super::{host, Lease};
 use crate::ai_cli::Provider;
 use std::{path::PathBuf, process::Command};
 
-/// Tauri 打包会把 sidecar 改名成 `forge-browser-mcp-<target-triple>[.exe]`，只有 cargo 直接产出时
-/// 才和 forge.exe 同名同目录。只认裸名字的话，装出来的 Forge 每次 AI 会话都起不来。
+/// 构建输入带 target triple，Windows 安装时 Tauri 会去掉后缀；Cargo 开发产物也使用裸名。
+/// 两种路径都只在当前 Forge 旁解析，避免启动其它安装版本的 companion。
 fn companion() -> Result<PathBuf, String> {
     let directory = std::env::current_exe()
         .map_err(|e| e.to_string())?

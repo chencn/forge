@@ -67,7 +67,8 @@ import {
   libKey,
   pathOfKey,
   GROUP_PREFIX,
-  isGroupKey,
+  isVirtualPath,
+  projectPathClipboardText,
 } from "./model";
 import { InlineEditor } from "./InlineEditor";
 import {
@@ -245,15 +246,6 @@ function collectDescendantKeys(
     }
   }
   return result;
-}
-
-function isVirtualPath(path: string): boolean {
-  return (
-    path.startsWith("__") ||
-    path.startsWith("\u0000") ||
-    path.startsWith("virtual:") ||
-    isGroupKey(path)
-  );
 }
 
 /** 加载失败占位行的 key 前缀；整行是虚拟节点，点击重新加载对应目录。 */
@@ -1240,9 +1232,10 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     // Ctrl+Shift+C: 复制绝对路径
     if (action === 'CopyPaths') {
       e.preventDefault();
-      if (picked.length > 0) {
-        void navigator.clipboard.writeText(picked.join("\n"));
-      }
+      const entries = picked.map((path) => treeModel.byKey.get(normalizeNodeKey(path))?.entry)
+        .filter((entry): entry is FsEntry => !!entry);
+      const text = projectPathClipboardText("absolute", entries, root);
+      if (text) void navigator.clipboard.writeText(text);
       return;
     }
 

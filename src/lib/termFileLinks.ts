@@ -38,7 +38,9 @@ function decodeFileUri(path: string): string {
   if (!FILE_URI.test(path)) return path;
   try {
     const url = new URL(path);
-    return decodeURIComponent(url.pathname.replace(/^\/([A-Za-z]:\/)/, "$1"));
+    const decoded = decodeURIComponent(url.pathname.replace(/^\/([A-Za-z]:\/)/, "$1"));
+    // file://server/share 必须保留主机名，否则会被当成本机绝对路径或工程相对路径。
+    return url.hostname ? `//${url.hostname}${decoded}` : decoded;
   } catch {
     return path.slice("file://".length);
   }
@@ -65,7 +67,7 @@ function resolveCandidate(path: string, baseDir: string | null): string | null {
   if (OTHER_URI.test(path) && !FILE_URI.test(path)) return null;
   const decoded = decodeFileUri(path);
   if (!hasPathShape(decoded) || !hasFileNameShape(decoded)) return null;
-  if (WINDOWS_ABSOLUTE.test(decoded)) return decoded;
+  if (isWindowsPath(decoded)) return decoded;
   const windows = baseDir ? isWindowsPath(baseDir) : WINDOWS_ABSOLUTE.test(decoded);
   if (decoded.startsWith("/")) {
     if (!windows) return decoded;

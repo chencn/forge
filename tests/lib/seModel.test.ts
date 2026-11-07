@@ -136,6 +136,46 @@ describe("matchActions 动作档", () => {
 });
 
 describe("textItem 正文行", () => {
+  it.each([
+    {
+      snippet: "    😀 ai ai",
+      snippetFrom: 1,
+      ranges: [{ column: 7, length: 2 }, { column: 10, length: 2 }],
+      text: "  😀 ai ai",
+      matched: "aiai",
+    },
+    {
+      snippet: "    😀 ai",
+      snippetFrom: 1,
+      ranges: [{ column: 5, length: 1 }],
+      text: "  😀 ai",
+      matched: "😀",
+    },
+    {
+      snippet: "😀 ai ai",
+      snippetFrom: 21,
+      ranges: [{ column: 23, length: 2 }, { column: 26, length: 2 }],
+      text: "😀 ai ai",
+      matched: "aiai",
+    },
+    {
+      snippet: "😀 ai",
+      snippetFrom: 21,
+      ranges: [{ column: 19, length: 4 }, { column: 23, length: 10 }],
+      text: "😀 ai",
+      matched: "😀 ai",
+    },
+  ])("字符列正确转换为高亮组件使用的 UTF-16 下标：$snippet / $snippetFrom", (sample) => {
+    const item = textItem({
+      path: "D:/r/main.ts", name: "main.ts", container: "", line: 1,
+      snippet: sample.snippet, snippetFrom: sample.snippetFrom, ranges: sample.ranges,
+    });
+    expect(item.text).toBe(sample.text);
+    // 按公共组件的字符串下标取回命中，覆盖缩进、代理对和片段边界。
+    expect(item.indices.map((index) => item.text[index]).join("")).toBe(sample.matched);
+    expect(item.indices.every((index) => index >= 0 && index < item.text.length)).toBe(true);
+  });
+
   it("行首缩进最多留两个空格，命中下标跟着挪", () => {
     const hit: TextHit = {
       path: "D:/r/src/App.tsx",

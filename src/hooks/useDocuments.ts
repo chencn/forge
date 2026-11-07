@@ -261,6 +261,9 @@ export function useDocuments(
           return;
         }
         const content = await readFile(targetPath);
+        // 第一次修改之前就保留原版，否则首次保存后没有可回退的内容。
+        await recordSnapshot(ownerRoot, targetPath, { ...content, savedAt: Date.now(), event: "opened" })
+          .catch((cause) => reportError(errorText(cause)));
         const editorConfig = await loadEditorConfig(ownerRoot, targetPath);
         // svg 两样都要：正文给源码视图，指纹给图片视图做缓存失效。
         const stamp = previewsFromDisk(kind)
@@ -462,6 +465,10 @@ export function useDocuments(
 
       const task = (async () => {
         try {
+          if (doc.onDisk) {
+            await recordSnapshot(doc.root, path, { savedAt: Date.now(), contents: doc.baseline,
+              lineEnding: doc.lineEnding, hasBom: doc.hasBom, encoding: doc.encoding, event: "beforeSave" });
+          }
           // 乐观锁：把打开时认下的 mtime 交给后端，写之前一比。对不上就拒写、报 CONFLICT_ON_WRITE，
           // 交回三向合并，而不是静默覆盖磁盘上别处（AI 工具 / 别的编辑器 / git）改的那一份。
           const written = await writeFile(
@@ -493,13 +500,13 @@ export function useDocuments(
           // 认领这份磁盘现状：紧随其后的监听回声不必再 readFile 一遍。
           savedAtRef.current.set(canonicalPath(path), Date.now());
           // 顺手打一条本地历史：按刚写盘这份（正文、行尾、编码、BOM）留一份，供事后回滚。
-          void recordSnapshot(fresh.root, path, {
+          await recordSnapshot(fresh.root, path, {
             savedAt: written.modifiedMs || Date.now(),
             contents: written.contents,
             lineEnding: written.lineEnding,
             hasBom: written.hasBom,
             encoding: written.encoding,
-          });
+          }).catch((cause) => reportError(errorText(cause)));
           return true;
         } catch (cause) {
           const conflictInfo = parseSaveConflict(errorText(cause));
@@ -593,13 +600,13 @@ export function useDocuments(
           encoding: written.encoding,
         });
         savedAtRef.current.set(canonicalPath(path), Date.now());
-        void recordSnapshot(fresh.root, path, {
+        await recordSnapshot(fresh.root, path, {
           savedAt: written.modifiedMs || Date.now(),
           contents: written.contents,
           lineEnding: written.lineEnding,
           hasBom: written.hasBom,
           encoding: written.encoding,
-        });
+        }).catch((cause) => reportError(errorText(cause)));
         setConflict(null);
         return true;
       } catch (cause) {
@@ -705,6 +712,8 @@ export function useDocuments(
             }
           }
           const content = await readFile(doc.path);
+          await recordSnapshot(doc.root, doc.path, { ...content, savedAt: Date.now(), event: "external" })
+            .catch((cause) => reportError(errorText(cause)));
           // 读盘要跨一次 IPC，期间用户可能已经开始编辑：重读当前条目，
           // 不再干净（contents 与 baseline 有出入）就跳过重载，磁盘版本
           // 不能盖掉用户手里那份——快照时干净不代表此刻还干净。
@@ -748,7 +757,7 @@ export function useDocuments(
         }
       }
     },
-    [upsert]
+    [upsert, reportError]
   );
 
   const close = useCallback(

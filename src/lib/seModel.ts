@@ -108,6 +108,7 @@ export interface TextItem {
   endCol: number;
   /** 缩进折到最多两个空格的那一行。 */
   text: string;
+  /** UTF-16 下标，与公共 HighlightedText 及语法 token 的切片口径一致。 */
   indices: number[];
   /** 后端原样的一条命中，激活时要交给底部查找窗口。 */
   hit: TextHit;
@@ -218,11 +219,16 @@ export function textItem(hit: TextHit): TextItem {
   const indent = " ".repeat(Math.min(ws, 2));
   const lead = ws - indent.length;
   const text = indent + chars.slice(ws).join("").trimEnd();
+  // Rust 的列号按 Unicode 字符计数；浏览器切片按 UTF-16，代理对必须占两个下标。
+  const offsets = [0];
+  for (const char of chars) offsets.push(offsets[offsets.length - 1]! + char.length);
   const indices: number[] = [];
   for (const range of hit.ranges) {
     const from = Math.max(range.column - 1 - start, ws);
-    const to = Math.min(range.column - 1 - start + range.length, start + 1 + chars.length);
-    for (let i = from; i < to; i++) if (i - lead < text.length) indices.push(i - lead);
+    const to = Math.min(range.column - 1 - start + range.length, chars.length);
+    if (from >= to) continue;
+    const end = Math.min(offsets[to]! - lead, text.length);
+    for (let i = offsets[from]! - lead; i < end; i++) indices.push(i);
   }
   const first = hit.ranges[0];
   return {

@@ -155,7 +155,7 @@ const LOG_PAGE = 200;
 // --- 提交图渲染（对齐 openidea GitLog.tsx 的 GraphCell） ---
 
 /** 一行日志的高度，SVG 线段的纵向坐标全靠它；.log-commit 的行高与此钉死。 */
-const GRAPH_ROW = 24;
+const GRAPH_ROW = 22;
 /** 一个 lane 槽位的横向宽度。 */
 const GRAPH_LANE = 12;
 
@@ -398,11 +398,11 @@ function GitLogPane({
   /** 文件历史过滤：只列改到这个路径的提交；空表示不限。 */
   /** 收起来的分组，包括每个远端自己那一层；不在里面就是展开。 */
   const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set());
-  /** 三栏的宽度比，默认 2:4:3；拖哪条分隔条就只重分它左右两栏。 */
+  /** OpenIDEA 的 18/54/28 三栏比例；拖动只重分相邻两栏。 */
   const [weights, setWeights] = useState<Record<LogColumn, number>>({
-    refs: 2,
-    list: 4,
-    detail: 3,
+    refs: 1.8,
+    list: 5.4,
+    detail: 2.8,
   });
   /** 右栏底部那块提交信息，收起来只剩一行标题。 */
   const [infoClosed, setInfoClosed] = useState(false);
@@ -1868,6 +1868,7 @@ function GitLogPane({
               <span className="log-time">
                 {commitStamp(commit.authoredMs, locale, t("time.today"), t("time.yesterday"))}
               </span>
+              <span className="log-hash">{commit.short}</span>
             </button>
           ))}
           {/* 无限滚动的哨兵：进视口（含 120px 提前量）就续一页。 */}

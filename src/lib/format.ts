@@ -21,8 +21,9 @@ export function nativeSeparators(path: string): string {
 /** 拼子项路径，根（"C:\" 或 "/"）不会拼出重复分隔符。 */
 export function joinPath(dir: string, name: string): string {
   const sep = separator(dir);
-  if (dir.endsWith(sep)) return `${dir}${name}`;
-  return `${dir}${sep}${name}`;
+  // Windows 根可能来自 Git 的正斜杠路径，拼接后统一整条路径，避免混合分隔符。
+  const base = nativeSeparators(dir);
+  return nativeSeparators(`${base}${base.endsWith(sep) ? "" : sep}${name}`);
 }
 
 /** 用户填的落盘位置：已经是绝对路径就原样用，相对的按 base 拼。 */
@@ -38,7 +39,8 @@ export function resolvePath(base: string, input: string): string {
  */
 export function resolveRelative(baseDir: string, relative: string): string {
   const sep = separator(baseDir);
-  let built = baseDir.replace(/[\\/]+$/, "");
+  // 保留根分隔符：C:\ 的相对路径解析不能退化为依赖进程当前目录的 C:。
+  let built = nativeSeparators(baseDir);
   for (const part of relative.split(SEPARATOR_PATTERN)) {
     if (part === "" || part === ".") continue;
     if (part === "..") {
@@ -47,20 +49,20 @@ export function resolveRelative(baseDir: string, relative: string): string {
     }
     built = built.endsWith(sep) ? `${built}${part}` : `${built}${sep}${part}`;
   }
-  return built;
+  return built || sep;
 }
 
 /** 上一级目录；已在根时返回 null。兼容正反斜杠混用。 */
 export function parentPath(path: string): string | null {
-  const trimmed = path.replace(/[\\/]+$/, "");
+  const trimmed = nativeSeparators(path).replace(/[\\/]+$/, "");
   if (trimmed === "" || /^[A-Za-z]:[\\/]?$/.test(trimmed)) return null;
+  // UNC 的服务器和共享名共同组成根；不能退到服务器路径，更不能在根处循环。
+  if (trimmed.startsWith("\\\\") && trimmed.split("\\").filter(Boolean).length <= 2) return null;
   const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   if (index < 0) return null;
   const sep = trimmed[index];
   const head = trimmed.slice(0, index);
   if (head === "" || /^[A-Za-z]:$/.test(head)) return `${head}${sep}`;
-  // UNC 共享（\\server\share）本身算根，不再往上退。
-  if (head.startsWith("\\\\") || head.startsWith("//")) return head + sep;
   return head;
 }
 
@@ -114,7 +116,7 @@ function normPath(p: string): string {
   if (flat.length > 1 && flat.endsWith("/")) {
     flat = flat.replace(/\/+$/, "");
   }
-  return isWindowsPath(flat) ? flat.toLowerCase() : flat;
+  return isWindowsPath(p) ? flat.toLowerCase() : flat;
 }
 
 /**
@@ -146,6 +148,15 @@ export function pathWithin(ancestor: string, path: string): boolean {
   if (target === base) return true;
   const prefix = base.endsWith("/") ? base : `${base}/`;
   return target.startsWith(prefix);
+}
+
+/** 根目录内的相对路径，保留文件名大小写；根自身为空串，目录外返回 null。 */
+export function relativePathFrom(root: string, path: string): string | null {
+  if (samePath(root, path)) return "";
+  if (!pathWithin(root, path)) return null;
+  const base = root.replaceAll("\\", "/").replace(/\/+$/, "");
+  const target = path.replaceAll("\\", "/").replace(/\/+$/, "");
+  return target.slice(base.length + 1);
 }
 
 /**

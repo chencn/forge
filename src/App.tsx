@@ -13,6 +13,7 @@ import {
   FolderPlus,
   FileDiff,
   GitCommit,
+  History,
   ListTree,
   LocateFixed,
   Maximize2,
@@ -45,11 +46,13 @@ import {
   createScratchFile,
   type ProjectTreeNode,
 } from "./features/project-tree";
-import type { ClipboardState } from "./features/project-tree/model";
+import { projectPathClipboardText, type ClipboardState } from "./features/project-tree/model";
 import EntryIcon from "./components/EntryIcon";
 import EditorTabs from "./components/EditorTabs";
 import BrowserPanel from "./components/BrowserPanel";
 import type { TabItem, TabKind } from "./components/EditorTabs";
+import { captureHistory, recordSnapshot } from "./lib/localHistory";
+import { Dialog } from "./ui/Dialog";
 import AiSessionTabMenu from "./components/AiSessionTabMenu";
 import { createEditorSplit, partitionEditorTabs, relocateEditorTab, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
 import type { AiFilePreview } from "./lib/aiFilePreview";
@@ -235,12 +238,12 @@ import "./components/aiAssistants.css";
 const DocPane = lazy(() => import("./components/DocPane"));
 const DiffPane = lazy(() => import("./components/DiffPane"));
 const MergeConflictDialog = lazy(() => import("./components/MergeConflictDialog"));
-const LocalHistoryDialog = lazy(() => import("./components/LocalHistoryDialog"));
+const LocalHistoryEditor = lazy(() => import("./components/LocalHistoryEditor"));
 // 三方合并对话框静态依赖 lib/cmEditor：静态 import 会把整个 CodeMirror 拉进启动包，
 // 改成与其它对话框一致的懒加载，只有真正弹出时才加载。
 const TriMergeDialog = lazy(() => import("./components/TriMergeDialog"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
-const GitLogPane = lazy(() => import("./components/GitLogPane"));
+const GitHistoryTabs = lazy(() => import("./components/GitHistoryTabs"));
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
 const TerminalHost = lazy(() => import("./components/TerminalHost"));
 const RunPane = lazy(() => import("./components/RunPane"));
@@ -1026,13 +1029,13 @@ export default function App() {
     totalWidth: number;
     totalHeight: number;
   } | null>(null);
-  /** 本地历史时间线弹窗当前查看的文件 */
-  const [historyFile, setHistoryFile] = useState<{
-    path: string;
-    name: string;
-    language: string;
-    currentContent: string;
-  } | null>(null);
+  /** 历史页签按所属工作区隔离，重复打开只聚焦现有页签。 */
+  const [historyTabs, setHistoryTabs] = useState<{ root: string; path: string; id: string }[]>([]);
+  const [historyLabelPath, setHistoryLabelPath] = useState<string | null>(null);
+  const [historyWriteRequest, setHistoryWriteRequest] = useState<{ path: string; run: () => Promise<void> } | null>(null);
+  const [historyWriteBusy, setHistoryWriteBusy] = useState(false);
+  const [gitHistoryTabs, setGitHistoryTabs] = useState<Record<string, { paths: string[]; active: string }>>({});
+  const fileHistories = gitHistoryTabs[rootKey] ?? { paths: [], active: "" };
   /**
    * 日志的两处筛选状态提在这一层：分支弹层里的「与当前比较」和「显示与工作树的差异」
    * 也要改它们，改完顺手把日志窗口叫出来。
@@ -1613,6 +1616,13 @@ export default function App() {
 
       // 任何常驻根下的已打开文档都跟着感知外部修改（干净的自动重读，脏的标记磁盘变化）。
       if (workspacePaths.length > 0) {
+        // 未打开的文本也记录外部变化；目录事件由各文件事件处理，避免重复递归。
+        void (async () => {
+          for (const path of workspacePaths.slice(0, 500)) {
+            if (path.replace(/\\/g, "/").split("/").some((part) => ["node_modules", "target", ".git"].includes(part))) continue;
+            await captureHistory(changedRoot, path, "external");
+          }
+        })().catch((cause) => reportError(errorText(cause)));
         void docsRef.current.noteExternalChange(workspacePaths);
         // 构建脚本或顶层依赖目录变动时，通知依赖同步检测器（内部先经 O(1) 白名单过滤 + 600ms 防抖）。
         depSyncRef.current?.noteDiskChange(changedRoot, workspacePaths);
@@ -1665,7 +1675,7 @@ export default function App() {
         flushWorkspace(changedRoot, { workspacePaths, structuralPaths, gitPaths, bulk });
       }
     },
-    [flushWorkspace, isBulkInstallSession]
+    [flushWorkspace, isBulkInstallSession, reportError]
   );
 
   // 包管理/构建会话（npm install、cargo build 等）结束时，把安装期间按住的那批路径补刷掉。
@@ -2717,35 +2727,33 @@ export default function App() {
     setEditorSplit(null);
   }, [setEditorSplit]);
 
-  /** 查看某文件的本地历史快照。 */
+  /** 文件、目录及已删除路径均可直接打开，无需先把目录当文件读取。 */
   const showLocalHistory = useCallback((path: string) => {
     const openDoc = docs.documents.find((d) => samePath(d.path, path));
-    const name = path.split(/[\\/]/).pop() ?? path;
-    if (openDoc) {
-      setHistoryFile({
-        path,
-        name,
-        language: openDoc.language,
-        currentContent: openDoc.contents,
-      });
-    } else {
-      void readFile(path)
-        .then((fc) => {
-          setHistoryFile({
-            path,
-            name,
-            language: languageForPath(path, fc.contents),
-            currentContent: fc.contents,
-          });
-        })
-        .catch((cause: unknown) => reportError(errorText(cause)));
+    const root = openDoc?.root || workspaceRoot;
+    if (!root) return;
+    const id = historyTabs.find((tab) => samePath(tab.root, root) && samePath(tab.path, path))?.id ?? `history|${path}`;
+    setHistoryTabs((tabs) => tabs.some((tab) => samePath(tab.root, root) && samePath(tab.path, path)) ? tabs : [...tabs, { root, path, id }]);
+    setActiveTab(id);
+  }, [docs.documents, workspaceRoot, historyTabs]);
+
+  const putLocalHistoryLabel = useCallback((path: string) => {
+    showLocalHistory(path); setHistoryLabelPath(path);
+  }, [showLocalHistory]);
+
+  const preserveHistoryEditors = useCallback(async (paths: string[]) => {
+    for (const doc of docsRef.current.documents) {
+      if (doc.loading || !paths.some((path) => samePath(path, doc.path)) || doc.contents === doc.baseline) continue;
+      await recordSnapshot(doc.root, doc.path, { ...doc, savedAt: Date.now(), event: "beforeRestore" });
     }
-  }, [docs.documents, reportError]);
+  }, []);
 
   const onLocalHistoryRestored = useCallback((fc: FileContent) => {
     docs.applyDiskVersion(fc.path, fc);
+    refreshTree();
+    void git.refreshChanges();
     pushUpdateNotice("info", t("menu.localHistory"), t("history.reverted"));
-  }, [docs, pushUpdateNotice, t]);
+  }, [docs, pushUpdateNotice, t, refreshTree, git.refreshChanges]);
 
   const closeDocTab = useCallback(
     (path: string) => {
@@ -2934,12 +2942,18 @@ export default function App() {
   /** 把某个版本下的文件写回工作区，目录树和开着的文档都跟着重读。 */
   const writeBack = useCallback(
     async (revision: string, absolute: string) => {
-      const done = await git.restoreFile(revision, absolute);
-      if (!done) return;
-      refreshTree();
-      void docs.noteExternalChange([absolute]);
+      setHistoryWriteRequest({ path: absolute, run: async () => {
+        await preserveHistoryEditors([absolute]);
+        if (git.root) await captureHistory(workspaceRoot ?? git.root, absolute, "beforeRestore");
+        const done = await git.restoreFile(revision, absolute);
+        if (!done) throw new Error(t("history.restoreFailed"));
+        if (hasTextContent(docKindOf(absolute))) docsRef.current.applyDiskVersion(absolute, await readFile(absolute));
+        else await docsRef.current.noteExternalChange([absolute]);
+        if (git.root) await captureHistory(workspaceRoot ?? git.root, absolute, "restored");
+        refreshTree();
+      } });
     },
-    [docs.noteExternalChange, git.restoreFile, refreshTree]
+    [preserveHistoryEditors, git.root, git.restoreFile, refreshTree, workspaceRoot, t]
   );
 
   /** 日志里双击一个文件：把这次提交前后的两份内容开到标签页里比对；`fresh` 为真时另开一个标签。 */
@@ -3078,9 +3092,17 @@ export default function App() {
           break;
         }
         case "revert":
-          // 撤销那次改动＝把这条提交的父版写回工作区；只动工作区，索引留着不动，
-          // 人还能用「全部取消暂存」那条路退回去。
-          if (parent) void writeBack(parent, absolute);
+          // 反向应用这一条提交的补丁，保留后来提交中的其它更改；冲突交给 Git 拒绝。
+          setHistoryWriteRequest({ path: absolute, run: async () => {
+            await preserveHistoryEditors([absolute]);
+            if (docsRef.current.dirty(absolute) && !await docsRef.current.save(absolute)) throw new Error(t("history.restoreFailed"));
+            await captureHistory(workspaceRoot ?? root, absolute, "beforeRestore");
+            const patch = await gitDiffText(root, parent || EMPTY_TREE_HASH, commit.hash, file.path, file.oldPath);
+            if (patch) await gitApplyPatch(root, patch, false, true);
+            if (hasTextContent(docKindOf(absolute))) await docsRef.current.noteExternalChange([absolute]);
+            await captureHistory(workspaceRoot ?? root, absolute, "restored");
+            refreshTree(); void git.refreshChanges();
+          } });
           break;
         case "getFromRevision":
           void writeBack(commit.hash, absolute);
@@ -3110,6 +3132,8 @@ export default function App() {
       reportError,
       workspaceRoot,
       writeBack,
+      preserveHistoryEditors,
+      t,
     ]
   );
 
@@ -3451,15 +3475,22 @@ export default function App() {
     });
   }, []);
 
-  /** 把日志叫出来并筛到这一条路径上；提交树和目录树两处历史记录走的是同一句。 */
+  /** 文件历史独立持有筛选条件，不能污染主日志。 */
   const showFileHistory = useCallback(
     (relative: string) => {
-      setLogPath(relative);
+      setGitHistoryTabs((tabs) => {
+        const current = tabs[rootKey] ?? { paths: [], active: "" };
+        return { ...tabs, [rootKey]: { paths: current.paths.includes(relative) ? current.paths : [...current.paths, relative], active: relative } };
+      });
       if (places.log === "hidden") dockPane("log");
       else if (places.log === "tabbed") setActiveTab("pane|log");
     },
-    [dockPane, places.log]
+    [dockPane, places.log, rootKey]
   );
+
+  const showEditorGitHistory = useCallback((path: string) => {
+    if (git.root && pathWithin(git.root, path)) showFileHistory(repoRelative(path));
+  }, [git.root, repoRelative, showFileHistory]);
 
   /**
    * 提交树文件或目录菜单里要动编辑器、对话框或日志的动作。
@@ -3694,21 +3725,8 @@ export default function App() {
         onCut: (entries) => copyPicked(entries, true),
         onCopy: (entries) => copyPicked(entries, false),
         onCopyPath: (type, entries) => {
-          let text = "";
-          if (type === "name") {
-            text = entries.map((e) => e.name).join("\n");
-          } else if (type === "relative" && workspaceRoot) {
-            const prefix = workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
-            text = entries
-              .map((e) => {
-                const p = e.path.replaceAll("\\", "/");
-                return p.startsWith(prefix) ? p.slice(prefix.length + 1) : p;
-              })
-              .join("\n");
-          } else {
-            text = entries.map((e) => e.path).join("\n");
-          }
-          void navigator.clipboard.writeText(text);
+          const text = projectPathClipboardText(type, entries, workspaceRoot);
+          if (text) void navigator.clipboard.writeText(text);
         },
         onPaste: (targetDir) => void pasteInto(targetDir),
         onOpenFile: (entry) => openFile(entry),
@@ -3734,6 +3752,7 @@ export default function App() {
         onReplaceInFiles: (targetDir) =>
           openEverywhere("text", selectedText(), targetDir, true),
         onLocalHistory: (path) => showLocalHistory(path),
+        onPutHistoryLabel: putLocalHistoryLabel,
         onReload: () => {
           refreshTree();
           void git.refresh();
@@ -3774,6 +3793,7 @@ export default function App() {
       selectedText,
       showFileHistory,
       showLocalHistory,
+      putLocalHistoryLabel,
       systemClipboardPaths,
       t,
       workspaceRoot,
@@ -3963,6 +3983,11 @@ export default function App() {
             total: targets.length,
             modalVisible: prev?.modalVisible ?? showModalImmediately,
           }));
+          // 删除前保存目录内的文本；恢复不再依赖原路径仍然存在。
+          if (workspaceRoot) {
+            await preserveHistoryEditors(docsRef.current.documents.filter((doc) => samePath(target, doc.path) || pathWithin(target, doc.path)).map((doc) => doc.path));
+            await captureHistory(workspaceRoot, target, "deleted");
+          }
           await deleteEntry(target);
           deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
           dropDocument(target);
@@ -4003,7 +4028,7 @@ export default function App() {
         }, 2400);
       }
     },
-    [deleteEntry, dropDocument, explorerPick, git.refreshChanges, refreshTree]
+    [deleteEntry, dropDocument, explorerPick, git.refreshChanges, refreshTree, workspaceRoot, preserveHistoryEditors]
   );
 
   const submitDialog = useCallback(
@@ -4215,6 +4240,10 @@ export default function App() {
       title: preview.path, filePath: preview.path, dirty: false,
       icon: <FileDiff size={13} className="entry-icon" aria-hidden="true" />,
     })),
+    ...historyTabs.filter((tab) => samePath(tab.root, workspaceRoot ?? "")).map((tab) => ({
+      id: tab.id, kind: "history" as const, name: t("history.title", { name: basenameOf(tab.path) }),
+      title: tab.path, filePath: tab.path, dirty: false, icon: <History size={13} className="entry-icon" aria-hidden="true" />,
+    })),
     ...BOTTOM_ORDER.filter((key) => places[key] === "tabbed").map((key) => ({
       id: `pane|${key}`,
       kind: "pane" as const,
@@ -4275,7 +4304,7 @@ export default function App() {
         ]
       : []),
     ],
-    [agentOrderVersion, aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], diffs, places, runConfigsTab, settingsTab, t, visibleDocs]
+    [agentOrderVersion, aiFilePreviews, aiSessions.sessions, aiSessions.openIds, aiDraftOpen[rootKey], diffs, historyTabs, workspaceRoot, places, runConfigsTab, settingsTab, t, visibleDocs]
   );
 
   // 栏上有哪些标签由上面那份目录说，排在哪儿由 tabOrder 说：新开一颗落在当前这颗右边，拖动改这个数组。
@@ -4423,6 +4452,7 @@ export default function App() {
         const key = rootKeyRef.current;
         setAiFilePreviewsByRoot((current) => ({ ...current, [key]: (current[key] ?? []).filter((preview) => preview.id !== id.slice(8)) }));
       }
+      else if (kind === "history") setHistoryTabs((tabs) => tabs.filter((tab) => tab.id !== id || !samePath(tab.root, workspaceRoot ?? "")));
       else if (kind === "doc") closeDocTab(id.slice(4));
       else if (kind === "diff") closeDiff(id.slice(5));
       else if (kind === "pane") hidePane(id.slice(5) as BottomPane);
@@ -4432,7 +4462,7 @@ export default function App() {
       else if (id === "run-configs") setRunConfigsTab(false);
       else setSettingsTab(false);
     },
-    [closeDiff, closeDocTab, hidePane, dispatchAiSession, aiLifecycle.closeSession]
+    [closeDiff, closeDocTab, hidePane, dispatchAiSession, aiLifecycle.closeSession, workspaceRoot]
   );
 
   /**
@@ -4446,6 +4476,7 @@ export default function App() {
           const key = rootKeyRef.current;
           setAiFilePreviewsByRoot((current) => ({ ...current, [key]: (current[key] ?? []).filter((preview) => preview.id !== tab.id.slice(8)) }));
         }
+        else if (tab.kind === "history") setHistoryTabs((tabs) => tabs.filter((item) => item.id !== tab.id || !samePath(item.root, workspaceRoot ?? "")));
         else if (tab.kind === "pane") hidePane(tab.id.slice(5) as BottomPane);
         else if (tab.id === "ai|draft") setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: false }));
         else if (tab.kind === "ai") aiLifecycle.closeSession(tab.id.slice(3), () => dispatchAiSession({ type: "close", id: tab.id.slice(3) }));
@@ -4456,7 +4487,7 @@ export default function App() {
       }
       closeBatch(list.filter((tab) => tab.kind === "doc").map((tab) => tab.id.slice(4)));
     },
-    [closeBatch, closeDiff, hidePane, dispatchAiSession, aiLifecycle.closeSession]
+    [closeBatch, closeDiff, hidePane, dispatchAiSession, aiLifecycle.closeSession, workspaceRoot]
   );
 
   const closeOtherTabs = useCallback(
@@ -4658,7 +4689,7 @@ export default function App() {
         label: `${t("menu.copyPath")} (Copy Path)`,
         run: () => {
           const target = docs.activePath ?? workspaceRoot;
-          if (target) void navigator.clipboard.writeText(target);
+          if (target) void navigator.clipboard.writeText(nativeSeparators(target));
         },
       },
       {
@@ -4667,6 +4698,11 @@ export default function App() {
         run: () => {
           if (docs.activePath) showLocalHistory(docs.activePath);
         },
+      },
+      {
+        id: "file.putHistoryLabel",
+        label: `${t("menu.localHistory")}: ${t("history.putLabel")}`,
+        run: () => { const path = docs.activePath ?? workspaceRoot; if (path) putLocalHistoryLabel(path); },
       },
 
       // 编辑菜单 (Edit)
@@ -4918,6 +4954,7 @@ export default function App() {
     setSidebarOpen,
     settings.editor,
     showLocalHistory,
+    putLocalHistoryLabel,
     splitEditor,
     stopAllRuns,
     t,
@@ -5006,8 +5043,12 @@ export default function App() {
     ) : key === "notifications" ? (
       <NotificationsToolWindow isOpen={places.notifications !== "hidden"} />
     ) : (
-      <GitLogPane
+      <GitHistoryTabs
         key={workspaceRoot ?? ""}
+        historyPaths={fileHistories.paths}
+        activeHistory={fileHistories.active}
+        onSelectHistory={(active) => setGitHistoryTabs((tabs) => ({ ...tabs, [rootKey]: { ...fileHistories, active } }))}
+        onCloseHistory={(path) => setGitHistoryTabs((tabs) => ({ ...tabs, [rootKey]: { paths: fileHistories.paths.filter((item) => item !== path), active: fileHistories.active === path ? "" : fileHistories.active } }))}
         git={git}
         reportError={reportError}
         onFileAction={logFileAction}
@@ -5110,6 +5151,7 @@ export default function App() {
 
   /** 两栏只按各自的活动标签渲染；所有标签类型共用这一条分派链。 */
   const editorSurface = (id: string | null) => {
+    const historyTab = historyTabs.find((tab) => tab.id === id && samePath(tab.root, workspaceRoot ?? ""));
     const preview = id?.startsWith("ai-file|") ? aiFilePreviews.find((item) => item.id === id.slice(8)) : null;
     const activeDiffTab = id?.startsWith("diff|") ? diffs.find((tab) => tab.id === id.slice(5)) : null;
     const activeDoc = id?.startsWith("doc|") ? visibleDocs.find((doc) => samePath(doc.path, id.slice(4))) : null;
@@ -5157,6 +5199,11 @@ export default function App() {
               : undefined
           }
         />
+      ) : historyTab ? (
+        <LocalHistoryEditor key={`${historyTab.root}:${historyTab.path}`} root={historyTab.root} path={historyTab.path}
+          documents={docs.documents} beforeRestore={preserveHistoryEditors}
+          onRestored={onLocalHistoryRestored} labelRequested={historyLabelPath === historyTab.path}
+          onLabelHandled={() => setHistoryLabelPath(null)} />
       ) : activePane && places[activePane] === "tabbed" ? (
         paneFrame(activePane, false)
       ) : id === "run-configs" ? (
@@ -5918,6 +5965,7 @@ export default function App() {
             onAction={branchAction}
             onRefAction={refAction}
             onRefInspect={(target, mode) => {
+              setGitHistoryTabs((tabs) => ({ ...tabs, [rootKey]: { ...(tabs[rootKey] ?? { paths: [] }), active: "" } }));
               /* IDEA 这两项都是把日志叫出来并落好筛选条件。 */
               const current = git.status?.branch ?? "";
               if (mode === "compare") setLogReference(`${current}..${target.name}`);
@@ -6221,6 +6269,8 @@ export default function App() {
                       onCloseSplit={closeSplit}
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
+                      onPutHistoryLabel={putLocalHistoryLabel}
+                      onShowGitHistory={git.root ? showEditorGitHistory : undefined}
                       actions={renderTabActions(primaryTab)}
                       onContextMenuItems={renderTabContextMenuItems}
                     />
@@ -6294,6 +6344,8 @@ export default function App() {
                       onCloseSplit={closeSplit}
                       isSplit={true}
                       onShowLocalHistory={showLocalHistory}
+                      onPutHistoryLabel={putLocalHistoryLabel}
+                      onShowGitHistory={git.root ? showEditorGitHistory : undefined}
                       actions={renderTabActions(secondaryTab)}
                       onContextMenuItems={renderTabContextMenuItems}
                     />
@@ -6324,6 +6376,8 @@ export default function App() {
                     onSplitRight={(id) => splitEditor(id, "horizontal")}
                     onSplitDown={(id) => splitEditor(id, "vertical")}
                     onShowLocalHistory={showLocalHistory}
+                    onPutHistoryLabel={putLocalHistoryLabel}
+                    onShowGitHistory={git.root ? showEditorGitHistory : undefined}
                     actions={renderTabActions(activeTab)}
                     onContextMenuItems={renderTabContextMenuItems}
                   />
@@ -6766,6 +6820,17 @@ export default function App() {
           />
         </Suspense>
       ) : null}
+      <Dialog open={historyWriteRequest !== null} title={t("history.revert")} onClose={() => { if (!historyWriteBusy) setHistoryWriteRequest(null); }} buttons={[
+        { label: t("history.revert"), role: "default", disabled: historyWriteBusy, onClick: () => {
+          if (!historyWriteRequest || historyWriteBusy) return;
+          setHistoryWriteBusy(true);
+          void historyWriteRequest.run().then(() => setHistoryWriteRequest(null))
+            .catch((cause) => reportError(errorText(cause))).finally(() => setHistoryWriteBusy(false));
+        } },
+        { label: t("dialog.cancel"), role: "cancel", disabled: historyWriteBusy },
+      ]}>
+        <p>{t("history.confirmRestore", { count: 1 })}</p><p>{historyWriteRequest?.path}</p>
+      </Dialog>
       {/* 保存撞上「磁盘被别处改过」时开这一层：本地 / 磁盘两份对着共同祖先摆，底下结果格可编辑。 */}
       {docs.conflict ? (
         <Suspense fallback={null}>
@@ -6775,20 +6840,6 @@ export default function App() {
             onAcceptDisk={(disk) => docs.applyDiskVersion(docs.conflict!.path, disk)}
             onResolve={(result, disk) => void docs.resolveConflict(docs.conflict!.path, result, disk)}
             onCancel={docs.dismissConflict}
-          />
-        </Suspense>
-      ) : null}
-      {/* 本地历史时间线对话框 */}
-      {historyFile && workspaceRoot ? (
-        <Suspense fallback={null}>
-          <LocalHistoryDialog
-            root={workspaceRoot}
-            path={historyFile.path}
-            name={historyFile.name}
-            language={historyFile.language}
-            currentContent={historyFile.currentContent}
-            onRestored={onLocalHistoryRestored}
-            onClose={() => setHistoryFile(null)}
           />
         </Suspense>
       ) : null}

@@ -6,7 +6,7 @@ import { RUN_KIND_ORDER, RunConfigIcon, runKindLabel } from "../lib/runIcons";
 import { configLabel, newShellConfig, resolveCommand } from "../lib/runConfigs";
 import type { EnvVar, RunConfiguration, RunKind } from "../lib/runConfigs";
 import type { RunConfigController } from "../hooks/useRunConfigs";
-import { basenameOf, joinPath } from "../lib/format";
+import { basenameOf, relativePathFrom, resolvePath } from "../lib/format";
 import { useI18n } from "../i18n";
 
 interface RunConfigsPageProps {
@@ -72,13 +72,11 @@ export default function RunConfigsPage({ configs }: RunConfigsPageProps) {
     const pickedDir = await open({
       directory: true,
       title: t("run.workingDir"),
-      defaultPath: current.workingDir ? joinPath(configs.workspace, current.workingDir) : configs.workspace,
+      defaultPath: current.workingDir ? resolvePath(configs.workspace, current.workingDir) : configs.workspace,
     });
     if (typeof pickedDir !== "string") return;
-    // 存的是相对工程根的写法：整棵目录挪盘子，配置不用跟着改。
-    const relative = pickedDir.startsWith(configs.workspace)
-      ? pickedDir.slice(configs.workspace.length).replace(/^[\\/]/, "")
-      : pickedDir;
+    // 工程内存相对路径，工程外保留绝对路径；同名前缀目录不能误判为子目录。
+    const relative = relativePathFrom(configs.workspace, pickedDir) ?? pickedDir;
     commit({ ...current, workingDir: relative });
   };
 

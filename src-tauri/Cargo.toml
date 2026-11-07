@@ -2,12 +2,16 @@
 members = [".", "crates/forge-shell-cmd", "crates/forge-shell-ext", "crates/forge-browser"]
 resolver = "2"
 
+[workspace.package]
+# 主程序和浏览器 MCP 的握手版本必须来自同一处，避免本地打包后静默禁用浏览器。
+version = "1.1.3"
+
 [package]
 name = "forge"
 # Tauri dev 使用 cargo run；原生回归入口必须通过 --bin 显式选择。
 default-run = "forge"
 # 本地版本与前端、Tauri 配置保持同步；发布构建由 CI 使用 tag 覆盖。
-version = "1.1.3"
+version.workspace = true
 description = "Forge - Tauri desktop app"
 edition = "2021"
 rust-version = "1.80"

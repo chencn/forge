@@ -17,7 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 /// 撞同一个文件还是一次随机的「另一个程序正在使用此文件」。锁只盖改动，读（列目录、读文件）
 /// 照常并行。守卫一律取在命令那层的闭包里，不在 `*_impl` 里取——`move_entry_impl` 会转调
 /// `delete_entry_impl`，两处都取就是同线程重入死锁。
-fn fs_write_lock() -> MutexGuard<'static, ()> {
+pub(crate) fn fs_write_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
@@ -354,7 +354,7 @@ pub async fn read_file(path: String) -> Result<FileContent, String> {
     block(move || read_file_impl(path)).await
 }
 
-fn read_file_impl(path: String) -> Result<FileContent, String> {
+pub(crate) fn read_file_impl(path: String) -> Result<FileContent, String> {
     let meta = fs::metadata(&path).map_err(|e| io_err(&path, e))?;
     if meta.is_dir() {
         return Err(err("IS_DIR", &path));
@@ -436,7 +436,7 @@ pub(crate) fn write_file_locked_impl(
 }
 
 /// 实际原子写入实现。调用者必须先取得 [`fs_write_lock`]。
-fn write_file_impl(
+pub(crate) fn write_file_impl(
     path: String,
     contents: String,
     line_ending: Option<String>,
@@ -512,7 +512,7 @@ fn write_file_impl(
 /// 符号链接——恶意仓库预置 `.foo.txt.forge-tmp → ~/.ssh/id_rsa` 一类的链接，保存就把
 /// 用户文件写了进去。类 unix 上还把原文件的权限位抄给临时文件，rename 替换后
 /// 可执行位（`deploy.sh`、带 shebang 的脚本）不静默丢失。
-fn write_bytes_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_bytes_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let temp = target.with_file_name(format!(".{name}.forge-tmp"));
     #[cfg(unix)]

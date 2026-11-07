@@ -1,7 +1,7 @@
 [package]
 name = "forge-browser"
-# 与主应用版本保持同步
-version = "1.1.2"
+# 直接继承主应用的发布版本，不再手动维护第二份握手版本号。
+version.workspace = true
 edition = "2021"
 
 [[bin]]

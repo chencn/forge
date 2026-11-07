@@ -122,14 +122,27 @@ fn decode(attrs: Option<u32>) -> EntryFlags {
 }
 
 pub fn reveal(path: &Path) -> Result<(), String> {
+    let metadata = path.metadata().map_err(|e| io_err(&path.to_string_lossy(), e))?;
+    // Explorer 不识别混合分隔符和扩展路径前缀；保留链接路径，不解析为链接目标。
+    let absolute = std::path::absolute(path).map_err(|e| io_err(&path.to_string_lossy(), e))?;
+    let normalized = absolute.to_string_lossy().replace('/', "\\");
+    let target = if let Some(unc) = normalized.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", unc)
+    } else {
+        normalized.strip_prefix(r"\\?\").unwrap_or(&normalized).to_string()
+    };
+    // 目录直接进入；其他调用方仍可通过文件路径在父目录中定位文件。
+    if metadata.is_dir() {
+        return open_external(&target);
+    }
     Command::new("explorer")
-        .arg(format!("/select,{}", path.to_string_lossy()))
+        .arg(format!("/select,{}", target))
         .spawn()
         .map(|_| ())
         .map_err(|e| io_err(&path.to_string_lossy(), e))
 }
 
-/// 用系统默认程序打开一个 URL。
+/// 用系统默认程序打开 URL 或本地路径。
 ///
 /// 走 ShellExecuteW 而不是 `cmd /C start`：cmd 会二次解析命令行，URL 里一个 `&`
 /// 就能把后面的内容当成新命令执行（markdown 里的链接是外部输入，不能当可信文本）。

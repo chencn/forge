@@ -4,7 +4,7 @@ import { procKill, procStart } from "../lib/proc";
 import type { ProcChunk, ProcExit, ProcSessionId } from "../lib/proc";
 import { configLabel, ensureHelper, missingTool, resolveCommand } from "../lib/runConfigs";
 import type { RunConfiguration } from "../lib/runConfigs";
-import { joinPath, samePath } from "../lib/format";
+import { resolvePath, samePath } from "../lib/format";
 import { ChunkBuffer } from "../lib/chunkBuffer";
 import { decodeChunk } from "../lib/term";
 import { formatStamp, stampBytes } from "../lib/runStamps";
@@ -231,7 +231,8 @@ export function useRunSessions(configs: RunConfigController) {
       const effectiveReplaceId = replaceId ?? existingSameConfig[0]?.id ?? null;
 
       const command = resolveCommand(config.command, configs.tools);
-      const dir = config.workingDir ? joinPath(targetRoot, config.workingDir) : targetRoot;
+      // 用户配置允许绝对工作目录，只有相对目录才拼工程根。
+      const dir = config.workingDir ? resolvePath(targetRoot, config.workingDir) : targetRoot;
       void (async () => {
         if (config.helper) await ensureHelper(config.helper);
         return procStart(dir, command, config.env);

@@ -25,8 +25,9 @@ import { flatMenu } from "../../components/ContextMenu";
 import type { FsEntry } from "../../lib/fs";
 import type { GitChange } from "../../lib/git";
 import { SCRATCH_LANGUAGES, type ScratchLanguage } from "./scratches";
-import type { ProjectTreeNode } from "./model";
+import { isVirtualPath, type ProjectTreeNode } from "./model";
 import type { ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
+import { parentPath } from "../../lib/format";
 
 export interface GitMenuHandlers {
   readonly root: string | null;
@@ -76,6 +77,7 @@ export interface ProjectMenuContext {
   readonly onFindInFiles?: (dir: string) => void;
   readonly onReplaceInFiles?: (dir: string) => void;
   readonly onLocalHistory?: (path: string) => void;
+  readonly onPutHistoryLabel?: (path: string) => void;
   readonly onReload?: () => void;
   readonly onCompareWith?: (entry: FsEntry) => void;
   readonly onCompareFiles?: (entries: FsEntry[]) => void;
@@ -83,14 +85,12 @@ export interface ProjectMenuContext {
   readonly onAiInput?: (entry: FsEntry) => void;
 }
 
-/** 规范取目录：如果是目录取自身，如果是文件取其所在父目录，空白处取工程根 */
+/** 与 App 的粘贴目标一致：单选目录取自身，多选取最后一个主条目的父目录。 */
 function resolveTargetDirectory(nodes: readonly ProjectTreeNode[], fallbackRoot: string): string {
   if (nodes.length === 0) return fallbackRoot;
-  const lead = nodes[0];
-  if (lead.entry.kind === "directory") return lead.entry.path;
-  const p = lead.entry.path.replaceAll("\\", "/");
-  const idx = p.lastIndexOf("/");
-  return idx > 0 ? p.slice(0, idx) : fallbackRoot;
+  const lead = nodes[nodes.length - 1];
+  if (nodes.length === 1 && lead.entry.kind === "directory") return lead.entry.path;
+  return parentPath(lead.entry.path) ?? fallbackRoot;
 }
 
 /**
@@ -107,6 +107,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   } = ctx;
 
   const entries = selection.map((n) => n.entry);
+  const physicalEntries = entries.filter((entry) => !isVirtualPath(entry.path));
   const files = entries.filter((e) => e.kind !== "directory");
   const singleNode = selection.length === 1 ? selection[0] : null;
   const singleEntry = singleNode ? singleNode.entry : null;
@@ -187,8 +188,8 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     {
       label: t("project.view.copyAbsolutePath"),
       shortcut: `${modKey}+Shift+C`,
-      disabled: !hasSelection,
-      onSelect: () => ctx.onCopyPath?.("absolute", entries),
+      disabled: physicalEntries.length === 0,
+      onSelect: () => ctx.onCopyPath?.("absolute", physicalEntries),
     },
     {
       label: t("project.view.copyFileName"),
@@ -197,8 +198,8 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     },
     {
       label: t("project.view.copyRelativePath"),
-      disabled: !hasSelection,
-      onSelect: () => ctx.onCopyPath?.("relative", entries),
+      disabled: physicalEntries.length === 0,
+      onSelect: () => ctx.onCopyPath?.("relative", physicalEntries),
     },
   ];
 
@@ -276,17 +277,19 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   ]);
 
   // Group 6: Open In › (Terminal, Explorer)
-  const openInSubmenu: MenuItem[] = [
-    {
+  const openInSubmenu: MenuItem[] = [];
+  // 只对单选物理目录提供入口，文件和虚拟分组不交给系统文件管理器。
+  if (singleDir && !isVirtualPath(singleDir.path)) {
+    openInSubmenu.push({
       label: t("project.view.systemExplorer"),
-      onSelect: () => singleEntry && ctx.onReveal?.(singleEntry.path),
-    },
-    {
-      label: t("project.view.terminal"),
-      shortcut: "Alt+F12",
-      onSelect: () => ctx.onOpenTerminal?.(targetDir),
-    },
-  ];
+      onSelect: () => ctx.onReveal?.(singleDir.path),
+    });
+  }
+  openInSubmenu.push({
+    label: t("project.view.terminal"),
+    shortcut: "Alt+F12",
+    onSelect: () => ctx.onOpenTerminal?.(targetDir),
+  });
   groups.push([{ label: t("project.view.openIn"), children: openInSubmenu }]);
 
   // Group 7: Local History / Reload from Disk
@@ -299,6 +302,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
           label: t("project.view.showHistory"),
           onSelect: () => ctx.onLocalHistory?.(singleEntry.path),
         },
+        ...(ctx.onPutHistoryLabel ? [{ label: t("history.putLabel"), onSelect: () => ctx.onPutHistoryLabel?.(singleEntry.path) }] : []),
       ],
     });
   }
@@ -446,6 +450,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
 function buildExternalLibraryContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   const { selection, modKey = "Ctrl", t = (k: string) => k } = ctx;
   const entries = selection.map((n) => n.entry);
+  const physicalEntries = entries.filter((entry) => !isVirtualPath(entry.path));
   const single = entries.length === 1 ? entries[0] : null;
   const targetDir = resolveTargetDirectory(selection, ctx.workspaceRoot);
 
@@ -464,7 +469,8 @@ function buildExternalLibraryContextMenu(ctx: ProjectMenuContext): MenuItem[] {
         {
           label: t("project.view.copyAbsolutePath"),
           shortcut: `${modKey}+Shift+C`,
-          onSelect: () => ctx.onCopyPath?.("absolute", entries),
+          disabled: physicalEntries.length === 0,
+          onSelect: () => ctx.onCopyPath?.("absolute", physicalEntries),
         },
         {
           label: t("project.view.copyFileName"),
@@ -482,7 +488,7 @@ function buildExternalLibraryContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     },
   ]);
 
-  if (single) {
+  if (single?.kind === "directory" && !isVirtualPath(single.path)) {
     groups.push([
       {
         label: t("project.view.openIn"),
@@ -505,6 +511,7 @@ function buildExternalLibraryContextMenu(ctx: ProjectMenuContext): MenuItem[] {
 function buildScratchesContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   const { selection, modKey = "Ctrl", t = (k: string) => k } = ctx;
   const entries = selection.map((n) => n.entry);
+  const physicalEntries = entries.filter((entry) => !isVirtualPath(entry.path));
   const single = entries.length === 1 ? entries[0] : null;
   const targetDir = resolveTargetDirectory(selection, ctx.workspaceRoot);
 
@@ -540,8 +547,8 @@ function buildScratchesContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     {
       label: t("project.view.copyPath"),
       shortcut: `${modKey}+Shift+C`,
-      disabled: !single,
-      onSelect: () => ctx.onCopyPath?.("absolute", entries),
+      disabled: physicalEntries.length === 0,
+      onSelect: () => ctx.onCopyPath?.("absolute", physicalEntries),
     },
     {
       label: t("project.view.paste"),
@@ -569,21 +576,23 @@ function buildScratchesContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   }
 
   // Open In
-  groups.push([
-    {
+  const openInGroup: MenuItem[] = [];
+  if (single?.kind === "directory" && !isVirtualPath(single.path)) {
+    openInGroup.push({
       label: t("project.view.openIn"),
       children: [
         {
           label: t("project.view.systemExplorer"),
-          onSelect: () => single && ctx.onReveal?.(single.path),
+          onSelect: () => ctx.onReveal?.(single.path),
         },
       ],
-    },
-    {
-      label: t("project.view.reloadFromDisk"),
-      onSelect: () => ctx.onReload?.(),
-    },
-  ]);
+    });
+  }
+  openInGroup.push({
+    label: t("project.view.reloadFromDisk"),
+    onSelect: () => ctx.onReload?.(),
+  });
+  groups.push(openInGroup);
 
   return flatMenu(groups);
 }

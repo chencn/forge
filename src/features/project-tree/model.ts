@@ -9,6 +9,7 @@
 
 import type { FsEntry } from "../../lib/fs";
 import type { ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
+import { nativeSeparators, relativePathFrom } from "../../lib/format";
 
 export type ProjectNodeDomain = "project" | "libraries" | "scratches";
 
@@ -77,6 +78,27 @@ export const LIB_SEP = "\u0000";
 
 export const isGroupKey = (key: string): boolean => key.startsWith(GROUP_PREFIX);
 export const isLibKey = (key: string): boolean => key.startsWith(LIB_PREFIX);
+
+/** 虚拟分组不对应磁盘路径，不能交给原生文件系统或系统文件管理器。 */
+export function isVirtualPath(path: string): boolean {
+  return path.startsWith("__") || path.startsWith("\u0000") || path.startsWith("virtual:");
+}
+
+/** 菜单和快捷键复制同一份物理路径；虚拟分组标识不能进入系统剪贴板。 */
+export function projectPathClipboardText(
+  type: "absolute" | "name" | "relative",
+  entries: readonly FsEntry[],
+  root?: string | null,
+): string {
+  return entries.filter((entry) => !isVirtualPath(entry.path)).map((entry) => {
+    if (type === "name") return entry.name;
+    if (type === "relative" && root) {
+      const relative = relativePathFrom(root, entry.path);
+      if (relative !== null) return relative || ".";
+    }
+    return nativeSeparators(entry.path);
+  }).join("\n");
+}
 
 export const libKey = (group: string, path: string): string =>
   `${LIB_PREFIX}${group}${LIB_SEP}${normalizePathKey(path)}`;

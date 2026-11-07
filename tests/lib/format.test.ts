@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basenameOf, isWindowsPath, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, resolveRelative, samePath, separator } from "../../src/lib/format";
+import { basenameOf, isWindowsPath, joinPath, nativeSeparators, parentPath, patchStem, pathWithin, relativePathFrom, resolvePath, resolveRelative, samePath, separator } from "../../src/lib/format";
 
 describe("isWindowsPath / separator", () => {
   it("盘符与 UNC 算 Windows 形状，反斜杠正斜杠都认", () => {
@@ -36,6 +36,9 @@ describe("joinPath / nativeSeparators", () => {
     expect(joinPath("C:\\", "a")).toBe("C:\\a");
     expect(joinPath("/tmp", "a")).toBe("/tmp/a");
     expect(joinPath("/", "a")).toBe("/a");
+    expect(joinPath("d:/app/code/forge/src-tauri", "binaries")).toBe("d:\\app\\code\\forge\\src-tauri\\binaries");
+    expect(joinPath("C:/", "src/main.rs")).toBe("C:\\src\\main.rs");
+    expect(joinPath("//server/share/", "src/a.ts")).toBe("\\\\server\\share\\src\\a.ts");
   });
 
   it("git 回的正斜杠根归一成系统写法", () => {
@@ -52,6 +55,14 @@ describe("parentPath", () => {
     expect(parentPath("/tmp/a")).toBe("/tmp");
     expect(parentPath("/")).toBeNull();
   });
+
+  it("UNC 共享根是上退边界，子目录逐级返回且不产生自循环", () => {
+    expect(parentPath("\\\\server\\share\\src\\a.ts")).toBe("\\\\server\\share\\src");
+    expect(parentPath("//server/share/src/")).toBe("\\\\server\\share");
+    expect(parentPath("\\\\server\\share")).toBeNull();
+    expect(parentPath("//server/share/")).toBeNull();
+    expect(resolveRelative("\\\\server\\share\\src", "../../../a.ts")).toBe("\\\\server\\share\\a.ts");
+  });
 });
 
 describe("basenameOf / resolveRelative", () => {
@@ -66,6 +77,8 @@ describe("basenameOf / resolveRelative", () => {
     expect(resolveRelative("D:\\doc", "../shared/x.md")).toBe("D:\\shared\\x.md");
     // 根的上一级没有：停在根，不越出去。
     expect(resolveRelative("D:\\", "../x")).toBe("D:\\x");
+    expect(resolveRelative("C:\\", ".")).toBe("C:\\");
+    expect(resolveRelative("/", "..")).toBe("/");
   });
 });
 
@@ -96,5 +109,29 @@ describe("pathWithin 与跨平台路径包含契约", () => {
     expect(pathWithin("D:\\app", "d:/app/src/index.ts")).toBe(true);
     expect(pathWithin("\\\\Server\\Share", "\\\\server\\share\\docs")).toBe(true);
     expect(samePath("\\\\Server\\Share\\A.txt", "\\\\server\\share\\a.txt")).toBe(true);
+  });
+});
+
+describe("相对路径与运行工作目录", () => {
+  it("Windows 比较忽略大小写和分隔符，复制的文件名保留大小写", () => {
+    expect(relativePathFrom("D:/Project", "d:\\project\\src\\App.tsx")).toBe("src/App.tsx");
+    expect(relativePathFrom("D:/Project/", "D:/project")).toBe("");
+    expect(relativePathFrom("C:/", "c:\\Src\\App.tsx")).toBe("Src/App.tsx");
+    expect(relativePathFrom("C:/", "c:/")).toBe("");
+    expect(relativePathFrom("\\\\Server\\Share", "//server/share/src/a.ts")).toBe("src/a.ts");
+  });
+
+  it("严格按目录边界判断，POSIX 仍区分大小写", () => {
+    expect(relativePathFrom("D:/project", "D:/project-other/src/a.ts")).toBeNull();
+    expect(relativePathFrom("D:/project", "E:/project/a.ts")).toBeNull();
+    expect(relativePathFrom("/project", "/Project/a.ts")).toBeNull();
+    expect(relativePathFrom("/", "/usr/src/a.ts")).toBe("usr/src/a.ts");
+  });
+
+  it("绝对工作目录不重复拼根，相对目录按工程根展开", () => {
+    expect(resolvePath("D:/repo", "E:/other")).toBe("E:/other");
+    expect(resolvePath("D:/repo", "\\\\server\\share\\work")).toBe("\\\\server\\share\\work");
+    expect(resolvePath("D:/repo", "src/app")).toBe("D:\\repo\\src\\app");
+    expect(resolvePath("/repo", "/other")).toBe("/other");
   });
 });

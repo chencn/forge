@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { FsEntry } from "../../src/lib/fs";
 import { getNextScratchName } from "../../src/features/project-tree/scratches";
 import { buildProjectContextMenu } from "../../src/features/project-tree/contextMenu";
@@ -12,6 +12,7 @@ import {
   libKey,
   isLibKey,
   pathOfKey,
+  projectPathClipboardText,
 } from "../../src/features/project-tree/model";
 import { en } from "../../src/i18n/lang/en";
 import { roleAtPath, setProjectDirectoryRole } from "../../src/lib/projectDirectoryRoles";
@@ -47,6 +48,103 @@ describe("ProjectTree Multi-Domain Integration", () => {
       isReadonly: false,
     },
   ];
+
+  // 验证公开菜单动作及回调参数，覆盖三个域，避免文件和虚拟根误调用系统 Shell。
+  it.each(["project", "libraries", "scratches"] as const)(
+    "opens only a single physical directory in the system explorer (%s)",
+    (domain) => {
+      const path = "d:/app/code/forge/src-tauri\\binaries";
+      const directory: ProjectTreeNode = {
+        key: path,
+        domain,
+        entry: { ...dummyEntries[0], path },
+        displayName: "binaries",
+        deepestPath: path,
+        depth: 0,
+        isRoot: true,
+      };
+      const file: ProjectTreeNode = { ...directory, entry: dummyEntries[1] };
+      const onReveal = vi.fn();
+      const onOpenTerminal = vi.fn();
+      const menuFor = (selection: ProjectTreeNode[]) => buildProjectContextMenu({
+        selection,
+        workspaceRoot: "D:/project",
+        onReveal,
+        onOpenTerminal,
+      });
+      const openIn = (selection: ProjectTreeNode[]) =>
+        menuFor(selection).find((item) => item.label === "project.view.openIn");
+      const explorer = (selection: ProjectTreeNode[]) =>
+        openIn(selection)?.children?.find((item) => item.label === "project.view.systemExplorer");
+
+      explorer([directory])?.onSelect?.();
+      expect(onReveal).toHaveBeenCalledExactlyOnceWith(path);
+      expect(explorer([file])).toBeUndefined();
+      expect(explorer([directory, file])).toBeUndefined();
+      expect(explorer([])).toBeUndefined();
+      for (const virtualPath of ["__scratches_and_consoles__", "\u0000group:npm", "virtual:root"]) {
+        expect(explorer([{ ...directory, entry: { ...directory.entry, path: virtualPath } }])).toBeUndefined();
+      }
+      if (domain === "project") {
+        openIn([file])?.children?.find((item) => item.label === "project.view.terminal")?.onSelect?.();
+        expect(onOpenTerminal).toHaveBeenCalledExactlyOnceWith("D:\\project\\src");
+      } else {
+        expect(openIn([file])).toBeUndefined();
+      }
+      expect(onReveal).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("复制路径统一 Windows 分隔符，项目相对路径按目录边界截取", () => {
+    const directory = { ...dummyEntries[0], path: "d:/Project/src-tauri\\binaries" };
+    const outside = { ...dummyEntries[1], path: "D:/Project-other/src/App.tsx" };
+    const virtual = { ...dummyEntries[0], path: "\u0000group:externalLibraries" };
+    expect(projectPathClipboardText("absolute", [directory, virtual])).toBe("d:\\Project\\src-tauri\\binaries");
+    expect(projectPathClipboardText("relative", [directory, outside], "D:/project")).toBe("src-tauri/binaries\nD:\\Project-other\\src\\App.tsx");
+    expect(projectPathClipboardText("relative", [{ ...directory, path: "d:/project" }], "D:/Project")).toBe(".");
+    expect(projectPathClipboardText("name", [directory, dummyEntries[1]])).toBe("src\nindex.ts");
+    expect(projectPathClipboardText("absolute", [virtual])).toBe("");
+  });
+
+  it.each(["project", "libraries", "scratches"] as const)("虚拟目录禁用复制路径，混选只传物理条目（%s）", (domain) => {
+    const makeNode = (entry: FsEntry): ProjectTreeNode => ({
+      key: entry.path, domain, entry, displayName: entry.name, deepestPath: entry.path, depth: 0,
+    });
+    const physical = makeNode(dummyEntries[0]);
+    const virtual = makeNode({ ...dummyEntries[0], path: "\u0000group:externalLibraries" });
+    const onCopyPath = vi.fn();
+    const copyAction = (selection: ProjectTreeNode[]) => {
+      const menu = buildProjectContextMenu({ selection, workspaceRoot: "D:/project", onCopyPath });
+      return domain === "scratches"
+        ? menu.find((item) => item.label === "project.view.copyPath")
+        : menu.find((item) => item.label === "project.view.copyPathRef")?.children
+          ?.find((item) => item.label === "project.view.copyAbsolutePath");
+    };
+    expect(copyAction([virtual])?.disabled).toBe(true);
+    copyAction([virtual, physical])?.onSelect?.();
+    expect(onCopyPath).toHaveBeenCalledExactlyOnceWith("absolute", [physical.entry]);
+  });
+
+  it("多选菜单与粘贴使用最后一个主条目的父目录，盘符根文件仍能正确取目录", () => {
+    const node = (entry: FsEntry): ProjectTreeNode => ({ key: entry.path, domain: "project", entry, displayName: entry.name, deepestPath: entry.path, depth: 0 });
+    const onOpenTerminal = vi.fn();
+    const onNewFolder = vi.fn();
+    const onPaste = vi.fn();
+    const second = { ...dummyEntries[0], path: "E:/other/last" };
+    const menu = buildProjectContextMenu({
+      selection: [node(dummyEntries[0]), node(second)], workspaceRoot: "D:/project",
+      onOpenTerminal, onNewFolder, onPaste, hasClipboard: true,
+    });
+    menu.find((item) => item.label === "project.view.openIn")?.children?.find((item) => item.label === "project.view.terminal")?.onSelect?.();
+    menu.find((item) => item.label === "project.view.new")?.children?.find((item) => item.label === "project.view.newDirectory")?.onSelect?.();
+    menu.find((item) => item.label === "project.view.paste")?.onSelect?.();
+    expect(onOpenTerminal).toHaveBeenCalledExactlyOnceWith("E:\\other");
+    expect(onNewFolder).toHaveBeenCalledExactlyOnceWith("E:\\other");
+    expect(onPaste).toHaveBeenCalledExactlyOnceWith("E:\\other");
+    const rootMenu = buildProjectContextMenu({ selection: [node({ ...dummyEntries[1], path: "C:/file.txt" })], workspaceRoot: "D:/project", onOpenTerminal });
+    rootMenu.find((item) => item.label === "project.view.openIn")?.children?.find((item) => item.label === "project.view.terminal")?.onSelect?.();
+    expect(onOpenTerminal).toHaveBeenLastCalledWith("C:\\");
+  });
 
   it("handles domain separation between Project, Libraries and Scratches", () => {
     const projectNode: ProjectTreeNode = {

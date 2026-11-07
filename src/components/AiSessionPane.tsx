@@ -726,7 +726,8 @@ const AiPermissionDeniedBanner = memo(function AiPermissionDeniedBanner({
   return (
     <section className="ai-permission-denied" role="status">
       <CircleAlert size={14} aria-hidden />
-      <div>
+      {/* 内容块：类名供 CSS 精确命中，避免 > div 误伤 .ai-permission-actions */}
+      <div className="ai-permission-body">
         <div className="ai-permission-header">
           <strong>{t("ai.permission.denied")}</strong>
           {denied.tool ? <span className="ai-permission-tool">{denied.tool}</span> : null}

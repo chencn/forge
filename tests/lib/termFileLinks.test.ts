@@ -36,6 +36,16 @@ describe("parseTermFileLinks 认终端输出里的文件路径", () => {
     expect(link.path).toBe("C:/work/a b.md");
   });
 
+  it.each([
+    ["\\\\server\\share\\src\\main.rs:3", "\\\\server\\share\\src\\main.rs"],
+    ["//server/share/src/main.rs:3", "//server/share/src/main.rs"],
+    ["file://server/share/src/main.rs:3", "//server/share/src/main.rs"],
+  ])("网络共享路径保持绝对地址：%s", (text, path) => {
+    for (const base of [ROOT, null]) {
+      expect(parseTermFileLinks(text, base)).toMatchObject([{ path, line: 3 }]);
+    }
+  });
+
   it("不像文件的不认：分支名、版本号、网址、没有分隔符的词", () => {
     expect(parseTermFileLinks("origin/main", ROOT)).toEqual([]);
     expect(parseTermFileLinks("v1/1.2.3", ROOT)).toEqual([]);

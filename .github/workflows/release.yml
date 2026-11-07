@@ -88,14 +88,12 @@ jobs:
           const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
           conf.version = process.env.VERSION;
           fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
-          // Cargo.toml：只改 [package] 顶部的 version 行，依赖项里的 version= 不动。
+          // 只更新工作区发布版本；主程序和浏览器 MCP 通过 version.workspace 共同继承。
           let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
-          cargo = cargo.replace(/^version\s*=\s*"[^"]*"/m, `version = "${process.env.VERSION}"`);
+          const workspaceVersion = /(^\[workspace\.package\][^\[]*?^[ \t]*version[ \t]*=[ \t]*)"[^"]*"/m;
+          if (!workspaceVersion.test(cargo)) throw new Error("Missing workspace release version");
+          cargo = cargo.replace(workspaceVersion, `$1"${process.env.VERSION}"`);
           fs.writeFileSync("src-tauri/Cargo.toml", cargo);
-          // The browser wire handshake rejects a companion from a different release.
-          const browserPath = "src-tauri/crates/forge-browser/Cargo.toml";
-          const browser = fs.readFileSync(browserPath, "utf8").replace(/^version\s*=\s*"[^"]*"/m, `version = "${process.env.VERSION}"`);
-          fs.writeFileSync(browserPath, browser);
           EOF
 
       - name: 安装前端依赖

@@ -4,9 +4,9 @@ import {
   useRef,
   useState,
   type KeyboardEvent as TabKeyEvent,
-  type KeyboardEvent as FieldKeyEvent,
-  type ReactNode
+  type KeyboardEvent as FieldKeyEvent
 } from "react";
+import { classHighlighter, highlightCode } from "@lezer/highlight";
 import {
   ArrowUpRight,
   ChevronDown,
@@ -31,7 +31,8 @@ import {
 } from "../lib/fs";
 import { ignoredRoots } from "../lib/git";
 import { loadIgnored } from "../lib/ignoredCache";
-import { indexRuns } from "../lib/seMatch";
+import { loadGrammar, pathExtension } from "../lib/cm/grammars";
+import { HighlightedText } from "../ui/HighlightedText";
 import { parseLocationQuery } from "../lib/seQuery";
 import { SeController, type SeSnapshot } from "../lib/seController";
 import {
@@ -124,25 +125,44 @@ interface Selection {
   moved: boolean;
 }
 
-/** 文本高亮组件：将匹配到的字符区间使用带有背景色的高亮标签渲染。 */
-function HighlightedText({ text, indices }: { text: string; indices?: readonly number[] | null }) {
-  if (!indices || indices.length === 0) {
-    return <span>{text}</span>;
-  }
-  const parts: ReactNode[] = [];
-  let pos = 0;
-  for (const [s, e] of indexRuns(indices)) {
-    if (s >= text.length) break;
-    if (s > pos) parts.push(text.slice(pos, s));
-    parts.push(
-      <mark key={s} className={styles.matchHighlight}>
-        {text.slice(s, e)}
-      </mark>
-    );
-    pos = e;
-  }
-  if (pos < text.length) parts.push(text.slice(pos));
-  return <span>{parts}</span>;
+/** 对齐 OpenIDEA：语法配色与搜索命中叠加，语法尚未加载时先显示命中。 */
+function CodeText({ path, text, indices }: { path: string; text: string; indices: readonly number[] }) {
+  const language = languageForPath(path);
+  const extension = pathExtension(path);
+  const key = `${language}\0${extension}\0${text}`;
+  const [highlighted, setHighlighted] = useState<{
+    key: string;
+    parts: Array<{ text: string; from: number; className: string }>;
+  } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void loadGrammar(language, extension).then((support) => {
+      if (!alive || !support) return;
+      const parts: Array<{ text: string; from: number; className: string }> = [];
+      let from = 0;
+      highlightCode(text, support.language.parser.parse(text), classHighlighter, (part, className) => {
+        parts.push({ text: part, from, className });
+        from += part.length;
+      }, () => { from++; });
+      setHighlighted({ key, parts });
+    });
+    return () => { alive = false; };
+  }, [key, language, extension, text]);
+
+  const parts = highlighted?.key === key ? highlighted.parts : [{ text, from: 0, className: "" }];
+  return (
+    <span className={`${styles.name} ${styles.code} syntax-highlight`}>
+      {parts.map((part) => (
+        <HighlightedText
+          key={part.from}
+          className={part.className || undefined}
+          text={part.text}
+          indices={indices.filter((i) => i >= part.from && i < part.from + part.text.length).map((i) => i - part.from)}
+        />
+      ))}
+    </span>
+  );
 }
 
 /** 代码预览面板：使用 CodeMirror 渲染只读文件内容，并在高亮命中行居中定位。 */
@@ -931,13 +951,12 @@ export default function SearchEverywhere({
                       <FileText size={14} />
                     </span>
                     <span className={styles.main}>
-                      <HighlightedText text={row.text} indices={row.indices} />
+                      <CodeText path={row.path} text={row.text} indices={row.indices} />
                     </span>
                     <span className={`${styles.right}${isSelected ? ` ${styles.rightActive}` : ""}`}>
                       <span className={repeat && !isSelected ? styles.repeat : undefined}>
                         {row.name}
-                      </span>{" "}
-                      :{row.line}
+                      </span>:{row.line}
                     </span>
                   </div>
                 );

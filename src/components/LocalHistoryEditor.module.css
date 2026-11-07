@@ -1,0 +1,14 @@
+/* 与 OpenIDEA 相同的编辑器时间线比例；选区仅用主题中性色。 */
+.root { display: flex; height: 100%; min-height: 0; min-width: 0; background: var(--bg-editor, var(--bg-primary)); }
+.sidebar { display: flex; flex-direction: column; flex: 0 0 260px; min-height: 0; border: 1px solid var(--border, #43454a); border-top: 0; }
+.header { display: flex; align-items: center; gap: 4px; min-height: var(--h-header, 40px); padding: 0 8px 0 12px; border-bottom: 1px solid var(--border, #43454a); }
+.title { flex: 1; font-weight: 500; white-space: nowrap; }
+.list { flex: 1; min-height: 0; --bg-tree-selected: color-mix(in srgb, var(--fg-strong) 12%, transparent); --bg-tree-selected-inactive: color-mix(in srgb, var(--fg-strong) 8%, transparent); }
+.entry { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; width: 100%; line-height: 15px; }
+.time { color: var(--fg-strong); font-size: 12px; }
+.label, .path, .deleted { display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); font-size: 11px; }
+.path, .deleted { display: block; }
+.deleted { text-decoration: line-through; }
+.diff { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.message { margin: auto; padding: 16px; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; }
+.confirmPaths { max-height: 220px; overflow: auto; font-size: 12px; overflow-wrap: anywhere; }

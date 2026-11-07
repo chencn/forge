@@ -28,7 +28,9 @@ AI 托管页再多一层：`private_literal_target` 覆盖 RFC1918 与 CGNAT 四
 
 `browser::init` 先登记状态再起 broker。管道被拒、随机数失败、companion 版本对不上，原因写进 `State::unavailable`，面板显示「浏览器暂不可用」，`attach` 那侧退回不注入。会话照跑，只是没有浏览器工具。broker 的瞬时连接失败不置停，退避 200ms 再听。
 
-companion 的路径解析走两档（`src-tauri/src/browser/launch.rs`）：先试装机那套带 target triple 的名字 `forge-browser-mcp-x86_64-pc-windows-gnu.exe`，这是 Tauri `externalBin` 实际装出来的样子；再试 cargo 的裸名 `forge-browser-mcp.exe`，那是 `tauri:dev` 下 `target/debug/` 里那个。只认一档的结果是开发能用、装机必坏。
+companion 的路径解析走两档（`src-tauri/src/browser/launch.rs`）：先试带 target triple 的构建输入名，再试 `forge-browser-mcp.exe`。Windows NSIS 会去掉 target triple，将裸名安装在 `forge.exe` 同目录；Cargo 开发产物也使用裸名。
+
+主程序和浏览器 MCP 都通过 `version.workspace = true` 继承 `src-tauri/Cargo.toml` 的工作区版本，CI 也只更新这一处 Rust 发布版本。两份版本独立维护会导致文件虽然完整打进安装包，宿主仍因版本闸拒绝启动浏览器，最终 AI 会话没有浏览器工具。
 
 ## 文案只在能翻译的那一侧写
 

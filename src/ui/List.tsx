@@ -185,6 +185,7 @@ export function List<T>({
     <div
       ref={scrollRef}
       role="listbox"
+      aria-multiselectable={isSelected ? true : undefined}
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
       aria-activedescendant={

@@ -297,6 +297,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
   let svgEl: SVGSVGElement | null = null;
   let buttonsBoxEl: HTMLElement | null = null;
   let scrollCleanup: (() => void) | null = null;
+  let updateHorizontalScrollbars: (() => void) | null = null;
   let checkedChunks = new Set<number>();
   let renderScheduled = false;
 
@@ -306,6 +307,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
     requestAnimationFrame(() => {
       renderScheduled = false;
       if (destroyed) return;
+      updateHorizontalScrollbars?.();
       renderRibbons();
     });
   }
@@ -580,13 +582,49 @@ export function createDiffView(options: DiffViewOptions): DiffView {
         editorsParent.insertBefore(splitterEl, wrapB);
       }
 
+      // 子编辑器随整份文件增高，原生横向条也落在文件末尾；底部代理条保留共同纵向滚动。
+      const scrollbars = document.createElement("div");
+      scrollbars.className = "forge-diff-scrollbars";
+      scrollbars.setAttribute("aria-hidden", "true");
+      const horizontal = panes.map((pane, index) => {
+        if (index > 0) {
+          const gap = document.createElement("div");
+          gap.className = "forge-diff-scrollbar-gap";
+          scrollbars.appendChild(gap);
+        }
+        const bar = document.createElement("div");
+        bar.className = "forge-diff-scrollbar";
+        bar.tabIndex = -1;
+        const track = document.createElement("div");
+        track.className = "forge-diff-scrollbar-track";
+        bar.appendChild(track);
+        scrollbars.appendChild(bar);
+        const syncFromEditor = () => { bar.scrollLeft = pane.scrollDOM.scrollLeft; };
+        const syncFromBar = () => { pane.scrollDOM.scrollLeft = bar.scrollLeft; };
+        pane.scrollDOM.addEventListener("scroll", syncFromEditor, { passive: true });
+        bar.addEventListener("scroll", syncFromBar, { passive: true });
+        return { pane, bar, track, syncFromEditor, syncFromBar };
+      });
+      merge.dom.appendChild(scrollbars);
+      updateHorizontalScrollbars = () => {
+        scrollbars.hidden = horizontal.every(({ pane }) => pane.scrollDOM.scrollWidth <= pane.scrollDOM.clientWidth);
+        for (const { pane, bar, track, syncFromEditor } of horizontal) {
+          // 用正文的实际滚动范围计算轨道，取消同步时栏内竖向滚动条也不会造成末尾偏差。
+          const range = pane.scrollDOM.scrollWidth - pane.scrollDOM.clientWidth;
+          track.style.width = `${bar.clientWidth + range}px`;
+          bar.style.visibility = range > 0 ? "visible" : "hidden";
+          syncFromEditor();
+        }
+      };
+
       const onScroll = () => scheduleRibbonRender();
       merge.dom.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("resize", onScroll, { passive: true });
 
       // 确保鼠标悬停在两栏代码、装订线或中缝任意区域滑动滚轮时，均能顺畅驱动外层滚动
       const onWheel = (e: WheelEvent) => {
-        if (!merge || e.deltaY === 0) return;
+        if (!merge || !syncScroll || e.defaultPrevented || e.ctrlKey || e.metaKey || e.shiftKey ||
+          Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.deltaY === 0) return;
         const maxScroll = merge.dom.scrollHeight - merge.dom.clientHeight;
         if (maxScroll > 0) {
           const next = Math.max(0, Math.min(maxScroll, merge.dom.scrollTop + e.deltaY));
@@ -602,6 +640,11 @@ export function createDiffView(options: DiffViewOptions): DiffView {
         merge?.dom.removeEventListener("scroll", onScroll);
         merge?.dom.removeEventListener("wheel", onWheel);
         window.removeEventListener("resize", onScroll);
+        updateHorizontalScrollbars = null;
+        for (const { pane, bar, syncFromEditor, syncFromBar } of horizontal) {
+          pane.scrollDOM.removeEventListener("scroll", syncFromEditor);
+          bar.removeEventListener("scroll", syncFromBar);
+        }
       };
     } else {
       merge = null;
@@ -714,6 +757,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
         syncScroll = next.syncScroll;
         // 滚动同步是纯样式档：不重建视图，直接翻外框的类。
         options.parent.classList.toggle("forge-diff-unsynced", mode === "side" && !syncScroll);
+        scheduleRibbonRender();
       }
       if (!dirty || destroyed) return;
       teardown();

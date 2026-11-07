@@ -327,12 +327,19 @@ describe("对标 IntelliJ IDEA 比对视图连线带与块提交复选框", () =
     expect(onChunkCheck).toHaveBeenCalledWith(0, true, expect.anything());
   });
 
-  it("当发生 wheel 滚轮事件时正确驱动 mergeView 滚动", () => {
+  it.each([
+    { name: "纵向滚轮驱动共同滚动", wheel: { deltaY: 100 }, syncScroll: true, expectedTop: 100 },
+    { name: "横向手势不驱动纵向滚动", wheel: { deltaX: 120, deltaY: 20 }, syncScroll: true, expectedTop: 0 },
+    { name: "Shift 滚轮留给横向滚动", wheel: { deltaY: 100, shiftKey: true }, syncScroll: true, expectedTop: 0 },
+    { name: "Ctrl 滚轮留给缩放", wheel: { deltaY: 100, ctrlKey: true }, syncScroll: true, expectedTop: 0 },
+    { name: "取消同步后由各栏处理纵向滚轮", wheel: { deltaY: 100 }, syncScroll: false, expectedTop: 0 },
+  ])("$name", ({ wheel, syncScroll, expectedTop }) => {
     const { host } = mount({
       original: ORIGINAL,
       modified: MODIFIED,
       language: "",
       mode: "side",
+      syncScroll,
     });
     const mergeEl = host.querySelector<HTMLElement>(".cm-mergeView");
     expect(mergeEl).not.toBeNull();
@@ -342,10 +349,12 @@ describe("对标 IntelliJ IDEA 比对视图连线带与块提交复选框", () =
     Object.defineProperty(mergeEl, "clientHeight", { value: 300, configurable: true });
     mergeEl!.scrollTop = 0;
 
-    const event = new WheelEvent("wheel", { deltaY: 100, bubbles: true, cancelable: true });
+    // 验证公开输入行为：横向或带修饰键的手势必须继续交给浏览器与当前栏。
+    const event = new WheelEvent("wheel", { ...wheel, bubbles: true, cancelable: true });
     mergeEl!.dispatchEvent(event);
 
-    expect(mergeEl!.scrollTop).toBe(100);
+    expect(mergeEl!.scrollTop).toBe(expectedTop);
+    expect(event.defaultPrevented).toBe(expectedTop > 0);
   });
 });
 

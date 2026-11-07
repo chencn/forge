@@ -8,12 +8,13 @@ import { useI18n } from "../i18n";
 import { createEditorTabListId, editorTabDropTarget, editorTabList, registerEditorTabList, unregisterEditorTabList } from "../lib/editorSplit";
 import AiSessionActivity from "./AiSessionActivity";
 import type { TranslationKey } from "../i18n/lang/zh";
+import { nativeSeparators } from "../lib/format";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const SAVE_SHORTCUT = IS_MAC ? "⌘S" : "Ctrl+S";
 
 /** 标签的种类：文档、比对、底部工具窗口、设置页、AI 会话。 */
-export type TabKind = "doc" | "diff" | "pane" | "settings" | "ai";
+export type TabKind = "doc" | "diff" | "pane" | "settings" | "ai" | "history";
 
 /**
  * 编辑区页签栏上的一项。
@@ -64,6 +65,8 @@ interface EditorTabsProps {
   isSplit?: boolean;
   /** 打开文件的本地历史时间线。 */
   onShowLocalHistory?: (path: string) => void;
+  onPutHistoryLabel?: (path: string) => void;
+  onShowGitHistory?: (path: string) => void;
   /** 页签栏右侧自定义操作区（如当前激活 AI 会话的三个点菜单）。 */
   actions?: ReactNode;
   /** 页签右键菜单扩展项（如 AI 会话的复制 ID、发给进行中会话）。 */
@@ -80,6 +83,7 @@ const CLOSE_LABEL: Record<TabKind, TranslationKey> = {
   pane: "tool.minimize",
   settings: "editor.closeTab",
   ai: "editor.closeTab",
+  history: "editor.closeTab",
 };
 
 export default function EditorTabs({
@@ -100,6 +104,8 @@ export default function EditorTabs({
   onCloseSplit,
   isSplit,
   onShowLocalHistory,
+  onPutHistoryLabel,
+  onShowGitHistory,
   actions,
   onContextMenuItems,
 }: EditorTabsProps) {
@@ -154,7 +160,11 @@ export default function EditorTabs({
     const tabRect = activeTab.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
     if (tabRect.left < containerRect.left || tabRect.right > containerRect.right) {
-      activeTab.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      // 只滚动页签栏；scrollIntoView 会连同有溢出的页面祖先一起滚动，裁掉标题栏和侧栏。
+      container.scrollTo({
+        left: container.scrollLeft + tabRect.left - containerRect.left - (container.clientWidth - tabRect.width) / 2,
+        behavior: "smooth",
+      });
     }
   }, [activeId, tabs.length]);
 
@@ -278,7 +288,13 @@ export default function EditorTabs({
     });
     items.push({ label: t("menu.closeAll"), onSelect: onCloseAll });
     if (tab.kind === "doc" || tab.kind === "diff") {
-      items.push({ label: t("menu.copyPath"), onSelect: () => void navigator.clipboard.writeText(path) });
+      // 比对标题可能只是相对路径或空串，复制必须取对应的真实文件路径。
+      const copyPath = tab.kind === "doc" ? path : tab.filePath;
+      items.push({
+        label: t("menu.copyPath"),
+        disabled: !copyPath,
+        onSelect: () => { if (copyPath) void navigator.clipboard.writeText(nativeSeparators(copyPath)); },
+      });
     }
     if (tab.filePath && onRevealInSidebar) {
       const target = tab.filePath;
@@ -309,8 +325,14 @@ export default function EditorTabs({
     if (tab.kind === "doc" && onShowLocalHistory) {
       items.push({
         label: t("menu.localHistory"),
-        onSelect: () => onShowLocalHistory(path),
+        children: [
+          { label: t("menu.showHistory"), onSelect: () => onShowLocalHistory(path) },
+          ...(onPutHistoryLabel ? [{ label: t("history.putLabel"), onSelect: () => onPutHistoryLabel(path) }] : []),
+        ],
       });
+    }
+    if (tab.kind === "doc" && onShowGitHistory) {
+      items.push({ label: "Git", children: [{ label: t("menu.showHistory"), onSelect: () => onShowGitHistory(path) }] });
     }
     // 标签特定的扩展操作（如 AI 会话的复制 ID、发给进行中会话）排在标签基础操作之后，不占用菜单首位
     if (custom.length > 0) {
