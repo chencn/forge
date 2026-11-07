@@ -268,7 +268,7 @@ export function languageForPath(path: string, contents?: string): string {
   const byName = LANGUAGE_BY_NAME[name] ?? FILENAME_PATTERNS.find((entry) => entry.re.test(name))?.id;
   if (byName) return byName;
   // 多段后缀从最长开始试（a.json.map → "json.map" 命中 JSON；pkr.hcl → "hcl"），
-  // 对齐 openidea cm/languages.ts 的最长后端口径——取最后一段会把多段扩展名退化掉。
+  // 用最长后端口径——取最后一段会把多段扩展名退化掉。
   let dot = name.indexOf(".");
   while (dot >= 0) {
     const ext = name.slice(dot + 1);

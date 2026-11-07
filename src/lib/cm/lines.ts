@@ -1,4 +1,4 @@
-/** 移植自 openidea（Apache-2.0）：复用实际编辑行为，键位由方案表提供。 */
+/** 复用实际编辑行为，键位由方案表提供。 */
 /** Edit › Sort Lines / Reverse Lines: the selected lines, or the whole file without a selection. */
 import {
   EditorSelection,

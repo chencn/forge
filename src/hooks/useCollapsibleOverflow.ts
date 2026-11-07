@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 
 /**
- * 「先按高度裁住，真被裁掉了才给出展开/收起」这套动作（对照参考实现的同名 hook）。
+ * 「先按高度裁住，真被裁掉了才给出展开/收起」这套动作。
  * 裁到多高由调用方的 CSS 类决定，这里不重复任何数值门槛。
  *
  * `contentRef` 绑到带裁剪类的那个节点，`contentKey` 传能代表正文的值（正文本身、分片

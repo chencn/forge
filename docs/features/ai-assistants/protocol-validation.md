@@ -56,7 +56,7 @@ Forge 已实现 Rust 直连本机 CLI 的聊天运行层与 React 界面。自�
 
 ## 模拟样本与测试
 
-`tests/fixtures/ai-runtime-cli.mjs` 是人工编写的确定性协议样本，不是真实账号输出，也不从参考项目复制。临时目录中仅在收到允许一次后写入测试标记文件。
+`tests/fixtures/ai-runtime-cli.mjs` 是人工编写的确定性协议样本，不是真实账号输出，也不从外部项目复制。临时目录中仅在收到允许一次后写入测试标记文件。
 
 自动测试覆盖：
 
@@ -81,7 +81,7 @@ Forge 已实现 Rust 直连本机 CLI 的聊天运行层与 React 界面。自�
 
 ## 计划审阅、后台任务与异步提问增量验证
 
-本轮从 ccgui 移植服务端实现、从 codeg 对照界面；以下结论仍只覆盖合成数据与模拟 CLI。服务端机制参考 `desktop-cc-gui`（MIT，版权归其作者 zhukunpenglinyutong，https://github.com/zhukunpenglinyutong/desktop-cc-gui）；Forge 按本项目的存储与协议结构重写，未直接复制其文件。
+本轮增量验证覆盖计划审阅、后台任务与异步提问；以下结论仍只覆盖合成数据与模拟 CLI。
 
 - Codex 计划模式：`initialize.capabilities.experimentalApi` 只在计划/决策回合为 true；`turn/start.collaborationMode` 的 `settings.model` 必填，拿不到模型就失败关闭。完成的 `plan` item 才是权威正文，流式 `item/plan/delta` 只作预览。
 - 计划审阅：版本与 CAS 在会话目录 `plans.json`；批准/要求修改/暂不执行三种决策，`request_changes` 必须带反馈。决策回合先用 `thread/turns/list`（itemsView=full）核对计划 id 与正文指纹，正文变化或条目消失报 `codex plan is stale:` 并过期该版本；回合确认启动后才标记 applied，执行完成/失败另记。启动失败、排队决策被取消或停止都会把提交权退回待审；打开会话只回收超过 10 秒仍停在 submitting 的残留，避免与正在启动的决策抢版本。

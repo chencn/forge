@@ -25,7 +25,7 @@ export async function openOutlineSymbol(path: string, item: OutlineSymbol): Prom
   revealRange(view, line.number, position - line.from, position - line.from);
 }
 
-/** 对齐 OpenIDEA 的编辑器内符号链：点击声明直接定位，独立于全局路径导航。 */
+/** 编辑器内符号链：点击声明直接定位，独立于全局路径导航。 */
 export default function CodeBreadcrumbs({ path }: { path: string }) {
   const { t } = useI18n();
   const { chain } = useCodeOutline(path);

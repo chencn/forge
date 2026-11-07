@@ -1,17 +1,17 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 /**
- * 聊天列宽的持久化与钳制（对照 codeg 的 chat-content-width）。
+ * 聊天列宽的持久化与钳制。
  *
- * 会话页与欢迎页共用同一条内容轴；宽度按「100% 缩放时的像素」存储，与参考实现
- * 一致——换算成 rem 交给 CSS 变量时由这里统一做，调用方不各自除 16。
+ * 会话页与欢迎页共用同一条内容轴；宽度按「100% 缩放时的像素」存储，
+ * 换算成 rem 交给 CSS 变量时由这里统一做，调用方不各自除 16。
  */
 
-/** 参考实现的默认列宽：48rem。 */
+/** 默认列宽：48rem。 */
 export const AI_CHAT_WIDTH_DEFAULT = 768;
-/** 再窄正文就换行过密；参考实现同值。 */
+/** 再窄正文就换行过密。 */
 export const AI_CHAT_WIDTH_MIN = 640;
-/** 方向键一次步进的距离；参考实现同值。 */
+/** 方向键一次步进的距离。 */
 export const AI_CHAT_WIDTH_KEY_STEP = 32;
 const KEY = "forge:ai-chat-width:v1";
 /** 列两侧永远留出的空隙；手柄不能压到窗口 resize 边上。 */

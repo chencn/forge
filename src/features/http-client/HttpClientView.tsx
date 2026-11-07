@@ -1,7 +1,5 @@
 /**
  * HTTP Client 工具窗口：左侧历史列表 + 右侧选中交换的详情。
- *
- * 移植自 openidea `features/http-client/HttpClientView.tsx`，按 forge 约定重写：
  * zustand → 外部 store，`@/ui` → forge `src/ui`，`tx` → `useI18n().t`。
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -288,7 +286,7 @@ export function HttpClientView() {
   const report = useHttpProblem();
   const clampList = (next: number) => {
     const total = frameRef.current?.clientWidth ?? 0;
-    // 右侧响应至少留 200px，和 openidea 的响应栏最小宽度一致。
+    // 右侧响应至少留 200px。
     const cap = total > 360 ? total - 200 : next;
     return Math.min(cap, Math.max(160, next));
   };

@@ -284,7 +284,7 @@ const TYPESPEC = stream({
  * `.http` / `.rest` 请求文件：`###` 分隔线、注释与 `# @name`、`@var = value`、请求行、
  * 头部、`{{变量}}`、`< file` 引用与 `> {% %}` 处理块。
  *
- * 移植自 openidea `features/http-client/language.ts`。其余语言多是 `simpleMode` 正则切片，
+ * 其余语言多是 `simpleMode` 正则切片，
  * 这门要跨行状态（前导 → 头部 → 正文、handler 块），所以用完整 `StreamParser`。
  */
 interface HttpState {

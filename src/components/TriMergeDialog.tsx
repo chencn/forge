@@ -1,5 +1,5 @@
 /**
- * 三栏合并编辑器（对齐 IDEA 的 Merge Revisions / openidea MergeEditor）：
+ * 三栏合并编辑器（对齐 IDEA 的 Merge Revisions）：
  * Yours | Result | Theirs。结果栏从「冲突块填 base」的形态起步（不留标记），
  * 每个未解决冲突上方挂着取舍按钮（采用本地/对方/两者/共同祖先），手动编辑也行——
  * 块范围随文档改动平移，改完点「应用解决」写回并交上层暂存。

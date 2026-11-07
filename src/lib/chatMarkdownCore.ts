@@ -13,7 +13,7 @@ import { fenceLanguages, grammarSupport, highlightCodeHtml, escapeHtml } from ".
  */
 
 /**
- * 流式正文尚未写完时补齐未闭合的围栏（对照参考实现的 parseIncompleteMarkdown 的
+ * 流式正文尚未写完时补齐未闭合的围栏（parseIncompleteMarkdown 的
  * 最小集）：模型正在敲一个代码块时，未闭合的 ``` 会把后半段正文整个吞进代码块，
  * 每次流式刷新都闪一下。只数围栏行、只补最后一行，不改别的语义。
  */

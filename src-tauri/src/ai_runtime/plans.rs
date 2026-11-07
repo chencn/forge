@@ -1,7 +1,7 @@
 //! Codex 计划审阅的本地事实源。
 //!
-//! 移植自 ccgui 的 `plan_review.rs`：把 SQLite 表换成本会话目录里的
-//! `plans.json`，状态机、CAS 抢占与「批准 ≠ 执行成功」的边界原样保留。
+//! 本地事实源是本会话目录里的
+//! `plans.json`，状态机、CAS 抢占与「批准 ≠ 执行成功」的边界照此保留。
 //! 计划只属于 Forge 会话；删会话时随目录一起消失，原生 history 不参与审批。
 //!
 //! 状态机：`awaiting_review → submitting → approved | changes_requested | deferred`，

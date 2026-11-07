@@ -82,8 +82,7 @@ const COMPACTION_TRIGGERS: Record<string, "ai.chat.compactionTriggerManual" | "a
 };
 
 /**
- * 压缩摘要正文：裁到固定高度，只有真被裁掉了底部才出现展开/收起页脚
- * （对照参考实现的 CompactionSummaryBody）。
+ * 压缩摘要正文：裁到固定高度，只有真被裁掉了底部才出现展开/收起页脚。
  */
 function AiCompactionSummaryBody({ id, text }: { id: string; text: string }) {
   const { t } = useI18n();
@@ -100,7 +99,7 @@ function AiCompactionSummaryBody({ id, text }: { id: string; text: string }) {
 }
 
 /**
- * 压缩分割线（对照参考实现的 ContextCompactionCard）：居中的一道无框分割线，左右渐隐的
+ * 压缩分割线：居中的一道无框分割线，左右渐隐的
  * 横线夹着「图标 + 状态 + token 差值 + 耗时」，摘要开关就在这一行里。它是会话里的一道
  * 分界标记——「这里压缩过」——不是一次工具调用，所以不给卡片外壳。
  *
@@ -250,7 +249,7 @@ const RequestCard = memo(function RequestCard({ request, stopping, onBeforeAllow
 const USER_MESSAGE_CLIP_LINES = 18;
 const USER_MESSAGE_CLIP_CHARS = 1500;
 
-/** 行首带 `>` 的行算引用（对照参考实现的 quote line）：排进带左线的引用段。 */
+/** 行首带 `>` 的行算引用：排进带左线的引用段。 */
 const USER_QUOTE_LINE = /^\s*>/;
 
 /** 一行正文里的 @提及：命中就包成小徽章，其余原样。 */
@@ -291,7 +290,7 @@ function renderUserText(text: string): ReactNode[] {
 /**
  * 用户消息：右对齐的圆角气泡，图片贴右上；悬停浮出复制按钮。
  *
- * 对照参考实现：正文是纯文本（不走 markdown），过长的消息先按高度收起并留一条
+ * 正文是纯文本（不走 markdown），过长的消息先按高度收起并留一条
  * 渐隐边，展开后才见全文——一整屏贴进来的日志不会把时间线顶出十屏。
  */
 const AiUserMessage = memo(function AiUserMessage({ text, images }: { text: string; images?: { node: ReactNode; key: string }[] }) {
@@ -546,7 +545,7 @@ function aiRunUsageBaseline(runId: string, total: number | undefined): number | 
 }
 
 /**
- * 运行中状态行（对照参考实现 LiveTurnStats 的精简版）：图标脉动 + 状态字之外，
+ * 运行中状态行（精简版）：图标脉动 + 状态字之外，
  * 补「耗时 / 本轮编辑统计 / tok/s」三档数据——按面板宽度分档出现，窄栏只留状态字。
  * 计时与 token 起点都从本轮第一次被前端看到起算，历史里翻开的旧轮没有这些数就不显示。
  */
@@ -579,7 +578,7 @@ function AiLiveStats({ provider, runId, entries, usage, statusText, planMode }: 
 }
 
 /**
- * 回合末尾的文件汇总卡（对照 codeg 的 reply-artifacts）：新增一张、改动一张，
+ * 回合末尾的文件汇总卡：新增一张、改动一张，
  * 完成态全部默认收起；头部给「N 个文件 + 总 ±行数」，
  * 展开是逐文件卡——点文件跳编辑器。统计口径与底栏汇总同源（只算真实完成的补丁）。
  */
@@ -624,7 +623,7 @@ const AiReplyArtifacts = memo(function AiReplyArtifacts({ summary, id }: { summa
 });
 
 /**
- * 回合完成后的操作行（对照参考实现的 TurnStats，砍掉协议不支持的分叉/转任务）：
+ * 回合完成后的操作行（砍掉协议不支持的分叉/转任务）：
  * 耗时、token 数、复制最后一段回复、跳回本轮的用户消息。回合失败也有这一行——
  * 失败原因另有错误行，这里的统计与动作同样成立。
  */

@@ -6,7 +6,7 @@
 
 ## 背景
 
-把侧栏 Git 面板（提交工具窗）和 git 文件比较（diff 视图）对齐到 IntelliJ IDEA 的像素规格，明暗两套主题都要对齐。规格取值来自一份按 IntelliJ IDEA 复刻的参考工程（React + CSS Modules + CodeMirror，「岛式」圆角设计令牌，默认亮色主题；该工程只作对照用，本仓库的文档与代码一律不写它的名字，对标对象统一写 IntelliJ IDEA）。本文所有颜色、尺寸、文案即验收标准；「出处」一节列参考工程与本仓库的源码位置。
+把侧栏 Git 面板（提交工具窗）和 git 文件比较（diff 视图）对齐到 IntelliJ IDEA 的像素规格，明暗两套主题都要对齐。本文所有颜色、尺寸、文案即验收标准。
 
 **例外项（forge 必须保留，不照抄）**：
 
@@ -239,7 +239,7 @@ margin 3、**minSize 6**（forge 现为 4）；折叠条 `padding 2px 10px`、�
 **回退决定（2026-10-30，用户拍板）**：侧栏新面板（三组模型/复选框/changelist/新提交区/新工具栏/speed search）实测后用户认为不如原版，整体回退——GitPanel.tsx 恢复 git HEAD 原版，styles.css 的面板段、tokens、App 接线（panelOpenCommitFile、commitAllWhenNothingStaged 设置项、按钮文案 (I)/(P)）全部还原；**diff 侧的改造全部保留**（配色/工具栏/空白口径/同步滚动/块控件/preview 标签/F7 链/后端 git_apply_patch）。给侧栏留档的结论：用户在意的是稳定与熟悉感，勾选模型那类结构性重构不要再主动提。
 ## 出处
 
-**规格出处**（按 IntelliJ IDEA 复刻的参考工程，不具名，相对其仓库根；行号为写稿时的位置，实施前重新核对）：
+**规格出处**（相对实现仓库根；行号为写稿时的位置，实施前重新核对）：
 
 - `src/features/vcs/CommitView.tsx` — 面板主体、工具栏、提交区、右键菜单（约 1-900）；`CommitView.module.css` — 同区全部样式（约 1-240）
 - `src/features/vcs/changes.ts` — 三组模型与树构建、复选框聚合（8-12、42-48、60-65、87、121-130、143、177-205、221-269、354-373）

@@ -209,7 +209,7 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
                   <GitBranch size={14} className="branch-popup-branch-icon" /><Star size={14} className="branch-popup-star-icon" /></button>}
                 {highlighted(row.label, "branch-popup-label branch-popup-name")}
                 {row.current && <span className="branch-popup-current">{t("git.currentBranchBadge")}</span>}
-                {/* 与参考分支行同序：同步计数紧跟名称，上游名称独立靠右。 */}
+                {/* 同步计数紧跟名称，上游名称独立靠右。 */}
                 {row.behind > 0 && <span className="branch-popup-sync git-sync-incoming" {...tooltipAttrs(t("git.behindN", { count: row.behind }))}><BranchSyncIcon incoming />{row.behind}</span>}
                 {row.ahead > 0 && <span className="branch-popup-sync git-sync-outgoing" {...tooltipAttrs(t("git.aheadN", { count: row.ahead }))}><BranchSyncIcon />{row.ahead}</span>}
                 {row.target.kind !== "tag" && row.upstream && <span className="branch-popup-upstream">{row.upstream}</span>}

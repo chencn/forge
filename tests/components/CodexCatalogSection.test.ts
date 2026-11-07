@@ -155,7 +155,7 @@ describe("Codex 模型清单编辑器", () => {
     const rows = collect(pane, (node) => ["ai-catalog-row", "ai-catalog-row is-excluded"].includes(String(node.props.className)))
       .map((node) => String(node.key));
     expect(rows).toEqual(["gpt-6-astra"]);
-    // 模板下拉里仍然能选到它：自定义模型照 codeg 一样可以以任何官方条目为底。
+    // 模板下拉里仍然能选到它：自定义模型可以以任何官方条目为底。
     const custom = { ...emptyCodexCatalogIntent(), customs: [{ slug: "gw/opus", displayName: "Opus", description: "", base: "gpt-6-astra", overrides: emptyCodexModelOverride() }] };
     const opened = renderCatalog(custom, withHidden, "custom:0");
     const baseSelect = find(opened, (node) => node.props.label === "ai.catalog.base")!;

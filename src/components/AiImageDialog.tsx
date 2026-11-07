@@ -5,7 +5,7 @@ import { copyChatImage } from "../lib/chatImage";
 import ImagePreview from "./ImagePreview";
 
 /**
- * 聊天图片的放大预览（对照参考实现的 ImagePreviewDialog）。
+ * 聊天图片的放大预览。
  *
  * 缩放逻辑复用工作台文档那套 `ImagePreview`（适应窗口 + 档位缩放）；这里只负责
  * 模态外壳。`path` 一律走沙箱里的副本——粘贴与选择器两条入口落盘后都有真实路径，

@@ -328,7 +328,7 @@ function EnabledAiCliSettingsPanel() {
   const [checking, setChecking] = useState<Partial<Record<AiProvider, boolean>>>({});
   const [files, setFiles] = useState<Partial<Record<AiProvider, AiCliConfigFile>>>({});
   const [fileDrafts, setFileDrafts] = useState<Partial<Record<AiProvider, string>>>({});
-  // 原生配置默认展开（对照 codeg 的原始配置编辑器）；收起仍然可用。
+  // 原生配置默认展开；收起仍然可用。
   const [fileOpen, setFileOpen] = useState<Partial<Record<AiProvider, boolean>>>({ claude: true, codex: true });
   const [fileBusy, setFileBusy] = useState<AiProvider | null>(null);
   const [fileNotice, setFileNotice] = useState<{ provider: AiProvider; error: boolean; text: string } | null>(null);
@@ -1379,7 +1379,7 @@ function EnabledAiCliSettingsPanel() {
                       </div>
                     ) : null}
 
-                    {/* 细粒度审批列表：内嵌紧凑虚线卡片（与 codeg 一致） */}
+                    {/* 细粒度审批列表：内嵌紧凑虚线卡片 */}
                     {codexDraft.approvalPolicy === "granular" ? (
                       <div className="ai-cli-switch-list">
                         <span className="ai-cli-hint">{t("ai.cfg.granularHint")}</span>
@@ -1396,7 +1396,7 @@ function EnabledAiCliSettingsPanel() {
                       </div>
                     ) : null}
 
-                    {/* 工作区写保护辅助配置：对照 codeg 的内嵌虚线卡片 */}
+                    {/* 工作区写保护辅助配置：内嵌虚线卡片 */}
                     {codexWorkspaceWriteApplies ? (
                       <div className="ai-cli-nested-box">
                         <label className="ai-cli-field">

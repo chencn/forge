@@ -3,7 +3,7 @@ import { useI18n } from "../i18n";
 import { AI_NAMES, type AiProvider } from "../lib/aiCli";
 import AiProviderIcon from "./AiProviderIcon";
 
-/** 与参考实现相同的收展时长与缓动；滑块和胶囊共用，两者才能同步走完。 */
+/** 收展时长与缓动；滑块和胶囊共用，两者才能同步走完。 */
 const REVEAL_MS = 300;
 const REVEAL_EASE = "cubic-bezier(0.4, 0, 0.2, 1)";
 
@@ -16,12 +16,12 @@ export interface AiAgentPill {
 }
 
 /**
- * 工具胶囊选择器，对照参考实现的 AgentSelector：滑块随选中项滑动，
- * 未选中的胶囊收成图标、选中的展开名称。行宽不够时参考会折叠进「更多」，
+ * 工具胶囊选择器：滑块随选中项滑动，
+ * 未选中的胶囊收成图标、选中的展开名称。行宽不够时会折叠进「更多」，
  * forge 只有 Claude / Codex 两颗，恒放得下，省去折叠与弹出层。
  *
  * 滑块定位必须持续重测：胶囊的宽度在 300ms 过渡里一直在变，只在点击那一帧
- * 量一次会停在半途的尺寸上——这正是切换工具时「样式乱」的根源。参考实现用
+ * 量一次会停在半途的尺寸上——这正是切换工具时「样式乱」的根源。用
  * ResizeObserver 盯住每颗胶囊与外框，过渡期间每一帧都把滑块贴回选中胶囊。
  */
 export default function AiAgentPills({ pills, selected, onSelect, className }: {

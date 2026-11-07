@@ -1,4 +1,4 @@
-/** 移植自 openidea（Apache-2.0）：复用实际编辑行为，键位由方案表提供。 */
+/** 复用实际编辑行为，键位由方案表提供。 */
 /** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center, code block and brace navigation. */
 import { EditorSelection, type EditorState, type Transaction } from "@codemirror/state";
 import { EditorView, type Command } from "@codemirror/view";

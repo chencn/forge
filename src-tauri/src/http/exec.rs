@@ -1,10 +1,9 @@
 //! 请求的发送：正文拼装、发出去、把响应读回来。
 //!
-//! 移植自 openidea `crates/ide-http/src/exec.rs`，按 forge 约定调整：
-//! `IdeResult` → `Result<T, String>`，错误统一走 [`crate::error::err`]；
-//! 取消从 `CancellationToken` 换成 forge 的 `tokio::sync::watch` 通道。
+//! `Result<T, String>`，错误统一走 [`crate::error::err`]；
+//! 取消用 forge 的 `tokio::sync::watch` 通道。
 //!
-//! 与 openidea 的分工差别：`.http` 的语法与变量替换（文件变量、环境、`{{name.response…}}`
+//! 分工：`.http` 的语法与变量替换（文件变量、环境、`{{name.response…}}`
 //! 依赖链、`$dotenv` / `$processEnv`、`# @prompt`、cURL 导入、GraphQL 包）留在前端
 //! `src/lib/httpFile.ts`——那边是 forge 既有实现，成套装且有测试，`# @prompt` 还要弹窗，
 //! 搬到这边只会多一次往返。这边只负责「把一条已经拼装好的请求发出去」，加上取消、

@@ -1,8 +1,8 @@
 /**
- * `.http` 编辑器上方的工具栏，对应 openidea `features/http-client/editor.tsx` 的
+ * `.http` 编辑器上方的工具栏：
  * `Toolbar`/`toolbarPanel`：Run All、Stop、`Run with:` 环境下拉、重载环境。
  *
- * openidea 用 CodeMirror 的 `showPanel` 挂这一条；forge 的编辑器是 React 壳，
+ * forge 的编辑器是 React 壳，
  * 直接渲染成 `.code-host` 里 `code-editor` 之上的一行，省掉一整套命令式面板生命周期。
  * 环境按文件记，所以没开文件（`path` 为 null）时只剩 Run All/Stop 是禁用态。
  */

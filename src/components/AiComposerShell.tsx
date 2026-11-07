@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { InputGroup, InputGroupAddon } from "./ui/input-group";
 
 /**
- * 会话输入框的外壳，对照参考实现的 composer 盒：单层圆角卡片（rounded-xl、
+ * 会话输入框的外壳，单层圆角卡片（rounded-xl、
  * 深一档的边框、聚焦时 3px 内描边），内部自上而下三段——附件缩略图条、
  * 可增长的编辑区、底部动作行（左侧「+ / 设置芯片」，右侧发送）。
  *

@@ -1,7 +1,6 @@
 //! 环境文件（`http-client.env.json`、`http-client.private.env.json`）。
 //!
-//! 移植自 openidea `crates/ide-http/src/env.rs`，按 forge 约定调整：
-//! `IdeResult` → `Result<T, String>`，错误统一走 [`crate::error::err`]。
+//! `Result<T, String>`，错误统一走 [`crate::error::err`]。
 //!
 //! ```json
 //! { "$shared": { "version": "v1" }, "dev": { "host": "localhost:8080" } }

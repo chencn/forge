@@ -34,11 +34,11 @@ import { refreshAiSessionHistory } from "../hooks/useAiSessions";
 import { buildCopySessionIdMenuItem, buildSendSessionIdMenuItem } from "../lib/aiInputBridge";
 
 /**
- * AI 会话侧栏列表。结构与视觉对照参考实现（codeg 的 sidebar + conversation list）：
+ * AI 会话侧栏列表。结构：
  * 固定的「新建会话 / 搜索」两行不随列表滚动，其下是「置顶 / 会话 / 最近」三个可折叠章节，
  * 会话行是带导轨线与状态点的胶囊卡片，悬停可置顶、归档并浮出详情气泡。
  *
- * forge 只支持单个项目：没有参考实现里的项目（文件夹）分组与 worktree 层级，
+ * forge 只支持单个项目：没有项目（文件夹）分组与 worktree 层级，
  * 全部会话直接落在「会话」章节；章节顺序、排序模式与「显示最近 / 已归档」
  * 的偏好存在本地（`lib/aiSidebarView`）。真正的动作仍交给上层 `onAction`。
  */
@@ -115,7 +115,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   const recentShown = recent.slice(0, view.recentLimit ?? RECENT_PAGE_SIZE);
   const recentRemaining = recent.length - recentShown.length;
 
-  /** 行尾相对时间读哪个时间戳，由该行所在章节与排序模式共同决定（对照参考实现）。 */
+  /** 行尾相对时间读哪个时间戳，由该行所在章节与排序模式共同决定。 */
   const timeLabelFor = (session: AiSession, section: AiSidebarSectionKey): string =>
     formatAiRelativeTime(section === "recent" || view.sortMode === "updated"
       ? session.lastActivity ?? session.createdAt
@@ -191,7 +191,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
   const recentFilterLabel = view.recentFilter === "claude" ? AI_NAMES.claude
     : view.recentFilter === "codex" ? AI_NAMES.codex : t("ai.sidebar.recentFilterAll");
 
-  /** 一个章节：标题行（悬停露出「新建」按钮——仅会话/最近章节，对照参考；「最近」另带筛选菜单）+ 行列表或空提示。 */
+  /** 一个章节：标题行（悬停露出「新建」按钮——仅会话/最近章节；「最近」另带筛选菜单）+ 行列表或空提示。 */
   const sectionBlock = (section: AiSidebarSectionKey, rows: ReactNode[], emptyHint: string): ReactNode => {
     const expanded = view.collapsed[section] !== true;
     const showNewChat = section === "sessions" || section === "recent";
@@ -243,7 +243,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
     if (id === "recent" && view.showRecent) {
       const rows: ReactNode[] = recentShown.map((session) => card(session, "recent"));
       // 已展开超过第一页才给「收起」入口；展开数被删到一页以内时收起按钮就该消失，
-      // 否则留下一个点了没有可见效果的开关（对照参考的 canReset 判定）。
+      // 否则留下一个点了没有可见效果的开关（canReset 判定）。
       const canReset = view.recentLimit !== null && recentShown.length > RECENT_PAGE_SIZE;
       if (recentRemaining > 0 || canReset) {
         const showMore = recentRemaining > 0;
@@ -298,7 +298,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       >
         {searching ? <AiSearchResults state={search} query={query} archived={false} onOpen={onOpen} />
           : cli.checking && !cli.checked && sessions.length === 0 ? (
-            // 首检骨架（对照参考实现）：六条与行同高的占位，比一颗孤立转圈更早说出「这里是列表」。
+            // 首检骨架：六条与行同高的占位，比一颗孤立转圈更早说出「这里是列表」。
             <div className="ai-sidebar-loading" role="status" aria-label={t("ai.runtime.loading")}>
               {Array.from({ length: 6 }, (_, index) => <span key={index} className="ai-sidebar-skeleton" aria-hidden="true" />)}
             </div>

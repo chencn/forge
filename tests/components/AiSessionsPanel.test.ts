@@ -70,7 +70,7 @@ describe("工具品牌图标配色", () => {
     expect(html).toContain('aria-hidden="true"');
   });
 
-  it("codex 使用官方渐变标，和 codeg 一致", () => {
+  it("codex 使用官方渐变标", () => {
     const html = renderToStaticMarkup(createElement(AiProviderIcon, { provider: "codex" }));
     expect(html).toContain("linearGradient");
     expect(html).toContain('stop-color="#B1A7FF"');

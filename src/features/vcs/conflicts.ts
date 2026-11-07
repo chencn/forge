@@ -1,6 +1,5 @@
 /**
- * Git 冲突标记解析与块级解决（纯函数）。
- * 移植自 openidea `features/vcs/conflicts.ts` 的标记解析与逐块取舍核心。
+ * Git 冲突标记解析与块级解决（纯函数）：标记解析与逐块取舍核心。
  */
 
 interface ConflictBlock {
@@ -105,7 +104,7 @@ export interface ResultConflict {
  * 三栏合并编辑器的起始结果，同 IDEA：合并文本里每个冲突块先填 base 段——
  * 界面上不出现标记，块的位置由 ResultConflict 记着，编辑过程中随文档改动平移。
  * `reversed`：变基/恢复 stash 撞出的冲突 git 把上游写进 stage 2，两侧对调
- * （对齐 openidea 同名函数），ours/theirs 存的是对调后的「你的/对方的」正文。
+ * ours/theirs 存的是对调后的「你的/对方的」正文。
  */
 export function initialResult(
   merged: string,

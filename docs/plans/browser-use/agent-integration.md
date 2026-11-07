@@ -270,7 +270,7 @@ CLI 不支持某个参数时，指出具体参数及可用降级路径；不把�
 - Forge `src-tauri/src/ai_runtime/codex.rs:338`：MCP 状态查询；`:992-1024`：new/resume 参数；`:1005`：动态工具仅 start。
 - Forge `src-tauri/src/ai_runtime/claude.rs:497`：实际 MCP 初始化信息解析。
 - Forge `src-tauri/src/ai_cli/mcp.rs:1-164`：当前原生 MCP 管理，与本方案运行时注入的区别。
-- codeg `src-tauri/src/acp/connection.rs:6682-6750`、`:7332-7460`：恢复路径与 per-launch 注入参考。其 `DISABLE_MCP_CONFIG_FILTERING` 是 codex-acp 行为，不作为 Codex CLI 通用设置。
+- 恢复路径与 per-launch 注入参考（对应外部实现 `connection.rs:6682-6750`、`:7332-7460`）。其 `DISABLE_MCP_CONFIG_FILTERING` 是 codex-acp 行为，不作为 Codex CLI 通用设置。
 - 本机 `codex-cli 0.164.0` 的 `app-server generate-json-schema --experimental`：`ThreadStartParams` / `ThreadResumeParams` 字段。调查产物仅写用户 TEMP，未作为仓库固定依赖。
 - 本机 Claude Code `2.1.308 --help`：上述启动参数支持。
 - [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)：MCP、主/子代理提示、工具限制、no-chrome 与 system prompt snapshot。

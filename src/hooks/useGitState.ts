@@ -174,7 +174,7 @@ export function useGitState(
         const held = current.get(root);
         return held?.id === next.id ? new Map(current).set(root, { ...held, phase: succeeded ? "success" : "error" }) : current;
       });
-      // 对齐 OpenIDEA 的任务收尾：保留 600ms；每个仓库独立，切回时仍能看见运行状态。
+      // 任务收尾保留 600ms；每个仓库独立，切回时仍能看见运行状态。
       const timer = setTimeout(() => {
         operationTimers.current.delete(timer);
         setOperations((current) => {

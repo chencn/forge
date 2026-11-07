@@ -3,7 +3,7 @@ import { useI18n } from "../i18n";
 import { AI_CHAT_WIDTH_KEY_STEP, aiChatWidthClamped, setAiChatHostWidth, setAiChatWidth } from "../lib/aiChatWidth";
 
 /**
- * 聊天列宽的左右拖拽手柄（对照参考实现的 chat-width-handles）。
+ * 聊天列宽的左右拖拽手柄。
  *
  * 命中区 12px、可见线 1px；拖拽**对称放大**——从左缘向外拖多少，右缘同步放多少，
  * 内容列始终居中。拖动中只改预览不落盘，松手才持久化；双击、Esc、Home 恢复默认；

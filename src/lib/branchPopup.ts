@@ -6,7 +6,7 @@ export type BranchPopupRow =
   | { type: "group"; key: string; label: string; depth: number; expanded: boolean; parent?: string }
   | { type: "ref"; key: string; label: string; depth: number; parent: string; target: RefTarget; current: boolean; favorite: boolean; upstream: string; ahead: number; behind: number };
 
-/** 沿用 OpenIDEA 的扁平树模型：搜索展开命中路径，退出搜索恢复用户自己的折叠状态。 */
+/** 扁平树模型：搜索展开命中路径，退出搜索恢复用户自己的折叠状态。 */
 export function branchPopupRows(branches: readonly GitBranch[], tags: readonly GitTag[], recent: readonly string[], query: string,
   options: BranchSettings, expanded: ReadonlyMap<string, boolean>, labels: Record<"recent" | "local" | "remote" | "tag", string>): BranchPopupRow[] {
   const needle = query.trim().toLocaleLowerCase();

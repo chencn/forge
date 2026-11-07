@@ -333,7 +333,7 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     // 括号按嵌套深度上色：IDEA 默认就是这样，只影视口，几千行的文件也扛得住。
     rainbowSlot.of([]),
     highlightSelectionMatches(),
-    // 文件内查找统一用 OpenIdea 风格的工具栏，不再让引擎临时安装默认面板。
+    // 文件内查找统一用自绘风格的工具栏，不再让引擎临时安装默认面板。
     forgeSearch,
     copyLineOnEmpty,
     syntaxHighlighting(forgeHighlightStyle),
@@ -771,7 +771,7 @@ export function gutterWidth(view: EditorView): number {
 
 // ---------------------------------------------------------------- 保存与偏好
 
-// --- Ctrl+滚轮缩放（对齐 openidea prefs.ts 的 fontZoom / stepFontZoom）---
+// --- Ctrl+滚轮缩放（fontZoom / stepFontZoom）---
 
 /** 本编辑器的字号缩放偏移（px）。 */
 const setFontZoom = StateEffect.define<number>();

@@ -1,7 +1,6 @@
 /**
  * 提交图 lane 状态机：按拓扑序（子在前）给每行算出上下两半的连线段。
- * 移植自 openidea `features/vcs/graph.ts` 的 computeGraph（纯前端函数，
- * 从 parents 客户端算出，分页可延续——state 传出下一页接着用）。
+ * 纯前端函数，从 parents 客户端算出，分页可延续——state 传出下一页接着用。
  */
 
 export interface GraphSegment {
@@ -130,7 +129,7 @@ export function computeGraph(
 /**
  * Collapse Linear Branches：把线性链（单父单子、无引用）的提交藏起来，只留
  * 分叉点、合并点、端点和带引用的提交，中间用虚线边连着。`keep` 里的（HEAD）不藏。
- * 对齐 openidea graph.ts 同名函数。
+
  */
 export function collapseLinear<C extends { id: string; parents: readonly string[]; refs?: readonly string[] }>(
   commits: readonly C[],

@@ -1,5 +1,5 @@
 /**
- * 状态栏里跟着活动编辑器走的两段（对齐 openidea StatusItems 的 CaretStatus / IndentStatus）：
+ * 状态栏里跟着活动编辑器走的两段（CaretStatus / IndentStatus）：
  * Line:Column 与缩进。数据来自 lib/caretStatus 的外部存储，订阅者只有这两个小组件，
  * 按键不会牵动整棵 App 树。
  */

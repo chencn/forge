@@ -20,7 +20,7 @@ function percentLabel(percent: number | undefined): string {
 }
 
 /**
- * 上下文用量芯片（保留 forge 的 Claude 上下文构成，位置与样式对照参考实现）：
+ * 上下文用量芯片（保留 forge 的 Claude 上下文构成）：
  * 环形进度 + 百分比，点开向上弹出紧凑用量卡——标题行 + 进度条 + 已用/窗口 +
  * token 明细行；压缩建议只在真的值得做（或正在压缩）时出现，不常驻占版面；
  * 构成明细收在同一弹层的滚动区里。
@@ -59,7 +59,7 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
   const contextTotal = currentContext?.total ?? usage?.context ?? shownContext?.total;
   const contextWindow = currentContext?.window ?? usage?.window ?? shownContext?.window;
   const percent = contextPercent({ context: contextTotal, window: contextWindow });
-  // 芯片只报占用比例；拿不到比例时退回报累计 token（对照参考的 Coins 分支）。
+  // 芯片只报占用比例；拿不到比例时退回报累计 token。
   const chipLabel = percent !== undefined ? percentLabel(percent) : usage?.total !== undefined ? formatTokenCount(usage.total) : percentLabel(undefined);
   // 窗口多大只有 CLI 知道：把本轮报到的那个窗口按 (引擎, 模型) 存下来，
   // 供下一次还没报告时当分母用（届时会标明来源，并拒绝自动压缩）。
@@ -89,7 +89,7 @@ export default function AiContextChip({ triggerRef, provider, usage, context, co
     return () => { window.removeEventListener("pointerdown", dismiss, true); window.removeEventListener("keydown", escape); };
   }, [open]);
 
-  /** token 明细行：有数的才画，合计行压一条上边线（对照参考的 token rows）。 */
+  /** token 明细行：有数的才画，合计行压一条上边线。 */
   const tokenRows: { key: string; label: string; value: number }[] = [];
   if (usage?.input !== undefined) tokenRows.push({ key: "input", label: t("ai.usage.input"), value: usage.input });
   if (usage?.output !== undefined) tokenRows.push({ key: "output", label: t("ai.usage.output"), value: usage.output });

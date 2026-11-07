@@ -14,7 +14,7 @@
 
 ## 已做
 
-已完成 Forge、snow-app、codeg 调查、本机 CLI 契约核对及 Windows 核心实现，完成三轮代码与方案审查。27 组真实 WebView2 / CLI 回归已通过，另以真实窗口 UI Automation 验证右侧栏、表单、查找、权限、元素标记和草稿追加；未运行真实模型端到端任务与历史会话续聊，完整验证结果见 [实施记录](./implementation.md)。
+已完成浏览器方案调查、本机 CLI 契约核对及 Windows 核心实现，完成三轮代码与方案审查。27 组真实 WebView2 / CLI 回归已通过，另以真实窗口 UI Automation 验证右侧栏、表单、查找、权限、元素标记和草稿追加；未运行真实模型端到端任务与历史会话续聊，完整验证结果见 [实施记录](./implementation.md)。
 
 ## 方案
 

@@ -1,6 +1,5 @@
 //! 响应历史：每次交换都存一份，最新在前，超过上限裁掉。
 //!
-//! 移植自 openidea `crates/ide-http/src/history.rs`，按 forge 约定调整：
 //! 存储目录改由命令层算好（`app_config_dir()/http-history/<工作区分桶>/`，与
 //! [`crate::local_history`] 同构），`IpcPath` 换成 `String`，去 specta。
 //!

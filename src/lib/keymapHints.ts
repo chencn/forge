@@ -31,7 +31,7 @@ function schemeChord(scheme: KeymapScheme, action: string): string | undefined {
 }
 
 /**
- * 空编辑区跟 OpenIDEA 列同样五行。最近文件和导航栏这边没有动作，只显示、不能点。
+ * 空编辑区列五行。最近文件和导航栏这边没有动作，只显示、不能点。
  * VS Code 没有「最近文件」的默认键，这一行不写键，避免把 IDEA 的 Ctrl+E 漏过去。
  */
 export function shortcutHints(scheme: KeymapScheme): ShortcutHint[] {

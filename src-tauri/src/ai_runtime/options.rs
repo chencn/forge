@@ -295,7 +295,7 @@ fn apply_claude_mappings(catalog: &mut Value, mappings: &Value) {
             for (alias, key) in CLAUDE_MODELS {
                 if model["id"] == alias {
                     if let Some(target) = mappings[key].as_str().map(str::trim).filter(|value| !value.is_empty()) {
-                        // 槽位被配置后，显示名就是用户填的模型（对照参考实现），
+                        // 槽位被配置后，显示名就是用户填的模型，
                         // 槽位本身留给前端做「自定义 {slot} 模型」的说明。
                         model["name"] = json!(target);
                         model["configuredModel"] = json!(target);
@@ -307,7 +307,7 @@ fn apply_claude_mappings(catalog: &mut Value, mappings: &Value) {
     }
 }
 
-/// Claude 的别名在启动前解析为当前工作区配置目标，保持参考实现的真实调用语义。
+/// Claude 的别名在启动前解析为当前工作区配置目标。
 pub fn configured_model(catalog: &Value, selector: &str) -> String {
     let (bare, suffix) = selector.strip_suffix("[1m]").map_or((selector, ""), |bare| (bare, "[1m]"));
     let target = catalog["models"].as_array().and_then(|models| models.iter().find(|model| model["id"] == bare))

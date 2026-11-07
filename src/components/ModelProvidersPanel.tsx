@@ -86,7 +86,7 @@ const snapshot = (item: ModelProvider): string => {
 
 /**
  * 保存前的必填校验：端点与密钥是供应商存在的意义，缺一个就不该保存。
- * 编辑时密钥留空表示「沿用原值」（与 codeg 一致），所以只有新建才要求它。
+ * 编辑时密钥留空表示「沿用原值」，所以只有新建才要求它。
  */
 const missingField = (item: ModelProvider, isNew: boolean): TranslationKey | null => {
   if (!item.name.trim()) return "providers.nameRequired";
@@ -96,7 +96,7 @@ const missingField = (item: ModelProvider, isNew: boolean): TranslationKey | nul
 };
 
 /**
- * 模型供应商：字段与 codeg 的供应商表单一一对应——名称、API 地址、API 密钥、智能体类型，
+ * 模型供应商：名称、API 地址、API 密钥、智能体类型，
  * 然后按类型给模型：Claude 六个槽位加「自定义模型选项」三项，Codex 一个模型。
  * 应用时写进 CLI 真正读取的位置：Claude 的 settings.json env、Codex 的 auth.json/config.toml。
  */

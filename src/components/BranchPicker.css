@@ -10,7 +10,7 @@
   --bg-tree-hover: var(--bg-hover);
   --bg-selected: var(--bg-active);
 }
-/* OpenIDEA 弹层定位后 80ms 入场，关闭直接卸载；不让菜单拖延下一个操作。 */
+/* 弹层定位后 80ms 入场，关闭直接卸载；不让菜单拖延下一个操作。 */
 .branch-popup[data-positioned] { animation: branch-popup-in var(--dur-fast, 80ms) var(--ease); }
 @keyframes branch-popup-in { from { opacity: 0; transform: translateY(-2px); } }
 .branch-popup.is-keyboard[data-positioned] { animation: none; }
@@ -25,7 +25,7 @@
 .branch-popup-group { color: var(--fg-secondary); }
 .branch-popup-group > .is-expanded { transform: rotate(90deg); }
 .branch-popup-row.is-current { color: var(--fg-strong); }
-/* 当前引用沿用参考窗口的图标和小标签；整行选区仍使用中性底色。 */
+/* 当前引用的图标和小标签；整行选区仍使用中性底色。 */
 .branch-popup-row > .branch-popup-current-icon { color: var(--accent); }
 .branch-popup-current { flex: none; padding: 0 5px; border-radius: var(--radius-control, 4px); background: var(--accent-soft); color: var(--accent); font-size: var(--fs-tiny, 11px); line-height: 15px; }
 .branch-popup-row.is-disabled { color: var(--fg-faint); cursor: default; }

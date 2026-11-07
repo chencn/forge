@@ -125,7 +125,7 @@ interface Selection {
   moved: boolean;
 }
 
-/** 对齐 OpenIDEA：语法配色与搜索命中叠加，语法尚未加载时先显示命中。 */
+/** 语法配色与搜索命中叠加，语法尚未加载时先显示命中。 */
 function CodeText({ path, text, indices }: { path: string; text: string; indices: readonly number[] }) {
   const language = languageForPath(path);
   const extension = pathExtension(path);

@@ -34,7 +34,7 @@ type LiteralKind = "comment" | "string";
 const literalHighlighter = tagHighlighter([{ tag: tags.comment, class: "comment" }, { tag: tags.string, class: "string" }]);
 const literalCache = new WeakMap<object, Array<Scope & { kind: LiteralKind }>>();
 
-/** 与 OpenIdea 一样按语法高亮标签分类；模板字符串里的插值表达式仍是代码。 */
+/** 按语法高亮标签分类；模板字符串里的插值表达式仍是代码。 */
 function literalKindAt(state: EditorState, pos: number): LiteralKind | null {
   const tree = ensureSyntaxTree(state, state.doc.length, 50) ?? syntaxTree(state);
   let ranges = literalCache.get(tree);
@@ -395,7 +395,7 @@ class FindPanel implements Panel {
       for (let result = cursor.next(); !result.done; result = cursor.next()) {
         total++;
         if (result.value.from === selected.from && result.value.to === selected.to) current = total;
-        // 与 OpenIdea 一样限制计数耗时；大文件仍由引擎负责导航，不阻塞输入。
+        // 限制计数耗时；大文件仍由引擎负责导航，不阻塞输入。
         if (total >= 9_999 || (total % 256 === 0 && performance.now() - start > 30)) { capped = true; break; }
       }
     }

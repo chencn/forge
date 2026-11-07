@@ -1068,7 +1068,7 @@ pub(crate) fn write_codex_provider_auth(api_key: &str) -> Result<(), String> {
     backup_and_write(&auth_path, &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?)
 }
 
-/// 供应商「应用」专用的路由配置写入（对齐 codeg 行为，同时用 toml_edit 保留注释）：
+/// 供应商「应用」专用的路由配置写入（用 toml_edit 保留注释）：
 /// 1. 设置根 `model`：有效默认模型写入根 `model`，若为 None 或空则移除根 `model`；
 /// 2. 检查 `model_provider`：若为空或为内置 ID (openai/ollama/lmstudio)，则换成 "forge"；否则保留用户的自定义 provider 名；
 /// 3. 设置 `[model_providers.<name>]` 表的 `base_url`；

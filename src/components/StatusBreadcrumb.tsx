@@ -35,7 +35,7 @@ interface SymbolMenu {
 }
 
 /**
- * 对齐 OpenIDEA：工程 › 目录 › 文件 › 光标所在符号，点击每段浏览其子项。
+ * 层级：工程 › 目录 › 文件 › 光标所在符号，点击每段浏览其子项。
  * 目录仍复用文件系统入口；符号来自源码编辑器手上的大纲，包含尚未保存的改动。
  */
 export default function StatusBreadcrumb({

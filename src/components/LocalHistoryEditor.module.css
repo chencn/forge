@@ -1,4 +1,4 @@
-/* 与 OpenIDEA 相同的编辑器时间线比例；选区仅用主题中性色。 */
+/* 编辑器时间线比例；选区仅用主题中性色。 */
 .root { display: flex; height: 100%; min-height: 0; min-width: 0; background: var(--bg-editor, var(--bg-primary)); }
 .sidebar { display: flex; flex-direction: column; flex: 0 0 260px; min-height: 0; border: 1px solid var(--border, #43454a); border-top: 0; }
 .header { display: flex; align-items: center; gap: 4px; min-height: var(--h-header, 40px); padding: 0 8px 0 12px; border-bottom: 1px solid var(--border, #43454a); }

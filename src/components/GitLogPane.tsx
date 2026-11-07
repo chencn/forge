@@ -149,10 +149,10 @@ const SINCE_MS: Record<string, number> = {
   "30d": 30 * 24 * 60 * 60 * 1000,
 };
 
-/** 日志一页多少条；滚动到底自动续一页（对齐 openidea logStore 的分页口径）。 */
+/** 日志一页多少条；滚动到底自动续一页。 */
 const LOG_PAGE = 200;
 
-// --- 提交图渲染（对齐 openidea GitLog.tsx 的 GraphCell） ---
+// --- 提交图渲染 ---
 
 /** 一行日志的高度，SVG 线段的纵向坐标全靠它；.log-commit 的行高与此钉死。 */
 const GRAPH_ROW = 22;
@@ -398,7 +398,7 @@ function GitLogPane({
   /** 文件历史过滤：只列改到这个路径的提交；空表示不限。 */
   /** 收起来的分组，包括每个远端自己那一层；不在里面就是展开。 */
   const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set());
-  /** OpenIDEA 的 18/54/28 三栏比例；拖动只重分相邻两栏。 */
+  /** 18/54/28 三栏比例；拖动只重分相邻两栏。 */
   const [weights, setWeights] = useState<Record<LogColumn, number>>({
     refs: 1.8,
     list: 5.4,
@@ -434,11 +434,11 @@ function GitLogPane({
   } | null>(null);
 
   const [commits, setCommits] = useState<GitCommit[]>([]);
-  // 提交图：从 parents 客户端算 lane（openidea graph.ts 同款状态机），行序与 commits 一一对应。
-  // 两个视图变换（折叠线性链、藏长边）和 openidea 一样排在铺 lane 之前/之后。
+  // 提交图：从 parents 客户端算 lane，行序与 commits 一一对应。
+  // 两个视图变换（折叠线性链、藏长边）分别排在铺 lane 之前/之后。
   const graphRows = useMemo<GraphRow[]>(() => {
     // refs 是自由文本标注（`HEAD -> main`），非空即视为带引用——折叠时这些提交不藏，
-    // HEAD tip 天然在内（keep 集合对齐 openidea 只放 HEAD 哈希，这里没有现成哈希，靠 refs 兜住）。
+    // HEAD tip 天然在内（keep 集合只放 HEAD 哈希，这里没有现成哈希，靠 refs 兜住）。
     const source = commits.map((c) => ({ id: c.hash, parents: c.parents, refs: c.refs ? [c.refs] : [] }));
     const collapsed = options.collapseLinear
       ? collapseLinear(source, new Set<string>())

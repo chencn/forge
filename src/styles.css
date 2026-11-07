@@ -21,7 +21,7 @@ body,
 body {
   background: var(--app-bg);
   color: var(--text-primary);
-  /* 与 OpenIDEA 的基础排版一致；控件继承同一字号与基线。 */
+  /* 基础排版；控件继承同一字号与基线。 */
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
   line-height: 1.4;
@@ -5721,7 +5721,7 @@ body.is-editor-tab-dragging * {
   line-height: 1.6;
 }
 
-/* 空编辑区跟 OpenIDEA：两列，动作名右对齐，快捷键用链接色，不画按键框。 */
+/* 空编辑区：两列，动作名右对齐，快捷键用链接色，不画按键框。 */
 .welcome-hints {
   display: grid;
   grid-template-columns: auto auto;
@@ -6885,7 +6885,7 @@ body.is-editor-tab-dragging * {
   display: none;
 }
 
-/* 编辑器内独立符号链，对齐 OpenIDEA 的 26px 底部条；不增加装饰竖边。 */
+/* 编辑器内独立符号链，26px 底部条；不增加装饰竖边。 */
 .code-crumbs {
   display: flex;
   align-items: center;
@@ -8998,7 +8998,7 @@ body.is-editor-tab-dragging * {
   overflow: auto;
 }
 
-/* 结果栏未解决冲突的行高亮与上方按钮条（对齐 openidea MergeEditor 的 baseTheme）。 */
+/* 结果栏未解决冲突的行高亮与上方按钮条。 */
 .tri-merge-marker {
   background: color-mix(in srgb, var(--vcs-danger) 14%, transparent);
 }

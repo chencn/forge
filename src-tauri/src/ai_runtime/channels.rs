@@ -86,7 +86,7 @@ pub fn active(store: &Store, provider: Provider) -> Option<Channel> {
     engine.active.as_deref().and_then(|id| engine.items.iter().find(|item| item.id == id)).cloned()
 }
 
-/// 与 codeg 同款的掩码：按 Unicode 标量切，CJK 输入法打出的全角字符不会让切片 panic。
+/// 掩码按 Unicode 标量切：CJK 输入法打出的全角字符不会让切片 panic。
 pub fn mask_api_key(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     let len = chars.len();

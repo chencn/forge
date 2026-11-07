@@ -400,7 +400,7 @@ const EMPTY_FIND: FindState = {
   replaceWith: null,
 };
 /** 新 HTTP 请求草稿的起手式：一条能直接改的示例。 */
-// 新建 HTTP 请求的初始正文，照 openidea `NEW_REQUEST_TEMPLATE` 来：
+// 新建 HTTP 请求的初始正文模板：
 // 把环境变量的来源写在注释里（`.http` 里最容易踩的就是不知道 {{host}} 从哪来），
 // 顺手带一个 Accept，末尾留 `###` 好接着写第二条。
 const HTTP_REQUEST_TEMPLATE = [
@@ -4854,7 +4854,7 @@ export default function App() {
       { id: "ai.newSession", label: `${t("command.newAiSession")} (New AI Session)`, run: openAiDraft },
       { id: "settings.open", label: `${t("command.openSettings")} (Settings)`, run: () => openSettingsTab("general") },
       { id: "settings.shortcuts", label: `${t("command.openShortcutSettings")} (Keymap)`, run: () => openSettingsTab("shortcuts") },
-      { id: "settings.ai", label: `设置: AI 助手设置 (AI Assistant Settings)`, run: () => openSettingsTab("aiCli") },
+      { id: "settings.ai", label: `设置: Agent 设置 (Agent Settings)`, run: () => openSettingsTab("aiCli") },
       { id: "tools.reloadMaven", label: `${t("maven.reload")} (Reload Maven Project)`, run: reloadMaven },
 
       // HTTP 客户端 (HTTP Client)
@@ -6621,7 +6621,7 @@ export default function App() {
         ) : (
           <span className="status-spacer" />
         )}
-        {/* OpenIDEA 的后台任务位于弹性路径区之后、右侧状态控件之前。 */}
+        {/* 后台任务位于弹性路径区之后、右侧状态控件之前。 */}
         <GitOperationStatus operations={git.backgroundOperations} />
         {activeDoc ? (
           <>

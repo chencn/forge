@@ -21,8 +21,8 @@ interface AiProcessGroupProps {
  *
  * 一轮长任务里几十条工具调用挨着排，回复正文被挤到看不见。折起来之后一屏只剩
  * 「标题 + 分类细分 + 正文」，想看过程再展开，展开也先只给最近 8 条。
- * 头部对照参考 ActivityHeader：标题在跑时微光、细分用等宽字体、箭头收在文字后；
- * 完成后的总耗时与失败跳转也在这里（对照参考的 elapsed 与 jump-to-failure）。
+ * 头部：标题在跑时微光、细分用等宽字体、箭头收在文字后；
+ * 完成后的总耗时与失败跳转也在这里。
  */
 export default memo(function AiProcessGroup({ entries, active, render }: AiProcessGroupProps) {
   const { t } = useI18n();
@@ -34,7 +34,7 @@ export default memo(function AiProcessGroup({ entries, active, render }: AiProce
   const group = useRef<HTMLElement>(null);
   const expanded = disclosure.active === active ? disclosure.open : active;
   const page = expanded ? pageProcess(entries, shown) : { visible: [] as AiEntry[], hidden: entries.length };
-  // 细分（对照参考 ActivityHeader）：总步数 + 按类计数，等宽字体排在一行；失败数单独
+  // 细分：总步数 + 按类计数，等宽字体排在一行；失败数单独
   // 成按钮，点了展开整段并滚到第一条失败——错误埋在折叠里等于没报。
   const breakdown = useMemo(() => {
     let commands = 0, edits = 0, thinking = 0;

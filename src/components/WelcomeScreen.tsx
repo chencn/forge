@@ -12,7 +12,7 @@ interface WelcomeScreenProps {
 }
 
 /**
- * 空编辑区跟 OpenIDEA 一样：几条导航提示，键名右对齐，没有标题和按键框。
+ * 空编辑区：几条导航提示，键名右对齐，没有标题和按键框。
  * 开工程这件事只有主工具栏那颗入口，这一页不重复摆按钮。
  */
 export default function WelcomeScreen({ keymap, workspace, onSearchEverywhere, onGotoFile }: WelcomeScreenProps) {

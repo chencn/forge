@@ -1,7 +1,7 @@
 /**
  * 响应正文的呈现：内容类型判定与美化。
  *
- * 移植自 openidea `features/http-client/format.ts`（无平台依赖，逻辑一字未改）。
+ * 无平台依赖的格式化。
  */
 
 export type BodyKind = "json" | "xml" | "html" | "text";

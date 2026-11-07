@@ -14,7 +14,7 @@ export function isNewCommitPath(change: { untracked: boolean; indexStatus: strin
 
 /**
  * Windows 拒绝的路径段。保留名看去掉扩展名后的主干，非法字符看每一段。
- * 对齐 OpenIDEA `badFileName`。
+
  */
 export function badCommitNames(paths: readonly string[]): { reserved: string[]; invalid: string[] } {
   const reserved: string[] = [];

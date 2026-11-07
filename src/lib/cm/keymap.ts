@@ -51,7 +51,7 @@ function writable(command: Command): Command {
   return (view: EditorView) => (view.state.readOnly ? false : command(view));
 }
 
-/** 查找保持单行；替换入口才展开第二行，焦点仍在查找词上，与 OpenIdea 一致。 */
+/** 查找保持单行；替换入口才展开第二行，焦点仍在查找词上。 */
 function find(replace: boolean): Command {
   return (view: EditorView) => openFind(view, replace);
 }

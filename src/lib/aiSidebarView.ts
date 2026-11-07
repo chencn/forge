@@ -4,7 +4,7 @@ import type { AiProvider } from "./aiCli";
 /**
  * AI 会话侧栏的视图偏好（排序、章节顺序、折叠、显示最近/归档）与工具条共享。
  *
- * 参考实现里这些状态由侧栏组件自持；这里抽成模块级小 store，是因为 forge 的
+ * 这些状态抽成模块级小 store，是因为 forge 的
  * 面板标题行（定位/展开全部/视图选项按钮）与列表分属两个组件，两边要读同一份值。
  * 只存当前 WebView 的 localStorage，不进后端设置。
  */
@@ -19,7 +19,7 @@ export type AiSidebarProviderFilter = AiProvider;
 export const AI_SIDEBAR_SECTION_IDS: readonly AiSidebarSectionId[] = ["sessions", "recent"];
 export const AI_SIDEBAR_SECTION_KEYS: readonly AiSidebarSectionKey[] = ["pinned", "sessions", "recent"];
 export const DEFAULT_SECTION_ORDER: readonly AiSidebarSectionId[] = ["sessions", "recent"];
-/** 「最近」章节每页条数；参考实现同值。 */
+/** 「最近」章节每页条数。 */
 export const RECENT_PAGE_SIZE = 10;
 
 const KEY = "forge:ai-sidebar-view:v1";
@@ -169,7 +169,7 @@ export function registerAiSidebarListCommands(commands: AiSidebarListCommands | 
 
 /**
  * 相对时间标签（"now" / "5m" / "3h" / "2d" / "5mo" / "1y"）。
- * 与参考实现逐字相同：紧凑的非本地化缩写，各语言下都占一行的固定小宽度。
+ * 紧凑的非本地化缩写，各语言下都占一行的固定小宽度。
  * `now` 由调用方传入，同一轮渲染共享一个值，避免同一时间在不同行上显示得不一样。
  */
 export function formatAiRelativeTime(timestamp: number | undefined, now: number): string {

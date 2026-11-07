@@ -43,7 +43,7 @@ export default function SkillsPanel() {
   const [location, setLocation] = useState("claude");
   const [content, setContent] = useState("");
   const [search, setSearch] = useState("");
-  // 预览是默认态，和 codeg 一致：技能正文主要是读的内容，编辑要显式切过去。
+  // 预览是默认态：技能正文主要是读的内容，编辑要显式切过去。
   const [preview, setPreview] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ error: boolean; text: string } | null>(null);

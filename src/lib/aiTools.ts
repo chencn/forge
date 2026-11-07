@@ -39,7 +39,7 @@ export function describeAiTool(entry: AiEntry, details = true): ToolView {
     cwd: string(input.cwd) ?? string(input.workdir), exitCode: number(result.exitCode) ?? number(input.exitCode), durationMs: number(result.durationMs) ?? number(input.durationMs) };
   if (command) {
     view.kind = "command";
-    // 行标题说「这是干什么的」：优先 agent 自己写的命令描述（对照参考实现 CommandLabel），
+    // 行标题说「这是干什么的」：优先 agent 自己写的命令描述（CommandLabel），
     // 没有描述才回落命令行本身——不从命令文本猜用途，猜错比显示原文更糟。
     const description = string(input.description)?.split(/\r?\n/, 1)[0].trim();
     view.summary = description || command.split(/\r?\n/, 1)[0];
@@ -158,7 +158,7 @@ export interface AiEditedFile {
 export interface AiEditSummary { files: AiEditedFile[]; fileCount: number; additions?: number; deletions?: number }
 
 /**
- * 常见命令 → 语义标题（对照参考实现「按用途命名命令行」）：行上说的是「构建 xxx」
+ * 常见命令 → 语义标题（「按用途命名命令行」）：行上说的是「构建 xxx」
  * 这种人话，原始命令收进悬浮提示与展开明细。认不出的命令如实回落原文——
  * 宁可显示原命令，也不编一个猜错的用途。
  */
@@ -241,7 +241,7 @@ export function isFileEditEntry(entry: AiEntry): boolean {
   return ["edit", "add", "delete", "move"].includes(describeAiTool(entry, false).kind);
 }
 
-/** 编辑行的行号范围（对照参考实现 `Edited path L44–46`）：只认官方字段，缺失不编。 */
+/** 编辑行的行号范围（`Edited path L44–46`）：只认官方字段，缺失不编。 */
 export function toolLineRange(view: ToolView): { start?: number; end?: number } {
   const patchStarts = view.patches.map((patch) => patch.start).filter((value): value is number => value !== undefined);
   const actionStarts = view.actions.map((action) => action.start).filter((value): value is number => value !== undefined);

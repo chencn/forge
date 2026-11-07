@@ -32,7 +32,7 @@ interface AiPlanApprovalProps {
 }
 
 /**
- * 计划审批卡：固定钉在输入框上方，和 codeg 的 plan-approval-card 一致。
+ * 计划审批卡：固定钉在输入框上方。
  * 批准不携带自由文本；要求修改必须写清反馈；暂不执行只落本地账。
  */
 export default function AiPlanApproval({ plan, disabled = false, onApprove, onRequestChanges, onDefer }: AiPlanApprovalProps) {

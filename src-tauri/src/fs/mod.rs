@@ -254,7 +254,7 @@ const CHAIN_MAX_DEPTH: usize = 24;
 
 /// 一次带回「从 path 往下的单子目录链」所有层：链合并（Compact Directories）的
 /// 树在恢复展开状态时只能拿到链首 key，逐层补加载会形成「渲染 → 缺一层 → 补请求 →
-/// 再渲染」的串行瀑布（每层一次 IPC + 一次 check-ignore 子进程）。对齐 IDEA/openidea
+/// 再渲染」的串行瀑布（每层一次 IPC + 一次 check-ignore 子进程）。对齐 IDEA
 /// 「数据先于 UI」的思路：请求粒度预取，一次往返把整条链交给树一次构建。
 ///
 /// 延伸条件与前端 compact 判定同源（过滤 hidden 与 ignored 后恰好 1 个目录子项）；

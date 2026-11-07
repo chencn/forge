@@ -1,6 +1,6 @@
 # 内置浏览器
 
-Windows 上由宿主持有一块原生 WebView2 页面，用户看得见，AI 也能操作，每一步都按「哪个工程、哪个会话、哪一张页」这三层身份授权。设计动机、参考项目对比与完整目标见 [../../plans/browser-use/](../../plans/browser-use/)，本文只写已经跑起来的那部分怎么运作。命令契约见 [../../backend/commands.md](../../backend/commands.md) 的「内置浏览器（8）」，错误码见 [../../backend/error-model.md](../../backend/error-model.md)。
+Windows 上由宿主持有一块原生 WebView2 页面，用户看得见，AI 也能操作，每一步都按「哪个工程、哪个会话、哪一张页」这三层身份授权。设计动机、方案对比与完整目标见 [../../plans/browser-use/](../../plans/browser-use/)，本文只写已经跑起来的那部分怎么运作。命令契约见 [../../backend/commands.md](../../backend/commands.md) 的「内置浏览器（8）」，错误码见 [../../backend/error-model.md](../../backend/error-model.md)。
 
 ## 一条链路，两个入口
 

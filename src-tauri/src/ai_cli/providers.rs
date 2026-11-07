@@ -118,7 +118,7 @@ fn load(app: &AppHandle) -> Result<Vec<ModelProvider>, String> {
 }
 
 /// 保存前的结构性检查：类型创建后不能改，仍被 CLI 绑定的不能删。
-/// 这两条与 codeg 的实现一致：改类型会把一种 CLI 的模型写法解释成另一种的，
+/// 这两条规则的原因：改类型会把一种 CLI 的模型写法解释成另一种的，
 /// 删掉被绑定的条目只会让绑定那一栏变成「绑定的供应商已不存在」。
 fn structural(
     previous: &[ModelProvider],
@@ -149,7 +149,7 @@ fn structural(
 }
 
 /// 编辑时把密钥清空等于「沿用原值」：界面上是密码框，用户看到的是掩码，清空多半是误操作。
-/// 与 codeg 的编辑对话框同一条口径（空密钥不提交，原值保留）。
+/// 与编辑对话框同一条口径（空密钥不提交，原值保留）。
 fn keep_keys(previous: &[ModelProvider], providers: &mut [ModelProvider]) {
     for provider in providers {
         if provider.api_key.trim().is_empty() {

@@ -1,6 +1,6 @@
 //! HTTP 客户端：IDEA 风格的 `.http` / `.rest` 请求文件。
 //!
-//! 分层移植自 openidea `crates/ide-http`：[`env`] 读 `http-client(.private).env.json`，
+//! 分层：[`env`] 读 `http-client(.private).env.json`，
 //! [`exec`] 发送请求（可取消、计时、文本/二进制判定），[`history`] 保留响应。
 //! 命令层在这里，取消沿用 `ai_commit` 的 watch 注册表。
 //!

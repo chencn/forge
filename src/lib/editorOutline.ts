@@ -43,7 +43,7 @@ export function clearOutline(path: string): void {
   for (const notify of listeners.get(path) ?? []) notify();
 }
 
-/** 对齐 OpenIDEA symbolChain：逐层找包含光标的范围，按从外到内排列。 */
+/** 逐层找包含光标的范围，按从外到内排列。 */
 export function symbolChain(items: readonly OutlineSymbol[], position: number): OutlineSymbol[] {
   const chain: OutlineSymbol[] = [];
   let level = items;

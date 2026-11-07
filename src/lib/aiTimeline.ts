@@ -37,7 +37,7 @@ export type AiTimelineItem =
  * redacted thinking 只剩签名（实测两份 Claude 会话的 44 条思考事件里 32 条是空的）。
  * 逐条摆成一行「思考」、点开什么都没有，看着就像界面坏了。留着的唯一理由是在流式途中——
  * 空正文恰好是「还在想」的信号，而且不返回摘要的模型自始至终只有这一条空的。
- * 所以只认本轮末尾那一条（对照参考实现 codeg：历史路径丢掉，流式路径留着）。
+ * 所以只认本轮末尾那一条：历史路径丢掉，流式路径留着。
  */
 export function liveThinking(entries: readonly AiEntry[], running: boolean): AiEntry | null {
   if (!running) return null;
@@ -62,7 +62,7 @@ export function groupAiTimeline(entries: readonly AiEntry[], runningRunId?: stri
     run = [];
   };
   for (const entry of rows) {
-    // 所有的工具调用（含文件修改）与思考连续归纳进过程段中（对照参考实现）：
+    // 所有的工具调用（含文件修改）与思考连续归纳进过程段中：
     // 两个气泡之间至多只有一个折叠段，展开看各步骤明细，避免交替切成多个碎片段落。
     const process = PROCESS_KINDS.includes(entry.kind);
     // 跨轮不并段：两段的归属轮次要唯一，否则「停止这一轮」之类的操作没有对象。

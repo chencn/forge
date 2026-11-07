@@ -112,7 +112,7 @@ function AiQuestionRecord({ entry }: { entry: AiEntry }) {
 }
 
 /**
- * 子代理（Task 工具）的委派卡片，对照参考实现的 agent-row + 委派卡：
+ * 子代理（Task 工具）的委派卡片：
  * 一行「代理名 + 任务一句话 + 当前动作 + 状态 + 时钟」，展开是它自己的迷你时间线——
  * 子代理的正文、思考与工具调用（事件带 parent 归属）全部收在这里，不再平铺主对话。
  * 历史里 CLI 原生文件不带这些过程（子代理记录在独立的 subagents 目录，forge 不导入），
@@ -191,8 +191,8 @@ function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiE
 }
 
 /**
- * 行尾数字列（对照参考实现的 RowFigure）：编辑行给 `+N −N`，命令行给退出码或
- * 运行时钟，读取给行数。运行时钟与参考同一条规矩——不足 10 秒不显示，数字跳得
+ * 行尾数字列：编辑行给 `+N −N`，命令行给退出码或
+ * 运行时钟，读取给行数。运行时钟的规矩——不足 10 秒不显示，数字跳得
  * 太快只是噪音；计时基准是前端第一次看到这条条目的时刻。
  */
 function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
@@ -288,7 +288,7 @@ function RawDetails({ label, value }: { label: string; value: unknown }) {
 }
 
 /**
- * 工具行的摘要文字，按场景分形态（对照参考实现的 command/edit/explore 行）：
+ * 工具行的摘要文字，按场景分形态（command/edit/explore 行）：
  * 文件行只展示文件名与真实行号，完整路径放在悬停提示；命令与搜索保留原摘要。
  * `icon` 为假时不画行内图标——过程行里状态环就是唯一图形，再叠一枚图标是重复。
  */
@@ -358,7 +358,7 @@ export function AiToolSummary({ entry, icon = true, collapsible = false, fileInd
   </>;
 }
 
-/** Grep 类输出的 `路径:行:内容` 行拆成按文件分组的命中列表（对照参考实现），行不跳编辑器。 */
+/** Grep 类输出的 `路径:行:内容` 行拆成按文件分组的命中列表，行不跳编辑器。 */
 function SearchHits({ output }: { output: string }) {
   const groups = useMemo(() => {
     const map = new Map<string, Array<{ line: string; text: string }>>();
@@ -430,7 +430,7 @@ function DiffLineView({ line, side }: { line: SplitRow["left"]; side: "old" | "n
   </div>;
 }
 
-/** 分栏视图：两列各自滚动，滚动位置互相跟随（对照参考的 useSyncedScroll）。 */
+/** 分栏视图：两列各自滚动，滚动位置互相跟随（useSyncedScroll）。 */
 function SplitDiff({ lines }: { lines: ReturnType<typeof parseToolDiff> }) {
   const left = useRef<HTMLDivElement>(null);
   const right = useRef<HTMLDivElement>(null);
@@ -452,7 +452,7 @@ function SplitDiff({ lines }: { lines: ReturnType<typeof parseToolDiff> }) {
   </div>;
 }
 
-/** 大 diff 的起步渲染量与步进（对照参考实现：先 240 行，按钮每次再放 400）。 */
+/** 大 diff 的起步渲染量与步进：先 240 行，按钮每次再放 400。 */
 const DIFF_FIRST = 240;
 const DIFF_STEP = 400;
 
@@ -542,8 +542,8 @@ export function isExploreEntry(entry: AiEntry): boolean {
 }
 
 /**
- * 连续的读取/搜索/列目录折成一条「浏览 · N 文件 · M 搜索」组行（对照参考实现的
- * Explored 组行）：组内子行保持各自的行级状态与可展开明细，运行中的子行使整组摊开。
+ * 连续的读取/搜索/列目录折成一条「浏览 · N 文件 · M 搜索」组行：
+ * 组内子行保持各自的行级状态与可展开明细，运行中的子行使整组摊开。
  */
 export const AiExploreGroup = memo(function AiExploreGroup({ entries, render }: { entries: AiEntry[]; render: (entry: AiEntry) => ReactNode }) {
   const { t } = useI18n();

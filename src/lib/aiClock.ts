@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 /**
- * 聊天里的秒级时钟（对照 codeg 的 use-live-elapsed）。
+ * 聊天里的秒级时钟。
  *
  * 两件事：
  * 一、共享 ticker——同一时刻可能有几十条行级计时（工具时钟、过程组耗时、回合状态条），
@@ -43,7 +43,7 @@ function stopTickerIfIdle() {
 
 /**
  * `active` 为真时每秒走一次的当前时刻；为假时返回 null 不走表。
- * 与参考实现一致：滚动导致组件卸载再挂回，计时基准在 `aiArrival` 里，不会重置。
+ * 滚动导致组件卸载再挂回，计时基准在 `aiArrival` 里，不会重置。
  */
 export function useAiNow(active: boolean): number | null {
   const [now, setNow] = useState<number | null>(active ? Date.now() : null);
@@ -71,7 +71,7 @@ export function useAiElapsed(active: boolean, id: string): number | undefined {
   return Math.max(0, now - aiArrival(id));
 }
 
-/** 与参考实现相同的格式：`0:21` / `12:05` / `1:04:17`。 */
+/** 格式：`0:21` / `12:05` / `1:04:17`。 */
 export function formatAiClock(ms: number): string {
   const total = Math.floor(ms / 1000);
   const seconds = total % 60;
@@ -81,10 +81,10 @@ export function formatAiClock(ms: number): string {
   return hours > 0 ? `${hours}:${two(minutes)}:${two(seconds)}` : `${minutes}:${two(seconds)}`;
 }
 
-/** 参考实现的取舍：不足 10 秒的运行不显示时钟——数字跳得太快只是噪音。 */
+/** 不足 10 秒的运行不显示时钟——数字跳得太快只是噪音。 */
 export const AI_CLOCK_AFTER_MS = 10000;
 
-/** 与参考实现相同的短耗时格式：`3.2s` / `45s`。不到一秒或负数没有可说的，返回 null。 */
+/** 短耗时格式：`3.2s` / `45s`。不到一秒或负数没有可说的，返回 null。 */
 export function formatAiSeconds(ms: number): string | null {
   if (!Number.isFinite(ms) || ms <= 0) return null;
   const seconds = ms / 1000;

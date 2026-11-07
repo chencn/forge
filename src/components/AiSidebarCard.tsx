@@ -23,7 +23,7 @@ function formatAbsolute(timestamp: number | undefined): string {
  * 侧栏会话卡片：竖向导轨线、供应商图标、标题、相对时间，
  * 悬停时右侧时间换成「置顶 / 归档」两颗快捷按钮，停住 0.5s 浮出详情气泡。
  *
- * 结构与视觉对照参考实现（sidebar-conversation-card）：行高 2rem、内层胶囊 1.9375rem、
+ * 结构：行高 2rem、内层胶囊 1.9375rem、
  * 图标轴线 0.875rem、标题左缩进 1.75rem。右键菜单与重命名/删除对话框由上层统一持有。
  */
 export const AiSidebarCard = memo(function AiSidebarCard({
@@ -79,7 +79,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
     closeTimer.current = window.setTimeout(() => { closeTimer.current = null; setHoverOpen(false); }, HOVER_CLOSE_DELAY_MS);
   }, []);
   /**
-   * 键盘可达性：只有「键盘方式」获得的焦点才打开气泡（对照参考的 `:focus-visible` 守卫）。
+   * 键盘可达性：只有「键盘方式」获得的焦点才打开气泡（`:focus-visible` 守卫）。
    * 鼠标点击行内按钮同样送来 focus，那时不该弹气泡——指针自己会走悬停路径打开它。
    */
   const hoverFocus = useCallback((event: React.FocusEvent) => {
@@ -117,7 +117,7 @@ export const AiSidebarCard = memo(function AiSidebarCard({
         event.preventDefault();
         // 阻止右键事件冒泡至外层列表容器，避免卡片菜单被容器背景菜单覆盖
         event.stopPropagation();
-        // 右键菜单接管这一行：先收掉气泡，两层浮层不该叠在同一处（对照参考）。
+        // 右键菜单接管这一行：先收掉气泡，两层浮层不该叠在同一处。
         clearTimers();
         setHoverOpen(false);
         onMenu(session, event.clientX, event.clientY);

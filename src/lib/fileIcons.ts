@@ -65,7 +65,7 @@ export const PACKAGE_ICON = "expui/nodes/package.svg";
 export const IGNORED_FILE = "expui/fileTypes/ignored.svg";
 
 /**
- * 忽略规则文件名（小写）。对齐 openidea 的 file-ignored 组：这些文件统一用
+ * 忽略规则文件名（小写）。这些文件统一用
  * 「灰圆加斜杠」的 ignored 图标，不再按工具 logo 走 material 映射。
  * `.gitignore` 不在其中——它有专属的 gitignore 图标（expui/fileTypes/gitignore.svg）。
  */

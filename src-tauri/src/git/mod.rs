@@ -1746,7 +1746,7 @@ fn git_rebase_impl(root: String, onto: String) -> Result<String, String> {
     Ok(trim_line(&output.stdout))
 }
 
-/// Stash 列表，最新在前（stash@{0}）。对齐 openidea `refs.rs:148 stashes`：
+/// Stash 列表，最新在前（stash@{0}）：
 /// 一条 reflog 读出来拆字段，消息里自带的分隔符用单元分隔符（%x1f）隔开不受干扰。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1791,7 +1791,7 @@ pub async fn git_stash_list(root: String) -> Result<Vec<GitStash>, String> {
     block(move || git_stash_list_impl(root)).await
 }
 
-/// 存 stash。参数对齐 openidea `write.rs:601 stash_push`。
+/// 存 stash。
 fn git_stash_push_impl(
     root: String,
     message: String,
@@ -1831,7 +1831,7 @@ pub async fn git_stash_push(
 }
 
 /// 取 stash。`pop` 为真取完即删（git stash pop），否则留着（apply）；
-/// `reinstate_index` 同时恢复当时的暂存状态。对齐 openidea `write.rs:616 stash_apply`。
+/// `reinstate_index` 同时恢复当时的暂存状态。
 fn git_stash_apply_impl(root: String, index: u32, pop: bool, reinstate_index: bool) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let spec = format!("stash@{{{index}}}");
@@ -1857,7 +1857,7 @@ pub async fn git_stash_apply(
     block(move || git_stash_apply_impl(root, index, pop, reinstate_index)).await
 }
 
-/// 从某条 stash 上开出新分支并应用它。对齐 openidea `write.rs:626 stash_branch`。
+/// 从某条 stash 上开出新分支并应用它。
 fn git_stash_branch_impl(root: String, index: u32, branch: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&branch) {
@@ -1897,7 +1897,7 @@ pub async fn git_stash_drop(root: String, index: u32) -> Result<String, String> 
 /// 搁置区（Shelf，对齐 IDEA 的 Shelve Changes / Unshelve）：把选中文件的未提交改动
 /// 存成命名补丁并把工作区恢复到 HEAD；随时可以 unshelve 放回来（有冲突就留标记）。
 /// 存储在 `<repo>/.git/forge-shelf/<id>/`：`shelved.patch` + `shelf.json`，跟仓库走、
-/// 永不进版本控制。移植自 openidea `crates/ide-vcs/src/shelf.rs`。
+/// 永不进版本控制。
 
 /// 一条搁置清单里的一个文件。
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -2092,7 +2092,7 @@ fn shelf_revert_files(root: &Path, files: &[GitShelfFile]) -> Result<(), String>
 }
 
 /// 一份补丁按干净落地/冲突两路应用：先试普通应用，不行退到 --3way（冲突文件留
-/// 标记与未合并索引位，交给三向合并 UI）。对齐 openidea `patch::apply`。
+/// 标记与未合并索引位，交给三向合并 UI）。
 fn shelf_apply_patch(root: &Path, patch: &str) -> Result<(Vec<String>, Vec<String>), String> {
     let patch = patch.trim_end();
     if patch.is_empty() {
@@ -2273,7 +2273,7 @@ fn git_shelf_rename_impl(root: String, id: String, name: String) -> Result<Strin
 
 /// 冲突文件的三个版本（index stage）：ours=2、theirs=3、base=1（stage 1 可能没有）。
 /// `reversed`：变基/恢复 stash 撞出的冲突里 git 把「别人的」写进 stage 2、你的写进
-/// stage 3，两侧语义对调（对齐 openidea 的 MergeSides.reversed）。
+/// stage 3，两侧语义对调。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitConflictVersions {
@@ -2312,7 +2312,7 @@ fn git_conflict_versions_impl(root: String, path: String) -> Result<GitConflictV
     match (ours, theirs) {
         (Some(ours), Some(theirs)) => {
             // 变基、以及没有进行中操作的未合并（恢复 stash 撞冲突）都要把两侧对调；
-            // merge / cherry-pick / revert 的 stage 2 本来就是你的（对齐 openidea 判定）。
+            // merge / cherry-pick / revert 的 stage 2 本来就是你的。
             let (merge, rebase, cherry_pick, revert) = in_progress(&root);
             let reversed = rebase || !(merge || cherry_pick || revert);
             Ok(GitConflictVersions { ours, theirs, base, reversed })

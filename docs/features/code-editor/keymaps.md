@@ -68,6 +68,5 @@
 `projectTreeLocate.test.ts`；日志焦点隔离由 `components/GitLogPane.test.ts` 验证。
 测试检查文档、选区、撤销、只读、方案切换、多段键和上下文动作，不以绑定数量证明行为正确。
 
-部分编辑命令移植自 OpenIDEA 提交 `2d7726cf53a4478bf89e5969ac14481edbf468c1`，
-具体路径、修改说明和版权见 `public/licenses/keymaps-NOTICE.txt`；Apache 2.0 正文在同目录。
+部分编辑命令的出处与许可见 `public/licenses/keymaps-NOTICE.txt`；Apache 2.0 正文在同目录。
 Vite 将这些材料复制到 `dist/licenses/`，随桌面前端发行。

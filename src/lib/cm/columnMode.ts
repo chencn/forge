@@ -1,4 +1,4 @@
-/** 移植自 openidea（Apache-2.0）：复用实际编辑行为，键位由方案表提供。 */
+/** 复用实际编辑行为，键位由方案表提供。 */
 /**
  * Edit › Column Selection Mode (⇧⌘8): while on, a plain mouse drag and
  * ⇧+arrows make rectangular (block) selections, one range per line.

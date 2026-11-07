@@ -483,7 +483,7 @@ describe("AI conversation pane", () => {
     const { html } = render();
     expect(html).toContain('class="ai-turn-error"');
     expect(html).toContain("CLI 崩了");
-    // 参考实现没有任何重试按钮：重试就是重发。
+    // 没有任何重试按钮：重试就是重发。
     expect(html).not.toContain("ai.chat.retryTurn");
     expect(html).not.toContain('class="ai-turn-actions"');
   });
@@ -642,7 +642,7 @@ describe("AI conversation pane", () => {
     ];
     h.state.tasks = [{ runId: "r1", status: "completed", seq: 1 }];
     const { html } = render();
-    // 压缩分隔条在，摘要正文默认收起（对齐参考实现），点开后才落到 DOM 里。
+    // 压缩分隔条在，摘要正文默认收起，点开后才落到 DOM 里。
     expect(html).toContain("ai-compaction-container");
     expect(html).toContain('class="ai-compaction-toggle" aria-expanded="false"');
     expect(html).not.toContain("ai-compaction-summary");

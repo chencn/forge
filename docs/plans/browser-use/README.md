@@ -12,15 +12,15 @@
 
 问题的根源是 Forge 缺少一个由宿主持有、能按会话授权的浏览器执行入口。浏览器页面、MCP 工具和代理启动配置必须连成一条完整链路。
 
-推荐采用 codeg 的原生内嵌与本机 MCP 桥结构，吸收 snow-app 的 AX 元素引用、动作观察和调试能力，补齐两者没有解决的多工程、多会话隔离与默认工具路由。
+推荐采用原生内嵌与本机 MCP 桥结构，吸收无障碍元素引用、动作观察和调试能力，补齐多工程、多会话隔离与默认工具路由。
 
 本文中的 browser use 指浏览器操作能力，不引入同名 Python Agent 框架。Codex、Claude 已承担规划与模型循环，再嵌一套 Agent 会重复规划、增加延迟并分散权限。
 
 产品口径：用户打开 AI 助手后，Forge 管理的 Codex/Claude 会话自动获得 Forge 浏览器工具；AI 创建自己的隔离标签，用户已有标签由用户明确共享；实际操作可见、可停止、可追踪。
 
-### 参考项目对比
+### 方案对比
 
-| 方面 | snow-app 已实现 | codeg 已实现 | Forge 采用 |
+| 方面 | 方案 A（Electron webview 宿主） | 方案 B（Tauri 宿主持有原生 WebView） | Forge 采用 |
 | --- | --- | --- | --- |
 | 桌面载体 | Electron webview | Tauri 宿主持有原生 WebView | 沿用 Forge Tauri，原生子视图内嵌 |
 | 工具接入 | 内置 Agent 经 Rust/NAPI 回调至 Electron | per-launch stdio MCP → named pipe/UDS → Rust | 独立 `forge-browser-mcp`，直接接现有两家 CLI |
@@ -33,10 +33,10 @@
 
 不能照搬的部分：
 
-- snow-app 的权威访问检查主要在 renderer；Forge 必须在 Rust 实际执行前再次校验。
-- snow-app 的固定 `snow-agent-isolated` 分区不能用于多个工程和代理并行。
-- codeg 的 browser broker 明确不按 parent connection 限制标签；Forge 的 token 必须绑定具体会话。
-- codeg 通过 ACP 注入 MCP 的细节不能当作 Forge 当前 Codex app-server 的接口。
+- 权威访问检查不能只放在渲染层；Forge 必须在 Rust 实际执行前再次校验。
+- 固定的单一隔离分区不能用于多个工程和代理并行。
+- browser broker 不按 parent connection 限制标签的做法不可取；Forge 的 token 必须绑定具体会话。
+- 通过 ACP 注入 MCP 的细节不能当作 Forge 当前 Codex app-server 的接口。
 - JS `.click()`、写 `value`、合成 `KeyboardEvent` 不等于真实输入。
 - 任意 evaluate 能读取页面可见信息并触发网络；关键词过滤不能使它成为安全沙箱。
 - 普通 iframe 无法可靠覆盖跨域页面、可信输入和调试协议，不作为自动化载体。
@@ -105,7 +105,7 @@ flowchart LR
 
 - Windows：优先通过与 Tauri 兼容的 wry 依赖建立原生 child surface，使用 WebView2 本进程 COM/CDP 调用。
 - 不直接给 Forge 主 WebView 设置全局 remote-debugging-port，不开放 9222，不让 AI 调试工作台本身。
-- 不直接将 Tauri child WebView 附加到 `main` 后就视为完成。Tauri child 可能改变 `WebviewWindow` 识别，先验证；codeg 通过直接 wry child 保持主窗口身份，可作为实现参考。
+- 不直接将 Tauri child WebView 附加到 `main` 后就视为完成。Tauri child 可能改变 `WebviewWindow` 识别，先验证；直接 wry child 可以保持主窗口身份，可作为实现参考。
 - 不为复制代码引入第二份不兼容的 wry/WebView2 依赖；先检查 Cargo 锁定版本和线程约束。
 - 原生对象只在 UI/COM 所属线程访问；浏览器等待与 broker I/O 在后台，不能持锁等事件回调。
 - 原生子视图会盖住 HTML。打开菜单、审批框、拖动标签和切换分栏时需要宿主管理显示/隐藏、焦点及截图占位，不能仅靠 CSS `z-index`。
@@ -389,7 +389,7 @@ src/components/BrowserSettingsPanel.tsx
 
 ## 出处
 
-调查日期：2026-10-28。以下参考均来自本地源码或实际获取的官方文档；未将参考实现的能力记为 Forge 已实现。
+调查日期：2026-10-28。以下出处均来自本仓库源码或实际获取的官方文档；未将外部实现的能力记为 Forge 已实现。
 
 ### Forge
 
@@ -404,7 +404,7 @@ src/components/BrowserSettingsPanel.tsx
 | `src/components/EditorTabs.tsx` | 当前 TabKind `:15` |
 | `src-tauri/Cargo.toml`、`src-tauri/capabilities/default.json` | 当前 WebView2 依赖与主窗口权限 |
 
-### codeg：`C:/Users/shengganbao/Desktop/codeg`
+### 外部工程 A：wry child 与 ACP 注入参考
 
 | 文件 | 内容与关键行 |
 | --- | --- |
@@ -418,7 +418,7 @@ src/components/BrowserSettingsPanel.tsx
 | `browser-agent/src/index.ts` | SPA 导航代际 `:149-188`、`:349-359` |
 | `src/lib/browser/browser-prefs.ts` | grant/eval 默认偏好 `:213-214` |
 
-### snow-app：`C:/Users/shengganbao/Desktop/snow-app`
+### 外部工程 B：AX 观察与授权分层参考
 
 | 文件 | 内容与关键行 |
 | --- | --- |

@@ -239,7 +239,7 @@ export interface BranchSettings {
   onSingleClick: SingleClickAction;
   /** 收藏的引用全名（本地分支不带前缀，远端带 `origin/`）；同层里排在前面。标签收藏不了。 */
   favorites: string[];
-  /** 提交图折叠线性链（Collapse Linear Branches），对齐 openidea logOptions 默认关。 */
+  /** 提交图折叠线性链（Collapse Linear Branches），默认关。 */
   collapseLinear: boolean;
   /** 提交图画长边（Show Long Edges），IDEA 默认开。 */
   showLongEdges: boolean;

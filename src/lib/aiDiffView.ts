@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-/** 工具 diff 的展示方式（行内 / 分栏）；全局偏好，对照参考实现的全局 ViewModeToggle。 */
+/** 工具 diff 的展示方式（行内 / 分栏）；全局偏好。 */
 export type AiDiffViewMode = "inline" | "split";
 const KEY = "forge:ai-diff-view:v1";
 

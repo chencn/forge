@@ -67,8 +67,8 @@ function OptionRow({ type, name, checked, text, detail, recommended, tag, onPick
 }
 
 /**
- * 提问卡：一次一题、页签切换、进度条摊在顶上，答完才让提交。版式对齐参考实现 codeg 的
- * ask-question-card —— 选项做成整行的卡片、点「其他」就地长出一个输入框、单选点完自动跳下一题。
+ * 提问卡：一次一题、页签切换、进度条摊在顶上，答完才让提交。
+ * 选项做成整行的卡片、点「其他」就地长出一个输入框、单选点完自动跳下一题。
  *
  * 这里没有「跳过」：后端要求每题都给一个非空答案（Claude 侧 answers 的数量必须和问题数相等），
  * 给一颗兑不了现的按钮比少画一个更糟。
@@ -88,7 +88,7 @@ export function AiQuestionCard({ request, readOnly = false, disabled = false, bu
   const questions = request.questions;
   const [local, setLocal] = useState<Record<string, Seed>>({});
   const [activeId, setActiveId] = useState(questions[0]?.id ?? "");
-  /** 整卡可收成一行（对照参考实现）：题先挂着、晚点再答的场合不该一直占半屏。 */
+  /** 整卡可收成一行：题先挂着、晚点再答的场合不该一直占半屏。 */
   const [collapsed, setCollapsed] = useState(false);
   // 只读那份没有任何可改的状态，直接照着答案算，不必再养一份会和它打架的本地状态。
   const state = readOnly ? seedState(questions, answer) : local;

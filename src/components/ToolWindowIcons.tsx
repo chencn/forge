@@ -71,7 +71,7 @@ export function VcsIcon({ size = 18, className }: GlyphProps) {
   );
 }
 
-/** HTTP 客户端：文件类型图标上的 HTTP 字样，和 `.http` 文件、openidea 工具窗口同一颗。 */
+/** HTTP 客户端：文件类型图标上的 HTTP 字样，和 `.http` 文件同一颗。 */
 export function HttpClientIcon({ size = 18, className }: GlyphProps) {
   return (
     <svg

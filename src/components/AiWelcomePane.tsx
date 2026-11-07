@@ -30,7 +30,7 @@ interface PastedImage { path: string; preview: string; name: string }
 /** 底部小提示的键集；挂载时随机挑一条，不随重渲染换样。 */
 const WELCOME_TIP_KEYS = ["ai.welcome.tip1", "ai.welcome.tip2", "ai.welcome.tip3", "ai.welcome.tip4", "ai.welcome.tip5", "ai.welcome.tip6"] as const;
 
-/** 提示文案里 `⟦…⟧` 包住的部分渲染成键帽（对照参考实现的 kbd 标签）。 */
+/** 提示文案里 `⟦…⟧` 包住的部分渲染成键帽（kbd 标签）。 */
 function WelcomeTipText({ text }: { text: string }) {
   const parts = text.split(/(⟦[^⟧]*⟧)/);
   return <>{parts.map((part, index) => part.startsWith("⟦") && part.endsWith("⟧")
@@ -50,9 +50,8 @@ interface AiWelcomePaneProps {
 }
 
 /**
- * 「新建会话」草稿页。对照参考实现的欢迎屏：垂直居中一列——渐变大标题、
+ * 「新建会话」草稿页。垂直居中一列——渐变大标题、
  * 工具胶囊选择器（滑块随选中项滑动）、输入框——底部钉一条随机小提示。
- * 参考实现里标题下方的「代码开发 / 日常办公 / 科学研究」快捷卡与技能栏按需求不移植。
  *
  * 会话在这一页并不存在：第一条消息发出时才由上层真正创建（`onLaunch`），
  * 输入框草稿按工作区落在本地，重开应用还能找回。输入框本身沿用会话页的

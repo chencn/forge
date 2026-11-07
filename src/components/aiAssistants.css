@@ -64,7 +64,7 @@
 .ai-cli-grid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .ai-cli-grid.is-triplet { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .ai-cli-grid.is-single { grid-template-columns: minmax(0, 1fr); }
-/* 独立开关组（对照 codeg 开关设计）：卡片自身维持紧凑定高并两端对齐，说明 hint 挂在卡片外下方 */
+/* 独立开关组：卡片自身维持紧凑定高并两端对齐，说明 hint 挂在卡片外下方 */
 .ai-cli-switch-group { display: flex; flex-direction: column; gap: 4px; width: 100%; }
 .ai-cli-switch-card {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -99,7 +99,7 @@
 }
 .ai-cli-row-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 9px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); }
 .ai-cli-row-switch > span { color: var(--text-secondary); font-size: 11.5px; }
-/* 内嵌虚线配置盒与开关列表（对照 codeg 沙箱 granular 与 workspace_write 设计） */
+/* 内嵌虚线配置盒与开关列表（沙箱 granular 与 workspace_write） */
 .ai-cli-nested-box {
   display: flex; flex-direction: column; gap: 8px; padding: 8px 10px;
   border: 1px dashed var(--border-color); border-radius: 6px; background: var(--bg-primary);
@@ -107,7 +107,7 @@
 .ai-cli-switch-list { display: flex; flex-direction: column; gap: 4px; padding: 7px 10px; border: 1px dashed var(--border-color); border-radius: 6px; background: var(--bg-primary); }
 .ai-cli-switch-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 26px; }
 .ai-cli-switch-item > span { color: var(--text-secondary); font-size: 11px; }
-/* 分组面板（对照 codeg 的 space-y-3 rounded-md border bg-muted/10 p-3） */
+/* 分组面板 */
 .ai-cli-subgroup {
   display: flex; flex-direction: column; gap: 9px; padding: 10px 12px;
   border: 1px solid var(--border-color); border-radius: 6px;
@@ -711,7 +711,7 @@
 .ai-sessions-tools { display: flex; align-items: center; gap: 2px; flex: none; }
 
 /* 对话正文与输入框使用同一条内容轴；响应式基于面板而非整个应用窗口。
-   列宽默认与参考实现一致（48rem），左右手柄可调并持久化。 */
+   列宽默认 48rem，左右手柄可调并持久化。 */
 .ai-session-pane { --ai-content-width: 768px; display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; color: var(--text-primary); background: var(--bg-primary); container: ai-chat / inline-size; }
 .ai-session-status { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 11px; color: var(--text-tertiary); }
 .ai-session-status.is-running::before { content: ""; width: 5px; height: 5px; background: var(--text-secondary); border-radius: 50%; }
@@ -808,7 +808,7 @@
 .ai-request-card fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 /* 提问卡：外壳由卡片自己画（授权卡那层灰框在这里会多套一圈），进度条才贴得到边。 */
 .ai-request-card.is-question { padding: 0; border: 0; border-radius: 0; }
-/* 提问卡：进度条、页签、定高正文、整行选项卡——版式对齐参考实现 codeg 的提问卡。 */
+/* 提问卡：进度条、页签、定高正文、整行选项卡。 */
 .ai-question { display: grid; gap: 10px; min-width: 0; padding: 12px; overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent-blue) 32%, var(--border-color)); border-radius: 10px; background: var(--bg-secondary); }
 /* 顶到卡片边缘的一条：还剩几题不用点开数，扫一眼就知道这段还要走几步。 */
@@ -1077,9 +1077,9 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   color: var(--text-primary); font-size: 12px; }
 .ai-custom-model-input { width: 220px; min-width: 0; }
 
-/* ===== AI 会话侧栏（章节化列表，视觉对照 codeg sidebar） ===== */
+/* ===== AI 会话侧栏（章节化列表） ===== */
 /* 只用工作台主题变量，不硬编码明暗色。几何值（行高 32px、轴线 14px、缩进 28px）
-   与参考实现逐像素对齐。 */
+   逐像素对齐。 */
 .ai-sidebar { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; }
 
 /* 固定动作区：新建会话 + 搜索，不随列表滚动。 */
@@ -1147,7 +1147,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 
 /* 会话卡片：外层 32px，内层 31px 胶囊；导轨穿过供应商图标轴线。
    content-visibility 让屏外的行跳过排版与绘制——行高恒定 32px 是它的前提，
-   与参考实现的 32px 虚拟化同一几何，不需要自绘虚拟窗口。 */
+   32px 虚拟化同一几何，不需要自绘虚拟窗口。 */
 .ai-scard { position: relative; height: 32px; content-visibility: auto; contain-intrinsic-size: auto 32px; }
 .ai-scard-pill { position: relative; display: flex; align-items: center; height: 31px; width: 100%;
   border-radius: var(--radius-pill); color: var(--sidebar-fg); transition: background-color 120ms; }
@@ -1316,7 +1316,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-view-order-actions button:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text-primary); }
 .ai-view-order-actions button:disabled { opacity: .35; cursor: default; }
 
-/* ===== 新建会话欢迎页（视觉对照 codeg welcome） ===== */
+/* ===== 新建会话欢迎页 ===== */
 .ai-welcome { --ai-content-width: 720px; position: relative; display: flex; flex-direction: column;
   height: 100%; min-height: 0; min-width: 0; background: var(--bg-primary); color: var(--text-primary); }
 .ai-welcome-scroll { display: flex; flex-direction: column; min-height: 100%; overflow-y: auto; }
@@ -1330,7 +1330,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   color-mix(in srgb, var(--sidebar-stripe) 85%, transparent) 55%, var(--accent-violet-text));
   -webkit-background-clip: text; background-clip: text; color: transparent; }
 /* 工具胶囊选择器：滑块随选中项滑动。 */
-/* 图标外再包一层：琥珀点钉在图标的右上角，而不是整颗胶囊的角上（对照参考）。 */
+/* 图标外再包一层：琥珀点钉在图标的右上角，而不是整颗胶囊的角上。 */
 /* 没有任何可用工具时的空态。 */
 .ai-agent-empty { display: flex; flex-direction: column; align-items: center; gap: 10px;
   padding: 12px 16px; border: 1px dashed var(--border-color); border-radius: 8px;
@@ -1344,7 +1344,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   color: color-mix(in srgb, var(--text-tertiary) 90%, transparent); font-size: 12px; text-align: center; }
 .ai-welcome-tip-pill > svg { flex: none; color: var(--sidebar-stripe); }
 
-/* ===== 输入框外壳（对照 codeg composer） ===== */
+/* ===== 输入框外壳 ===== */
 /* 单层圆角卡片：边框比常规输入深一档（foreground/20），聚焦时 3px 内描边。 */
 .ai-composer { position: relative; display: flex; flex-direction: column; min-height: 96px; max-height: 240px;
   border: 1px solid color-mix(in srgb, var(--text-primary) 20%, transparent);
@@ -1432,7 +1432,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-composer-caption .ai-context-trigger { padding: 2px 4px; gap: 5px; font-size: 11px; }
 .ai-composer-caption .ai-context-ring { width: 12px; height: 12px; mask: radial-gradient(transparent 4px, #000 4.5px); }
 
-/* ===== 工具胶囊选择器（对照 codeg AgentSelector） ===== */
+/* ===== 工具胶囊选择器 ===== */
 .ai-agent-row { display: flex; justify-content: center; max-width: 100%; }
 .ai-agent-track { position: relative; display: inline-flex; align-items: center; max-width: 100%; overflow: hidden;
   padding: 2px; border: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
@@ -1458,7 +1458,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-agent-label { min-width: 0; overflow: hidden; white-space: nowrap; opacity: 0; transition: opacity 300ms; }
 .ai-agent-pill.is-selected .ai-agent-label { opacity: 1; }
 
-/* ===== 时间线（对照 codeg message list / activity rail） ===== */
+/* ===== 时间线（消息列表 / 活动导轨） ===== */
 /* 用户消息：右对齐圆角气泡，图片贴右上，悬停浮出复制与折叠。 */
 .ai-chat-entry.is-user { width: fit-content; max-width: 88%; margin-left: auto; align-self: flex-end; padding: 0; background: transparent; white-space: normal; }
 .ai-user-msg { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 100%; }
@@ -1490,7 +1490,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-user-msg-bubble.is-clipped { max-height: 240px; overflow: hidden; }
 .ai-user-msg-bubble.is-clipped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 40px;
   background: linear-gradient(to bottom, transparent, var(--bg-secondary)); pointer-events: none; }
-/* 行首 `>` 的引用段（对照参考实现的 quote line）：左线 + 内缩，嵌在 pre-wrap 文本流里。 */
+/* 行首 `>` 的引用段（quote line）：左线 + 内缩，嵌在 pre-wrap 文本流里。 */
 .ai-user-quote { display: inline-block; border-left: 2px solid color-mix(in srgb, var(--text-primary) 25%, transparent);
   padding-left: 12px; margin: 2px 0; white-space: pre-wrap; max-width: 100%; }
 /* 用户消息里的 @文件提及：小徽章形状，和斜杠命令的 code 标记同一族。 */
@@ -1619,7 +1619,7 @@ details[open] > .ai-row-head .ai-detail-chevron { transform: rotate(90deg); }
 
 /* 工具行活动导轨：行前 1px 竖线 + 状态环；失败自动展开的明细收进圆角卡。 */
 .ai-process-body { position: relative; display: flex; flex-direction: column; min-width: 0; gap: 0; margin: 0; padding-left: 0; border-left: 0; }
-/* 导轨布局（参考 activity-item，轴线 14px 与参考逐像素一致）：环/点钉在轴线上，行文字从 32px 起。
+/* 导轨布局（activity-item，轴线 14px）：环/点钉在轴线上，行文字从 32px 起。
    工具行、思考行与浏览组行均按统一缩进接入导轨，保持竖线与文本绝对垂直对齐。 */
 .ai-process-body .ai-chat-entry,
 .ai-process-body .ai-explore-group { position: relative; margin: 0 0 2px; padding-left: 32px; }
@@ -1709,9 +1709,9 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-compaction-notice.is-running { color: var(--text-secondary); }
 .ai-compaction-notice.is-failed { color: var(--accent-red-text); }
 
-/* 回合操作行：错误与按钮的间距对齐参考的行内收尾。 */
+/* 回合操作行：错误与按钮的行内收尾间距。 */
 
-/* ===== 子代理委派卡片 / 排队条 / 审批卡（对照 codeg delegation card、queue、permission） ===== */
+/* ===== 子代理委派卡片 / 排队条 / 审批卡 ===== */
 /* 委派卡片：一行代理身份 + 任务一句话 + 状态，展开看任务原文与结果。 */
 .ai-delegation { margin: 6px 0 12px; border: 1px solid var(--border-popup); border-radius: 6px;
   background: var(--bg-elev); overflow: hidden; min-width: 0; }
@@ -1743,7 +1743,7 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 .ai-delegation-detail pre { margin: 0; padding: 6px 0; border-radius: 0; background: transparent;
   border: 0; max-height: 320px; overflow: auto; font: 12px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* 发送队列只属于输入区，不再混进模型 Task 清单。结构对齐 ccgui 的 composer queue card。 */
+/* 发送队列只属于输入区，不再混进模型 Task 清单。 */
 .ai-task-queue { margin: 0 0 8px; overflow: hidden; border: 1px solid var(--border-color); border-radius: 14px;
   background: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-primary));
   box-shadow: 0 8px 24px color-mix(in srgb, #000 12%, transparent); }
@@ -1809,7 +1809,7 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 /* 旧规则 .ai-session-requests .ai-request-card 的特异性更高，这里同特异性补写覆盖。 */
 .ai-session-requests .ai-request-card { border-color: var(--border-popup); }
 
-/* ===== 设置弹层（对照 codeg session-settings-picker）与上下文用量卡（对照 composer-context-usage） ===== */
+/* ===== 设置弹层与上下文用量卡 ===== */
 /* 外框由 Popover 独占；内部用通栏分隔和留白分区，不再叠加模型卡片。 */
 .popover.ai-settings-popup { display: flex; flex-direction: column; padding: 0;
   width: min(352px, calc(100vw - 12px)); min-width: 0;
@@ -2396,7 +2396,7 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 @keyframes ai-entry-flash { 0% { background: color-mix(in srgb, var(--accent-blue) 18%, transparent); } 100% { background: transparent; } }
 .ai-chat-entry.is-flash { animation: ai-entry-flash 1.6s ease-out 1; border-radius: 8px; }
 
-/* ===== 回合错误行 / 运行状态行 / 计划条目 / 加载更早（对照 codeg turn-error、LiveTurnStats、PlanEntriesList、load-older） ===== */
+/* ===== 回合错误行 / 运行状态行 / 计划条目 / 加载更早 ===== */
 /* 回合错误：未加盒的一行，圆圈叹号 + 灰字（参考 turn-error-part）。 */
 .ai-turn-error { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 4px;
   color: var(--text-tertiary); font-size: 12px; }
@@ -2470,7 +2470,7 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-extra-dirs li { display: flex; align-items: center; gap: 6px; }
 .ai-extra-dirs code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
-/* ===== 本轮增量：浏览组、明细分块、分栏 diff、运行数据行、列宽手柄等（对照 codeg） ===== */
+/* ===== 本轮增量：浏览组、明细分块、分栏 diff、运行数据行、列宽手柄等 ===== */
 
 /* 「浏览 · N 文件 · M 搜索」组行（对照 Explored 组行）：子行走虚线导轨（参考 activity-child）。 */
 .ai-explore-group { position: relative; }
@@ -2737,7 +2737,7 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   background: transparent; max-height: min(240px, 34vh); overflow: auto;
   font: 12px/1.5 var(--font-mono); white-space: normal; }
 
-/* Grep 命中按文件分组（对照参考实现的 search results）：文件头 + 行号对齐的命中行。 */
+/* Grep 命中按文件分组（search results）：文件头 + 行号对齐的命中行。 */
 .ai-search-hits { display: grid; gap: 10px; padding: 8px 0; }
 .ai-search-hits-file { min-width: 0; overflow: hidden; }
 .ai-search-hits-file > header { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
@@ -2748,7 +2748,7 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
   font: 11px/1.6 var(--font-mono); }
 .ai-search-hits-row > code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 
-/* 改动文件的新增/修改/删除徽标（对照参考实现的 New/Changed/Deleted 配色）。 */
+/* 改动文件的新增/修改/删除徽标（New/Changed/Deleted 配色）。 */
 .ai-edit-kind { flex: none; padding: 0 5px; border-radius: 4px; font-size: 9.5px; font-style: normal; line-height: 1.6; }
 .ai-edit-kind.is-add { color: var(--accent-green-text); background: color-mix(in srgb, var(--accent-green-text) 12%, transparent); }
 .ai-edit-kind.is-delete { color: var(--accent-red-text); background: color-mix(in srgb, var(--accent-red-text) 12%, transparent); }
@@ -2814,8 +2814,8 @@ p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary
 .ai-thinking-live > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text-tertiary); font-size: 11.5px; }
 
-/* 压缩摘要：开关长在分割线那一行里，正文展开在分割线下方（对照参考实现的
-   CompactionSummaryBody）。裁到固定高度，只在真被裁掉时才给渐隐边和底部页脚。 */
+/* 压缩摘要：开关长在分割线那一行里，正文展开在分割线下方。
+   裁到固定高度，只在真被裁掉时才给渐隐边和底部页脚。 */
 .ai-compaction-summary { margin-top: 4px; border: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
   border-radius: 8px; background: color-mix(in srgb, var(--bg-secondary) 30%, var(--bg-primary));
   overflow: hidden; min-width: 0; }
