@@ -307,6 +307,7 @@ fn sub_dirs(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// 判断目录条目是否该跳过（命中 SKIP_DIRS 或隐藏目录），大小写不敏感。
 pub(super) fn is_skipped(entry: &walkdir::DirEntry) -> bool {
     let name = entry.file_name();
     // 遍历里每个条目都要问一次，别为它现造一个小写 String。
@@ -329,6 +330,7 @@ fn read_build_file(path: &Path, problems: &mut Vec<String>) -> Option<String> {
     }
 }
 
+/// 取目录名；无名字段（盘根等）退回完整路径展示。
 fn dir_name(dir: &Path) -> String {
     dir.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -340,6 +342,7 @@ fn short_name(fqcn: &str) -> &str {
     fqcn.rsplit('.').next().unwrap_or(fqcn)
 }
 
+/// 判断一个名字是不是合法标识符（字母/`_`/`$` 开头，其余允许数字）。
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -589,6 +592,7 @@ fn toml_values(
         .collect()
 }
 
+/// Maven 包装脚本的文件名（优先级：Windows 优先 `.cmd`）。
 pub(super) fn maven_wrapper_names() -> (&'static str, &'static str) {
     if cfg!(windows) {
         ("mvnw.cmd", "mvnw")
@@ -597,6 +601,7 @@ pub(super) fn maven_wrapper_names() -> (&'static str, &'static str) {
     }
 }
 
+/// Gradle 包装脚本的文件名（Windows 优先 `.bat`）。
 pub(super) fn gradle_wrapper_names() -> (&'static str, &'static str) {
     if cfg!(windows) {
         ("gradlew.bat", "gradlew")
@@ -617,6 +622,7 @@ pub async fn run_tools() -> Tools {
 /// 之后，界面上那些 `NO_TOOL` 标记和 `${mvn}` 占位必须能自己恢复，不能整个进程都停在「没装」。
 const TOOLS_TTL: Duration = Duration::from_secs(60);
 
+/// 带 TTL 缓存的工具探测结果；过期或未缓存时走 [`tools_scan`]。
 fn tools_cached() -> Tools {
     static CACHE: OnceLock<Mutex<Option<(Instant, Tools)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
@@ -630,6 +636,7 @@ fn tools_cached() -> Tools {
     found
 }
 
+/// 真正扫描本机工具（mvn/gradle/java 及特性判断）。
 fn tools_scan() -> Tools {
     let java = java_executable();
     Tools {
@@ -2062,6 +2069,11 @@ pub async fn run_detect(root: String) -> Result<RunDetectOutcome, String> {
     block(move || run_detect_impl(root)).await
 }
 
+/// [`run_detect`] 的同步体：探测工作区的运行/构建配置并产出结果。
+///
+/// # Errors
+///
+/// 根不是目录（`NO_DIR`）时返回错误。
 fn run_detect_impl(root: String) -> Result<RunDetectOutcome, String> {
     let base = PathBuf::from(&root);
     if !base.is_dir() {

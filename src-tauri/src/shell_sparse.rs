@@ -99,6 +99,7 @@ fn is_windows_11() -> bool {
         .is_some_and(|build| build >= 22000)
 }
 
+/// 读 HKLM 注册表里的字符串值；键或值不存在返回 `None`。
 fn read_machine_sz(subkey: &str, name: &str) -> Option<String> {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{
@@ -147,6 +148,11 @@ fn read_machine_sz(subkey: &str, name: &str) -> Option<String> {
     }
 }
 
+/// 把右键菜单开关、标签和扩展名名单写进 DLL 读取的注册表配置。
+///
+/// # Errors
+///
+/// 注册表写入失败时返回 `SHELL_REG` 错误。
 fn write_dll_settings(
     open_folder: bool,
     open_file: bool,
@@ -207,6 +213,11 @@ unsafe fn set_sz(
     }
 }
 
+/// 确认安装目录下有 `forge_shell_cmd.dll`，没有直接报错。
+///
+/// # Errors
+///
+/// DLL 缺失（`SHELL_REG`）时返回错误。
 fn ensure_package(install_dir: &Path) -> Result<(), String> {
     let dll = find_shell_dll(install_dir).ok_or_else(|| {
         err(
@@ -336,6 +347,7 @@ fn package_marker(install_dir: &Path, dll_rel: &str) -> String {
     )
 }
 
+/// 取文件的（字节数，修改秒数）指纹；元数据读不到按 0 处理。
 fn file_stamp(path: &Path) -> (u64, u64) {
     let meta = fs::metadata(path).ok();
     let len = meta.as_ref().map(|item| item.len()).unwrap_or(0);
@@ -375,6 +387,11 @@ fn installed_package_version() -> Option<Option<String>> {
     }
 }
 
+/// 用 PowerShell 卸载 sparse MSIX 包；包不存在也算成功。
+///
+/// # Errors
+///
+/// PowerShell 执行失败时返回错误。
 fn remove_package() -> Result<(), String> {
     let script = format!(
         r#"
@@ -397,6 +414,11 @@ try {{
     run_powershell(&script)
 }
 
+/// 用 PowerShell 注册 sparse MSIX 包（外部位置指向安装目录）。
+///
+/// # Errors
+///
+/// PowerShell 执行失败时返回错误。
 fn add_package(msix: &Path, external: &Path) -> Result<(), String> {
     let script = format!(
         "Add-AppxPackage -Path '{}' -ExternalLocation '{}'",
@@ -569,6 +591,7 @@ fn confirm_certificate_install() -> bool {
     answer != IDCANCEL
 }
 
+/// 证书安装确认框的（标题，正文）文案，按系统 UI 语言取中文繁体或英文。
 fn cert_prompt_text() -> (&'static str, &'static str) {
     let lang = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
     let primary = lang & 0x3FF;
@@ -591,6 +614,7 @@ fn cert_prompt_text() -> (&'static str, &'static str) {
     )
 }
 
+/// 当前进程是否以管理员权限运行。
 fn is_elevated() -> bool {
     use windows::Win32::UI::Shell::IsUserAnAdmin;
     unsafe { IsUserAnAdmin().as_bool() }
@@ -659,6 +683,7 @@ fn run_elevated_file(script: &Path) -> Result<(), String> {
     }
 }
 
+/// 在安装目录的几个候选位置里找 `forge_shell_cmd.dll`。
 fn find_shell_dll(install_dir: &Path) -> Option<PathBuf> {
     let candidates = [
         install_dir.join("forge_shell_cmd.dll"),
@@ -672,6 +697,11 @@ fn find_shell_dll(install_dir: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+/// 写 sparse 包的 AppxManifest.xml。
+///
+/// # Errors
+///
+/// 文件写入失败时返回 `SHELL_REG` 错误。
 fn write_manifest(pkg_dir: &Path, publisher: &str, dll_rel: &str) -> Result<(), String> {
     let xml = package_contract::manifest(env!("CARGO_PKG_VERSION"), publisher, dll_rel);
     fs::write(pkg_dir.join("AppxManifest.xml"), xml).map_err(|e| err("SHELL_REG", e))
@@ -690,9 +720,16 @@ fn package_version() -> String {
 ///
 /// 避免使用 1x1 占位图导致 Windows 任务栏、Alt+Tab 或应用列表显示为灰色方块。
 const LOGO_44: &[u8] = include_bytes!("../icons/Square44x44Logo.png");
+/// 150×150 规格图标。
 const LOGO_150: &[u8] = include_bytes!("../icons/Square150x150Logo.png");
+/// 应用列表里的 Store 徽标。
 const LOGO_STORE: &[u8] = include_bytes!("../icons/Square50x50Logo.png");
 
+/// 把三张规格图标写进包目录。
+///
+/// # Errors
+///
+/// 文件写入失败时返回 `SHELL_REG` 错误。
 fn write_logo(dir: &Path) -> Result<(), String> {
     fs::write(dir.join("Square44x44Logo.png"), LOGO_44).map_err(|e| err("SHELL_REG", e))?;
     fs::write(dir.join("Square150x150Logo.png"), LOGO_150).map_err(|e| err("SHELL_REG", e))?;
@@ -700,6 +737,11 @@ fn write_logo(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// sparse 包的工作目录（`%LOCALAPPDATA%/Forge/shell-package`），不存在则创建。
+///
+/// # Errors
+///
+/// `LOCALAPPDATA` 未设置或目录创建失败时返回 `SHELL_REG` 错误。
 fn package_work_dir() -> Result<PathBuf, String> {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -709,6 +751,11 @@ fn package_work_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// 在安装目录的几个候选位置里找 `appx-tools` 工具目录。
+///
+/// # Errors
+///
+/// 目录不存在时返回 `SHELL_REG` 错误。
 fn appx_tools_dir(install_dir: &Path) -> Result<PathBuf, String> {
     let candidates = [
         install_dir.join("appx-tools"),
@@ -741,6 +788,11 @@ fn appx_tools_dir(install_dir: &Path) -> Result<PathBuf, String> {
     Err(err("SHELL_REG", "appx-tools missing"))
 }
 
+/// 运行 appx-tools 里的一个外部工具，隐藏控制台并等待结束。
+///
+/// # Errors
+///
+/// 工具缺失或退出码非零时返回 `SHELL_REG` 错误。
 fn run_tool(exe: &Path, cwd: &Path, args: &[String]) -> Result<(), String> {
     if !exe.is_file() {
         return Err(err("SHELL_REG", format!("missing {}", exe.display())));
@@ -764,6 +816,11 @@ fn run_tool(exe: &Path, cwd: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
+/// 隐藏控制台跑一段 PowerShell 脚本，失败带 stderr 报错。
+///
+/// # Errors
+///
+/// 退出码非零时返回含 stderr 的 `SHELL_REG` 错误。
 fn run_powershell(script: &str) -> Result<(), String> {
     let mut command = Command::new("powershell");
     crate::sys::hide_console(&mut command);
@@ -788,6 +845,11 @@ fn run_powershell(script: &str) -> Result<(), String> {
     }
 }
 
+/// [`run_powershell`] 的带输出版本，返回 stdout 原文。
+///
+/// # Errors
+///
+/// 退出码非零时返回含 stderr 的 `SHELL_REG` 错误。
 fn run_powershell_output(script: &str) -> Result<String, String> {
     let mut command = Command::new("powershell");
     crate::sys::hide_console(&mut command);
@@ -812,6 +874,7 @@ fn run_powershell_output(script: &str) -> Result<String, String> {
     }
 }
 
+/// 路径放进 PowerShell 单引号字面量前的转义（`'` → `''`）。
 fn escape_ps(path: &Path) -> String {
     path.display().to_string().replace('\'', "''")
 }

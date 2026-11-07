@@ -75,8 +75,10 @@ import type { RefAction, RefTarget } from "../lib/refMenu";
 import { useI18n } from "../i18n";
 import { useSettings } from "../hooks/useSettings";
 
+/** 日志面板可直触的快捷键动作名单（右键菜单动作的子集）。 */
 const LOG_SHORTCUT_ACTIONS = new Set(['CopyReference', '$Copy', 'ChangesView.GroupBy.Directory', 'ChangesView.GroupBy.Module',
   'Git.New.Branch.In.Log', 'Git.CreateNewBranch', 'Diff.ShowDiff', 'EditSource', 'Git.Rename.Local.Branch', '$Delete', 'git.push']);
+/** 上面那份动作的完整键位表（菜单快捷键提示与全局拦截共用）。 */
 const LOG_SHORTCUTS = [...contextShortcuts([...LOG_SHORTCUT_ACTIONS].filter((id) => id !== 'git.push')),
   ...SHORTCUT_DEFS.filter((definition) => definition.id === 'git.push')];
 
@@ -110,6 +112,7 @@ export type CommitAction =
   | "reword"
   | "pushUpTo";
 
+/** {@link GitLogPane} 的入参。 */
 interface GitLogPaneProps {
   git: GitState;
   /** 日志里的错误走同一条告警通道，跟面板其它地方一致。 */
@@ -159,8 +162,10 @@ const GRAPH_ROW = 22;
 /** 一个 lane 槽位的横向宽度。 */
 const GRAPH_LANE = 12;
 
+/** lane 的横向像素坐标。 */
 const laneX = (lane: number) => GRAPH_LANE / 2 + lane * GRAPH_LANE;
 
+/** 一段连线：同行直线，跨 lane 用三阶贝塞尔过渡。 */
 function segPath(fromX: number, fromY: number, toX: number, toY: number) {
   if (fromX === toX) return `M${fromX} ${fromY}L${toX} ${toY}`;
   const mid = (fromY + toY) / 2;
@@ -177,6 +182,7 @@ function ArrowTip({ x, y, dir, color }: { x: number; y: number; dir: "up" | "dow
   return <polygon points={points} fill={color} />;
 }
 
+/** 一行日志的提交图 SVG 单元。 */
 function GraphCell({ row }: { row: GraphRow | undefined }) {
   if (!row) return <span className="log-dot" aria-hidden="true" />;
   const width = Math.min(row.width, 24) * GRAPH_LANE;
@@ -254,6 +260,7 @@ interface RefNode {
   leaves: RefLeaf[];
 }
 
+/** 把一页提交的改动文件按目录嵌成树。 */
 function buildFileTree(items: TreeItem[]): FileNode {
   const root: FileNode = { name: "", path: "", dirs: [], files: [] };
   /** 每层的「子目录路径 → 节点」索引：逐段 `dirs.find` 在同级目录多时是平方量级。 */
@@ -292,6 +299,7 @@ function buildFileTree(items: TreeItem[]): FileNode {
 /** 树按那一份 items 数组缓存：第三栏每次渲染都要用，而换提交才会真的换内容。 */
 const treeCache = new WeakMap<TreeItem[], FileNode>();
 
+/** {@link buildFileTree} 的按数组身份缓存版。 */
 function fileTree(items: TreeItem[]): FileNode {
   let hit = treeCache.get(items);
   if (!hit) {
@@ -304,6 +312,7 @@ function fileTree(items: TreeItem[]): FileNode {
 /** 目录行右端那个「几个文件」：整棵树里每个目录行都要算一次，不缓存就是每渲染一遍全递归一次。 */
 const underCache = new WeakMap<FileNode, TreeItem[]>();
 
+/** 目录子树下的全部文件（含子目录，结果缓存）。 */
 function filesUnder(node: FileNode): TreeItem[] {
   const hit = underCache.get(node);
   if (hit) return hit;
@@ -314,6 +323,7 @@ function filesUnder(node: FileNode): TreeItem[] {
 
 /** 引用树缓存；攒够上限就整张重开，重开最坏是再建一次树，不会算错。 */
 const refTreeCache = new Map<string, RefNode>();
+/** 引用树缓存条数上限；超了整张重开。 */
 const REF_TREE_CACHE_CAP = 32;
 
 /** 按斜杠把引用嵌成目录；返回的那层里 leaves 是不含斜杠的那一批。 */
@@ -362,7 +372,7 @@ function refDirKeysOf(labels: string[]): string[] {
   return [...keys];
 }
 
-/** IDEA 的日志窗口：左边引用树，中间提交列表，右边这次提交的文件清单与元信息。 */
+/** 日志窗口：左边引用树，中间提交列表，右边这次提交的文件清单与元信息。 */
 function GitLogPane({
   git,
   reportError,
@@ -454,7 +464,7 @@ function GitLogPane({
   const [signal, setSignal] = useState(0);
   /**
    * 中列的选中集，按点击的先后排；最后一颗是详情栏跟着走的那条。
-   * IDEA 的提交行菜单里好几项要看选中几条，所以这里不能只留一条。
+   * 提交行菜单里好几项要看选中几条，所以这里不能只留一条。
    */
   const [picked, setPicked] = useState<string[]>([]);
   const selectedHash = picked[picked.length - 1] ?? null;
@@ -843,7 +853,7 @@ function GitLogPane({
         (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
         sole
       ) {
-        // 左边是子提交、右边是父提交，和 IDEA 图上的箭头一致；这一侧没有可跳的行就不抢按键。
+        // 左边是子提交、右边是父提交，与图上箭头方向一致；这一侧没有可跳的行就不抢按键。
         const next =
           event.key === "ArrowLeft"
             ? commits.find((row) => row.parents.includes(sole.hash))
@@ -942,9 +952,8 @@ function GitLogPane({
   };
 
   /**
-   * IDEA 的 Vcs.Log.ContextMenu，次序照平台那份组声明加上 git4idea 插进来的那批。
-   * 门控也照它：多数项要求恰好选中一条，合并提交还原不了（要先定并入哪一条父提交），
-   * 撤销与改写说明那一族只在 HEAD 那条提交上生效。
+   * 提交行右键菜单，布局与门控：多数项要求恰好选中一条，合并提交还原不了（要先定并入
+   * 哪一条父提交），撤销与改写说明那一族只在 HEAD 那条提交上生效。
    * 修补 / 压缩到 / 删除提交 / 压缩提交 / 交互式变基这几项要的是变基待办那条通道，
    * 「在修订版中显示仓库」要拼远端网页地址；落点没有就不摆出来，摆了就是点不动的死控件。
    */
@@ -996,7 +1005,7 @@ function GitLogPane({
       const row = commits.find((commit2) => commit2.hash === hash);
       return row ? `${row.subject} (${row.short})` : hash.slice(0, 8);
     };
-    /** IDEA 的签出子菜单：本地分支挨个列，当前那条不算，末尾再挂「签出修订」。 */
+    /** 签出子菜单：本地分支挨个列，当前那条不算，末尾再挂「签出修订」。 */
     const localCheckout = git.branches
       .filter((ref) => !ref.remote && !ref.current)
       .map((ref) => ref.name);
@@ -1228,7 +1237,7 @@ function GitLogPane({
       onDiffWithWorktree: (held) => setCompareRef(held.name),
     });
 
-  /** 文件行右键菜单：IDEA 在日志里给的那一整套，置灰的照旧置灰。 */
+  /** 文件行右键菜单：日志里给的那一整套，置灰的照旧置灰。 */
   const fileMenu = (commit: GitCommitDetail, file: GitCommitFile): MenuItem[] => {
     const hasParent = commit.parents.length > 0;
     const act = (action: FileAction) => () => onFileAction(action, commit, file);
@@ -1250,7 +1259,7 @@ function GitLogPane({
         disabled: !hasParent,
         onSelect: act("revert"),
       },
-      // 这三项是 IDEA 变更清单那一侧的动作，日志里对着一次提交没有对应落点。
+      // 这三项是变更清单侧的动作，日志里对着一次提交没有对应落点。
       { label: t("log.prioritizeSelected"), disabled: true },
       { label: t("log.extractToCommit"), disabled: true },
       { label: t("log.deleteSelected"), disabled: true },
@@ -1624,7 +1633,7 @@ function GitLogPane({
           >
             <FileDiff size={15} />
           </button>
-          {/* IDEA 的抓取动作在执行时仅置灰禁用，按钮图标保持静态不转圈。 */}
+          {/* 抓取动作在执行时仅置灰禁用，按钮图标保持静态不转圈。 */}
           <button
             type="button"
             className="icon-button is-inline"

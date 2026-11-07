@@ -15,6 +15,7 @@ import { List } from "../ui/List";
 import DiffPane from "./DiffPane";
 import styles from "./LocalHistoryEditor.module.css";
 
+/** {@link LocalHistoryEditor} 的入参。 */
 interface Props {
   root: string;
   path: string;
@@ -25,8 +26,11 @@ interface Props {
   onRestored: (content: FileContent) => void;
 }
 
+/** 一条修订的稳定键（清单选中态用）。 */
 const keyOf = (entry: HistoryEntry) => `${entry.kind}:${entry.path}:${entry.savedAt}`;
+/** 秒级本地时间文案（修订列表用）。 */
 function time(ms: number) { return new Date(ms).toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+/** 一次比对的两份数据（路径、还原出的两版、当前盘上版本与修改时刻）。 */
 interface Comparison { path: string; original: string; modified: string; left: string; right?: string; modifiedMs: number }
 
 /** 历史是编辑器输入；文件、目录和已删除文件使用同一条查询与恢复流程。 */

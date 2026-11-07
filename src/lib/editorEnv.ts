@@ -7,8 +7,8 @@
  * 在自身加载时通过 `attachEditorBridge` 挂上来；没挂上时它们要么是无意义操作
  * （盘上没有 state 可读），要么退回本模块的静态表。
  *
- * 语言目录是对标 IDE 语言表（`languages/*.toml`，71 门）的 1:1 抄本：id、显示名、
- * 扩展名与文件名逐字对齐，供编辑器识别与显示。
+ * 语言目录与编辑器语言表（`languages/*.toml`，71 门）逐字对齐：id、显示名、
+ * 扩展名与文件名，供编辑器识别与显示。
  * 目录之外的少数语言（batch、nsis、solidity 这类编辑器还有语法但目录里没有的）
  * 放在 `EDITOR_EXTRA`，只参与识别与显示。
  */
@@ -21,7 +21,7 @@ interface CatalogLanguage {
   filenames?: readonly string[];
 }
 
-/** 目录内 71 门语言，条目顺序与对标 IDE 的 languages 目录一致。 */
+/** 目录内 71 门语言，条目顺序与语言表目录一致。 */
 const CATALOG: readonly CatalogLanguage[] = [
   { id: "c", name: "C", extensions: ["c", "h"] },
   { id: "clojure", name: "Clojure", extensions: ["clj", "cljs", "cljc", "cljd", "edn", "bb"], filenames: ["deps.edn", "project.clj", "bb.edn"] },
@@ -173,7 +173,7 @@ const CATALOG: readonly CatalogLanguage[] = [
 ];
 
 /**
- * 目录之外的编辑器专用语言：对标 IDE 的目录里没有这几门，但编辑器这边
+ * 目录之外的编辑器专用语言：语言目录里没有这几门，但编辑器这边
  * 语法包还在、老工程还会打开，识别与显示照旧，只是不进语言服务目录。
  */
 const EDITOR_EXTRA: readonly CatalogLanguage[] = [
@@ -214,6 +214,7 @@ for (const language of [...CATALOG, ...EDITOR_EXTRA]) {
 
 /** 文件名精确表与通配模式：文件名命中优先于扩展名。 */
 const LANGUAGE_BY_NAME: Record<string, string> = {};
+/** 文件名通配模式表（`Makefile*` 这类），文件名精确表没中才查它。 */
 const FILENAME_PATTERNS: Array<{ re: RegExp; id: string }> = [];
 /** 文件名通配转正则：`*` 匹配任意串，其余字符按字面量转义。 */
 function filenameToRegExp(text: string): RegExp {
@@ -238,7 +239,7 @@ for (const language of [...CATALOG, ...EDITOR_EXTRA]) {
 }
 
 /**
- * 首行识别表：扩展名认不出的脚本靠它。条目与对标 IDE 各语言 toml 的
+ * 首行识别表：扩展名认不出的脚本靠它。条目与各语言 toml 的
  * `first-line` 一致，顺序是从特例到泛化（先锚定的声明，再 shebang）。
  */
 const FIRST_LINE: ReadonlyArray<readonly [RegExp, string]> = [
@@ -298,6 +299,7 @@ export function languageLabel(id: string): string {
   return LANGUAGE_LABELS[id] ?? id;
 }
 
+/** 读一个 CSS 自定义属性的值（取不到返回空串）。 */
 function cssToken(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -309,6 +311,7 @@ function cssToken(name: string): string {
  */
 const CJK_MONO = '"Microsoft YaHei Mono", "Noto Sans Mono CJK SC", "MS Gothic"';
 
+/** 等宽字体栈：`--font-mono` 打头，补 CJK 等宽回退与 monospace 兜底。 */
 export function monoFont(): string {
   const base = cssToken("--font-mono").replace(/,\s*monospace\s*$/, "");
   return base ? `${base}, ${CJK_MONO}, monospace` : `Menlo, Consolas, ${CJK_MONO}, monospace`;
@@ -320,6 +323,7 @@ interface EditorBridge {
   selectedText(limit: number): string;
 }
 
+/** 编辑器模块挂上来的能力单例；null 表示首屏还没碰过编辑器。 */
 let bridge: EditorBridge | null = null;
 
 /** 由编辑器模块在自身初始化时调用，把自己接进这几条门面；返回退订。 */

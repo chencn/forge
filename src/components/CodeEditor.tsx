@@ -78,7 +78,7 @@ import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import { useAiInputMenu } from "./AiInputContext";
 import { changeBaselineKey, gutterChanges, headFile, type ChangeBaseline } from "../lib/lineChanges";
 
-/** 一颗 ▶ 占多宽。行号与代码之间那条带里留给指针命中的宽度，同原来 Monaco 那版一致。 */
+/** 一颗 ▶ 占多宽。行号与代码之间那条带里留给指针命中的宽度。 */
 const PIN_WIDTH = 12;
 
 /** 供分栏模式下双向同步滚动位置的指令句柄。 */
@@ -87,6 +87,7 @@ export interface CodeEditorHandle {
   getScrollRatio: () => number;
 }
 
+/** 代码编辑器的入参。 */
 interface CodeEditorProps {
   /** 当前标签对应的文档；为 null 时编辑器留空。 */
   document: OpenDocument | null;
@@ -381,7 +382,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     ensurePinHost(view);
 
     // 失焦保存：查找条、补全浮层、悬停浮层都在 view.dom 里，焦点落进它们仍算在编辑器内。
-    // 原来用 Monaco 的 onDidBlurEditorWidget 就是为了这件事，这里换成 focusout + 归属判断。
+    // focusout + 归属判断 = 焦点离开编辑器挂件的检测。
     const onFocusOut = (event: FocusEvent) => {
       const next = event.relatedTarget as Node | null;
       if (next && view.dom.contains(next)) return;
@@ -706,15 +707,14 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   /**
    * 将装订线标记测量任务调度到 CodeMirror 的测量周期中。
    *
-   * 核心根因与修复：
-   * CodeMirror 在初始化、换文档或代码折叠/展开（fold/unfold）事务派发时，DOM 尚未完成 reflow 与 HeightMap 测量，
-   * 内部行高仍处于 14px 的默认回退值（HeightOracle.lineHeight = 14）。
-   * 若同步读取 lineTop，将读到按 14px 行高计算出的假坐标（例如 16 个脚本全被压缩至前 13 行，整体上偏 3 行）。
+   * 根因：CodeMirror 在初始化、换文档或代码折叠/展开事务派发时，DOM 尚未完成
+   * reflow 与 HeightMap 测量，内部行高仍是默认回退值（HeightOracle.lineHeight = 14）；
+   * 同步读取 lineTop 会得到按 14px 行高算出的假坐标（行越多偏差越大）。
    *
-   * 接入 CodeMirror 官方的 view.requestMeasure({ key, read, write })：
-   * 1. 确保在 viewState.measure() 测量完 DOM 真实行高（如 22px/24px）后再执行 read；
-   * 2. 利用相同的 key 自动在同帧内去重，避免重复重绘；
-   * 3. 在 write 阶段更新 React state，确保图钉与真实代码行完全咬合。
+   * 走 CodeMirror 官方的 view.requestMeasure({ key, read, write })：
+   * 1. 确保 viewState.measure() 测出真实行高（如 22px/24px）后再执行 read；
+   * 2. 相同 key 在同帧内自动去重，避免重复重绘；
+   * 3. write 阶段更新 React state，保证图钉与真实代码行咬合。
    */
   const scheduleMeasure = useCallback(() => {
     const view = viewRef.current;
@@ -803,7 +803,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       ...(selection
         ? [
             // 复制出去的那段带这篇文档的行尾：粘到编辑器外的 CRLF 文件里不该变成 LF
-            // （原来 Monaco 的 getValueInRange 就是按 model 的 EOL 给的）。
+            // （按文档实际 EOL 划范围）。
             {
               label: t("action.copy"),
               onSelect: () => void navigator.clipboard.writeText(toDiskText(selectedText(view), endingRef.current)),

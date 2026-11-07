@@ -33,7 +33,7 @@ describe("fuzzyMatch 三档匹配", () => {
 describe("wordMatch 只认起头的", () => {
   it("散落的逐字命中整条拒掉", () => {
     // "dbe" 在 "database" 里逐字顺次能对上（d-b-e），但 b、e 都不起头也不连着，
-    // IDEA 的 Find Action 匹配器就不认这一档。
+    // Find Action 匹配器就不认这一档。
     expect(wordMatch("database", "dbe")).toBeNull();
     expect(fuzzyMatch("database", "dbe")).toEqual([0, 4, 7]);
   });

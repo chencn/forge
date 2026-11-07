@@ -1,10 +1,16 @@
 //! Claude Code / Codex 的安装管理。仅运行版本探测和固定管理命令，不建立对话。
 mod latest;
+/// 隔离子进程树与挂起恢复的封装（实现见 [`process`]）。
 pub(crate) mod process;
+/// Codex 版本目录（按版本探测可用能力）。
 pub mod codex_catalog;
+/// 两个 CLI 的 MCP 服务器配置读写。
 pub mod mcp;
+/// 自定义模型供应商配置。
 pub mod providers;
+/// CLI 安装、版本与设置管理。
 pub mod settings;
+/// Claude/Codex 技能（SKILL.md）管理。
 pub mod skills;
 
 use crate::offload::block;
@@ -29,6 +35,11 @@ pub(crate) fn management_busy() -> bool { BUSY.load(Ordering::Acquire) }
 pub(crate) struct RuntimeGate {
     _lock: crate::sys::ExclusiveFileLock,
 }
+/// 抢跨进程 CLI 管理门闩；拿不到说明别的进程正在装/改 CLI。
+///
+/// # Errors
+///
+/// 数据目录无法定位或创建时返回错误；门闩被占时返回「CLI 管理进行中」。
 pub(crate) fn runtime_gate(app: &AppHandle) -> Result<RuntimeGate, String> {
     let root = app.path().app_local_data_dir().map_err(|error| error.to_string())?;
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
@@ -163,6 +174,7 @@ fn version_parts(value: &str) -> Option<[u64; 3]> {
     }
     Some(result)
 }
+/// 从 `--version` 输出里剥掉 CLI 自己的前后缀，取出纯版本号；解析不出返回 `None`。
 fn parse_version(provider: Provider, output: &str) -> Option<String> {
     let line = output.lines().find(|line| !line.trim().is_empty())?.trim();
     let value = match provider {
@@ -171,6 +183,7 @@ fn parse_version(provider: Provider, output: &str) -> Option<String> {
     };
     version_parts(value).map(|_| value.to_string())
 }
+/// 按段比较版本号，判断 latest 是否比已安装版本新；任一侧解析失败按不新处理。
 fn newer(latest: &str, installed: &str) -> bool {
     match (version_parts(latest), version_parts(installed)) { (Some(a), Some(b)) => a > b, _ => false }
 }
@@ -218,6 +231,11 @@ fn launchers(provider: Provider) -> Vec<PathBuf> {
     }
     found
 }
+/// 在 PATH 里解析一个 CLI 可执行文件的完整路径。
+///
+/// # Errors
+///
+/// 找不到该程序时返回带名称的中文错误。
 fn resolve(program: &str) -> Result<PathBuf, String> {
     crate::sys::resolve_command(program).map(PathBuf::from)
         .ok_or_else(|| format!("未找到 {program}，请安装并在重启 Forge 后重试"))
@@ -517,6 +535,7 @@ pub async fn ai_cli_probe(app: AppHandle, force: Option<bool>) -> Result<Vec<Sta
     Ok(statuses)
 }
 
+/// 本轮诊断结果缓存；刷新周期内重复打开面板不再重跑一遍全部检查。
 static LOCAL_STATUS: tokio::sync::Mutex<Option<Vec<Status>>> = tokio::sync::Mutex::const_new(None);
 
 /// 联网更新查询不持有管理锁，不影响已安装工具创建或发送会话。

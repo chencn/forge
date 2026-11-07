@@ -1,3 +1,4 @@
+/** 简体中文词表，是全部翻译键的权威来源。 */
 export const zh = {
   "app.name": "Forge",
   // AI Elements 使用真实工具数据；未知结果保持未知。
@@ -972,7 +973,7 @@ export const zh = {
   "git.revHead": "HEAD",
   "git.revIndex": "暂存区 (index)",
   "git.revWorktree": "你的版本",
-  /* 比对顶栏：IDEA 的组序是 差异上下 / 跳到源码 / 文件左右 / 关闭，右端是差异条数与布局。 */
+  /* 比对顶栏组序：差异上下 / 跳到源码 / 文件左右 / 关闭，右端是差异条数与布局。 */
   "diff.workingCopy": "工作副本",
   "diff.highlighting": "高亮",
   "diff.highlightWords": "词级高亮",
@@ -2629,7 +2630,7 @@ export const zh = {
   "project.view.moveToDirectory": "移动 {count} 项到目录：",
   "project.view.safeDeletePrompt": "安全删除选中的 {count} 项并搜索使用情况？",
 
-  // VCS 设置中心 (对标 IDEA)
+  // VCS 设置中心
   "vcs.nonModalCommit": "使用非模态提交界面",
   "vcs.nonModalHint": "关闭后，提交会弹出独立对话框；开启后使用侧边栏的提交工具窗口。",
   "vcs.clearInitialMessage": "提交成功后清空初始提交说明",
@@ -2679,5 +2680,7 @@ export const zh = {
   "vcs.rows": "行",
 } as const;
 
+/** 词条字典类型：键为翻译键，值为简体中文文案。 */
 export type Dictionary = typeof zh;
+/** 全部翻译键的并集。 */
 export type TranslationKey = keyof Dictionary;

@@ -62,6 +62,7 @@ export class OlderHistoryScroll {
  */
 export type FollowAnchor = { id: string } | null;
 
+/** 是否贴底：距底部不足 slop 像素即算。 */
 export function isNearBottom(scrollHeight: number, scrollTop: number, clientHeight: number, slop = BOTTOM_SLOP): boolean {
   return scrollHeight - scrollTop - clientHeight <= slop;
 }

@@ -19,22 +19,28 @@ import { recallContextWindow } from "./aiContextMemory";
 
 /** 提示阈值（百分比整数）。 */
 export const DEFAULT_COMPACT_THRESHOLD = 80;
+/** 提示阈值允许的下限。 */
 export const MIN_COMPACT_THRESHOLD = 50;
+/** 提示阈值允许的上限（百分比）。 */
 export const MAX_COMPACT_THRESHOLD = 95;
 /** 自动压缩永远不早于此比例，哪怕用户把提示阈值调得更低：折掉的内容下一轮可能还要用。 */
 export const AUTO_COMPACT_MIN_PERCENT = 90;
 
+/** 压缩偏好：自动开关与提示阈值。 */
 export interface CompactPrefs {
   /** 自动压缩开关；默认关，用户自己点头才替他要动手。 */
   auto: boolean;
   threshold: number;
 }
 
+/** 偏好的 localStorage 键。 */
 const prefsKey = "forge:ai:compact:v1";
+/** 把阈值夹回 [MIN, MAX] 并取整；非数字回默认值。 */
 const clampThreshold = (value: unknown): number => typeof value === "number" && Number.isFinite(value)
   ? Math.min(MAX_COMPACT_THRESHOLD, Math.max(MIN_COMPACT_THRESHOLD, Math.round(value)))
   : DEFAULT_COMPACT_THRESHOLD;
 
+/** 读压缩偏好；损坏回默认（关自动 + 默认阈值）。 */
 export function readCompactPrefs(): CompactPrefs {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(prefsKey) ?? "{}");
@@ -45,6 +51,7 @@ export function readCompactPrefs(): CompactPrefs {
   }
 }
 
+/** 合并并持久化压缩偏好，返回生效后的完整值。 */
 export function writeCompactPrefs(prefs: Partial<CompactPrefs>): CompactPrefs {
   const next: CompactPrefs = { auto: prefs.auto ?? readCompactPrefs().auto, threshold: clampThreshold(prefs.threshold ?? readCompactPrefs().threshold) };
   try {
@@ -58,6 +65,7 @@ export function writeCompactPrefs(prefs: Partial<CompactPrefs>): CompactPrefs {
 /** 分母是从哪来的：本轮报告、该模型的历史报告，或者根本没有。 */
 export type WindowSource = "reported" | "remembered" | "unknown";
 
+/** 算比例用的那对数字：已用 token、上下文窗口与分母来源。 */
 export interface CompactNumbers {
   total: number;
   window: number;
@@ -99,8 +107,10 @@ export type CompactAutoGuard =
   | "ai.compact.guardRemembered"
   | "ai.compact.guardEarly";
 
+/** 判定的动作档：不提示 / 提示用户 / 自动执行。 */
 export type CompactAction = "none" | "suggest" | "fire";
 
+/** 判定的完整输入：会话状态、用量快照与用户偏好。 */
 export interface CompactState {
   provider: AiProvider;
   /** 会话状态：idle / running / completed / cancelled / failed。 */
@@ -123,6 +133,7 @@ export interface CompactState {
   dismissed?: string | null;
 }
 
+/** 一次判定的完整输出（动作、比例、阻断/软守卫原因、提示去重 id）。 */
 export interface CompactDecision {
   action: CompactAction;
   /** 已用比例（四舍五入到整数百分比）；算不出来为 null。 */
@@ -144,10 +155,18 @@ export interface CompactDecision {
   noticeId: string | null;
 }
 
+/** 中性判定值（不做任何事）。 */
 const NONE: CompactDecision = { action: "none", percent: null, source: "unknown", reason: null, autoGuard: null, noticeId: null };
 /** 会话还没跑过任何一轮时的判定；给只关心模型/权限的调用方当一个中性值用。 */
 export const NO_COMPACT_DECISION: CompactDecision = NONE;
 
+/**
+ * 判定此刻该不该提压缩 / 能不能自动压缩。
+ *
+ * 硬阻断优先（无会话、停止中、运行中、待授权、有排队消息、凑不出数字）；
+ * 再按阈值分档出 suggest/fire，自动档受 {@link AUTO_COMPACT_MIN_PERCENT}
+ * 与三条软守卫（草稿、记忆分母、过早）约束。
+ */
 export function compactDecision(state: CompactState): CompactDecision {
   if (!state.boundSession) return { ...NONE, reason: "ai.compact.blockNoSession" };
   // 正在停止：这一轮还没落地，压缩会插在一个已经决定要结束的回合后面。
@@ -182,4 +201,5 @@ export function compactDecision(state: CompactState): CompactDecision {
 export function compactIntent(provider: AiProvider): "codexCompact" | "claudeSlash" {
   return provider === "codex" ? "codexCompact" : "claudeSlash";
 }
+/** 压缩指令的原文。 */
 export const COMPACT_COMMAND_TEXT = "/compact";

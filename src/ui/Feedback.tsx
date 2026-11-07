@@ -4,6 +4,7 @@ import { Icon, type LucideIconType } from "./Icon";
 import { IconButton } from "./Button";
 import styles from "./Feedback.module.css";
 
+/** {@link ProgressBar} 的入参。 */
 export interface ProgressBarProps {
   /** 0..1; 为 null/undefined 时渲染不确定滑动动画 */
   value?: number | null;
@@ -61,6 +62,7 @@ export function Spinner({
   );
 }
 
+/** 徽标（文字或小圆点）。 */
 export interface BadgeProps {
   children: ReactNode;
   tone?: "neutral" | "accent" | "danger" | "warning" | "success";
@@ -69,6 +71,7 @@ export interface BadgeProps {
   className?: string;
 }
 
+/** 徽标组件。 */
 export function Badge({ children, tone = "neutral", dot, className }: BadgeProps) {
   if (dot) {
     return (
@@ -82,6 +85,7 @@ export function Badge({ children, tone = "neutral", dot, className }: BadgeProps
   return <span className={clsx(styles.badge, styles[`tone-${tone}`], className)}>{children}</span>;
 }
 
+/** {@link EmptyState} 的入参。 */
 export interface EmptyStateProps {
   title?: ReactNode;
   icon?: string | LucideIconType | ReactNode;
@@ -103,11 +107,13 @@ export function EmptyState({ title, children, actions, className }: EmptyStatePr
   );
 }
 
+/** Toast 上的一个动作按钮。 */
 export interface ToastAction {
   label: string;
   run: () => void;
 }
 
+/** {@link Toast} 的入参。 */
 export interface ToastProps {
   level?: "info" | "warning" | "error" | "success";
   title?: ReactNode;
@@ -122,7 +128,7 @@ export interface ToastProps {
 }
 
 /**
- * IDEA 风格通知条目 / 气泡卡片
+ * 通知条目 / 气泡卡片
  */
 export function Toast({
   level = "info",

@@ -71,8 +71,10 @@ impl Session {
     }
 }
 
+/// 全部活动终端会话表：id → 会话句柄。
 type Sessions = Mutex<HashMap<String, Arc<Session>>>;
 
+/// 会话表的懒初始化入口。
 fn sessions() -> &'static Sessions {
     static SESSIONS: OnceLock<Sessions> = OnceLock::new();
     SESSIONS.get_or_init(|| Sessions::new(HashMap::new()))
@@ -99,6 +101,7 @@ pub struct TermExit {
     pub code: Option<u32>,
 }
 
+/// 终端会话 ID 发号器。
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 一个能起的 shell。
@@ -119,6 +122,7 @@ pub async fn shell_probe() -> Vec<ShellInfo> {
     block_value(shell_probe_impl, Vec::new).await
 }
 
+/// [`shell_probe`] 的同步体：按优先级探测本机可用的 shell 清单。
 fn shell_probe_impl() -> Vec<ShellInfo> {
     let mut found: Vec<ShellInfo> = Vec::new();
     if cfg!(windows) {
@@ -248,6 +252,7 @@ fn wsl_distributions() -> Vec<String> {
     keep_user_distributions(names)
 }
 
+/// Windows 上枚举 WSL 发行版名；非 Windows 平台恒为空。
 #[cfg(not(windows))]
 fn wsl_distributions() -> Vec<String> {
     Vec::new()
@@ -270,6 +275,7 @@ fn push_shell(list: &mut Vec<ShellInfo>, name: &str, path: &str, args: &[String]
     push_shell_as(list, path, name, path, args);
 }
 
+/// [`push_shell`] 的完整版：id 可与路径不同（WSL 发行版共用 wsl.exe 的场景）。
 fn push_shell_as(list: &mut Vec<ShellInfo>, id: &str, name: &str, path: &str, args: &[String]) {
     if !is_file(path) || list.iter().any(|item| item.id == id) {
         return;
@@ -304,14 +310,18 @@ fn resolve_shell(configured: Option<String>) -> (String, Vec<String>) {
     }
 }
 
+/// 取程序路径末段的文件名并转小写。
 fn executable_name(program: &str) -> String {
     program.rsplit(['/', '\\']).next().unwrap_or(program).to_ascii_lowercase()
 }
 
 /// 外层终端留在环境里的身份标记。shell 和 CLI 据此判断「我在哪个终端里」，带过来就认错了宿主。
+/// 完整的外层终端标记名单（精确匹配部分）。
 const INHERITED_MARKERS: &[&str] = &["WT_SESSION", "WT_PROFILE_ID", "TERM_SESSION_ID", "VTE_VERSION", "TMUX", "TMUX_PANE"];
+/// 按前缀匹配的外层终端标记（各终端有多个变量，只认前缀）。
 const INHERITED_MARKER_PREFIXES: &[&str] = &["KITTY_", "GHOSTTY_", "WEZTERM_", "ITERM_"];
 
+/// 判断一个环境变量名是不是外层终端留下的身份标记。
 fn is_inherited_marker(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     INHERITED_MARKERS.contains(&upper.as_str())
@@ -370,6 +380,11 @@ pub async fn term_open(
     block(move || term_open_impl(app, cwd, shell, cols, rows, launch.unwrap_or_default())).await
 }
 
+/// [`term_open`] 的同步体：起 PTY 会话并登记进 [`sessions`]。
+///
+/// # Errors
+///
+/// shell 解析失败、PTY 打开失败或 reader 线程无法启动时返回错误。
 fn term_open_impl(
     app: AppHandle,
     cwd: Option<String>,
@@ -511,6 +526,11 @@ fn flush(app: &AppHandle, id: &str, pending: &mut Vec<u8>, encoded: &mut String)
     pending.clear();
 }
 
+/// 按 id 取一个还活着的会话句柄。
+///
+/// # Errors
+///
+/// 会话已关闭（`TERM_GONE`）时返回错误。
 fn session_of(id: &str) -> Result<Arc<Session>, String> {
     lock(sessions())
         .get(id)
@@ -518,6 +538,11 @@ fn session_of(id: &str) -> Result<Arc<Session>, String> {
         .ok_or_else(|| err("TERM_GONE", id))
 }
 
+/// 往会话的 PTY 写字节并冲刷。
+///
+/// # Errors
+///
+/// 写入或冲刷失败（`TERM_IO`）时返回错误。
 fn write_bytes(session: &Session, data: &[u8]) -> Result<(), String> {
     let mut writer = lock(&session.writer);
     writer
@@ -602,6 +627,7 @@ pub async fn term_close(id: String) -> Result<(), String> {
     .await
 }
 
+/// 关闭单个会话：发停止信号、放开闸门、杀子进程并清理注入脚本。
 fn close_one(id: &str) {
     if let Some(session) = lock(sessions()).remove(id) {
         let _ = session.stop.send(());
@@ -619,6 +645,7 @@ pub async fn term_reap() {
     block_value(reap_impl, || {}).await
 }
 
+/// [`term_reap`] 的同步体：关掉当前实例名下的全部会话。
 fn reap_impl() {
     let stale: Vec<String> = lock(sessions()).keys().cloned().collect();
     for id in stale {
@@ -640,6 +667,9 @@ pub fn term_windows_build() -> Option<u32> {
     windows_build_number()
 }
 
+/// Windows 实现里查询补全级（terminal 布局特性按 build 号启用）。
+///
+/// 直接调 ntdll 的 `RtlGetVersion`，避免 manifest 谎报版本。
 #[cfg(windows)]
 fn windows_build_number() -> Option<u32> {
     #[repr(C)]
@@ -668,6 +698,7 @@ fn windows_build_number() -> Option<u32> {
     if status < 0 { None } else { Some(info.build) }
 }
 
+/// 非 Windows 平台没有 build 号概念，恒为 `None`。
 #[cfg(not(windows))]
 fn windows_build_number() -> Option<u32> {
     None

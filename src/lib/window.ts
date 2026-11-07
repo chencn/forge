@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+/** 当前窗口句柄，模块内共用一个实例。 */
 const win = getCurrentWindow();
 
 /** 这个窗口的标签。 */
 export const windowLabel = win.label;
 
 import type { ThemePreference } from "../themes/themeManager";
+/** 主题模式，直接沿用主题管理器的偏好类型。 */
 export type ThemeMode = ThemePreference;
 
 /**
@@ -49,7 +51,7 @@ export function onWindowBlur(handler: () => void): () => void {
 }
 
 /**
- * 监听原生窗口重新获得焦点（从后台切回前台时触发；对齐 IDEA 的 Frame Activation 机制）。
+ * 监听原生窗口重新获得焦点（从后台切回前台时触发；Frame Activation 机制）。
  *
  * 结合 Tauri 的 onFocusChanged 与 DOM 的 window.focus，确保切回窗口时可靠唤醒。
  */

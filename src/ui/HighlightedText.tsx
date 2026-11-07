@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { indexRuns } from "./match";
 import styles from "./HighlightedText.module.css";
 
+/** 高亮命中片段文本的入参。 */
 export interface HighlightedTextProps {
   text: string;
   /** 命中的字符索引数组（递增） */

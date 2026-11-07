@@ -180,7 +180,7 @@
   color: var(--fg-strong, #dfe1e5);
   font-weight: 600;
   overflow-wrap: anywhere;
-  /* 通知内容可选中，右键走系统原生「复制」（对齐 IDEA：全局不禁文本选择） */
+  /* 通知内容可选中，右键走系统原生「复制」（全局不禁文本选择） */
   user-select: text;
 }
 

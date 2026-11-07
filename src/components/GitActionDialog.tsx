@@ -15,6 +15,7 @@ import { useI18n } from "../i18n";
 import { useSettings } from "../hooks/useSettings";
 import "./GitActionDialog.css";
 
+/** 一次 Git 动作对话框的请求（更新/推送/建分支/建标签/签出修订）。 */
 export interface GitActionRequest {
   kind: "update" | "push" | "newBranch" | "newTag" | "checkoutRev";
   from?: string;
@@ -22,6 +23,7 @@ export interface GitActionRequest {
   revision?: string;
   root?: string;
 }
+/** 表单提交的值（名称、起点、说明、签出开关与更新策略）。 */
 export interface GitActionValues {
   name: string;
   from: string;
@@ -31,6 +33,7 @@ export interface GitActionValues {
   push?: GitPushOptions;
 }
 
+/** {@link GitActionDialog} 的入参。 */
 interface Props {
   request: GitActionRequest;
   git: GitState;
@@ -43,6 +46,7 @@ export default function GitActionDialog(props: Props) {
   return props.request.kind === "push" ? <PushDialog {...props} /> : <ActionDialog {...props} />;
 }
 
+/** 更新/建分支/建标签/签出的表单对话框。 */
 function ActionDialog({ request, git, onCancel, onSubmit }: Props) {
   const { t } = useI18n();
   const { settings } = useSettings();
@@ -89,6 +93,7 @@ function ActionDialog({ request, git, onCancel, onSubmit }: Props) {
   </Dialog>;
 }
 
+/** 推送表单对话框：远端分支选择与 force push 确认。 */
 function PushDialog({ request, git, onCancel, onSubmit }: Props) {
   const { t, locale } = useI18n();
   const { settings } = useSettings();

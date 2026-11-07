@@ -10,7 +10,7 @@
   --bg-secondary: var(--bg-elev, #f9fafb);
   --bg-tertiary: var(--bg-control, #f3f4f6);
   --chrome-bg: var(--bg-frame, #f8fafc);
-  /* 外框承载工具栏与岛屿间隙；bg-app 是内容底色，不是 IDEA 的窗框色。 */
+  /* 外框承载工具栏与岛屿间隙；bg-app 是内容底色，不是窗框色。 */
   --app-bg: var(--bg-frame);
   --surface-island: var(--bg-island, #ffffff);
   --surface-island-strong: var(--bg-popup, #ffffff);
@@ -25,7 +25,7 @@
   --button-solid-text: var(--fg-button-primary);
 
   color-scheme: light;
-  /* 浮层、菜单与弹出框一律采用 IDEA 风格的实心不透明背景，禁止透出底层文字。 */
+  /* 浮层、菜单与弹出框一律采用实心不透明背景，禁止透出底层文字。 */
   --surface-island-muted: var(--bg-elev);
   --island-shadow: var(--shadow-popup);
   /* 旧组件只做语义映射；不得再覆盖 IDEA 同名状态、焦点与滚动条变量。 */
@@ -40,7 +40,7 @@
   --git-outgoing: #369650;
   --run-solid: #369650;
   --stop-solid: #e55765;
-  /* 会话状态点取 IDEA 的 IconBadge：跑着绿、出错红；结束不再画点。 */
+  /* 会话状态点（IconBadge）：跑着绿、出错红；结束不再画点。 */
   --run-badge-running: #55a76a;
   --run-badge-error: #e55765;
   --accent-red: var(--danger);
@@ -58,9 +58,9 @@
   --accent-violet-text: #6d28d9;
   /* 分支标记用的实心黄：就是上面那档 amber 的本名，浅色下文字档太暗。 */
   --accent-yellow: var(--warning);
-  /* 被 .gitignore 忽略的文件在树里的文字色，取 IDEA 的 FILESTATUS_IDEA_FILESTATUS_IGNORED。 */
+  /* 被 .gitignore 忽略的文件在树里的文字色（ignored 文件状态色）。 */
   --vcs-ignored: #8c4f00;
-  /* 排除目录那一行的底色，对齐 IDEA 项目树里 dist / node_modules 的浅黄底。 */
+  /* 排除目录那一行的底色（项目树里 dist / node_modules 的浅黄底）。 */
   --vcs-excluded-bg: #fff9eb;
   /* IDEA New UI (expUI_light_with_light_header.theme.json) Notification 气泡专属色板 */
   --idea-notification-bg: #ffffff;
@@ -82,7 +82,7 @@
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
-  /* 弹层/对话框这一档对齐 IDEA 的 radius-dialog / radius-popup-large（10px）。 */
+  /* 弹层/对话框这一档的圆角（10px）。 */
   --radius-lg: 10px;
   --radius-xl: 16px;
   --radius-pill: 999px;
@@ -185,7 +185,7 @@
   --accent-color: var(--text-primary);
   --accent-cyan-text: #67e8f9;
   --accent-violet-text: #c4b5fd;
-  /* 被 .gitignore 忽略的文件在树里的文字色（深色档，取 IDEA 的 D69A6B）。 */
+  /* 被 .gitignore 忽略的文件在树里的文字色（深色档）。 */
   --vcs-ignored: #d69a6b;
   /* 排除目录那一行的底色（深色档）。 */
   --vcs-excluded-bg: #3d3428;

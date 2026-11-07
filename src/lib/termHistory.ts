@@ -1,7 +1,9 @@
 /** `CSI 3 J`：擦掉全部滚屏。ConPTY 重画视口时会带上它，滚出屏幕的行就没了。 */
 const ERASE_SCROLLBACK = [0x1b, 0x5b, 0x33, 0x4a];
+/** 公共的空字节块，避免每次都新建。 */
 const EMPTY = new Uint8Array(0);
 
+/** 一轮剥标记的结果：留下的半截前缀与本次输出的净字节。 */
 export interface StripResult {
   /** 还没凑齐的标记前缀，下一包拼上再判断。 */
   carry: Uint8Array;
@@ -9,6 +11,7 @@ export interface StripResult {
   data: Uint8Array;
 }
 
+/** 这截字节是不是完整标记的严格前缀（比标记短才算）。 */
 function isMarkerPrefix(bytes: Uint8Array, start: number): boolean {
   const length = bytes.length - start;
   if (length <= 0 || length >= ERASE_SCROLLBACK.length) return false;
@@ -18,6 +21,7 @@ function isMarkerPrefix(bytes: Uint8Array, start: number): boolean {
   return true;
 }
 
+/** 从 start 起是不是一条完整的擦滚屏标记。 */
 function isMarker(bytes: Uint8Array, start: number): boolean {
   if (start + ERASE_SCROLLBACK.length > bytes.length) return false;
   for (let index = 0; index < ERASE_SCROLLBACK.length; index += 1) {
@@ -97,6 +101,7 @@ export function stripEraseScrollback(carry: Uint8Array, chunk: Uint8Array): Stri
   return { carry: EMPTY, data: join(parts) };
 }
 
+/** 把两段字节拼成一整块新数组。 */
 function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   const result = new Uint8Array(left.length + right.length);
   result.set(left);

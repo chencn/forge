@@ -13,15 +13,18 @@ export const AI_CHAT_WIDTH_DEFAULT = 768;
 export const AI_CHAT_WIDTH_MIN = 640;
 /** 方向键一次步进的距离。 */
 export const AI_CHAT_WIDTH_KEY_STEP = 32;
+/** localStorage 键（v1：像素值）。 */
 const KEY = "forge:ai-chat-width:v1";
 /** 列两侧永远留出的空隙；手柄不能压到窗口 resize 边上。 */
 const GUTTER = 12;
 
+/** 把目标宽度钳进 [MIN, 宿主宽度−留白]；宿主未知时上限取默认值。 */
 function clamp(value: number, hostWidth: number | undefined): number {
   const max = hostWidth !== undefined ? Math.max(AI_CHAT_WIDTH_MIN, Math.floor((hostWidth - 2 * GUTTER))) : AI_CHAT_WIDTH_DEFAULT;
   return Math.min(max, Math.max(AI_CHAT_WIDTH_MIN, Math.round(value)));
 }
 
+/** 从 localStorage 读持久化宽度；没有或非法返回 null。 */
 function load(): number | null {
   try {
     const raw = localStorage.getItem(KEY);
@@ -33,8 +36,11 @@ function load(): number | null {
   }
 }
 
+/** 模块级单例状态（当前宽度 + 宿主宽度）。 */
 let state: { width: number | null; host: number | undefined } = { width: load(), host: undefined };
+/** 状态订阅者。 */
 const listeners = new Set<() => void>();
+/** 合并状态并广播。 */
 function commit(next: Partial<typeof state>) {
   state = { ...state, ...next };
   listeners.forEach((listener) => listener());
@@ -74,6 +80,7 @@ export function aiChatWidthClamped(): number {
   return clamp(state.width, host);
 }
 
+/** AI 聊天栏宽度的挂载点：读写单例状态并订阅变更。 */
 export function useAiChatWidth(): { width: number; custom: boolean } {
   const subscribe = useCallback((listener: () => void) => {
     listeners.add(listener);

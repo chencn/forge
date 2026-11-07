@@ -4,15 +4,20 @@
  * 保证只有最顶层响应 Escape 关闭，点击上层不会关闭下层。
  */
 
+/** 栈里的一层浮层（延迟取 DOM，挂载前也能登记）。 */
 interface Layer {
   id: number;
   el: () => HTMLElement | null;
 }
 
+/** 当前打开的浮层栈（后进先出）。 */
 const layers: Layer[] = [];
+/** 层 id 发号器。 */
 let seq = 0;
+/** 无 DOM 浮动态（Speed Search 等）的计数。 */
 let anonymous = 0;
 
+/** 一个浮层的句柄：判栈顶、判点击归属、出栈。 */
 export interface LayerHandle {
   isTop(): boolean;
   /** 目标节点是否落在当前层或当前层之上的任何层内 */
@@ -20,6 +25,11 @@ export interface LayerHandle {
   release(): void;
 }
 
+/**
+ * 把一个浮层压入层级栈。
+ *
+ * @returns 句柄；用完必须 {@link LayerHandle.release}，否则层留在栈里挡住下层关闭
+ */
 export function openLayer(el: () => HTMLElement | null): LayerHandle {
   const layer = { id: ++seq, el };
   layers.push(layer);
@@ -53,7 +63,7 @@ export function acquirePopup(): () => void {
   };
 }
 
-/** 窗口失去焦点时调用（IDEA 风格失焦关闭浮层） */
+/** 窗口失去焦点时调用（失焦关闭浮层） */
 export function onWindowDeactivate(fn: () => void): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const onBlur = () => {
@@ -69,10 +79,12 @@ export function onWindowDeactivate(fn: () => void): () => void {
   };
 }
 
+/** 当前是否有任何浮层（DOM 层或无 DOM 态）打开。 */
 export function isPopupOpen(): boolean {
   return layers.length + anonymous > 0;
 }
 
+/** 可聚焦元素选择器（焦点圈用）。 */
 export const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 

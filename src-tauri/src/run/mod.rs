@@ -3,9 +3,13 @@
 //! 识别（`detect`）负责从工程目录里的构建文件推出可跑的那几台，落盘（`store`）只存用户自己
 //! 建的那批和选中/最近这两条线索。两者在产品根上汇合成同一份列表交给界面。
 
+/// 依赖同步（Java 项目跑前检查依赖变更）。
 pub mod dep_sync;
+/// 从构建文件识别可跑配置。
 pub mod detect;
+/// 运行输出的扫描（URL、错误行等）。
 pub mod scan;
+/// 用户自建配置的落盘。
 pub mod store;
 
 use serde::{Deserialize, Serialize};

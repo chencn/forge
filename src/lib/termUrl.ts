@@ -138,6 +138,7 @@ export function isHttpUrl(text: string): boolean {
   }
 }
 
+/** 终端链接点击行为的配置。 */
 export interface TerminalUrlOptions {
   /** 自定义打开链接的处理函数，默认调用系统外部浏览器打开 */
   onOpenUrl?: (url: string) => void;

@@ -9,6 +9,7 @@
 import { HighlightStyle, type TagStyle } from "@codemirror/language";
 import { tags as t, type Tag } from "@lezer/highlight";
 
+/** 组装一个标签样式：颜色/粗斜体/底色/装饰全部走 `--syn-*` 变量，可被配色覆写。 */
 function token(
   tag: Tag | Tag[],
   name: string,
@@ -24,6 +25,7 @@ function token(
   };
 }
 
+/** Forge 的语法高亮样式表，标签到颜色的映射见各 token 项。 */
 export const forgeHighlightStyle = HighlightStyle.define([
   // Markdown 的 link / quote 是整段标签，排最前，好让里面的 URL、标题各自保色。
   token(t.link, "link", { effect: "underline" }),
@@ -78,7 +80,7 @@ export const forgeHighlightStyle = HighlightStyle.define([
   { tag: t.emphasis, fontStyle: "italic" },
   { tag: t.strong, fontWeight: "700" },
   { tag: t.strikethrough, textDecoration: "line-through" },
-  // 对齐 IntelliJ：链接目标按静态方法上色，分隔线按关键字上色。
+  // 链接目标按静态方法上色，分隔线按关键字上色。
   token(t.url, "function", { italic: "italic" }),
   token(t.monospace, "markup-code"),
   token(t.contentSeparator, "keyword"),

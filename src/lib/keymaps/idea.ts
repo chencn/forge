@@ -4,8 +4,10 @@ import vscode from './vscode.json';
 import eclipse from './eclipse.json';
 import type { KeymapScheme } from '../settings';
 
+/** IDEA Windows/Linux 预设键位表（JSON 原样装载）。 */
 export const IDEA_DEFAULT = defaults;
 
+/** 一个动作在预设方案里的键位定义（键盘 / 鼠标 / 手势三种载体）。 */
 export interface PresetAction {
   keyboard: string[];
   mouse: string[];
@@ -19,6 +21,7 @@ export const PRESET_ACTIONS: Record<KeymapScheme, Readonly<Record<string, Preset
   eclipse: { ...defaults.actions, ...eclipse.actions },
 };
 
+/** Swing 键名 → DOM 键名对照。 */
 const names: Record<string, string> = {
   UP: 'ArrowUp', DOWN: 'ArrowDown', LEFT: 'ArrowLeft', RIGHT: 'ArrowRight',
   PAGE_UP: 'PageUp', PAGE_DOWN: 'PageDown', BACK_SPACE: 'Backspace',
@@ -61,10 +64,12 @@ export function ideaStroke(stroke: string): string {
   return [...modifiers, key].join('+');
 }
 
+/** IDEA 预设里某动作的键位（等价于 {@link presetKeys}`('idea', action)`）。 */
 export function ideaKeys(action: string): string[] {
   return presetKeys('idea', action);
 }
 
+/** 某预设方案里某动作的键位：先查原生覆盖表，再回退 JSON 基表（未知动作返回空数组）。 */
 export function presetKeys(scheme: KeymapScheme, action: string): string[] {
   const native = nativeKeys[scheme]?.[action];
   if (native) return native;

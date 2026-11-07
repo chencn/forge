@@ -69,6 +69,14 @@ export function readFile(path: string): Promise<FileContent> {
   return invoke<FileContent>("read_file", { path });
 }
 
+/**
+ * 写文件正文，返回写完后的磁盘现状（行尾、编码、BOM 与新 `modifiedMs`）。
+ *
+ * @param lineEnding - 统一写成的行尾
+ * @param hasBom - 是否带 UTF-8 BOM
+ * @param encoding - 按打开时认下的编码回写；缺省后端按 utf-8
+ * @param expectModifiedMs - 乐观锁：传打开时认下的 `modifiedMs`，磁盘被别处改过时后端拒写并报 `CONFLICT_ON_WRITE`
+ */
 export function writeFile(
   path: string,
   contents: string,
@@ -137,8 +145,7 @@ export async function listDirectory(path: string): Promise<DirectoryListing> {
 export type DirectoryListingChain = DirectoryListing[];
 
 /**
- * 列目录并一次带回「往下延伸的单子目录链」所有层（对齐 IDEA Compact Directories 的
- * 数据先于 UI）：树把唯一可见子目录并成链节点，逐层补加载会形成每层一次 IPC 的瀑布。
+ * 列目录并一次带回「往下延伸的单子目录链」所有层（紧凑目录的数据先于 UI）：树把唯一可见子目录并成链节点，逐层补加载会形成每层一次 IPC 的瀑布。
  * 超时口径与 listDirectory 相同；链中某层读取失败时后端截断返回已收集的层。
  */
 export async function listDirectoryChain(path: string): Promise<DirectoryListingChain> {
@@ -156,14 +163,17 @@ export async function listDirectoryChain(path: string): Promise<DirectoryListing
   }
 }
 
+/** 新建一层目录（父目录不存在时后端报错，逐层建由调用方负责）。 */
 export function createFolder(path: string): Promise<FsEntry> {
   return invoke<FsEntry>("create_folder", { path });
 }
 
+/** 新建空文件；同名已存在时后端报错。 */
 export function createFile(path: string): Promise<FsEntry> {
   return invoke<FsEntry>("create_file", { path });
 }
 
+/** 重命名或移动一条（同一盘内改名，跨目录即移动）；目标已有同名时报 TARGET_EXISTS。 */
 export function renameEntry(from: string, to: string): Promise<FsEntry> {
   return invoke<FsEntry>("rename_entry", { from, to });
 }
@@ -178,6 +188,7 @@ export function moveEntry(from: string, to: string): Promise<FsEntry> {
   return invoke<FsEntry>("move_entry", { from, to });
 }
 
+/** 删除一条（目录连内容一起；是否进回收站由后端实现决定）。 */
 export function deleteEntry(path: string): Promise<void> {
   return invoke<void>("delete_entry", { path });
 }
@@ -193,6 +204,7 @@ export interface FileStamp {
   modifiedMs: number;
 }
 
+/** 取一份文件的大小与修改时刻；文件不存在时后端报错。 */
 export function fileStamp(path: string): Promise<FileStamp> {
   return invoke<FileStamp>("file_stamp", { path });
 }

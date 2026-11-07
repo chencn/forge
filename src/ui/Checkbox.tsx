@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { Icon } from "./Icon";
 import styles from "./Checkbox.module.css";
 
+/** 复选框（支持三态混合）的入参。 */
 export interface CheckboxProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -52,6 +53,7 @@ export function Checkbox({
   );
 }
 
+/** 开关（滑动样式的布尔选择）的入参。 */
 export interface ToggleProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -62,7 +64,7 @@ export interface ToggleProps {
 }
 
 /**
- * IDEA 风格开关组件（ON/OFF 滑块）
+ * 开关组件（ON/OFF 滑块）
  */
 export function Toggle({ checked, onChange, label, disabled, className, ...aria }: ToggleProps) {
   return (

@@ -4,6 +4,7 @@ import type { AiProvider } from "./aiCli";
 /** 与后端 `Provider` 对齐：这两个 CLI 都有可管理的供应商/Skills/MCP 配置。 */
 export const MANAGED_PROVIDERS: AiProvider[] = ["claude", "codex"];
 
+/** 当前环境是否具备 CLI 管理能力；仅在桌面应用内可用。 */
 export const cliAdminAvailable = () => isTauri();
 
 /** 保存下来的一套模型端点；应用时只改动对应 CLI 的环境变量层。 */
@@ -18,15 +19,24 @@ export interface ModelProvider {
   models: Record<string, string>;
 }
 
+/** Claude 六个模型槽位的键名；界面顺序即此处顺序。 */
 export const CLAUDE_MODEL_SLOTS = ["main", "reasoning", "haiku", "sonnet", "opus", "fable"] as const;
+/** Claude 模型槽位名的字面量联合。 */
 export type ClaudeModelSlot = (typeof CLAUDE_MODEL_SLOTS)[number];
 /**
  * 自定义模型选项：在 CLI 的 /model 选择器里多出来的那一项（值 / 显示名 / 说明），
  * 用来点名网关自己提供的模型。它和六个槽位一样属于供应商，随同一次「应用」写进 CLI。
  */
 export const CLAUDE_CUSTOM_SLOTS = ["customOption", "customOptionName", "customOptionDescription"] as const;
+/** Claude 自定义模型选项槽位名的字面量联合。 */
 export type ClaudeCustomSlot = (typeof CLAUDE_CUSTOM_SLOTS)[number];
 
+/**
+ * 生成一个空的供应商配置草稿。
+ *
+ * @param kind - 所属 CLI；决定应用时改哪家的环境变量层
+ * @returns id 已填随机 UUID、其余字段为空的草稿
+ */
 export function emptyModelProvider(kind: AiProvider): ModelProvider {
   return {
     id: globalThis.crypto?.randomUUID?.() ?? `provider-${Date.now()}`,
@@ -39,23 +49,28 @@ export function emptyModelProvider(kind: AiProvider): ModelProvider {
   };
 }
 
+/** 读取全部已保存的供应商端点配置。 */
 export function loadModelProviders(): Promise<ModelProvider[]> {
   return invoke<ModelProvider[]>("ai_providers_load");
 }
 
+/** 保存整套供应商配置并返回后端归一后的列表。 */
 export function saveModelProviders(providers: ModelProvider[]): Promise<ModelProvider[]> {
   return invoke<ModelProvider[]>("ai_providers_save", { providers });
 }
 
+/** 把指定 id 的端点应用到对应 CLI 的环境变量层；当前激活项不变时是幂等的。 */
 export function applyModelProvider(id: string): Promise<void> {
   return invoke<void>("ai_providers_apply", { id });
 }
 
+/** 一个技能搜索目录；一个 CLI 可能有多个（用户级 / 项目级 / 插件目录）。 */
 export interface SkillLocation {
   id: string;
   path: string;
 }
 
+/** 技能列表中的一条技能。 */
 export interface SkillItem {
   id: string;
   name: string;
@@ -67,23 +82,28 @@ export interface SkillItem {
   linked: boolean;
 }
 
+/** 一次技能扫描结果：目录与技能集合。 */
 export interface SkillList {
   locations: SkillLocation[];
   skills: SkillItem[];
 }
 
+/** 列出某 CLI 的技能目录与全部技能。 */
 export function listSkills(provider: AiProvider): Promise<SkillList> {
   return invoke<SkillList>("ai_skills_list", { provider });
 }
 
+/** 读取一个技能的 SKILL.md 正文。 */
 export function readSkill(provider: AiProvider, location: string, id: string): Promise<string> {
   return invoke<string>("ai_skill_read", { provider, location, id });
 }
 
+/** 保存技能正文并返回刷新后的技能列表。 */
 export function saveSkill(provider: AiProvider, location: string, id: string, content: string): Promise<SkillList> {
   return invoke<SkillList>("ai_skill_save", { provider, location, id, content });
 }
 
+/** 删除技能；符号链接目录只删链接不删源目录。返回刷新后的技能列表。 */
 export function deleteSkill(provider: AiProvider, location: string, id: string): Promise<SkillList> {
   return invoke<SkillList>("ai_skill_delete", { provider, location, id });
 }
@@ -93,28 +113,34 @@ export function skillTemplate(id: string): string {
   return `---\nname: ${id}\ndescription: Describe when this skill should be used.\n---\n\n# ${id}\n\n`;
 }
 
+/** 一个 MCP 服务器的本地配置：id 即配置文件里的键。 */
 export interface McpServer {
   id: string;
   spec: Record<string, unknown>;
 }
 
+/** 某 CLI 的 MCP 配置文件位置与全部服务器。 */
 export interface McpList {
   path: string;
   servers: McpServer[];
 }
 
+/** 读取某 CLI 的 MCP 配置。 */
 export function listMcp(provider: AiProvider): Promise<McpList> {
   return invoke<McpList>("ai_mcp_list", { provider });
 }
 
+/** 写入（新增或覆盖）一个 MCP 服务器配置，返回刷新后的列表。 */
 export function saveMcp(provider: AiProvider, id: string, spec: Record<string, unknown>): Promise<McpList> {
   return invoke<McpList>("ai_mcp_save", { provider, id, spec });
 }
 
+/** 删除一个 MCP 服务器配置，返回刷新后的列表。 */
 export function deleteMcp(provider: AiProvider, id: string): Promise<McpList> {
   return invoke<McpList>("ai_mcp_delete", { provider, id });
 }
 
+/** 新建 MCP 服务器的默认 spec：本地 stdio 文件系统服务。 */
 export const MCP_TEMPLATE = {
   type: "stdio",
   command: "npx",
@@ -163,6 +189,7 @@ export function skillHasFrontMatter(content: string): boolean {
  * 做稀疏覆盖。枚举取值域与「能不能清除」都不写死：后端现场问 Codex，结果随 CLI 版本缓存，
  * 问不到时才退回下面这份按 0.164.0 实测抄录的兜底表，并在界面上标成未核实。
  */
+/** 用户自定义条目的稀疏覆盖项；null 与缺省都表示「不覆盖该字段」。 */
 export interface CodexModelOverride {
   toolMode?: string | null;
   multiAgentVersion?: string | null;
@@ -189,6 +216,7 @@ export interface CodexFieldDomain {
   verified: boolean;
 }
 
+/** 用户自定义的 Codex 模型条目：写进 model_catalog_json 的新模型。 */
 export interface CodexCustomModel {
   slug: string;
   displayName: string;
@@ -200,6 +228,7 @@ export interface CodexCustomModel {
   overrides: CodexModelOverride;
 }
 
+/** 用户对 Codex 模型目录的完整意图：排除、覆盖、自定义与默认模型。 */
 export interface CodexCatalogIntent {
   excluded: string[];
   overrides: Record<string, CodexModelOverride>;
@@ -207,6 +236,7 @@ export interface CodexCatalogIntent {
   default?: string;
 }
 
+/** 后端合并意图后回给界面的 Codex 目录视图。 */
 export interface CodexCatalogView {
   /** 实际会写到哪个文件（CODEX_HOME 可被环境变量改写，界面直接展示免得用户猜）。 */
   path: string;
@@ -229,12 +259,19 @@ export interface CodexCatalogView {
 
 /** 兜底取值域：只在后端问不到 Codex 时用，界面会标成「未核实」。 */
 export const CODEX_TOOL_MODES = ["direct", "code_mode", "code_mode_only"];
+/** 兜底取值域：Codex 多智能体版本。 */
 export const CODEX_MULTI_AGENT_VERSIONS = ["v1", "v2"];
+/** 兜底取值域：推理摘要粒度。 */
 export const CODEX_REASONING_SUMMARIES = ["auto", "concise", "detailed", "none"];
+/** 兜底取值域：回答详略程度。 */
 export const CODEX_VERBOSITIES = ["low", "medium", "high"];
+/** 兜底取值域：shell 执行类型。 */
 export const CODEX_SHELL_TYPES = ["default", "local", "shell_command", "unified_exec", "disabled"];
+/** 兜底取值域：apply_patch 工具类型。 */
 export const CODEX_APPLY_PATCH_TYPES = ["freeform"];
+/** 兜底取值域：web_search 工具类型。 */
 export const CODEX_WEB_SEARCH_TYPES = ["text", "text_and_image"];
+/** 兜底取值域：目录条目可见性。 */
 export const CODEX_VISIBILITIES = ["list", "hide", "none"];
 /** 开关候选表：实际显示哪些由后端探测结果决定（`view.flags`）。 */
 export const CODEX_MODEL_FLAGS = [
@@ -253,13 +290,18 @@ export const CODEX_MODEL_FLAGS = [
  * 多智能体、apply_patch、responses-lite、原图细节），第三方端点只认标准 Responses。
  * 这是「能不能连通」的分水岭，所以做成一键预设，而不是让用户在八个开关里自己猜。
  */
+/** 兼容预设要清掉的枚举字段（指向私有方言的键）。 */
 const CODEX_COMPAT_ENUMS: CodexEnumKey[] = ["toolMode", "multiAgentVersion", "applyPatchToolType"];
+/** 兼容预设要显式钉成 false 的布尔开关。 */
 const CODEX_COMPAT_FLAGS = ["use_responses_lite", "supports_image_detail_original"];
 
 /** 下拉里「跟随 Codex」和「显式清除」是两个不同状态，不能都塞成空串：前者不写键，后者写 null。 */
+/** 下拉里「跟随 Codex」的哨兵值；提交时不写键。 */
 export const CODEX_INHERIT = "\u0000inherit";
+/** 下拉里「显式清除」的哨兵值；提交时写 null。 */
 export const CODEX_CLEAR = "\u0000clear";
 
+/** 生成一份全空的覆盖项。 */
 export function emptyCodexModelOverride(): CodexModelOverride {
   return { flags: {} };
 }
@@ -268,6 +310,7 @@ export function emptyCodexModelOverride(): CodexModelOverride {
 export type CodexEnumKey = "toolMode" | "multiAgentVersion" | "defaultReasoningSummary"
   | "defaultVerbosity" | "shellType" | "applyPatchToolType" | "webSearchToolType" | "visibility";
 
+/** 覆盖项字段名到 Codex 目录键名的映射。 */
 const CODEX_ENUM_FIELDS: Record<CodexEnumKey, string> = {
   toolMode: "tool_mode",
   multiAgentVersion: "multi_agent_version",
@@ -280,6 +323,7 @@ const CODEX_ENUM_FIELDS: Record<CodexEnumKey, string> = {
 };
 
 /** 兜底表：按 Codex 0.164.0 实测抄录，只在后端问不到这一版 CLI 时用。 */
+/** 兜底取值域到是否允许清除的映射；按 Codex 0.164.0 实测。 */
 const CODEX_ENUM_FALLBACK: Record<CodexEnumKey, { values: string[]; nullable: boolean }> = {
   toolMode: { values: CODEX_TOOL_MODES, nullable: true },
   multiAgentVersion: { values: CODEX_MULTI_AGENT_VERSIONS, nullable: true },
@@ -341,6 +385,7 @@ export function applyCodexCompatPreset(model: CodexCustomModel, base: Record<str
   return next;
 }
 
+/** 生成一份空目录意图：不排除、不覆盖、无自定义条目。 */
 export function emptyCodexCatalogIntent(): CodexCatalogIntent {
   return { excluded: [], overrides: {}, customs: [] };
 }
@@ -512,6 +557,7 @@ export function parseCodexCatalogIntent(raw: string | undefined | null): CodexCa
   return emptyCodexCatalogIntent();
 }
 
+/** 把意图序列化成保存到供应商 model 字段的 JSON 文本；空意图返回空串。 */
 export function serializeCodexCatalogIntent(intent: CodexCatalogIntent): string {
   const hasContent = (intent.customs && intent.customs.length > 0)
     || (intent.excluded && intent.excluded.length > 0)
@@ -521,6 +567,7 @@ export function serializeCodexCatalogIntent(intent: CodexCatalogIntent): string 
   return JSON.stringify(intent, null, 2);
 }
 
+/** 两个意图是否等价：按归一化文本比较。 */
 export function catalogIntentEquals(left: CodexCatalogIntent, right: CodexCatalogIntent): boolean {
   return normalizeCodexCatalogIntent(left) === normalizeCodexCatalogIntent(right);
 }
@@ -533,10 +580,12 @@ export function codexModelEfforts(model: Record<string, unknown>): string[] {
     .filter((effort): effort is string => typeof effort === "string" && effort !== "");
 }
 
+/** 读取 Codex 模型目录的当前视图。 */
 export function readAiCliCodexCatalog(): Promise<CodexCatalogView> {
   return invoke<CodexCatalogView>("ai_cli_codex_catalog_read");
 }
 
+/** 保存意图并返回合并后的目录视图。 */
 export function saveAiCliCodexCatalog(intent: CodexCatalogIntent): Promise<CodexCatalogView> {
   return invoke<CodexCatalogView>("ai_cli_codex_catalog_save", { intent });
 }
@@ -547,6 +596,7 @@ export function readAiCliCodexCatalogText(slug: string): Promise<string | null> 
 }
 
 /** 市场来源：官方 MCP registry 与 Smithery。 */
+/** 一个市场来源的展示信息。 */
 export interface McpMarketProvider {
   id: string;
   name: string;
@@ -586,6 +636,7 @@ export interface McpMarketParameter {
   location: string | null;
 }
 
+/** 市场里可选的一种安装方式（协议 + 参数表）。 */
 export interface McpMarketOption {
   id: string;
   protocol: string;
@@ -595,6 +646,7 @@ export interface McpMarketOption {
   parameters: McpMarketParameter[];
 }
 
+/** 市场服务器详情：搜索结果字段 + 该 CLI 下的安装方式列表。 */
 export interface McpMarketDetail extends McpMarketServer {
   defaultOptionId: string | null;
   installOptions: McpMarketOption[];
@@ -602,14 +654,17 @@ export interface McpMarketDetail extends McpMarketServer {
   spec: Record<string, unknown> | null;
 }
 
+/** 列出可用的市场来源。 */
 export function mcpMarketProviders(): Promise<McpMarketProvider[]> {
   return invoke<McpMarketProvider[]>("ai_mcp_market_providers");
 }
 
+/** 在指定市场里按关键词搜索服务器。 */
 export function mcpMarketSearch(market: string, query: string): Promise<McpMarketServer[]> {
   return invoke<McpMarketServer[]>("ai_mcp_market_search", { market, query });
 }
 
+/** 取某服务器在指定 CLI 下的安装详情（安装方式与参数表）。 */
 export function mcpMarketDetail(provider: AiProvider, market: string, serverId: string): Promise<McpMarketDetail> {
   return invoke<McpMarketDetail>("ai_mcp_market_detail", { provider, market, serverId });
 }

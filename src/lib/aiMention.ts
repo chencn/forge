@@ -20,7 +20,9 @@ const MENTION_LEAD = String.raw`[\s（【「(\[{>"']`;
 const MENTION_QUERY = String.raw`[^\s@]*`;
 /** 渲染侧的 token 从严：不吃句读标点，行尾的 ）" 等留给普通片段。 */
 const MENTION_TOKEN = /[^\s，。；、！？）】」"']+/;
+/** 光标处的 @ 触发检测（严前缀 + 宽 token）。 */
 const MENTION_AT_RE = new RegExp(`(?:^|${MENTION_LEAD})@(${MENTION_QUERY})$`);
+/** 渲染时切分正文的正则来源：把 @token 从普通文本里分出来。 */
 const MENTION_SPLIT_SOURCE = `(^|${MENTION_LEAD})@(${MENTION_TOKEN.source})`;
 
 /** 光标前紧邻的 @token：`@` 之前必须是开头或空白/开括号，避免命中邮箱里的 @。 */

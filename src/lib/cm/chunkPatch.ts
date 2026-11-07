@@ -20,6 +20,7 @@ export interface ChunkCoords {
   toB: number;
 }
 
+/** 构造把差异块从原文换成新文的 ChangeSpec。 */
 export function buildChunkPatch(
   path: string,
   original: string,

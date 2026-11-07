@@ -16,22 +16,26 @@ import { codedError } from "./errors";
 import { isWindowsPath, joinPath, resolvePath } from "./format";
 import { fileStamp, readFile } from "./fs";
 
+/** 一条请求头。 */
 export interface HttpHeader {
   name: string;
   value: string;
 }
 
+/** `# @prompt` 声明的一个发送前询问。 */
 export interface HttpPrompt {
   name: string;
   description: string;
 }
 
+/** 文件里的一条 `@name = value` 变量。 */
 export interface HttpVariable {
   name: string;
   value: string;
   line: number;
 }
 
+/** `.http` 文件里解析出的一条请求。 */
 export interface HttpRequest {
   /** 请求行的 1-based 行号，装订线箭头落在这一行。 */
   line: number;
@@ -52,11 +56,13 @@ export interface HttpRequest {
   prompts: HttpPrompt[];
 }
 
+/** 一个解析完的 `.http` 文件：文件变量与请求列表。 */
 export interface HttpFile {
   variables: HttpVariable[];
   requests: HttpRequest[];
 }
 
+/** 请求正文的一段：文本或文件引用（`< file` / `<@utf-8 file`）。 */
 export interface HttpBodyPiece {
   text?: string;
   file?: string;
@@ -163,6 +169,7 @@ export function toHttpResult(exchange: HttpExchange): HttpResult {
   };
 }
 
+/** `executeHttpRequest` 的可注入选项；全部缺省时按桌面环境实际行为执行。 */
 export interface HttpExecuteOptions {
   /** `.http` 文件所在目录，相对路径的正文文件和 `.env` 都相对它。 */
   dir?: string;
@@ -197,6 +204,7 @@ export interface HttpExecuteOptions {
   isCancelled?: () => boolean;
 }
 
+/** 一次发送的完整留底：发出的请求、正文文本与收到的结果。 */
 interface Captured {
   call: HttpCall;
   bodyText: string;
@@ -209,6 +217,7 @@ interface Captured {
  */
 export type HttpRunSession = object;
 
+/** 运行全部会话到具名响应缓存的映射；`WeakMap` 让会话废弃后缓存自动回收。 */
 const runSessions = new WeakMap<HttpRunSession, Map<string, Captured>>();
 
 /** 开一次「运行全部」用的会话。单条请求不用这个。 */
@@ -216,6 +225,7 @@ export function createHttpRunSession(): HttpRunSession {
   return {};
 }
 
+/** 取（必要时新建）一个会话的具名响应缓存。 */
 function sessionCache(session: HttpRunSession): Map<string, Captured> {
   let cache = runSessions.get(session);
   if (!cache) {
@@ -225,6 +235,7 @@ function sessionCache(session: HttpRunSession): Map<string, Captured> {
   return cache;
 }
 
+/** 会话期间记住的 Cookie，按 host 分罐；仅内存，不持久化。 */
 const cookiesByHost = new Map<string, Map<string, string>>();
 
 /** 测试之间清掉会话里记住的 Cookie。 */
@@ -232,6 +243,7 @@ export function clearHttpCookies(): void {
   cookiesByHost.clear();
 }
 
+/** 路径是否为 `.http` / `.rest` 文件。 */
 export function isHttpFile(path: string): boolean {
   return /\.(?:http|rest)$/i.test(path);
 }
@@ -263,6 +275,16 @@ export function httpRequestAtLine(file: HttpFile, line: number): HttpRequest | n
   return best ?? file.requests[0] ?? null;
 }
 
+/**
+ * 解析 `.http` 文本为变量与请求列表。
+ *
+ * 语法容错：`###`/`####` 都算分段符，标题可有可无；请求行后接 `?`/`&` 续行、
+ * 缩进的头值续行；cURL 行（含 `\` 续行）整段交给 {@link parseCurl}。
+ * 响应脚本 `> {% … %}` 与 `<>`/`>>` 指令行被跳过，不当成正文。
+ *
+ * @param text - 文件全文；BOM 会被剥掉
+ * @returns 变量与请求；行号均为 1-based
+ */
 export function parseHttpFile(text: string): HttpFile {
   const source = text.replace(/^\uFEFF/, "");
   const lines = source.split(/\r?\n/);
@@ -425,6 +447,7 @@ export function parseHttpFile(text: string): HttpFile {
   return { variables, requests };
 }
 
+/** 发送一条 .http 请求：变量展开 → include 拼装 → 交发送器；结果落历史。 */
 export async function executeHttpRequest(
   file: HttpFile,
   request: HttpRequest,
@@ -541,6 +564,13 @@ export async function executeHttpRequest(
   return captured.result;
 }
 
+/**
+ * 把一次交换格式化成历史页用的纯文本（状态行、耗时、头、正文）。
+ *
+ * @param result - 响应预览
+ * @param notes - 二进制正文与截断正文的占位文案
+ * @returns 多行文本；JSON 正文按 2 空格缩进重排，解析失败原样保留
+ */
 export function formatHttpExchange(
   result: HttpResult,
   notes: { binary: string; truncated: string }
@@ -593,6 +623,11 @@ export function parseDotEnv(text: string): Map<string, string> {
   return map;
 }
 
+/**
+ * 解析请求行 `METHOD URL`；`HTTP/x.y` 后缀被剥掉。
+ *
+ * @returns 方法（大写）与地址；裸 URL / `{{…}}` / 路径按 GET 处理，其余返回 null（留在前导区）
+ */
 function parseRequestLine(line: string): { method: string; url: string } | null {
   const stripped = line.replace(/\s+HTTP\/\d+(?:\.\d+)?$/i, "").trim();
   // 与原版一样只把请求行认作请求，说明文字和没有目标的方法名留在前导区。
@@ -602,6 +637,17 @@ function parseRequestLine(line: string): { method: string; url: string } | null 
   return null;
 }
 
+/**
+ * 把一条 cURL 命令转成请求（`parseHttpFile` 的 cURL 分支）。
+ *
+ * 支持 `-X/--request`、`-H/--header`、`-d/--data*`、`--url`、`-I/--head`、
+ * `-u/--user`（转 Basic）、`-b/--cookie`；`-L` 忽略。`@file`/`@@file` 数据
+ * 分别转成 `< file` / `<@ file` 的正文文件引用。
+ *
+ * @param script - cURL 全文（续行已合并）
+ * @param line - 请求行行号（1-based）
+ * @param meta - 注释里收集的 `@name`/标题/`@prompt`
+ */
 function parseCurl(
   script: string,
   line: number,
@@ -695,18 +741,21 @@ function parseCurl(
   };
 }
 
+/** 解析 `-H "Name: value"` 并追加到头列表；无冒号的参数忽略。 */
 function pushCurlHeader(headers: HttpHeader[], raw: string) {
   const index = raw.indexOf(":");
   if (index <= 0) return;
   headers.push({ name: raw.slice(0, index).trim(), value: raw.slice(index + 1).trim() });
 }
 
+/** 归一一条 `-d` 数据：`@@file` 保留为 `@file`，`@file` 转成 `< file` 文件引用。 */
 function curlData(value: string): string {
   if (value.startsWith("@@")) return value.slice(1);
   if (value.startsWith("@")) return `< ${value.slice(1)}`;
   return value;
 }
 
+/** 按 POSIX 规则把一行 cURL 拆成词：单双引号、反斜杠转义、`\` 续行。 */
 function shellWords(input: string): string[] {
   const text = input.replace(/\\\r?\n/g, " ");
   const words: string[] = [];
@@ -758,6 +807,7 @@ function shellWords(input: string): string[] {
   return words;
 }
 
+/** `user:password` 编码为 Basic 授权头值。 */
 function basicAuth(user: string): string {
   const bytes = new TextEncoder().encode(user);
   let binary = "";
@@ -765,6 +815,7 @@ function basicAuth(user: string): string {
   return `Basic ${btoa(binary)}`;
 }
 
+/** 还原文件变量值里的转义序列（`\n`/`\r`/`\t`/`\\`）。 */
 function unescapeValue(value: string): string {
   return value.replace(/\\([nrt\\])/g, (_match, ch: string) => {
     if (ch === "n") return "\n";
@@ -774,6 +825,11 @@ function unescapeValue(value: string): string {
   });
 }
 
+/**
+ * 找出文本里引用了、但还没有响应缓存的具名请求。
+ *
+ * @returns 按出现顺序去重后的缺失名字列表
+ */
 function missingNames(
   text: string,
   byName: Map<string, HttpRequest>,
@@ -790,18 +846,20 @@ function missingNames(
   return names;
 }
 
+/** 变量合并视图：环境文件垫底，文件内 `@var` 覆盖；替换时递归展开。 */
 function resolveFileVars(
   file: HttpFile,
   envVars?: Record<string, string> | null
 ): Map<string, string> {
   const raw = new Map<string, string>();
-  // 环境文件的变量垫底，文件里的 `@var` 覆盖它——和 IDEA 的取值次序一致。
+  // 环境文件的变量垫底，文件里的 `@var` 覆盖它（取值次序：文件优先于环境）。
   for (const [key, value] of Object.entries(envVars ?? {})) raw.set(key, value);
   for (const variable of file.variables) raw.set(variable.name, variable.value);
   // 使用时递归解析，保留模板与外部响应数据的边界，不重复解释已经替换出的数据。
   return raw;
 }
 
+/** 物化一条请求所需的环境：路径、缓存、动态变量与各注入点。 */
 interface MaterializeContext {
   dir: string;
   workspace: string | null;
@@ -815,6 +873,7 @@ interface MaterializeContext {
   ensureDynamics: (text: string) => Promise<void>;
 }
 
+/** 展开一条请求的 URL/头/体：替换变量、处理 `@prompt` 提示（答案只在本请求内有效）。 */
 async function materialize(
   request: HttpRequest,
   vars: Map<string, string>,
@@ -872,6 +931,7 @@ async function materialize(
   return { call, bodyText: pieces.map((piece) => piece.text ?? "").join(""), result: emptyResult(url) };
 }
 
+/** 把请求体中的 `< include` 引用展开成请求片段；GraphQL 的 `< query`/`< variables` 特殊拼装。 */
 async function expandIncludes(
   body: string,
   ctx: MaterializeContext,
@@ -912,6 +972,7 @@ async function expandIncludes(
   return pieces;
 }
 
+/** 把 GRAPHQL 方法包成 `{query, variables}` JSON 信封；正文按空行拆 query 与 variables。 */
 function graphqlEnvelope(body: string): string {
   const splitAt = body.search(/\n[ \t]*\n/);
   if (splitAt < 0) return JSON.stringify({ query: body });
@@ -925,6 +986,7 @@ function graphqlEnvelope(body: string): string {
   }
 }
 
+/** 解析 include 引用的相对路径：相对请求文件目录，找不到再退回工作区根。 */
 async function resolveIncludePath(ctx: MaterializeContext, raw: string): Promise<string> {
   const primary = tidyPath(resolvePath(ctx.dir, raw));
   const rooted = isWindowsPath(raw) || raw.startsWith("/") || raw.startsWith("\\");
@@ -935,6 +997,7 @@ async function resolveIncludePath(ctx: MaterializeContext, raw: string): Promise
   return primary;
 }
 
+/** 通过文件时间戳探测存在性的缺省实现。 */
 async function defaultExists(path: string): Promise<boolean> {
   try {
     await fileStamp(path);
@@ -944,6 +1007,7 @@ async function defaultExists(path: string): Promise<boolean> {
   }
 }
 
+/** 补协议：只有 `scheme://` 才算带了协议，`localhost:8080` 补成 `http://localhost:8080`。 */
 function normalizeUrl(raw: string): string {
   const trimmed = raw.trim();
   // 只有 `scheme://` 才算已经带了协议。`localhost:8080` 里的冒号是端口，不是协议。
@@ -966,6 +1030,7 @@ function tidyPath(path: string): string {
   return joined;
 }
 
+/** 地址必须是可解析的 http(s) URL，否则抛 `HTTP_URL`。 */
 function assertHttp(url: string): void {
   let parsed: URL;
   try {
@@ -978,6 +1043,7 @@ function assertHttp(url: string): void {
   }
 }
 
+/** 用户没写 Cookie 头时，把会话记住的该 host Cookie 追加进去。 */
 function applyCookies(url: string, headers: HttpHeader[]): HttpHeader[] {
   if (headers.some((header) => header.name.toLowerCase() === "cookie")) return headers;
   let host = "";
@@ -992,6 +1058,7 @@ function applyCookies(url: string, headers: HttpHeader[]): HttpHeader[] {
   return [...headers, { name: "Cookie", value }];
 }
 
+/** 把响应里的 `Set-Cookie` 记进会话罐（只取名值对，忽略属性）。 */
 function rememberCookies(url: string, headers: HttpHeader[]) {
   let host = "";
   try {
@@ -1010,6 +1077,16 @@ function rememberCookies(url: string, headers: HttpHeader[]) {
   }
 }
 
+/**
+ * 递归替换 `{{…}}` 占位符。
+ *
+ * 解析次序：具名响应引用 → `$` 系统变量 → `@prompt` 询问 → 文件/环境变量（再递归展开）。
+ * 每层最多递归 8 层防环；解不开的名字记入 `missing` 并保留原 token。
+ *
+ * @param prompts - 本条请求的 `@prompt` 声明；null 表示不启用询问
+ * @param answers - 本次请求内提示答案缓存，同名的只问一次
+ * @param missing - 收集未能解析的名字；不传则静默保留 token
+ */
 function substitute(
   text: string,
   vars: Map<string, string>,
@@ -1057,6 +1134,12 @@ function substitute(
   });
 }
 
+/**
+ * 从具名请求的留底里取 `{{name.response…}}` / `{{name.request…}}` 的值。
+ *
+ * @param path - `*` 整个正文；`$…` JSON path；`/…` XPath；头引用按名不区分大小写合并
+ * @returns 值文本；二进制响应、解不开的路径返回 null
+ */
 function lookupCaptured(
   captured: Captured,
   side: "response" | "request",
@@ -1077,6 +1160,12 @@ function lookupCaptured(
   return null;
 }
 
+/**
+ * 计算 `$` 系统变量：`$guid`、`$timestamp`、`$datetime`、`$randomInt`、
+ * `$dotenv KEY`、`$processEnv KEY` 及 REST Client 别名（`$random.uuid` 等）。
+ *
+ * @returns 替换值；未知变量或参数不合法返回 null
+ */
 function systemValue(
   expr: string,
   dotenv: Map<string, string>,
@@ -1084,7 +1173,7 @@ function systemValue(
   now: Date
 ): string | null {
   const body = expr.slice(1).trim();
-  // IDEA 原有动态变量与 REST Client 的带参数写法共用同一条替换路径。
+  // 内置动态变量与 REST Client 的带参数写法共用同一条替换路径。
   if (body === "random.uuid") return crypto.randomUUID();
   if (body === "isoTimestamp") return now.toISOString().replace(/\.\d{3}Z$/, "Z");
   if (["randomInt", "random.integer", "random.integer()"].includes(body)) return String(Math.floor(Math.random() * 1000));
@@ -1117,6 +1206,7 @@ function systemValue(
   return null;
 }
 
+/** 拆 `$datetime` 参数：`"格式" 偏移`、具名格式（rfc1123/iso8601）或裸偏移。 */
 function splitFormat(rest: string): { format: string; offset: string } {
   if (rest.startsWith('"') || rest.startsWith("'")) {
     const quote = rest[0];
@@ -1128,6 +1218,7 @@ function splitFormat(rest: string): { format: string; offset: string } {
   return { format: "iso8601", offset: rest };
 }
 
+/** 按偏移表达式（`-1d`、`+2h` 等）平移时间；格式不合法返回原时间。 */
 function shift(now: Date, offset: string): Date {
   const match = /^(-?\d+)\s+([A-Za-z]+)$/.exec(offset.trim());
   const date = new Date(now.getTime());
@@ -1145,6 +1236,7 @@ function shift(now: Date, offset: string): Date {
   return date;
 }
 
+/** 按模板格式化时间：`iso8601`/`rfc1123` 具名格式或 `YYYY MM DD HH mm ss SSS` 令牌。 */
 function formatDate(date: Date, format: string, utc: boolean): string {
   if (format === "iso8601") {
     if (utc) return date.toISOString();
@@ -1180,6 +1272,7 @@ function formatDate(date: Date, format: string, utc: boolean): string {
   return format.replace(/YYYY|YY|MM|DD|HH|mm|ss|SSS/g, pick);
 }
 
+/** 简化版 JSON path（`.key`、`[0]`、`['key']`）；解析失败返回 null。 */
 function jsonPath(body: string, path: string): string | null {
   let data: unknown;
   try {
@@ -1213,6 +1306,7 @@ function jsonPath(body: string, path: string): string | null {
   return stringifyJson(current);
 }
 
+/** 值转文本：字符串原样，标量 `String()`，其余 `JSON.stringify`。 */
 function stringifyJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "string") return value;
@@ -1220,6 +1314,7 @@ function stringifyJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** XPath 取值用的最小 XML 节点；文本子节点以 `#text` 名暂存。 */
 interface XmlEl {
   name: string;
   attrs: Record<string, string>;
@@ -1227,6 +1322,7 @@ interface XmlEl {
   text: string;
 }
 
+/** 简化版 XPath（`/a/b`、`//a`、`[n]`、`/text()`、`/@attr`）；解不开返回 null。 */
 function xmlPath(body: string, path: string): string | null {
   const attr = /\/@([\w:.-]+)$/.exec(path);
   const attrName = attr?.[1] ?? null;
@@ -1259,6 +1355,7 @@ function xmlPath(body: string, path: string): string | null {
   return null;
 }
 
+/** 深度优先收集名字匹配的节点；`deep` 时连同子孙一起收。 */
 function collectXml(nodes: XmlEl[], name: string, deep: boolean, bag: XmlEl[]) {
   for (const node of nodes) {
     if (node.name === name) bag.push(node);
@@ -1266,6 +1363,7 @@ function collectXml(nodes: XmlEl[], name: string, deep: boolean, bag: XmlEl[]) {
   }
 }
 
+/** 解析 XML 为节点树：剥 PI/注释、展开 CDATA、属性与文本做实体反转义。 */
 function parseXml(source: string): XmlEl[] {
   const text = source
     .replace(/<\?[\s\S]*?\?>/g, "")
@@ -1316,6 +1414,7 @@ function parseXml(source: string): XmlEl[] {
   return roots.filter((node) => node.name !== "#text");
 }
 
+/** 把文本子节点折叠进父元素的 text，并从 children 里移除 `#text`。 */
 function fillXmlText(node: XmlEl): string {
   if (node.name === "#text") return node.text;
   const value = node.children.map((child) => fillXmlText(child)).join("");
@@ -1324,6 +1423,7 @@ function fillXmlText(node: XmlEl): string {
   return value;
 }
 
+/** 反转义五个 XML 基本实体；`&amp;` 最后处理避免二次解包。 */
 function decodeXml(text: string): string {
   return text
     .replace(/&lt;/g, "<")
@@ -1333,6 +1433,7 @@ function decodeXml(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
+/** 发送前的空结果占位：状态 0、无头无正文，仅供依赖链占位。 */
 function emptyResult(url: string): HttpResult {
   return {
     status: 0,
@@ -1347,6 +1448,7 @@ function emptyResult(url: string): HttpResult {
   };
 }
 
+/** 通过 Tauri fs 命令读文件内容的缺省实现。 */
 async function defaultReadText(path: string): Promise<string> {
   const file = await readFile(path);
   return file.contents;
@@ -1373,11 +1475,13 @@ async function defaultSend(call: HttpCall, options: HttpExecuteOptions): Promise
   return toHttpResult(exchange);
 }
 
+/** `@prompt` 的缺省询问实现；无窗口环境返回 null（占位符原样保留）。 */
 function defaultPrompt(name: string, description: string): string | null {
   if (typeof window === "undefined" || typeof window.prompt !== "function") return null;
   return window.prompt(description || name, "");
 }
 
+/** 从后端 `http_env` 取环境变量的缺省实现；未定义返回 null。 */
 async function defaultProcessEnv(name: string): Promise<string | null> {
   return invoke<string | null>("http_env", { name });
 }

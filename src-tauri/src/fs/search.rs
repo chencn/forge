@@ -187,16 +187,19 @@ pub(super) fn score_name_full(name: &str, query: &str) -> Option<u8> {
     }
 }
 
+/// ASCII 大小写折叠后的全等比较。
 fn eq_fold(name: &str, query: &str) -> bool {
     let (a, b) = (name.as_bytes(), query.as_bytes());
     a.len() == b.len() && fold_eq(a, b)
 }
 
+/// ASCII 大小写折叠后的前缀比较。
 fn starts_fold(name: &str, query: &str) -> bool {
     let (a, b) = (name.as_bytes(), query.as_bytes());
     a.len() >= b.len() && fold_eq(&a[..b.len()], b)
 }
 
+/// ASCII 大小写折叠后的子串比较，窗口滑动不分配。
 fn contains_fold(name: &str, query: &str) -> bool {
     let (a, b) = (name.as_bytes(), query.as_bytes());
     if b.is_empty() || a.len() < b.len() {
@@ -206,6 +209,7 @@ fn contains_fold(name: &str, query: &str) -> bool {
     a.windows(b.len()).any(|window| fold_eq(window, b))
 }
 
+/// 逐字节 ASCII 小写折叠后的等值比较。
 fn fold_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len()
         && a.iter()

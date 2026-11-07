@@ -23,8 +23,10 @@ import type { MavenDependency, MavenModule, MavenProject, MavenSourceRoot } from
 import type { RunConfiguration, RunTools } from "../lib/runConfigs";
 import MavenIcon from "./MavenIcon";
 
+/** 生命周期目标快捷列表（面板里的 phase 按钮）。 */
 const PHASES = ["clean", "validate", "compile", "test", "package", "verify", "install", "site", "deploy"] as const;
 
+/** 源码根 kind 的展示文案键。 */
 const ROOT_KIND: Record<MavenSourceRoot["kind"], TranslationKey> = {
   mainJava: "maven.kind.mainJava",
   mainResources: "maven.kind.mainResources",
@@ -32,6 +34,7 @@ const ROOT_KIND: Record<MavenSourceRoot["kind"], TranslationKey> = {
   testResources: "maven.kind.testResources",
 };
 
+/** Maven 工具窗口的入参。 */
 interface Props {
   workspace: string;
   project: MavenProject | null;
@@ -45,6 +48,7 @@ interface Props {
   onOpenFile: (path: string) => void;
 }
 
+/** Maven 工具窗口：项目结构树、生命周期 phase 执行与 profiles/依赖视图。 */
 export default function MavenPane({
   workspace,
   project,
@@ -277,6 +281,7 @@ export default function MavenPane({
   );
 }
 
+/** 初始展开集：默认展开 project 节点，有 profiles 再展开 profiles。 */
 function initialExpanded(project: MavenProject | null): Set<string> {
   if (!project) return new Set();
   const next = new Set<string>(["project"]);
@@ -284,10 +289,12 @@ function initialExpanded(project: MavenProject | null): Set<string> {
   return next;
 }
 
+/** POM 里 activeByDefault 的 profile id。 */
 function defaultProfiles(project: MavenProject | null): string[] {
   return project?.profiles.filter((item) => item.activeByDefault).map((item) => item.id) ?? [];
 }
 
+/** 按 relativePath 在模块树（含嵌套）里找模块；没有返回 null。 */
 function findModule(modules: readonly MavenModule[], relativePath: string | null): MavenModule | null {
   if (!relativePath) return null;
   for (const module of modules) {
@@ -298,6 +305,7 @@ function findModule(modules: readonly MavenModule[], relativePath: string | null
   return null;
 }
 
+/** 模块树节点：reactor 表示工程根本身。 */
 function ModuleNode({
   node,
   reactor,
@@ -423,6 +431,7 @@ function ModuleNode({
   );
 }
 
+/** 依赖列表里的一行。 */
 function DependencyRow({ dep }: { dep: MavenDependency }) {
   const subtitle = [dep.groupId, dep.version, dep.scope].filter(Boolean).join(" · ");
   return (
@@ -434,6 +443,7 @@ function DependencyRow({ dep }: { dep: MavenDependency }) {
   );
 }
 
+/** 可折叠的分组容器行（Profiles / Dependencies / Source Roots 等）。 */
 function Branch({
   id,
   title,
@@ -464,6 +474,7 @@ function Branch({
   );
 }
 
+/** 树的通用一行：折叠箭头 + 图标 + 标题/副标题。 */
 function Row({
   title,
   subtitle,

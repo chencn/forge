@@ -4,6 +4,7 @@ import { Icon, type LucideIconType } from "./Icon";
 import { tooltipAttrs } from "./Tooltip";
 import styles from "./Button.module.css";
 
+/** 通用按钮的入参。 */
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: "primary" | "secondary" | "ghost";
   size?: "normal" | "small";
@@ -32,6 +33,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   );
 });
 
+/** 纯图标按钮的入参。 */
 export interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "title"> {
   icon: string | LucideIconType | ReactNode;
   /** 可访问标签与提示文本 */

@@ -4,8 +4,8 @@ import { formatSyncCommand } from "../lib/depSync";
 import type { DepSyncPrompt } from "../lib/depSync";
 
 /**
- * IDEA New UI `AllIcons.General.BalloonInformation`（源自 `platform/icons/src/expui/status/info.svg`）。
- * 16x16 实心蓝圆（浅色 `#4682FA` / 深色 `#548AF7`）配白色 `i`。
+ * 信息图标：`16x16` 实心蓝圆（浅色 `#4682FA` / 深色 `#548AF7`）配白色 `i`。
+ * （JetBrains New UI `AllIcons.General.BalloonInformation`，Apache-2.0）
  */
 function IdeaBalloonInfoIcon() {
   return (
@@ -31,9 +31,7 @@ function IdeaBalloonInfoIcon() {
   );
 }
 
-/**
- * IDEA New UI `AllIcons.Ide.Notification.Close`（源自 `platform/icons/src/expui/general/closeSmall.svg`）。
- */
+/** 关闭图标（JetBrains New UI `AllIcons.Ide.Notification.Close`，Apache-2.0）。 */
 function IdeaNotificationCloseIcon() {
   return (
     <svg
@@ -55,14 +53,13 @@ function IdeaNotificationCloseIcon() {
 }
 
 /**
- * IDEA Notification Balloon（`NotificationsManagerImpl` + `PackageJsonUpdateNotifier`）风格的依赖同步提示气泡。
+ * 依赖同步提示气泡。
  *
- * 布局严格对齐 IDEA Community 源码：
- * - 宽度 `360px`，圆角 `12px`（`Notification.arc`）；
- * - 左侧裸露 `16x16` `BalloonInformation` 图标（无灰底方块），`iconPanelWidth = 32px`、`iconOffset = (10, 7)`；
- * - 第一行加粗标题（`安装依赖项` / `更新依赖项`），第二行正文 `来自 <a href="#">package.json</a>`；
- * - 底部动作区（`isSuggestionType = true`）：第 1 个动作为无图标描边 `JButton`（`运行 'npm install'`），
- *   第 2 个动作为间距 `16px` 的蓝色 `LinkLabel` 文字链接（`不再询问`）；
+ * 布局约定：
+ * - 宽度 `360px`、圆角 `12px`；
+ * - 左侧裸露 `16x16` 信息图标（无灰底方块）；
+ * - 第一行加粗标题（「安装依赖项」/「更新依赖项」），第二行正文「来自 package.json」链接；
+ * - 底部动作区：描边按钮（运行安装命令）+ 间距 `16px` 的蓝色文字链接（「不再询问」）；
  * - 右上角关闭按钮悬停气泡时显示。
  */
 const DepSyncToast = memo(function DepSyncToast({

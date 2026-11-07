@@ -276,7 +276,7 @@ export default function AiSessionsPanel({ sessions, openIds, activeId, storageEr
       {/* 探测失败与本地存储失败是两类问题，分别提示，不合并成一条笼统错误。 */}
       {cli.error ? <p className="ai-error" role="alert">{cli.error}</p> : null}
       {storageError ? <p className="ai-error" role="alert">{t("ai.storageError")}</p> : null}
-      {/* 固定动作区：不随列表滚动。「新建会话」是主入口，搜索沿用原功能、按参考的行样式重画。 */}
+      {/* 固定动作区：不随列表滚动。「新建会话」是主入口，搜索与列表行共用一套样式。 */}
       <div className="ai-sidebar-fixed">
         <button type="button" className="ai-sidebar-nav" onClick={onNew} title={t("ai.newSession")}>
           <SquarePen size={14} aria-hidden />

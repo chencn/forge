@@ -4,6 +4,7 @@ import { useI18n } from "../i18n";
 import { getUpdateStatus, watchUpdateStatus } from "../lib/updater";
 import type { GlobalUpdateState } from "../lib/updater";
 
+/** 更新状态栏的入参。 */
 interface UpdateStatusBarProps {
   /** 点击时打开设置页的关于模块 */
   onOpenSettings: () => void;

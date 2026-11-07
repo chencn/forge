@@ -103,6 +103,7 @@ fn quit_now(app: &AppHandle) {
     }
 }
 
+/// 是否需要先叫前端保存再退出（跟随设置的 save_on_exit 开关）。
 fn wants_flush(current: &settings::Settings) -> bool {
     current.editor.save_on_exit
 }
@@ -143,10 +144,12 @@ pub fn app_cancel_exit(app: AppHandle) {
     reveal(&app);
 }
 
+/// 从托盘唤醒主窗口：取消最小化/隐藏状态并前置聚焦。
 pub(crate) fn show_main(app: &AppHandle) {
     reveal(app);
 }
 
+/// 恢复主窗口：取消最小化、显示并聚焦；窗口不存在时静默跳过。
 fn reveal(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;

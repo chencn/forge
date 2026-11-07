@@ -7,10 +7,13 @@ import { MOD_LABEL } from "../lib/sys";
 import type { MenuItem } from "./Menu";
 import styles from "./SelectableText.module.css";
 
+/** 启用文本选择的 CSS 类名（模块类，加载失败时抛错）。 */
 export const selectableText = styles.selectable!;
 
+/** 表单控件的统一选择器：这些元素上的右键复制菜单由浏览器原生行为接管。 */
 const EDITABLE = "input, textarea, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']";
 
+/** 选区非空且与目标节点相交（覆盖目标或目标在选区内）。 */
 function selectionCovers(sel: Selection | null, target: Node): boolean {
   if (!sel || sel.isCollapsed || !sel.toString()) return false;
   for (let i = 0; i < sel.rangeCount; i++) {

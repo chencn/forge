@@ -1,6 +1,8 @@
 /** 同步输出（DEC 2026）的进入与退出标记：CSI ? 2026 h / l。 */
 const SYNCHRONIZED_OUTPUT_ENTER = new Uint8Array([0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x32, 0x36, 0x68]);
+/** 同步输出的退出标记：CSI ? 2026 l。 */
 const SYNCHRONIZED_OUTPUT_EXIT = new Uint8Array([0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x32, 0x36, 0x6c]);
+/** 同步输出标记的字节长度（进入与退出等长）。 */
 const SYNCHRONIZED_OUTPUT_MARKER_LENGTH = SYNCHRONIZED_OUTPUT_ENTER.length;
 
 /** 结束标记之后再等一小会儿，把紧跟着的那一帧一起交出去。 */
@@ -10,11 +12,13 @@ const DEFAULT_SYNCHRONIZED_OUTPUT_TIMEOUT_MS = 1_000;
 /** 队列字节上限。到了就提前写，不等结束标记。 */
 export const TERM_OUTPUT_HIGH_WATERMARK = 500_000;
 
+/** 攒着待写的一段输出及其完成回调。 */
 interface PendingWrite {
   data: Uint8Array;
   onComplete: () => void;
 }
 
+/** {@link TermOutputBuffer} 的构造参数；定时项都可以注入以便测试。 */
 export interface TermOutputBufferOptions {
   write: (data: Uint8Array, onComplete: () => void) => void;
   scheduleFlush?: (callback: () => void, delayMs: number) => unknown;

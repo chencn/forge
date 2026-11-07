@@ -20,9 +20,11 @@ pub fn codex_project_trusted(workspace: &str) -> bool {
     if let Some(value) = project_trust(&config, workspace) { return value; }
     git_trust_root(Path::new(workspace)).is_some_and(|root| project_trusted(&config, &root.to_string_lossy()))
 }
+/// 判断一个工作区是否被信任（查不到信任记录按不信任）。
 fn project_trusted(config: &toml::Value, workspace: &str) -> bool {
     project_trust(config, workspace).unwrap_or(false)
 }
+/// 查一个工作区的信任状态：先精确/规范化路径匹配，再按 [`super::same_workspace_path`] 模糊匹配。
 fn project_trust(config: &toml::Value, workspace: &str) -> Option<bool> {
     let projects = config.get("projects")?.as_table()?;
     let canonical = std::fs::canonicalize(workspace).ok();
@@ -79,10 +81,12 @@ pub fn defaults(provider: Provider) -> Value {
         "modes":["default","plan"],"modesAuthoritative":false}) }
 }
 
+/// 读一份 JSON 文档；文件缺失或损坏返回空对象，不阻塞设置界面。
 fn read_document(path: &Path) -> Value {
     std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .filter(Value::is_object).unwrap_or_else(|| json!({}))
 }
+/// CLI 在 JSON 文档里的键名（`claude` / `codex`）。
 fn provider_key(provider: Provider) -> &'static str {
     match provider { Provider::Claude => "claude", Provider::Codex => "codex" }
 }
@@ -99,6 +103,7 @@ pub fn canonical_model(catalog: &Value, input: &str) -> String {
     }
     if ids.len() == 1 { ids.into_iter().next().unwrap().into() } else { value.into() }
 }
+/// 从缓存文档中取出某 CLI 的模型目录；结构损坏或旧格式回退到本地默认。
 fn catalog_from(document: &Value, provider: Provider) -> Value {
     let key = provider_key(provider);
     let mut catalog = document["catalogs"][key].clone();
@@ -285,6 +290,7 @@ fn apply_claude_custom_option(catalog: &mut Value, mappings: &Value) {
     if let Some(description) = description { model["description"] = json!(description); }
     models.push(model);
 }
+/// 把用户配置的环境变量映射（ANTHROPIC_MODEL 等）反映射到目录项的 configuredModel 字段。
 fn apply_claude_mappings(catalog: &mut Value, mappings: &Value) {
     if let Some(models) = catalog["models"].as_array_mut() {
         for model in models {
@@ -315,6 +321,7 @@ pub fn configured_model(catalog: &Value, selector: &str) -> String {
     if suffix.is_empty() || target.ends_with(suffix) { target.into() } else { format!("{target}{suffix}") }
 }
 
+/// 权限档位：两个 CLI 各自的落点由 [`PermissionMode`] 的换算方法给出。
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -328,15 +335,19 @@ pub enum PermissionMode {
     Full,
 }
 impl PermissionMode {
+    /// 换算成 Claude 的权限模式串。
     pub fn claude(self) -> &'static str {
         match self { Self::Inherit | Self::Ask => "manual", Self::Read => "plan", Self::Auto => "acceptEdits", Self::Full => "bypassPermissions" }
     }
+    /// 换算成 Codex 的审批策略串。
     pub fn codex_policy(self) -> &'static str {
         match self { Self::Inherit | Self::Read | Self::Ask => "on-request", Self::Auto | Self::Full => "never" }
     }
+    /// 换算成 Codex 的沙箱模式串。
     pub fn codex_sandbox(self) -> &'static str {
         match self { Self::Full => "danger-full-access", Self::Read => "read-only", _ => "workspace-write" }
     }
+    /// 换算成 Codex 的沙箱模式 camelCase 串（写入配置文件用）。
     pub fn codex_sandbox_type(self) -> &'static str {
         match self { Self::Full => "dangerFullAccess", Self::Read => "readOnly", _ => "workspaceWrite" }
     }
@@ -470,6 +481,11 @@ pub fn validate(model: Option<&str>, effort: Option<&str>) -> Result<(), String>
     }
     Ok(())
 }
+/// 等待一个 JSON-RPC 响应直到截止时刻，跳过过程中的通知与无关请求。
+///
+/// # Errors
+///
+/// 超时（带 operation 前缀）或进程退出时返回错误。
 fn response(process: &mut Process, id: u64, deadline: Instant, operation: &str) -> Result<Value, String> {
     loop {
         if Instant::now() >= deadline {
@@ -509,6 +525,11 @@ fn codex_management_process_with_experimental(cwd: &str, operation: &str, experi
     process.write(&json!({"method":"initialized","params":{}}))?;
     Ok((process, deadline))
 }
+/// 起一个 Codex 管理会话（`codex app-server`）用于设置读写操作。
+///
+/// # Errors
+///
+/// 进程启动或握手失败时返回错误。
 fn codex_management_process(cwd: &str, operation: &str) -> Result<(Process, Instant), String> {
     codex_management_process_with_experimental(cwd, operation, false)
 }
@@ -640,6 +661,7 @@ pub fn codex_project_config(cwd: &str) -> Result<Value, String> {
     let result = response(&mut process, 2, deadline, "读取 Codex 项目配置")?;
     Ok(project_config_fields(&result))
 }
+/// 从 `config/read` 响应投影出项目配置字段；官方组合映射成快捷权限名。
 fn project_config_fields(result: &Value) -> Value {
     let config = &result["config"];
     let sandbox = config["sandbox_mode"].as_str().unwrap_or("");
@@ -676,6 +698,7 @@ pub enum SandboxGrant {
     Unapplied(&'static str),
 }
 
+/// 把附加目录授权合并进 Codex 沙箱策略；返回本轮要发的策略或不可行的原因。
 pub fn codex_sandbox_grant(config: &Value, permission: PermissionMode, dirs: &[String]) -> SandboxGrant {
     // Inherit 时本轮不发送沙箱覆盖，生效模式只能问 CLI；其余档位由本轮选择直接决定。
     let mode = if permission == PermissionMode::Inherit { config["sandboxMode"].as_str().unwrap_or("") } else { permission.codex_sandbox() };
@@ -701,6 +724,7 @@ pub fn codex_sandbox_grant(config: &Value, permission: PermissionMode, dirs: &[S
     }
 }
 
+/// 定位项目层配置文件的写入目标：优先 CLI 报告的项目层目录，回退 `<cwd>/.codex`。
 fn project_config_target(result: &Value, cwd: &str) -> (std::path::PathBuf, Option<String>) {
     let layer = result["layers"].as_array().and_then(|layers| layers.iter().rev().find(|layer| layer["name"]["type"] == "project"));
     let folder = layer.and_then(|layer| layer["name"]["dotCodexFolder"].as_str()).map(std::path::PathBuf::from)
@@ -764,6 +788,11 @@ pub fn update_codex_project_config(cwd: &str, patch: &Value) -> Result<Value, St
     codex_project_config(cwd)
 }
 
+/// 列出引擎可用的模型目录：Claude 走静态别名表，Codex 起一次 app-server 问。
+///
+/// # Errors
+///
+/// Codex 查询失败时返回错误串。
 pub fn models(provider: Provider, cwd: &str) -> Result<Value, String> {
     if provider == Provider::Claude {
         // 这些只是 CLI 的别名，不代表账号一定可用、也不保证背后是哪个具体模型。
@@ -820,6 +849,11 @@ pub fn models(provider: Provider, cwd: &str) -> Result<Value, String> {
     }
     Err("模型列表超过分页上限".into())
 }
+/// 解析官方 `/models` 列表为目录条目：过滤隐藏项，抽出 id/思考强度档位及说明。
+///
+/// # Errors
+///
+/// 响应结构不兼容（缺 data、模型缺调用标识或思考强度信息）时返回中文错误。
 fn parse_models(value: &Value) -> Result<Vec<Value>, String> {
     let data = value["data"].as_array().ok_or("模型列表格式不兼容")?;
     data.iter().filter(|m| m["hidden"] != true).map(|model| {

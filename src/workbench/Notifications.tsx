@@ -14,23 +14,28 @@ import {
 } from "./notificationStore";
 import styles from "./Notifications.module.css";
 
+/** 同屏浮动气泡上限。 */
 const MAX_BALLOONS = 3;
 
+/** t 函数的类型别名。 */
 type TranslateFn = ReturnType<typeof useI18n>["t"];
 
 /** 通知动作在组件外构造文案，t 在组件挂载时同步进这个 ref。 */
 const tRef = { current: ((key: string) => key) as TranslateFn };
 
+/** 时间戳的时:分显示。 */
 function timeLabel(t: number) {
   const d = new Date(t);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** 通知级别映射成 Toast 的级别（warn → warning）。 */
 function toToastLevel(level: import("../lib/notifications").NotificationLevel): "error" | "warning" | "info" | "success" {
   if (level === "warn") return "warning";
   return level;
 }
 
+/** 订阅窗口聚焦/失焦；返回退订函数。 */
 function subscribeWindowFocus(onChange: () => void) {
   window.addEventListener("focus", onChange);
   window.addEventListener("blur", onChange);
@@ -50,7 +55,7 @@ function useWindowActive(): boolean {
 }
 
 /**
- * 通知自身动作之后追加「不再显示」（对齐 IDEA notificationActions/canSuppress）：
+ * 通知自身动作之后追加「不再显示」（notificationActions/canSuppress）：
  * 错误级不可抑制——错误本来就必须让用户看见。
  */
 function notificationActions(n: IdeNotification): NonNullable<IdeNotification["actions"]> {
@@ -65,13 +70,14 @@ function notificationActions(n: IdeNotification): NonNullable<IdeNotification["a
   ];
 }
 
+/** 右下角浮动气泡：智能倒计时（窗口失焦或悬停暂停）。 */
 function Balloon({ n }: { n: IdeNotification }) {
   const [hover, setHover] = useState(false);
   const active = useWindowActive();
   const remaining = useRef<number | null>(null);
   const ms = balloonTimeout(n);
 
-  // IDEA 智能计时：仅当窗口激活且鼠标未悬停在气泡上时倒数
+  // 智能计时：仅当窗口激活且鼠标未悬停在气泡上时倒数
   useEffect(() => {
     if (ms === null || hover || !active) return;
     const left = remaining.current ?? ms;
@@ -105,7 +111,7 @@ function Balloon({ n }: { n: IdeNotification }) {
 
 /**
  * 右下角堆叠通知气泡宿主（按时间倒序排列，最新在最下方，最多展示 3 条）
- * 1:1 对齐 IntelliJ IDEA：气泡源是 store 的活动气泡列表（toasts），点叉/超时即从中移除；
+ * 气泡源是 store 的活动气泡列表（toasts），点叉/超时即从中移除；
  * 当 Notifications 工具窗口打开时自动隐藏气泡
  */
 export function Balloons({ isListOpen = false }: { isListOpen?: boolean }) {
@@ -130,10 +136,11 @@ export function Balloons({ isListOpen = false }: { isListOpen?: boolean }) {
   );
 }
 
+/** 通知工具窗口在工具栏注册表里的 id。 */
 export const NOTIFICATIONS_TOOL_WINDOW = "notifications";
 
 /**
- * Notifications 工具窗口（右侧活动栏，1:1 对标 IntelliJ IDEA 源码）
+ * Notifications 工具窗口（右侧活动栏）
  * 历史记录按时间倒序，最新在最前；无任何自造药丸过滤栏或输入框；纯净 Toast 细线列表渲染；
  * 当面板处于展开可见状态时，自动触发 markAllNotificationsRead 将全部通知标记为已读。
  */
@@ -175,7 +182,7 @@ export function NotificationsToolWindow({ isOpen = true }: { isOpen?: boolean })
 }
 
 /**
- * 对应 IntelliJ IDEA 中的 NotificationsHeaderActions：
+ * 头部动作（NotificationsHeaderActions）：
  * 头部右侧操作区仅包含单个 Clear All 垃圾桶图标按钮。
  * 用与侧栏工具窗一致的原生 `icon-button is-inline is-hover`：
  * 跟随头部 hover 才显现，配色/尺寸随 `.tool-window-head` 规范走。

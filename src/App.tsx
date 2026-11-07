@@ -236,22 +236,36 @@ import "./components/aiAssistants.css";
  * 类型仍走 `import type`，编译期擦掉，不产生依赖。
  */
 const DocPane = lazy(() => import("./components/DocPane"));
+/** 工作区改动/提交比对的正文视图。 */
 const DiffPane = lazy(() => import("./components/DiffPane"));
+/** 合并冲突解决对话框。 */
 const MergeConflictDialog = lazy(() => import("./components/MergeConflictDialog"));
+/** 本地历史独立编辑器页签。 */
 const LocalHistoryEditor = lazy(() => import("./components/LocalHistoryEditor"));
 // 三方合并对话框静态依赖 lib/cmEditor：静态 import 会把整个 CodeMirror 拉进启动包，
 // 改成与其它对话框一致的懒加载，只有真正弹出时才加载。
 const TriMergeDialog = lazy(() => import("./components/TriMergeDialog"));
+/** Git 提交/变更工具窗口。 */
 const GitPanel = lazy(() => import("./components/GitPanel"));
+/** Git 历史页签（日志/分支/暂存浏览）。 */
 const GitHistoryTabs = lazy(() => import("./components/GitHistoryTabs"));
+/** 终端单格视图。 */
 const TerminalPane = lazy(() => import("./components/TerminalPane"));
+/** 终端宿主（分屏组布局）。 */
 const TerminalHost = lazy(() => import("./components/TerminalHost"));
+/** 运行面板（输出与停止控制）。 */
 const RunPane = lazy(() => import("./components/RunPane"));
+/** 运行配置管理页。 */
 const RunConfigsPage = lazy(() => import("./components/RunConfigsPage"));
+/** 全局搜索浮层。 */
 const SearchEverywhere = lazy(() => import("./components/SearchEverywhere"));
+/** 设置页。 */
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
+/** AI 会话正文窗格。 */
 const AiSessionPane = lazy(() => import("./components/AiSessionPane"));
+/** AI 空态欢迎页。 */
 const AiWelcomePane = lazy(() => import("./components/AiWelcomePane"));
+/** AI 附件/文件预览窗格。 */
 const AiFilePreviewPane = lazy(() => import("./components/AiFilePreviewPane"));
 
 /** 对话框除了文案，还要记住它作用在哪个条目上、新建落在哪个目录里。 */
@@ -310,7 +324,7 @@ interface DiffTab {
 /**
  * 顶栏箭头走链时交给开比对那一步的落点。
  *
- * `tabId` 是要写回哪一颗标签：IDEA 的比对标签装的是整条链，走链只换里面那一篇，所以这一步
+ * `tabId` 是要写回哪一颗标签：比对标签装的是整条链，走链只换里面那一篇，所以这一步
  * 带着它自己那颗回来，不再新开。`land` 是上下箭头走到本篇尽头转过来时才给的落点。
  */
 type ChainStep = { tabId?: string; land?: "first" | "last"; /** 双击变更树开的那档：预览标签，会被下一个预览顶替。 */ preview?: boolean };
@@ -332,6 +346,7 @@ type DiffChain =
 
 /** 有正文侧栏的工具可待在任一侧；终端、运行和日志只移动入口，正文仍在底部。 */
 type Panel = "explorer" | "git" | "ai" | "browser" | "maven" | "notifications";
+/** 右侧停靠面板的别名；与 `Panel` 同一取值域。 */
 type RightDockPanel = Panel;
 
 /** 底部工具窗口：各自独立开关，底部一次只见一块，切到选项卡才能并存。通知不占底部，停靠时进右侧工具窗口。 */
@@ -340,6 +355,7 @@ type BottomPane = "terminal" | "run" | "log" | "find" | "httpClient" | "notifica
 /** 一块工具窗口待在哪。底部是排他的，选项卡那边可以并存。 */
 type Placement = "hidden" | "docked" | "tabbed";
 
+/** 侧栏各工具入口的翻译键。 */
 const RAIL_LABEL: Record<Panel, TranslationKey> = {
   explorer: "panel.explorer",
   git: "panel.commit",
@@ -356,9 +372,13 @@ const BOTTOM_ORDER: BottomPane[] = ["terminal", "run", "httpClient", "log", "fin
  * 活动栏上属于底部的几块（「查找」没有栏位，通知走侧栏）。
  * 剩下的 ToolRailId 正好就是 `Panel`，所以侧栏判据写在这个函数里，不必到处列一遍。
  */
+/** 活动栏上属于底部的工具 id 的字面量联合。 */
 type BottomRailId = "terminal" | "run" | "log" | "httpClient";
+/** 活动栏上属于底部的几块（「查找」没有栏位，通知走侧栏）。 */
 const BOTTOM_RAIL_IDS: readonly BottomRailId[] = ["terminal", "run", "log", "httpClient"];
+/** 判断一个活动栏入口是否为底部工具；不是的就是侧栏工具。 */
 const isBottomRailId = (id: ToolRailId): id is BottomRailId => BOTTOM_RAIL_IDS.includes(id as BottomRailId);
+/** 底部工具没有侧栏正文，返回 null；侧栏工具返回其 Panel 名。 */
 const sideToolId = (id: ToolRailId): Panel | null => (isBottomRailId(id) ? null : (id as Panel));
 
 /**
@@ -393,6 +413,7 @@ interface FindState {
   replaceWith: string | null;
 }
 
+/** 查找窗口的空状态。 */
 const EMPTY_FIND: FindState = {
   query: "",
   options: { caseSensitive: false, wholeWords: false, regex: false, fileMask: "", limit: 0 },
@@ -412,11 +433,15 @@ const HTTP_REQUEST_TEMPLATE = [
   "###",
   "",
 ].join("\n");
+/** 空比对标签数组的稳定引用（memo 用）。 */
 const EMPTY_DIFFS: DiffTab[] = [];
+/** 空选中条目数组的稳定引用。 */
 const EMPTY_PICK: FsEntry[] = [];
 /** 目录树在没有仓库状态时拿到的那份空清单：必须是同一个数组，否则 memo 白装。 */
 const EMPTY_CHANGES: GitChange[] = [];
+/** 空标签顺序数组的稳定引用。 */
 const EMPTY_TAB_ORDER: string[] = [];
+/** 各底部工具的默认停靠位置：全部隐藏。 */
 const DEFAULT_PLACES: Record<BottomPane, Placement> = {
   terminal: "hidden",
   run: "hidden",
@@ -425,6 +450,7 @@ const DEFAULT_PLACES: Record<BottomPane, Placement> = {
   find: "hidden",
   notifications: "hidden",
 };
+/** 各底部工具上次非隐藏时的停靠方式；恢复「隐藏」前的位置用。 */
 const DEFAULT_LAST_PLACE: Record<BottomPane, "docked" | "tabbed"> = {
   terminal: "docked",
   run: "docked",
@@ -434,6 +460,7 @@ const DEFAULT_LAST_PLACE: Record<BottomPane, "docked" | "tabbed"> = {
   notifications: "docked",
 };
 
+/** 应用根组件：布局、工具窗口、页签、对话框与全局快捷键的归口。 */
 export default function App() {
   const { t } = useI18n();
   const { settings, patch, applied: resolved } = useSettings();
@@ -476,10 +503,10 @@ export default function App() {
   const openSettingsTabRef = useRef<(module?: unknown) => void>(() => {});
 
   /**
-   * 统一上报错误与通知（1:1 对标 IntelliJ IDEA 体系）：
-   * - 自动识别通知来源组（Git / Maven / System 等）；
-   * - 严格遵循用户设置的组行为规则（气泡形态 Balloon/Sticky/None、是否记入历史、勿扰模式）；
-   * - 支持快捷处置动作（Actions）。
+   * 统一上报错误与通知，走统一的通知体系。
+   *
+   * 自动识别通知来源组（Git / Maven / System 等），遵循用户设置的组行为规则
+   * （气泡形态 Balloon/Sticky/None、是否记入历史、勿扰模式），支持快捷处置动作。
    */
   const reportError = useCallback(
     (raw: string, titleKey?: string) => {
@@ -1000,7 +1027,7 @@ export default function App() {
   const [rewordSignal, setRewordSignal] = useState(0);
   /** 提交工具窗口的视图选项，图标条那颗齿轮和变更树共用。 */
   const [commitView, setCommitView] = useState({ byDir: true, byModule: true, ignored: false });
-  /** 头部齿轮（IDEA 的 CommitView.GearActions）挂在这颗按钮上。 */
+  /** 头部齿轮：提交工具窗口的动作菜单挂在这颗按钮上。 */
   const commitGearRef = useRef<HTMLButtonElement>(null);
   const [commitGearAnchor, setCommitGearAnchor] = useState<HTMLElement | null>(null);
   /** 未合并那一节的 Resolve 链接与冲突行菜单开的是同一层弹层。 */
@@ -1046,13 +1073,13 @@ export default function App() {
   const [logPath, setLogPath] = useState("");
   /**
    * 随处搜索的弹层，null 表示没开。开的时候带三样：落在哪个页签、预填的词、
-   * 以及搜的是哪一层（IDEA 的 Look in Directory，从树右键带过来的那个目录）。
+   * 以及搜的是哪一层（目录范围，从树右键带过来的那个目录）。
    */
   const [everywhere, setEverywhere] = useState<{
     tab: SearchTab;
     query: string;
     scope: string | null;
-    /** 替换模式（IDEA 的 Replace in Files）：同一弹层多一条「替换为」输入。 */
+    /** 替换模式（Replace in Files）：同一弹层多一条「替换为」输入。 */
     replace: boolean;
   } | null>(null);
   /** 每开一次换一个序号当 key：同一份状态里再按一次 Ctrl+Shift+N 也要重置页签与词。 */
@@ -1326,11 +1353,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isSideToolOpen, places.log]);
 
-  // WebView2 自带的「刷新 / 打印 / 检查」菜单在桌面应用里不该出现（1:1 抄 IDEA browserGuards）。
+  // WebView2 自带的「刷新 / 打印 / 检查」菜单在桌面应用里不该出现（browserGuards 守卫）。
   // 组件没接手的右键，落在可读文本（如通知内容）上时弹自绘「复制」菜单，而不是什么都不给。
   useEffect(() => installContextMenuGuard(), []);
 
-  // 窗口重新激活时（对齐 IDEA 的 Frame Activation / VSCode 的 focus 刷新）：
+  // 窗口重新激活时（Frame Activation / VSCode 的 focus 刷新）：
   // 外部敲完 git 命令（如外部终端提交/切分支）切回应用窗口时，自动静默同步一次 Git 状态与最近提交。
   useEffect(() => {
     let lastFocusSync = 0;
@@ -1421,10 +1448,11 @@ export default function App() {
   /** 删除动作完成并主动刷新后的短暂回声抑制窗口（时间戳），防止尾随到达的监听事件重复刷树。 */
   const suppressWatchUntilRef = useRef(0);
   /**
-   * 文件删除进度状态（参照 IDEA `DeleteHandlerHelper.kt` + `ProgressDialogUI.kt`）：
-   * - `deleting` 阶段：批量删除或大目录删除超过延迟阈值时在窗口中央展示模态进度弹窗，
-   *   实时刷新底层递归回调上报的 `已删除：{count} 个文件/目录`；
-   * - `done` 阶段：模态框关闭，底部全局状态栏短暂提示已删除结果。
+   * 文件删除的进度状态，居中模态进度框。
+   *
+   * `deleting` 阶段：批量删除或大目录删除超过延迟阈值时在窗口中央展示模态进度弹窗，
+   * 实时刷新底层递归回调上报的 `已删除：{count} 个文件/目录`；`done` 阶段：模态框关闭，
+   * 底部全局状态栏短暂提示已删除结果。
    */
   const [deleteStatus, setDeleteStatus] = useState<{
     phase: "deleting" | "done";
@@ -2010,7 +2038,7 @@ export default function App() {
         const list = prev[key] ?? EMPTY_DIFFS;
         const next = list.some((item) => item.id === tab.id)
           ? list.map((item) => (item.id === tab.id ? tab : item))
-          : // 新开的预览标签顶掉旧的预览（IDEA 的单预览槽），普通标签照常追加。
+          : // 新开的预览标签顶掉旧的预览（单预览槽），普通标签照常追加。
             [...list.filter((item) => !(tab.preview && item.preview)), tab];
         return { ...prev, [key]: next };
       });
@@ -2096,7 +2124,7 @@ export default function App() {
   );
 
   /**
-   * 开随处搜索弹层。`query` 是从编辑器选区带过来的词（IDEA 的 `PREDEFINED_TEXT`），
+   * 开随处搜索弹层。`query` 是从编辑器选区带过来的词（预定义文本），
    * 没选东西就留空；`scope` 为空时自动推导当前活跃的目录或工程，非空就是显式指定。
    */
   const openEverywhere = useCallback(
@@ -2130,7 +2158,7 @@ export default function App() {
   );
 
   /**
-   * 弹层里点开一个文件：进编辑区，光标不动，IDEA 的 Files 页也是这样落。
+   * 弹层里点开一个文件：进编辑区，光标不动，Files 页也是这样落。
    * 目录那一条没有正文可开，落点全在树上——展开它并把它选住。
    */
   const openSearchFile = useCallback(
@@ -2178,7 +2206,7 @@ export default function App() {
 
   /**
    * 弹层里点开一处正文命中：跳进编辑器，同一整页结果留在底部查找窗口里。
-   * IDEA 那边 Enter 之后弹层关掉、结果还摆在 Find 窗口，这边一样。
+   * Enter 之后弹层关掉、结果还摆在查找窗口，两边一致。
    */
   const openSearchHit = useCallback(
     (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean, replaceWith?: string) => {
@@ -2226,7 +2254,7 @@ export default function App() {
   /**
    * 双击 Shift 是独立手势；其余应用快捷键由命令表统一分发。
    *
-   * 双击 Shift 照 IDEA 那条键盘手势（`$default.xml` 里的 `shift SHIFT`）：两次轻击 Shift 的
+   * 双击 Shift 的键盘手势（`shift SHIFT`）：两次轻击 Shift 的
    * 间隔不超过 350ms 才算，中间落了别的键就重新计。长按 Shift（持续按住或发生 repeat）
    * 严格判定为长按，绝不触发搜索。焦点在输入框里时不认这条，
    * 否则重命名框里连按两下 Shift 会把弹层盖上去；编辑器那块输入面除外，
@@ -3343,7 +3371,7 @@ export default function App() {
    * 按同一口径重开一次比对，并且写回**它自己那颗标签**。
    *
    * 链上存的是这一串文件与比法，不是打开它的闭包——所以旧标签的箭头走的还是它自己那一串，
-   * 序号也从标签上现读，不靠谁记住走到哪了。写回同一颗是 IDEA 的规矩：比对标签装的是整条链，
+   * 序号也从标签上现读，不靠谁记住走到哪了。写回同一颗是既定规矩：比对标签装的是整条链，
    * 走链只换里面那一篇。
    */
   /** 比对窗口里按块打补丁：暂存此块打到索引（--cached），还原此块反打到工作区（-R）。 */
@@ -3641,9 +3669,7 @@ export default function App() {
     [patch, settings.projectDirectoryRoles, workspaceRoot]
   );
 
-  /**
-   * 目录树右键菜单，1:1 对齐 IntelliJ IDEA ProjectViewPopupMenu / IntelliJ IDEA 商业级规范
-   */
+  /** 组装目录树右键菜单，菜单项按项目视图弹出菜单的口径组织。 */
   const requestMenu = useCallback(
     (selection: FsEntry[], position: { x: number; y: number }, node?: ProjectTreeNode) => {
       // 组装选择节点的模型（支持外部库、Scratches 与常规项目节点）
@@ -3731,7 +3757,7 @@ export default function App() {
         onPaste: (targetDir) => void pasteInto(targetDir),
         onOpenFile: (entry) => openFile(entry),
         onRename: (entry) => confirmRename(entry),
-        // IDEA 的 Move 问的是「移到哪个目录」，不是新名字：这里收目标目录，名字保持不变
+        // Move 问的是「移到哪个目录」，不是新名字：这里收目标目录，名字保持不变
         // （要改名走 Rename）。默认落在当前工程根。
         onMove: (entries) => {
           if (entries.length === 0) return;
@@ -3960,7 +3986,7 @@ export default function App() {
         total: targets.length,
         modalVisible: showModalImmediately,
       });
-      // 参照 IDEA `ProgressWindow.DEFAULT_PROGRESS_DELAY_MILLIS`：单条目若在 180ms 内秒删完则不闪模态框，
+      // 参照进度窗默认延迟（180ms）：单条目若在 180ms 内秒删完则不闪模态框，
       // 删大目录耗时超过阈值时自动弹出居中模态进度框。
       if (!showModalImmediately) {
         deleteModalDelayRef.current = window.setTimeout(() => {
@@ -3992,7 +4018,7 @@ export default function App() {
           deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);
           dropDocument(target);
         }
-        // 删除后按可见顺序选中下一存活行（对齐 IDEA selectionAfterDelete）。
+        // 删除后按可见顺序选中下一存活行（selectionAfterDelete）。
         // 树的最新可见行从这里拿不到——交一个「选兄弟」的最小语义：选中集清空，
         // 由树在 refresh 后把 lead 落到删除位置的第一行（这里只保证不再引用死路径）。
         setExplorerPick(
@@ -5083,7 +5109,7 @@ export default function App() {
     >
       <header className="tool-window-head">
         <span className="tool-window-title">{t(BOTTOM_LABEL[key])}</span>
-        {/* 运行面板照 IDEA：会话页签跟在标题同一行，动作另起第二行。 */}
+        {/* 运行面板：会话页签跟在标题同一行，动作另起第二行。 */}
         {key === "run" ? <RunSessionTabs run={run} /> : null}
         {/* 终端同理：页签 + `+` + `⌄` 都在标题行里。 */}
         {key === "terminal" ? (
@@ -5139,7 +5165,7 @@ export default function App() {
           <Minus size={15} />
         </button>
       </header>
-      {/* 运行面板的第二行：重跑 / 停止 / 清空 / 更多，和 IDEA 的 Run 工具窗口同构。 */}
+      {/* 运行面板的第二行：重跑 / 停止 / 清空 / 更多，照运行工具窗口的布局。 */}
       {key === "run" ? <RunPaneToolbar run={run} /> : null}
       <div className="bottom-body">
         <ErrorBoundary label={t(BOTTOM_LABEL[key])} onError={reportError}>
@@ -5373,7 +5399,7 @@ export default function App() {
     async (action: CommitAction, commit: GitCommitInfo) => {
       if (!git.root) return;
       if (action === "checkout") {
-        // IDEA 的 Checkout Revision 不二次确认：行上点一下就游离到那条修订上。
+        // Checkout Revision 不二次确认：行上点一下就游离到那条修订上。
         await git.checkout(commit.hash);
         return;
       }
@@ -5410,7 +5436,7 @@ export default function App() {
         return;
       }
       if (action === "uncommit") {
-        /* IDEA 的 Undo Commit 就是「mixed 重置到 HEAD 的父」：HEAD 退一格，改动留在工作区且不暂存。
+        /* Undo Commit 就是「mixed 重置到 HEAD 的父」：HEAD 退一格，改动留在工作区且不暂存。
            这条只在 HEAD 上点得动，所以直接写 HEAD^；根提交没有父，git 自己报错报回去。 */
         await git.reset("HEAD^", "mixed");
         return;
@@ -5817,7 +5843,7 @@ export default function App() {
     {tool === "maven" ? <button type="button" className="icon-button is-inline" title={t("maven.reload")} onClick={reloadMaven}><RefreshCw size={14} className={maven.status === "loading" ? "is-spinning" : undefined} /></button> : null}
     {tool === "notifications" ? <NotificationsHeaderActions /> : null}
   </>;
-  /** 1:1 对标 IntelliJ IDEA 工具窗口头部三个点选项菜单 (Move To, Maximize/Restore, Close) */
+  /** 工具窗口头部的三个点选项菜单：移动到另一侧、最大化/还原、关闭。 */
   const openToolWindowMenu = useCallback(
     (
       e: React.MouseEvent<HTMLButtonElement>,
@@ -5885,7 +5911,7 @@ export default function App() {
         collapseSignal={collapseSignal} refresh={treeRefresh} reveal={treeReveal}
         showIgnored={settings.explorer.showIgnored} showHidden={settings.explorer.showHidden}
         clipboard={clipboard} onClipboardChange={setClipboard} directoryRoles={directoryRoles}
-        /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
+        /* VCS：传递是否在目录树高亮显示含修改的目录配置 */
         highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
         openRoots={watchedRoots} activeFile={locatePath} openFiles={visibleDocs.map((doc) => doc.path)} picked={explorerPickedPaths} onPick={setExplorerPick}
         onOpenFile={treeOpenFile} onContextMenu={treeContextMenu}
@@ -6039,7 +6065,7 @@ export default function App() {
                   ) : null}
                   {panel === "git" && git.root ? (
                     <>
-                      {/* IDEA 的 CommitView.GearActions 挂在工具窗口头部那颗齿轮上。 */}
+                      {/* 提交工具窗口的动作菜单挂在头部那颗齿轮上。 */}
                       <Popover
                         anchor={commitGearAnchor}
                         onClose={() => setCommitGearAnchor(null)}
@@ -6141,7 +6167,7 @@ export default function App() {
                       showHidden={settings.explorer.showHidden}
                       clipboard={clipboard}
                       onClipboardChange={setClipboard}
-                      /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
+                      /* VCS：传递是否在目录树高亮显示含修改的目录配置 */
                       highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
                       directoryRoles={directoryRoles}
                       openRoots={watchedRoots}
@@ -6484,7 +6510,7 @@ export default function App() {
                       showHidden={settings.explorer.showHidden}
                       clipboard={clipboard}
                       onClipboardChange={setClipboard}
-                      /* 对标 IDEA VCS：传递是否在目录树高亮显示含修改的目录配置 */
+                      /* VCS：传递是否在目录树高亮显示含修改的目录配置 */
                       highlightDirtyDirectories={settings.vcs.highlightDirtyDirectories}
                       directoryRoles={directoryRoles}
                       openRoots={watchedRoots}
@@ -6628,7 +6654,7 @@ export default function App() {
             <CaretStatus
               path={activeDoc.path}
               onJump={() => {
-                // 对齐 IDEA：状态栏行列段点击 = Go to Line（与 Ctrl+G 同一入口）。
+                // 状态栏行列段点击 = Go to Line（与 Ctrl+G 同一入口）。
                 // 编辑器与搜索模块按需加载，保持它们不在启动包里。
                 void Promise.all([import("./lib/cmEditor"), import("@codemirror/search")])
                   .then(([editor, search]) => {
@@ -6748,7 +6774,7 @@ export default function App() {
           onCancel={() => setDialog(null)}
         />
       ) : null}
-      {/* 参照 IDEA `DeleteHandlerHelper.kt` + `ProgressDialogUI.kt`：居中模态删除进度框 */}
+      {/* 居中模态删除进度框 */}
       {deleteStatus?.phase === "deleting" && deleteStatus.modalVisible ? (
         <div className="dialog-backdrop" role="presentation">
           <div

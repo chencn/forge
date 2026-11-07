@@ -10,7 +10,9 @@ import AiSessionActivity from "./AiSessionActivity";
 import type { TranslationKey } from "../i18n/lang/zh";
 import { nativeSeparators } from "../lib/format";
 
+/** 是否 macOS 平台（快捷键文案跟随）。 */
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+/** 保存快捷键的展示文案（平台差异）。 */
 const SAVE_SHORTCUT = IS_MAC ? "⌘S" : "Ctrl+S";
 
 /** 标签的种类：文档、比对、底部工具窗口、设置页、AI 会话。 */
@@ -32,12 +34,13 @@ export interface TabItem {
   filePath?: string;
   /** 有没保存的改动，画成小圆点。 */
   dirty: boolean;
-  /** 预览标签：斜体，会被下一个预览顶替（IDEA 的单预览槽）。 */
+  /** 预览标签：斜体，会被下一个预览顶替（单预览槽）。 */
   preview?: boolean;
   /** 种类图标；文档按文件名取，和资源管理器同一套。 */
   icon?: ReactNode;
 }
 
+/** {@link EditorTabs} 的入参。 */
 interface EditorTabsProps {
   tabs: TabItem[];
   activeId: string | null;
@@ -86,6 +89,7 @@ const CLOSE_LABEL: Record<TabKind, TranslationKey> = {
   history: "editor.closeTab",
 };
 
+/** 编辑区页签栏：渲染 {@link TabItem} 列表，托管拖拽重排、右键菜单与分栏动作。 */
 export default function EditorTabs({
   tabs,
   activeId,
@@ -128,7 +132,7 @@ export default function EditorTabs({
   if (!listKey.current) listKey.current = createEditorTabListId();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Lithe `useTabWheelScroll`：条藏掉之后，竖着滚轮也改成左右挪标签。
+  // 标签条藏掉之后，竖着滚轮也改成左右挪标签。
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;

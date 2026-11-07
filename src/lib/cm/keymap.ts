@@ -1,6 +1,6 @@
 /**
  * 编辑器键位方案：设置里那三档（IntelliJ IDEA / VS Code / Eclipse）在 CodeMirror 上的落地，
- * 默认 IDEA。
+ * 默认 IntelliJ IDEA。
  *
  * 三套完整来源表决定键位；只给有真实实现的动作注册处理器，不混入另一套默认方案。
  * IDE 专有的语义功能需要对应服务，不能拿不相干的编辑命令代替。
@@ -56,6 +56,7 @@ function find(replace: boolean): Command {
   return (view: EditorView) => openFind(view, replace);
 }
 
+/** 一条键位绑定：动作 id、CM 键名与实现命令。 */
 interface Binding {
   action: string;
   key: string;
@@ -66,6 +67,7 @@ interface Binding {
 
 /** 扩大选区单独记住每一步，缩小时恢复原选区而不是直接丢掉所有次光标。 */
 const selectionStep = StateEffect.define<readonly EditorSelection[]>();
+/** 扩大选区各步的历史（StateField），供缩小选区逐步还原。 */
 const selectionHistory = StateField.define<readonly EditorSelection[]>({
   create: () => [],
   update(history, transaction) {
@@ -75,6 +77,7 @@ const selectionHistory = StateField.define<readonly EditorSelection[]>({
     return transaction.docChanged || transaction.selection ? [] : history;
   },
 });
+/** 扩大选区（Ctrl+W 一族）：沿语法结构向外扩，成功则记录一步历史。 */
 const expandSelection: Command = (view) => {
   const previous = view.state.selection;
   const history = view.state.field(selectionHistory);
@@ -82,6 +85,7 @@ const expandSelection: Command = (view) => {
   if (!previous.eq(view.state.selection)) view.dispatch({ effects: selectionStep.of([...history, previous]) });
   return true;
 };
+/** 缩小选区（Shift+Ctrl+W）：按历史退回上一步选区。 */
 const shrinkSelection: Command = (view) => {
   const history = view.state.field(selectionHistory);
   const previous = history.at(-1);
@@ -90,7 +94,7 @@ const shrinkSelection: Command = (view) => {
   return true;
 };
 
-/** IDEA 的出现处导航只移动主选区，不生成多光标。 */
+/** 出现处导航只移动主选区，不生成多光标。 */
 function occurrence(backward: boolean): Command {
   return (view) => {
     const { state } = view;
@@ -231,9 +235,11 @@ function viewportEdge(bottom: boolean, extend: boolean): Command {
     return true;
   };
 }
+/** 滚动一行（不挪光标）；direction 为 ±1。 */
 function scrollLine(direction: number): Command {
   return (view) => { view.scrollDOM.scrollTop += direction * view.defaultLineHeight; return true; };
 }
+/** 把命令包成「移动后延伸选区到新 head」的形式。 */
 function extendTo(command: Command): Command {
   return (view) => {
     const anchor = view.state.selection.main.anchor;
@@ -242,6 +248,7 @@ function extendTo(command: Command): Command {
     return true;
   };
 }
+/** 查找光标所在（或选中的）词的下一处/上一处。 */
 function findWord(backward: boolean): Command {
   return (view) => {
     const range = view.state.selection.main;
@@ -251,6 +258,7 @@ function findWord(backward: boolean): Command {
     return backward ? findPrevious(view) : findNext(view);
   };
 }
+/** 跳到上一处/下一处改动标记（变更条）。 */
 function changeMarker(backward: boolean): Command {
   return (view) => {
     const head = view.state.selection.main.head;
@@ -288,6 +296,7 @@ function bindingsFor(scheme: KeymapScheme): Binding[] {
     return [key, { action: id, key, command, scope: ['Find', 'Replace'].includes(id) ? 'editor search-panel' : undefined }] as const;
   }))).values()];
 }
+/** 三套方案的绑定总表（构建时一次算好）。 */
 const BINDINGS: Record<KeymapScheme, Binding[]> = {
   idea: bindingsFor('idea'), vscode: bindingsFor('vscode'), eclipse: bindingsFor('eclipse'),
 };
@@ -297,6 +306,7 @@ export function keymapBindings(): Array<[KeymapScheme, Binding[]]> {
   return Object.entries(BINDINGS) as Array<[KeymapScheme, Binding[]]>;
 }
 
+/** 编辑器的完整键位扩展：状态字段 + 方案绑定 + 通用兜底键。 */
 export function forgeKeymap(scheme: KeymapScheme): Extension {
   const bindings = BINDINGS[scheme];
   return [selectionHistory, editing.occurrenceSearch, overwriteField, columnModeExtension, ...(scheme === "idea" ? [Prec.highest(cloneCarets)] : []), Prec.high(keymap.of([
@@ -311,6 +321,7 @@ export function forgeKeymap(scheme: KeymapScheme): Extension {
   ]))];
 }
 
+/** IDEA 的双击 Ctrl 克隆光标：Ctrl 松开 500ms 内再按（无修饰键）则武装，随后↑↓加光标。 */
 const cloneCarets = ViewPlugin.fromClass(class {
   releasedAt = -Infinity;
   armed = false;

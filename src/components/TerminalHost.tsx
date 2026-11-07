@@ -56,6 +56,7 @@ const PAUSE_BYTES = 500_000;
 /** 降到这么少再放开。两个水位分开，免得在一条线上来回开关。 */
 const RESUME_BYTES = 100_000;
 
+/** {@link TerminalHost} 的入参。 */
 interface TerminalHostProps {
   dark: boolean;
   /** 当前激活的工作区根。只有它名下的会话才常驻画面，见 `keptLive`。 */
@@ -98,10 +99,12 @@ function paintTerm(term: Terminal | null) {
   term.refresh(0, term.rows - 1);
 }
 
+/** 终端字体栈：设置里有字体就排在等宽兜底前面。 */
 function fontFamilyOf(options: TerminalSettings): string {
   return options.fontFamily ? `${options.fontFamily}, ${monoFont()}` : monoFont();
 }
 
+/** 响铃用的 AudioContext，第一次响铃时创建后复用。 */
 let bellAudio: AudioContext | null = null;
 
 /** 一声很短的提示音。用振荡器现做，不带音频文件。 */
@@ -126,6 +129,7 @@ function playBell() {
 /** 已经写过退出提示的会话。xterm 重建时历史里已经带着那行，不再补一遍。 */
 const noticed = new Set<string>();
 
+/** {@link LiveTerm} 的入参。 */
 interface LiveTermProps {
   session: TermSession;
   /** 会话对象原地改，单独递一份才能在退出时触发重渲染。 */
@@ -134,6 +138,7 @@ interface LiveTermProps {
   onOpenFile: TerminalHostProps["onOpenFile"];
 }
 
+/** 一条活着的 xterm 实例：创建、绑数据流、fit 与退出提示都挂在这一层。 */
 function LiveTerm({ session, exited, dark, onOpenFile }: LiveTermProps) {
   const { settings, patch } = useSettings();
   const zoomRef = useRef<(step: 1 | -1 | 0) => void>(() => {});

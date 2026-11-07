@@ -4,6 +4,7 @@ import EntryIcon from "./EntryIcon";
 import { useI18n } from "../i18n";
 import type { GitChange } from "../lib/git";
 
+/** 冲突文件解决对话框的入参。 */
 interface ResolveConflictsDialogProps {
   /** 未合并的那些文件，顺序跟着变更清单。 */
   files: GitChange[];
@@ -16,7 +17,7 @@ interface ResolveConflictsDialogProps {
   onClose: () => void;
 }
 
-/** IDEA 的 Resolve Conflicts 那一层：逐个冲突文件按一边了结，或打开自己改。 */
+/** 解决冲突对话框：逐个冲突文件按一边了结，或打开自己改。 */
 export default function ResolveConflictsDialog({
   files,
   onAccept,

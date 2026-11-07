@@ -4,6 +4,7 @@ import { editedInput, allowAndRemember, allowDirectory, allowEdited, allowOnce, 
 import type { AiPermissionAnswer } from "../lib/aiApprovals";
 import type { AiRequest } from "../lib/aiRuntime";
 
+/** 权限审批卡的入参。 */
 interface AiApprovalCardProps {
   /** 一条仍然有效的授权请求。 */
   request: AiRequest;

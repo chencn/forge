@@ -63,9 +63,10 @@ import EntryIcon from "./EntryIcon";
 import SymbolIcon from "./SymbolIcon";
 import styles from "./SearchEverywhere.module.css";
 
-/** 弹窗页签。IntelliJ IDEA 的六档：全部 / 类 / 文件 / 符号 / 动作 / 文本。 */
+/** 弹窗页签。六档：全部 / 类 / 文件 / 符号 / 动作 / 文本。 */
 export type SearchTab = SeTab;
 
+/** 各页签的文案键。 */
 const TAB_LABELS: Record<SeTab, TranslationKey> = {
   all: "search.tab.all",
   classes: "search.tab.classes",
@@ -75,6 +76,7 @@ const TAB_LABELS: Record<SeTab, TranslationKey> = {
   text: "search.tab.text"
 };
 
+/** 各分组标题的文案键。 */
 const SECTION_LABELS: Record<SectionId, TranslationKey> = {
   recent: "search.section.recent",
   recentActions: "search.section.recentActions",
@@ -85,12 +87,18 @@ const SECTION_LABELS: Record<SectionId, TranslationKey> = {
   text: "search.tab.text"
 };
 
+/** 一行高度（px）；列表尺寸与虚拟滚动以此为准。 */
 const ROW = 24;
+/** 结果列表最大高度（px）。 */
 const MAX_LIST = 672;
+/** 预览模式下列表的最大高度（px）。 */
 const MAX_LIST_PREVIEW = 312;
+/** 结果列表最小高度（10 行）。 */
 const MIN_LIST = 10 * ROW;
+/** 输入防抖毫秒数。 */
 const TYPE_DELAY = 60;
 
+/** {@link SearchEverywhere} 弹窗的入参。 */
 export interface SearchEverywhereProps {
   /** 搜索范围：当前选中的目录（如用户右键的目录、在资源管理器高亮的目录）或工程根。 */
   root: string;
@@ -109,16 +117,17 @@ export interface SearchEverywhereProps {
   onOpenHit: (hit: TextHit, page: TextPage, options: SearchOptions, side?: boolean, replaceWith?: string) => void;
   /** 打开一处符号定义：落到那一行并把名字选住。 */
   onOpenSymbol: (path: string, line: number, column: number, length: number, side?: boolean) => void;
-  /** 打开时停在哪个页签。IDEA 的 Goto File 不是另一个框，是同一弹层落在 Files 页签上。 */
+  /** 打开时停在哪个页签。「转到文件」不是另一个框，是同一弹层落在 Files 页签上。 */
   initialTab?: SearchTab;
-  /** 预填的搜索词，取的是编辑器选区，对应 IDEA 的 `PREDEFINED_TEXT`。 */
+  /** 预填的搜索词，取的是编辑器选区。 */
   initialQuery?: string;
-  /** 替换模式（IDEA 的 Replace in Files）：Text 页签多出「替换为」输入，结果交给底部窗口执行。 */
+  /** 替换模式（Replace in Files）：Text 页签多出「替换为」输入，结果交给底部窗口执行。 */
   initialReplace?: boolean;
   /** 可执行动作表（命令面板的数据源）；「动作」档与最近动作都从它取。 */
   commands?: ForgeCommand[];
 }
 
+/** 键盘导航的当前选中（key + 扁平 index + 用户是否动过）。 */
 interface Selection {
   key: string | null;
   index: number;
@@ -266,7 +275,6 @@ function sameFile(prev: SeRow | undefined, row: SeRow): boolean {
 
 /**
  * 随处搜索（Search Everywhere）
- * 100% 对齐 IntelliJ IDEA everywhere 交互与布局体系：
  * - 顶栏：TabList、Scope 下拉、Preview 切换、Filter、转到底部 Find 窗口；
  * - 搜索行：放大镜历史下拉、自适应无边框输入框、Spinner 与提示；
  * - 列表区：分节渲染、多类型条目高亮、同文件合并、底部键盘导航；
@@ -637,7 +645,7 @@ export default function SearchEverywhere({
       }}
     >
       <div className={styles.dialog} role="dialog" aria-modal="true" aria-label={t("search.title")}>
-        {/* 顶部 Header：Tabs 胶囊与右侧 Actions（完全对齐 IntelliJ IDEA） */}
+        {/* 顶部 Header：Tabs 胶囊与右侧 Actions */}
         <div className={styles.header}>
           <div role="tablist" aria-label={t("search.title")} className={styles.tabs} onKeyDown={onTabKey}>
             {TABS.map((item, index) => (
@@ -658,7 +666,7 @@ export default function SearchEverywhere({
           </div>
 
           <div className={styles.headerActions}>
-            {/* 对齐 IntelliJ IDEA：All 或 Actions 页签显示 Checkbox，其余页签显示 Scope 下拉 */}
+            {/* All 或 Actions 页签显示 Checkbox，其余页签显示 Scope 下拉 */}
             {tab === "all" || tab === "actions" ? (
               <label className={styles.include}>
                 <input
@@ -782,7 +790,7 @@ export default function SearchEverywhere({
           </div>
         </div>
 
-        {/* 替换模式（IDEA 的 Replace in Files）：检索行下面多一条「替换为」 */}
+        {/* 替换模式（Replace in Files）：检索行下面多一条「替换为」 */}
         {replaceMode && tab === "text" && (
           <div className={styles.queryRow}>
             <div className={styles.field}>
@@ -973,7 +981,7 @@ export default function SearchEverywhere({
           </div>
         )}
 
-        {/* 下方代码预览窗格（对齐 IntelliJ IDEA CodePreview） */}
+        {/* 下方代码预览窗格 */}
         {preview && rows.length > 0 && (
           <CodePreviewPane path={previewTarget?.path ?? null} line={previewTarget?.line ?? 1} />
         )}

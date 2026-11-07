@@ -16,6 +16,7 @@ import type { MarkdownPreviewHandle } from "./MarkdownPreview";
 /** marked 与 DOMPurify 只在渲染预览时要用，跟着第一次切到预览那侧才取。 */
 const MarkdownPreview = lazy(() => import("./MarkdownPreview"));
 
+/** 文档窗格的入参。 */
 interface DocPaneProps {
   document: OpenDocument;
   onChange: (path: string, contents: string) => void;
@@ -61,7 +62,7 @@ function previewLabel(kind: DocKind): "preview.markdown" | "preview.svg" | "prev
  * 有源码的文档（text / markdown / svg）把编辑器一直挂着，切到预览只是把它藏起来——
  * 这样来回切视图不会丢掉撤销栈与光标位置。图片没有源码，只画预览。
  *
- * 视图切换是编辑区右上角那组浮动图标（照 IDEA）：左边源码、右边预览，纯图标不带字，
+ * 视图切换是编辑区右上角那组浮动图标：左边源码、右边预览，纯图标不带字，
  * 浮在内容之上，不占正文的一条高。
  */
 export default function DocPane({

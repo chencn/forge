@@ -12,7 +12,9 @@ use tauri::{AppHandle, Manager};
 
 /// 每个文件的有界修订数量。
 const KEEP_PER_FILE: usize = 50;
+/// 单条快照正文的大小上限；正文超过它的记录直接丢弃。
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+/// 全局串行写锁；所有 JSONL 的读-改-写都持它，防并发交错。
 static HISTORY_WRITE: Mutex<()> = Mutex::new(());
 
 /// 一条历史快照：保存那一刻的正文与写盘所需的全部元信息。
@@ -22,6 +24,7 @@ pub struct Snapshot {
     /// 完整路径让目录历史能发现已删除文件；旧记录按请求路径补齐。
     #[serde(default)]
     pub path: String,
+    /// 触发事件：`saved` / `external` / `deleted` / `beforeRestore` / `restored` / `label`
     #[serde(default)]
     pub event: String,
     /// 保存成功那刻的 unix 毫秒，列历史时按它倒序。
@@ -103,11 +106,21 @@ fn snapshot_file(history_dir: &Path, root: &Path, file: &Path) -> PathBuf {
 /// 读回一个文件的全部快照（最新在前）。文件不在就是空表，不是错误。
 ///
 /// 落盘时就是「最新在前」整份重写的（见 [`append_snapshot`]），读回来照这个顺序收集即可，不再反。
+///
+/// # Errors
+///
+/// [`read_snapshots_checked`] 透传存储读取或反序列化失败。
 #[cfg(test)]
 fn read_snapshots(path: &Path) -> Vec<Snapshot> {
     read_snapshots_checked(path).unwrap_or_default()
 }
 
+/// 读回一个文件的全部快照（最新在前），损坏即报错。
+///
+/// # Errors
+///
+/// - 文件存在但读不出来：`"IO"` 前缀
+/// - 某一行不是合法 JSON：`"IO"` 前缀
 fn read_snapshots_checked(path: &Path) -> Result<Vec<Snapshot>, String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -121,6 +134,12 @@ fn read_snapshots_checked(path: &Path) -> Result<Vec<Snapshot>, String> {
 }
 
 /// 追加一条快照并把超出条数的旧条目裁掉。裁的时候整份重写——JSONL 没有原地删头的操作。
+///
+/// 与 [`restore_snapshot`] 共用 [`HISTORY_WRITE`] 串行锁。
+///
+/// # Errors
+///
+/// [`append_snapshot_unlocked`] 透传目录创建、读取或原子写失败。
 fn append_snapshot(path: &Path, snapshot: &Snapshot) -> Result<(), String> {
     let _guard = HISTORY_WRITE
         .lock()
@@ -128,6 +147,16 @@ fn append_snapshot(path: &Path, snapshot: &Snapshot) -> Result<(), String> {
     append_snapshot_unlocked(path, snapshot)
 }
 
+/// 在已持 [`HISTORY_WRITE`] 锁的前提下追加快照。
+///
+/// 与最新一条的正文、编码、行尾、BOM 全都相同且事件不是 `deleted` 时跳过——反复存同一个
+/// 内容不该把历史刷成一排重复条目。同毫秒的连续保存会把 `saved_at` 推到前一条之后，
+/// 保证每条修订可独立寻址（恢复按时间标识查找）。
+///
+/// # Errors
+///
+/// - 父目录创建失败：`"IO"` 前缀
+/// - 读旧快照或写盘失败：透传 [`read_snapshots_checked`] / [`crate::fs::write_bytes_atomic`]
 fn append_snapshot_unlocked(path: &Path, snapshot: &Snapshot) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -162,6 +191,11 @@ fn append_snapshot_unlocked(path: &Path, snapshot: &Snapshot) -> Result<(), Stri
     crate::fs::write_bytes_atomic(path, text.as_bytes())
 }
 
+/// 本地历史快照的存储根目录（应用配置目录下的 `local-history/`）。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回 `CONFIG_DIR` 错误。
 fn history_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -171,6 +205,10 @@ fn history_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// 保存成功后调这里打一条快照。前端静默调用，历史是兜底，不该因为它把保存这条主路报错。
+///
+/// # Errors
+///
+/// 配置目录定位失败（`"CONFIG_DIR"`）或落盘失败（`"IO"`）。
 #[tauri::command]
 pub async fn local_history_record(
     app: AppHandle,
@@ -186,6 +224,11 @@ pub async fn local_history_record(
     .await
 }
 
+/// [`local_history_record`] 的同步体：单份快照超限时（恢复前事件除外）静默丢弃。
+///
+/// # Errors
+///
+/// 快照追加写失败时返回 `IO` 错误。
 fn record_snapshot(dir: &Path, root: &str, path: &str, snapshot: Snapshot) -> Result<(), String> {
     if snapshot.contents.len() > MAX_SNAPSHOT_BYTES && snapshot.event != "beforeRestore" {
         return Ok(());
@@ -196,7 +239,11 @@ fn record_snapshot(dir: &Path, root: &str, path: &str, snapshot: Snapshot) -> Re
     )
 }
 
-/// 列单文件元数据；不存在与存储读取失败分别处理。
+/// 列单文件历史元数据（不含正文，整份正文回传就是几百 KB 的白搭 IPC）。
+///
+/// # Errors
+///
+/// 配置目录定位失败或存储读取失败（`"IO"`）；文件不存在返回空表，不算错。
 #[tauri::command]
 pub async fn local_history_list(
     app: AppHandle,
@@ -220,7 +267,11 @@ pub async fn local_history_list(
     .await
 }
 
-/// 取出历史里某一条的完整正文，给 diff 视图用。找不到时回 None（不是错误）。
+/// 取出历史里某一条的完整正文，给 diff 视图用。
+///
+/// # Errors
+///
+/// 配置目录定位失败或存储读取失败（`"IO"`）；找不到该条返回 `Ok(None)`，不是错误。
 #[tauri::command]
 pub async fn local_history_get(
     app: AppHandle,
@@ -238,8 +289,16 @@ pub async fn local_history_get(
     .await
 }
 
-/// 把某一条快照写回那个文件（复用保存那条原子写：认原行尾、原编码、原 BOM）。
-/// 使用比较时的磁盘版本进行乐观校验，返回实际写盘内容以同步编辑器。
+/// 把某一条快照写回那个文件，返回实际写盘内容以同步编辑器。
+///
+/// 复用普通保存的原子写：认原行尾、原编码、原 BOM。当前文件还在时先把它的内容
+/// 以 `beforeRestore` 存进历史——恢复动作本身不丢用户改了没存的东西。
+///
+/// # Errors
+///
+/// - 找不到目标修订：`"PATH_GONE"`
+/// - 传入 `expect_modified_ms` 而磁盘版本与之不符：`"CONFLICT_ON_WRITE"`，不覆盖磁盘
+/// - 目录定位、读取或写盘失败：`"IO"` / `"CONFIG_DIR"`
 #[tauri::command]
 pub async fn local_history_restore(
     app: AppHandle,
@@ -260,6 +319,16 @@ pub async fn local_history_restore(
     .await
 }
 
+/// 执行恢复：保护当前内容、乐观校验后按快照原样写盘。
+///
+/// 与普通保存共用 [`crate::fs`] 写锁和 [`HISTORY_WRITE`]：保护当前版本与写回必须是
+/// 一次不可交错的操作。写回成功后索引记录失败只打日志，不能让调用方误判未写盘。
+///
+/// # Errors
+///
+/// - 找不到目标修订：`"PATH_GONE"`
+/// - `expect_modified_ms` 与磁盘不符：`"CONFLICT_ON_WRITE"`，不覆盖磁盘
+/// - 读取或写盘失败：`"IO"`
 fn restore_snapshot(
     dir: &Path,
     root: &str,
@@ -306,6 +375,7 @@ fn restore_snapshot(
     Ok(written)
 }
 
+/// 列表/历史页共用的单条条目；`kind` 为 `snapshot` 或 `label`。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
@@ -316,6 +386,7 @@ pub struct HistoryEntry {
     pub kind: String,
 }
 
+/// 目录范围的历史视图；`deleted` 是出现过但磁盘上已不存在的路径。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryHistory {
@@ -323,12 +394,14 @@ pub struct DirectoryHistory {
     pub deleted: Vec<String>,
 }
 
+/// 当前 unix 毫秒；时钟回拨等异常时返回 0。
 fn now_ms() -> i64 {
     std::time::UNIX_EPOCH
         .elapsed()
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
+/// 从一份已读文件内容构造快照，`saved_at` 取当前时刻。
 fn snapshot_from_file(file: &crate::fs::FileContent, event: &str) -> Snapshot {
     Snapshot {
         path: file.path.clone(),
@@ -341,13 +414,20 @@ fn snapshot_from_file(file: &crate::fs::FileContent, event: &str) -> Snapshot {
     }
 }
 
+/// 域包含判定：`path` 等于 `scope` 或落在它之下（路径键归一后比较）。
 fn under(scope: &str, path: &str) -> bool {
     let scope = path_key(Path::new(scope));
     let path = path_key(Path::new(path));
     path == scope || path.starts_with(&format!("{}/", scope.trim_end_matches('/')))
 }
 
-/// 读取元数据时不依赖磁盘文件仍然存在，因此父目录中也能恢复已删除的文件。
+/// 列一个目录范围下的历史条目（快照与标签合并、按时间倒序）与已删除文件。
+///
+/// 旧单文件历史没有路径字段，直接查询那个文件时按请求路径补齐，仍可读取。
+///
+/// # Errors
+///
+/// 存储读取或反序列化失败（`"IO"`）。
 fn list_directory(dir: &Path, root: &str, scope: &str) -> Result<DirectoryHistory, String> {
     let bucket = dir.join(bucket_name(Path::new(root)));
     let files = bucket.join("files");
@@ -407,6 +487,13 @@ fn list_directory(dir: &Path, root: &str, scope: &str) -> Result<DirectoryHistor
     Ok(DirectoryHistory { entries, deleted })
 }
 
+/// 列一个目录范围下的全部历史条目与已删除文件。
+///
+/// 读取元数据时不依赖磁盘文件仍然存在，因此父目录中也能恢复已删除的文件。
+///
+/// # Errors
+///
+/// 配置目录定位失败或存储读取失败（`"IO"`）。
 #[tauri::command]
 pub async fn local_history_list_dir(
     app: AppHandle,
@@ -416,6 +503,14 @@ pub async fn local_history_list_dir(
     block(move || list_directory(&history_dir(&app)?, &root, &path)).await
 }
 
+/// 给路径打快照；目录递归，文件不存在时改记 `deleted` 事件。
+///
+/// 超过 [`MAX_SNAPSHOT_BYTES`] 的正文只在 `beforeRestore` 保护场景放行——
+/// 兜底历史不收大文件，但恢复前保护当前内容不能省。
+///
+/// # Errors
+///
+/// 存储读写失败（`"IO"`）；二进制与超限文件静默跳过。
 fn capture_path(dir: &Path, root: &str, path: &Path, event: &str) -> Result<(), String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -463,6 +558,14 @@ fn capture_path(dir: &Path, root: &str, path: &Path, event: &str) -> Result<(), 
     Ok(())
 }
 
+/// 外部变更或显式事件到达时给一个路径打快照；目录会递归。
+///
+/// 目录递归跳过 `.git`、`node_modules`、`target`；符号链接一律跳过。文件不存在时
+/// 若历史里有它的记录，改记一条 `deleted` 事件而不是清空历史。
+///
+/// # Errors
+///
+/// 配置目录定位失败或存储读写失败（`"IO"`）；二进制与超限文件静默跳过。
 #[tauri::command]
 pub async fn local_history_capture(
     app: AppHandle,
@@ -473,6 +576,14 @@ pub async fn local_history_capture(
     block(move || capture_path(&history_dir(&app)?, &root, Path::new(&path), &event)).await
 }
 
+/// 给历史打一个命名标签，标签记录此刻的磁盘状态与编辑器缓冲区。
+///
+/// 编辑器缓冲区里未保存的修改进历史，但不悄悄写进工作区。
+///
+/// # Errors
+///
+/// - 标签去除首尾空白后为空：`"IO"`
+/// - 落盘或目录列举失败：`"IO"`
 #[tauri::command]
 pub async fn local_history_put_label(
     app: AppHandle,
@@ -493,6 +604,12 @@ pub async fn local_history_put_label(
     .await
 }
 
+/// 把标签与编辑器缓冲区快照落盘。标签记录此刻的磁盘状态；之后保存不会改变标签之前的修订集合。
+///
+/// # Errors
+///
+/// - 标签为空白：`"IO"`
+/// - 目录列举、序列化或写盘失败：`"IO"`
 fn put_label(
     dir: &Path,
     root: &str,

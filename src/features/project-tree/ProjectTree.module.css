@@ -47,7 +47,7 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
-/* IDEA's "excluded" look: ignored / excluded entries are dimmed. */
+/* excluded 观感：忽略/排除条目降暗。 */
 .excluded {
   color: var(--vcs-ignored, #d69a6b);
 }

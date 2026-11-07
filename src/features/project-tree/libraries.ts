@@ -1,7 +1,6 @@
 /**
  * External Libraries (外部依赖库) 探测与虚拟树模型
  *
- * 1:1 严格对标 IntelliJ IDEA (crates/ide-sdk/src/libraries.rs) 的 External Libraries 机制：
  * 1. Node.js: 读取 package.json 直接依赖，分组名恒为 `< node_modules >` 与 `< Node.js Core >`；
  * 2. Rust: 读取 Cargo.toml / Cargo.lock，分组名恒为 `< Cargo dependencies >`；
  * 3. Java: 探测 JDK 与 pom.xml / build.gradle 依赖；
@@ -10,6 +9,7 @@
 
 import { readFile, listDirectory, statEntries } from "../../lib/fs";
 
+/** 外部库的来源种类（决定图标与展开行为）。 */
 export type LibraryKind =
   | "nodeModules"
   | "nodeCore"
@@ -23,6 +23,7 @@ export type LibraryKind =
   | "goModules"
   | "sdk";
 
+/** 外部库树的一个分组（`< node_modules >` 这类固定标题下的库集合）。 */
 export interface LibraryGroup {
   readonly id: string;
   /** 分组显示名，如 `< node_modules >`、`< Node.js Core >`、`< Cargo dependencies >` */
@@ -31,6 +32,7 @@ export interface LibraryGroup {
   readonly roots: readonly LibraryRoot[];
 }
 
+/** 分组里的一个库条目（真实目录或归档虚拟路径）。 */
 export interface LibraryRoot {
   readonly id: string;
   /** 库名（如 `react`、`@tanstack/react-virtual`、`serde 1.0.200`） */
@@ -61,7 +63,7 @@ async function existingDirectories(paths: readonly string[]): Promise<Set<string
 }
 
 /**
- * 探测工作区关联的外部依赖库（1:1 对齐 IntelliJ IDEA 逻辑）
+ * 探测工作区关联的外部依赖库。
  */
 export async function detectExternalLibraries(workspaceRoot: string): Promise<LibraryGroup[]> {
   const normRoot = workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
@@ -71,7 +73,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   const groups: LibraryGroup[] = [];
 
   // -------------------------------------------------------------------------
-  // 1. Node.js / npm 项目探测（1:1 对标 IntelliJ IDEA node_libraries）
+  // 1. Node.js / npm 项目探测
   // -------------------------------------------------------------------------
   try {
     let pkgJsonContent = "";
@@ -129,7 +131,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
         directRoots.push(rootItem);
       }
 
-      // 如果有 @types/node，单独抽出一组 < Node.js Core >（对标 IntelliJ IDEA）
+      // 如果有 @types/node，单独抽出一组 < Node.js Core >
       if (coreTypesRoot) {
         groups.push({
           id: "nodeCore",
@@ -154,7 +156,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   }
 
   // -------------------------------------------------------------------------
-  // 2. Rust / Cargo 项目探测（1:1 对标 IntelliJ IDEA rust_groups）
+  // 2. Rust / Cargo 项目探测
   // -------------------------------------------------------------------------
   try {
     let cargoLockContent = "";
@@ -214,7 +216,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
         const version = match[2];
         if (name === selfPackageName) continue;
 
-        // IntelliJ IDEA 标准命名格式："serde 1.0.200"
+        // 标准命名格式："serde 1.0.200"
         const label = `${name} ${version}`;
         if (!seen.has(label)) {
           seen.add(label);
@@ -244,7 +246,7 @@ export async function detectExternalLibraries(workspaceRoot: string): Promise<Li
   }
 
   // -------------------------------------------------------------------------
-  // 3. Python 虚拟环境探测（1:1 对标 IntelliJ IDEA python_groups）
+  // 3. Python 虚拟环境探测
   // -------------------------------------------------------------------------
   try {
     const venvDirs = [".venv", "venv", "env"];

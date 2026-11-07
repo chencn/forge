@@ -26,6 +26,7 @@ export function procStart(cwd: string, line: string, env: EnvVar[]): Promise<Pro
   return invoke<ProcSessionId>("proc_start", { cwd, line, env });
 }
 
+/** 终止一个进程会话。 */
 export function procKill(id: ProcSessionId): Promise<void> {
   return invoke<void>("proc_kill", { id });
 }

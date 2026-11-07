@@ -118,6 +118,7 @@ export function renderMarkdown(
 
 /** 聊天 Markdown 渲染结果的 LRU 缓存，容量 500 条 */
 const CHAT_MARKDOWN_CACHE_LIMIT = 500;
+/** 聊天 Markdown 渲染结果的 LRU 缓存本体，键为源文本。 */
 const chatMarkdownCache = new Map<string, string>();
 
 /**

@@ -44,6 +44,7 @@ export interface TermLaunch {
   env: Record<string, string>;
 }
 
+/** 起一个 PTY 终端会话；cwd 为 null 时落在后端进程的当前目录，shell 为空时用系统默认。 */
 export function termOpen(
   cwd: string | null,
   shell: string,
@@ -59,6 +60,7 @@ export function termLayoutLoad(): Promise<Record<string, unknown>> {
   return invoke<Record<string, unknown>>("term_layout_load").catch(() => ({}));
 }
 
+/** 把各工作区根的页签布局写回后端落盘；失败静默。 */
 export function termLayoutSave(layout: Record<string, unknown>): Promise<void> {
   return invoke<void>("term_layout_save", { layout }).catch(() => {});
 }
@@ -93,6 +95,7 @@ export function termResize(
   return invoke<void>("term_resize", { id, cols, rows, pixelWidth, pixelHeight });
 }
 
+/** 关闭一个终端会话；shell 进程随之退出。 */
 export function termClose(id: TermSessionId): Promise<void> {
   return invoke<void>("term_close", { id });
 }
@@ -102,6 +105,7 @@ export function termReap(): Promise<void> {
   return invoke<void>("term_reap");
 }
 
+/** Windows 构建号的懒加载缓存：一次查询终身复用。 */
 let windowsBuild: Promise<number | undefined> | null = null;
 
 /**
@@ -197,6 +201,7 @@ export function terminalColors(isDark?: boolean): Record<string, string> {
   };
 }
 
+/** 原生滚动结构的两个节点。 */
 export type NativeScrollPort = {
   /** 粘性容器：xterm 画在这里，滚动时不动。 */
   sticky: HTMLElement;
@@ -204,6 +209,7 @@ export type NativeScrollPort = {
   spacer: HTMLElement;
 };
 
+/** 一条原生滚动绑定的操作句柄。 */
 export type NativeScrollBinding = {
   /** 排一次「视口 → 滚动条」同步（内部用 rAF 合帧）。 */
   sync: () => void;

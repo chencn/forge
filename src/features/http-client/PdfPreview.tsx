@@ -17,6 +17,7 @@ function decodeBase64(text: string): Uint8Array {
   return bytes;
 }
 
+/** PDF 预览：pdf.js 渲染页面，支持密码与缩放。 */
 export default function PdfPreview({ base64 }: { base64: string }) {
   const { t } = useI18n();
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);

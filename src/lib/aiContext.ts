@@ -1,7 +1,10 @@
 /** 上下文分类快照，与输入/输出/费用用量独立。summary 是 CLI 本地估算。 */
 export type ContextKind = "used" | "free" | "buffer" | "deferred";
+/** 分类里的一行（用于汇总条）。 */
 export interface ContextRow { name: string; tokens: number; kind: ContextKind }
+/** 分区里的一项（可带来源与装载标记）。 */
 export interface ContextItem { name: string; tokens: number; source?: string; loaded?: boolean }
+/** 上下文分类快照的结构化形态。 */
 export interface AiContext {
   runId: string;
   capturedAt: number;
@@ -18,8 +21,11 @@ export interface AiContext {
 export function contextMatchesModel(context: Pick<AiContext, "model" | "requestedModel">, selected?: string): boolean {
   return !selected || selected === context.model || selected === context.requestedModel;
 }
+/** 收敛成对象；非对象返回空对象。 */
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/** 有限非负数判定。 */
 const number = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+/** 把一段数组收敛成 ContextItem 列表；字段名可定制，不合形的条目丢弃。 */
 function items(value: unknown, name = "name", source?: string, tokens = "tokens"): ContextItem[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.flatMap((value) => {
@@ -27,6 +33,7 @@ function items(value: unknown, name = "name", source?: string, tokens = "tokens"
     return typeof row[name] === "string" && number(row[tokens]) ? [{ name: row[name] as string, tokens: row[tokens] as number, ...(source && typeof row[source] === "string" ? { source: row[source] as string } : {}), ...(typeof row.isLoaded === "boolean" ? { loaded: row.isLoaded } : {}) }] : [];
   });
 }
+/** 把 CLI 的上下文摘要 JSON 收敛成 {@link AiContext}；结构不合返回 undefined。 */
 export function normalizeAiContext(data: Record<string, unknown>, runId: string): AiContext | undefined {
   if (data.detail !== "summary" || !number(data.capturedAt) || !number(data.totalTokens) || !number(data.rawMaxTokens) || data.rawMaxTokens === 0 || typeof data.model !== "string" || !Array.isArray(data.categories)) return undefined;
   const categories: ContextRow[] = [];

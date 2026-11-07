@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+/** 「有没有未保存内容」的检查器签名。 */
 type Checker = () => boolean;
 
 /** 设置页一次只挂载一个带草稿的面板，所以一个登记位就够。 */

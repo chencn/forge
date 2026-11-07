@@ -12,7 +12,7 @@ import type { RunController } from "./useRunSessions";
 
 /** 首屏渲染后延迟多久才在后台静默建立 CRC32 基线，确保首屏绝对零卡顿。 */
 const INITIAL_PROBE_DELAY_MS = 800;
-/** 构建文件保存或分支切换时的防抖时间（参照 IDEA `autoimport` 合并窗口）。 */
+/** 构建文件保存或分支切换时的防抖时间（合并窗口，避免保存风暴触发多次探测）。 */
 const CHANGE_DEBOUNCE_MS = 600;
 /** 外部终端包安装写入安装目录标记后的收尾宽限窗口（防止尾随落盘的 lockfile 被误判为未同步修改）。 */
 const ARTIFACT_GRACE_MS = 3500;
@@ -25,7 +25,7 @@ function normalizeRootKey(root: string | null | undefined): string {
 }
 
 /**
- * 构建依赖自动检测与变更同步状态机（IDEA `externalSystem.autoimport` 风格）。
+ * 构建依赖自动检测与变更同步状态机。
  *
  * 核心流转：
  * 1. 首屏延迟 800ms 静默采样 `filesCrc` 存入内存 `baselineRef`；仅当本地依赖目录缺失（如无 `node_modules`）
@@ -216,7 +216,7 @@ export function useDepSync(
             nextPrompts.push({ ...item, root, reason: "modified", signature: dismissSig });
           }
         } else {
-          // Auto-Expire：当文件被 Ctrl+Z 或 git checkout 还原回基线且本地依赖目录已就绪时，清除单次关闭记录并不再提示
+          // Auto-Expire：文件被还原回基线且本地依赖目录已就绪时，清除单次关闭记录并不再提示
           dismissMap.delete(item.id);
         }
       }

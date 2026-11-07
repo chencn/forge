@@ -7,6 +7,7 @@ use super::task_status as turn;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
+/// 把 Claude 任务工具的各种状态写法收敛成 Forge 的三态（complete/active/blocked）。
 fn task_status(value: Option<&str>) -> &'static str {
     match value.unwrap_or("") {
         "completed" | "complete" => "complete",
@@ -130,6 +131,7 @@ const DENIAL_PHRASES: &[&str] = &[
     "outside the allowed",
     "outside workspace",
 ];
+/// 粗判一条错误消息是不是工作区权限拒绝；命中 [`DENIAL_PHRASES`] 即认定。
 fn looks_like_permission_denial(message: &str) -> bool {
     let normalized = message.trim().to_ascii_lowercase();
     !normalized.is_empty() && DENIAL_PHRASES.iter().any(|phrase| normalized.contains(phrase))
@@ -148,6 +150,7 @@ fn extract_absolute_path(text: &str) -> Option<String> {
     }
     None
 }
+/// 提取工具结果块里的纯文本：字符串直取，数组拼所有 text 段，其余转 JSON 串。
 fn tool_result_text(block: &Value) -> String {
     match block.get("content") {
         Some(Value::String(text)) => text.clone(),
@@ -224,6 +227,7 @@ pub struct Claude {
     agent_ids: HashMap<String, String>,
 }
 impl Claude {
+    /// 新建一轮 Claude 回合的状态。
     pub fn new(_cwd: String, prompt: String, native: Option<String>) -> Self {
         Self {
             prompt,
@@ -252,6 +256,7 @@ impl Claude {
             agent_ids: HashMap::new(),
         }
     }
+    /// 是否以计划模式起步。
     pub fn with_plan(mut self, plan: bool) -> Self {
         self.plan_mode = plan;
         self
@@ -264,14 +269,17 @@ impl Claude {
         }
         self
     }
+    /// 指定本轮请求的模型；None 用 CLI 默认。
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.requested_model = model;
         self
     }
+    /// 随首条消息附带的图片（已编码成 CLI 载荷）。
     pub fn with_images(mut self, images: Vec<Value>) -> Self {
         self.images = images;
         self
     }
+    /// 斜杠命令意图（/compact、/model 等），由本轮启动时执行。
     pub fn with_command(mut self, command: Option<super::commands::CommandIntent>) -> Self {
         self.command = command;
         self

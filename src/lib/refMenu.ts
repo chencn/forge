@@ -58,7 +58,7 @@ export interface RefMenuDeps {
 }
 
 /**
- * IDEA 只有一套引用动作（组 `Git.Branch`），本地 / 远端 / 标签的差别全在每个动作自己的
+ * 引用动作只有一套（组 `Git.Branch`），本地 / 远端 / 标签的差别全在每个动作自己的
  * 可见性上：`refClass` 不匹配或 `isEnabledForRef` 返回 false 是整项隐藏，不是置灰
  * （见 docs/features/git-branches/ref-action-matrix.md）。空组不留下悬空的分隔线。
  */
@@ -141,7 +141,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             {
               label: t("git.refRebaseOnto", { name: target.name, current }),
               icon: Undo2,
-              // IDEA 在游离 HEAD 时把这条置灰：变基的对象是「当前分支」，游离时没有。
+              // 游离 HEAD 时把这条置灰：变基的对象是「当前分支」，游离时没有。
               disabled: detached,
               hint: detached ? t("git.detachedRebase") : undefined,
               onSelect: go("rebase"),
@@ -205,7 +205,7 @@ export function buildRefMenu(target: RefTarget, deps: RefMenuDeps): MenuItem[] {
             },
           ]
         : []),
-      // 跟踪的上游：IDEA 把同一套动作换成那条远端分支再列一遍。
+      // 跟踪的上游：把同一套动作换成那条远端分支再列一遍。
       ...(target.kind === "local" && upstream
         ? [
             {

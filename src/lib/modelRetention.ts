@@ -5,7 +5,9 @@ export { KEPT_FILE_MODELS, nextKeptPaths };
 /** 引擎手上那份「这篇还留不留」的清理：名单在本模块算，删什么由引擎自己决定。 */
 type RetentionSweep = (keep: readonly string[], openPaths: readonly string[]) => void;
 
+/** 最近看过的文件路径（越靠后越新），留存判定的输入。 */
 let recent: string[] = [];
+/** 各引擎登记的清理回调。 */
 const sweeps: RetentionSweep[] = [];
 
 /**

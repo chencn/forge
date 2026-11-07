@@ -1,13 +1,15 @@
 /**
  * VCS 提交工具窗口核心模型：变更分组、目录树构建、纳入复选框聚合与提交计划。
- * 1:1 对标 IntelliJ IDEA / IDEA 的变更树模型，同时保留目录聚合圆点与行尾状态字母。
+ * 变更树保留目录聚合圆点与行尾状态字母。
  */
 import type { GitChange, GitCommitSelection } from "../../lib/git";
 import { changeMark, folderMarks, isDeletedMark } from "../../lib/git";
 import { basenameOf } from "../../lib/format";
 
+/** 变更树四个分组（冲突/已暂存/未暂存/未版本控制）。 */
 export type GroupId = "conflicts" | "staged" | "unstaged" | "unversioned";
 
+/** 各分组在树里的英文标题。 */
 export const GROUP_LABEL: Record<GroupId, string> = {
   conflicts: "Merge Conflicts",
   staged: "Staged Changes",
@@ -15,6 +17,7 @@ export const GROUP_LABEL: Record<GroupId, string> = {
   unversioned: "Unversioned Files",
 };
 
+/** 变更树的一个节点（分组头、目录聚合或单文件）。 */
 export interface ChangeNode {
   key: string;
   type: "group" | "dir" | "file";
@@ -27,9 +30,9 @@ export interface ChangeNode {
   path?: string;
   /** 节点附加描述（如平铺模式下的父目录，或旧文件名） */
   detail?: string;
-  /** 【保留项】文件行尾状态字母（如 M, U, A, D, R, C） */
+  /** 文件行尾状态字母（如 M, U, A, D, R, C） */
   mark?: string;
-  /** 【保留项】目录聚合变更状态（用于目录行尾圆点染色） */
+  /** 目录聚合变更状态（用于目录行尾圆点染色） */
   dirMark?: string;
   /** 是否为删除态 */
   isDeleted?: boolean;
@@ -86,6 +89,7 @@ export function isPartiallyStaged(change: GitChange): boolean {
  */
 export type ChangeSide = "staged" | "worktree";
 
+/** 复选框状态表（键见 {@link checkKey}，值 true 为勾）。 */
 export type Checks = ReadonlyMap<string, boolean>;
 
 /** 某一侧复选框的存储键。 */
@@ -156,11 +160,13 @@ function createFileNode(change: GitChange, group: GroupId, scope: string, flat: 
   };
 }
 
+/** 路径前缀树节点：目录段 → 子节点，叶子挂文件。 */
 interface TrieNode {
   dirs: Map<string, TrieNode>;
   files: GitChange[];
 }
 
+/** 深度优先收齐前缀树里的全部文件。 */
 function collectTrieFiles(trie: TrieNode): GitChange[] {
   const result = [...trie.files];
   for (const sub of trie.dirs.values()) {
@@ -354,6 +360,7 @@ export function filesOf(nodes: readonly ChangeNode[]): GitChange[] {
   return out;
 }
 
+/** 一次提交的计划：纳入的文件与每文件的操作选择。 */
 export interface CommitPlan {
   /** 纳入本次提交的文件 */
   included: GitChange[];

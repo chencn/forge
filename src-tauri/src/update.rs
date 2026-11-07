@@ -26,6 +26,7 @@ use url::Url;
 /// 挂起标记的文件名，落在系统配置目录里，与 settings.json 同目录。
 const PENDING_FILE: &str = "update-pending.json";
 
+/// serde 跳过序列化辅助：值为 0 时不出现在 JSON 里。
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
@@ -41,6 +42,11 @@ pub struct PendingUpdate {
     pub attempts: u32,
 }
 
+/// 挂起标记文件的完整路径。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回 `CONFIG_DIR` 错误。
 fn pending_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -49,6 +55,7 @@ fn pending_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(PENDING_FILE))
 }
 
+/// 读挂起标记；路径、读取或解析任一失败都返回 `None`。
 fn read_pending(app: &AppHandle) -> Option<PendingUpdate> {
     let path = pending_path(app).ok()?;
     let text = fs::read_to_string(path).ok()?;

@@ -4,8 +4,10 @@ import { Menu, type MenuItem } from "../../ui/Menu";
 import { useI18n } from "../../i18n";
 import styles from "./ProjectHeader.module.css";
 
+/** 工程工具窗口的内容视图（整个工程 / 工程文件 / 已打开 / 变更 / scratches）。 */
 export type ProjectViewMode = "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches";
 
+/** 工程树的视图开关（头部齿轮菜单的各选项）。 */
 export interface ViewOptions {
   showHidden: boolean;
   showExcluded: boolean;
@@ -18,21 +20,23 @@ export interface ViewOptions {
   previewTab: boolean;
 }
 
+/** 视图开关的默认值（与设置页工程树的默认勾选保持一致）。 */
 export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   showHidden: false,
   showExcluded: true,
   compact: true,
   foldersFirst: true,
   autoscrollToSource: false,
-  // 对齐 IDEA 默认值：不随标签切换自动跟随，仅点「选择已打开的文件」按钮才定位
+  // 不随标签切换自动跟随，仅点「选择已打开的文件」按钮才定位
   autoscrollFromSource: false,
-  // 单击打开/单击展开默认勾选（2026-11 拍板，放弃 IDEA 的双击默认）
+  // 单击打开/单击展开默认勾选（2026-11 拍板）
   singleClickOpen: true,
   singleClickExpand: true,
-  // 对齐 IDEA 默认值：预览标签页默认关闭
+  // 预览标签页默认关闭
   previewTab: false,
 };
 
+/** {@link ProjectHeader} 的入参。 */
 export interface ProjectHeaderProps {
   mode: ProjectViewMode;
   onModeChange: (mode: ProjectViewMode) => void;
@@ -50,6 +54,7 @@ export interface ProjectHeaderProps {
   onToggleExpand?: () => void;
 }
 
+/** 工程工具窗口头部：视图切换菜单、齿轮选项菜单与定位/展开收起按钮。 */
 export const ProjectHeader = memo(function ProjectHeader({
   mode,
   onModeChange,

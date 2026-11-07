@@ -12,10 +12,12 @@ export type ModelVerdict = "match" | "variant" | "mismatch" | "unknown";
 /** 档位标记（`[1m]`、`[200k]` 之类）改的是上下文窗口，不是模型本身。 */
 const CONTEXT_MARKER = /\[[^\]]*\]$/;
 
+/** id 尾部是否带档位标记。 */
 export function hasContextMarker(id: string): boolean {
   return CONTEXT_MARKER.test(id.trim());
 }
 
+/** 去掉档位标记后的裸模型 id，供跨档位比对。 */
 export function stripContextMarker(id: string): string {
   return id.replace(CONTEXT_MARKER, "").trim();
 }

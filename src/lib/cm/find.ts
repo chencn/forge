@@ -1,5 +1,5 @@
 /**
- * 对齐 IntelliJ IDEA 的文件内查找栏：界面由应用提供，匹配、跳转和替换仍走 CodeMirror。
+ * 文件内查找栏：界面由应用提供，匹配、跳转和替换仍走 CodeMirror。
  * 使用 search.createPanel 保留引擎的高亮和面板生命周期，避免再维护一套搜索状态。
  */
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
@@ -14,10 +14,15 @@ import { translate as t } from "../../i18n";
 import type { TranslationKey } from "../../i18n/lang/zh";
 import "./find.css";
 
+/** 一段文档区间（搜索范围选区）。 */
 interface Scope { from: number; to: number }
+/** 搜索上下文过滤档位：任意 / 只注释 / 只字符串 / 排除注释 / 排除字符串 / 只代码。 */
 type Context = "any" | "comments" | "strings" | "exceptComments" | "exceptStrings" | "code";
+/** 范围+上下文过滤；scope 为 null 表示全文档。 */
 interface Filter { scope: Scope | null; context: Context }
+/** 设置 {@link Filter} 的事务效果。 */
 const setFilter = StateEffect.define<Filter>();
+/** 持有过滤条件的 StateField；文档编辑时范围自动映射跟随。 */
 const filter = StateField.define<Filter>({
   create: () => ({ scope: null, context: "any" }),
   update(value, tr) {
@@ -30,8 +35,11 @@ const filter = StateField.define<Filter>({
   },
 });
 
+/** 字面量分类：注释或字符串。 */
 type LiteralKind = "comment" | "string";
+/** 把语法树高亮成 comment/string 两类的 tagHighlighter。 */
 const literalHighlighter = tagHighlighter([{ tag: tags.comment, class: "comment" }, { tag: tags.string, class: "string" }]);
+/** 按语法树缓存的字面量区间表（树对象做键，随树一起回收）。 */
 const literalCache = new WeakMap<object, Array<Scope & { kind: LiteralKind }>>();
 
 /** 按语法高亮标签分类；模板字符串里的插值表达式仍是代码。 */
@@ -56,6 +64,7 @@ function literalKindAt(state: EditorState, pos: number): LiteralKind | null {
   return null;
 }
 
+/** 判定一个匹配是否通过当前的范围与上下文过滤；挂在 SearchQuery.test 上。 */
 function accepts(_match: string, state: EditorState, from: number, to: number): boolean {
   const { scope, context } = state.field(filter);
   if (scope && (from < scope.from || to > scope.to)) return false;
@@ -67,14 +76,18 @@ function accepts(_match: string, state: EditorState, from: number, to: number): 
     : context === "exceptStrings" ? kind !== "string" : kind === null;
 }
 
+/** 每个编辑器的查找面板实例（面板销毁时移除）。 */
 const panels = new WeakMap<EditorView, FindPanel>();
+/** 查找/替换历史的 localStorage 键。 */
 const historyKey = (kind: string) => `forge.editor.${kind}History.v1`;
+/** 读一类历史（search/replace），最多 20 条；存储不可用回空表。 */
 function history(kind: string): string[] {
   try {
     const values: unknown = JSON.parse(localStorage.getItem(historyKey(kind)) ?? "[]");
     return Array.isArray(values) ? values.filter((v): v is string => typeof v === "string").slice(0, 20) : [];
   } catch { return []; }
 }
+/** 记一条历史：去重置顶，仍保留 20 条；空值不记，存储不可用静默放弃。 */
 function remember(kind: string, value: string): void {
   if (!value.trim()) return;
   try {
@@ -101,6 +114,7 @@ export function openFind(view: EditorView, replace = false): boolean {
   return true;
 }
 
+/** 关闭查找面板并清掉范围过滤；面板没开着时返回 false 不吃按键。 */
 function closeFind(view: EditorView): boolean {
   if (!searchPanelOpen(view.state)) return false;
   panels.get(view)?.remember();
@@ -120,12 +134,15 @@ const icons = {
   expand: "m9 6 6 6-6 6",
   close: "m6 6 12 12M6 18 18 6",
 } as const;
+/** 图标名（对应 {@link icons} 里的 SVG 路径）。 */
 type Icon = keyof typeof icons;
+/** 创建带 class 的 DOM 元素。 */
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   node.className = className;
   return node;
 }
+/** 造一个带标题、aria 标签与可选图标的查找栏按钮。 */
 function button(label: string, run: () => void, icon?: Icon): HTMLButtonElement {
   const node = element("button", "forge-find-button");
   node.type = "button";
@@ -143,6 +160,7 @@ function button(label: string, run: () => void, icon?: Icon): HTMLButtonElement 
   return node;
 }
 
+/** 自绘的查找/替换面板：搜索框、计数、选项开关、范围过滤与历史下拉。 */
 class FindPanel implements Panel {
   // 自定义面板必须自己声明位置；search.top 只会被引擎的默认面板读取。
   readonly top = true;
@@ -206,7 +224,7 @@ class FindPanel implements Panel {
     }
     this.menu.hidden = true;
     this.menu.setAttribute("role", "menu");
-    // IDEA 的替换箭头独占左列，两行输入框共用同一列，展开时不会横向跳动。
+    // 替换箭头独占左列，两行输入框共用同一列，展开时不会横向跳动。
     this.dom.append(this.replaceToggle, this.searchBox, actions, close, this.replaceBox, this.replaceButtons, this.menu);
     this.dom.onkeydown = (event) => this.keydown(event);
     this.showReplace(false);
@@ -434,6 +452,7 @@ class FindPanel implements Panel {
   }
 }
 
+/** 编辑器查找扩展：过滤字段 + search 引擎（自绘面板）+ Ctrl+F/Esc 快捷键。 */
 export const forgeSearch: Extension = [
   filter,
   search({ top: true, literal: true, createPanel: (view) => new FindPanel(view),

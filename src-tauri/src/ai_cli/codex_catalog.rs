@@ -43,15 +43,21 @@ const HEAVY_KEYS: [&str; 2] = ["model_messages", "base_instructions"];
 /// 兜底取值域：只有问不到 CLI 时才用（取值本身由 `probe_domains` 现问）。
 /// 这份表按 Codex 0.164.0 的实测结果抄录，界面上会标成「未核实」。
 const TOOL_MODES: [&str; 3] = ["direct", "code_mode", "code_mode_only"];
+/// multi_agent_version 的兜底取值域。
 const MULTI_AGENT_VERSIONS: [&str; 2] = ["v1", "v2"];
+/// default_reasoning_summary 的兜底取值域。
 const REASONING_SUMMARIES: [&str; 4] = ["auto", "concise", "detailed", "none"];
+/// default_verbosity 的兜底取值域。
 const VERBOSITIES: [&str; 3] = ["low", "medium", "high"];
 /// 0.164 实测接受 5 种写法；`default` / `local` / `shell_command` 与 `unified_exec` 的差别
 /// 我们没有任何通道能读回来（目录不回显、`model/list` 不读它），所以照 CLI 的话全给界面，
 /// 不替它挑。
 const SHELL_TYPES: [&str; 5] = ["default", "local", "shell_command", "unified_exec", "disabled"];
+/// apply_patch_tool_type 的兜底取值域。
 const APPLY_PATCH_TYPES: [&str; 1] = ["freeform"];
+/// web_search_tool_type 的兜底取值域。
 const WEB_SEARCH_TYPES: [&str; 2] = ["text", "text_and_image"];
+/// visibility 的兜底取值域。
 const VISIBILITIES: [&str; 3] = ["list", "hide", "none"];
 /// 界面渲染成下拉的目录字段：`(键, 兜底取值域, 兜底能否写 null)`。
 const ENUM_FIELDS: [(&str, &[&str], bool); 8] = [
@@ -81,9 +87,13 @@ const MODEL_FLAGS: [&str; 8] = [
 /// 实测取值域单独缓存：探测一次约 1 秒，只在 CLI 版本变了以后重来，不能每次开面板都付。
 const DOMAINS_FILE: &str = "ai-codex-catalog-domains.json";
 
+/// 单个自定义条目的各字段上限：slug 长度、目录总条数、名称/描述文本长度。
 const MAX_CUSTOMS: usize = 32;
+/// 目录总条数上限。
 const MAX_ENTRIES: usize = 128;
+/// slug 最大长度。
 const MAX_SLUG: usize = 64;
+/// 名称/描述文本最大长度。
 const MAX_TEXT: usize = 500;
 /// 系统提示词的量级：Codex 自带的就有一两万字，所以它不能跟名称共用同一条上限。
 const MAX_INSTRUCTIONS: usize = 200_000;
@@ -205,14 +215,22 @@ pub struct CatalogView {
     pub flags_verified: bool,
 }
 
+/// 应用配置目录。
+///
+/// # Errors
+///
+/// Tauri 无法定位配置目录时返回错误。
 fn app_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_config_dir().map_err(|error| error.to_string())
 }
 
+/// 意图持久化文件的路径。
 fn intent_path(app: &AppHandle) -> Result<PathBuf, String> { Ok(app_dir(app)?.join(INTENT_FILE)) }
 
+/// 官方模型目录快照（base 缓存）的路径。
 fn base_path(app: &AppHandle) -> Result<PathBuf, String> { Ok(app_dir(app)?.join(BASE_FILE)) }
 
+/// 取值域探测缓存的路径。
 fn domains_path(app: &AppHandle) -> Result<PathBuf, String> { Ok(app_dir(app)?.join(DOMAINS_FILE)) }
 
 /// CODEX_HOME 与 `~/.codex` 的取舍和 CLI 自己的规则一致，直接复用设置里的解析。
@@ -221,6 +239,7 @@ fn codex_home() -> Result<PathBuf, String> {
     config.parent().map(|dir| dir.to_path_buf()).ok_or_else(|| "Codex 配置目录无效".to_string())
 }
 
+/// 生成目录文件的路径（CODEX_HOME 下）。
 fn catalog_path() -> Result<PathBuf, String> { Ok(codex_home()?.join(CATALOG_NAME)) }
 
 /// slug 只进 JSON 字段、不进文件路径，所以允许网关常见的 `/`；空格与 NUL 仍然挡住。
@@ -230,8 +249,14 @@ fn valid_slug(value: &str) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/'))
 }
 
+/// 自由文本长度校验：不超 [`MAX_TEXT`] 且无 NUL。
 fn text_ok(value: &str) -> bool { value.len() <= MAX_TEXT && !value.contains('\0') }
 
+/// 运行 `codex debug models` 取原始模型目录。
+///
+/// # Errors
+///
+/// CLI 不存在、命令失败或输出无法解析时返回错误。
 fn run_codex_models() -> Result<Value, String> {
     let path = resolve("codex")?;
     let output = checked(command(&path, &["debug", "models"]))?;
@@ -255,6 +280,11 @@ fn parse_models_output(output: &str) -> Result<Value, String> {
     }
 }
 
+/// 校验解析结果带 `models` 数组。
+///
+/// # Errors
+///
+/// 缺少 `models` 数组时返回错误。
 fn require_models(parsed: Value) -> Result<Value, String> {
     if parsed.get("models").and_then(Value::as_array).is_none() {
         return Err("Codex 模型目录缺少 models 数组".into());
@@ -262,6 +292,7 @@ fn require_models(parsed: Value) -> Result<Value, String> {
     Ok(parsed)
 }
 
+/// 错误信息里的输出预览：控制字符换空格，截到 160 字符。
 fn preview(output: &str) -> String {
     let flattened = output.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
     let mut preview: String = flattened.chars().take(160).collect();
@@ -311,6 +342,7 @@ fn strip_self_customs(app: &AppHandle, models: Value) -> Value {
     out
 }
 
+/// 取模型条目的 slug 字段。
 fn model_slug(model: &Value) -> Option<&str> { model.get("slug").and_then(Value::as_str) }
 
 /// 兜底：取值域抄 0.164 的实测结果并全部标成未核实，开关按候选全给。
@@ -395,6 +427,7 @@ fn probe_domains(base: &Value) -> Result<(BTreeMap<String, FieldDomain>, Vec<Str
     Ok((fields, live))
 }
 
+/// 取值域探测时往字段里塞的三种非法值。
 #[derive(Clone, Copy)]
 enum Probe {
     Bogus,
@@ -440,12 +473,18 @@ fn resolve_domains(app: &AppHandle, base: Option<&Value>) -> (BTreeMap<String, F
 }
 
 
+/// 模型模板支持的全部推理档位（`supported_reasoning_levels` 的 effort 列表）。
 fn supported_efforts(template: &Value) -> Vec<String> {
     template.get("supported_reasoning_levels").and_then(Value::as_array)
         .map(|levels| levels.iter().filter_map(|level| level.get("effort").and_then(Value::as_str)).map(str::to_string).collect())
         .unwrap_or_default()
 }
 
+/// 往条目写一个枚举字段；空值等于清除（仅 nullable 字段允许）。
+///
+/// # Errors
+///
+/// 值不在取值域内或对非可选字段清除时返回错误。
 fn set_field(entry: &mut Map<String, Value>, key: &str, domain: &FieldDomain, raw: Option<&String>) -> Result<(), String> {
     let Some(value) = raw else { return Ok(()) };
     let value = value.trim();
@@ -487,6 +526,11 @@ fn domain_for(domains: &BTreeMap<String, FieldDomain>, key: &str) -> FieldDomain
     FieldDomain { values: Vec::new(), nullable: true, verified: false }
 }
 
+/// 把意图里的全部覆盖项套到一个条目上（枚举字段、档位、上下文长度、提示词）。
+///
+/// # Errors
+///
+/// 任一覆盖值非法（不在取值域、档位不支持、窗口为 0）时返回错误。
 fn apply_override(entry: &mut Map<String, Value>, override_fields: &ModelOverride, template: &Value, domains: &BTreeMap<String, FieldDomain>) -> Result<(), String> {
     for (key, _, _) in ENUM_FIELDS {
         set_field(entry, key, &domain_for(domains, key), override_of(key, override_fields))?;
@@ -641,6 +685,7 @@ fn generate(base: &Value, intent: &CatalogIntent, domains: &BTreeMap<String, Fie
     Ok(out)
 }
 
+/// 给界面用的条目投影：剥掉大体积键（提示词等）。
 fn project(models: &[Value]) -> Vec<Value> {
     models.iter().map(|model| {
         let mut entry = model.clone();
@@ -651,6 +696,11 @@ fn project(models: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
+/// 校验意图：条目数量、slug 合法性、覆盖项非空。
+///
+/// # Errors
+///
+/// 任一条不满足时返回错误。
 fn validate_intent(intent: &CatalogIntent) -> Result<(), String> {
     if intent.excluded.len() > MAX_ENTRIES || intent.overrides.len() > MAX_ENTRIES {
         return Err("模型清单的条目过多".into());
@@ -685,6 +735,7 @@ fn set_catalog_key(file_name: Option<&str>) -> Result<(), String> {
     backup_and_write(&path, &doc.to_string())
 }
 
+/// config.toml 是否已把 `model_catalog_json` 指到 Forge 生成的清单。
 fn config_has_key() -> bool {
     settings::config_path(Provider::Codex).ok()
         .and_then(|path| fs::read_to_string(path).ok())
@@ -730,6 +781,7 @@ fn view(app: &AppHandle, intent: CatalogIntent, base: Option<Value>, error: Opti
     })
 }
 
+/// 读取持久化的意图；文件缺失或损坏时给默认空意图。
 fn read_intent(app: &AppHandle) -> CatalogIntent {
     intent_path(app).ok().and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -768,6 +820,11 @@ pub async fn ai_cli_codex_catalog_text(app: AppHandle, slug: String) -> Result<O
     }).await
 }
 
+/// 落盘意图并应用：空意图删键回内置目录，否则生成清单并写 `model_catalog_json`。
+///
+/// # Errors
+///
+/// 校验失败、目录/文件写入失败或清单生成失败时返回错误。
 fn save_intent(app: &AppHandle, intent: CatalogIntent) -> Result<CatalogView, String> {
     validate_intent(&intent)?;
     let dir = app_dir(app)?;
@@ -871,6 +928,7 @@ pub fn parse_provider_model(raw: Option<&str>) -> CatalogIntent {
     single_custom_intent(raw)
 }
 
+/// 裸 slug 迁移用的单条自定义意图（base 与 default 都指向该 slug）。
 fn single_custom_intent(slug: &str) -> CatalogIntent {
     let slug = slug.trim().to_string();
     if slug.is_empty() {

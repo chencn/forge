@@ -1,6 +1,6 @@
 /**
  * 随处搜索的结果模型：条目类型、各分节的合并与排序、弹窗渲染的那张平表
- * （分节标题 + 「更多」行 + 条目）。抄 IntelliJ IDEA 的 everywhere/model.ts，
+ * （分节标题 + 「更多」行 + 条目）。
  * 去掉了这边没有数据源的一块：设置页条目。
  */
 import type { FileHit, SymbolHit, TextHit } from "./fs";
@@ -8,11 +8,12 @@ import type { ForgeCommand } from "./commands";
 import { byScore, matchText } from "./seRank";
 import { basenameOf } from "./format";
 
-/** 弹窗页签。IntelliJ IDEA 的六档原样搬，动作档的数据源换成命令面板那张表。 */
+/** 弹窗页签，共六档；动作档的数据源换成命令面板那张表。 */
 export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
 /** 数据分节：All 页签按权重混排时，每节各自保持源内顺序。 */
 export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "actions" | "text";
 
+/** 弹窗页签的展示顺序，界面上按这张表渲染。 */
 export const TABS: ReadonlyArray<{ id: SeTab }> = [
   { id: "all" },
   { id: "classes" },
@@ -22,6 +23,7 @@ export const TABS: ReadonlyArray<{ id: SeTab }> = [
   { id: "text" },
 ];
 
+/** 各分节的固定排列顺序：非 All 页签按这张表自上而下摆。 */
 export const SECTION_ORDER: readonly SectionId[] = [
   "recent",
   "recentActions",
@@ -49,12 +51,18 @@ export function sectionsFor(tab: SeTab, emptyQuery: boolean): SectionId[] {
   return tab === "all" ? ["classes", "files", "symbols", "actions", "text"] : [tab];
 }
 
+/** All 页签每个分节的默认条数上限。 */
 export const ALL_TAB_LIMIT = 6;
+/** 单一分节页签的默认条数上限。 */
 export const TAB_LIMIT = 50;
+/** All 页签「更多」每次追加的行数。 */
 export const MORE_STEP_ALL = 15;
+/** 单一分节页签「更多」每次追加的行数。 */
 export const MORE_STEP_TAB = 50;
+/** 「最近文件/最近动作」分节的条数上限。 */
 export const RECENT_LIMIT = 15;
 
+/** 文件条目：来自最近文件或文件名匹配，附带名称高亮下标。 */
 export interface FileItem {
   kind: "file";
   key: string;
@@ -69,11 +77,12 @@ export interface FileItem {
   col: number | null;
 }
 
+/** 符号条目：来自语言服务的符号匹配，带位置与展示名。 */
 export interface SymbolItem {
   kind: "symbol";
   key: string;
   name: string;
-  /** 展示名：可调用符号带 `()`，照 IDEA。 */
+  /** 展示名：可调用符号带 `()`。 */
   display: string;
   symbolKind: string;
   path: string;
@@ -86,6 +95,7 @@ export interface SymbolItem {
   indices: number[];
 }
 
+/** 动作条目：来自命令面板那张表，按标签匹配度排序。 */
 export interface ActionItem {
   kind: "action";
   key: string;
@@ -96,6 +106,7 @@ export interface ActionItem {
   score: number;
 }
 
+/** 正文条目：来自后端的正文命中，激活时交给底部查找窗口。 */
 export interface TextItem {
   kind: "text";
   key: string;
@@ -114,14 +125,17 @@ export interface TextItem {
   hit: TextHit;
 }
 
+/** 弹窗条目的统一类型：文件、符号、动作、正文四者之一。 */
 export type SeItem = FileItem | SymbolItem | ActionItem | TextItem;
 
+/** 弹窗渲染的平表行：分节标题、`/` 命令、「更多」行或带所属分节的条目。 */
 export type SeRow =
   | { kind: "section"; key: string; section: SectionId; title: string }
   | { kind: "command"; key: string; name: string; tab: SeTab; label: string }
   | { kind: "more"; key: string; section: SectionId }
   | (SeItem & { section: SectionId });
 
+/** 一个分节的当前状态：已收口的条目、是否还有更多、是否在加载。 */
 export interface SectionState {
   items: SeItem[];
   hasMore: boolean;
@@ -146,16 +160,19 @@ export function fileItem(m: FileHit, query: string, line: number | null = null, 
   };
 }
 
+/** 视为「可调用」的符号种类，展示名要补 `()`。 */
 const CALLABLE = new Set(["function", "method", "constructor"]);
-/** 展示名，IDEA 风格：可调用符号带 `()`。 */
+/** 展示名：可调用符号带 `()`。 */
 export function symbolDisplayName(name: string, kind: string): string {
   return CALLABLE.has(kind) && !name.endsWith(")") ? `${name}()` : name;
 }
 
 /** 「类」档收录的种类，与 Rust `is_type_kind` 同一张表。 */
 const TYPE_KINDS = new Set(["class", "interface", "struct", "enum", "trait", "typeAlias", "record", "annotation", "object", "union"]);
+/** kind 是否属于「类」档收录的种类（class/interface/struct 等）。 */
 export const isTypeKind = (kind: string) => TYPE_KINDS.has(kind);
 
+/** 符号命中折成弹窗条目：本地算名称高亮，位置原样带出。 */
 export function symbolItem(m: SymbolHit, query: string): SymbolItem {
   const hit = matchText(m.name, query);
   return {
@@ -174,7 +191,7 @@ export function symbolItem(m: SymbolHit, query: string): SymbolItem {
 }
 
 /**
- * 动作匹配，照 IntelliJ IDEA 的 matchActions 减去 enabled/hidden/toggled：
+ * 动作匹配（不含 enabled/hidden/toggled 三态）：
  * 词对齐的标签匹配为主，散落的逐字命中只认 id 包含，最近执行过的往上抬。
  */
 export function matchActions(
@@ -210,7 +227,7 @@ export function matchActions(
   return byScore(out);
 }
 
-/** 后端的一条正文命中折成弹窗行：缩进最多留两个空格，IDEA 同款。 */
+/** 后端的一条正文命中折成弹窗行：缩进最多留两个空格。 */
 export function textItem(hit: TextHit): TextItem {
   const chars = [...hit.snippet];
   const start = hit.snippetFrom - 1;
@@ -257,7 +274,7 @@ const MIXED: readonly SectionId[] = ["classes", "files", "symbols", "actions", "
  */
 export const TEXT_WEIGHT = 350;
 
-/** 条目对查询的匹配度（IDEA 的 MatchingDegree）。 */
+/** 条目对查询的匹配度（MatchingDegree）。 */
 export function itemWeight(item: SeItem, query: string): number {
   const name = (text: string) => matchText(text, query)?.score;
   switch (item.kind) {
@@ -272,6 +289,7 @@ export function itemWeight(item: SeItem, query: string): number {
   }
 }
 
+/** All 页签混排的一条中间结果：条目、所属分节与夹好的权重。 */
 interface Mixed {
   item: SeItem;
   section: SectionId;
@@ -321,15 +339,18 @@ export function buildRows(
   return rows;
 }
 
+/** 这行是不是分节标题（不可选中、不算结果）。 */
 export const isSectionRow = (r: SeRow) => r.kind === "section";
 
 // ---------------------------------------------------------------------------
 // 「/」命令
 
+/** 弹窗支持的 `/` 命令表：每个非 All 页签一条，`/files` 这种。 */
 export const COMMANDS: ReadonlyArray<{ name: string; tab: SeTab }> = TABS.filter(
   (t) => t.id !== "all"
 ).map((t) => ({ name: `/${t.id}`, tab: t.id }));
 
+/** `/` 命令的解析结果：列出候选，或跳到某页签并带余下查询。 */
 export type ParsedCommand = { kind: "list"; rows: SeRow[] } | { kind: "run"; tab: SeTab; rest: string };
 
 /**
@@ -356,7 +377,7 @@ export function parseCommand(query: string, label: (tab: SeTab) => string): Pars
 
 /**
  * 顶端结果定了没有：第一条有结果的分节之前的所有分节都已收口。
- * 没定就按 Enter 会被欠着（IDEA 开的是新查询的第一条，不是旧查询的残留行）。
+ * 没定就按 Enter 会被欠着（按 Enter 开的是新查询的第一条，不是旧查询的残留行）。
  */
 export function topResultSettled(sections: ReadonlyMap<SectionId, SectionState>, mix?: string): boolean {
   if (mix?.trim()) {

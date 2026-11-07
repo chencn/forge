@@ -1,6 +1,7 @@
 /** 项目目录的用户标记；路径按项目根保存，避免把机器绝对路径写进项目角色表。 */
 export type ProjectDirectoryRole = "source" | "test" | "resources" | "testResources" | "excluded";
 
+/** 各项目根的目录角色表（键是 {@link projectPathKey} 归一后的根路径）。 */
 export type ProjectDirectoryRoles = Record<string, Record<string, ProjectDirectoryRole>>;
 
 /** Windows 大小写与分隔符不可靠，设置键统一成稳定的小写正斜杠路径。 */
@@ -19,10 +20,12 @@ export function projectRelativePath(root: string, path: string): string | null {
   return rawPath.slice(rawRoot.length + 1);
 }
 
+/** 项目内相对路径的稳定键（与 {@link projectPathKey} 同口径，再掐掉两端斜杠）。 */
 function relativePathKey(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "").toLowerCase();
 }
 
+/** 查某路径在项目里的角色；越界或没标过返回 null。 */
 export function roleAtPath(
   root: string,
   path: string,
@@ -52,6 +55,7 @@ export function setProjectDirectoryRole(
   return next;
 }
 
+/** 全部合法角色（读回设置时按它把关）。 */
 const VALID_ROLES: readonly ProjectDirectoryRole[] = ["source", "test", "resources", "testResources", "excluded"];
 
 /** 读取旧/损坏设置时只保留可识别的项目目录角色。 */

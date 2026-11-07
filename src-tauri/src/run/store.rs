@@ -14,6 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// 运行配置在应用配置目录下的文件名。
 const RUN_FILE: &str = "runConfigs.json";
 
 /// 一个工程的运行配置状态。
@@ -28,6 +29,7 @@ pub struct ProjectRunState {
     pub pinned: Vec<String>,
 }
 
+/// runConfigs.json 的磁盘结构：按归一化工程根索引的状态表。
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct RunFileFormat {
@@ -47,6 +49,11 @@ fn project_key(root: &str) -> String {
     format!("/{trimmed}")
 }
 
+/// runConfigs.json 的完整路径。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回 `CONFIG_DIR` 错误。
 fn run_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -55,6 +62,7 @@ fn run_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(RUN_FILE))
 }
 
+/// 读运行配置文件；文件缺失或损坏按空表处理。
 fn read_file(app: &AppHandle) -> RunFileFormat {
     run_file_path(app)
         .ok()
@@ -94,6 +102,11 @@ pub async fn run_state_save(
     block(move || run_state_save_impl(app, root, state)).await
 }
 
+/// [`run_state_save`] 的同步体：更新一个工程的运行配置并写盘。
+///
+/// # Errors
+///
+/// 配置路径定位、目录创建、序列化或写盘失败时返回错误。
 fn run_state_save_impl(
     app: AppHandle,
     root: String,

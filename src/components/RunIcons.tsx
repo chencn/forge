@@ -1,15 +1,17 @@
 import type { SVGProps } from "react";
 
 /**
- * IDEA 运行/停止/重跑按钮用的图标。
+ * 运行/停止/重跑按钮用的图标（JetBrains expui/run 体系，Apache-2.0）。
  *
- * 形状直接取自 IntelliJ 的 `expui/run/*.svg`：三角、圆角方块、环形箭头。
+ * 形状取自 `expui/run/*.svg`：三角、圆角方块、环形箭头。
  * 原图标把颜色写死在 fill/stroke 里；这里改成 `currentColor`，由按钮的
  * CSS 决定是白（实心底上）还是绿/红（无底状态），一套形状两处用。
  */
 
+/** 运行图标的公共属性：尺寸加 SVG 透传。 */
 type Props = SVGProps<SVGSVGElement> & { size?: number };
 
+/** 组装各图标共用的 SVG 属性（viewBox、无填充、隐藏于辅助技术）。 */
 function base(size: number, props: SVGProps<SVGSVGElement>) {
   return {
     width: size,
@@ -48,7 +50,7 @@ export function StopIcon({ size = 16, ...props }: Props) {
  *
  * 原图标是双色——箭头绿、外圈弧线灰；这里两个 path 各带一个 class，
  * 由 CSS 决定配色：主工具栏那颗压在实心底上，两段都取 `currentColor`（白）；
- * 运行面板动作条那颗照 IDEA 原样，弧线灰、箭头绿。两处共用一套形状。
+ * 运行面板动作条那颗弧线灰、箭头绿。两处共用一套形状。
  */
 export function RerunIcon({ size = 16, ...props }: Props) {
   return (

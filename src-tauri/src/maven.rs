@@ -9,12 +9,18 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// 单个 pom.xml 的读取上限，超出直接报错而不是硬吞。
 const MAX_POM_BYTES: u64 = 2 * 1024 * 1024;
+/// 模块总数上限，防依赖环或异常工程撑爆内存。
 const MAX_MODULES: usize = 400;
+/// 模块树展开的最大深度。
 const MAX_DEPTH: usize = 24;
+/// 目录遍历的条目数上限，防巨型仓库全树扫盘。
 const MAX_WALK_ENTRIES: usize = 800;
+/// 从根 pom 顺 `<module>` 下钻找 reactor 的深度上限。
 const MAX_REACTOR_DEPTH: usize = 3;
 
+/// 一个源码根目录及其角色（java/test 等）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenSourceRoot {
@@ -22,6 +28,7 @@ pub struct MavenSourceRoot {
     pub kind: String,
 }
 
+/// 一条依赖声明。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenDependency {
@@ -31,6 +38,7 @@ pub struct MavenDependency {
     pub scope: String,
 }
 
+/// 一个构建 profile 及其默认激活态。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenProfile {
@@ -38,6 +46,7 @@ pub struct MavenProfile {
     pub active_by_default: bool,
 }
 
+/// 反应堆里的一个模块（可递归嵌套）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenModule {
@@ -51,6 +60,7 @@ pub struct MavenModule {
     pub modules: Vec<MavenModule>,
 }
 
+/// 解析出的 Maven 工程全貌（含嵌套模块与 profile）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenProject {
@@ -68,6 +78,7 @@ pub struct MavenProject {
     pub modules: Vec<MavenModule>,
 }
 
+/// 一个 XML 元素：标签名与内部原文（不含标签本身）。
 struct El {
     name: String,
     inner: String,
@@ -79,6 +90,7 @@ pub async fn maven_scan(root: String) -> Result<Option<MavenProject>, String> {
     crate::offload::block(move || scan(Path::new(&root))).await
 }
 
+/// [`maven_scan`] 的同步体：定位反应堆并递归读取模块树。
 fn scan(root: &Path) -> Result<Option<MavenProject>, String> {
     if !root.is_dir() {
         return Ok(None);
@@ -107,6 +119,7 @@ fn scan(root: &Path) -> Result<Option<MavenProject>, String> {
     }))
 }
 
+/// 反应堆的 mvn 调用方式：优先 mvnw 包装脚本，退回 `${mvn}` 占位（前端替换成系统命令）。
 fn wrapper_invoke(reactor: &Path) -> (String, bool) {
     let (primary, secondary) = if cfg!(windows) {
         ("mvnw.cmd", "mvnw")
@@ -132,6 +145,7 @@ fn wrapper_invoke(reactor: &Path) -> (String, bool) {
     ("${mvn}".to_string(), false)
 }
 
+/// 定位 Maven 反应堆：根目录的 pom.xml 优先，否则广度优先找最近的子目录 pom。
 fn find_reactor(root: &Path) -> Option<PathBuf> {
     if root.join("pom.xml").is_file() {
         return Some(root.to_path_buf());
@@ -143,6 +157,7 @@ fn find_reactor(root: &Path) -> Option<PathBuf> {
     found.into_iter().next().map(|(_, _, path)| path)
 }
 
+/// 有界广度优先遍历找子目录的 pom.xml；同级找到就不再下钻。
 fn walk_for_pom(
     workspace: &Path,
     dir: &Path,
@@ -193,6 +208,7 @@ fn walk_for_pom(
     }
 }
 
+/// 遍历要跳过的目录：隐藏目录与构建产物/依赖目录。
 fn skipped_dir(name: &str) -> bool {
     name.starts_with('.')
         || matches!(
@@ -201,6 +217,11 @@ fn skipped_dir(name: &str) -> bool {
         )
 }
 
+/// 递归读取一个模块的 pom：坐标、profile、源根、依赖与子模块。
+///
+/// # Errors
+///
+/// pom 超限（`MAVEN_TOO_LARGE`/`MAVEN_TOO_MANY`）或读取失败（`MAVEN_READ`）时返回错误。
 fn read_module(
     dir: &Path,
     workspace: &Path,
@@ -349,6 +370,11 @@ fn read_module(
     })
 }
 
+/// 读取反应堆 pom 的 `<profiles>` 清单。
+///
+/// # Errors
+///
+/// pom 读取失败时返回错误。
 fn read_profiles(reactor: &Path) -> Result<Vec<MavenProfile>, String> {
     let text = read_pom(&reactor.join("pom.xml"))?;
     let Some(project) = project_element(&text) else {
@@ -383,6 +409,7 @@ fn read_profiles(reactor: &Path) -> Result<Vec<MavenProfile>, String> {
     Ok(out)
 }
 
+/// 提取 `<dependencies>` 块，占位符按当前模块坐标与父级 properties 展开。
 fn dependencies_of(
     children: &[El],
     props: &BTreeMap<String, String>,
@@ -416,6 +443,7 @@ fn dependencies_of(
     out
 }
 
+/// 组装四个标准源根；pom 声明的目录优先，目录不存在的不收。
 fn source_roots(
     dir: &Path,
     source_directory: Option<String>,
@@ -435,6 +463,7 @@ fn source_roots(
     out
 }
 
+/// 往源根清单追加一个存在的目录；占位符声明回退到标准路径。
 fn push_root(
     out: &mut Vec<MavenSourceRoot>,
     dir: &Path,
@@ -460,6 +489,7 @@ fn push_root(
     });
 }
 
+/// 提取 `<properties>` 块为键值表。
 fn properties_map(children: &[El]) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     let Some(block) = children.iter().find(|el| el.name == "properties") else {
@@ -474,6 +504,7 @@ fn properties_map(children: &[El]) -> BTreeMap<String, String> {
     map
 }
 
+/// 展开 `${...}` 占位符：内置 project/pom 坐标键 + properties 表，最多迭代 8 轮防自引用。
 fn expand(input: &str, props: &BTreeMap<String, String>, group: &str, artifact: &str, version: &str) -> String {
     if !input.contains("${") {
         return input.to_string();
@@ -522,6 +553,7 @@ fn expand(input: &str, props: &BTreeMap<String, String>, group: &str, artifact: 
     current
 }
 
+/// 取第一个非空字符串；全空给空串。
 fn first_nonempty(values: &[String]) -> String {
     values
         .iter()
@@ -530,10 +562,12 @@ fn first_nonempty(values: &[String]) -> String {
         .unwrap_or_default()
 }
 
+/// 取指定名的直接子元素的文本。
 fn child_text(children: &[El], name: &str) -> Option<String> {
     children.iter().find(|el| el.name == name).map(|el| plain_text(&el.inner))
 }
 
+/// 取顶层 `<project>` 元素的内部原文。
 fn project_element(text: &str) -> Option<String> {
     elements(text)
         .into_iter()
@@ -541,6 +575,11 @@ fn project_element(text: &str) -> Option<String> {
         .map(|el| el.inner)
 }
 
+/// 读 pom 文件文本并剥 BOM。
+///
+/// # Errors
+///
+/// 超过 [`MAX_POM_BYTES`] 返回 `MAVEN_TOO_LARGE`；读取失败返回 `MAVEN_READ`。
 fn read_pom(path: &Path) -> Result<String, String> {
     let meta = fs::metadata(path).map_err(|_| "MAVEN_READ".to_string())?;
     if meta.len() > MAX_POM_BYTES {
@@ -550,6 +589,7 @@ fn read_pom(path: &Path) -> Result<String, String> {
     Ok(text.trim_start_matches('\u{feff}').to_string())
 }
 
+/// child 是否真的位于 workspace 之内（canonicalize 后比较前缀）。
 fn inside_workspace(workspace: &Path, child: &Path) -> bool {
     let Ok(root) = workspace.canonicalize() else {
         return child.starts_with(workspace);
@@ -559,6 +599,7 @@ fn inside_workspace(workspace: &Path, child: &Path) -> bool {
         .is_ok_and(|canon| canon.starts_with(&root))
 }
 
+/// 目录相对根的路径；根自己给 `.`。
 fn rel_of(root: &Path, dir: &Path) -> String {
     dir.strip_prefix(root)
         .ok()
@@ -594,12 +635,14 @@ fn join_rel(base: &str, child: &str) -> Option<String> {
     }
 }
 
+/// 元素首个子文本节点：剥注释、取 `<` 之前的纯文本、反转义实体。
 fn plain_text(inner: &str) -> String {
     let stripped = strip_comments(inner);
     let cut = stripped.find('<').unwrap_or(stripped.len());
     decode_entities(stripped[..cut].trim())
 }
 
+/// 删掉 `<!-- -->` 注释。
 fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -616,6 +659,7 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
+/// 反转义五个 XML 内置实体（`&amp;` 最后处理）。
 fn decode_entities(text: &str) -> String {
     if !text.contains('&') {
         return text.to_string();
@@ -716,6 +760,7 @@ fn elements(text: &str) -> Vec<El> {
     out
 }
 
+/// 从 `from` 起找与开标签配平的同名闭标签，返回（开, 闭）字节区间。
 fn matching_close(text: &str, from: usize, name: &str) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut depth = 1usize;
@@ -761,6 +806,7 @@ fn matching_close(text: &str, from: usize, name: &str) -> Option<(usize, usize)>
     None
 }
 
+/// 标签名合法字符（字母数字与 `_.-:`）。
 fn is_name(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.' || byte == b':'
 }

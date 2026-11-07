@@ -139,7 +139,9 @@ fn structured_tool_result<'a>(value: Option<&'a Value>, id: &str, result_count: 
     }
     (value["tool_use_id"].as_str() == Some(id) || value["toolUseId"].as_str() == Some(id) || value["id"].as_str() == Some(id)).then_some(value)
 }
+/// 待发送队列的懒初始化入口。
 fn queued() -> &'static Mutex<HashMap<String, VecDeque<SendRequest>>> { QUEUED.get_or_init(Mutex::default) }
+/// 判断一条会话当前有没有排队中的请求。
 fn has_queued(session_id: &str) -> bool {
     queued().lock().unwrap_or_else(|e| e.into_inner()).get(session_id).is_some_and(|items| !items.is_empty())
 }
@@ -185,6 +187,11 @@ fn queued_status(is_front: bool, external_blocked: bool) -> &'static str {
 fn not_queued() -> String {
     err("NOT_QUEUED", "任务已开始或结束，或由另一个 Forge 窗口排队")
 }
+/// 把队列里的一条请求挪到 `before_run_id` 之前（或队尾）。
+///
+/// # Errors
+///
+/// 被挪项或目标项已不在队列（[`not_queued`]）时返回错误。
 fn move_queued_run(items: &mut VecDeque<SendRequest>, run_id: &str, before_run_id: Option<&str>) -> Result<(), String> {
     let old = items.iter().position(|item| item.run_id == run_id).ok_or_else(not_queued)?;
     if before_run_id == Some(run_id) { return Ok(()); }
@@ -246,6 +253,11 @@ fn runtime_args(request: &SendRequest, claude_mode: &str, native: Option<&str>) 
     args
 }
 
+/// 组装参数后真正起 runtime 子进程，返回（进程、CLI 版本）。
+///
+/// # Errors
+///
+/// 参数组装、浏览器启动参数、CLI 定位或进程启动失败时返回错误。
 fn spawn_runtime_process(request: &SendRequest, claude_mode: &str, native: Option<&str>, browser: Option<&crate::browser::Lease>) -> Result<(Process, String), String> {
     let mut args = runtime_args(request, claude_mode, native);
     if browser.is_some() { args.extend(crate::browser::launch::arguments(request.provider)?); }
@@ -461,6 +473,13 @@ fn drop_phantom_thread(store: &mut store::Store) -> Result<(), String> {
     store.save()
 }
 
+/// 往一条会话的事件日志追加一次任务状态变更（排队/取消等运行时事件）。
+///
+/// 不走 `Store::open` 的修复路径，避免把还活着的回合误写成 cancelled。
+///
+/// # Errors
+///
+/// 工作区解析、存储打开或日志追加失败时返回错误。
 fn append_task_status(app: &AppHandle, request: &SendRequest, status: &str, extra: Value, include_user: bool) -> Result<(), String> {
     let root = store::workspace(&request.workspace)?;
     let base = base(app)?;
@@ -498,6 +517,11 @@ fn status_already_recorded(record: Option<&Value>, status: &str, extra: &Value) 
     if record["status"].as_str() != Some(status) { return false; }
     extra.as_object().is_none_or(|fields| fields.iter().all(|(key, value)| record.get(key.as_str()) == Some(value)))
 }
+/// 会话存储根目录（应用本地数据目录下的 `ai-sessions-v1/`），不存在则创建。
+///
+/// # Errors
+///
+/// 目录定位或创建失败时返回错误。
 fn base(app: &AppHandle) -> Result<PathBuf, String> {
     let path = app
         .path()
@@ -512,9 +536,20 @@ pub(crate) fn browser_run_active(run_id: &str) -> bool {
     registry::get(run_id).is_some_and(|run| !run.cancelled.load(Ordering::Acquire))
 }
 
+/// 解析工作区路径为规范形式，供浏览器能力校验用。
+///
+/// # Errors
+///
+/// 路径不存在或后端校验失败时返回错误。
 pub(crate) fn browser_workspace(path:&str) -> Result<String,String> { store::workspace(path) }
+/// 取运行预登记时请求的工作区；未登记返回 `None`。
 pub(crate) fn browser_requested_workspace(run_id:&str) -> Option<String> { registry::get(run_id).map(|run|run.requested_workspace.clone()) }
 
+/// 为 smoke 测试预占一条运行记录，不真正启动 CLI。
+///
+/// # Errors
+///
+/// 工作区解析或运行租约申请失败时返回错误。
 #[cfg(feature = "browser-smoke")]
 pub(crate) fn browser_smoke_reserve(workspace:&str,session:&str) -> Result<Arc<Run>,String> {
     let (run,_controls) = Run::reserve(format!("smoke-{session}"),session.into(),store::workspace(workspace)?,workspace.into())?;
@@ -589,6 +624,11 @@ pub(crate) fn browser_smoke_cli(workspace:&str,lease:&crate::browser::Lease,run_
     }
     Ok(checks)
 }
+/// 发送前的完整性校验：命令合法性、图片/命令互斥、计划模式与命令互斥等。
+///
+/// # Errors
+///
+/// 任一约束不满足时返回中文错误。
 fn validate(request: &SendRequest) -> Result<(), String> {
     commands::validate(request.provider, &request.prompt, request.command)?;
     if request.command.is_some() && !request.images.is_empty() {
@@ -694,7 +734,9 @@ pub async fn ai_runtime_save_image_file(app: AppHandle, path: String) -> Result<
     .await
 }
 
+/// 文本附件的大小上限，超出让用户改用文件。
 const MAX_TEXT_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
+/// 文本附件文件名的序号发号器。
 static TEXT_ATTACHMENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /** 长选区只落到系统临时目录；工作区和项目源码目录永远不会收到这些中转文件。 */
@@ -736,6 +778,11 @@ pub async fn ai_runtime_save_text_attachment(_app: AppHandle, text: String) -> R
     .await
 }
 
+/// 统计一个文本文件的行数（按换行符计，末行无换行也算一行）。
+///
+/// # Errors
+///
+/// 路径非绝对/超长、文件打开或读取失败时返回错误。
 fn file_line_count(path: &str) -> Result<u64, String> {
     let path = PathBuf::from(path.trim());
     if !path.is_absolute() || path.as_os_str().len() > 32_768 {
@@ -867,6 +914,11 @@ pub async fn ai_runtime_models(
     .await
 }
 
+/// 模型目录缓存文件在应用配置目录下的路径。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回错误。
 fn models_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("ai-models.json"))
 }
@@ -1197,6 +1249,11 @@ fn launch_task(app: AppHandle, request: SendRequest, include_user: bool) -> Resu
     Ok(())
 }
 
+/// 队列调度：会话空闲（registry 无运行）时唤醒队首请求；忙或管理操作期间原地等待。
+///
+/// # Errors
+///
+/// 生命周期锁或队列锁中毒、CLI 门禁获取失败时返回错误。
 fn schedule_next(app: &AppHandle, session_id: &str) -> Result<(), String> {
     let _lifecycle = registry::LIFECYCLE.lock().map_err(|e| e.to_string())?;
     if registry::for_session(session_id).is_some() { return Ok(()); }
@@ -1255,6 +1312,7 @@ fn child_session_id(parent: &str, key: &str) -> String {
     format!("{}-ag{:012x}", &parent[..parent.len().min(48)], hash & 0xffff_ffff_ffff)
 }
 
+/// 当前 Unix 毫秒时间戳；系统时钟异常时取 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
@@ -3030,6 +3088,7 @@ pub async fn ai_runtime_stop_project(app: AppHandle, workspace: String) -> Resul
     })
     .await
 }
+/// 比较两个工作区路径是否指向同一目录：Windows 统一斜杠与小写、剥 `\\?\` 前缀后再比。
 fn same_workspace_path(a: &str, b: &str) -> bool {
     fn key(path: &str) -> String {
         if cfg!(windows) {
@@ -3045,14 +3104,17 @@ fn same_workspace_path(a: &str, b: &str) -> bool {
     }
     key(a) == key(b)
 }
+/// 生命周期锁：进程出生到退出的登记与收割都握着它。
 pub fn lifecycle_lock() -> std::sync::MutexGuard<'static, ()> {
     registry::LIFECYCLE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
 }
+/// 是否还有活着的运行（registry 在册或队列未发）——决定退出时要不要收割。
 pub fn has_runs() -> bool {
     !registry::all().is_empty() || queued().lock().unwrap_or_else(|e| e.into_inner()).values().any(|items| !items.is_empty())
 }
+/// 退出前统一收割：杀掉本窗口登记的全部子进程。
 pub fn reap_all_for_exit() {
     let _guard = registry::LIFECYCLE
         .lock()

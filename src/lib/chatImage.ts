@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/** 一张图片的字节：MIME 类型加 base64。 */
 interface ChatImageBytes {
   mediaType: string;
   base64: string;
@@ -20,6 +21,7 @@ export function copyChatImage(path: string): Promise<void> {
   return navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
 }
 
+/** 把非 PNG 图片经 canvas 重编码为 PNG，供剪贴板写入。 */
 async function encodePng(blob: Blob): Promise<Blob> {
   const bitmap = await createImageBitmap(blob);
   try {

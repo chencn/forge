@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
+/// 批注浮层发往前端的注入请求载荷。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Request {
@@ -23,6 +24,7 @@ struct Request {
     delta_y: f64,
 }
 
+/// 处理浮层的注入请求：解析载荷、在后台线程处理并回发结果；超长载荷直接丢弃。
 fn receive(app: AppHandle, raw: &str) {
     if raw.len() > 16 * 1024 { return; }
     let Ok(request) = serde_json::from_str::<Request>(raw) else { return; };
@@ -274,8 +276,10 @@ mod native {
         tokio::time::timeout(std::time::Duration::from_secs(5),rx).await.map_err(|_|"annotation probe timeout")?.map_err(|_|"annotation probe lost".into())
     }
 }
+/// Windows 平台的标注探测实现（见 `native` 模块）。
 #[cfg(windows)]
 pub use native::*;
+/// 向前端转发标注事件；仅 Windows 的 `native` 实现使用。
 #[cfg(windows)]
 pub(super) use native::present;
 #[cfg(not(windows))]

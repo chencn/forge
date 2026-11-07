@@ -21,24 +21,29 @@ import {
   type UpdateInfo,
 } from "../../../lib/updater";
 
+/** 终端光标样式候选的文案键。 */
 const CURSOR_STYLE_LABEL: Record<TerminalCursorStyle, "settings.terminalCursor.bar" | "settings.terminalCursor.block" | "settings.terminalCursor.underline"> = {
   bar: "settings.terminalCursor.bar",
   block: "settings.terminalCursor.block",
   underline: "settings.terminalCursor.underline",
 };
 
+/** 终端页签布局候选的文案键。 */
 const TAB_LAYOUT_LABEL: Record<TerminalTabLayout, "settings.terminalTabLayout.horizontal" | "settings.terminalTabLayout.vertical"> = {
   horizontal: "settings.terminalTabLayout.horizontal",
   vertical: "settings.terminalTabLayout.vertical",
 };
 
+/** 终端响铃候选的文案键。 */
 const BELL_LABEL: Record<TerminalBell, "settings.terminalBell.visual" | "settings.terminalBell.sound" | "settings.terminalBell.none"> = {
   visual: "settings.terminalBell.visual",
   sound: "settings.terminalBell.sound",
   none: "settings.terminalBell.none",
 };
 
+/** 布尔下拉的候选值与其文案键（EditorPages 同款）。 */
 const SWITCHES = ["yes", "no"] as const;
+/** {@link SWITCHES} 各候选的 i18n 键。 */
 const SWITCH_LABEL: Record<"yes" | "no", "common.yes" | "common.no"> = {
   yes: "common.yes",
   no: "common.no",

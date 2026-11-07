@@ -13,6 +13,7 @@ function replacePlaceholders(template: string, match: RegExpExecArray): string {
   return result;
 }
 
+/** 工单文本的一个片段：普通文本或带 URL 的链接。 */
 export interface IssueToken {
   type: "text" | "link";
   value: string;
@@ -20,7 +21,7 @@ export interface IssueToken {
 }
 
 /**
- * 将文本按工单正则规则分词并生成超链接 (纯函数，对标 IDEA Issue Navigation)
+ * 将文本按工单正则规则分词并生成超链接（纯函数）。
  */
 export function parseIssueTokens(
   text: string,
@@ -90,6 +91,7 @@ export function parseIssueTokens(
   return tokens;
 }
 
+/** 工单链接化文本组件的入参。 */
 export interface IssueTextProps {
   text: string;
   patterns?: IssueNavigationPattern[];
@@ -98,7 +100,7 @@ export interface IssueTextProps {
 }
 
 /**
- * 带有工单超链接的文本组件 (对标 IDEA Issue Navigation)
+ * 带有工单超链接的文本组件。
  */
 export function IssueText({ text, patterns = [], className, style }: IssueTextProps) {
   const tokens = parseIssueTokens(text, patterns);

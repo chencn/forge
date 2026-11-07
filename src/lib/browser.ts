@@ -1,7 +1,9 @@
 /** 用户界面的导航输入与本地访问记录，不存会话凭证或页面内容。 */
 export interface BrowserLocation { url: string; title: string; visitedAt: number }
+/** 本地访问记录库：书签与最近访问，各按容量上限截断。 */
 export interface BrowserLibrary { bookmarks: BrowserLocation[]; recent: BrowserLocation[] }
 
+/** 元素选择器的完整快照：标签、选择器、可达性角色、文本、几何与样式，元素标记/审查用。 */
 export interface BrowserElementSelection {
   selectionId: number;
   tabId: string;
@@ -16,19 +18,28 @@ export interface BrowserElementSelection {
   styles: Record<string, string>;
   styleChanges?: Record<string, { before: string; after: string }>;
 }
+/** 元素选择器的运行态：是否激活、当前选中的元素或错误。 */
 export interface BrowserPicker { active: boolean; selection: BrowserElementSelection | null; error: string | null }
 
+/** 设备/网络/主题模拟的完整状态；width 为 null 表示跟随视口（responsive）。 */
 export interface BrowserEmulation {
   width: number | null; height: number; deviceScaleFactor: number; mobile: boolean; touch: boolean;
   userAgent: string; offline: boolean; latencyMs: number; downloadMbps: number; uploadMbps: number;
   colorScheme: "auto" | "light" | "dark";
 }
+/** 对模拟状态的增量修改；reset 清掉全部模拟，resetDevice 只还原设备字段。 */
 export type BrowserEmulationPatch = Partial<Omit<BrowserEmulation, "width">> & { width?: number; reset?: boolean; resetDevice?: boolean };
+/** 模拟状态默认值：跟随视口、无 UA 覆盖、在线、主题跟随系统。 */
 export const DEFAULT_BROWSER_EMULATION: BrowserEmulation = { width: null, height: 800, deviceScaleFactor: 1, mobile: false, touch: false, userAgent: "", offline: false, latencyMs: 0, downloadMbps: 0, uploadMbps: 0, colorScheme: "auto" };
+/** Android 设备 UA 模板，平板去掉「 Mobile」标记。 */
 const androidAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
+/** iPhone 设备 UA（Chrome iOS 版）。 */
 const iphoneAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.0.0 Mobile/15E148 Safari/604.1";
+/** iPad 设备 UA。 */
 const ipadAgent = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.0.0 Mobile/15E148 Safari/604.1";
+/** 一个预设设备：尺寸、缩放、输入方式与 UA。 */
 interface BrowserDevice { id: string; group: "desktop" | "tablet" | "phone"; name: string; width: number; height: number; deviceScaleFactor: number; mobile: boolean; touch: boolean; userAgent: string }
+/** 设备预设清单：桌面分辨率 + iPad/iPhone/Android 常见机型。 */
 export const BROWSER_DEVICES: readonly BrowserDevice[] = [
   ...[[1280,720],[1366,768],[1440,900],[1920,1080],[2560,1440]].map(([width,height]) => ({ id: `pc-${width}`, group: "desktop" as const, name: `${width} × ${height}`, width, height, deviceScaleFactor: 1, mobile: false, touch: false, userAgent: "" })),
   { id: "ipad-mini", group: "tablet", name: "iPad mini", width: 768, height: 1024, deviceScaleFactor: 2, mobile: true, touch: true, userAgent: ipadAgent },
@@ -42,6 +53,7 @@ export const BROWSER_DEVICES: readonly BrowserDevice[] = [
   { id: "pixel-8", group: "phone", name: "Pixel 8", width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true, touch: true, userAgent: androidAgent },
   { id: "android-small", group: "phone", name: "Android 360", width: 360, height: 800, deviceScaleFactor: 3, mobile: true, touch: true, userAgent: androidAgent },
 ];
+/** 网络节流预设：在线/各代移动网络/离线，字段对齐 {@link BrowserEmulation} 的网络部分。 */
 export const BROWSER_NETWORKS = [
   { id: "online", offline: false, latencyMs: 0, downloadMbps: 0, uploadMbps: 0 },
   { id: "wifi", offline: false, latencyMs: 2, downloadMbps: 100, uploadMbps: 50 },
@@ -60,10 +72,12 @@ export function browserDeviceOptions(id: string): BrowserEmulationPatch {
   const { width, height, deviceScaleFactor, mobile, touch, userAgent } = device;
   return { width, height, deviceScaleFactor, mobile, touch, userAgent };
 }
+/** 从模拟状态反查设备预设 id；对得上返回预设 id，对不上返回 "custom"。 */
 export function browserDeviceId(value: BrowserEmulation): string {
   if (value.width === null) return "responsive";
   return BROWSER_DEVICES.find((item) => ((item.width === value.width && item.height === value.height) || (item.height === value.width && item.width === value.height)) && item.deviceScaleFactor === value.deviceScaleFactor && item.mobile === value.mobile && item.touch === value.touch && item.userAgent === value.userAgent)?.id ?? "custom";
 }
+/** 从模拟状态反查网络预设 id；对不上返回 "custom"。 */
 export function browserNetworkId(value: BrowserEmulation): typeof BROWSER_NETWORKS[number]["id"] | "custom" {
   return BROWSER_NETWORKS.find((item) => item.offline === value.offline && item.latencyMs === value.latencyMs && item.downloadMbps === value.downloadMbps && item.uploadMbps === value.uploadMbps)?.id ?? "custom";
 }
@@ -85,6 +99,14 @@ export function browserElementMessage(element: BrowserElementSelection, problem:
   return JSON.stringify({ source: "Forge 浏览器元素标记", problem: problem.trim(), ...(includeCode ? { element } : { url: element.url, ...(element.styleChanges ? { styleChanges: element.styleChanges } : {}) }) }, null, 2);
 }
 
+/**
+ * 把地址栏输入折成可导航的 URL。
+ *
+ * 显式 http(s) 原样放行；localhost/IP/IPv4 字面量补 http，其余带点的域名补 https；
+ * 其它自定义 scheme 拒绝；纯文本走 Bing 搜索。
+ *
+ * @throws 地址为空 `EMPTY_ADDRESS`、scheme 不支持 `UNSUPPORTED_SCHEME`、含凭据或主机为空 `INVALID_ADDRESS`
+ */
 export function browserAddress(input: string): string {
   const text = input.trim();
   if (!text) throw new Error("EMPTY_ADDRESS");
@@ -100,6 +122,7 @@ export function browserAddress(input: string): string {
   return url.href;
 }
 
+/** 校验并规整未知来源的库数据：只留 http(s) 且无凭据的条目，去重并按上限截断（书签 40 / 最近 30）。 */
 export function normalizeBrowserLibrary(value: unknown): BrowserLibrary {
   const raw = value && typeof value === "object" ? value as Partial<BrowserLibrary> : {};
   const list = (items: unknown, limit: number): BrowserLocation[] => {
@@ -118,19 +141,23 @@ export function normalizeBrowserLibrary(value: unknown): BrowserLibrary {
   return { bookmarks: list(raw.bookmarks, 40), recent: list(raw.recent, 30) };
 }
 
+/** 记一次访问：去重后插到「最近」最前，并整体再过一遍 {@link normalizeBrowserLibrary} 截断。 */
 export function rememberBrowserLocation(library: BrowserLibrary, location: BrowserLocation): BrowserLibrary {
   return normalizeBrowserLibrary({ ...library, recent: [location, ...library.recent.filter((entry) => entry.url !== location.url)] });
 }
 
+/** 按工作区折算 localStorage 键；正斜杠、去尾斜杠、小写，保证同一目录读到的键一致。 */
 export function browserStorageKey(workspace: string): string {
   return `forge:browser-library:${workspace.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase()}`;
 }
 
+/** 从 localStorage 读工作区的库；缺失或损坏回退空库。 */
 export function loadBrowserLibrary(workspace: string): BrowserLibrary {
   try { return normalizeBrowserLibrary(JSON.parse(localStorage.getItem(browserStorageKey(workspace)) ?? "{}")); }
   catch { return { bookmarks: [], recent: [] }; }
 }
 
+/** 把库写入 localStorage（先过一遍规整）；写不进去只在本次会话内有效。 */
 export function saveBrowserLibrary(workspace: string, library: BrowserLibrary): void {
   // 隐私窗口或存储配额不足时，浏览仍然可用。
   try { localStorage.setItem(browserStorageKey(workspace), JSON.stringify(normalizeBrowserLibrary(library))); } catch { /* 本次内存记录继续有效。 */ }
@@ -144,6 +171,7 @@ export function browserPageOwner(sessions: { id: string }[], defaultSessionId: s
   return sessions.find((session) => session.id === defaultSessionId)?.id ?? "manual";
 }
 
+/** 几何矩形（像素坐标），供重叠判定等纯几何计算用。 */
 export interface SimpleRect {
   left: number;
   top: number;

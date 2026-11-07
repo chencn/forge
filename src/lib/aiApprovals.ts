@@ -78,6 +78,7 @@ export interface PermissionOffer {
   canEdit: boolean;
 }
 
+/** 从一张权限请求提炼可提出的动作（工具认不出、路径没有父目录时对应项为 null）。 */
 export function permissionOffer(request: { toolName?: string; input?: unknown; canEdit?: boolean }): PermissionOffer {
   const tool = typeof request.toolName === "string" && request.toolName.trim() ? request.toolName.trim() : null;
   return { tool, root: parentDirectory(requestPath(request.input)), canEdit: request.canEdit === true };
@@ -119,8 +120,13 @@ export function editedInput(text: string, original: unknown): { value?: Record<s
   return { value: changes };
 }
 
+/** 拒绝本次。 */
 export const denyPermission = (): AiPermissionAnswer => ({ allow: false });
+/** 只允许这一次（不记规则）。 */
 export const allowOnce = (): AiPermissionAnswer => ({ allow: true });
+/** 允许并记住「这个工具以后都放行」。 */
 export const allowAndRemember = (tool: string): AiPermissionAnswer => ({ allow: true, remember: { tool } });
+/** 允许并记住「这个工具在这个目录里都放行」。 */
 export const allowDirectory = (tool: string, root: string): AiPermissionAnswer => ({ allow: true, remember: { tool, root } });
+/** 允许，但用卡片里改过的入参替换原入参。 */
 export const allowEdited = (input: Record<string, unknown>): AiPermissionAnswer => ({ allow: true, input });

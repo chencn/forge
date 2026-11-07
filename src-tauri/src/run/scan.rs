@@ -20,6 +20,7 @@ const LISTING_TTL: Duration = Duration::from_secs(2);
 /// 缓存最多记多少层目录。大仓把上限撑破时整表清空重来，比无限涨着占内存划算。
 const MAX_CACHED_DIRS: usize = 8192;
 
+/// 锁上毒时也照样拿到锁；目录扫描缓存不能因一次 panic 卡死全部命令。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -158,6 +159,7 @@ struct Cache {
     invalidated_at: Instant,
 }
 
+/// 目录构建标志缓存的懒初始化入口。
 fn cache() -> &'static Mutex<Cache> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(Cache {
@@ -191,6 +193,7 @@ fn marks(dir: &Path) -> Marks {
     fresh
 }
 
+/// 复制一份 `Marks`（缓存取数用，避免返回借用锁内引用）。
 fn clone_marks(found: &Marks) -> Marks {
     Marks {
         listed: found.listed,

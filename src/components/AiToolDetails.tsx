@@ -133,7 +133,7 @@ function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiE
     : entry.status === "completed" ? t("ai.runtime.completed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
   // 手动选择只属于当前阶段；子代理结束后恢复收起，与普通工具保持一致。
   const expanded = disclosure?.phase === phase ? disclosure.open : running;
-  // 当前动作（对照 ProgressLine）：优先在跑的工具摘要，其次最新一段正文的首行。
+  // 当前动作：优先在跑的工具摘要，其次最新一段正文的首行。
   const currentAction = useMemo(() => {
     if (!subagents?.length) return undefined;
     for (let index = subagents.length - 1; index >= 0; index--) {
@@ -389,6 +389,7 @@ function ToolSection({ title, children }: { title: ReactNode; children: ReactNod
   </section>;
 }
 
+/** 分栏 diff 的一行对：left/right 各是 unified diff 的一行，缺侧渲染占位。 */
 interface SplitRow { left?: ReturnType<typeof parseToolDiff>[number]; right?: ReturnType<typeof parseToolDiff>[number] }
 
 /** unified diff → 左右两栏的行对：删除行先攒着，遇到添加行配成对，上下文两侧同现。 */
@@ -420,6 +421,7 @@ function DiffCode({ text, kind }: { text: string; kind: string }) {
   return <code>{text}</code>;
 }
 
+/** 分栏视图的单行渲染：缺行画占位，行号与 +/- 前缀按侧取。 */
 function DiffLineView({ line, side }: { line: SplitRow["left"]; side: "old" | "new" }) {
   if (!line) return <div className="ai-tool-diff-line is-filler" />;
   const number = side === "old" ? line.oldLine : line.newLine;
@@ -454,8 +456,10 @@ function SplitDiff({ lines }: { lines: ReturnType<typeof parseToolDiff> }) {
 
 /** 大 diff 的起步渲染量与步进：先 240 行，按钮每次再放 400。 */
 const DIFF_FIRST = 240;
+/** 「加载更多」每次追加的行数（起步量见 {@link DIFF_FIRST}）。 */
 const DIFF_STEP = 400;
 
+/** 工具输出里的 unified diff 视图：行内/分栏切换 + 大 diff 分批渲染。 */
 export function ToolDiff({ text }: { text: string }) {
   const { t } = useI18n();
   const lines = useMemo(() => parseToolDiff(text), [text]);
@@ -476,6 +480,7 @@ export function ToolDiff({ text }: { text: string }) {
   </div>;
 }
 
+/** {@link AiToolDetails} 的入参。 */
 interface AiToolDetailsProps {
   /** 要展开的工具条目，从 `input` / `output` 里挑已知字段渲染。 */
   entry: AiEntry;
@@ -524,7 +529,7 @@ export default function AiToolDetails({ entry }: AiToolDetailsProps) {
         折叠块：那是同一段数据的 JSON 原文，视图失真需要核对原始数据时才有价值；
         认不出结构的条目（known 为假）仍给原文兜底。 */}
     {known && !view.source && view.kind !== "search" ? <RawDetails label={t("ai.chat.rawInput")} value={entry.input} /> : null}
-    {/* Terminal and error panels share the real output; a failed call must not print it twice. */}
+    {/* 终端面板与错误面板共用同一份输出；失败的调用不能把它打印两遍。 */}
     {entry.output !== undefined && !view.source && show(entry.output) !== error?.message ? (suites.length
       ? <RawDetails label={t("ai.tool.structuredResult")} value={entry.output} />
       : view.kind === "search" ? <SearchHits output={show(entry.output)} /> : <CodeBlock text={show(entry.output)} terminal={view.kind === "command"} />) : null}

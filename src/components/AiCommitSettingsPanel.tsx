@@ -35,9 +35,12 @@ import {
 } from "../lib/aiCommit";
 import { describeError } from "../lib/errors";
 
+/** 布尔下拉的候选值与其文案键（EditorPages 同款）。 */
 const SWITCHES = ["yes", "no"] as const;
+/** {@link SWITCHES} 的成员类型。 */
 type Switch = (typeof SWITCHES)[number];
 
+/** AI 智能提交设置页：供应商/密钥/模型参数与各上限的编辑与保存。 */
 export default function AiCommitSettingsPanel() {
   const { t } = useI18n();
   const [config, setConfig] = useState<AiCommitConfig>(DEFAULT_AI_COMMIT_CONFIG);

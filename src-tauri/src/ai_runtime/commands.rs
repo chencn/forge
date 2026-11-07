@@ -2,10 +2,12 @@
 use crate::ai_cli::Provider;
 use serde::Deserialize;
 
+/// 显式的斜杠命令意图；只有这三个受支持。
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CommandIntent { ClaudeSlash, CodexCompact, CodexReview }
 
+/// 拆出提示文本首部的 `/命令 参数`；不是斜杠开头时返回 None。
 pub fn parse(prompt: &str) -> Option<(&str, &str)> {
     let text = prompt.trim_start().strip_prefix('/')?;
     if text.starts_with('/') { return None; }
@@ -14,6 +16,11 @@ pub fn parse(prompt: &str) -> Option<(&str, &str)> {
     Some((&text[..boundary], args))
 }
 
+/// 校验意图与提示文本匹配当前引擎的白名单；不匹配则拒绝发送。
+///
+/// # Errors
+///
+/// 命令类型或参数不受支持时返回错误串。
 pub fn validate(provider: Provider, prompt: &str, intent: Option<CommandIntent>) -> Result<(), String> {
     match (parse(prompt), intent) {
         (None, None) => Ok(()),

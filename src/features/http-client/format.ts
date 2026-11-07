@@ -4,8 +4,13 @@
  * 无平台依赖的格式化。
  */
 
+/** 正文呈现类别。 */
 export type BodyKind = "json" | "xml" | "html" | "text";
 
+/**
+ * 判定正文类别：Content-Type 优先，其次按正文形状（JSON 试解析、
+ * doctype/xml 头、标签开头）；都认不出按 text。
+ */
 export function bodyKind(contentType: string | null | undefined, body: string): BodyKind {
   const ct = (contentType ?? "").toLowerCase();
   if (ct.includes("json")) return "json";
@@ -25,6 +30,7 @@ export function bodyKind(contentType: string | null | undefined, body: string): 
   return "text";
 }
 
+/** JSON 美化（2 空格缩进）；解析失败原样返回。 */
 export function prettyJson(body: string): string {
   try {
     return JSON.stringify(JSON.parse(body), null, 2);
@@ -33,6 +39,7 @@ export function prettyJson(body: string): string {
   }
 }
 
+/** HTML 空元素（无闭合标签，缩进时不进深度）。 */
 const VOID_HTML = new Set([
   "area",
   "base",
@@ -116,6 +123,7 @@ export function prettyMarkup(body: string, html = false, indent = "  "): string 
   return out.join("\n");
 }
 
+/** 按类别美化正文；text 原样返回。 */
 export function prettyBody(kind: BodyKind, body: string): string {
   switch (kind) {
     case "json":
@@ -129,6 +137,7 @@ export function prettyBody(kind: BodyKind, body: string): string {
   }
 }
 
+/** 字节数的 B/KB/MB 显示（null 按 0）。 */
 export function formatSize(value: number | null): string {
   const bytes = value ?? 0;
   if (bytes < 1024) return `${bytes} B`;
@@ -136,6 +145,7 @@ export function formatSize(value: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** 时长的 ms/s 显示（null 按 0）。 */
 export function formatMs(value: number | null): string {
   const ms = value ?? 0;
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;

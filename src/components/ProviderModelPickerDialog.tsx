@@ -6,6 +6,7 @@ import AiActionDialog from "./AiActionDialog";
 import { listProviderModels } from "../lib/aiManage";
 import type { AiProvider } from "../lib/aiCli";
 
+/** 供应商模型列表选择对话框的入参。 */
 interface ProviderModelPickerProps {
   kind: AiProvider;
   apiUrl: string;

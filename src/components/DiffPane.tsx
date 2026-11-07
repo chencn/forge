@@ -39,6 +39,7 @@ export interface DiffGroup {
   onNext: (land?: "first") => void;
 }
 
+/** 差异窗格的入参。 */
 interface DiffPaneProps {
   /** 左边那一栏的表头：这一侧是哪个版本（HEAD、Staged (index)、短哈希）。 */
   leftLabel: string;
@@ -78,6 +79,7 @@ function sideRow(label: string, path?: string, badge?: string) {
   );
 }
 
+/** 双栏差异视图：CodeMirror 合并视图渲染两侧文本与块导航。 */
 function DiffPane({
   leftLabel,
   rightLabel,
@@ -193,7 +195,7 @@ function DiffPane({
 
   /**
    * F7 / ⇧F7 与上一处 / 下一处：本篇还有就走本篇；走到头了，2.5 秒内再按一下
-   * 才转到链上相邻那一篇（IDEA 的「Press again to go to the next file」）。
+   * 才转到链上相邻那一篇（「再按一次转到下一个文件」）。
    */
   const stepChain = (target: DiffDir) => {
     const view = viewRef.current;
@@ -233,7 +235,7 @@ function DiffPane({
   };
 
   /** 右那一侧的表头：根提交那类没有名字的侧不出这一行。 */
-  // 右侧是工作区那份时挂「working copy」徽章（IDEA 的比对窗口）。
+  // 右侧是工作区那份时挂「working copy」徽章。
   const rightSideRow = rightLabel
     ? sideRow(
         rightLabel,

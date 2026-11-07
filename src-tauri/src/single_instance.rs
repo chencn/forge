@@ -175,6 +175,7 @@ mod imp {
         }
     }
 
+    /// 停掉单实例服务线程（应用退出时调用）。
     pub fn stop_server() {
         RUNNING.store(false, Ordering::Relaxed);
     }
@@ -184,15 +185,19 @@ mod imp {
 mod imp {
     use tauri::AppHandle;
 
+    /// 非 Windows 无单实例服务：永远不转发。
     pub fn try_forward(_args: &[String]) -> bool {
         false
     }
 
+    /// 非 Windows 无服务线程，空实现。
     pub fn start_server(_app: AppHandle) {}
 
+    /// 非 Windows 无服务线程，空实现。
     pub fn stop_server() {}
 }
 
+/// 把平台实现（Windows 命名管道 / 非 Windows 空实现）整体导出为模块公开接口。
 pub use imp::*;
 
 #[cfg(test)]

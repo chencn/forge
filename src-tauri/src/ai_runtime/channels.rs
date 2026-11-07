@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const CODEX_KEY_VAR: &str = "FORGE_CODEX_CHANNEL_KEY";
 /// 只串行化这份 JSON 的读改写；绝不能在此锁内启动 CLI 或等待网络。
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// 渠道 id 发号器（配合纳秒时间戳）。
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// 一条渠道。`api_key` 只存在于磁盘与子进程环境，任何返回前端的路径都必须剔除它。
@@ -36,6 +37,7 @@ pub struct Channel {
     pub allows_insecure_http: bool,
 }
 
+/// 一个 CLI 引擎的渠道配置：激活项与全部候选。
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Engine {
@@ -44,6 +46,7 @@ pub struct Engine {
     pub items: Vec<Channel>,
 }
 
+/// 两个引擎各自的渠道配置，持久化为一份。
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Store {
@@ -64,9 +67,11 @@ pub struct Draft {
     pub allows_insecure_http: bool,
 }
 
+/// 取 store 里某 CLI 的可变引擎部分。
 fn engine_mut(store: &mut Store, provider: Provider) -> &mut Engine {
     if provider == Provider::Claude { &mut store.claude } else { &mut store.codex }
 }
+/// 取 store 里某 CLI 的只读引擎部分。
 fn engine<'a>(store: &'a Store, provider: Provider) -> &'a Engine {
     if provider == Provider::Claude { &store.claude } else { &store.codex }
 }
@@ -75,6 +80,11 @@ fn engine<'a>(store: &'a Store, provider: Provider) -> &'a Engine {
 pub fn load(path: &Path) -> Store {
     std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
+/// 原子保存渠道表；调用方必须已持 [`LOCK`]。
+///
+/// # Errors
+///
+/// 目录创建失败、序列化或写盘失败时返回错误。
 fn save(path: &Path, store: &Store) -> Result<(), String> {
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
     crate::sys::write_atomic(path, &serde_json::to_string_pretty(store).map_err(|e| e.to_string())?)
@@ -136,6 +146,11 @@ fn normalize_base_url(input: &str, allows_insecure_http: bool) -> Result<String,
     Ok(rebuilt.to_string())
 }
 
+/// 规整模型清单：去空白、去重、逐条校验。
+///
+/// # Errors
+///
+/// 单条模型 ID 校验失败（[`options::validate`]）时返回错误。
 fn normalize_models(provider: Provider, input: &[String]) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     for raw in input {
@@ -148,6 +163,11 @@ fn normalize_models(provider: Provider, input: &[String]) -> Result<Vec<String>,
     Ok(out)
 }
 
+/// 规整模型别名映射：别名/目标去空白，逐条校验目标必须是已知模型。
+///
+/// # Errors
+///
+/// 别名目标未知（[`validate_alias`]）或模型超 200 条时返回错误。
 fn normalize_aliases(provider: Provider, input: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     let mut out = BTreeMap::new();
     for (alias, target) in input {
@@ -163,6 +183,7 @@ fn normalize_aliases(provider: Provider, input: &BTreeMap<String, String>) -> Re
     Ok(out)
 }
 
+/// 生成新渠道 id：`ch-<纳秒>-<序号>`。
 fn new_id() -> String {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or_default();
     format!("ch-{:x}-{:x}", nanos, NEXT_ID.fetch_add(1, Ordering::Relaxed))
@@ -232,6 +253,7 @@ pub fn set_active(path: &Path, provider: Provider, id: Option<&str>) -> Result<V
     Ok(public_view(&store))
 }
 
+/// 渠道 JSON 读改写的串行化锁；锁内禁止启动 CLI 或等待网络。
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Claude 侧的注入：网关地址 + 凭据 + 别名目标，全部走子进程环境。

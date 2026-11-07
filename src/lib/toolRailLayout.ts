@@ -1,6 +1,8 @@
 /** 活动栏只允许在同一上下分组内排序；左右迁移不改变工具所属分组。 */
 export type ToolRailSide = "left" | "right";
+/** 活动栏的上下分组：顶部区 / 底部区。 */
 export type ToolRailGroup = "top" | "bottom";
+/** 活动栏上的全部工具 id。 */
 export type ToolRailId =
   | "ai"
   | "browser"
@@ -13,13 +15,16 @@ export type ToolRailId =
   | "httpClient"
   | "notifications";
 
+/** 活动栏布局：左右两侧各自的上下分组工具顺序。 */
 export interface ToolRailLayout {
   left: Record<ToolRailGroup, ToolRailId[]>;
   right: Record<ToolRailGroup, ToolRailId[]>;
 }
 
+/** 布局偏好的 localStorage 键。 */
 const STORAGE_KEY = "forge:tool-rail-layout:v1";
 
+/** 每个工具固定所属的上下分组（分组归属不可迁移）。 */
 export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   notifications: "top",
   ai: "top",
@@ -33,13 +38,16 @@ export const TOOL_RAIL_GROUP: Record<ToolRailId, ToolRailGroup> = {
   httpClient: "bottom",
 };
 
+/** 出厂默认布局：左栏资源管理器/Git + 终端区，右栏通知/AI/浏览器/Maven。 */
 export const DEFAULT_TOOL_RAIL_LAYOUT: ToolRailLayout = {
   left: { top: ["explorer", "git"], bottom: ["terminal", "run", "httpClient", "log"] },
   right: { top: ["notifications", "ai", "browser", "maven"], bottom: [] },
 };
 
+/** 全部工具 id 的运行时清单。 */
 const TOOL_IDS = Object.keys(TOOL_RAIL_GROUP) as ToolRailId[];
 
+/** 深拷贝默认布局（各数组独立，防止调用方改坏常量）。 */
 function copyDefault(): ToolRailLayout {
   return {
     left: { top: [...DEFAULT_TOOL_RAIL_LAYOUT.left.top], bottom: [...DEFAULT_TOOL_RAIL_LAYOUT.left.bottom] },
@@ -74,12 +82,13 @@ export function normalizeToolRailLayout(value: unknown): ToolRailLayout {
   return normalized;
 }
 
+/** 从 localStorage 读布局并强制 notifications 规范（右侧顶端首位）；损坏回默认。 */
 export function loadToolRailLayout(): ToolRailLayout {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === null) return copyDefault();
     const parsed = normalizeToolRailLayout(JSON.parse(stored));
-    // 1:1 对标 IntelliJ IDEA 规范 (anchor: "right", order: 0)：
+    // 布局规范（anchor: "right", order: 0）：
     // notifications 必须且永远置于右侧顶端第一位，严禁遗留在 bottom 或其他位置。
     parsed.left.bottom = parsed.left.bottom.filter((id) => id !== "notifications");
     parsed.right.bottom = parsed.right.bottom.filter((id) => id !== "notifications");
@@ -91,6 +100,7 @@ export function loadToolRailLayout(): ToolRailLayout {
   }
 }
 
+/** 规整后写入 localStorage；写失败只丢布局偏好。 */
 export function saveToolRailLayout(layout: ToolRailLayout): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeToolRailLayout(layout)));
@@ -99,6 +109,7 @@ export function saveToolRailLayout(layout: ToolRailLayout): void {
   }
 }
 
+/** 查一个工具当前在左栏还是右栏。 */
 export function sideOfTool(layout: ToolRailLayout, id: ToolRailId): ToolRailSide {
   const group = TOOL_RAIL_GROUP[id];
   return layout.left[group].includes(id) ? "left" : "right";
@@ -125,6 +136,7 @@ export function reorderToolRail(
   return { ...layout, [side]: { ...layout[side], [group]: next } };
 }
 
+/** 把工具迁到另一侧（追加到该侧同组末尾）；原本就在该侧时原样返回。 */
 export function moveToolRail(layout: ToolRailLayout, id: ToolRailId, side: ToolRailSide): ToolRailLayout {
   const group = TOOL_RAIL_GROUP[id];
   const from = side === "left" ? "right" : "left";

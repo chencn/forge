@@ -6,6 +6,7 @@ import { fuzzyMatch } from "../../ui/match";
 import { useI18n } from "../../i18n";
 import styles from "./NewPopup.module.css";
 
+/** 「新建」弹出菜单的一项（separator 为真时是分割线）。 */
 export interface NewPopupItem {
   id: string;
   label: string;
@@ -15,6 +16,7 @@ export interface NewPopupItem {
   onSelect: () => void;
 }
 
+/** {@link NewPopup} 的入参。 */
 export interface NewPopupProps {
   open: boolean;
   anchor: { x: number; y: number } | null;
@@ -22,6 +24,7 @@ export interface NewPopupProps {
   onClose: () => void;
 }
 
+/** 「新建」弹出菜单：搜索框 + 过滤列表，键盘上下与回车选中。 */
 export function NewPopup({ open, anchor, items, onClose }: NewPopupProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");

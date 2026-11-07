@@ -14,6 +14,7 @@ pub static LIFECYCLE: Mutex<()> = Mutex::new(());
 const STOP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// 当前所有运行中的任务，按 run id 索引；用 OnceLock 保证全局唯一。
 static RUNS: OnceLock<Mutex<HashMap<String, Arc<Run>>>> = OnceLock::new();
+/// 运行表的懒初始化入口。
 fn runs() -> &'static Mutex<HashMap<String, Arc<Run>>> {
     RUNS.get_or_init(Mutex::default)
 }
@@ -61,6 +62,11 @@ pub struct Run {
     done: (Mutex<bool>, Condvar),
 }
 impl Run {
+    /// 在册登记一次新运行；同会话互斥，全局上限 8 个。
+    ///
+    /// # Errors
+    ///
+    /// 会话已有任务在跑或达到全局上限时返回错误串。
     pub fn reserve(
         id: String,
         session_id: String,
@@ -93,12 +99,18 @@ impl Run {
         all.insert(id, run.clone());
         Ok((run, receive))
     }
+    /// 从注册表移除自身并通知等待者：线程已彻底退出。
     pub fn finish(&self) {
         let mut all = runs().lock().unwrap_or_else(|e| e.into_inner());
         all.remove(&self.id);
         *self.done.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.done.1.notify_all();
     }
+    /// 请求停止并阻塞等线程退出。
+    ///
+    /// # Errors
+    ///
+    /// 清理超时未完成时返回错误串。
     pub fn stop(&self) -> Result<(), String> {
         self.request_stop();
         self.wait_until_stopped()
@@ -125,6 +137,7 @@ impl Run {
         Ok(())
     }
 }
+/// 按 id 取一条在册运行。
 pub fn get(id: &str) -> Option<Arc<Run>> {
     runs()
         .lock()
@@ -132,6 +145,7 @@ pub fn get(id: &str) -> Option<Arc<Run>> {
         .get(id)
         .cloned()
 }
+/// 按会话 id 找它的在册运行。
 pub fn for_session(id: &str) -> Option<Arc<Run>> {
     runs()
         .lock()
@@ -140,6 +154,7 @@ pub fn for_session(id: &str) -> Option<Arc<Run>> {
         .find(|r| r.session_id == id)
         .cloned()
 }
+/// 全部在册运行的快照。
 pub fn all() -> Vec<Arc<Run>> {
     runs()
         .lock()

@@ -13,8 +13,11 @@
 /** 行首已有的时钟写法：`10:12:33`、`2026-08-08T10:12:33.123`、ISO 的空格分隔变体。 */
 const LEADING_TIME = /^\s*(?:\d{4}-\d{2}-\d{2}[T ])?\d{2}:\d{2}:\d{2}/;
 
+/** 回车字节值。 */
 const CR = 13;
+/** 换行字节值。 */
 const LF = 10;
+/** ESC 字节值（行首是它就不盖章）。 */
 const ESC = 27;
 
 /** 跨块的盖章状态。`atLineStart`：下一个字节落不落在行首。新会话、整屏重放后置回 true。 */
@@ -31,6 +34,7 @@ export function formatStamp(now: Date): string {
   )}`;
 }
 
+/** 时间戳 → 字节（UTF-8），盖章时插入用。 */
 const TEXT_ENCODER = new TextEncoder();
 
 /**

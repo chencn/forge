@@ -7,7 +7,9 @@
  */
 
 const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+/** Windows 盘符路径（`C:/`、`C:\`），scheme 检测要把它排除。 */
 const WINDOWS_PATH = /^[A-Za-z]:[\\/]/;
+/** 虚拟文档 URI 的前缀。 */
 const VIRTUAL_PREFIX = "virtual:doc/";
 
 /** 返回 URI 的 scheme；无 scheme 的值不是可注册的虚拟 URI。 */

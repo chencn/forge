@@ -1,5 +1,6 @@
 import type { TranslationKey } from "./zh";
 
+/** 英文词表：键集必须与简体中文词表完全一致。 */
 export const en: Record<TranslationKey, string> = {
   "app.name": "Forge",
   // AI Elements labels share the same reported tool facts across locales.

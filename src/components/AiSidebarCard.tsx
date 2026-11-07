@@ -13,6 +13,7 @@ const HOVER_OPEN_DELAY_MS = 500;
 /** 指针离开后的宽限：跨进行内缝隙或小抖动不该把气泡闪灭。 */
 const HOVER_CLOSE_DELAY_MS = 120;
 
+/** 时间戳格式化成 `YYYY-MM-DD HH:mm`；缺省显示占位符。 */
 function formatAbsolute(timestamp: number | undefined): string {
   if (!timestamp) return "—";
   const date = new Date(timestamp);

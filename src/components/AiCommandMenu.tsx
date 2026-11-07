@@ -2,6 +2,7 @@ import type { Ref } from "react";
 import { useI18n } from "../i18n";
 import type { CommandSuggestion } from "../lib/aiCommands";
 
+/** 斜杠命令建议菜单的入参。 */
 interface AiCommandMenuProps {
   id: string;
   suggestions: CommandSuggestion[];

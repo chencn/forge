@@ -98,6 +98,7 @@ export type CommitFileAction =
   | "rollback"
   | "ignore";
 
+/** {@link GitPanel} 的入参。 */
 interface GitPanelProps {
   git: GitState;
   /** 网络动作交给 App 的统一窗口和任务流程。 */
@@ -127,9 +128,9 @@ interface GitPanelProps {
   /** 视图选项里的两个分组开关。 */
   onToggleByDir: () => void;
   onToggleByModule: () => void;
-  /** 双击变更行打开比对还是源文件；IDEA 的 Show on Double-Click。 */
+  /** 双击变更行打开比对还是源文件。 */
   showOnDoubleClick: "preview" | "source";
-  /** 一件都没暂存时，提交按钮直接提交全部已跟踪改动；IDEA 默认开着。 */
+  /** 一件都没暂存时，提交按钮直接提交全部已跟踪改动；默认开着。 */
   commitAllWhenNothingStaged: boolean;
   /** 双击要打开源文件时走这条，落给 App 开编辑器标签。 */
   onOpenSource: (change: GitChange) => void;
@@ -147,7 +148,7 @@ interface GitPanelProps {
   onOpenAiSettings?: () => void;
 }
 
-/** 提交信息规范问题检查 (对齐 IntelliJ IDEA / IDEA Commit Inspections) */
+/** 提交信息规范问题检查：主题长度、空行分隔等。 */
 export function messageProblems(
   message: string,
   c: {
@@ -184,7 +185,7 @@ export function wrapAtMargin(text: string, caret: number, limit: number): { text
   return { text: `${text.slice(0, at)}\n${text.slice(at + 1)}`, caret };
 }
 
-/** 14px 三态复选框组件（1:1 对标 IDEA / IntelliJ IDEA） */
+/** 14px 三态复选框。 */
 function CheckMark({
   checked,
   indeterminate,
@@ -219,6 +220,7 @@ function CheckMark({
   );
 }
 
+/** Git 工具窗口主体：改动清单、changelist、暂存区与历史页签。 */
 function GitPanel({
   git,
   onUpdate,
@@ -299,7 +301,7 @@ function GitPanel({
     });
   }, [message, vcs.blankLineAfterSubject, vcs.limitSubjectLine, vcs.subjectLineLimit, vcs.limitBodyLine, vcs.bodyLineLimit]);
 
-  // 提交区收起与自定义高度状态【保留项 2 & 4】
+  // 提交区收起与自定义高度状态
   const [commitCollapsed, setCommitCollapsed] = useState(false);
   const [commitHeight, setCommitHeight] = useState<number | null>(null);
   const commitBoxRef = useRef<HTMLDivElement>(null);
@@ -340,12 +342,12 @@ function GitPanel({
   // 选中的节点 key 集合
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
-  // AI 提交相关状态【保留项 3】
+  // AI 提交相关状态
   const aiCommitEnabled = useAiCommitEnabled();
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
-  // Stash Changes… 对话框：消息默认留空走 git 的「WIP on …」，未跟踪文件默认包含（IDEA 默认勾选）。
+  // Stash Changes… 对话框：消息默认留空走 git 的「WIP on …」，未跟踪文件默认包含。
   const [stashDialog, setStashDialog] = useState(false);
   const [shelfDialog, setShelfDialog] = useState(false);
   const [shelfName, setShelfName] = useState("");
@@ -664,7 +666,7 @@ function GitPanel({
     [git.root]
   );
 
-  // 创建补丁文件并按设置分流处理 (对标 IDEA VCS onPatchCreated 规范)
+  // 创建补丁文件并按设置分流处理。
   const handleCreatePatchFiles = useCallback(
     async (files: GitChange[]) => {
       if (!git.root || files.length === 0) return;
@@ -709,7 +711,7 @@ function GitPanel({
   };
 
   /**
-   * 变更文件与目录节点右键菜单（1:1 对标 IDEA 的 nodeMenu 规范）
+   * 变更文件与目录节点右键菜单。
    */
   const getNodeMenu = (node: ChangeNode): MenuItem[] => {
     const files = filesOf([node]);
@@ -841,7 +843,7 @@ function GitPanel({
     return items;
   };
 
-  // 生成 AI 提交消息【保留项 3】
+  // 生成 AI 提交消息
   const handleGenerateAiCommit = async () => {
     if (isGenerating) {
       handleCancelAiCommit();
@@ -947,7 +949,7 @@ function GitPanel({
       return;
     }
 
-    // 3. 超大文件安全拦截 (warnLargeFiles & largeFilesLimitMb 对标 IDEA)
+    // 3. 超大文件安全拦截（warnLargeFiles & largeFilesLimitMb）
     if (vcs.warnLargeFiles && git.root && includedPaths.length > 0) {
       const limitBytes = (vcs.largeFilesLimitMb || 50) * 1024 * 1024;
       const oversizedFiles: { path: string; sizeMb: number }[] = [];
@@ -970,7 +972,7 @@ function GitPanel({
       }
     }
 
-    // 4. 提交前检查：扫描待提交文件中的 TODO/FIXME (checkTodo 对标 IDEA Commit Checks)
+    // 4. 提交前检查：扫描待提交文件中的 TODO/FIXME（checkTodo）
     const shouldCheckTodo = commitOptions.checkTodo || vcs.checkTodo;
     if (shouldCheckTodo && git.root && includedPaths.length > 0) {
       const filesWithTodo: string[] = [];
@@ -1079,7 +1081,7 @@ function GitPanel({
   const openByDoubleClickRef = useRef(openByDoubleClick);
   openByDoubleClickRef.current = openByDoubleClick;
 
-  // 渲染单行树节点（1:1 对标 IDEA，并严格保留目录聚合圆点与行尾状态字母）
+  // 渲染单行树节点：保留目录聚合圆点与行尾状态字母
   const renderRow = useCallback(function renderRows(node: ChangeNode, depth: number) {
     const isGroup = node.type === "group";
     const isDir = node.type === "dir";
@@ -1161,7 +1163,7 @@ function GitPanel({
             onToggle={() => toggleCheck([node])}
           />
 
-          {/* 图标：1:1 对标 IntelliJ IDEA / ExpUI 官方矢量文件夹与文件图标体系 */}
+          {/* 图标：ExpUI 官方矢量文件夹与文件图标体系 */}
           {isGroup ? null : isDir ? (
             <span className={styles.icon}>
               <EntryIcon
@@ -1330,7 +1332,7 @@ function GitPanel({
         </button>
       </Popover>
 
-      {/* 1:1 对标 IDEA 的 32px 规范工具栏 */}
+      {/* 32px 规范工具栏 */}
       <div className={styles.toolbar} role="toolbar" aria-label={t("git.changes")}>
         <IconButton
           icon="refresh"
@@ -1457,7 +1459,7 @@ function GitPanel({
         </div>
       </div>
 
-      {/* Stash 列表：有贮藏才占地方，空仓库不留一行标题。操作对齐 IDEA 的 Apply / Pop / Drop。 */}
+      {/* Stash 列表：有贮藏才占地方，空仓库不留一行标题。操作为 Apply / Pop / Drop。 */}
       {git.stashes.length > 0 && (
         <div className={styles.stashBox}>
           <div className={styles.stashHead}>
@@ -1589,7 +1591,7 @@ function GitPanel({
         </div>
       )}
 
-      {/* 【保留项 4】：提交区可拖拽自定义高度分隔条。模态提交时改由对话框承载。 */}
+      {/* 提交区可拖拽自定义高度分隔条。模态提交时改由对话框承载。 */}
       {vcs.nonModalCommit && !commitCollapsed && (
         <div
           role="separator"
@@ -1692,7 +1694,7 @@ function GitPanel({
               </div>
             )}
 
-            {/* 平铺式等宽 Mono 输入框（1:1 对标 IDEA） */}
+            {/* 平铺式等宽 Mono 输入框 */}
             <textarea
               ref={inputRef}
               className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
@@ -1732,7 +1734,7 @@ function GitPanel({
               </div>
             )}
 
-            {/* 提交规范检查警告 (Commit Message Inspections 对标 IDEA) */}
+            {/* 提交规范检查警告（Commit Message Inspections） */}
             {commitProblems.length > 0 && !emptyError && (
               <div className={styles.inspections} role="status">
                 {commitProblems.map((prob, idx) => (
@@ -1755,7 +1757,7 @@ function GitPanel({
               </div>
             )}
 
-            {/* 底部按钮栏（1:1 对齐 IDEA 布局规范） */}
+            {/* 底部按钮栏 */}
             <div className={styles.commitActions}>
               <Button
                 variant="primary"
@@ -1852,7 +1854,7 @@ function GitPanel({
         )}
       </Popover>
 
-      {/* Stash Changes… 对话框（对齐 IDEA：消息 + 未跟踪文件开关） */}
+      {/* Stash Changes… 对话框：消息 + 未跟踪文件开关 */}
       {stashDialog && (
         <div className="dialog-backdrop" onClick={() => setStashDialog(false)}>
           <div className="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
@@ -1985,6 +1987,7 @@ function GitPanel({
   );
 }
 
+/** {@link ChangelistModal} 的入参（dialog 决定当前是新建/编辑/移动/删除哪一种）。 */
 interface ChangelistModalProps {
   dialog:
     | { mode: "new" }
@@ -1999,6 +2002,7 @@ interface ChangelistModalProps {
   onDelete: (id: string) => void;
 }
 
+/** changelist 的新建/编辑/移动/删除弹窗。 */
 function ChangelistModal({
   dialog,
   changelists,

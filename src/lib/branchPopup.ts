@@ -2,6 +2,7 @@ import type { GitBranch, GitTag } from "./git";
 import type { BranchSettings } from "./settings";
 import type { RefTarget } from "./refMenu";
 
+/** 分支弹层的一行：分组标题或一个引用。 */
 export type BranchPopupRow =
   | { type: "group"; key: string; label: string; depth: number; expanded: boolean; parent?: string }
   | { type: "ref"; key: string; label: string; depth: number; parent: string; target: RefTarget; current: boolean; favorite: boolean; upstream: string; ahead: number; behind: number };

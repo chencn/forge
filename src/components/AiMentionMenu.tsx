@@ -1,3 +1,4 @@
+/** @ 文件建议菜单的入参。 */
 interface AiMentionMenuProps {
   id: string;
   /** 相对路径建议（已按工作区归一）。 */

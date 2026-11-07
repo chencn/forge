@@ -10,8 +10,11 @@ import { aiSessionStorageKey } from "./aiSessions";
  * 「我在这个项目里说过什么」，跟哪个标签无关）。
  */
 const draftKey = (workspace: string | null, sessionId: string) => `${aiSessionStorageKey(workspace)}:draft:${sessionId}`;
+/** 会话草稿图片附件的存储键。 */
 const draftImagesKey = (workspace: string | null, sessionId: string) => `${aiSessionStorageKey(workspace)}:draft-images:${sessionId}`;
+/** 发送历史（按工程共享）的存储键。 */
 const historyKey = (workspace: string | null) => `${aiSessionStorageKey(workspace)}:prompts`;
+/** 会话附加目录列表的存储键。 */
 const dirsKey = (workspace: string | null, sessionId: string) => `${aiSessionStorageKey(workspace)}:dirs:${sessionId}`;
 
 /** 草稿最多存这么多字符。整段日志粘进来时，超出的尾巴不留到下次重启。 */
@@ -26,6 +29,7 @@ const MAX_STORED_IMAGES = 64;
 /** 草稿只保存可重建预览的稳定字段，禁止把大体积 data URL 塞进 localStorage。 */
 export interface DraftImageAttachment { path: string; name: string }
 
+/** 草稿防抖定时器（同一时刻最多一个待写入批次）。 */
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
 // 分栏与快速切换会交错编辑多个输入框，防抖期间也必须按完整存储键隔离。
 const pendingDrafts = new Map<string, string>();
@@ -51,6 +55,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", flushDraft);
 }
 
+/** 读会话草稿：防抖期间先取内存里的待写值，再退回 localStorage；读不到回空串。 */
 export function loadDraft(workspace: string | null, sessionId: string): string {
   const key = draftKey(workspace, sessionId);
   // 同一份规范化键贯穿内存与磁盘，避免相同会话 ID 跨项目串用。
@@ -84,6 +89,7 @@ export function saveDraft(workspace: string | null, sessionId: string, text: str
   }, 300);
 }
 
+/** 读工程的发送历史；坏数据回空表。 */
 export function loadPromptHistory(workspace: string | null): string[] {
   try {
     const items: unknown = JSON.parse(localStorage.getItem(historyKey(workspace)) ?? "[]");
@@ -111,6 +117,7 @@ export function rememberPrompt(workspace: string | null, text: string): void {
   }
 }
 
+/** 删除会话草稿（内存待写值与磁盘一起清）。 */
 export function clearDraft(workspace: string | null, sessionId: string): void {
   const key = draftKey(workspace, sessionId);
   pendingDrafts.delete(key);
@@ -124,12 +131,14 @@ export function clearDraft(workspace: string | null, sessionId: string): void {
 /** 读取尚未发送的图片附件；损坏条目直接跳过，不能让一条坏缓存挡住输入框。 */
 // 存储被禁用或配额耗尽时仍保留本窗口的附件，不能因为持久化失败直接清空输入框。
 const imageFallbacks = new Map<string, string>();
+/** 图片附件的原始快照（JSON 字符串）：先看内存兜底，再读 localStorage。 */
 function draftImagesSnapshot(workspace: string | null, sessionId: string): string {
   const key = draftImagesKey(workspace, sessionId);
   if (imageFallbacks.has(key)) return imageFallbacks.get(key)!;
   try { return localStorage.getItem(key) ?? "[]"; } catch { return "[]"; }
 }
 
+/** 解析图片附件 JSON；非法/越界条目丢弃，最多保留 {@link MAX_STORED_IMAGES} 张。 */
 function parseDraftImages(raw: string): DraftImageAttachment[] {
   try {
     const items: unknown = JSON.parse(raw);
@@ -146,10 +155,12 @@ function parseDraftImages(raw: string): DraftImageAttachment[] {
   }
 }
 
+/** 读会话的图片附件列表。 */
 export function loadDraftImages(workspace: string | null, sessionId: string): DraftImageAttachment[] {
   return parseDraftImages(draftImagesSnapshot(workspace, sessionId));
 }
 
+/** 按存储键分组的通知订阅者（同窗口内的变更用，跨窗口走 storage 事件）。 */
 const imageListeners = new Map<string, Set<() => void>>();
 
 /** 卸载页面的异步保存也能通知重新挂载的输入框；其他原生窗口走 storage 事件。 */
@@ -167,6 +178,7 @@ export function subscribeDraftImages(workspace: string | null, sessionId: string
   };
 }
 
+/** 订阅图片附件变更的 React 入口；字符串快照 + memo，避免每帧重解析。 */
 export function useDraftImages(workspace: string | null, sessionId: string): DraftImageAttachment[] {
   const subscribe = useCallback((listener: () => void) => subscribeDraftImages(workspace, sessionId, listener), [workspace, sessionId]);
   const snapshot = useCallback(() => draftImagesSnapshot(workspace, sessionId), [workspace, sessionId]);
@@ -194,6 +206,7 @@ export function updateDraftImages(workspace: string | null, sessionId: string, c
   saveDraftImages(workspace, sessionId, change(loadDraftImages(workspace, sessionId)));
 }
 
+/** 清空会话的图片附件。 */
 export function clearDraftImages(workspace: string | null, sessionId: string): void {
   saveDraftImages(workspace, sessionId, []);
 }
@@ -233,6 +246,7 @@ export function loadAdditionalDirs(workspace: string | null, sessionId: string):
     return Array.isArray(items) ? items.filter((item): item is string => typeof item === "string" && item.length > 0).slice(0, 16) : [];
   } catch { return []; }
 }
+/** 持久化本会话的附加目录；空列表删键，最多 16 条，写失败只丢跨重启恢复。 */
 export function saveAdditionalDirs(workspace: string | null, sessionId: string, dirs: string[]): void {
   try {
     if (!dirs.length) localStorage.removeItem(dirsKey(workspace, sessionId));
@@ -244,6 +258,7 @@ export function saveAdditionalDirs(workspace: string | null, sessionId: string, 
 
 /** ↑↓ 在历史里的位置。`stash` 是离开历史时要还回去的那行——用户中途改的字也存在这里。 */
 export type PromptBrowse = { index: number; stash: string };
+/** 输入框的当前状态：正文加上进行中的历史召回位置（不在召回中为 null）。 */
 export type DraftState = { text: string; browse: PromptBrowse | null };
 
 /** 往上（更早）走一格；已经到最老一条就停在原地。 */
@@ -283,6 +298,7 @@ export function browseTyped(text: string, draft: DraftState): DraftState {
 export function caretOnFirstLine(text: string, caret: number): boolean {
   return !text.slice(0, Math.min(Math.max(caret, 0), text.length)).includes("\n");
 }
+/** 光标之后没有换行（在最后一行）时 ↑ 才归历史召回。 */
 export function caretOnLastLine(text: string, caret: number): boolean {
   return !text.slice(Math.min(Math.max(caret, 0), text.length)).includes("\n");
 }

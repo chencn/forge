@@ -2,6 +2,7 @@ import { renderChatTokenBlocks } from "./chatMarkdownCore";
 import { sanitizeChatHtml } from "./chatSanitize";
 import { fenceLanguages, prepareHighlight } from "./cm/grammars";
 
+/** 一个渲染好的 markdown 块：key 是块指纹，html 是清洗后的 HTML。 */
 export interface ChatBlock {
   key: string;
   html: string;
@@ -20,8 +21,10 @@ export interface ChatBlock {
 
 /** 单块清洗结果的 LRU；按 token 指纹命中，流式中历史块永不重洗。 */
 const SANITIZE_LIMIT = 2000;
+/** 单块清洗结果的 LRU 容器。 */
 const sanitizeCache = new Map<string, string>();
 
+/** 清洗一块 HTML；命中 {@link sanitizeCache} 直接复用。 */
 function sanitizeBlock(key: string, html: string): string {
   const cached = sanitizeCache.get(key);
   if (cached !== undefined) return cached;
@@ -34,6 +37,7 @@ function sanitizeBlock(key: string, html: string): string {
   return clean;
 }
 
+/** 全部块逐个清洗。 */
 function sanitizeAll(blocks: ChatBlock[]): ChatBlock[] {
   return blocks.map((block) => ({ key: block.key, html: sanitizeBlock(block.key, block.html) }));
 }
@@ -44,10 +48,14 @@ async function renderSync(source: string, copyLabel: string, openBlocks: boolean
   return sanitizeAll(renderChatTokenBlocks(source, copyLabel, openBlocks));
 }
 
+/** 渲染 Worker 单例（懒建）；null 表示没有 Worker 环境。 */
 let worker: Worker | null = null;
+/** Worker 请求 id 发号器。 */
 let nextRequestId = 1;
+/** 在飞的请求（id → 回调）。 */
 const pending = new Map<number, (blocks: ChatBlock[]) => void>();
 
+/** 拿渲染 Worker；建不了返回 null（走主线程兜底）。 */
 function ensureWorker(): Worker | null {
   if (worker) return worker;
   if (typeof Worker === "undefined") return null;

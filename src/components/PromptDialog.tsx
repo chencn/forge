@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
 
+/** 提示对话框的种类（新建/重命名/Git 确认/更新安装…）。 */
 export type DialogKind =
   | "newFolder"
   | "newFile"
@@ -25,6 +26,7 @@ export type DialogKind =
   | "installUpdate"
   | "restartUpdate";
 
+/** 一次弹对话框的请求：种类 + 预填值 + 各类专用参数。 */
 export interface DialogRequest {
   kind: DialogKind;
   /** 新建时是预填名；重命名、删除和两种 git 确认框里是当前要写在文案上的名字（提交短哈希）。 */
@@ -54,12 +56,14 @@ export interface DialogRequest {
   closeReason?: "dirty" | "running" | "both";
 }
 
+/** {@link PromptDialog} 的入参。 */
 interface PromptDialogProps {
   request: DialogRequest;
   onSubmit: (name: string, extra: string) => void;
   onCancel: () => void;
 }
 
+/** 各对话框的标题文案键。 */
 const TITLE_KEY: Record<DialogKind, TranslationKey> = {
   newFolder: "dialog.newFolder",
   newFile: "dialog.newFile",
@@ -138,14 +142,17 @@ const CONFIRM_KEY: Partial<Record<DialogKind, TranslationKey>> = {
   renameBranch: "dialog.rename",
 };
 
+/** 确认按钮文案键（缺省「创建」）。 */
 export function confirmKey(kind: DialogKind): TranslationKey {
   return CONFIRM_KEY[kind] ?? "dialog.create";
 }
 
+/** 取消按钮文案键（更新类对话框是「稍后」）。 */
 export function cancelKey(kind: DialogKind): TranslationKey {
   return UPDATE_KINDS.includes(kind) ? "dialog.updateLater" : "dialog.cancel";
 }
 
+/** 提示对话框组件（受 request 驱动渲染）。 */
 export default function PromptDialog({ request, onSubmit, onCancel }: PromptDialogProps) {
   const { t } = useI18n();
   const [value, setValue] = useState(request.name);

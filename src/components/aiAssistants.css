@@ -2417,7 +2417,7 @@ details[open].ai-tool[data-kind="command"] .ai-detail-chevron { opacity: 1; }
 /* 空态：一行灰字。 */
 p.ai-chat-empty { margin: 24px 0; text-align: center; color: var(--text-tertiary); font-size: 12.5px; }
 
-/* 直接使用 IDEA 的表面、文字与完成色；完成项保持可读，不模拟禁用态或划除内容。 */
+/* 直接使用表面、文字与完成色；完成项保持可读，不模拟禁用态或划除内容。 */
 .ai-plan-notice { box-sizing: border-box; margin: 8px 0 12px; padding: 10px 12px; border: 1px solid var(--border-popup); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 13px; }
 /* 完成数与总数紧随计划标题，不向行尾分散。 */
 .ai-plan-notice header { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 4px 10px; }

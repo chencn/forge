@@ -1,7 +1,6 @@
 /**
  * 树节点行内就地编辑组件 (InlineEditor)
  *
- * 1:1 对标 IntelliJ IDEA：
  * 1. 挂载时自动聚焦并选中主文件名（重命名时自动排除扩展名，如 `App.tsx` 选中 `App`）；
  * 2. 实时校验合法性，遇到非法字符或重名在下方以气泡弹窗 (Popup) 显示具体原因；
  * 3. 敲击 Enter 提交，Esc 取消；新建条目失焦时自动取消，重命名有效失焦时自动提交。
@@ -19,6 +18,7 @@ import {
 } from "./model";
 import styles from "./ProjectTree.module.css";
 
+/** 项目树行内编辑器的入参。 */
 export interface InlineEditorProps {
   /** 当前编辑态 */
   readonly editing: EditingState;
@@ -30,6 +30,7 @@ export interface InlineEditorProps {
   readonly onCancel: () => void;
 }
 
+/** 项目树的行内重命名/新建编辑框。 */
 export function InlineEditor({
   editing,
   siblings,
@@ -122,7 +123,7 @@ export function InlineEditor({
           }
         }}
         onBlur={() => {
-          // IDEA 规则：新建失焦取消；重命名有效且变更则提交
+          // 新建失焦取消；重命名有效且变更则提交
           if (editing.kind === "new") {
             void handleFinish(false);
             return;

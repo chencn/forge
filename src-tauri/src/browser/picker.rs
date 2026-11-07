@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 use std::sync::Arc;
 
+/// 页签上的元素选择器状态：会话、代际与当前选中。
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Picker {
@@ -20,6 +21,7 @@ pub struct Picker {
     queue: Arc<tokio::sync::Mutex<()>>,
 }
 impl Picker {
+    /// 作废当前选择会话：代际前移，在途标记自然过期。
     pub fn invalidate(&mut self) {
         self.generation += 1;
         self.active = false;
@@ -28,14 +30,17 @@ impl Picker {
         self.backend = None;
         self.error = None;
     }
+    /// 是否还有活动、在途或未清的选择现场。
     pub fn in_use(&self) -> bool {
         self.active || self.pending || self.selection.is_some()
     }
 }
 
+/// 元素选取高亮样式的 highlightConfig JSON。
 fn highlight() -> Value {
     json!({"showInfo":true,"contentColor":{"r":79,"g":120,"b":255,"a":0.12},"borderColor":{"r":79,"g":120,"b":255,"a":0.95}})
 }
+/// 开关 CDP 的 inspect 模式；WebView2 即使关闭也必须带 highlightConfig，否则静默滞留。
 fn inspect_mode(enabled: bool) -> Value {
     // WebView2 即使 mode=none 也要求 highlightConfig；漏掉它会静默留在鼠标悬停选取模式。
     json!({"mode":if enabled {"searchForNode"} else {"none"},"highlightConfig":highlight()})
@@ -81,6 +86,7 @@ pub async fn set_enabled(app: &AppHandle, id: &str, enabled: bool) -> Result<Val
     result
 }
 
+/// 判断选取器代际是否仍是最新的（过期则丢弃结果）。
 fn current(app: &AppHandle, id: &str, generation: u64) -> bool {
     host(app).lock().tabs.get(id).is_some_and(|tab| tab.picker.generation == generation)
 }
@@ -296,6 +302,7 @@ fn follow_hover(app: &AppHandle, id: &str, generation: u64) {
     });
 }
 
+/// 元素选择器的引擎事件入口：收到选中即关闭会话并异步处理。
 pub fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
     let mut state = host(app).lock();
     let Some(tab) = state.tabs.get_mut(id) else { return; };

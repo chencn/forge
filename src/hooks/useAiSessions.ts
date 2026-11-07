@@ -18,7 +18,9 @@ const stores = new Map<string, Snapshot>();
 const activityWorkspaces = new Map<string, string>();
 /** 活动探针的两个档位：有人在跑就盯紧，全闲就松到 10 秒。 */
 const ACTIVE_POLL_MS = 3000;
+/** 活动探针的松档：全闲时的轮询间隔（紧档见 {@link ACTIVE_POLL_MS}）。 */
 const IDLE_POLL_MS = 10000;
+/** useSyncExternalStore 的订阅者。 */
 const listeners = new Set<() => void>();
 /** 已删除的会话 id（带存储键前缀）。后端历史里仍有记录，靠它挡住重新导入。 */
 const deleted = new Set<string>();
@@ -45,6 +47,7 @@ function get(key: string): Snapshot {
   }
   return value;
 }
+/** useSyncExternalStore 的订阅入口。 */
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => { listeners.delete(listener); };

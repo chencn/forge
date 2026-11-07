@@ -17,6 +17,7 @@ const STORM_MAX_WAIT_MS = 6000;
 /** 单批路径数达到该阈值即视为批量文件增删事件。 */
 const STORM_PATH_THRESHOLD = 10;
 
+/** 后端 watchWorkspace 事件的载荷。 */
 interface FsChangePayload {
   /** 变更所属的工作区根目录（与 watchWorkspace 入参一致）。 */
   root: string;
@@ -26,6 +27,7 @@ interface FsChangePayload {
   structural?: string[];
 }
 
+/** 一个工作区根攒批的现场：待发路径、结构变动子集与风暴计时。 */
 interface RootBatchState {
   paths: Set<string>;
   /** 与 `paths` 同步攒的结构变动子集：只有它才值得让文件树重列目录。 */

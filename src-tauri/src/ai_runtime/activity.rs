@@ -7,10 +7,16 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::io::{Read, Seek, SeekFrom};
 
+/// 会话占用探测的结论。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State { Idle, Running, External, Conflict, Unknown }
 
+/// CLI 配置目录：环境变量（绝对路径）优先，否则用户主目录下的 `fallback`。
+///
+/// # Errors
+///
+/// 环境变量与用户目录均不可得时返回错误。
 fn cli_home(variable: &str, fallback: &str) -> Result<PathBuf, String> {
     std::env::var_os(variable).map(PathBuf::from).or_else(|| {
         std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|home| PathBuf::from(home).join(fallback))
@@ -83,6 +89,13 @@ fn process_matches(pid: u32, record: &Value) -> Result<bool, String> {
     }
 }
 
+/// 批量读 Claude 的 PID 登记目录，产出 `(pid, record)` 列表。
+///
+/// 单份登记超过 64 KB、解析失败或正被写一半的都跳过，不让个别坏文件阻塞整个探测。
+///
+/// # Errors
+///
+/// 目录读取失败（不存在不算）或条目元数据失败时返回错误。
 fn claude_records(dir: &Path) -> Result<Vec<(u32, Value)>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -108,6 +121,12 @@ fn claude_records(dir: &Path) -> Result<Vec<(u32, Value)>, String> {
 #[derive(Default)]
 pub struct Probe { claude: Option<Result<Vec<(u32, Value)>, String>> }
 impl Probe {
+/// 探测一条原生会话是否正被外部进程执行；Claude 走 PID 登记，Codex 走线程写锁。
+/// Claude 的登记结果按探针实例缓存（见 [`Probe`] 字段），批量轮询只扫一遍目录。
+///
+/// # Errors
+///
+/// 原生 ID 非法、配置目录不可得或登记读取失败时返回错误。
 fn external(&mut self, provider: Provider, native: &str, own_pid: u32) -> Result<bool, String> {
     if !store::valid_id(native) { return Err("无效原生会话 ID".into()); }
     if provider == Provider::Codex { return codex_occupied(&cli_home("CODEX_HOME", ".codex")?.join("thread-writer-locks"), native); }
@@ -117,10 +136,17 @@ fn external(&mut self, provider: Provider, native: &str, own_pid: u32) -> Result
         Err(error) => Err(error.clone()),
     }
 }
-pub fn state(&mut self, base: &Path, id: &str, root: &str) -> Result<State, String> {
+    /// 探测一条会话的占用状态（实例方法入口）。
+    pub fn state(&mut self, base: &Path, id: &str, root: &str) -> Result<State, String> {
     state_with(self, base, id, root)
 }
 }
+/// 在 Claude PID 登记里找同会话的外部活动任务：ID 匹配、状态 busy/waiting、
+/// 排除自身进程，且 PID 对应进程确实存活（`matches` 校验创建时间）。
+///
+/// # Errors
+///
+/// [`process_matches`] 的错误原样透传。
 fn claude_occupied(records: &[(u32, Value)], native: &str, own_pid: u32, matches: impl Fn(u32, &Value) -> Result<bool, String>) -> Result<bool, String> {
     for (pid, record) in records {
         // 窗口存活不是任务运行；只有执行中或等待工具答复才计入活动任务。
@@ -131,6 +157,14 @@ fn claude_occupied(records: &[(u32, Value)], native: &str, own_pid: u32, matches
     Ok(false)
 }
 
+/// 检查 Codex 的线程写锁占用情况。
+///
+/// 先查交接锁 `.coordination.lock`：正被占着说明交接进行中，按错误报；
+/// 再查会话锁 `<native>.lock`：被别的进程握着即占用。
+///
+/// # Errors
+///
+/// 交接锁被占（中文提示）或底层锁检查失败时返回错误。
 fn codex_occupied(dir: &Path, native: &str) -> Result<bool, String> {
     // 与官方 writer_lock.rs 相同顺序，防止检查到清理/重建之前的旧文件。
     let (busy, _coordination) = writer_lock(&dir.join(".coordination.lock"))?;
@@ -149,6 +183,13 @@ pub fn writer_held(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     held_in(base, id, root, &codex_thread_locks()?)
 }
 
+/// [`writer_held`] 的实际执行体；`locks` 参数化是为了测试注入临时目录。
+///
+/// 只对绑定了原生 ID 的 Codex 会话有意义，其余一律不挡。
+///
+/// # Errors
+///
+/// 会话 ID 非法、元数据读取失败或原生 ID 非法时返回错误。
 fn held_in(base: &Path, id: &str, root: &str, locks: &Path) -> Result<bool, String> {
     if !store::valid_id(id) { return Err("无效会话 ID".into()); }
     let meta = store::Store::metadata(&base.join(id), root)?;
@@ -164,6 +205,7 @@ fn held_in(base: &Path, id: &str, root: &str, locks: &Path) -> Result<bool, Stri
     }
 }
 
+/// 用默认探针探测一条会话的占用状态。
 pub fn state(base: &Path, id: &str, root: &str) -> Result<State, String> {
     Probe::default().state(base, id, root)
 }
@@ -175,6 +217,14 @@ pub fn externally_occupied(base: &Path, id: &str, root: &str) -> Result<bool, St
     let Some(native) = meta.native_id.as_deref() else { return Ok(false); };
     Probe::default().external(meta.provider, native, 0)
 }
+/// [`state`] 的实际执行体，允许测试注入自定义探针。
+///
+/// 判定顺序：本窗口在跑 → Running；另一 Forge 窗口持租约 → External；
+/// 原生 CLI 还活着 → External/Idle（Codex 按任务边界细分）；都不占 → Idle。
+///
+/// # Errors
+///
+/// 会话 ID 非法、项目不匹配或元数据读取失败时返回错误。
 fn state_with(probe: &mut Probe, base: &Path, id: &str, root: &str) -> Result<State, String> {
     if !store::valid_id(id) { return Err("无效会话 ID".into()); }
     if let Some(run) = registry::for_session(id) {
@@ -240,6 +290,7 @@ fn codex_task_active(path: &Path) -> Result<Option<bool>, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    /// 测试夹具：唯一临时目录，Drop 时整体清理。
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {

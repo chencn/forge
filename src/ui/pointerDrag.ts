@@ -14,6 +14,7 @@ export interface DragData {
 /** 项目文件拖拽 MIME 类型：`payload` 是用 `\n` 连接的文件绝对路径 */
 export const FILES_DRAG = "application/x-forge-files";
 
+/** 一个可接收拖放的容器。 */
 export interface DropTarget {
   accepts(type: string): boolean;
   /** 指针移动到目标上方 */
@@ -23,8 +24,10 @@ export interface DropTarget {
   drop(data: DragData, x: number, y: number): void;
 }
 
+/** 已注册的拖放目标（元素 → 目标）。 */
 const targets = new Map<Element, DropTarget>();
 
+/** 注册拖放目标；返回注销函数。 */
 export function registerDropTarget(el: Element, target: DropTarget): () => void {
   targets.set(el, target);
   return () => {
@@ -41,6 +44,7 @@ function targetAt(type: string, x: number, y: number): DropTarget | null {
   return null;
 }
 
+/** 一次进行中的拖拽会话。 */
 export interface DragSession {
   /** 更新悬停反馈；如果 (x, y) 处有目标接受该拖拽则返回 true */
   move(x: number, y: number): boolean;
@@ -49,6 +53,7 @@ export interface DragSession {
   cancel(): void;
 }
 
+/** 开一个拖拽会话（内部记当前悬停目标，进出自动补 over/leave）。 */
 export function dragSession(data: DragData): DragSession {
   let current: DropTarget | null = null;
   const enter = (t: DropTarget | null) => {
@@ -75,10 +80,13 @@ export function dragSession(data: DragData): DragSession {
 /** 超过此像素阈值才触发拖拽，避免误触普通点击 */
 const DRAG_THRESHOLD = 4;
 
+/** 拖拽是否要求按住 Alt 的判定器（App 启动时注入）。 */
 let requiresAlt = () => false;
+/** 注入 Alt 判定器。 */
 export function setDragRequiresAlt(fn: () => boolean) {
   requiresAlt = fn;
 }
+/** 拖拽是否要求按住 Alt（未注入时恒 false）。 */
 export const dragRequiresAlt = () => requiresAlt();
 
 /**

@@ -1,5 +1,5 @@
 /**
- * 虚拟化树形组件，支持子节点懒加载、范围/连续多选、IntelliJ 键盘模型
+ * 虚拟化树形组件，支持子节点懒加载、范围/连续多选、树形键盘导航模型
  * （↑↓←→, Enter / F4, Home/End, PageUp/PageDown, Shift 扩展选区）
  * 以及 Speed Search（打字即搜即跳，Esc 清除；可选 filter 模式隐藏未匹配行）。
  */
@@ -27,6 +27,7 @@ import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 
+/** 单行的渲染状态，传给 {@link TreeProps.renderNode}。 */
 export interface TreeRowState {
   depth: number;
   expanded: boolean;
@@ -38,6 +39,7 @@ export interface TreeRowState {
   matches: number[] | null;
 }
 
+/** 一次 occurrence 导航的结果（下一个匹配节点及其序位）。 */
 export interface TreeOccurrence {
   key: string;
   node: unknown;
@@ -45,6 +47,7 @@ export interface TreeOccurrence {
   total: number;
 }
 
+/** 命令式句柄：聚焦、滚动到某节点、读 lead 行、occurrence 导航。 */
 export interface TreeHandle {
   focus(): void;
   reveal(key: string): void;
@@ -53,6 +56,7 @@ export interface TreeHandle {
   selectOccurrence(dir: 1 | -1, options?: { skipSubtree?: boolean }): TreeOccurrence | null;
 }
 
+/** {@link Tree} 的入参：节点模型回调 + 展开/选中受控或非受控 + Speed Search 配置。 */
 export interface TreeProps<T> {
   roots: readonly T[];
   getKey: (node: T) => string;
@@ -91,6 +95,7 @@ export interface TreeProps<T> {
   empty?: ReactNode;
 }
 
+/** 展平后的可见行（虚拟化渲染的最小单元）。 */
 interface Row<T> {
   node: T;
   key: string;
@@ -102,11 +107,13 @@ interface Row<T> {
   loading?: boolean;
 }
 
+/** 受控/非受控两用的小集合 state：受控时透传外部值并跳过内部更新。 */
 function useControllableSet(value: ReadonlySet<string> | undefined, initial: Iterable<string> | undefined) {
   const [inner, setInner] = useState<ReadonlySet<string>>(() => new Set(initial ?? []));
   return [value ?? inner, setInner, value !== undefined] as const;
 }
 
+/** 虚拟化树组件本体；渲染逻辑见文件头注释。 */
 export function Tree<T>(props: TreeProps<T>) {
   const { t } = useI18n();
   const loadingText = t("common.loading");
@@ -213,7 +220,7 @@ export function Tree<T>(props: TreeProps<T>) {
     if (leadIndex >= 0) virtualizer.scrollToIndex(leadIndex, { align: "auto" });
   }, [leadIndex, virtualizer]);
 
-  // SpeedSearch 激活时捕获 Escape
+  // 逐字搜索激活时捕获 Escape
   useEffect(() => {
     if (!query) return;
     return acquirePopup();
@@ -580,6 +587,7 @@ export function Tree<T>(props: TreeProps<T>) {
   );
 }
 
+/** key 是否是 ancestor 的后代（沿 parentKey 链上溯）。 */
 function isDescendant<T>(byKey: Map<string, Row<T>>, key: string, ancestor: string): boolean {
   for (let k = byKey.get(key)?.parentKey ?? null; k != null; k = byKey.get(k)?.parentKey ?? null) {
     if (k === ancestor) return true;
@@ -587,6 +595,7 @@ function isDescendant<T>(byKey: Map<string, Row<T>>, key: string, ancestor: stri
   return false;
 }
 
+/** 每行在其兄弟中的序位 [index, total]（拖拽/状态栏展示用）。 */
 export function siblingPositions(
   rows: ReadonlyArray<{ parentKey: string | null; loading?: boolean }>
 ): Array<[number, number]> {
@@ -600,6 +609,10 @@ export function siblingPositions(
   return out;
 }
 
+/**
+ * 找下一个/上一个 occurrence（`isOccurrence` 为真的节点）：先序遍历序，
+ * `skipSubtree` 为真时跳过 lead 节点的子树。没有返回 null。
+ */
 export function findOccurrence<T>(
   roots: readonly T[],
   lead: string | null,

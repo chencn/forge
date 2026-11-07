@@ -20,6 +20,7 @@ export interface AiSearchState {
   workspace: string | null;
 }
 
+/** 空闲态的固定快照：引用稳定，避免无谓重渲染。 */
 const IDLE: AiSearchState = { status: "idle", result: null, error: null, query: "", archived: false, workspace: null };
 
 /**

@@ -17,12 +17,15 @@ const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// 一次快照最多收多少个文件，防一手异常入参。
 const MAX_FILES: usize = 32;
 
+/// 快照 id 的毫秒序号发号器。
 static SNAPSHOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// 一条会话的检查点存储目录。
 fn checkpoints_dir(base: &Path, session_id: &str) -> PathBuf {
     base.join(session_id).join("checkpoints")
 }
 
+/// 生成快照 id：`cp-<毫秒>-<序号>`。
 fn snapshot_id() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -89,6 +89,7 @@ export function reduceDownloadEvent(
  */
 const readyUpdates = new Map<string, Update>();
 
+/** 把一条可用更新登记进 {@link readyUpdates}。 */
 function remember(update: Update): void {
   readyUpdates.set(update.version, update);
 }
@@ -220,17 +221,21 @@ export async function clearPendingUpdate(): Promise<void> {
 
 /** 更新流程的全局互斥锁。 */
 let busy = false;
+/** busy 状态的订阅者（界面据此禁用/放开更新按钮）。 */
 const busyListeners = new Set<() => void>();
 
+/** 更新流程是否正在占用（检查/下载/安装期间互斥）。 */
 export function isUpdateFlowBusy(): boolean {
   return busy;
 }
 
+/** 订阅 busy 状态变化。 */
 export function watchUpdateFlowBusy(listener: () => void): () => void {
   busyListeners.add(listener);
   return () => busyListeners.delete(listener);
 }
 
+/** 尝试占用更新互斥锁；已被占用返回 false。 */
 export function beginUpdateFlow(): boolean {
   if (busy) return false;
   busy = true;
@@ -238,6 +243,7 @@ export function beginUpdateFlow(): boolean {
   return true;
 }
 
+/** 释放更新互斥锁。 */
 export function endUpdateFlow(): void {
   busy = false;
   busyListeners.forEach((listener) => listener());
@@ -246,6 +252,7 @@ export function endUpdateFlow(): void {
 /** 更新状态机的阶段。 */
 export type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "ready" | "error";
 
+/** 全局更新状态机的对外快照。 */
 export interface GlobalUpdateState {
   phase: UpdatePhase;
   version: string | null;
@@ -253,6 +260,7 @@ export interface GlobalUpdateState {
   error: string | null;
 }
 
+/** 当前全局更新状态（模块级单例）。 */
 let globalUpdateState: GlobalUpdateState = {
   phase: "idle",
   version: null,
@@ -260,17 +268,21 @@ let globalUpdateState: GlobalUpdateState = {
   error: null,
 };
 
+/** 更新状态变化的订阅者。 */
 const statusListeners = new Set<(state: GlobalUpdateState) => void>();
 
+/** 读全局更新状态快照。 */
 export function getUpdateStatus(): GlobalUpdateState {
   return globalUpdateState;
 }
 
+/** 合并写入全局更新状态并通知订阅者。 */
 export function setUpdateStatus(partial: Partial<GlobalUpdateState>): void {
   globalUpdateState = { ...globalUpdateState, ...partial };
   statusListeners.forEach((listener) => listener(globalUpdateState));
 }
 
+/** 订阅全局更新状态；注册时立即回放当前值。 */
 export function watchUpdateStatus(listener: (state: GlobalUpdateState) => void): () => void {
   statusListeners.add(listener);
   listener(globalUpdateState);
@@ -459,6 +471,7 @@ async function installPendingUpdate(
   }
 }
 
+/** 把任意抛出值折成一行错误文案。 */
 function errorText(error: unknown): string {
   return typeof error === "string" ? error : String(error);
 }

@@ -13,6 +13,7 @@ import {
 } from "../lib/localHistory";
 import type { FileContent } from "../lib/fs";
 
+/** {@link LocalHistoryDialog} 的入参。 */
 interface LocalHistoryDialogProps {
   root: string;
   path: string;
@@ -23,6 +24,7 @@ interface LocalHistoryDialogProps {
   onClose: () => void;
 }
 
+/** 修订时刻文案：当天只给时分秒，隔天补上月日。 */
 function formatTime(ms: number): string {
   const date = new Date(ms);
   const now = new Date();
@@ -35,6 +37,7 @@ function formatTime(ms: number): string {
   return `${date.toLocaleDateString([], { month: "2-digit", day: "2-digit" })} ${time}`;
 }
 
+/** 本地历史对话框：修订清单 + 双栏比对 + 恢复。 */
 export default function LocalHistoryDialog({
   root,
   path,

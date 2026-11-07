@@ -186,6 +186,7 @@ export function gitInit(root: string): Promise<string> {
   return invoke<string>("git_init", { root });
 }
 
+/** 仓库全量状态：分支、变更清单、ahead/behind 等一次取回，Git 面板的刷新入口。 */
 export function gitStatus(root: string): Promise<GitStatus> {
   return invoke<GitStatus>("git_status", { root });
 }
@@ -210,6 +211,7 @@ export function gitStage(root: string, absolutePaths: string[]): Promise<void> {
   return invoke<void>("git_stage", { root, paths: absolutePaths });
 }
 
+/** 把已暂存的改动从索引里撤出（保留工作区内容）。 */
 export function gitUnstage(root: string, absolutePaths: string[]): Promise<void> {
   return invoke<void>("git_unstage", { root, paths: absolutePaths });
 }
@@ -268,6 +270,7 @@ export function gitRefs(root: string): Promise<{ branches: GitBranch[]; tags: Gi
   return invoke<{ branches: GitBranch[]; tags: GitTag[] }>("git_refs", { root });
 }
 
+/** 已配置的远端名称列表；没有远端时为空数组。 */
 export function gitRemotes(root: string): Promise<string[]> {
   return invoke<string[]>("git_remotes", { root });
 }
@@ -309,10 +312,12 @@ function progressArgs(onProgress?: (line: string) => void) {
   return { onOutput };
 }
 
+/** 拉取所有远端；最终输出走返回值，过程日志经 onProgress 实时回传。 */
 export function gitFetch(root: string, onProgress?: (line: string) => void): Promise<string> {
   return invoke<string>("git_fetch", { root, ...progressArgs(onProgress) });
 }
 
+/** 拉取并整合当前分支的上游；method 决定 ff-only / merge / rebase 三种整合方式。 */
 export function gitPull(root: string, method: "ff-only" | "merge" | "rebase" = "merge", onProgress?: (line: string) => void): Promise<string> {
   return invoke<string>("git_pull", { root, method, ...progressArgs(onProgress) });
 }
@@ -322,6 +327,7 @@ export function gitUpdateBranch(root: string, branch: string, onProgress?: (line
   return invoke<string>("git_update_branch", { root, branch, ...progressArgs(onProgress) });
 }
 
+/** 推送选项；不指定 branch 时推当前分支，tags 控制附带推送哪些标签。 */
 export interface GitPushOptions {
   branch?: string;
   remote?: string;
@@ -332,6 +338,7 @@ export interface GitPushOptions {
   tags?: "all" | "currentBranch";
 }
 
+/** 分支的上游跟踪信息；tracked 为 false 表示尚未建立上游。 */
 export interface GitPushTarget {
   branch: string;
   remote: string;
@@ -355,6 +362,7 @@ export function isProtectedBranch(branch: string, patterns: string): boolean {
     new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(branch));
 }
 
+/** 按错误文案判定推送是否因远端领先被拒（non-fast-forward 类），用于触发「先拉取再推」提示。 */
 export function isPushRejected(message: string): boolean {
   return /non-fast-forward|fetch first|updates were rejected/i.test(message);
 }
@@ -369,6 +377,7 @@ export function gitCreateTag(
   return invoke<string>("git_create_tag", { root, name, message, revision });
 }
 
+/** 切换分支；本地没有同名分支时 git 报错，创建走 {@link gitCreateBranch}。 */
 export function gitCheckout(root: string, branch: string): Promise<string> {
   return invoke<string>("git_checkout", { root, branch });
 }
@@ -393,6 +402,7 @@ export function gitRebase(root: string, onto: string): Promise<string> {
   return invoke<string>("git_rebase", { root, onto });
 }
 
+/** 就地重命名分支；name 为当前分支名（含当前分支可用 HEAD），to 为新名。 */
 export function gitRenameBranch(root: string, name: string, to: string): Promise<string> {
   return invoke<string>("git_rename_branch", { root, name, to });
 }
@@ -404,6 +414,7 @@ export interface GitStash {
   timeMs: number;
 }
 
+/** stash 清单，最新在前；index 对应 `stash@{index}`，drop/apply 都按它点名。 */
 export function gitStashList(root: string): Promise<GitStash[]> {
   return invoke<GitStash[]>("git_stash_list", { root });
 }
@@ -481,6 +492,7 @@ export function gitShelve(root: string, name: string, paths: string[]): Promise<
   return invoke<GitShelvedChangeList>("git_shelve", { root, name, paths });
 }
 
+/** 全部搁置清单，最新在前；id 为条目主键，unshelve/delete/rename 都按它点名。 */
 export function gitShelves(root: string): Promise<GitShelvedChangeList[]> {
   return invoke<GitShelvedChangeList[]>("git_shelves", { root });
 }
@@ -490,10 +502,12 @@ export function gitUnshelve(root: string, id: string, remove: boolean): Promise<
   return invoke<GitShelfApplyOutcome>("git_unshelve", { root, id, remove });
 }
 
+/** 删除一条搁置清单；不可恢复，确认由调用方负责。 */
 export function gitShelfDelete(root: string, id: string): Promise<string> {
   return invoke<string>("git_shelf_delete", { root, id });
 }
 
+/** 重命名一条搁置清单。 */
 export function gitShelfRename(root: string, id: string, name: string): Promise<string> {
   return invoke<string>("git_shelf_rename", { root, id, name });
 }
@@ -503,6 +517,7 @@ export function gitDeleteBranch(root: string, name: string): Promise<string> {
   return invoke<string>("git_delete_branch", { root, name });
 }
 
+/** 删除本地标签；远端标签的删除走 {@link gitPushRef} 推删除引用。 */
 export function gitDeleteTag(root: string, name: string): Promise<string> {
   return invoke<string>("git_delete_tag", { root, name });
 }
@@ -566,14 +581,17 @@ export function gitRebaseContinue(root: string): Promise<string> {
   return invoke<string>("git_rebase_continue", { root });
 }
 
+/** 中止进行中的变基，回到变基前的分支状态。 */
 export function gitRebaseAbort(root: string): Promise<string> {
   return invoke<string>("git_rebase_abort", { root });
 }
 
+/** 解决冲突后继续进行中的合并；工作区还有未合并文件时 git 自己会拦。 */
 export function gitMergeContinue(root: string): Promise<string> {
   return invoke<string>("git_merge_continue", { root });
 }
 
+/** 中止进行中的合并，恢复到合并前状态。 */
 export function gitMergeAbort(root: string): Promise<string> {
   return invoke<string>("git_merge_abort", { root });
 }
@@ -583,10 +601,12 @@ export function gitCherryPick(root: string, revision: string): Promise<string> {
   return invoke<string>("git_cherry_pick", { root, revision });
 }
 
+/** 解决冲突后继续进行中的 cherry-pick。 */
 export function gitCherryPickContinue(root: string): Promise<string> {
   return invoke<string>("git_cherry_pick_continue", { root });
 }
 
+/** 中止进行中的 cherry-pick。 */
 export function gitCherryPickAbort(root: string): Promise<string> {
   return invoke<string>("git_cherry_pick_abort", { root });
 }
@@ -596,10 +616,12 @@ export function gitRevert(root: string, revision: string): Promise<string> {
   return invoke<string>("git_revert", { root, revision });
 }
 
+/** 冲突解决后继续进行中的还原（revert）。 */
 export function gitRevertContinue(root: string): Promise<string> {
   return invoke<string>("git_revert_continue", { root });
 }
 
+/** 中止进行中的还原（revert）。 */
 export function gitRevertAbort(root: string): Promise<string> {
   return invoke<string>("git_revert_abort", { root });
 }
@@ -622,6 +644,10 @@ export function gitResolveConflict(root: string, path: string, side: "ours" | "t
   return invoke<string>("git_resolve_conflict", { root, path, side });
 }
 
+/**
+ * 提交历史查询。query 各字段直接映射后端的过滤参数：作者、检索词、路径过滤、
+ * 分页游标（数与跳过条数）等；缺省字段表示不过滤，返回 HEAD 起的一页提交。
+ */
 export function gitLog(root: string, query: GitLogQuery = {}): Promise<GitCommit[]> {
   return invoke<GitCommit[]>("git_log", { root, query });
 }
@@ -636,6 +662,7 @@ export function gitAuthors(root: string, limit: number): Promise<string[]> {
   return invoke<string[]>("git_authors", { root, limit });
 }
 
+/** 一条提交的详情：元数据加上这次改动的完整文件清单，历史详情页签用。 */
 export function gitCommitDetail(root: string, revision: string): Promise<GitCommitDetail> {
   return invoke<GitCommitDetail>("git_commit_detail", { root, revision });
 }

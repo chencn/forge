@@ -15,7 +15,7 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EditorSettings {
-    /// 括号按嵌套深度上色（对标 IDEA 默认关）。
+    /// 括号按嵌套深度上色（默认关）。
     pub rainbow_brackets: bool,
     /// 正文字体族；空串跟随 `--font-mono`。
     pub font_family: String,
@@ -35,9 +35,9 @@ pub struct EditorSettings {
     pub trim_trailing_whitespace: bool,
     /// 保存时保证非空文本以换行结束。
     pub insert_final_newline: bool,
-    /// 软换行（IDEA 默认关）。
+    /// 软换行（默认关）。
     pub soft_wrap: bool,
-    /// 显示空白符（IDEA 默认关）。
+    /// 显示空白符（默认关）。
     pub show_whitespace: bool,
     /// 行高（px）；0 表示自动按字号 1.69 倍推导。
     pub line_height: u32,
@@ -131,6 +131,7 @@ pub struct TerminalProfile {
     pub command: String,
 }
 
+/// 终端的一条环境变量。
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TerminalEnvVar {
@@ -138,7 +139,7 @@ pub struct TerminalEnvVar {
     pub value: String,
 }
 
-/// 提交工具窗口的偏好，对应 IDEA 的 CommitView.GearActions 那两项。
+/// 提交工具窗口的偏好（提交前/后执行的钩子命令与强制清空暂存区）。
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CommitSettings {
@@ -267,7 +268,7 @@ impl Default for ShellSettings {
     }
 }
 
-/// 事务工单规则项（对标 IDEA Issue Navigation 规范）
+/// 事务工单规则项（Issue Navigation）
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct IssueNavigationPattern {
@@ -276,7 +277,7 @@ pub struct IssueNavigationPattern {
     pub issue_link: String,
 }
 
-/// 版本控制完整配置，1:1 对标 IDEA VCS 设置规范
+/// 版本控制完整配置
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VcsSettings {
@@ -412,14 +413,21 @@ impl Default for Settings {
     }
 }
 
+/// serde 默认值辅助：布尔字段默认为真。
 fn default_true() -> bool {
     true
 }
 
+/// serde 默认值辅助：HTTP 面板响应区默认停靠底部。
 fn default_http_response() -> String {
     "bottom".to_string()
 }
 
+/// Forge 顶层设置文件 settings.json 的路径；browser-smoke 构建下重定向到冒烟根目录。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定或冒烟根环境变量缺失时返回错误。
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     // The opt-in native harness must never read or write a real user's settings.
     #[cfg(feature = "browser-smoke")]
@@ -519,6 +527,11 @@ pub async fn settings_save(app: AppHandle, patch: serde_json::Value) -> Result<S
     .await
 }
 
+/// 原子保存合并后的设置文档。
+///
+/// # Errors
+///
+/// 目录创建失败、序列化或写盘失败时返回 `IO` 错误。
 fn save_document(app: &AppHandle, document: &serde_json::Value) -> Result<(), String> {
     let path = settings_path(app)?;
     if let Some(dir) = path.parent() {

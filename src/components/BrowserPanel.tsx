@@ -14,14 +14,23 @@ import { openExternal, errorText } from "../lib/fs";
 import { describeError } from "../lib/errors";
 import "../styles/browser.css";
 
+/** 一个浏览器页签：会话绑定、授权档位、加载态与模拟状态。 */
 interface BrowserTab { id: string; sessionId: string; url: string; title: string; grant: "none" | "read" | "control"; loading: boolean; loadError: string | null; zoom: number; epoch: number; managed: boolean; emulation: BrowserEmulation; previewScale: number }
+/** 浏览器可用性、页签与 AI 运行绑定。 */
 interface BrowserState { available: boolean; unavailable: string | null; tabs: BrowserTab[]; runs: { sessionId: string; runId: string; readOnly: boolean }[] }
+/** 一条控制台输出。 */
 interface ConsoleEntry { type: string | null; text: string; epoch: number }
+/** 一条网络请求记录。 */
 interface NetworkEntry { id: string; method: string; url: string | null; type: string; status?: number; failed?: boolean; error?: string }
+/** 当前页签的详情：导航能力、控制台、网络、对话框与元素选择器。 */
 interface Details { canGoBack: boolean; canGoForward: boolean; console: ConsoleEntry[]; network: NetworkEntry[]; dialog: { type: string; message: string | null } | null; picker: BrowserPicker }
+/** 元素标注提交载荷（送进 AI 会话）。 */
 interface AnnotationSubmission { workspace: string; selection: BrowserElementSelection; problem: string }
+/** {@link BrowserPanel} 的入参。 */
 interface Props { workspace: string; sessions: { id: string; title: string }[]; defaultSessionId: string | null; targetTabId: string | null; onTargetHandled: () => void; onAddToChat: (payload: AiInputPayload) => Promise<void>; chatTargetLabel: string }
+/** 隐藏原生视口时的占位矩形（1×1，避免 0 尺寸导致布局抖动）。 */
 const hiddenBounds = { x: 0, y: 0, width: 1, height: 1 };
+/** 详情区的空状态值。 */
 const emptyDetails: Details = { canGoBack: false, canGoForward: false, console: [], network: [], dialog: null, picker: { active: false, selection: null, error: null } };
 // 原生呈现队列跨卸载和工作区切换共享，过期回调不能重新显示旧页面。
 let presentation = Promise.resolve();
@@ -47,11 +56,14 @@ function hasOverlay(viewportNode: HTMLElement | null) {
     return isRectOverlapping(rect, viewportRect);
   });
 }
+/** 从 URL 提取主机名；解析失败原样返回。 */
 function hostLabel(url: string) { try { return new URL(url).host; } catch { return url; } }
+/** 面板通用图标按钮（title + aria-label + 激活态）。 */
 function IconButton({ label, children, onClick, disabled, active }: { label: string; children: ReactNode; onClick: () => void; disabled?: boolean; active?: boolean }) {
   return <button type="button" className={`browser-icon${active ? " is-active" : ""}`} title={label} aria-label={label} aria-pressed={active} disabled={disabled} onClick={onClick}>{children}</button>;
 }
 
+/** 内嵌浏览器面板：页签管理、导航、开发者工具与元素标注。 */
 export default function BrowserPanel({ workspace, sessions, defaultSessionId, targetTabId, onTargetHandled, onAddToChat }: Props) {
   const { t } = useI18n();
   const { settings, patch } = useSettings();

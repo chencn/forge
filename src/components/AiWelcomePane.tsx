@@ -25,6 +25,7 @@ import { watchAiInputDelivery } from "../lib/aiInputBridge";
 /** 选择器里的筛选提示；真正认格式的是后端的文件头嗅探，扩展名写错也骗不过去。 */
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
 
+/** 一次粘贴进来的图片：沙箱路径、本地预览 URL 与显示名。 */
 interface PastedImage { path: string; preview: string; name: string }
 
 /** 底部小提示的键集；挂载时随机挑一条，不随重渲染换样。 */
@@ -38,6 +39,7 @@ function WelcomeTipText({ text }: { text: string }) {
     : <span key={index}>{part}</span>)}</>;
 }
 
+/** 新建会话欢迎页的入参。 */
 interface AiWelcomePaneProps {
   /** 当前项目根；为 null（非桌面端/未开项目）时只能看不能发。 */
   workspace: string | null;
@@ -310,7 +312,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
                 <Send size={16} />
               </button>}
             />
-            {/* Suggestions prepare editable drafts and use the same validated send path as typed prompts. */}
+            {/* 建议按钮把预设文案填进草稿，走的仍是与手打消息同一条校验后的发送路径。 */}
             {!draft.trim() && !images.length ? <div data-slot="suggestions" className="ai-element-suggestions" aria-label={t("ai.elements.suggestions")}>
               {(["ai.elements.suggestStructure", "ai.elements.suggestReview", "ai.elements.suggestTests"] as const).map((key) => <button key={key} type="button" disabled={!provider || sending}
                 onClick={() => { updateDraft(t(key)); input.current?.focus(); }}>{t(key)}</button>)}

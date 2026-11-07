@@ -23,7 +23,9 @@ struct AsyncQuestion {
     titles: HashMap<String, String>,
 }
 
+/// Codex 侧任务同步工具的命名空间与工具名（`forge.update_tasks`）。
 const TASK_TOOL_NAMESPACE: &str = "forge";
+/// Codex 侧任务同步工具的工具名。
 const TASK_TOOL_NAME: &str = "update_tasks";
 
 /// Codex 的协议适配器。
@@ -231,6 +233,7 @@ impl Codex {
         }}))
     }
 
+    /// 新建一轮 Codex 回合的状态。
     pub fn new(cwd: String, prompt: String, native_id: Option<String>) -> Self {
         Self {
             cwd,
@@ -275,33 +278,41 @@ impl Codex {
             agent_titles: HashMap::new(),
         }
     }
+    /// 指定模型与推理强度；None 用线程现有值。
     pub fn with_options(mut self, model: Option<String>, effort: Option<String>) -> Self {
         self.model = model;
         self.effort = effort;
         self
     }
+    /// 随首条消息附带的图片路径。
     pub fn with_images(mut self, images: Vec<String>) -> Self {
         self.images = images;
         self
     }
+    /// 是否启用浏览器工具授权。
     pub fn with_browser(mut self, enabled:bool) -> Self { self.browser=enabled; self }
+    /// 断线恢复时要续上的那个 turn id。
     pub fn with_recovery_turn(mut self, turn: String) -> Self {
         self.recovery_turn = Some(turn);
         self
     }
+    /// 权限档位与服务层级。
     pub fn with_policy(mut self, permission: super::options::PermissionMode, service_tier: String) -> Self {
         self.permission = permission;
         self.service_tier = service_tier;
         self
     }
+    /// 整份替换的沙箱策略；None 沿用线程现有策略。
     pub fn with_sandbox_policy(mut self, policy: Option<Value>) -> Self {
         self.sandbox_policy = policy;
         self
     }
+    /// 斜杠命令意图，由本轮启动时执行。
     pub fn with_command(mut self, command: Option<super::commands::CommandIntent>) -> Self {
         self.command = command;
         self
     }
+    /// 工作模式 id（plan / 默认档等）。
     pub fn with_mode(mut self, mode: String) -> Self {
         self.mode = mode;
         self
@@ -324,6 +335,7 @@ impl Codex {
             data: json!({"status":"completed","metadata":{"preTokens":before,"postTokens":after}}),
         })
     }
+    /// 恢复回合时带上的计划决策上下文。
     pub fn with_decision(mut self, decision: Option<Decision>) -> Self {
         self.decision = decision;
         self

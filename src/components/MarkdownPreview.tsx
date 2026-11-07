@@ -27,6 +27,7 @@ export interface MarkdownPreviewHandle {
   openFind: () => void;
 }
 
+/** Markdown 预览的入参。 */
 interface MarkdownPreviewProps {
   /** markdown 正文。 */
   source: string;

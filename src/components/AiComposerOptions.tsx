@@ -1,6 +1,7 @@
 import { useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { LocalCommand } from "../lib/aiCommands";
+/** 输入框命令执行句柄（`/` 命令选中后由外层调）。 */
 export interface AiComposerHandle { execute: (command: LocalCommand, args: string) => Promise<void> }
 import { Check, ChevronDown, Search } from "lucide-react";
 import { useI18n } from "../i18n";
@@ -15,6 +16,7 @@ import AiActionDialog from "./AiActionDialog";
 import { Item, ItemContent } from "./ui/item";
 export { readAiOptions } from "../lib/aiOptions";
 
+/** {@link AiComposerOptions} 的入参。 */
 interface AiComposerOptionsProps {
   commandRef?: Ref<AiComposerHandle>;
   provider: AiProvider;
@@ -26,6 +28,7 @@ interface AiComposerOptionsProps {
   actualModel?: string;
 }
 
+/** 推理力度各档的文案键。 */
 const effortKeys = { none: "ai.chat.effort.none", minimal: "ai.chat.effort.minimal", low: "ai.chat.effort.low", medium: "ai.chat.effort.medium", high: "ai.chat.effort.high", xhigh: "ai.chat.effort.xhigh", max: "ai.chat.effort.max" } as const;
 /** Claude 的 --effort 是会话级参数，不随别名（例如 Haiku）被目录里的空档位列表挡住。 */
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -172,7 +175,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   }, [open, provider, workspace]);
 
   const pickModel = async (nextId: string | undefined, targetModel = capabilities?.models.find((item) => nextId ? item.id === nextId : item.isDefault)) => {
-    // 选完即收起面板（对齐 IDEA 模型选择）；斜杠命令路径弹层没开，不抢焦点。
+    // 选完即收起面板；斜杠命令路径弹层没开，不抢焦点。
     if (open) close();
     onChange({
       ...value, model: nextId || undefined,

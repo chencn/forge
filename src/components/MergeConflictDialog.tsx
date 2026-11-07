@@ -78,11 +78,13 @@ function fillChoices(result: MergeResult, choice: ConflictChoice): ConflictChoic
   return new Array(result.conflicts).fill(choice);
 }
 
+/** 毫秒时间戳转本地时间串；0 返回空串。 */
 function formatStamp(ms: number): string {
   if (!ms) return "";
   return new Date(ms).toLocaleString();
 }
 
+/** 三栏合并冲突对话框：两侧原文对照，逐块取舍或全收一边。 */
 export default function MergeConflictDialog({
   conflict,
   onAcceptDisk,

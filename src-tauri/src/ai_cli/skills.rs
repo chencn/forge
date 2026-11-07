@@ -10,9 +10,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// 保存技能正文的上限；读取兜底上限见 [`MAX_READ`]。
 const MAX_CONTENT: usize = 256 * 1024;
+/// 读取技能文件的大小上限，超出直接报错不读入。
 const MAX_READ: usize = 512 * 1024;
 
+/// 一个技能目录（来源位置）：id、显示路径。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillLocation {
@@ -21,6 +24,7 @@ pub struct SkillLocation {
     pub path: String,
 }
 
+/// 一个技能条目的元数据（正文按需另读）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillItem {
@@ -35,6 +39,7 @@ pub struct SkillItem {
     pub linked: bool,
 }
 
+/// 全部技能位置与其中的技能清单。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillList {
@@ -42,6 +47,11 @@ pub struct SkillList {
     pub skills: Vec<SkillItem>,
 }
 
+/// Claude 用户级配置目录：`CLAUDE_CONFIG_DIR`（绝对路径）优先，否则 `~/.claude`。
+///
+/// # Errors
+///
+/// 主目录无法确定时返回错误。
 fn claude_home() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|path| path.is_absolute()) {
         return Ok(dir);
@@ -49,6 +59,11 @@ fn claude_home() -> Result<PathBuf, String> {
     Ok(home()?.join(".claude"))
 }
 
+/// Codex 用户级配置目录：`CODEX_HOME`（绝对路径）优先，否则 `~/.codex`。
+///
+/// # Errors
+///
+/// 主目录无法确定时返回错误。
 fn codex_home() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("CODEX_HOME").map(PathBuf::from).filter(|path| path.is_absolute()) {
         return Ok(dir);
@@ -56,6 +71,13 @@ fn codex_home() -> Result<PathBuf, String> {
     Ok(home()?.join(".codex"))
 }
 
+/// 列出指定 CLI 的全部技能来源位置。
+///
+/// Codex 有两处：`$CODEX_HOME/skills` 与多 CLI 共用的 `~/.agents/skills`。
+///
+/// # Errors
+///
+/// 主目录无法确定时返回错误。
 fn locations(provider: Provider) -> Result<Vec<SkillLocation>, String> {
     match provider {
         Provider::Claude => Ok(vec![SkillLocation {
@@ -70,6 +92,11 @@ fn locations(provider: Provider) -> Result<Vec<SkillLocation>, String> {
     }
 }
 
+/// 按 id 找技能来源位置。
+///
+/// # Errors
+///
+/// id 不在 [`locations`] 列出的范围内时返回「未知的 Skills 目录」。
 fn find_location(provider: Provider, id: &str) -> Result<SkillLocation, String> {
     locations(provider)?.into_iter().find(|item| item.id == id).ok_or_else(|| "未知的 Skills 目录".to_string())
 }
@@ -96,6 +123,10 @@ fn is_linked(path: &Path) -> bool {
     }
 }
 
+/// 解析 SKILL.md 的 YAML front matter，提取 name 与 description。
+///
+/// 只认 `---` 围栏内前 64 行的 `name:` / `description:` 简单键值，值两侧的引号会剥掉；
+/// 不是合法 front matter 时两者都返回 `None`。
 fn parse_front_matter(content: &str) -> (Option<String>, Option<String>) {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let mut lines = content.lines();
@@ -120,6 +151,7 @@ fn parse_front_matter(content: &str) -> (Option<String>, Option<String>) {
     (name, description)
 }
 
+/// 把一个技能目录读成条目元数据；无 SKILL.md 或读取失败时返回 `None`（列表场景静默跳过）。
 fn read_item(location: &SkillLocation, id: &str, dir: &Path) -> Option<SkillItem> {
     let file = dir.join("SKILL.md");
     if !file.is_file() {
@@ -141,6 +173,7 @@ fn read_item(location: &SkillLocation, id: &str, dir: &Path) -> Option<SkillItem
     })
 }
 
+/// 扫描全部来源位置生成技能清单，按 id 与位置排序。
 fn list_at(locations: &[SkillLocation]) -> SkillList {
     let mut skills = Vec::new();
     for location in locations {
@@ -164,6 +197,11 @@ fn list_at(locations: &[SkillLocation]) -> SkillList {
     SkillList { locations: locations.to_vec(), skills }
 }
 
+/// 读取一个技能的 SKILL.md 正文。
+///
+/// # Errors
+///
+/// ID 不合法、位置未知、技能不存在、文件超过 [`MAX_READ`] 或不是普通文件、读取失败时返回中文错误。
 fn read_skill(provider: Provider, location: &str, id: &str) -> Result<String, String> {
     if !valid_id(id) {
         return Err("技能 ID 只能包含字母、数字、- 和 _".into());
@@ -177,6 +215,14 @@ fn read_skill(provider: Provider, location: &str, id: &str) -> Result<String, St
     fs::read_to_string(&file).map_err(|error| format!("读取技能失败：{error}"))
 }
 
+/// 确保技能目录可写并返回其路径。
+///
+/// 目录不存在则创建；目录链接允许写穿到源目录（共享技能库场景），
+/// 但 SKILL.md 本身是符号链接或非普通文件时拒绝写入，防误写目标文件。
+///
+/// # Errors
+///
+/// 目录创建失败、同名路径不是目录、SKILL.md 是链接或非常规文件时返回中文错误。
 fn ensure_writable(location: &SkillLocation, id: &str) -> Result<PathBuf, String> {
     let root = PathBuf::from(&location.path);
     fs::create_dir_all(&root).map_err(|error| format!("无法创建技能目录：{error}"))?;
@@ -202,6 +248,11 @@ fn ensure_writable(location: &SkillLocation, id: &str) -> Result<PathBuf, String
     Ok(dir)
 }
 
+/// 在指定位置保存（或覆盖）一个技能的 SKILL.md。
+///
+/// # Errors
+///
+/// ID 不合法、内容为空、内容超过 [`MAX_CONTENT`]、[`ensure_writable`] 拒绝或原子写失败时返回中文错误。
 fn save_at(location: &SkillLocation, id: &str, content: &str) -> Result<(), String> {
     if !valid_id(id) {
         return Err("技能 ID 只能包含字母、数字、- 和 _".into());
@@ -216,6 +267,13 @@ fn save_at(location: &SkillLocation, id: &str, content: &str) -> Result<(), Stri
     write_atomic(&dir.join("SKILL.md"), content)
 }
 
+/// 删除指定位置的一个技能目录。
+///
+/// 目录本身是链接时只摘链接不递归，防止把共享技能库源文件一起删掉。
+///
+/// # Errors
+///
+/// ID 不合法、技能不存在、路径不是目录或删除失败时返回中文错误。
 fn delete_at(location: &SkillLocation, id: &str) -> Result<(), String> {
     if !valid_id(id) {
         return Err("技能 ID 只能包含字母、数字、- 和 _".into());
@@ -233,12 +291,22 @@ fn delete_at(location: &SkillLocation, id: &str) -> Result<(), String> {
     }
 }
 
+/// 保存技能后返回全量清单。
+///
+/// # Errors
+///
+/// 位置未知或 [`save_at`] 失败时透传错误。
 fn save_skill(provider: Provider, location: &str, id: &str, content: &str) -> Result<SkillList, String> {
     let location = find_location(provider, location)?;
     save_at(&location, id, content)?;
     Ok(list_at(&locations(provider)?))
 }
 
+/// 删除技能后返回全量清单。
+///
+/// # Errors
+///
+/// 位置未知或 [`delete_at`] 失败时透传错误。
 fn delete_skill(provider: Provider, location: &str, id: &str) -> Result<SkillList, String> {
     let location = find_location(provider, location)?;
     delete_at(&location, id)?;

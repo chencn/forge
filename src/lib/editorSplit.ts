@@ -1,3 +1,4 @@
+/** 编辑器分栏方向：horizontal 左右两栏、vertical 上下两栏。 */
 export type EditorSplitDirection = "horizontal" | "vertical";
 
 /** 标签只属于一组；活动项独立于标签目录，避免把整组复制到副栏。 */
@@ -9,6 +10,10 @@ export interface EditorSplitState {
   primaryActiveId: string | null;
 }
 
+/**
+ * 从现有标签造一份分栏状态：`tabId` 挪去副栏，主栏活动项就近顶上。
+ * `current` 是旧状态时在其基础上增改；`ratio` 缺省沿用旧值或 50。
+ */
 export function createEditorSplit(
   tabIds: readonly string[], activeId: string | null, tabId: string,
   direction: EditorSplitDirection, current: EditorSplitState | null = null,
@@ -42,11 +47,17 @@ export interface EditorTabListRegistration {
   ids: readonly string[];
   onImport?: (id: string, beforeId: string | null) => void;
 }
+/** 已登记的标签栏（id → 登记项）。 */
 const editorTabLists = new Map<string, EditorTabListRegistration>();
+/** 标签栏 id 发号器。 */
 let editorTabListSeq = 0;
+/** 发一个新的标签栏 id。 */
 export function createEditorTabListId() { editorTabListSeq += 1; return `editor-tabs-${editorTabListSeq}`; }
+/** 登记一个标签栏（跨栏拖放查找用）。 */
 export function registerEditorTabList(id: string, list: EditorTabListRegistration) { editorTabLists.set(id, list); }
+/** 注销一个标签栏。 */
 export function unregisterEditorTabList(id: string) { editorTabLists.delete(id); }
+/** 取标签栏登记项；没有返回 null。 */
 export function editorTabList(id: string) { return editorTabLists.get(id) ?? null; }
 
 /**

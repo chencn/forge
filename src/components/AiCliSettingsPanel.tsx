@@ -124,6 +124,7 @@ export default function AiCliSettingsPanel() {
   return settings.aiAssistantsEnabled ? <EnabledAiCliSettingsPanel /> : null;
 }
 
+/** 自检项标签的 i18n 键映射。 */
 const CHECK_LABEL: Record<string, TranslationKey> = {
   binary: "ai.checks.binary",
   version: "ai.checks.version",
@@ -145,6 +146,7 @@ const CLAUDE_MODEL_FIELDS: { key: string; label: TranslationKey; placeholder: st
   { key: "ANTHROPIC_DEFAULT_FABLE_MODEL", label: "ai.cfg.claudeFable", placeholder: "claude-fable-5-1" },
 ];
 
+/** Claude 自定义模型选项的三个环境变量字段。 */
 const CLAUDE_CUSTOM_MODEL_FIELDS: { key: string; label: TranslationKey; placeholder: string }[] = [
   { key: "ANTHROPIC_CUSTOM_MODEL_OPTION", label: "ai.cfg.customOptionId", placeholder: "my-gateway/claude-opus-4-1" },
   { key: "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", label: "ai.cfg.customOptionName", placeholder: "Gateway Opus" },
@@ -168,22 +170,26 @@ const CLAUDE_MODE_LABEL: Record<ClaudeAuthMode, TranslationKey> = {
   custom: "ai.cfg.claudeCustom",
   provider: "ai.cfg.modeProvider",
 };
+/** Claude 三档认证方式的说明文案。 */
 const CLAUDE_MODE_HINT: Record<ClaudeAuthMode, TranslationKey> = {
   official: "ai.cfg.claudeOfficialHint",
   custom: "ai.cfg.claudeCustomHint",
   provider: "ai.cfg.providerHint",
 };
+/** Codex 三档认证方式的标签。 */
 const CODEX_MODE_LABEL: Record<CodexAuthMode, TranslationKey> = {
   subscription: "ai.cfg.codexSubscription",
   api_key: "ai.cfg.codexApiKey",
   provider: "ai.cfg.modeProvider",
 };
+/** Codex 三档认证方式的说明文案。 */
 const CODEX_MODE_HINT: Record<CodexAuthMode, TranslationKey> = {
   subscription: "ai.cfg.codexSubscriptionHint",
   api_key: "ai.cfg.codexApiKeyHint",
   provider: "ai.cfg.providerHint",
 };
 
+/** Codex 细粒度审批开关的字段与标签。 */
 const CODEX_GRANULAR_FIELDS: { key: keyof AiCliCodexGranular; label: TranslationKey }[] = [  { key: "sandboxApproval", label: "ai.cfg.granularSandboxApproval" },
   { key: "rules", label: "ai.cfg.granularRules" },
   { key: "skillApproval", label: "ai.cfg.granularSkillApproval" },
@@ -191,23 +197,29 @@ const CODEX_GRANULAR_FIELDS: { key: keyof AiCliCodexGranular; label: Translation
   { key: "mcpElicitations", label: "ai.cfg.granularMcpElicitations" },
 ];
 
+/** Codex 摘要档位的译名。 */
 const CODEX_SUMMARY_LABELS: Record<string, TranslationKey> = {
   auto: "ai.cfg.summary.auto", concise: "ai.cfg.summary.concise",
   detailed: "ai.cfg.summary.detailed", none: "ai.cfg.summary.none",
 };
+/** Codex 输出详细程度的译名。 */
 const CODEX_VERBOSITY_LABELS: Record<string, TranslationKey> = {
   low: "ai.cfg.verbosity.low", medium: "ai.cfg.verbosity.medium", high: "ai.cfg.verbosity.high",
 };
+/** Codex 网页搜索档位的译名。 */
 const CODEX_WEB_SEARCH_LABELS: Record<string, TranslationKey> = {
   disabled: "ai.cfg.webSearch.disabled", cached: "ai.cfg.webSearch.cached",
   indexed: "ai.cfg.webSearch.indexed", live: "ai.cfg.webSearch.live",
 };
+/** Codex AGENTS.md 继承范围的译名。 */
 const CODEX_INHERIT_LABELS: Record<string, TranslationKey> = {
   core: "ai.cfg.inherit.core", all: "ai.cfg.inherit.all", none: "ai.cfg.inherit.none",
 };
+/** Codex 会话滚动保留策略的译名。 */
 const CODEX_PERSISTENCE_LABELS: Record<string, TranslationKey> = {
   "save-all": "ai.cfg.persistence.save-all", none: "ai.cfg.persistence.none",
 };
+/** Codex Windows 沙箱档位的译名。 */
 const CODEX_WINDOWS_SANDBOX_LABELS: Record<string, TranslationKey> = {
   elevated: "ai.cfg.winSandbox.elevated", unelevated: "ai.cfg.winSandbox.unelevated", mxc: "ai.cfg.winSandbox.mxc",
 };
@@ -262,8 +274,10 @@ function CodexNumberField(props: { label: string; hint?: string; value: number |
   </label>;
 }
 
+/** 自检结果的状态档（决定图标颜色）。 */
 type CheckTone = "pass" | "warn" | "fail" | "checking" | "unchecked" | "disabled";
 
+/** 按自检状态渲染对应的结果图标。 */
 function CheckIcon({ status }: { status: AiCliCheck["status"] }) {
   if (status === "pass") return <CheckCircle2 size={13} className="ai-cli-check-icon is-pass" />;
   if (status === "warn") return <AlertTriangle size={13} className="ai-cli-check-icon is-warn" />;

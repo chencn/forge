@@ -1,5 +1,5 @@
 /**
- * 编辑器外观：IDEA 新 UI 的岛状编辑区——行号右对齐、当前行整条染色（含行号槽）、
+ * 编辑器外观：岛状编辑区——行号右对齐、当前行整条染色（含行号槽）、
  * 行号槽与正文之间一条发丝线、括号对高亮。颜色一律走 tokens.css 的变量，深浅色只有一份来源，
  * 组件不再像 Monaco 那样把 CSS 变量读成十六进制再喂给引擎。
  *
@@ -8,6 +8,7 @@
  */
 import { EditorView } from "@codemirror/view";
 
+/** 编辑器主题：岛状外观的全部样式，颜色走 CSS 变量。 */
 export const forgeTheme = EditorView.theme({
   "&": {
     height: "100%",
@@ -37,7 +38,7 @@ export const forgeTheme = EditorView.theme({
     overscrollBehavior: "contain",
   },
   ".cm-content": {
-    // 上下留白对齐 IDEA（padding top 4 / bottom 8）；lineTop 已按 documentPadding 动态取，无联动断点。
+    // 上下留白（padding top 4 / bottom 8）；lineTop 已按 documentPadding 动态取，无联动断点。
     padding: "4px 0 8px 0",
     caretColor: "var(--caret, var(--text-primary))",
   },
@@ -96,7 +97,7 @@ export const forgeTheme = EditorView.theme({
   },
   ".cm-activeLineGutter": { backgroundColor: "var(--editor-caret-row)" },
   ".cm-lineNumbers .cm-activeLineGutter": { color: "var(--editor-line-number-current)" },
-  // 改动色带：行号与折叠扣之间单开一条 4px 的槽，条走左缘 3px，正好是 IDEA 那根。
+  // 改动色带：行号与折叠扣之间单开一条 4px 的槽，条走左缘 3px。
   ".cm-change-lane": { width: "4px" },
   ".cm-change-lane .cm-gutterElement": { padding: "0", position: "relative" },
   ".change-lane-bar": {
@@ -129,7 +130,7 @@ export const forgeTheme = EditorView.theme({
     cursor: "pointer",
     transition: "opacity 120ms ease",
   },
-  // 展开的扣平时收着，鼠标进装订线才亮（IDEA 新 UI 的做法，正文边上不挂一片箭头）。
+  // 展开的扣平时收着，鼠标进装订线才亮（正文边上不挂一片箭头）。
   ".cm-foldGutter .cm-fold-open": { opacity: "0", display: "inline-flex" },
   ".cm-foldGutter .cm-fold-closed": { display: "inline-flex" },
   ".cm-gutters:hover .cm-foldGutter .cm-fold-open": { opacity: "1" },
@@ -186,7 +187,7 @@ export const forgeTheme = EditorView.theme({
   },
   ".cm-panel button:hover": { backgroundColor: "var(--bg-hover)" },
 
-  // 查找命中：非当前项 --bg-search-match，当前项 --bg-search-match-current 且描边（对齐 IDEA theme）。
+  // 查找命中：非当前项 --bg-search-match，当前项 --bg-search-match-current 且描边。
   ".cm-searchMatch": {
     backgroundColor: "var(--bg-search-match, var(--editor-search))",
     borderRadius: "2px",

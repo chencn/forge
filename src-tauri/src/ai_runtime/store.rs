@@ -51,6 +51,7 @@ fn fit_event_data(mut data: serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// 递归求一个 JSON 值里最长字符串的长度，用于选择裁剪目标。
 fn longest_string(value: &serde_json::Value) -> usize {
     match value {
         serde_json::Value::String(text) => text.len(),
@@ -69,6 +70,7 @@ fn cut_longest(value: &mut serde_json::Value, excess: usize) -> bool {
     cut_first(value, longest, excess)
 }
 
+/// 在 JSON 树里找第一个长度为 `target` 的字符串并裁掉约 `excess` 字节。
 fn cut_first(value: &mut serde_json::Value, target: usize, excess: usize) -> bool {
     match value {
         serde_json::Value::String(text) if text.len() == target => {
@@ -91,6 +93,7 @@ fn cut_first(value: &mut serde_json::Value, target: usize, excess: usize) -> boo
     }
 }
 
+/// 就地裁剪超长字符串到 [`FIT_STRING`] 以内；截断点按字符边界回退。
 fn cap_strings(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(text) if text.len() > FIT_STRING => {
@@ -137,12 +140,15 @@ pub fn events_lock_path(base: &Path, id: &str) -> PathBuf {
 /// 子代理注册）若带 create 语义打开会把目录凭空重建出来，列表里出现打不开的幽灵
 /// 会话。删除时落一条墓碑，创建路径见到即拒绝；条目按天过期，避免文件无限增长。
 const TOMBSTONE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// 墓碑条目数上限；超过只留最新的一批。
 const TOMBSTONE_MAX: usize = 10_000;
 
+/// 墓碑清单文件的位置。
 pub fn tombstones_path(base: &Path) -> PathBuf {
     base.join("tombstones.json")
 }
 
+/// 当前 Unix 毫秒时间戳；系统时钟异常时取 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -150,6 +156,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// 读墓碑清单；文件缺失或损坏按空表处理。
 fn read_tombstones(base: &Path) -> std::collections::HashMap<String, u64> {
     let Ok(bytes) = fs::read(tombstones_path(base)) else {
         return Default::default();
@@ -157,6 +164,11 @@ fn read_tombstones(base: &Path) -> std::collections::HashMap<String, u64> {
     serde_json::from_slice(&bytes).unwrap_or_default()
 }
 
+/// 写回墓碑清单：先按 TTL 淘汰过期条目，再超限截到 [`TOMBSTONE_MAX`]。
+///
+/// # Errors
+///
+/// 序列化或写盘失败时返回错误。
 fn write_tombstones(base: &Path, map: &mut std::collections::HashMap<String, u64>) -> Result<(), String> {
     let cutoff = now_ms().saturating_sub(TOMBSTONE_TTL_MS);
     let mut dropped: Vec<String> = map.iter().filter(|(_, at)| **at <= cutoff).map(|(id, _)| id.clone()).collect();
@@ -189,6 +201,7 @@ pub fn record_tombstone(base: &Path, id: &str) -> Result<(), String> {
     write_tombstones(base, &mut map)
 }
 
+/// 该 id 是否落在墓碑 TTL 内（删除后 30 天内拒绝凭空重建）。
 pub fn is_tombstoned(base: &Path, id: &str) -> bool {
     let cutoff = now_ms().saturating_sub(TOMBSTONE_TTL_MS);
     read_tombstones(base)
@@ -202,6 +215,11 @@ pub struct Lease {
     _file: File,
 }
 impl Lease {
+    /// 取一把 OS 级独占租约；Windows 侧带短退避以消除瞬态冲突。
+    ///
+    /// # Errors
+    ///
+    /// 独占打开失败（真锁竞争或 IO 错误）时返回错误串。
     pub fn acquire(path: &Path) -> Result<Self, String> {
         let mut options = OpenOptions::new();
         options.create(true).truncate(false).read(true).write(true);
@@ -508,6 +526,11 @@ impl Store {
         Ok(event.seq)
     }
 
+    /// 读一条会话的元数据并校验版本与项目归属。
+    ///
+    /// # Errors
+    ///
+    /// 文件缺失、超限、损坏或归属不匹配时返回错误串。
     pub fn metadata(dir: &Path, root: &str) -> Result<Metadata, String> {
         let path = dir.join("meta.json");
         if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 64 * 1024 {
@@ -525,6 +548,11 @@ impl Store {
         }
         Ok(meta)
     }
+    /// 把元数据写回磁盘（含 id 与归属再校验）。
+    ///
+    /// # Errors
+    ///
+    /// 写盘失败时返回错误串。
     pub fn save(&self) -> Result<(), String> {
         self.save_meta()
     }
@@ -581,6 +609,11 @@ impl Store {
             &serde_json::to_string(&self.meta).map_err(|e| e.to_string())?,
         )
     }
+    /// 把一个 Forge 会话绑定到 CLI 原生会话 id；已绑定且不一致时拒绝。
+    ///
+    /// # Errors
+    ///
+    /// 已绑定到别的原生会话或写盘失败时返回错误串。
     pub fn bind(&mut self, native: String) -> Result<(), String> {
         if native.is_empty() || native.len() > 512 || native.chars().any(char::is_control) {
             return Err("CLI 返回了无效会话标识".into());
@@ -596,6 +629,11 @@ impl Store {
         self.meta.native_id = Some(native);
         self.save_meta()
     }
+    /// 把一批事件追加进日志并落盘；失败时回滚到追加前的长度并标记实例损坏。
+    ///
+    /// # Errors
+    ///
+    /// 日志尾部不完整、单条超限或写盘失败时返回错误串。
     pub fn append(
         &mut self,
         run: &str,
@@ -660,6 +698,11 @@ impl Store {
         self.seq += events.len() as u64;
         Ok(events)
     }
+    /// 按页读一条会话的事件日志。
+    ///
+    /// # Errors
+    ///
+    /// 日志损坏或读取失败时返回错误串。
     pub fn page(
         base: &Path,
         id: &str,
@@ -1122,8 +1165,11 @@ pub fn compaction_fold(path: &Path) -> CompactionFold {
 
 /// 已索引到日志的哪个字节位置、每 `ANCHOR_EVERY` 条事件的一次落点。
 const INDEX_VERSION: u32 = 3;
+/// 每 [`ANCHOR_EVERY`] 条事件在索引里落一个锚点，供快速定位。
 const ANCHOR_EVERY: u64 = 64;
+/// 索引文件的大小上限；超了整份重建，坏索引不能拖垮读取。
 const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
+/// 索引里保留的提示词行数上限（导航只显示最近几条）。
 const MAX_INDEX_PROMPTS: usize = 64;
 
 /// 事件日志的稀疏索引，与日志放在同一个会话目录里（`events.idx`）。
@@ -1340,6 +1386,7 @@ fn scan_events(
     scan_events_folded(path, repair, window, limit, session_id, &CompactionFold::default())
 }
 
+/// [`scan_events`] 的折叠压缩版：扫描的同时按 `fold` 规则合并工具输出等重复事件。
 fn scan_events_folded(
     path: &Path,
     repair: bool,

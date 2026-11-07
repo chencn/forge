@@ -9,7 +9,7 @@ import type { RunController } from "../hooks/useRunSessions";
 import { useI18n } from "../i18n";
 
 /**
- * 运行面板头部的两行，照 IDEA 的 Run 工具窗口：
+ * 运行面板头部的两行：
  * 第一行是「标题 + 会话页签」，第二行是一排动作图标。标题行由 App 的 paneFrame 画，
  * 页签（`RunSessionTabs`）与动作条（`RunPaneToolbar`）拆出来各自渲染。
  */

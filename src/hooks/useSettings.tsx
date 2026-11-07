@@ -6,6 +6,7 @@ import type { Settings, SettingsPatch } from "../lib/settings";
 import type { ThemeMode } from "../lib/window";
 import { applyThemeAttributes, resolveThemeId, themeKind } from "../themes/themeManager";
 
+/** 全局设置 Context 的值（读 + 局部补丁 + 已落地的主题）。 */
 interface SettingsValue {
   /** 当前生效的全局设置。 */
   settings: Settings;
@@ -15,6 +16,7 @@ interface SettingsValue {
   applied: "light" | "dark";
 }
 
+/** 全局设置 Context；没挂 Provider 时为 null。 */
 const SettingsContext = createContext<SettingsValue | null>(null);
 
 /** 读全局设置；提供者拿不到就直接报错，设置是渲染的前提。 */
@@ -24,12 +26,14 @@ export function useSettings(): SettingsValue {
   return value;
 }
 
+/** {@link SettingsProvider} 的入参。 */
 interface SettingsProviderProps {
   /** 入口在 import 界面之前读好的设置：语言与编辑器文案都在首帧就要对。 */
   initial: Settings;
   children: ReactNode;
 }
 
+/** 全局设置提供者：本地乐观渲染 + 只发改动项给后端合并 + 主题属性落地。 */
 export function SettingsProvider({ initial, children }: SettingsProviderProps) {
   const [settings, setSettings] = useState<Settings>(initial);
   /** 第几次保存的回包才算数；见下面 `patch`。 */

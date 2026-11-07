@@ -9,9 +9,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
+/// 单份 MCP 配置的体积上限，防握着整份 CLI 配置文件写爆。
 const MAX_SPEC: usize = 64 * 1024;
+/// MCP 服务器 ID 的最大字符数。
 const MAX_ID: usize = 128;
 
+/// 一个已配置的 MCP 服务器条目。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServer {
@@ -19,6 +22,7 @@ pub struct McpServer {
     pub spec: Value,
 }
 
+/// 某个 CLI 的 MCP 配置文件全量视图。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpList {
@@ -26,6 +30,9 @@ pub struct McpList {
     pub servers: Vec<McpServer>,
 }
 
+/// 校验 MCP 服务器 ID：非空、不超过 [`MAX_ID`] 字符、首尾无空白、不含控制字符。
+///
+/// 市场服务器名里的 `@`、`/`、`:` 属于合法字符，不作拦截。
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.chars().count() <= MAX_ID
@@ -44,17 +51,34 @@ fn resolve_claude_json(config_dir: Option<PathBuf>, home: PathBuf) -> PathBuf {
     }
 }
 
+/// 当前用户下 `.claude.json` 的位置。
+///
+/// 与 [`resolve_claude_json`] 同一规则：`CLAUDE_CONFIG_DIR` 优先，否则落在用户主目录。
+///
+/// # Errors
+///
+/// 主目录无法确定时返回错误。
 fn claude_json_path() -> Result<PathBuf, String> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
     Ok(resolve_claude_json(dir, home()?))
 }
 
+/// 校验环境变量名：非空、不超过 256 字节、字母或下划线开头，
+/// 其余只能为字母、数字、下划线、`.`、`-`。
 fn valid_env_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 256
         && key.bytes().next().is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
         && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' || byte == b'-')
 }
 
+/// 校验并规整 env / headers 类的字符串映射。
+///
+/// 限制：最多 128 条，键不超过 256 字节，值不超过 4096 字节，键值均不得含 NUL；
+/// `env_keys` 为真时键还须通过 [`valid_env_key`]。
+///
+/// # Errors
+///
+/// 值非 JSON 对象、条目超限、值非字符串或键不合法时返回带字段名的中文错误。
 fn string_map(value: Option<&Value>, name: &str, env_keys: bool) -> Result<Option<Map<String, Value>>, String> {
     let Some(value) = value else { return Ok(None) };
     let Some(object) = value.as_object() else { return Err(format!("{name} 必须是 JSON 对象")) };
@@ -141,6 +165,13 @@ fn canonical_spec(spec: &Value) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
+/// 读取一份 JSON 配置文件。
+///
+/// 文件不存在或内容为空白时返回空对象，不视为错误。
+///
+/// # Errors
+///
+/// 文件读取失败或 JSON 解析失败时返回中文错误。
 fn read_json(path: &Path) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({}));
@@ -152,6 +183,13 @@ fn read_json(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| format!("JSON 格式错误：{error}"))
 }
 
+/// 读取 Claude 配置里 `mcpServers` 的全部条目。
+///
+/// 校验失败的条目原样带出而非隐藏，让用户能在面板里修正，保存时再报具体原因。
+///
+/// # Errors
+///
+/// 根不是 JSON 对象时返回错误。
 fn read_claude_at(path: &Path) -> Result<BTreeMap<String, Value>, String> {
     let root = read_json(path)?;
     let Some(object) = root.as_object() else { return Err("~/.claude.json 不是 JSON 对象".into()) };
@@ -166,6 +204,13 @@ fn read_claude_at(path: &Path) -> Result<BTreeMap<String, Value>, String> {
     Ok(out)
 }
 
+/// 在 `.claude.json` 中写入或删除一条 `mcpServers` 条目，写前走 [`settings::backup_and_write`] 备份。
+///
+/// 删除时文件不存在是空操作，不凭空创建空配置；根不是 JSON 对象时拒绝覆盖，防止冲掉整份内容。
+///
+/// # Errors
+///
+/// 读取失败、根或 `mcpServers` 不是 JSON 对象、目录创建失败、写回失败时返回中文错误。
 fn write_claude_at(path: &Path, id: &str, spec: Option<&Value>) -> Result<(), String> {
     // 删除时文件本来就不存在：没有可删的内容，也别凭空创建一份空配置。
     if !path.exists() && spec.is_none() { return Ok(()); }
@@ -190,6 +235,7 @@ fn write_claude_at(path: &Path, id: &str, spec: Option<&Value>) -> Result<(), St
     settings::backup_and_write(path, &serde_json::to_string_pretty(&root).map_err(|error| error.to_string())?)
 }
 
+/// `toml::Value` → `serde_json::Value` 的全量转换。
 fn toml_to_json(value: &toml::Value) -> Value {
     match value {
         toml::Value::String(text) => Value::String(text.clone()),
@@ -272,6 +318,13 @@ fn codex_entry_to_spec(item: &toml::Value) -> Option<Value> {
     Some(spec)
 }
 
+/// 读取 Codex 配置里 `mcp_servers` 的全部条目。
+///
+/// 兼容旧版 `[mcp.servers]` 位置；无法识别的条目按原始 TOML 转 JSON 带出，不隐藏。
+///
+/// # Errors
+///
+/// 文件读取失败或 TOML 解析失败时返回中文错误。
 fn read_codex_at(path: &Path) -> Result<BTreeMap<String, Value>, String> {
     if !path.exists() {
         return Ok(BTreeMap::new());
@@ -293,11 +346,17 @@ fn read_codex_at(path: &Path) -> Result<BTreeMap<String, Value>, String> {
     }).collect())
 }
 
+/// 取出（或新建）TOML 文档顶层指定键的表。
+///
+/// # Errors
+///
+/// 该键已存在但不是表时返回中文错误。
 fn table_entry<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut Table, String> {
     let item = doc.entry(key).or_insert(Item::Table(Table::new()));
     item.as_table_mut().ok_or_else(|| format!("{key} 必须是 TOML 表"))
 }
 
+/// 把 JSON 字符串映射转成 TOML 表；非字符串值静默丢弃。
 fn toml_string_map(object: &Map<String, Value>) -> Table {
     let mut table = Table::new();
     for (key, entry) in object {
@@ -308,6 +367,14 @@ fn toml_string_map(object: &Map<String, Value>) -> Table {
     table
 }
 
+/// 在 Codex 配置中写入或删除一条 `mcp_servers` 条目，写前走 [`settings::backup_and_write`] 备份。
+///
+/// 用 toml_edit 保留注释与格式；`MANAGED` 之外的键（cwd、超时、bearer_token_env_var 等）原样保留。
+/// 删除时文件不存在是空操作。
+///
+/// # Errors
+///
+/// 读取失败、TOML 解析失败、配置非 JSON 对象、条目不是 TOML 表、数值超范围、目录创建失败或写回失败时返回中文错误。
 fn write_codex_at(path: &Path, id: &str, spec: Option<&Value>) -> Result<(), String> {
     if !path.exists() && spec.is_none() { return Ok(()); }
     let existing = if path.exists() { fs::read_to_string(path).map_err(|error| format!("读取 Codex 配置失败：{error}"))? } else { String::new() };
@@ -360,6 +427,11 @@ fn write_codex_at(path: &Path, id: &str, spec: Option<&Value>) -> Result<(), Str
     settings::backup_and_write(path, &doc.to_string())
 }
 
+/// 列出指定 CLI 的 MCP 服务器清单及配置文件路径。
+///
+/// # Errors
+///
+/// 配置目录无法确定或配置读取失败时透传底层错误。
 fn list(provider: Provider) -> Result<McpList, String> {
     let (path, servers) = match provider {
         Provider::Claude => {
@@ -379,6 +451,11 @@ fn list(provider: Provider) -> Result<McpList, String> {
     })
 }
 
+/// 校验后保存一条 MCP 服务器配置，返回保存后的全量清单。
+///
+/// # Errors
+///
+/// ID 不合法、配置规整失败或写回失败时返回中文错误。
 fn save(provider: Provider, id: &str, spec: &Value) -> Result<McpList, String> {
     if !valid_id(id) {
         return Err("服务器 ID 不能为空、不能超过 128 个字符，且首尾不能有空白。".into());
@@ -391,6 +468,11 @@ fn save(provider: Provider, id: &str, spec: &Value) -> Result<McpList, String> {
     list(provider)
 }
 
+/// 删除一条 MCP 服务器配置，返回删除后的全量清单。
+///
+/// # Errors
+///
+/// ID 不合法或写回失败时返回中文错误。
 fn remove(provider: Provider, id: &str) -> Result<McpList, String> {
     if !valid_id(id) {
         return Err("服务器 ID 不能为空、不能超过 128 个字符，且首尾不能有空白。".into());
@@ -418,6 +500,7 @@ pub async fn ai_mcp_delete(provider: Provider, id: String) -> Result<McpList, St
 }
 
 
+/// MCP 市场目录的拉取与安装（实现见 `mcp_market`）。
 #[path = "mcp_market.rs"]
 mod market;
 pub use market::*;

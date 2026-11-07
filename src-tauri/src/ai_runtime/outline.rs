@@ -26,7 +26,9 @@ const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const LABEL_CHARS: usize = 120;
 /// 索引只读用户、文件和任务状态，跳过庞大的工具输出。
 const USER_MARK: &[u8] = b"\"kind\":\"user\"";
+/// 文件类记录的字节标记，索引用它跳过无关行。
 const FILES_MARK: &[u8] = b"\"kind\":\"files\"";
+/// 状态类记录的字节标记，索引用它跳过无关行。
 const STATUS_MARK: &[u8] = b"\"kind\":\"status\"";
 
 /// 一轮用户消息在导航里的一行。

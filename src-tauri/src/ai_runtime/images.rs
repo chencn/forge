@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager};
 
 /// 单张与单条消息的上限；`limits` 把真实数字交给界面，前端不再自己抄一份。
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+/// 单条消息允许携带的图片数上限。
 pub const MAX_IMAGES: usize = 8;
 /// 没有会话引用的图片最多留多久：粘贴后没发出去、或从输入框移除却没删成的残件最终会被收走。
 /// 进过历史的消息另有 `.ref` 标记，不受这个窗口影响。
@@ -19,11 +20,18 @@ const ORPHAN_RETENTION: u64 = 30 * 24 * 60 * 60;
 /// 上限一旦先跳过，这条会话的附件就永久留在沙箱里。所以只把它当失控日志的保险丝，
 /// 不当性能门槛（逐行流式读，1 GiB 也只是一次顺序读）。
 const MAX_RELEASE_SCAN: u64 = 1024 * 1024 * 1024;
+/// 引用标记文件的扩展名（`<图片名>.ref`）。
 const REFERENCE_SUFFIX: &str = ".ref";
 /// 清理一个进程只跑一次：授权在每次加载会话时重建，靠这个开关避免重复扫目录。
 static PURGED: AtomicBool = AtomicBool::new(false);
+/// 粘贴图片文件名的序号发号器。
 static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
 
+/// 图片缓存目录（应用缓存目录下的 `ai-pasted-images/`）。
+///
+/// # Errors
+///
+/// 应用缓存目录无法确定时返回错误。
 fn directory(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_cache_dir()
@@ -31,11 +39,13 @@ fn directory(app: &AppHandle) -> Result<PathBuf, String> {
         .map(|path| path.join("ai-pasted-images"))
 }
 
+/// Windows 版链接判定：符号链接或 reparse point（junction）都算。
 #[cfg(windows)]
 fn is_link(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
 }
+/// 非 Windows 版链接判定：符号链接。
 #[cfg(not(windows))]
 fn is_link(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
@@ -271,6 +281,7 @@ fn reference_path(image: &Path) -> PathBuf {
     image.with_file_name(name)
 }
 
+/// 判断一个文件名是不是引用标记文件。
 fn is_reference(name: &str) -> bool {
     name.ends_with(REFERENCE_SUFFIX)
 }
@@ -282,6 +293,7 @@ fn is_managed(name: &str) -> bool {
         && media_type(name.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("")).is_some()
 }
 
+/// 判断一个图片文件是否早已无人引用（超过孤儿保留期）。
 fn stale(age: u64) -> bool {
     age > ORPHAN_RETENTION
 }

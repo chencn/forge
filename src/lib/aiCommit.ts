@@ -5,6 +5,7 @@ import { gitDiffText } from "./git";
 import { readFile } from "./fs";
 import { describeError, errorCodeOf } from "./errors";
 
+/** 提交说明的写作风格档位（设置下拉的取值）。 */
 export const COMMIT_FORMATS = [
   "conventional",
   "concise",
@@ -13,17 +14,25 @@ export const COMMIT_FORMATS = [
   "releaseNote",
   "custom",
 ] as const;
+/** {@link COMMIT_FORMATS} 的成员类型。 */
 export type CommitFormat = (typeof COMMIT_FORMATS)[number];
 
+/** 供应商 API 协议档位。 */
 export const COMMIT_PROTOCOLS = ["chatCompletions", "anthropicMessages", "responses"] as const;
+/** {@link COMMIT_PROTOCOLS} 的成员类型。 */
 export type CommitProtocol = (typeof COMMIT_PROTOCOLS)[number];
 
+/** 推理力度档位（透传 reasoning_effort）。 */
 export const COMMIT_EFFORTS = ["default", "none", "minimal", "low", "medium", "high"] as const;
+/** {@link COMMIT_EFFORTS} 的成员类型。 */
 export type CommitEffort = (typeof COMMIT_EFFORTS)[number];
 
+/** chat 协议下发 token 上限用的字段名。 */
 export const CHAT_TOKEN_LIMIT_FIELDS = ["max_completion_tokens", "max_tokens"] as const;
+/** {@link CHAT_TOKEN_LIMIT_FIELDS} 的成员类型。 */
 export type ChatTokenLimitField = (typeof CHAT_TOKEN_LIMIT_FIELDS)[number];
 
+/** 一个 AI 提交说明的供应商：OpenAI 兼容端点的地址、模型与密钥。 */
 export interface AiCommitProvider {
   id: string;
   name: string;
@@ -35,6 +44,7 @@ export interface AiCommitProvider {
   allowsInsecureHttp: boolean;
 }
 
+/** AI 提交说明的完整配置（持久化在 ai-commit.json）。 */
 export interface AiCommitConfig {
   enabled: boolean;
   activeProviderId: string | null;
@@ -49,12 +59,14 @@ export interface AiCommitConfig {
   reasoningEffort: CommitEffort;
 }
 
+/** 喂给 AI 的一个文件改动：路径、变更类型与差异文本。 */
 export interface AiCommitFileInput {
   path: string;
   changeKind: string;
   diff: string;
 }
 
+/** 配置缺省值：启用、中文、conventional、无字符/Token 限制。 */
 export const DEFAULT_AI_COMMIT_CONFIG: AiCommitConfig = {
   enabled: true,
   activeProviderId: null,
@@ -70,6 +82,7 @@ export const DEFAULT_AI_COMMIT_CONFIG: AiCommitConfig = {
   reasoningEffort: "default",
 };
 
+/** 造一个 OpenAI 兼容的默认供应商条目（id 用时间戳+随机串保证唯一）。 */
 export function newAiCommitProvider(name = "OpenAI Compatible"): AiCommitProvider {
   const id = `provider-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   return {
@@ -84,8 +97,10 @@ export function newAiCommitProvider(name = "OpenAI Compatible"): AiCommitProvide
   };
 }
 
+/** 配置保存后广播的自定义事件名（设置页与其他面板同步用）。 */
 export const AI_COMMIT_CONFIG_CHANGED_EVENT = "forge:ai-commit-config-changed";
 
+/** 最近一次读到的配置缓存（同步读取入口 {@link useAiCommitEnabled} 用）。 */
 let cachedAiCommitConfig: AiCommitConfig | null = null;
 
 /** 读取保存在 ai-commit.json 的配置 */

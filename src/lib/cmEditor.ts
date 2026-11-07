@@ -72,9 +72,12 @@ export type { Extension, Transaction };
 
 /** WorkspaceEdit 的跨文档撤销按时间序留一小组：太长没意义，无界栈反而招旧事务回放。 */
 const WORKSPACE_UNDO_LIMIT = 10;
+/** 跨文档撤销回放入口的时间序栈；由 {@link registerWorkspaceUndo} 注册。 */
 const workspaceUndoStack: Array<() => Promise<void>> = [];
+/** 是否有撤销回放在途；为真时吞掉连按，等当前这条撤完。 */
 let workspaceUndoRunning = false;
 
+/** 注册一次跨文档撤销动作；超出上限时挤掉最旧的一条。 */
 export function registerWorkspaceUndo(undo: () => Promise<void>): void {
   workspaceUndoStack.push(undo);
   if (workspaceUndoStack.length > WORKSPACE_UNDO_LIMIT) workspaceUndoStack.shift();
@@ -85,6 +88,7 @@ export function clearWorkspaceUndo(): void {
   workspaceUndoStack.length = 0;
 }
 
+/** 撤一次跨文档编辑；返回是否受理（栈空返回 false，回放在途吞掉但返回 true）。 */
 export function undoWorkspaceEdit(): boolean {
   if (workspaceUndoStack.length === 0) return false;
   // 回放还没落地就吞掉连按：下一级等当前这条撤完再撤，别让它掉进普通 undo。
@@ -128,16 +132,24 @@ export interface EditorDoc {
  * 打一个字外挂表就认不出手上这份了。facet 跟着配置走，正文怎么改都在。
  */
 const pathFacet = Facet.define<string, string>({ combine: (values) => values[0] ?? "" });
+/** 这篇 state 用的语言 id（`EditorDoc.language`）。 */
 const languageFacet = Facet.define<string, string>({ combine: (values) => values[0] ?? "" });
+/** 这篇 state 挂的语法支持；没加载完为 null。 */
 const supportFacet = Facet.define<LanguageSupport | null, LanguageSupport | null>({
   combine: (values) => values.length ? values[0] : null,
 });
 
+/** 语言动态重配槽位；语法异步加载完成后从这里换装。 */
 const languageSlot = new Compartment();
+/** 只读开关槽位。 */
 const readOnlySlot = new Compartment();
+/** 缩进槽位（tabSize / useTabs）。 */
 const tabSlot = new Compartment();
+/** 小地图开关槽位。 */
 const minimapSlot = new Compartment();
+/** 快捷键方案槽位。 */
 const keymapSlot = new Compartment();
+/** 彩虹括号开关槽位。 */
 const rainbowSlot = new Compartment();
 
 // ---------------------------------------------------------------- 行尾
@@ -178,6 +190,7 @@ export function loadLanguage(id: string, path = ""): Promise<LanguageSupport | n
   return loadGrammar(id, pathExtension(path));
 }
 
+/** 为一篇文档组装语言相关扩展：语法、语言 facet 与路径 facet。 */
 function languageExtensions(doc: EditorDoc): Extension[] {
   const support = languageOf(doc.language, doc.path);
   return [languageFacet.of(doc.language), supportFacet.of(support), pathFacet.of(doc.path), ...(support ? [support] : [])];
@@ -216,11 +229,11 @@ export function primeMinimap(view: EditorView): void {
 // ---------------------------------------------------------------- 装配
 
 /**
- * 空选区按 Ctrl+C 复制整行。IDEA、VS Code 与原来 Monaco 那版都是这行为：光标停在哪，
+ * 空选区按 Ctrl+C 复制整行（VS Code 等主流编辑器同款行为）：光标停在哪，
  * 那一行就是「要复制的东西」，不必先划选。有选区时原样交给浏览器。
  *
  * 走 `copy` 事件里的 `clipboardData.setData`，而不是绑 Mod-c：绑键就得拦默认行为，
- * 一拦会把有选区那次正常复制一起弄坏；而且多光标要按 IDEA 的口径一次复制好几行，
+ * 一拦会把有选区那次正常复制一起弄坏；而且多光标要一次复制好几行，
  * 原生那条路给不了。
  */
 const copyLineOnEmpty = EditorView.domEventHandlers({
@@ -235,7 +248,7 @@ const copyLineOnEmpty = EditorView.domEventHandlers({
       previous = line.number;
       lines.push(line.text);
     }
-    // 末尾补一个换行：粘出去的是「一整行」，跟 IDEA 一样落在光标所在行的下一行之上。
+    // 末尾补一个换行：粘出去的是「一整行」，落在光标所在行的下一行之上。
     event.clipboardData.setData("text/plain", `${lines.join("\n")}\n`);
     event.preventDefault();
     return true;
@@ -243,7 +256,7 @@ const copyLineOnEmpty = EditorView.domEventHandlers({
 });
 
 /**
- * 折叠扣：细线小箭头，平时收着，鼠标进装订线才露出来（IDEA 和模范项目都是这个路数）。
+ * 折叠扣：细线小箭头，平时收着，鼠标进装订线才露出来。
  * 用 SVG 不用字符：`⌄` / `›` 在不同字体下胖瘦差得太多。
  */
 function foldChevron(open: boolean): HTMLElement {
@@ -269,11 +282,14 @@ function foldChevron(open: boolean): HTMLElement {
   return span;
 }
 
+/** 括号匹配成功时给两侧括号的高亮标记。 */
 const matchingBracketMark = Decoration.mark({ class: "cm-matchingBracket" });
+/** 匹配标签对（非纯括号字符）用的标记，与括号色区分。 */
 const matchingTagMark = Decoration.mark({ class: "cm-matchingBracket cm-matchingTag" });
+/** 无匹配括号用的警示标记。 */
 const nonmatchingBracketMark = Decoration.mark({ class: "cm-nonmatchingBracket" });
 
-/** IDEA 的 MATCHED_TAG_NAME：HTML/XML/JSX 的标签名与括号分开染色（对齐 IDEA renderMatch）。 */
+/** 标签名染色：HTML/XML/JSX 的标签名与括号分开染色。 */
 function renderMatch(match: MatchResult, state: EditorState): readonly Range<Decoration>[] {
   const mark = (from: number, to: number) =>
     !match.matched
@@ -286,6 +302,7 @@ function renderMatch(match: MatchResult, state: EditorState): readonly Range<Dec
   return out;
 }
 
+/** 每台编辑器共用的基础扩展集（行号、折叠、历史、补全、主题等）加文档专属部分。 */
 function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
   const format = doc.lineNumberFormat;
   const numbers =
@@ -294,16 +311,16 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     // 查找条、跳转行、折叠、问题面板的文案：引擎里那些是写死的英文原串，这张表是唯一的翻译入口。
     EditorState.phrases.of(cmPhrases),
     ...numbers,
-    // 改动色带紧跟行号（IDEA 的位置）；折叠扣压到最右，别插到两者中间。
+    // 改动色带紧跟行号；折叠扣压到最右，别插到两者中间。
     changeMarksField,
-    // 右侧滚动条那条改动色带（IDEA 的错误条位置），点一下跳到那一行。
+    // 右侧滚动条那条改动色带（错误条位置），点一下跳到那一行。
     overviewLane,
-    // 当前行高亮（对齐 IDEA caretRowHighlight）：有选区时整行底色会盖住选区色，所以只有空光标才画。
+    // 当前行高亮：有选区时整行底色会盖住选区色，所以只有空光标才画。
     caretRowHighlight,
-    // 软换行与空白符显示（IDEA 默认都关）：配置随设置变，由组件 setSoftWrap/setShowWhitespace 现派发。
+    // 软换行与空白符显示（默认都关）：配置随设置变，由组件 setSoftWrap/setShowWhitespace 现派发。
     softWrapSlot.of([]),
     whitespaceSlot.of([]),
-    // stickyScroll（IDEA 2023+ 默认开启）：作用域头部行钉在编辑区顶部，见 cm/stickyScroll.ts。
+    // stickyScroll：作用域头部行钉在编辑区顶部，见 cm/stickyScroll.ts。
     stickyScroll,
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -312,7 +329,7 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
     codeFolding(),
     // 光标闪烁的样式统一在 styles.css：跟终端光标同一条淡入淡出（见 `forge-caret-blink`）。
     drawSelection(),
-    // Ctrl+滚轮缩放字号（IDEA 的 zoom with Ctrl+Mouse Wheel），见下方 wheelZoom。
+    // Ctrl+滚轮缩放字号，见下方 wheelZoom。
     wheelZoom,
     dropCursor(),
     rectangularSelection(),
@@ -330,7 +347,7 @@ function baseExtensions(doc: EditorDoc, extra: Extension[]): Extension[] {
   }),
   // 缩进参考线：Monaco 默认就画，换了引擎得自己带上（这一版 CodeMirror 没有内置）。
     indentGuides,
-    // 括号按嵌套深度上色：IDEA 默认就是这样，只影视口，几千行的文件也扛得住。
+    // 括号按嵌套深度上色：只影视口，几千行的文件也扛得住。
     rainbowSlot.of([]),
     highlightSelectionMatches(),
     // 文件内查找统一用自绘风格的工具栏，不再让引擎临时安装默认面板。
@@ -396,15 +413,18 @@ interface ViewMarks {
   scrollTop: number;
   scrollLeft: number;
 }
+/** 光标与滚动位置的常驻表，key 为文档路径。 */
 const viewByPath = new Map<string, ViewMarks>();
 /** 此刻挂在屏幕上的编辑器，按路径找。 */
 const mounted = new Map<string, EditorView>();
 
+/** 登记/注销一台挂载中的编辑器视图；组件挂载与卸载时调用。 */
 export function setMounted(path: string, view: EditorView | null): void {
   if (view) mounted.set(path, view);
   else mounted.delete(path);
 }
 
+/** 按路径找当前挂载的编辑器；路径比较不区分大小写与分隔符风格。 */
 export function editorFor(path: string): EditorView | null {
   for (const [key, view] of mounted) if (samePath(key, path)) return view;
   return null;
@@ -503,20 +523,23 @@ export function minimapConfigOf(view: EditorView): MinimapConfig | null {
   return view.state.facet(showMinimap) ?? null;
 }
 
-/** 括号彩虹上色开关（IDEA 默认关）：设置切换时不重建 state，只换这一格。 */
+/** 括号彩虹上色开关（默认关）：设置切换时不重建 state，只换这一格。 */
 export function setRainbowBrackets(view: EditorView, enabled: boolean): void {
   view.dispatch({ effects: rainbowSlot.reconfigure(enabled ? rainbowBrackets() : []) });
 }
 
-/** 软换行开关（IDEA 默认关）：同 rainbowSlot 的格子模式，切设置不重建 state。 */
+/** 软换行开关（默认关）：同 rainbowSlot 的格子模式，切设置不重建 state。 */
 const softWrapSlot = new Compartment();
+/** 切换软换行；只重配软换行格，不重建 state。 */
 export function setSoftWrap(view: EditorView, enabled: boolean): void {
   view.dispatch({ effects: softWrapSlot.reconfigure(enabled ? EditorView.lineWrapping : []) });
 }
 
+/** 空白符显示用的空格标记。 */
 const whitespaceSpaceMark = Decoration.mark({ class: "cm-highlightSpace" });
+/** 空白符显示用的制表符标记。 */
 const whitespaceTabMark = Decoration.mark({ class: "cm-highlightTab" });
-/** 显示空白符（IDEA 默认关）：前导/内部/行尾的空格画中点、制表符画箭头。 */
+/** 显示空白符（默认关）：前导/内部/行尾的空格画中点、制表符画箭头。 */
 const whitespaceMarks = new MatchDecorator({
   regexp: /[ \t]+/g,
   decorate: (add, from, _to, match) => {
@@ -528,7 +551,9 @@ const whitespaceMarks = new MatchDecorator({
     }
   },
 });
+/** 空白符显示的开关槽位。 */
 const whitespaceSlot = new Compartment();
+/** 切换空白符显示；只重配这一格，不重建 state。 */
 export function setShowWhitespace(view: EditorView, enabled: boolean): void {
   view.dispatch({
     effects: whitespaceSlot.reconfigure(
@@ -656,10 +681,12 @@ registerRetentionSweep(pruneToRecent);
 
 // ---------------------------------------------------------------- 读写与定位
 
+/** 编辑器全文文本。 */
 export function textOf(view: EditorView): string {
   return view.state.doc.toString();
 }
 
+/** 某一行的文本；行号越界返回空串。 */
 export function lineText(state: EditorState, line: number): string {
   if (line < 1 || line > state.doc.lines) return "";
   return state.doc.line(line).text;
@@ -680,10 +707,12 @@ export function selectedRange(view: EditorView): { from: number; to: number; lin
   };
 }
 
+/** 当前选区文本；空选区返回空串。 */
 export function selectedText(view: EditorView): string {
   return view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to);
 }
 
+/** 全选。 */
 export function selectAll(view: EditorView): void {
   view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
 }
@@ -694,11 +723,13 @@ export function replaceRange(view: EditorView, from: number, to: number, text: s
   view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length }, userEvent: "input.paste" });
 }
 
+/** 当前垂直滚动比例（0 顶部，1 底部；不可滚动返回 0）。 */
 export function scrollRatio(view: EditorView): number {
   const max = view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight;
   return max > 0 ? view.scrollDOM.scrollTop / max : 0;
 }
 
+/** 按比例设置垂直滚动位置；不可滚动时忽略。 */
 export function setScrollRatio(view: EditorView, ratio: number): void {
   const max = view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight;
   if (max > 0) view.scrollDOM.scrollTop = Math.round(ratio * max);
@@ -775,6 +806,7 @@ export function gutterWidth(view: EditorView): number {
 
 /** 本编辑器的字号缩放偏移（px）。 */
 const setFontZoom = StateEffect.define<number>();
+/** 字号缩放偏移的 state 字段；与 `--editor-font-base` 相加得到实际字号。 */
 const fontZoomField = StateField.define<number>({
   create: () => 0,
   update: (value, tr) => tr.effects.reduce((acc, e) => (e.is(setFontZoom) ? e.value : acc), value),
@@ -812,7 +844,7 @@ const wheelZoom = EditorView.domEventHandlers({
 
 /** Ctrl+S 交回应用的保存，不落在引擎自己的按键表里。 */
 export function saveKeymap(onSave: () => void | boolean): Extension {
-  // IDEA 的 SaveAll 交给工作区；返回 false 时不能预先 preventDefault，应用派发还要接手。
+  // 全局保存交给工作区；返回 false 时不能预先 preventDefault，应用派发还要接手。
   return keymap.of([{ key: "Mod-s", run: () => onSave() !== false }]);
 }
 
@@ -820,7 +852,7 @@ export function saveKeymap(onSave: () => void | boolean): Extension {
  * 字号与行高不进主题对象：宿主元素上写两个自定义属性，主题按 var() 取，
  * 改设置只换属性，不重建主题也不重配 state。
  *
- * 行高跟着字号走：IDEA/IDEA 13px 字号配 22px 行高（--lh-code: 22px），
+ * 行高跟着字号走：13px 字号配 22px 行高（--lh-code: 22px），
  * 换算系数 1.69；大字号时仍按比例放大不挤字。
  *
  * `fontFamily` 非空时写 `--editor-font-family`，空串则摘掉属性回退到 `--font-mono`。

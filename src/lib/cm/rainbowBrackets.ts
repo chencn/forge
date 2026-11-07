@@ -1,6 +1,6 @@
 /**
  * 彩虹括号：`()`、`[]`、`{}` 按嵌套深度换色，配不上的那半颗标红。
- * 逻辑移植自 IntelliJ IDEA（Apache-2.0）的同名模块，注释与开关换成本应用的说法。
+ * 逻辑照业界通行做法按嵌套深度分配色环，注释与开关用本应用的说法。
  *
  * 只给视口内的括号上装饰。视口开头的嵌套状态靠扫描时每几 KB 存下的检查点还原，
  * 于是滚动和打字是从改动前最近的检查点重扫，而不是从文件头——大文件才扛得住。
@@ -10,12 +10,15 @@ import { Prec, type EditorState, type Extension, type Text } from "@codemirror/s
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 
+/** 语法树类型（SyntaxTree）的简写。 */
 type Tree = ReturnType<typeof syntaxTree>;
+/** 树节点类型（NodeType）的简写。 */
 type NodeType = Tree["type"];
 
 /** 深度循环用掉几档 `--syn-bracket-<n>`。 */
 const BRACKET_COLORS = 3;
 
+/** 扫描检查点的间隔（字符数）。 */
 const CHUNK = 4096;
 /** 看得见的左括号，往后再找多远的右括号才算它闭合。 */
 const LOOKAHEAD = 64_000;
@@ -36,6 +39,7 @@ interface Opener {
 /** 词法档位：0 代码、1 行注释、2 块注释、3 字符串（引号在 `quote`）。 */
 type Mode = 0 | 1 | 2 | 3;
 
+/** 一次检查点里的扫描进度：位置、括号栈、词法模式与当前引号。 */
 interface ScanState {
   pos: number;
   stack: Opener | null;
@@ -43,19 +47,24 @@ interface ScanState {
   quote: string;
 }
 
+/** 一颗要上装饰的括号：位置与嵌套深度。 */
 interface BracketMark {
   from: number;
   /** 从 0 起的深度；-1 是配不上的那半颗。 */
   depth: number;
 }
 
+/** 语言的注释符（来自 commentTokens），无语法树时的词法跳过依据。 */
 interface CommentTokens {
   line?: string;
   block?: { open: string; close: string };
 }
 
+/** 语法树上整段跳过的节点（字符串/注释等）。 */
 const SKIP_NODE = /string|comment|char|rune|regexp|textblock|docstring|heredoc/i;
+/** 按节点类型缓存的跳过判定（类型对象做键）。 */
 const skipCache = new WeakMap<NodeType, boolean>();
+/** 该节点类型里的括号要不要算深度。 */
 function skipsNode(type: NodeType): boolean {
   let cached = skipCache.get(type);
   if (cached === undefined) skipCache.set(type, (cached = !type.isTop && SKIP_NODE.test(type.name)));
@@ -262,7 +271,9 @@ export function bracketClass(depth: number): string {
   return depth < 0 ? "cm-rainbow-bracket-unmatched" : `cm-rainbow-bracket-${(depth % BRACKET_COLORS) + 1}`;
 }
 
+/** 深度 → 装饰的缓存（Decoration 对象复用，按 class 名键控）。 */
 const markCache = new Map<string, Decoration>();
+/** 取（或造）某深度的括号装饰。 */
 function markFor(depth: number): Decoration {
   const cls = bracketClass(depth);
   let mark = markCache.get(cls);
@@ -270,6 +281,7 @@ function markFor(depth: number): Decoration {
   return mark;
 }
 
+/** 把视口内的括号标记折成 DecorationSet。 */
 function build(view: EditorView, scanner: BracketScanner): DecorationSet {
   const { from, to } = view.viewport;
   return Decoration.set(
@@ -278,6 +290,7 @@ function build(view: EditorView, scanner: BracketScanner): DecorationSet {
   );
 }
 
+/** 彩虹括号的 ViewPlugin：文档改动失效检查点，视口/语法树变化重建装饰。 */
 const plugin = ViewPlugin.fromClass(
   class {
     scanner = new BracketScanner();

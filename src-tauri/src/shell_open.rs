@@ -32,6 +32,7 @@ pub struct ShellPlan {
 #[derive(Default)]
 pub struct Pending(Mutex<ShellPlan>);
 
+/// 扩展名是否按文本处理（内置名单的公开判定）。
 pub fn is_text_extension(ext: &str) -> bool {
     is_text_ext(ext)
 }
@@ -41,6 +42,7 @@ pub fn normalize_extra_extensions(raw: &[String]) -> Vec<String> {
     normalize_extras(raw)
 }
 
+/// 判断一个文件的扩展名是否允许用 Forge 打开（内置文本扩展名或用户追加名单）。
 fn file_allowed(path: &Path, extras: &[String]) -> bool {
     let Some(ext) = path.extension().and_then(|item| item.to_str()) else {
         return false;
@@ -82,6 +84,7 @@ pub fn deliver(app: &AppHandle, args: &[String]) {
     let _ = app.emit("shell-open", true);
 }
 
+/// 取走并清空暂存的打开计划（前端挂上监听后调一次）。
 #[tauri::command]
 pub fn shell_open_take(state: State<'_, Pending>) -> ShellPlan {
     let mut guard = state.0.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -109,6 +112,11 @@ pub async fn shell_integration_apply(
     block(move || apply_integration(open_folder, open_file, default_file, &label, &extra_extensions)).await
 }
 
+/// [`shell_integration_apply`] 的同步体：按各开关写注册表集成项，返回被拒绝的项。
+///
+/// # Errors
+///
+/// 注册表读写失败时返回错误。
 fn apply_integration(
     open_folder: bool,
     open_file: bool,
@@ -179,6 +187,7 @@ pub fn clean_for_uninstall() -> Result<(), String> {
     }
 }
 
+/// 清理右键菜单标签：去控制字符、截 64 字符、空值回退默认文案。
 fn clean_label(label: &str) -> String {
     let text: String = label.chars().filter(|ch| !ch.is_control()).take(64).collect();
     let text = text.trim();
@@ -189,6 +198,7 @@ fn clean_label(label: &str) -> String {
     }
 }
 
+/// 组装「程序 + 占位符」的命令值（双方都加引号）。
 pub fn command_value(exe: &str, placeholder: &str) -> String {
     format!("\"{exe}\" \"{placeholder}\"")
 }
@@ -209,6 +219,7 @@ pub fn user_choice_hash(ext: &str, sid: &str, prog_id: &str, filetime_high: u32,
     hash_user_choice_bytes(&bytes)
 }
 
+/// 把 UTF-16 输入按 MD5 摘要派生成稳定的 UserChoice hash（Windows 注册表校验值格式）。
 fn hash_user_choice_bytes(input: &[u8]) -> String {
     let block_count = input.len() / 8;
     let digest = md5(input);
@@ -252,10 +263,12 @@ fn hash_user_choice_bytes(input: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// MD5 轮函数里的 16 位字交换位。
 fn word_swap(value: u32) -> u32 {
     value.rotate_left(16)
 }
 
+/// 纯 Rust 实现的 MD5，只为派生 Windows UserChoice hash；不用于任何安全用途。
 fn md5(message: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14,
@@ -362,6 +375,11 @@ mod registry {
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Forge."))
     }
 
+    /// 把用户的选择同步进注册表与 ProgId；只在值真的变化时写入。
+    ///
+    /// # Errors
+    ///
+    /// 注册表读写失败时返回错误串。
     pub fn sync(
         open_folder: bool,
         open_file: bool,

@@ -19,12 +19,14 @@ import Select from "./Select";
 import AiActionDialog from "./AiActionDialog";
 import type { TranslationKey } from "../i18n/lang/zh";
 
+/** 技能来源 id 到文案键的映射。 */
 const LOCATION_LABEL: Record<string, TranslationKey> = {
   claude: "skills.location.claude",
   codex: "skills.location.codex",
   agents: "skills.location.agents",
 };
 
+/** 取技能来源的显示名；映射外原样返回 id。 */
 const locationLabel = (id: string, t: (key: TranslationKey) => string) =>
   LOCATION_LABEL[id] ? t(LOCATION_LABEL[id]) : id;
 

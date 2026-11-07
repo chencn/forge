@@ -17,10 +17,7 @@ import {
   subscribeFileIcons,
 } from "../lib/fileIcons";
 
-// ---------------------------------------------------------------------------
-// EntryIcon 属性定义
-// ---------------------------------------------------------------------------
-
+/** 文件/目录图标的入参。 */
 interface EntryIconProps {
   /** 文件名或目录名；带路径也行，内部只认最后一段。 */
   name: string;
@@ -29,11 +26,11 @@ interface EntryIconProps {
   /** 是否 JVM 包节点（目录链合并出的 `com.example`），用包图标而非文件夹图标。 */
   isPackage?: boolean;
   /**
-   * 排除目录（IDEA 的 ExcludeRoot）。被 git 忽略、又不是点开头的目录用这枚橙色文件夹，
+   * 排除目录（ExcludeRoot）。被 git 忽略、又不是点开头的目录用这枚橙色文件夹，
    * 不再按名字去取普通文件夹图标。
    */
   excluded?: boolean;
-  /** 显式指定文件夹角色 (1:1 对标 IntelliJ IDEA) */
+  /** 显式指定文件夹角色，优先于按路径推断。 */
   folderKind?: FolderKind;
   /** 绝对路径。`.java` 靠它读源码，按顶层声明换成类 / 接口 / 枚举 / 注解 / record / 异常图标。 */
   path?: string;
@@ -44,7 +41,7 @@ interface EntryIconProps {
 
 /**
  * 数据未就绪时的占位：expui 的 text.svg（四条横线），单色走 currentColor
- * 继承文字色，与 IDEA 的单色图标渲染规则一致；不再是 lucide 的描边纸张。
+ * 继承文字色，走单色图标渲染；不再是 lucide 的描边纸张。
  */
 const PLACEHOLDER_FILE =
   '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">' +
@@ -56,10 +53,10 @@ const PLACEHOLDER_FILE =
 
 /**
  * 文件 / 目录图标。图标数据懒加载，未就绪时先给一枚单色占位，
- * 数据到位后订阅回调触发重渲染，换成 IDEA 彩色图标；深浅主题各取一套 SVG。
+ * 数据到位后订阅回调触发重渲染，换成彩色图标；深浅主题各取一套 SVG。
  *
  * 铁律契约：文件图标绝对不改动（Java 类/接口/枚举/注解、pom.xml、Spring 等）；
- * 文件夹图标 1:1 对齐 IntelliJ IDEA 的 JetBrains 官方 expui 矢量图标体系。
+ * 文件夹图标遵循 JetBrains expui 矢量图标体系。
  */
 export default function EntryIcon({
   name,
@@ -114,7 +111,7 @@ export default function EntryIcon({
   }
 
   // ---------------------------------------------------------------------------
-  // 文件夹与包图标分支：1:1 对齐 IntelliJ IDEA JetBrains 官方矢量图标体系
+  // 文件夹与包图标分支：JetBrains expui 官方矢量图标体系
   if (isDirectory || isPackage) {
     const kind: FolderKind =
       explicitFolderKind ?? resolveFolderKind(path, baseName, isPackage, excluded);
@@ -161,7 +158,7 @@ export default function EntryIcon({
   }
 
   // ---------------------------------------------------------------------------
-  // 普通文件图标分支：严格 100% 保持原有解析契约不变
+  // 普通文件图标分支：解析契约保持不变
   if (ready) {
     const svg = iconSvg(resolveIconPath(name, false, false), applied === "dark");
     if (svg) {

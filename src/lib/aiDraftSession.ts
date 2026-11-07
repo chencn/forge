@@ -17,6 +17,7 @@ export interface AiDraftHandoff {
   images: string[];
 }
 
+/** 各会话待移交的首条消息，键为会话 id。 */
 const handoffs = new Map<string, AiDraftHandoff>();
 
 /** 草稿页没有会话 id，只按引擎保存；创建会话时必须从同一个键复制，不能回退到其他会话改写的全局默认。 */
@@ -24,6 +25,7 @@ export function aiDraftOptionsKey(provider: AiProvider) {
   return `forge:ai-draft-options:v1:${provider}`;
 }
 
+/** 登记待移交载荷；会话页挂载后由 {@link takeAiDraftHandoff} 取走。 */
 export function setAiDraftHandoff(sessionId: string, payload: AiDraftHandoff) {
   handoffs.set(sessionId, payload);
 }
@@ -45,6 +47,7 @@ export function loadAiDraftProvider(root: string | null): AiProvider | null {
   }
 }
 
+/** 记住草稿页选中的工具；写失败只影响下次默认选中。 */
 export function saveAiDraftProvider(root: string | null, provider: AiProvider) {
   try { localStorage.setItem(`${aiSessionStorageKey(root)}:draft-provider`, provider); } catch { /* 记不住只影响下次默认选中 */ }
 }

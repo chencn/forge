@@ -1,7 +1,7 @@
 /**
  * 变更列表（changelist）：把一批变更归成组，方便只提交其中一部分。
  *
- * 模型照 IntelliJ IDEA 的 Local Changes：有一个默认列表（永远存在、删不掉），
+ * 模型是「变更列表」（Local Changes）：有一个默认列表（永远存在、删不掉），
  * 文件可以挪到别的列表，其中一个列表是「活动」的——新出现的变更默认落进它，
  * 树里它加粗。勾选提交的口径在提交面板那边，这里只管归组。
  *
@@ -12,7 +12,7 @@
 export interface Changelist {
   id: string;
   name: string;
-  /** 说明（IDEA 的 Comment）；空串没有。 */
+  /** 说明（Comment）；空串没有。 */
   comment: string;
 }
 
@@ -24,6 +24,7 @@ export interface ChangelistsState {
   activeId: string;
 }
 
+/** 默认列表的 id：永远存在、删不掉，落盘里不存它的名字。 */
 export const DEFAULT_LIST_ID = "default";
 
 /** 界面上默认列表的显示名走 i18n；落盘里不存这条的名字。 */
@@ -31,8 +32,10 @@ export function defaultChangelist(): Changelist {
   return { id: DEFAULT_LIST_ID, name: "", comment: "" };
 }
 
+/** localStorage 键（按仓库根分开）。 */
 const storageKey = (root: string) => `forge:vcs:changelists:v1:${root}`;
 
+/** 读回某仓库的变更列表（坏数据、指向不存在列表的归属一律丢掉，默认列表不落盘）。 */
 export function loadChangelists(root: string): ChangelistsState {
   try {
     const raw = localStorage.getItem(storageKey(root));
@@ -61,6 +64,7 @@ export function loadChangelists(root: string): ChangelistsState {
   }
 }
 
+/** 持久化某仓库的变更列表（写失败只丢持久化，内存态还管本次会话）。 */
 export function saveChangelists(root: string, state: ChangelistsState): void {
   try {
     localStorage.setItem(storageKey(root), JSON.stringify(state));

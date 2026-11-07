@@ -5,15 +5,18 @@ import type { AiContext, ContextKind } from "../lib/aiContext";
 import { contextShare } from "../lib/aiContext";
 import { formatTokenCount } from "../lib/aiUsage";
 
+/** codex 上下文分节的标题键（按快照字段名分组）。 */
 const sectionKeys = {
   systemPrompt: "ai.context.systemPrompt", systemTools: "ai.context.systemTools", mcp: "ai.context.mcp", files: "ai.context.files",
   agents: "ai.context.agents", skills: "ai.context.skills", deferredTools: "ai.context.deferredTools", messages: "ai.context.messages",
   attachments: "ai.context.attachments", toolCalls: "ai.context.toolCalls", toolResults: "ai.context.toolResults",
 } as const;
+/** claude 上下文各条目的显示名键（键是 CLI 报的原名）。 */
 const names: Record<string, TranslationKey> = {
   "System prompt": "ai.context.systemPrompt", "System tools": "ai.context.systemTools", "MCP tools": "ai.context.mcp", "Memory files": "ai.context.files", Messages: "ai.context.messages", Skills: "ai.context.skills", Agents: "ai.context.agents",
   userMessageTokens: "ai.context.userMessages", assistantMessageTokens: "ai.context.assistantMessages", toolCallTokens: "ai.context.toolCalls", toolResultTokens: "ai.context.toolResults", attachmentTokens: "ai.context.attachments", redirectedContextTokens: "ai.context.redirected", unattributedTokens: "ai.context.unattributed",
 };
+/** 各上下文种类（已用/剩余/缓冲/延迟加载）的文案键。 */
 const kindKeys: Record<ContextKind, TranslationKey> = { used: "ai.context.used", free: "ai.context.free", buffer: "ai.context.buffer", deferred: "ai.context.deferred" };
 
 /** 展示真正的上下文分类；不把消费统计当作上下文组成。 */

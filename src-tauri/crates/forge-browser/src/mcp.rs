@@ -2,11 +2,13 @@
 use crate::{failure, tools, VERSION};
 use serde_json::{json, Value};
 
+/// MCP JSON-RPC 状态机：跟踪 initialize 握手进度。
 #[derive(Default)]
 pub struct Server {
     initialized: bool,
     ready: bool,
 }
+/// 一次请求的处置结果：回包、转发给 Host 的工具调用，或无需回复。
 pub enum Reply {
     Message(Value),
     Call {
@@ -16,6 +18,7 @@ pub enum Reply {
     },
     None,
 }
+/// 组一帧 JSON-RPC 成功响应。
 pub fn response(id: Value, result: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":result})
 }
@@ -23,6 +26,7 @@ fn error(id: Value, code: i32, message: &str) -> Reply {
     Reply::Message(json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}))
 }
 impl Server {
+    /// 处理一帧客户端请求，返回要写回 stdout 的内容。
     pub fn handle(&mut self, request: Value) -> Reply {
         let id = request.get("id").cloned();
         let method = request["method"].as_str().unwrap_or("");

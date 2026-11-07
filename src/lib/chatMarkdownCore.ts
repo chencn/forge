@@ -28,7 +28,7 @@ export function repairStreamingMarkdown(source: string): string {
  * 按语言高亮；语法包还没装上（首次遇到这门语言的那一帧）或解析抛错时退回转义后的原文。
  *
  * 不再自动猜语言：highlight.js 的 highlightAuto 会对全表回溯试探，一段贴错的正文
- * 就会被染成莫名其妙的颜色。Lezer 与 IDEA 一样，围栏没标语言就按素文本排。
+ * 就会被染成莫名其妙的颜色；围栏没标语言就按素文本排。
  */
 function highlightCode(text: string, cleanLang: string): string {
   return highlightCodeHtml(text, cleanLang) ?? escapeHtml(text);
@@ -61,16 +61,19 @@ export function renderCodeBlock(text: string, lang: string | null | undefined, c
     : highlighted;
   const reset = startLine !== undefined && startLine > 1 ? ` style="counter-reset: ai-code-line ${startLine - 1}"` : "";
   const pre = `<pre><code class="${langClass.trim()}"${reset}>${body}</code></pre>`;
-  // Code Block pattern stays HTML-based so the worker, sanitizer and delegated copy preserve their contracts.
+  // Code Block 保持 HTML 形态，worker、sanitizer 与委托复制才好维持各自契约。
   return `<div class="code-block-wrapper" data-slot="code-block">${tag}${copy}${pre}</div>`;
 }
 
+/** 聊天渲染时挂上的「复制」按钮文案；每次渲染前设置。 */
 let activeChatCopyLabel = "";
 
+/** 聊天 renderer 的代码块钩子（带 {@link activeChatCopyLabel}）。 */
 function chatCode({ text, lang }: { text: string; lang?: string | null }): string {
   return renderCodeBlock(text, lang, activeChatCopyLabel);
 }
 
+/** GFM 复选框的只读替身（聊天的 DOMPurify 白名单不收 input）。 */
 function chatCheckbox({ checked }: { checked: boolean }): string {
   // GFM 任务列表复选框：用无害的只读 span 替换 input，避免被聊天的 DOMPurify 白名单删除。
   return checked
@@ -78,8 +81,10 @@ function chatCheckbox({ checked }: { checked: boolean }): string {
     : '<span class="ai-task-checkbox" aria-hidden="true"></span> ';
 }
 
+/** 行内 token 序列（marked 的 Generic[] 加链接定义表）。 */
 type InlineTokens = import("marked").Tokens.Generic[] & { links?: unknown };
 
+/** 链接钩子：文件链接（`file:...`）渲染成可点击打开的 ai-file-link。 */
 function chatLink(
   { href, title, tokens }: { href: string; title?: string | null; tokens: InlineTokens },
   parseInline: (tokens: InlineTokens) => string
@@ -114,6 +119,7 @@ chatParser.use({
 const blockRenderer = new Renderer();
 blockRenderer.code = chatCode;
 blockRenderer.checkbox = chatCheckbox;
+/** 逐块解析器（与 chatParser 同配置）。 */
 const blockParser = new Parser({ gfm: true, breaks: false, renderer: blockRenderer });
 blockRenderer.link = (token) => chatLink(token, (inline) => blockParser.parseInline(inline as never));
 
@@ -161,8 +167,10 @@ export function blockKey(raw: string, copyLabel: string, openBlocks: boolean): s
  * 最贵的活，不该每帧对每个历史块重来一遍。
  */
 const blockHtmlCache = new Map<string, string>();
+/** 逐块解析结果的 LRU 容量上限。 */
 const BLOCK_HTML_LIMIT = 2000;
 
+/** 按 {@link blockKey} 指纹逐块渲染正文（缓存命中直接复用，见上文块指纹说明）。 */
 export function renderChatTokenBlocks(source: string, copyLabel: string, openBlocks: boolean): Array<{ key: string; html: string }> {
   activeChatCopyLabel = copyLabel;
   const tokens = chatParser.lexer(source);

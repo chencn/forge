@@ -10,7 +10,9 @@ export interface TermFileLink {
   endIndex: number;
 }
 
+/** 剥掉路径头部常见的引用符与括号，如 `` ` ``、引号、`(`。 */
 const LEADING_TRIM = /^[`"'(<[{]+/;
+/** 剥掉路径尾部常见的标点，如引号、`)`、句号、逗号。 */
 const TRAILING_TRIM = /[`"')>\]},.;!:]+$/;
 /** `a.ts:12` 与 `a.ts:12:5`：编译器、测试框架、栈追踪最常见的写法。 */
 const LINE_COLUMN = /^(.*?):(\d+)(?::(\d+))?$/;
@@ -18,11 +20,13 @@ const LINE_COLUMN = /^(.*?):(\d+)(?::(\d+))?$/;
 const PAREN_LINE_COLUMN = /^(.*?)\((\d+)(?:,(\d+))?\):?$/;
 /** `src/App.java:[42,9]`：Maven javac / checkstyle 的写法，报错的行最爱用这个格式。 */
 const BRACKET_LINE_COLUMN = /^(.*?):\[(\d+)(?:,(\d+))?\]:?$/;
+/** `file://` 协议头。 */
 const FILE_URI = /^file:\/\//i;
+/** 其它带协议头的 URI（http 等）：一律不当文件路径。 */
 const OTHER_URI = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** Windows 盘符绝对路径（`C:/` 或 `C:\`）。 */
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
-/** Git Bash / MSYS 写法的盘符路径：`/d/app/x`。 */
-const MSYS_DRIVE = /^\/([A-Za-z])(\/.*)?$/;
+/** 没有扩展名也当文件名认的白名单。 */
 const EXTENSIONLESS = new Set([
   "Dockerfile",
   "Gemfile",
@@ -33,7 +37,10 @@ const EXTENSIONLESS = new Set([
   "Rakefile",
   "README",
 ]);
+/** Git Bash / MSYS 写法的盘符路径：`/d/app/x`。 */
+const MSYS_DRIVE = /^\/([A-Za-z])(\/.*)?$/;
 
+/** 解开 `file://` 链接：本地盘去掉协议头与首斜杠，UNC 保留主机名；解不动原样返回。 */
 function decodeFileUri(path: string): string {
   if (!FILE_URI.test(path)) return path;
   try {
@@ -46,6 +53,7 @@ function decodeFileUri(path: string): string {
   }
 }
 
+/** 取路径的末段文件名（两种分隔符都认，去掉尾部斜杠）。 */
 function baseName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ?? "";
 }
@@ -55,6 +63,7 @@ function hasPathShape(path: string): boolean {
   return path.includes("/") || path.includes("\\");
 }
 
+/** 末段像不像一个文件名：带扩展点、或属于无扩展名白名单，且不是纯版本号。 */
 function hasFileNameShape(path: string): boolean {
   const name = baseName(path);
   if (!name || name === "." || name === "..") return false;

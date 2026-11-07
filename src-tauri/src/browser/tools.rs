@@ -3,6 +3,11 @@ use super::*;
 use forge_browser::success;
 use std::time::{Duration, Instant};
 
+/// 从工具参数里取一个非空字符串字段。
+///
+/// # Errors
+///
+/// 字段缺失或为空时返回 `INVALID_ARGUMENT` 错误。
 fn required<'a>(a: &'a Value, key: &str) -> Result<&'a str, String> {
     a[key]
         .as_str()

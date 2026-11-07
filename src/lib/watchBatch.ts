@@ -78,6 +78,7 @@ export interface FlushPlan {
 /** 动到这些就得全量重取 Git：分支、提交历史、合并状态都跟着走。 */
 const GIT_REF_MARKERS = ["/.git/head", "/.git/refs/", "/.git/packed-refs", "/.git/merge_head"];
 
+/** 路径是否命中 Git 引用文件（触发全量重取的判定）。 */
 function touchesGitRef(gitPaths: readonly string[]): boolean {
   return gitPaths.some((p) => {
     const n = norm(p);

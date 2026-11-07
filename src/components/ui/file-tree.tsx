@@ -2,11 +2,14 @@ import { useMemo, type ReactNode } from "react";
 import { ChevronRight, File, Folder } from "lucide-react";
 import "./ai-elements.css";
 
+/** 树的一个叶子：路径与调用方给的内容。 */
 interface FileTreeEntry { path: string; content: ReactNode }
+/** 目录树节点：子目录按名字索引，叶子文件平铺。 */
 interface Branch { name: string; folders: Map<string, Branch>; files: FileTreeEntry[] }
 
-/** Adapted from https://ui.shadcn.com/docs/ai-elements/base/file-tree (MIT).
- * Directory disclosure uses native keyboard-accessible details; leaves retain their real actions.
+/**
+ * 按目录路径折叠成树的文件列表。
+ * 目录展开用原生 `details`（自带键盘可达性），叶子保留调用方给的真实动作。
  */
 export function FileTree({ files, label }: { files: FileTreeEntry[]; label: string }) {
   const root = useMemo(() => {

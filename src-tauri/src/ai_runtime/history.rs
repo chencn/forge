@@ -41,6 +41,7 @@ impl std::fmt::Display for SupplementError {
 }
 /// 历史投影检查点只是可重建缓存；卡住大小，坏文件直接退回事件日志重建。
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
+/// 检查点文件的结构版本，结构变更时递增以触发重建。
 const CHECKPOINT_VERSION: u32 = 1;
 
 /// 一份原生历史的定位信息：哪个 CLI、哪个原生会话、文件在哪、属于哪个项目。
@@ -66,12 +67,22 @@ struct Candidate {
     /// 文件修改时间（毫秒），用于「最近优先」排序。
     modified: u64,
 }
+/// 用户主目录。
+///
+/// # Errors
+///
+/// `USERPROFILE` / `HOME` 均未设置时返回错误。
 fn home() -> Result<PathBuf, String> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .ok_or("无法确定用户目录".into())
 }
+/// 各 CLI 原生历史目录清单；Codex 的归档会话也参与扫描。
+///
+/// # Errors
+///
+/// [`home`] 失败时透传错误。
 fn roots() -> Result<Vec<(Provider, PathBuf)>, String> {
     Ok(vec![
         (Provider::Claude, claude_home()?.join("projects")),
@@ -93,9 +104,17 @@ fn codex_home() -> Result<PathBuf, String> {
     }
     Ok(home()?.join(".codex"))
 }
+/// 判断原生历史记录里的 cwd 是否属于给定工作区根（直接比较或经 [`store::workspace`] 推导）。
 fn same_root(cwd: &str, root: &str) -> bool {
     super::same_workspace_path(cwd, root) || store::workspace(cwd).is_ok_and(|value| value == root)
 }
+/// 有界深度遍历收集 `.jsonl` 历史文件。
+///
+/// 不跟随目录链接、跳过 `subagents`；总条目数由 `budget` 封顶。
+///
+/// # Errors
+///
+/// 目录读取失败或扫描预算耗尽（[`MAX_SCAN_BUDGET`]）时返回中文错误。
 fn files(
     root: &Path,
     depth: usize,
@@ -121,6 +140,13 @@ fn files(
     }
     Ok(())
 }
+/// 从 reader 读一行完整 JSON 记录，返回记录与其字节数。
+///
+/// 超过 `limit` 的行报错；末行无换行符（CLI 正在写）返回 `None` 留给下轮扫描。
+///
+/// # Errors
+///
+/// 读取失败、行超限或 JSON 损坏时返回中文错误。
 fn bounded_line(reader: &mut impl BufRead, limit: u64) -> Result<Option<(Value, u64)>, String> {
     let mut bytes = Vec::new();
     let count = reader
@@ -249,6 +275,7 @@ const CANDIDATE_TTL: Duration = Duration::from_secs(60);
 /// 缓存最多记多少份历史；撑破就整表重开，重开最坏是重读一遍。
 const MAX_CANDIDATE_CACHE: usize = 4096;
 
+/// 对 Mutex 上毒时也照样拿到锁；投影缓存宁可带病工作也不能整体卡死。
 fn cache_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -263,6 +290,14 @@ fn candidate_cache(
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 判定一份原生历史是否属于给定工作区，产出候选（带标题与 mtime）。
+///
+/// 结果按（文件、长度、mtime、归属工程）缓存；指纹未变直接复用，「不属于本工程」
+/// 的否定结论也一并复用。
+///
+/// # Errors
+///
+/// 文件元数据或读取失败、历史记录损坏时返回中文错误。
 fn inspect(path: &Path, provider: Provider, root: &str) -> Result<Option<Candidate>, String> {
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
     // 一次列表刷新会把同一份原生历史问好几遍——发现、归属校验、补采摘要各问一次——
@@ -411,9 +446,15 @@ fn inspect_uncached(
             .map_or(0, |d| d.as_millis() as u64),
     }))
 }
+/// 一条会话的 `native-source.json` 引用文件路径。
 fn source_path(base: &Path, id: &str) -> PathBuf {
     base.join(id).join("native-source.json")
 }
+/// 读一条会话的原生历史引用（引擎、原生 id 等）；文件不存在返回 None。
+///
+/// # Errors
+///
+/// 文件超限或解析失败时返回错误串。
 pub fn source(base: &Path, id: &str, root: &str) -> Result<Option<Source>, String> {
     let path = source_path(base, id);
     if !path.exists() {
@@ -429,6 +470,7 @@ pub fn source(base: &Path, id: &str, root: &str) -> Result<Option<Source>, Strin
     }
     Ok(Some(value))
 }
+/// 判断一条原生历史是否已被隐藏（墓碑文件存在且记录了该工作区）。
 fn hidden(base: &Path, native: &str, provider: Provider, root: &str) -> bool {
     let path = base
         .join("hidden-native")
@@ -437,12 +479,19 @@ fn hidden(base: &Path, native: &str, provider: Provider, root: &str) -> bool {
 }
 /// Forge 的会话主键就是 CLI 原生会话 ID；供应商只用于查重，不能改写 ID。
 fn native_key(_provider: Provider, id: &str) -> String { id.to_owned() }
+/// 绑定查重键：`<claude|codex>:<id>`，供应商只参与命名空间，不改写主键。
 fn binding_key(provider: Provider, id: &str) -> String {
     format!("{}:{id}", if provider == Provider::Codex { "codex" } else { "claude" })
 }
+/// 墓碑文件名：`<claude|codex>-<native id>`。
 fn hidden_key(provider: Provider, id: &str) -> String {
     format!("{}-{id}", if provider == Provider::Codex { "codex" } else { "claude" })
 }
+/// 隐藏一条会话的原生历史：写墓碑标记，原生 CLI 列表不再导入它。
+///
+/// # Errors
+///
+/// 元数据读取或墓碑写入失败时返回错误串。
 pub fn hide(base: &Path, id: &str, root: &str) -> Result<(), String> {
     let meta = Store::metadata(&base.join(id), root)?;
     if let Some(native) = meta.native_id.filter(|id| store::valid_id(id)) {
@@ -587,6 +636,11 @@ fn delete_claude_transcript(source: &Source, projects: &Path) -> Result<(), Stri
 pub fn discover(base: &Path, root: &str) -> Result<(), String> {
     discover_in(base, root, roots()?)
 }
+/// [`discover`] 的实际执行体；`roots` 参数化是为了测试注入临时目录。
+///
+/// # Errors
+///
+/// 扫描预算耗尽或 store 写入失败时返回中文错误。
 fn discover_in(base: &Path, root: &str, roots: Vec<(Provider, PathBuf)>) -> Result<(), String> {
     // 先把外部 CLI 那侧整段读完：递归扫到 3 万条目、逐个解析 jsonl，是整条发现流程里
     // 最贵的部分，而它碰的全是 ~/.claude / ~/.codex 下的文件，与 store 目录毫无关系。
@@ -1001,12 +1055,18 @@ fn poll_codex_subagent(target: &mut Store, source: &Source, follow_lifecycle: bo
     let _ = save_checkpoint(&base, &id, offset, &projection);
     Ok(events)
 }
+/// 原子写回一条会话的 `native-source.json` 引用文件。
+///
+/// # Errors
+///
+/// 序列化或写盘失败时返回错误串。
 fn save_source(base: &Path, id: &str, source: &Source) -> Result<(), String> {
     crate::sys::write_atomic(
         &source_path(base, id),
         &serde_json::to_string(source).map_err(|e| e.to_string())?,
     )
 }
+/// 跨批投影状态：未落地的 TaskCreate、Codex 父线程/快照深度、Claude 半条 assistant 消息。
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ProjectionState {
     pending_task_creates: HashMap<String, Value>,
@@ -1030,10 +1090,12 @@ struct HistoryCheckpoint {
     projection: ProjectionState,
 }
 
+/// 一条会话的检查点文件 `history.idx` 路径。
 fn checkpoint_path(base: &Path, id: &str) -> PathBuf {
     base.join(id).join("history.idx")
 }
 
+/// 读取并校验检查点：版本、会话 ID 须匹配且游标不超过当前镜像长度；任何不符返回 `None` 走全量重建。
 fn read_checkpoint(base: &Path, id: &str, mirror_length: u64) -> Option<HistoryCheckpoint> {
     let path = checkpoint_path(base, id);
     if fs::metadata(&path).ok()?.len() > MAX_CHECKPOINT_BYTES {
@@ -1046,6 +1108,13 @@ fn read_checkpoint(base: &Path, id: &str, mirror_length: u64) -> Option<HistoryC
         .then_some(value)
 }
 
+/// 取得同步起点：优先检查点，否则从 0 重放 Forge 日志里的 `history_checkpoint` 事件。
+///
+/// 返回（镜像起始长度、原生游标、跨批投影状态）。
+///
+/// # Errors
+///
+/// 文件读取失败或游标损坏时返回错误串。
 fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     let path = base.join(id).join("events.jsonl");
     if !path.exists() {
@@ -1084,6 +1153,11 @@ fn checkpoint(base: &Path, id: &str) -> Result<(u64, ProjectionState), String> {
     Ok((offset, state))
 }
 
+/// 原子写检查点；失败由调用方忽略——缓存坏了只是退回全量重建。
+///
+/// # Errors
+///
+/// 镜像长度读取失败、序列化或写盘失败时返回错误串。
 fn save_checkpoint(
     base: &Path,
     id: &str,
@@ -1190,6 +1264,14 @@ pub fn sync(base: &Path, id: &str, root: &str) -> Result<bool, String> {
     let _ = save_checkpoint(base, id, offset, &projection);
     Ok(offset < size)
 }
+/// 倒查原生 rollout 尾部，找到最后一条完整记录的结束偏移。
+///
+/// 大文件可能还在被 CLI 追加；固定 64 KiB 缓冲区只在尾部找完整行边界，
+/// 不把合法半行当损坏。
+///
+/// # Errors
+///
+/// 文件打开、定位或读取失败时返回错误串。
 fn complete_offset(path: &Path) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
@@ -1386,6 +1468,13 @@ fn sync_claude_source(target: &mut Store, source: &Source, parent_native: &str, 
     Ok(emitted)
 }
 
+/// 读取一个 Claude 子代理会话的原生历史并投影成 Forge 事件批次。
+///
+/// 父会话不存在或已删除时返回空批次。
+///
+/// # Errors
+///
+/// 会话元数据读取失败、历史解析失败或日志追加失败时返回错误串。
 fn read_claude_subagent(
     base: &Path,
     child_id: &str,
@@ -1471,6 +1560,7 @@ pub fn sync_claude_agent(base: &Path, id: &str, root: &str) -> Result<Vec<super:
     read_claude_subagent(base, id, &meta, root)
 }
 
+/// 测试辅助：同步一个 Claude 子代理并报告是否产出了事件。
 #[cfg(test)]
 fn sync_claude_subagent(base: &Path, id: &str, meta: &store::Metadata, root: &str) -> Result<bool, String> {
     Ok(!read_claude_subagent(base, id, meta, root)?.is_empty())
@@ -1660,6 +1750,7 @@ pub fn repair_summaries(base: &Path, id: &str, root: &str) -> Result<bool, Strin
     let mut target = Store::open(base, id, root, meta.provider, &meta.title, "")?;
     recover_summaries(&mut target, &source, false).map(|(_, more)| more).map_err(|cause| cause.to_string())
 }
+/// 提取 JSON 值里的纯文本：字符串原样返回，数组拼接各段文本，其余转 JSON 串。
 fn text(value: &Value) -> String {
     if let Some(text) = value.as_str() {
         return text.into();
@@ -1729,10 +1820,12 @@ pub fn human_text(body: &str) -> Option<String> {
     let rest = rest.trim();
     (!rest.is_empty()).then(|| rest.to_owned())
 }
+/// 无跨批状态的单条投影入口；见 [`project_with_state`]。
 fn project(provider: Provider, value: &Value, offset: u64) -> Vec<(String, Value)> {
     project_with_state(provider, value, offset, &mut ProjectionState::default())
 }
 
+/// 把一条原生历史记录投影成 Forge 事件 `(kind, data)` 批次，跨批状态记入 `projection`。
 fn project_with_state(
     provider: Provider,
     value: &Value,

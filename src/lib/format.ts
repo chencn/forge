@@ -1,3 +1,4 @@
+/** 路径分隔符（正反斜杠通吃），供按段拆路径。 */
 const SEPARATOR_PATTERN = /[\\/]/;
 
 /** 判断是否为 Windows 风格路径（盘符或 UNC）。兼容正反双斜杠前缀。 */
@@ -165,6 +166,7 @@ export function relativePathFrom(root: string, path: string): string | null {
  */
 const FORMATTERS = new Map<string, Intl.DateTimeFormat>();
 
+/** 取（或建）一个「语言+形状」键下的日期格式化器。 */
 function formatter(
   locale: string,
   shape: string,

@@ -6,6 +6,7 @@ import AiMarkdown from "./AiMarkdown";
 import { useI18n } from "../i18n";
 import type { AiEntry, AiPlanReview } from "../lib/aiRuntime";
 
+/** 计划审阅各状态的文案键。 */
 const STATUS_KEY = {
   awaiting_review: "ai.plan.awaiting",
   submitting: "ai.plan.submitting",
@@ -16,6 +17,7 @@ const STATUS_KEY = {
   superseded: "ai.plan.superseded",
 } as const;
 
+/** 计划状态的显示文案（未识别的状态回落到「待审阅」）。 */
 function statusLabel(t: ReturnType<typeof useI18n>["t"], status: AiPlanReview["status"]) {
   return t(STATUS_KEY[status] ?? "ai.plan.awaiting");
 }
@@ -23,6 +25,7 @@ function statusLabel(t: ReturnType<typeof useI18n>["t"], status: AiPlanReview["s
 /** 当前仍需用户处理的计划：同一 planId 取最新版本，多个 planId 取最近更新的一份。 */
 export { openAiPlan } from "../lib/aiPlan";
 
+/** {@link AiPlanApproval} 的入参。 */
 interface AiPlanApprovalProps {
   plan: AiPlanReview;
   disabled?: boolean;
@@ -88,7 +91,7 @@ export function AiPlanEntry({ entry }: { entry: AiEntry }) {
   const status = record?.status;
   const phase = status ?? "draft";
   const [choice, setChoice] = useState<{ phase: string; open: boolean } | null>(null);
-  // A decision changes the phase, so an earlier manual choice cannot keep a finished plan open.
+  // 决策会改变阶段，早前的手动开关不能把已完结的计划一直摊开。
   const open = choice?.phase === phase ? choice.open : status === "awaiting_review" || status === "deferred" || !record;
   const icon = !record ? <Loader2 size={14} className="is-spinning" aria-hidden />
     : status === "approved" ? <CheckCircle2 size={14} aria-hidden />

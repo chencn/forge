@@ -20,6 +20,7 @@ const STOP = /\$\{(\d+)(?::([^{}]*))?\}|\$(\d+)/g;
 /** 停靠点的默认文本里放不下这两样字符，CodeMirror 的解析器就是按它们分界的。 */
 const UNSHAREABLE = /[{}]/;
 
+/** 把 VSCode 风格片段模板归一成 CodeMirror 的片段语法。 */
 export function cmSnippet(template: string): string {
   const normalized = template.replace(CHOICE, (_all, index: string, choices: string) => `\${${index}:${choices.split(",")[0]}}`);
   const defaults = new Map<string, string>();

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { TextHit } from "../lib/fs";
 
+/** 命中行片段的入参。 */
 interface MatchSnippetProps {
   /** 后端回的一行正文命中。 */
   hit: TextHit;

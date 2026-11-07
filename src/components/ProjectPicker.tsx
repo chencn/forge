@@ -19,6 +19,7 @@ export interface FolderStatusItem {
   dirty: boolean;
 }
 
+/** 工程选择器的入参。 */
 interface ProjectPickerProps {
   /** 当前工程根；null 表示还没打开文件夹。 */
   root: string | null;
@@ -37,7 +38,7 @@ interface ProjectPickerProps {
   onCloseProject: () => void;
 }
 
-/** IDEA 的工程入口在主工具栏最左边：一颗带下拉的芯片，不是一个静态标题。 */
+/** 工程入口在主工具栏最左边：一颗带下拉的芯片，不是一个静态标题。 */
 export default function ProjectPicker({
   root,
   mode = "multi",

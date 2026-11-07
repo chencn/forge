@@ -1,6 +1,7 @@
 //! UI 与 MCP 共享真实引擎状态；预览缩放只影响呈现，不改变设备的 CSS 尺寸。
 use super::*;
 
+/// 设备模拟配置：视口、触摸、网络与配色方案。
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Emulation {
@@ -24,6 +25,11 @@ impl Default for Emulation {
     }
 }
 impl Emulation {
+    /// 把一帧 patch 合并进当前配置；先过 forge_browser 的参数校验。
+    ///
+    /// # Errors
+    ///
+    /// 参数非法、指标超界或视口缺失时返回 `INVALID_ARGUMENT` 错误串。
     pub fn patched(&self, patch: &Value) -> Result<Self, String> {
         forge_browser::validate("browser_emulate", patch).map_err(|e|format!("INVALID_ARGUMENT: {e}"))?;
         if patch["reset"] == true { return Ok(Self::default()); }
@@ -48,9 +54,11 @@ impl Emulation {
         Ok(next)
     }
 
+    /// 预览缩放比：视口相对可用区域的比例，上限 1.0（只缩小不放大）。
     pub fn scale(&self, bounds: &Bounds) -> f64 {
         self.width.map_or(1.0, |width| (bounds.width / width as f64).min(bounds.height / self.height as f64).min(1.0))
     }
+    /// 视口在可用区域内居中后的实际占位框；未启用模拟时原样返回。
     pub fn bounds(&self, bounds: &Bounds) -> Bounds {
         let Some(width) = self.width else { return *bounds; };
         let scale = self.scale(bounds);
@@ -58,6 +66,7 @@ impl Emulation {
         let height = (self.height as f64 * scale).min(bounds.height);
         Bounds { x: bounds.x + (bounds.width - width) / 2.0, y: bounds.y + (bounds.height - height) / 2.0, width, height }
     }
+    /// 发给 CDP 的设备指标命令与载荷；未启用时是清除命令。
     pub fn metrics(&self, bounds: &Bounds) -> (&'static str, Value) {
         match self.width {
             None => ("Emulation.clearDeviceMetricsOverride", json!({})),
@@ -140,6 +149,7 @@ pub fn screenshot_region(visual: CssBox, layout: CssBox, device: Option<(f64, f6
     }
 }
 
+/// CSS 像素坐标下的元素框（视口模拟缩放换算后的结果）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CssBox {
     pub x: f64,

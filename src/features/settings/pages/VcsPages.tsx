@@ -7,6 +7,7 @@ import { gitProbe } from "../../../lib/git";
 import type { VcsSettings } from "../../../lib/settings";
 import { Loader2 } from "lucide-react";
 
+/** VCS 设置页共用的 `{t, v, update}` 三件套（v 是 settings.vcs，update 打补丁）。 */
 function useVcs() {
   const { t } = useI18n();
   const { settings, patch } = useSettings();
@@ -15,6 +16,7 @@ function useVcs() {
   return { t, v, update };
 }
 
+/** 设置行容器：限宽居中。 */
 function Rows({ children }: { children: ReactNode }) {
   return (
     <div className="settings-rows">
@@ -23,6 +25,7 @@ function Rows({ children }: { children: ReactNode }) {
   );
 }
 
+/** 一行「标签 + 是/否下拉」的开关设置行。 */
 function SwitchRow({
   label,
   checked,
@@ -53,6 +56,7 @@ function SwitchRow({
   );
 }
 
+/** 一行「开关 + 数值上限 + 单位」的限额设置行（关着时数值框禁用）。 */
 function LimitRow({
   label,
   checked,

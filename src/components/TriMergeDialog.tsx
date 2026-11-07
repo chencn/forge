@@ -1,6 +1,6 @@
 /**
- * 三栏合并编辑器（对齐 IDEA 的 Merge Revisions）：
- * Yours | Result | Theirs。结果栏从「冲突块填 base」的形态起步（不留标记），
+ * 三栏合并编辑器：Yours | Result | Theirs。
+ * 结果栏从「冲突块填 base」的形态起步（不留标记），
  * 每个未解决冲突上方挂着取舍按钮（采用本地/对方/两者/共同祖先），手动编辑也行——
  * 块范围随文档改动平移，改完点「应用解决」写回并交上层暂存。
  * 三方正文来自 index stage（git_conflict_versions），工作区文本只用来起步。
@@ -27,6 +27,7 @@ import { initialResult, parseConflicts, resolutionText, type Resolution, type Re
 /** 一块被解决后把它的装饰与范围表清掉。 */
 const resolvedConflict = StateEffect.define<number>();
 
+/** 三方合并编辑器持有的状态：冲突清单 + 装饰 + 按钮文案。 */
 interface ConflictField {
   conflicts: ResultConflict[];
   deco: DecorationSet;
@@ -34,8 +35,10 @@ interface ConflictField {
   labels: ActionsWidget["labels"];
 }
 
+/** 冲突块整段的行装饰（上色用）。 */
 const conflictLine = Decoration.line({ class: "tri-merge-marker" });
 
+/** 按冲突清单铺装饰：每块一个按钮 widget + 块内每行的底色标记。 */
 function decorate(
   state: EditorState,
   conflicts: readonly ResultConflict[],
@@ -118,6 +121,7 @@ class ActionsWidget extends WidgetType {
   }
 }
 
+/** {@link TriMergeDialog} 的入参。 */
 interface TriMergeDialogProps {
   /** 仓库根（git_conflict_versions 要拿 index stage）。 */
   root: string;
@@ -127,6 +131,7 @@ interface TriMergeDialogProps {
   reportError: (message: string, title?: string) => void;
 }
 
+/** 三方合并对话框：两侧编辑器点按钮取舍，写入结果并落盘。 */
 export default function TriMergeDialog({ root, path, onApplied, onClose, reportError }: TriMergeDialogProps) {
   const { t } = useI18n();
   const [data, setData] = useState<(GitConflictVersions & { working: string }) | null>(null);
@@ -224,7 +229,7 @@ export default function TriMergeDialog({ root, path, onApplied, onClose, reportE
         setStale({ diskMs: file.modifiedMs });
         return;
       }
-      // 未解决的块保留 base 段（IDEA 同语义）：用户可以先全部取舍，也可以直接应用。
+      // 未解决的块保留 base 段：用户可以先全部取舍，也可以直接应用。
       await writeFile(path, view.state.doc.toString(), file.lineEnding, file.hasBom, file.encoding, file.modifiedMs);
       onApplied();
     } catch (cause: unknown) {

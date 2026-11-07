@@ -21,6 +21,7 @@ export type AiTurnBlockReason =
   | "ai.chat.turnActionNoPrompt"
   | "ai.chat.turnActionSlash";
 
+/** 决定回合操作可用性所需的会话状态。 */
 export interface AiTurnActionState {
   /** 会话当前状态，来自运行时快照。 */
   status: AiTask["status"] | "idle";
@@ -30,6 +31,7 @@ export interface AiTurnActionState {
   tasks: readonly AiTask[];
 }
 
+/** 回合操作的判定结果：可操作的回合，或不可操作的原因。 */
 export interface AiTurnActionDecision {
   /** 可以操作的那一回合；不可操作时为 null。 */
   task: AiTask | null;

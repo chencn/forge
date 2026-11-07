@@ -3,21 +3,36 @@
  *
  * 用法是每次调用都把自己那份任务函数交进来：队列只认「现在有没有在飞的」，
  * 不认任务的身份，所以任务本身可以随依赖换（换了根目录、换了工作区都行）。
- *
  * 为什么补跑一趟就够、不会丢东西：补跑那一轮是在手头这轮落定之后才起，读到的
  * 必然是最后一次请求之后的状态。中间再来十次请求也只是把欠账标记再按一次。
  */
 export interface Coalescer {
-  /** 触发一次；已有任务在飞时只记一笔欠账，并把手头那趟回给调用方。 */
+  /**
+   * 触发一次任务。
+   *
+   * @param task - 本次要跑的任务函数；已有任务在飞时它成为补跑候选
+   * @returns 手头在飞那一趟的 Promise（含本次并入）；任务异常时以同样原因 reject
+   */
   request: (task: () => Promise<void>) => Promise<void>;
-  /** 作废排队中的补跑：换工作区那种「旧仓库读回来也不该写进新面板」的场合用。 */
+  /**
+   * 作废排队中的补跑。
+   *
+   * @remarks 用于换工作区那种「旧仓库读回来也不该写进新面板」的场合
+   */
   cancelTrailing: () => void;
 }
 
+/**
+ * 创建一个任务并合器。
+ *
+ * @returns Coalescer 实例；request 与 cancelTrailing 闭包共享同一份状态
+ */
 export function createCoalescer(): Coalescer {
+  /** 在飞那一趟的 Promise；null 表示空闲 */
   let live: Promise<void> | null = null;
+  /** 在飞期间又来过请求的欠账标记 */
   let again = false;
-  /** 排队期间最后一次交进来的那份任务，补跑用它。 */
+  // 排队期间最后一次交进来的那份任务，补跑用它。
   let pending: (() => Promise<void>) | null = null;
   return {
     request(task: () => Promise<void>) {

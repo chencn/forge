@@ -14,7 +14,9 @@ export function resolveAiModel(catalog: AiCapabilities | null, input: string | u
   return ids.length === 1 ? ids[0] : value;
 }
 
+/** 按引擎的全局默认档在 localStorage 的键。 */
 const defaultsKey = (provider: AiProvider) => `forge:ai:defaults:v1:${provider}`;
+/** 权限档的白名单（读回时按它把关）。 */
 const PERMISSIONS = ["read", "ask", "auto", "full"] as const;
 /** 模式 id 会原样交给 CLI：先在本地过形状白名单，真正的取值把关在后端对着这版 CLI 的清单上做。 */
 const MODE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
@@ -39,6 +41,7 @@ export function readAiOptions(key: string): AiRunOptions {
     };
   } catch { return {}; }
 }
+/** 读某会话键的运行选项；会话里缺权限/模式时回落到该引擎的全局默认。 */
 export function loadAiOptions(key: string, provider: AiProvider): AiRunOptions {
   let value: AiRunOptions;
   let own = false;
@@ -58,6 +61,7 @@ export function loadAiOptions(key: string, provider: AiProvider): AiRunOptions {
   }
   return value;
 }
+/** 保存运行选项：当前会话键一份 + 按引擎的全局默认一份（不写 CLI 原生配置）。 */
 export function saveAiOptions(key: string, provider: AiProvider, value: AiRunOptions): void {
   // 选择记在 Forge 自己的存储里（当前会话一份 + 按引擎的全局默认一份），
   // 不写 CLI 的原生配置：记住上次选择不等于替用户改 config。

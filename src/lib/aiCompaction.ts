@@ -10,15 +10,19 @@
 
 /** 压缩事件里 token 前后值与时长的几种写法。 */
 const BEFORE_KEYS = ["preTokens", "pre_tokens", "tokensBefore", "before_tokens", "tokens_before"];
+/** 压缩后 token 数的几种写法。 */
 const AFTER_KEYS = ["postTokens", "post_tokens", "tokensAfter", "after_tokens", "tokens_after"];
+/** 压缩耗时的几种写法。 */
 const DURATION_KEYS = ["durationMs", "duration_ms"];
 
 /** 只用得到压缩条目的这几个字段，避免与 `AiEntry` 形成循环依赖。 */
 export interface AiCompactionEntry { text: string; input?: unknown }
 
+/** 把条目的 input 收敛成键值对（不是对象返回空表）。 */
 export const compactionRecord = (entry: AiCompactionEntry): Record<string, unknown> =>
   entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
 
+/** 依次试各候选键取第一个非负有限数；全不中返回 undefined。 */
 function pickNumber(meta: Record<string, unknown> | undefined, keys: string[]): number | undefined {
   for (const key of keys) {
     const value = meta?.[key];
@@ -41,6 +45,7 @@ export interface AiCompactionFacts {
   summary: string;
 }
 
+/** 把一条压缩条目读成 {@link AiCompactionFacts}（认不出的字段一律 undefined/空串）。 */
 export function compactionFacts(entry: AiCompactionEntry): AiCompactionFacts {
   const data = compactionRecord(entry);
   const meta = data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)

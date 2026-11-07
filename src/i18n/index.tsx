@@ -2,8 +2,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from "react";
 import type { TranslationKey } from "./lang/zh";
 
+/** 界面语言：简体 / 英文 / 繁体。 */
 export type Lang = "zh" | "en" | "zh-TW";
 
+/** 一份语言的词典（键 → 译文）。 */
 type Dictionary = Record<TranslationKey, string>;
 
 /**
@@ -17,7 +19,9 @@ const LOADERS: Record<Lang, () => Promise<Dictionary>> = {
   "zh-TW": () => import("./lang/zh-TW").then((module) => module.zhTW),
 };
 
+/** 已装载词典的缓存。 */
 const DICTIONARIES = new Map<Lang, Dictionary>();
+/** 装载中的词典（同一语言并发请求合并为一次 import）。 */
 const INFLIGHT = new Map<Lang, Promise<Dictionary>>();
 
 /** 装上某种语言的词典；已经装好就立即返回。启动流程与切换语言都要先过这一关。 */
@@ -47,8 +51,10 @@ export function resolveLang(stored: string | null): Lang {
   return "en";
 }
 
+/** 插值变量的形态（替换译文里的 `{token}`）。 */
 type TranslateVars = Record<string, string | number>;
 
+/** 指定语言取译文；词典未装好回键名，不抛错。 */
 function translateIn(lang: Lang, key: TranslationKey, vars?: TranslateVars): string {
   // 词典还没装好时按缺键回退键名：预载由启动流程与 setLang 保证，
   // 这里宁可按缺键处理，也不要在渲染途中抛错把整棵树打断。
@@ -65,10 +71,12 @@ function translateIn(lang: Lang, key: TranslationKey, vars?: TranslateVars): str
  */
 let activeLang: Lang = resolveLang(null);
 
+/** 用当前界面语言取译文（React 外的调用点用）。 */
 export function translate(key: TranslationKey, vars?: TranslateVars): string {
   return translateIn(activeLang, key, vars);
 }
 
+/** i18n 上下文的值。 */
 interface I18nValue {
   /** 当前界面语言。 */
   lang: Lang;
@@ -79,8 +87,10 @@ interface I18nValue {
   t: (key: TranslationKey, vars?: TranslateVars) => string;
 }
 
+/** i18n 上下文对象；Provider 之外为 null。 */
 const I18nContext = createContext<I18nValue | null>(null);
 
+/** {@link I18nProvider} 的入参。 */
 interface I18nProviderProps {
   /** 当前语言，由设置层控制。 */
   lang: Lang;
@@ -89,6 +99,7 @@ interface I18nProviderProps {
   children: ReactNode;
 }
 
+/** i18n 根组件：装词典、同步 React 外的语言镜像、下发 t/setLang。 */
 export function I18nProvider({ lang, onLangChange, children }: I18nProviderProps) {
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : lang === "zh-TW" ? "zh-TW" : "en";
@@ -137,6 +148,7 @@ export function I18nProvider({ lang, onLangChange, children }: I18nProviderProps
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
+/** 取 i18n 上下文；漏包 Provider 时直接报错。 */
 export function useI18n(): I18nValue {
   const value = useContext(I18nContext);
   if (!value) throw new Error("useI18n 必须在 I18nProvider 内使用");

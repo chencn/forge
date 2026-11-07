@@ -7,6 +7,7 @@ import { copyChatImage } from "../lib/chatImage";
 import ContextMenu from "./ContextMenu";
 import type { MenuAnchor } from "./ContextMenu";
 
+/** 聊天里一张图片附件：缩略图、复制与放大预览。 */
 interface AiChatImageProps {
   /** 沙箱里的图片路径。 */
   path: string;

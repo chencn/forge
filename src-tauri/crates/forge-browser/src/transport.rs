@@ -58,6 +58,11 @@ pub async fn call(endpoint: &str, request: Request) -> Result<Value, String> {
     read(&mut stream).await
 }
 
+/// 创建命名管道服务端：`first` 为真时建首个实例，否则追加新实例；DACL 只放行当前用户。
+///
+/// # Errors
+///
+/// 管道创建或安全描述符构造失败时返回原因串。
 #[cfg(windows)]
 pub fn server(
     endpoint: &str,
@@ -69,7 +74,7 @@ pub fn server(
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-    // Bind the DACL to TokenUser, not OW: an elevated token's default owner can be a group.
+    // DACL 绑到 TokenUser 而不是 OW：提权令牌的默认属主可能是一个组。
     let sid = current_user_sid()?;
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {

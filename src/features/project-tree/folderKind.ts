@@ -1,6 +1,6 @@
 /**
- * 侧边栏项目树 1:1 对标 IntelliJ IDEA 的文件夹角色与图标体系 (Folder Kind Architecture)
- * 严格使用 JetBrains 官方 expui 矢量 SVG。
+ * 侧边栏项目树的文件夹角色与图标体系 (Folder Kind Architecture)。
+ * 使用 JetBrains 官方 expui 矢量 SVG。
  */
 import {
   isUnderJvmSourceRoot,
@@ -8,6 +8,7 @@ import {
   resourcesRootKind,
 } from "../../lib/jvm";
 
+/** 文件夹在项目树里的角色，决定图标与颜色。 */
 export type FolderKind =
   | "plain"
   | "source"
@@ -119,7 +120,7 @@ export function folderKindSvg(kind: FolderKind, dark: boolean): string {
 }
 
 /**
- * 判定目录节点的具体角色类型 (1:1 对标 IntelliJ IDEA)
+ * 判定目录节点的具体角色类型。
  */
 export function resolveFolderKind(
   path: string | undefined,

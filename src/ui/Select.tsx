@@ -5,14 +5,18 @@ import { Popup } from "./Popup";
 import { List, listNavigate } from "./List";
 import styles from "./Select.module.css";
 
+/** 基础下拉选择的一项。 */
 export interface SelectOption<V extends string | number = string> {
+  /** 实际写回的值。 */
   value: V;
+  /** 显示文案。 */
   label: string;
   icon?: string | LucideIconType | ReactNode;
   detail?: string;
   disabled?: boolean;
 }
 
+/** 基础下拉选择的入参。 */
 export interface SelectProps<V extends string | number = string> {
   value: V | null;
   options: readonly SelectOption<V>[];

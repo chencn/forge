@@ -46,6 +46,11 @@ fn companion() -> Result<PathBuf, String> {
     Err(format!("Forge browser companion missing next to {}. Run npm run browser:prepare before starting the desktop app.",directory.display()))
 }
 
+/// 组装让 CLI 挂上 forge_browser MCP companion 的命令行参数。
+///
+/// # Errors
+///
+/// companion 可执行文件缺失时返回错误串。
 pub fn arguments(provider: Provider) -> Result<Vec<String>, String> {
     let command = companion()?.to_string_lossy().into_owned();
     let quote = |s: &str| serde_json::to_string(s).unwrap();
@@ -60,12 +65,13 @@ pub fn arguments(provider: Provider) -> Result<Vec<String>, String> {
             "-c".into(),"mcp_servers.forge_browser.tool_timeout_sec=45".into(),
         ]),
         Provider::Claude => {
-            // Inline JSON avoids token/config files and preserves the user's other MCP servers.
+            // 内联 JSON 免去令牌/配置文件，也保留用户自己的其他 MCP 服务器。
             let config = serde_json::json!({"mcpServers":{"forge_browser":{"type":"stdio","command":command,"args":[]}}});
             Ok(vec!["--mcp-config".into(),config.to_string(),"--append-system-prompt".into(),forge_browser::INSTRUCTIONS.into(),"--append-subagent-system-prompt".into(),forge_browser::INSTRUCTIONS.into(),"--system-prompt-snapshot".into(),"off".into(),"--no-chrome".into()])
         }
     }
 }
+/// 给 CLI 进程注入 companion 所需的端点与令牌环境变量。
 pub fn environment(command: &mut Command, lease: &Lease) {
     let endpoint = host(&lease.app).lock().endpoint.clone();
     command

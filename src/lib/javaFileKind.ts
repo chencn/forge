@@ -7,6 +7,7 @@ export type JavaFileIconKind =
   | "java.record"
   | "java.exception";
 
+/** 把注释与字符串字面量（含 text block）掩成空格，防止声明匹配吃进「class」出现在注释里的情况。 */
 function maskJavaCommentsAndLiterals(source: string): string {
   let output = "";
   let index = 0;
@@ -105,12 +106,14 @@ function maskJavaCommentsAndLiterals(source: string): string {
   return output;
 }
 
+/** 取 `.java` 文件的不含扩展名基名；不是 .java 文件返回 null。 */
 function getJavaBaseName(fileName: string): string | null {
   const leafName = fileName.split(/[\\/]/).pop() ?? fileName;
   if (!leafName.toLowerCase().endsWith(".java")) return null;
   return leafName.slice(0, -".java".length);
 }
 
+/** 跳过声明前的前导泛型参数（`class Foo<T>` 的 `<T>`），配平尖括号深度；没配平返回空串。 */
 function stripLeadingTypeParameters(declarationTail: string): string {
   let index = 0;
   while (/\s/.test(declarationTail[index] ?? "")) index += 1;
@@ -128,6 +131,7 @@ function stripLeadingTypeParameters(declarationTail: string): string {
   return "";
 }
 
+/** 判定 Java 文件的图标种类：只认与文件名同名的顶层声明；认不出返回 null。 */
 export function detectJavaFileIconKind(fileName: string, source: string): JavaFileIconKind | null {
   const baseName = getJavaBaseName(fileName);
   if (!baseName) return null;

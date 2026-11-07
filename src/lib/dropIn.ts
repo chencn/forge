@@ -1,6 +1,7 @@
 import type { TranslationKey } from "../i18n/lang/zh";
 import type { EntryKind } from "./fs";
 
+/** 拖入路径按文件/文件夹拆开的结果。 */
 export interface DropSplit {
   files: string[];
   folders: string[];

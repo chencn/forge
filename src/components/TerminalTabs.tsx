@@ -77,6 +77,7 @@ export interface TermPlacement {
   toggle: () => void;
 }
 
+/** shell 探测结果的模块级缓存（失败也缓存 null 以免重试风暴）。 */
 let shellList: Promise<ShellInfo[]> | null = null;
 
 /** 标题行和竖排列表各要一份，探测只跑一次。 */
@@ -88,6 +89,7 @@ function probeShells(): Promise<ShellInfo[]> {
   return shellList;
 }
 
+/** React 侧的 shell 探测 hook（挂载时探一次）。 */
 function useShells(): ShellInfo[] {
   const [shells, setShells] = useState<ShellInfo[]>([]);
   useEffect(() => {
@@ -102,6 +104,7 @@ function useShells(): ShellInfo[] {
   return shells;
 }
 
+/** 订阅某工作目录的终端会话列表。 */
 function useTermTabs(cwd: string | null) {
   const [store, setStore] = useState(() => termSessionsFor(cwd));
   useEffect(() => {
@@ -111,6 +114,7 @@ function useTermTabs(cwd: string | null) {
   return store;
 }
 
+/** 会话 shell 的展示名（认不出去后缀取尾段）。 */
 function shellName(session: TermSession, shells: ShellInfo[]): string {
   const id = session.shell || shells[0]?.id || "";
   const known = shells.find((shell) => shell.id === id || shell.path === id);
@@ -135,17 +139,20 @@ function fileSafe(name: string): string {
   return name.replace(/[\\/:*?"<>|\s]+/gu, "_").replace(/^_+|_+$/gu, "") || "terminal";
 }
 
+/** 拖拽排序时的插入提示（落在哪个页签之后）。 */
 interface DropHint {
   id: string;
   after: boolean;
 }
 
+/** {@link TermTabList} 的入参。 */
 interface TermTabListProps {
   cwd: string | null;
   orientation: "horizontal" | "vertical";
   placement?: TermPlacement;
 }
 
+/** 终端页签栏（横/竖两向），支持拖拽排序与新建/关闭。 */
 export function TermTabList({ cwd, orientation, placement }: TermTabListProps) {
   const { settings } = useSettings();
   const { t } = useI18n();

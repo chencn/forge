@@ -1,10 +1,9 @@
 /**
- * 项目侧边栏 1:1 复刻树视窗组件 (ProjectTree)
+ * 项目侧边栏树视窗组件 (ProjectTree)
  *
- * 严格 1:1 全量对标 IntelliJ IDEA ProjectView / IntelliJ IDEA 商业级项目视窗：
  * 1. 宿主与视图结构：采用 `.view` 弹性容器，直接承载 `<Tree<ProjectTreeNode>>` 虚拟化树引擎；
- * 2. 真实 IDEA 样式体系：24px 虚拟行高、20px 缩进阶梯、6px inset 浮动选区、聚焦 `--bg-tree-selected` / 失焦 `--bg-tree-selected-inactive`；
- * 3. 树行内部 1:1 CSS：`.content`（gap 5px）、`.icon`、`.folderIcon`、`.rootLabel`、`.excluded`（严格采用 `var(--vcs-ignored)` 专属色）、`.detail`；
+ * 2. 样式体系：24px 虚拟行高、20px 缩进阶梯、6px inset 浮动选区、聚焦 `--bg-tree-selected` / 失焦 `--bg-tree-selected-inactive`；
+ * 3. 树行内部 CSS：`.content`（gap 5px）、`.icon`、`.folderIcon`、`.rootLabel`、`.excluded`（严格采用 `var(--vcs-ignored)` 专属色）、`.detail`；
  * 4. 就地行内编辑 (InlineEditor)：直接在 `.content` 行内激活 `.inlineInput`，输入非法出现 `.inlineError` 警示气泡，回车提交 Esc 取消；
  * 5. 剪切状态 (Cut State)：`.cut` 赋予 0.45 弱化透明度；
  * 6. 拖拽移动与复制 (Drag & Drop)：指针驱动拖拽，命中目标文件夹赋予 `.dropTarget` 蓝色强调框与微透明底色，跟随 `.dragGhost` 浮窗；
@@ -86,10 +85,13 @@ import type { KeymapScheme } from "../../lib/settings";
 import { contextShortcuts, ShortcutSequence } from "../../lib/shortcuts";
 import { presetKeys } from "../../lib/keymaps/idea";
 
+/** 树里可直触的快捷键动作（新建/重命名/删除/复制路径），键盘事件里拦截。 */
 const TREE_SHORTCUT_ACTIONS = new Set(['NewElement', 'NewElementSamePlace', 'RenameElement', 'Move', '$Delete', 'CopyPaths']);
 
+/** 拖拽起手的位移阈值（px），过了才算拖而不是点。 */
 const DRAG_THRESHOLD = 4;
 
+/** {@link ProjectTree} 的入参。 */
 export interface ProjectTreeProps {
   keymapScheme?: KeymapScheme;
   /** 工作区工程根目录（项目顶层） */
@@ -111,7 +113,7 @@ export interface ProjectTreeProps {
   /** 由 App 统一持有的文件树剪贴板；不再在树组件内部另起一份。 */
   readonly clipboard?: ClipboardState | null;
   readonly onClipboardChange?: (next: ClipboardState | null) => void;
-  /** 在项目目录树中高亮显示包含已修改文件的父目录 (对标 IDEA VCS 规范) */
+  /** 在项目目录树中高亮显示包含已修改文件的父目录 */
   readonly highlightDirtyDirectories?: boolean;
   /** 当前项目内持久化的显式目录角色。 */
   readonly directoryRoles?: Readonly<Record<string, ProjectDirectoryRole>>;
@@ -151,6 +153,7 @@ export interface ProjectTreeProps {
   readonly onNewFolder?: (dir: string) => void;
 }
 
+/** 树内统一的小写路径 key（缓存与展开集合的键契约）。 */
 const pathKey = normalizePathKey;
 
 /** 没有项目级旧数据时沿用全局设置；一旦保存过，项目自己的视图选项优先。 */
@@ -162,18 +165,21 @@ function initialViewOptions(root: string, showHidden: boolean, showIgnored: bool
     : { ...saved, showHidden, showExcluded: showIgnored };
 }
 
+/** 规范化后的父目录；根的父是 "/"。 */
 function parentOfPath(path: string): string {
   const norm = path.replaceAll("\\", "/").replace(/\/+$/, "");
   const slash = norm.lastIndexOf("/");
   return slash <= 0 ? "/" : norm.slice(0, slash);
 }
 
+/** 路径的最后一段（文件/目录名）。 */
 function nameOfPath(path: string): string {
   const norm = path.replaceAll("\\", "/").replace(/\/+$/, "");
   const slash = norm.lastIndexOf("/");
   return slash < 0 ? norm : norm.slice(slash + 1);
 }
 
+/** child 是否在 ancestor 目录之下（不含自身）。 */
 function isInside(child: string, ancestor: string): boolean {
   const c = normalizePathKey(child).replace(/\/+$/, "");
   const a = normalizePathKey(ancestor).replace(/\/+$/, "");
@@ -201,12 +207,14 @@ function ancestorsWithin(ancestor: string, targetPath: string): string[] {
   return folders;
 }
 
+/** 目录 key 是否被一次变更波及（自身、变更路径位于其下、或它是变更路径的祖先）。 */
 function touched(key: string, changed: string): boolean {
   const a = normalizePathKey(key).replace(/\/+$/, "");
   const b = normalizePathKey(changed).replace(/\/+$/, "");
   return a === b || b.startsWith(`${a}/`) || a.startsWith(`${b}/`);
 }
 
+/** 造一个只读的虚拟目录条目（外部库根、分组等，不对应物理目录）。 */
 function makeVirtualDirectoryEntry(name: string, path: string): FsEntry {
   return {
     name,
@@ -303,7 +311,7 @@ function useLazyChildren(
         })
         .catch(() => {
           // 首次读取失败（不存在/受限/超时）：标进失败集，渲染可点的重试占位行，不触发红色横条；
-          // 已有缓存时刷新失败：保留旧内容（对齐 IDEA loadDir 的错误分级）。
+          // 已有缓存时刷新失败：保留旧内容。
           setFailed((prev) => {
             if (prev.has(key) || childrenRef.current.has(key)) return prev;
             return new Set(prev).add(key);
@@ -366,6 +374,7 @@ function useLazyChildren(
   return { children, failed, load, reloadDir };
 }
 
+/** 项目树组件本体：组装虚拟目录、惰性加载、拖拽与快捷键。 */
 export function ProjectTree({
   keymapScheme = 'idea',
   root,
@@ -401,7 +410,7 @@ export function ProjectTree({
   useEffect(() => { shortcutSequence.reset(); }, [keymapScheme, shortcutSequence]);
 
   // 1. 顶部 Header 状态（视图模式 + 选项）
-  // 视图选项/模式/展开状态按工程根持久化（对齐 IDEA store 的 localStorage 层）
+  // 视图选项/模式/展开状态按工程根持久化
   const [viewMode, setViewModeRaw] = useState<ProjectViewMode>(() => loadViewMode(pathKey(root)));
   const [options, setOptionsRaw] = useState<ViewOptions>(() =>
     initialViewOptions(root, propShowHidden, propShowIgnored)
@@ -467,7 +476,7 @@ export function ProjectTree({
     setOptionsRaw(initialViewOptions(root, propShowHidden, propShowIgnored));
     setExpandedRaw(loadExpanded(nextRootKey) ?? new Set([normalizeNodeKey(root)]));
   }, [propShowHidden, propShowIgnored, root]);
-  // 待执行的滚动/聚焦定位请求引用 (1:1 对标 IntelliJ IDEA revealRequest)
+  // 待执行的滚动/聚焦定位请求引用
   const pendingRevealRef = useRef<{
     path: string;
     focus: boolean;
@@ -552,7 +561,7 @@ export function ProjectTree({
   }, [changes, repoRoot, highlightDirtyDirectories]);
 
   /**
-   * 1:1 对标 IntelliJ IDEA revealPath 规范：展开祖先目录、异步加载并在可见后滚动定位
+   * 定位规范：展开祖先目录、异步加载并在可见后滚动定位
    */
   const revealPath = useCallback(
     (targetPath: string, focus = true): boolean => {
@@ -605,7 +614,7 @@ export function ProjectTree({
         return false;
       }
 
-      // 2. 模式联动（对齐 IDEA modeShows）：只有目标在主工程、而当前停在过滤视图时才切回 Project；
+      // 2. 模式联动：只有目标在主工程、而当前停在过滤视图时才切回 Project；
       // 在 Scratches 模式定位草稿文件不该被拉走。
       if (viewMode !== "project" && (inProject || inLibrary || (inScratches && viewMode !== "scratches"))) {
         setViewMode("project");
@@ -690,7 +699,7 @@ export function ProjectTree({
     }
     if (viewMode === "changedFiles") {
       const prefix = repoRoot ? repoRoot.replace(/[\\/]+$/, "") : root.replace(/[\\/]+$/, "");
-      // 已删除（D）的文件磁盘上不存在，树上只会展开成空壳，剔除掉（对齐 IDEA localChangedPaths）。
+      // 已删除（D）的文件磁盘上不存在，树上只会展开成空壳，剔除掉。
       return new Set(
         changes
           .filter((c) => c.workStatus !== "D" && c.indexStatus !== "D")
@@ -735,7 +744,7 @@ export function ProjectTree({
       // Tree.tsx 收到 undefined 会渲染稳定固高(24px)的 loading 占位行，
       // 彻底消除异步加载前后虚拟列表高度突变导致的重影与拉扯！
       if (!children.has(pKey)) {
-        // 读取失败且无旧缓存：渲染可点的重试占位行，不再无限转圈（对齐 IDEA loadDir 错误分级）。
+        // 读取失败且无旧缓存：渲染可点的重试占位行，不再无限转圈。
         if (failed.has(pKey)) {
           const retryNode: ProjectTreeNode = {
             key: `${LOAD_FAILED_PREFIX}${dirPath}`,
@@ -916,7 +925,7 @@ export function ProjectTree({
       }
     }
 
-    // 2. External Libraries 根节点 (1:1 严格对标 IntelliJ IDEA librariesRoot)
+    // 2. External Libraries 根节点
     if (viewMode === "project" && libraries.length > 0) {
       const libRootKey = `${GROUP_PREFIX}externalLibraries`;
       const isLibExp = expanded.has(libRootKey);
@@ -941,7 +950,7 @@ export function ProjectTree({
         const groupKey = `${GROUP_PREFIX}externalLibraries/${group.id}`;
         const groupExp = expanded.has(groupKey);
 
-        // 1:1 对标 IntelliJ IDEA 的 GROUP_ICONS 映射
+        // 分组图标映射
         const groupIcon =
           group.kind === "nodeModules"
             ? "file-npm"
@@ -986,7 +995,7 @@ export function ProjectTree({
             hasChildren: libRoot.isDirectory,
             isReadonly: true,
             locationDetail: libRoot.detail || "library root",
-            // 1:1 对标 IntelliJ IDEA librariesRoot：依赖项统一赋予库文件夹或归档图标
+            // 依赖项统一赋予库文件夹或归档图标
             icon: libRoot.isArchive ? "file-archive" : "folder-library",
           };
           libNodes.push(libNode);
@@ -1124,12 +1133,12 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
             await createFolder(fullPath);
           } else {
             await createFile(fullPath);
-            // 新建文件随后在编辑器里打开（对齐 IDEA commitEditing → openFile）
+            // 新建文件随后在编辑器里打开
             onOpenFile(makeEntryFor(fullPath, value));
           }
           reloadDir(editing.parent);
           setEditing(null);
-          // 新条目露出来并定位（对齐 IDEA refreshAfterCreate → revealPath）
+          // 新条目露出来并定位
           revealPath(fullPath, true);
           return true;
         } catch (err) {
@@ -1283,7 +1292,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     }
   };
 
-  // 统一的展开/折叠核心调度函数（1:1 对标 IntelliJ IDEA toggleExpanded 规范）
+  // 统一的展开/折叠核心调度函数
   const toggleNodeExpanded = useCallback(
     (node: ProjectTreeNode) => {
       if (!node.hasChildren) return;
@@ -1325,12 +1334,12 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
       if (editing) return;
 
       if (node.hasChildren) {
-        // 对标 IDEA 规范：单击目录即展开/折叠（默认开启）
+        // 单击目录即展开/折叠（默认开启）
         if (options.singleClickExpand ?? true) {
           toggleNodeExpanded(node);
         }
       } else {
-        // 对标 IDEA 规范：侧边资源管理器中单击文件立即在编辑器中打开（默认开启）
+        // 侧边资源管理器中单击文件立即在编辑器中打开（默认开启）
         if (options.singleClickOpen ?? true) {
           onOpenFile(node.entry);
         }
@@ -1478,7 +1487,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         return;
       }
       if (node.hasChildren) {
-        // 「单击展开」开启时，双击的第一段单击已经切过一次，这里再切就等于没变（对齐 IDEA 的 stopPropagation 语义）。
+        // 「单击展开」开启时，双击的第一段单击已经切过一次，这里再切就等于没变。
         if (options.singleClickExpand ?? true) return;
         toggleNodeExpanded(node);
       } else {
@@ -1502,7 +1511,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
     [treeModel.byKey, onContextMenu]
   );
 
-  // 1:1 renderNode 渲染回调
+  // renderNode 渲染回调
   const renderNode = useCallback(
     (node: ProjectTreeNode, state: TreeRowState) => {
       const isCut = clipboard?.cut && clipboard.paths.includes(node.entry.path);
@@ -1714,7 +1723,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) shortcutSequence.reset();
       }}
     >
-      {/* 顶部 Header 工具栏 (单层 1:1 工具视窗标准) */}
+      {/* 顶部 Header 工具栏 */}
       <ProjectHeader
         mode={viewMode}
         onModeChange={setViewMode}
@@ -1729,7 +1738,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         locateDisabled={!activeFile && openFiles.length === 0}
         onExpandAll={() => {
           // BFS 逐层展开：深层目录还没读到 childrenMap 里，只收已加载层会漏；
-          // 按队列加载（上限 400 个目录，对齐 IDEA expandAll），加载完的下一轮补进展开集。
+          // 按队列加载（上限 400 个目录），加载完的下一轮补进展开集。
           const all = new Set<string>([normalizeNodeKey(root)]);
           for (const k of treeModel.childrenMap.keys()) {
             all.add(k);
@@ -1776,7 +1785,7 @@ function makeEntryFor(fullPath: string, name: string): FsEntry {
         onToggleExpand={onToggleExpand}
       />
 
-      {/* 1:1 虚拟化树主体 */}
+      {/* 虚拟化树主体 */}
       <Tree<ProjectTreeNode>
         aria-label="Project"
         handleRef={treeHandleRef}

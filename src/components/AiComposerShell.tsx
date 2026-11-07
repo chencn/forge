@@ -25,7 +25,7 @@ export default function AiComposerShell({ editor, attachments, toolbarLeft, tool
   /** 编辑区与动作行之间的补充行（如命令提示）。 */
   footer?: ReactNode;
 }) {
-  // Prompt Input is a composition: editor state, IME, attachments and submission stay with the caller.
+  // 组合式外壳：编辑器状态、输入法、附件与提交都留给调用方。
   return <InputGroup data-element="prompt-input" className={`ai-composer${tall ? " is-tall" : ""}${attachments ? " has-attachments" : ""}`}>
     {overlay}
     {attachments ? <InputGroupAddon align="block-start" className="ai-composer-attachments">{attachments}</InputGroupAddon> : null}

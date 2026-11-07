@@ -58,7 +58,7 @@
 /* 行间距为 8px；同时存在的两个同步计数按参考收紧到 4px。 */
 .branch-popup-sync + .branch-popup-sync { margin-left: -4px; }
 
-/* IDEA 的同步箭头有独立语义色；菜单动作仍跟随中性前景。 */
+/* 同步箭头有独立语义色；菜单动作仍跟随中性前景。 */
 .toolbar-chip .git-sync-incoming,
 .branch-popup-sync.git-sync-incoming > svg { color: var(--git-incoming); }
 .toolbar-chip .git-sync-outgoing,

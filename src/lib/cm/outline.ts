@@ -5,6 +5,7 @@ import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
 import { reportOutline, type OutlineSymbol } from "../editorOutline";
 
+/** Lezer 节点名 → 大纲种类（各语言文法的声明节点）。 */
 const DECLARATIONS: Record<string, OutlineSymbol["kind"]> = {
   FunctionDeclaration: "function", FunctionDefinition: "function", FunctionItem: "function",
   MethodDeclaration: "method", MethodDefinition: "method", ConstructorDeclaration: "method",
@@ -16,9 +17,12 @@ const DECLARATIONS: Record<string, OutlineSymbol["kind"]> = {
   PropertyDeclaration: "property", Property: "property",
   VariableDeclarator: "variable", ConstItem: "variable", StaticItem: "variable", LetDeclaration: "variable",
 };
+/** 可以当「名字」的节点名（先要明确的定义名，其次退而求其次的标识符）。 */
 const NAME = /^(VariableDefinition|VariableName|PropertyDefinition|TypeDefinition|Definition|BoundIdentifier|TypeIdentifier|Identifier|PropertyName|Name|TypeName)$/;
+/** 明确的定义名节点（比 {@link NAME} 优先）。 */
 const DEFINITION_NAME = /^(VariableDefinition|PropertyDefinition|TypeDefinition|Definition|BoundIdentifier)$/;
 
+/** 从语法树抽出大纲符号树（匿名函数沿调用表达式命名，变量声明逐绑定拆条）。 */
 export function extractOutline(state: EditorState): OutlineSymbol[] {
   const tree = ensureSyntaxTree(state, state.doc.length, 25) ?? syntaxTree(state);
   const text = (node: SyntaxNode) => state.sliceDoc(node.from, node.to).replace(/\s+/g, " ").slice(0, 120);

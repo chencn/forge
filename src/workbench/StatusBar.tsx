@@ -4,6 +4,7 @@ import { Spinner } from "../ui";
 import { useI18n } from "../i18n";
 import styles from "./StatusBar.module.css";
 
+/** {@link StatusItem} 的入参。 */
 export interface StatusItemProps {
   id?: string;
   shrink?: boolean;
@@ -11,6 +12,7 @@ export interface StatusItemProps {
   className?: string;
 }
 
+/** 状态栏上的一格（children 为 null/false 时不渲染）。 */
 export function StatusItem({ id, shrink, children, className }: StatusItemProps) {
   if (children == null || children === false) return null;
   return (
@@ -23,6 +25,7 @@ export function StatusItem({ id, shrink, children, className }: StatusItemProps)
   );
 }
 
+/** {@link StatusBar} 的入参。 */
 export interface StatusBarProps {
   left?: ReactNode;
   right?: ReactNode;
@@ -56,6 +59,7 @@ export function StatusBar({
   );
 }
 
+/** {@link StatusMessage} 的入参。 */
 export interface StatusMessageProps {
   message?: string | null;
   className?: string;
@@ -71,6 +75,7 @@ export function StatusMessage({ message, className }: StatusMessageProps) {
   );
 }
 
+/** {@link StatusTask} 的入参。 */
 export interface StatusTaskProps {
   title: string;
   running?: boolean;

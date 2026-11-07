@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import { Menu as UiMenu, type MenuItem as UiMenuItem } from "../ui/Menu";
 import type { LucideIconType } from "../ui/Icon";
 
+/** 右键菜单的一项。 */
 export interface MenuItem {
   /** 菜单文案；分隔线项不写文案。 */
   label?: string;
@@ -17,7 +18,7 @@ export interface MenuItem {
   danger?: boolean;
   /** 不可点，例如没有选中项时的重命名。 */
   disabled?: boolean;
-  /** 点不动的原因，画在悬停提示里；IDEA 那套置灰项都带一句。 */
+  /** 点不动的原因，画在悬停提示里；置灰项都应带一句。 */
   hint?: string;
   /** 有子菜单：点这颗不关菜单，而是往右边展开一层。 */
   children?: MenuItem[];
@@ -26,6 +27,7 @@ export interface MenuItem {
   onSelect?: () => void;
 }
 
+/** 一次右键打开的菜单现场：触发点与菜单项。 */
 export interface MenuAnchor {
   /** 触发点视口坐标，来自右键事件的 clientX。 */
   x: number;
@@ -61,9 +63,10 @@ function toUiMenuItem(item: MenuItem): UiMenuItem {
 }
 
 /**
- * 右键上下文菜单组件
- * 内部已平滑升级为基于 floating-ui 的设计系统 UI 组件，
- * 获得自动视口边缘避让、子菜单平滑防抖展开以及全局层级栈控制。
+ * 右键上下文菜单。
+ *
+ * 基于设计系统 {@link UiMenu} 渲染，自带视口边缘避让、
+ * 子菜单防抖展开与全局浮层层级栈控制。
  */
 export default function ContextMenu({
   anchor,

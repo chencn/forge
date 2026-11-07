@@ -6,6 +6,7 @@ export interface SaveActionOptions {
   protectedLine?: number;
 }
 
+/** 卫生动作的结果：处理后的文本与是否真的改了。 */
 export interface SaveActionResult {
   text: string;
   changed: boolean;

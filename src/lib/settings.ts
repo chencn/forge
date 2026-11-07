@@ -29,7 +29,7 @@ export type HttpResponseLayout = "bottom" | "tab";
 
 /** 编辑器偏好，对应 Rust `EditorSettings`。 */
 export interface EditorSettings {
-  /** 括号按嵌套深度上色（对标 IDEA 默认关）。 */
+  /** 括号按嵌套深度上色（默认关）。 */
   rainbowBrackets: boolean;
   /** 正文字体族；空串跟随 `--font-mono`。 */
   fontFamily: string;
@@ -49,9 +49,9 @@ export interface EditorSettings {
   trimTrailingWhitespace: boolean;
   /** 保存时保证非空文本以换行结束。 */
   insertFinalNewline: boolean;
-  /** 软换行（IDEA 默认关）。 */
+  /** 软换行（默认关）。 */
   softWrap: boolean;
-  /** 显示空白符（IDEA 默认关）。 */
+  /** 显示空白符（默认关）。 */
   showWhitespace: boolean;
   /** 行高（px）；0 表示自动按字号 1.69 倍推导。 */
   lineHeight: number;
@@ -77,10 +77,12 @@ export interface TerminalSettings {
   profiles: TerminalProfile[];
 }
 
+/** 终端页签的摆放方式。 */
 export type TerminalTabLayout = "horizontal" | "vertical";
 /** 程序响铃时：闪一下并在页签上挂铃铛、再加一声提示音、或什么都不做。 */
 export type TerminalBell = "visual" | "sound" | "none";
 
+/** 配置档注入的一条环境变量。 */
 export interface TerminalEnvVar {
   key: string;
   value: string;
@@ -102,14 +104,26 @@ export interface TerminalProfile {
   command: string;
 }
 
+/** 终端字号允许的取值范围。 */
 export const TERMINAL_FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
+/** 终端回滚行数允许的取值范围。 */
 export const TERMINAL_SCROLLBACK_RANGE = { min: 1_000, max: 100_000 } as const;
 /** HTTP 历史保留天数：0 表示永不清理。 */
 export const HTTP_HISTORY_RETENTION_DAYS_RANGE = { min: 0, max: 3_650 } as const;
+/** 光标样式候选，供设置页下拉。 */
 export const TERMINAL_CURSOR_STYLES: readonly TerminalCursorStyle[] = ["bar", "block", "underline"];
+/** 页签布局候选，供设置页下拉。 */
 export const TERMINAL_TAB_LAYOUTS: readonly TerminalTabLayout[] = ["horizontal", "vertical"];
+/** 响铃行为候选，供设置页下拉。 */
 export const TERMINAL_BELLS: readonly TerminalBell[] = ["visual", "sound", "none"];
 
+/**
+ * 把存档里的一份配置档规整成完整 {@link TerminalProfile}。
+ *
+ * @param raw - 存档里可能残缺的一份配置档
+ * @param index - 在配置档数组里的位置，用于生成兜底的 id 与名字
+ * @returns 规整后的配置档；raw 不是对象时返回 null
+ */
 function normalizeProfile(raw: Partial<TerminalProfile> | null | undefined, index: number): TerminalProfile | null {
   if (!raw || typeof raw !== "object") return null;
   const text = (value: unknown) => (typeof value === "string" ? value : "");
@@ -129,6 +143,7 @@ function normalizeProfile(raw: Partial<TerminalProfile> | null | undefined, inde
   };
 }
 
+/** 规整整份配置档数组：非对象项丢弃，重复 id 只保留第一个。 */
 function normalizeProfiles(raw: unknown): TerminalProfile[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
@@ -142,6 +157,7 @@ function normalizeProfiles(raw: unknown): TerminalProfile[] {
   return out;
 }
 
+/** 把值夹回 `[min, max]`；不是有限数时用 fallback。 */
 function clampInt(value: unknown, range: { min: number; max: number }, fallback: number): number {
   const number = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
   return Math.min(range.max, Math.max(range.min, number));
@@ -180,14 +196,14 @@ export interface CommitSettings {
   commitAllWhenNothingStaged: boolean;
 }
 
-/** 事务工单规则项（对齐 IntelliJ IDEA Issue Navigation 规范） */
+/** 事务工单规则项（Issue Navigation） */
 export interface IssueNavigationPattern {
   id: string;
   issueId: string;
   issueLink: string;
 }
 
-/** 版本控制完整配置，1:1 对标 IntelliJ IDEA VCS 设置规范 */
+/** 版本控制完整配置 */
 export interface VcsSettings {
   /** 提交设置 Commit Settings */
   nonModalCommit: boolean;
@@ -241,7 +257,7 @@ export interface BranchSettings {
   favorites: string[];
   /** 提交图折叠线性链（Collapse Linear Branches），默认关。 */
   collapseLinear: boolean;
-  /** 提交图画长边（Show Long Edges），IDEA 默认开。 */
+  /** 提交图画长边（Show Long Edges），默认开。 */
   showLongEdges: boolean;
 }
 
@@ -323,10 +339,11 @@ export interface Settings {
   run: RunSettings;
   /** 按项目根隔离的目录角色；相对路径值为 source/test/resources/testResources/excluded。 */
   projectDirectoryRoles: ProjectDirectoryRoles;
-  /** 版本控制与 Git 设置（1:1 对标 IntelliJ IDEA VCS 设置中心） */
+  /** 版本控制与 Git 设置 */
   vcs: VcsSettings;
 }
 
+/** 版本控制设置的出厂值。 */
 export const DEFAULT_VCS_SETTINGS: VcsSettings = {
   nonModalCommit: true,
   clearInitialCommitMessage: false,
@@ -360,6 +377,7 @@ export const DEFAULT_VCS_SETTINGS: VcsSettings = {
 /** 浏览器权限逐项保存，避免旧窗口顺带恢复已撤销的上传或脚本授权。 */
 export type SettingsPatch = Omit<Partial<Settings>, "browser"> & { browser?: Partial<Settings["browser"]> };
 
+/** 全部设置的出厂值；各分项缺省时都从这份拷。 */
 export const DEFAULT_SETTINGS: Settings = {
   aiAssistantsEnabled: false,
   browser: { enabled: true, renderedPixels: true, unsafeEvaluate: false, fileUpload: false, elementContent: "both" },

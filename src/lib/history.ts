@@ -23,6 +23,7 @@ export interface History {
   commitMessages: string[];
 }
 
+/** 空白历史：首次使用或存储损坏时的兜底。 */
 export const DEFAULT_HISTORY: History = {
   lastFolder: "",
   openFolders: [],

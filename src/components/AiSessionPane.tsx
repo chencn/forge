@@ -69,9 +69,11 @@ import type { AiSession, AiSessionAction } from "../lib/aiSessions";
 import { watchAiInputDelivery } from "../lib/aiInputBridge";
 import { summarizeAiFileEdits, type AiEditSummary, type AiEditedFile } from "../lib/aiTools";
 
+/** 粘贴进输入框的图片：临时文件路径 + 预览地址。 */
 interface PastedImage { path: string; preview: string; name: string }
 /** 选择器里的筛选提示；真正认格式的是后端的文件头嗅探，扩展名写错也骗不过去。 */
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"];
+/** 工具结果详情的字符串形态（非字符串序列化展示）。 */
 const detail = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
 /** 触发方式：只认两家 CLI 都会给的这两个词，认不出的照原样浮出——不猜，也不丢。 */
@@ -145,7 +147,7 @@ const AiCheckpointNotice = memo(function AiCheckpointNotice({ entry, onRestore }
   if (!id || files.length === 0) return null;
   const isRestore = data.source === "restore";
   const restoreOf = typeof data.restoreOf === "string" ? data.restoreOf : null;
-  // Checkpoint restores file snapshots through the existing callback, not conversation history.
+  // 快照恢复走已有的回调，不走会话历史。
   return <Marker render={<section />} data-element="checkpoint" className="ai-checkpoint" data-checkpoint-id={id}>
     <ItemMedia className="ai-checkpoint-icon"><History size={14} /></ItemMedia>
     <ItemContent className="ai-checkpoint-body">
@@ -159,6 +161,7 @@ const AiCheckpointNotice = memo(function AiCheckpointNotice({ entry, onRestore }
   </Marker>;
 });
 
+/** 时间线里的系统条目（checkpoint / plan / compaction / task_list / retry…）。 */
 const TimelineNotice = memo(function TimelineNotice({ entry, onRestoreCheckpoint }: { entry: AiEntry; onRestoreCheckpoint?: (id: string) => void }) {
   const { t } = useI18n();
   const data = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
@@ -190,6 +193,7 @@ const TimelineNotice = memo(function TimelineNotice({ entry, onRestoreCheckpoint
   return <details className="ai-timeline-notice"><summary><ChevronRight className="ai-detail-chevron" size={13} />{entry.name === "retry" ? t("ai.chat.retry") : t("ai.chat.notice")}</summary>{entry.text ? <AiMarkdown text={entry.text} /> : <pre>{detail(entry.input)}</pre>}</details>;
 });
 
+/** 权限请求卡片：允许/拒绝/逐项选择，提交前可先落改动前快照。 */
 const RequestCard = memo(function RequestCard({ request, stopping, onBeforeAllow }: { request: AiRequest; stopping: boolean; onBeforeAllow?: (request: AiRequest) => Promise<void> }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
@@ -218,7 +222,7 @@ const RequestCard = memo(function RequestCard({ request, stopping, onBeforeAllow
   // 提问卡：还能答才摆交互版；答完或失效就换成结果行（点开看当时选的那几项）。
   // 两种形态不同时出现，也就不会出现「按钮还在、结果也在」的自相矛盾。
   const asking = request.active && !answered;
-  // Confirmation composes Item + existing actions; the runtime remains the only approval authority.
+  // 确认卡复用 Item 与既有动作；审批的准绳始终只在运行时。
   if (!isQuestion) return <Item render={<section />} className="ai-request-card" aria-label={t("ai.runtime.permission")}>
     <ItemMedia><CircleAlert size={16} aria-hidden /></ItemMedia>
     <ItemContent>
@@ -247,6 +251,7 @@ const RequestCard = memo(function RequestCard({ request, stopping, onBeforeAllow
 
 /** 用户消息的长文折叠线：超过这个行数先收起，底部渐隐提示还有更多。 */
 const USER_MESSAGE_CLIP_LINES = 18;
+/** 按字符数计的折叠线（行数达不到时兜底）。 */
 const USER_MESSAGE_CLIP_CHARS = 1500;
 
 /** 行首带 `>` 的行算引用：排进带左线的引用段。 */
@@ -538,6 +543,7 @@ function AiMessageNav({ entries, outline, hasOlder: _hasOlder, onRequestOutline,
 
 /** 本轮 token 的起点快照：tok/s =（当前累计 − 起点）/ 已跑时长；键随 runId 换新。 */
 const runUsageStart = new Map<string, number>();
+/** 读一轮 token 用量的起点快照（首次见到该 run 时记下累计值）。 */
 function aiRunUsageBaseline(runId: string, total: number | undefined): number | undefined {
   if (total === undefined) return undefined;
   if (!runUsageStart.has(runId)) runUsageStart.set(runId, total);
@@ -770,6 +776,7 @@ const AiPermissionDeniedBanner = memo(function AiPermissionDeniedBanner({
   );
 });
 
+/** {@link AiChatEntryRow} 的入参。 */
 interface AiChatEntryRowProps {
   entry: AiEntry;
   request?: AiRequest;
@@ -892,6 +899,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
   );
 });
 
+/** {@link AiSessionPane} 的入参。 */
 interface AiSessionPaneProps {
   /** 要渲染的会话；切换会话时由上层用 `key` 强制重建，不靠 props 变化。 */
   session: AiSession;
@@ -2017,7 +2025,7 @@ export default function AiSessionPane({
   <section ref={pane} className={`ai-session-pane${isDocked ? " is-docked" : ""}`} aria-label={displayTitle}
     style={{ "--ai-content-width": `${chatWidth.width}px` } as CSSProperties}>
     <div className={`ai-chat-viewport${isDocked ? " is-docked" : ""}`}>
-    {/* 任务/子代理折叠态药丸胶囊（对照 5.png）：右上角悬浮药丸，左箭头 + 右当前任务/子代理文本 */}
+    {/* 任务/子代理折叠态药丸胶囊：右上角悬浮药丸，左箭头 + 右当前任务/子代理文本 */}
     {hasDockContent ? (
       <button
         ref={attachTaskListTrigger}

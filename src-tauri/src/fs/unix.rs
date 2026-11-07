@@ -2,6 +2,7 @@ use super::{io_err, EntryFlags};
 use std::path::Path;
 use std::process::Command;
 
+/// 取一条路径的目录项标志（单独 stat 一轮）。
 pub fn flags(path: &Path) -> EntryFlags {
     let meta = path.metadata().ok();
     let reparse = path
@@ -26,6 +27,7 @@ pub fn hidden(path: &Path, _meta: Option<&std::fs::Metadata>) -> bool {
         .starts_with('.')
 }
 
+/// Unix 平台的条目标志组装：隐藏属性（点开头）等。
 fn build(path: &Path, meta: Option<&std::fs::Metadata>, reparse: bool) -> EntryFlags {
     let name = path
         .file_name()
@@ -39,6 +41,11 @@ fn build(path: &Path, meta: Option<&std::fs::Metadata>, reparse: bool) -> EntryF
     }
 }
 
+/// 在系统文件管理器里定位该路径（macOS 用 open -R，Linux 用 xdg-open 父目录）。
+///
+/// # Errors
+///
+/// 平台命令缺失或启动失败时返回错误串。
 pub fn reveal(path: &Path) -> Result<(), String> {
     if cfg!(target_os = "macos") {
         return Command::new("open")

@@ -23,6 +23,7 @@ import {
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import styles from "./Popup.module.css";
 
+/** 弹层的锚点：DOM 元素、虚拟元素（坐标点）、ref 引用或 null（不定位）。 */
 export type PopupAnchor =
   | Element
   | VirtualElement
@@ -30,6 +31,7 @@ export type PopupAnchor =
   | { x: number; y: number }
   | null;
 
+/** {@link Popup} 的入参。 */
 export interface PopupProps {
   open: boolean;
   onClose: (reason: "escape" | "outside" | "action") => void;
@@ -51,6 +53,7 @@ export interface PopupProps {
   unstyled?: boolean;
 }
 
+/** 把 {@link PopupAnchor} 归一成 floating-ui 的定位参考（null 返回 null）。 */
 function toReference(anchor: PopupAnchor): Element | VirtualElement | null {
   if (!anchor) return null;
   if ("current" in anchor) return anchor.current;
@@ -70,11 +73,13 @@ function toReference(anchor: PopupAnchor): Element | VirtualElement | null {
   };
 }
 
+/** 弹层门面：`open` 为 false 时不渲染任何东西。 */
 export function Popup(props: PopupProps) {
   if (!props.open) return null;
   return <PopupInner {...props} />;
 }
 
+/** 弹层实现：Portal、定位、焦点圈与关闭时机。 */
 function PopupInner({
   onClose,
   anchor,

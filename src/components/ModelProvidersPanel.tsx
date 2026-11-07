@@ -26,6 +26,7 @@ import ProviderModelPickerDialog from "./ProviderModelPickerDialog";
 import CodexCatalogSection from "./CodexCatalogSection";
 import type { TranslationKey } from "../i18n/lang/zh";
 
+/** Claude 各模型槽位的表单标签（i18n 键）。 */
 const SLOT_LABEL: Record<ClaudeModelSlot, TranslationKey> = {
   main: "providers.claudeMainModel",
   reasoning: "providers.claudeReasoningModel",
@@ -35,6 +36,7 @@ const SLOT_LABEL: Record<ClaudeModelSlot, TranslationKey> = {
   fable: "providers.claudeFableDefaultModel",
 };
 
+/** Claude 各模型槽位留空时的占位示例。 */
 const SLOT_PLACEHOLDER: Record<ClaudeModelSlot, string> = {
   main: "claude-sonnet-5-5",
   reasoning: "claude-opus-5-5",
@@ -44,12 +46,14 @@ const SLOT_PLACEHOLDER: Record<ClaudeModelSlot, string> = {
   fable: "claude-fable-5-1",
 };
 
+/** 自定义选项三个字段的表单标签（i18n 键）。 */
 const CUSTOM_LABEL: Record<ClaudeCustomSlot, TranslationKey> = {
   customOption: "providers.customOption",
   customOptionName: "providers.customOptionName",
   customOptionDescription: "providers.customOptionDescription",
 };
 
+/** 自定义选项三个字段的占位示例。 */
 const CUSTOM_PLACEHOLDER: Record<ClaudeCustomSlot, string> = {
   customOption: "my-gateway/claude-opus-5-5",
   customOptionName: "Gateway Opus",
@@ -58,6 +62,7 @@ const CUSTOM_PLACEHOLDER: Record<ClaudeCustomSlot, string> = {
 
 /** 「从端点获取」对话框里每行的填入目标：六个模型槽位 + 自定义选项的 ID。 */
 const FILL_TARGETS: string[] = [...CLAUDE_MODEL_SLOTS, "customOption"];
+/** 「从端点获取」对话框每行的填入目标标签（模型槽位 + 自定义选项，i18n 键）。 */
 const FILL_LABEL: Record<string, TranslationKey> = { ...SLOT_LABEL, customOption: "providers.customOption" };
 
 /**

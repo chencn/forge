@@ -25,8 +25,11 @@ const LIVE: readonly AiTaskStatus[] = ["submitting", ...QUEUED, "running"];
 /** 已落定的终态；只有这一档允许重试/重新生成。 */
 const TERMINAL: readonly AiTaskStatus[] = ["completed", "cancelled", "failed"];
 
+/** 任务还在后端排队/等待外部，可以编辑、移动、取消。 */
 export function isAiTaskQueued(status: AiTaskStatus): boolean { return QUEUED.includes(status); }
+/** 任务还没终结（含乐观占位与运行中），停止按钮按它显示。 */
 export function isAiTaskLive(status: AiTaskStatus): boolean { return LIVE.includes(status); }
+/** 已落定终态；只有这一档允许重试/重新生成。 */
 export function isAiTaskTerminal(status: AiTaskStatus): boolean { return TERMINAL.includes(status); }
 
 /** 会话状态与任务状态共用同一批词，但从事件日志、后端摘要里拿到的是未经校验的 `string`。 */
@@ -39,6 +42,7 @@ export type AiTaskStatusLabelKey =
   | "ai.runtime.submitting" | "ai.runtime.queued" | "ai.runtime.waitingExternal" | "ai.runtime.running"
   | "ai.runtime.completed" | "ai.runtime.cancelled" | "ai.runtime.failed";
 
+/** 各状态的文案键对照表。 */
 const LABELS: Record<AiTaskStatus, AiTaskStatusLabelKey> = {
   submitting: "ai.runtime.submitting",
   queued: "ai.runtime.queued",

@@ -3,8 +3,10 @@ import { ArrowDown, ArrowUp, X } from "lucide-react";
 import type { TermControl, TermFindOptions, TermFindResults } from "../lib/termSurface";
 import { useI18n } from "../i18n";
 
+/** 没有命中时的固定结果（0 命中、指向第 0 条）。 */
 const NO_RESULTS: TermFindResults = { index: 0, count: 0 };
 
+/** 终端查找浮层的入参。 */
 interface TermFindBarProps {
   /** 查找要作用的那条终端；换会话时浮层跟着在新那条上重找。 */
   control: TermControl | null;

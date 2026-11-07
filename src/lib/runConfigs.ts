@@ -98,18 +98,22 @@ export interface ProjectRunState {
 /** 命令行里代表「本机 PATH 上那个工具」的占位；展开见 `resolveCommand`。 */
 export const TOOL_PLACEHOLDERS = ["${mvn}", "${gradle}", "${java}"] as const;
 
+/** 识别一个工程的运行配置（读构建文件；识别不了配置也回「读到了」的清单）。 */
 export function detectRuns(root: string): Promise<RunDetectOutcome> {
   return invoke<RunDetectOutcome>("run_detect", { root });
 }
 
+/** 探测本机 Maven/Gradle/JDK 的位置与版本。 */
 export function runTools(): Promise<RunTools> {
   return invoke<RunTools>("run_tools");
 }
 
+/** 读一个工程存下的运行状态（没有时后端给默认值）。 */
 export function loadRunState(root: string): Promise<ProjectRunState> {
   return invoke<ProjectRunState>("run_state_load", { root });
 }
 
+/** 保存一个工程的运行状态。 */
 export function saveRunState(root: string, state: ProjectRunState): Promise<void> {
   return invoke<void>("run_state_save", { root, state });
 }

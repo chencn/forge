@@ -15,16 +15,20 @@ import {
 import clsx from "clsx";
 import styles from "./Splitter.module.css";
 
+/** 分割方向：horizontal 上下分、vertical 左右分（语义按 CSS flex 主轴）。 */
 export type SplitDirection = "horizontal" | "vertical";
 
+/** {@link SplitGroup} 通过 context 下发给 handle 的方向与回调。 */
 interface SplitContextValue {
   direction: SplitDirection;
   onDragDelta: (handleIndex: number, deltaRatio: number) => void;
   onReset: (handleIndex: number) => void;
 }
 
+/** 分栏上下文；handle 之外取值为 null。 */
 const SplitContext = createContext<SplitContextValue | null>(null);
 
+/** 分栏容器：声明方向并给内部 handle 提供回调默认实现。 */
 export interface SplitGroupProps {
   direction?: SplitDirection;
   children: ReactNode;
@@ -32,6 +36,7 @@ export interface SplitGroupProps {
   style?: CSSProperties;
 }
 
+/** 分栏容器组件（基础版：不实现拖拽，布局钩子留给宿主覆盖）。 */
 export function SplitGroup({
   direction = "horizontal",
   children,
@@ -65,6 +70,7 @@ export function SplitGroup({
   );
 }
 
+/** 分栏里的一块面板：size 定固定宽高，缺省弹性伸缩。 */
 export interface SplitPanelProps {
   size?: number | string;
   minSize?: number | string;
@@ -74,6 +80,7 @@ export interface SplitPanelProps {
   style?: CSSProperties;
 }
 
+/** 面板组件：把 size/min/max 翻成 flex 与 min/max 样式。 */
 export function SplitPanel({
   size,
   minSize,
@@ -96,6 +103,7 @@ export function SplitPanel({
   );
 }
 
+/** 分割条：拖拽/键盘微调/双击复位，回调由调用方接。 */
 export interface SplitHandleProps {
   /** 是否绘制 1px 发丝线，false 时仅保留隐形交互热区 */
   hairline?: boolean;
@@ -105,6 +113,7 @@ export interface SplitHandleProps {
   "aria-label"?: string;
 }
 
+/** 分割条组件本体（role="separator"，指针捕获拖拽）。 */
 export function SplitHandle({
   hairline = true,
   onDelta,

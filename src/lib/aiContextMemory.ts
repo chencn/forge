@@ -14,6 +14,7 @@ const MAX_ENTRIES = 24;
 /** 模型 id 最长这么多字符，和保存运行选项时的裁剪保持一致。 */
 const MAX_MODEL = 200;
 
+/** 一条 CLI 亲口报告过的上下文窗口记录。 */
 export interface ContextWindowFact {
   provider: AiProvider;
   /** CLI 报告时用的模型写法，原样保存；大小写变体各算一条，不猜它们是同一个。 */
@@ -23,10 +24,13 @@ export interface ContextWindowFact {
   seenAt: number;
 }
 
+/** 引擎名只认这两个，其他值按不可信输入丢弃。 */
 const isProvider = (value: unknown): value is AiProvider => value === "claude" || value === "codex";
 /** 窗口必须是正的安全整数：负数、NaN、字符串、0 都按「没报告」处理。 */
 const isWindow = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+/** 报告时刻必须是非负有限数。 */
 const isSeenAt = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+/** 模型名收敛成非空字符串并裁到 {@link MAX_MODEL}；不是字符串返回 undefined。 */
 const modelName = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value.trim().slice(0, MAX_MODEL) : undefined;
 
 /** 坏数据逐条丢掉，不整串作废：一个写坏的模型 id 不该让已知的窗口一起消失。 */
@@ -46,6 +50,7 @@ export function parseContextWindows(raw: string | null): ContextWindowFact[] {
   }
 }
 
+/** 从 localStorage 读回全部记录（存储读不到只退回空数组，聊天照常）。 */
 export function loadContextWindows(): ContextWindowFact[] {
   try {
     return parseContextWindows(localStorage.getItem(storageKey));
@@ -72,6 +77,7 @@ export function rememberContextWindow(provider: AiProvider, model: string | unde
   }
 }
 
+/** 查某 (引擎, 模型) 的记忆窗口；没记过或模型名认不出返回 undefined。 */
 export function recallContextWindow(provider: AiProvider, model: string | undefined): ContextWindowFact | undefined {
   const name = modelName(model);
   if (!name) return undefined;

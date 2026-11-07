@@ -57,6 +57,7 @@ function lineCoder(): (line: string) => number {
   };
 }
 
+/** 行序列编码成等长的单字符 id 串，供 Myers 差异比较。 */
 function encodeLines(lines: readonly string[], code: (line: string) => number): string {
   let out = "";
   for (const line of lines) out += String.fromCharCode(code(line));

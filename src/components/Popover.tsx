@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { Popup as UiPopup } from "../ui/Popup";
 
+/** 气泡弹层的入参。 */
 export interface PopoverProps {
   /** 锚点元素：弹层贴着它的下沿画，放不下时翻到上沿。 */
   anchor: HTMLElement | null;

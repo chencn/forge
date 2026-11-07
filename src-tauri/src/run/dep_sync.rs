@@ -1,9 +1,9 @@
-//! 构建依赖自动检测与语义 CRC32 基线计算（参照 IDEA `externalSystem.autoimport`）。
+//! 构建依赖自动检测与语义 CRC32 基线计算（自动导入机制）。
 //!
 //! 坚持两条底线：
 //! 1. 零本地写盘：不在工程目录或应用配置目录下生成任何缓存文件，仅向前端返回各构建单元
 //!    当前受控清单文件的语义 CRC32 字典与本地依赖目录就绪状态。
-//! 2. 去注释、去空白的语义 CRC32（参照 IDEA `DefaultCrcCalculator`）：用户在 `pom.xml`、
+//! 2. 去注释、去空白的语义 CRC32：用户在 `pom.xml`、
 //!    `build.gradle`、`package.json`、`Cargo.toml` 等文件中增删空格、空行或注释时，
 //!    语义 CRC32 保持不变，绝不误报；修改依赖后若 `Ctrl+Z` 撤销回原状，CRC32 恢复原值，
 //!    前端提示据此自动消隐（Auto-Expire）。
@@ -237,6 +237,7 @@ fn read_manifest_bytes(path: &Path) -> Option<Vec<u8>> {
 /// 语义 CRC32 的指纹缓存上限。探测过的清单文件数量有限，撑破就整表重开。
 const MAX_CRC_CACHE_ENTRIES: usize = 4096;
 
+/// 锁上毒时也照样拿到锁；依赖同步的缓存宁可带病工作也不能卡死。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -707,7 +708,7 @@ fn probe_gradle(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
 
 /// 探测 Rust (`Cargo.toml`)。
 /// 注意：不将 `Cargo.lock` 计入触发源，因为 `cargo check` / `cargo build` 自身会自动写 `Cargo.lock`，
-/// 对齐 IDEA Rust 插件仅跟踪 `Cargo.toml`、`rust-toolchain.toml` 与 `.cargo/config.toml`。
+/// 仅跟踪 `Cargo.toml`、`rust-toolchain.toml` 与 `.cargo/config.toml`。
 fn probe_rust(root: &Path, dir: &Path, out: &mut Vec<DepSyncItem>) {
     let cargo_toml = dir.join("Cargo.toml");
     if !scan::has_file(dir, "Cargo.toml") {
@@ -1100,6 +1101,7 @@ pub async fn dep_sync_probe(root: String) -> Vec<DepSyncItem> {
     block_value(move || dep_sync_probe_impl(&root), Vec::new).await
 }
 
+/// [`dep_sync_probe`] 的同步体：扫描工作区的依赖清单，产出待同步项列表。
 fn dep_sync_probe_impl(root: &str) -> Vec<DepSyncItem> {
     let base = PathBuf::from(root);
     if !base.is_dir() {

@@ -48,6 +48,7 @@ import {
   List,
 } from "lucide-react";
 
+/** Lucide 图标组件的公共类型（size/color/className/strokeWidth）。 */
 export type LucideIconType = ComponentType<{
   size?: number | string;
   color?: string;
@@ -112,6 +113,7 @@ const ICON_NAME_MAP: Record<string, LucideIconType> = {
   hide: HideIcon as unknown as LucideIconType,
 };
 
+/** 通用图标的入参。 */
 export interface IconProps {
   /** 可以是映射名，也可以直接是 Lucide 图标组件或任意 ReactNode */
   icon?: string | LucideIconType | ReactNode;

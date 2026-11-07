@@ -50,7 +50,7 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     expect(item.sticky).toBe(false);
   });
 
-  it("Sticky 策略：错误级别默认常驻，已记录的 5 分钟后淡出（对齐 IDEA）", () => {
+  it("Sticky 策略：错误级别默认常驻，已记录的 5 分钟后淡出", () => {
     notificationCenter.notify({
       title: "Git 推送失败",
       content: "网络连接超时",
@@ -66,7 +66,7 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     expect(balloonTimeout({ ...item, logged: false })).toBeNull();
   });
 
-  it("超时计算：普通 info/warn 统一 10 秒（对齐 IDEA）", () => {
+  it("超时计算：普通 info/warn 统一 10 秒", () => {
     notificationCenter.notify({
       title: "更新提示",
       content: "新版本可用",
@@ -143,7 +143,7 @@ describe("NotificationCenter 核心总线与通知策略测试", () => {
     expect(notificationCenter.getState().history.some((t) => t.id === id)).toBe(true);
   });
 
-  it("markAllAsRead 对齐 IDEA：已记录条目的浮动气泡随之撤下", () => {
+  it("markAllAsRead：已记录条目的浮动气泡随之撤下", () => {
     notificationCenter.notify({ title: "提示 A", content: "a" });
     notificationCenter.notify({ title: "提示 B", content: "b" });
     expect(notificationCenter.getState().toasts.length).toBe(2);

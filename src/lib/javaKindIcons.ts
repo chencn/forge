@@ -18,6 +18,7 @@ const LIGHT: Record<JavaFileIconKind, string> = {
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6.5" fill="#FFFAEB" stroke="#C27D04"/><path d="M9 4.5L6 8H10L7 11.5" stroke="#C27D04" stroke-linecap="round"/></svg>',
 };
 
+/** 同一批图标标的深色版本。 */
 const DARK: Record<JavaFileIconKind, string> = {
   "java.class":
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6.5" fill="#25324D" stroke="#548AF7"/><path d="M8.13295 11.5C9.61223 11.5 10.8836 10.6105 11.2075 9.33909H10.2213C9.90229 10.0739 9.11914 10.6057 8.13295 10.6057C6.77936 10.6057 5.80284 9.51796 5.80284 8C5.80284 6.48204 6.77936 5.39434 8.13295 5.39434C9.11914 5.39434 9.90229 5.92611 10.2213 6.66091H11.2075C10.8836 5.3895 9.61223 4.5 8.13295 4.5C6.21859 4.5 4.79248 5.99378 4.79248 8C4.79248 10.0062 6.21859 11.5 8.13295 11.5Z" fill="#548AF7"/></svg>',
@@ -33,15 +34,23 @@ const DARK: Record<JavaFileIconKind, string> = {
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6.5" fill="#3D3223" stroke="#D6AE58"/><path d="M9 4.5L6 8H10L7 11.5" stroke="#D6AE58" stroke-linecap="round"/></svg>',
 };
 
+/** 超过这么大就不读内容识别（只当普通文件画）；读盘与解析双保险。 */
 const MAX_BYTES = 256 * 1024;
+/** 同时读盘识别的并发上限，避免打开大目录时挤占 IO。 */
 const MAX_CONCURRENT = 4;
 
+/** 路径 → 识别结果；null 表示识别过但认不出或文件太大。 */
 const cache = new Map<string, JavaFileIconKind | null>();
+/** 按路径分组的订阅者（React 组件）。 */
 const subscribers = new Map<string, Set<() => void>>();
+/** 已入队等待识别的路径（防重复排队）。 */
 const queued = new Set<string>();
+/** 待识别任务队列（先进先出）。 */
 const pending: Array<{ path: string; fileName: string }> = [];
+/** 当前并发中的识别数。 */
 let active = 0;
 
+/** 通知某路径的全部订阅者。 */
 function notify(path: string) {
   for (const callback of subscribers.get(path) ?? []) callback();
 }
@@ -59,6 +68,7 @@ export function isJavaIconPath(path: string): boolean {
     );
 }
 
+/** 取一枚 Java 图标的 SVG 原文（浅/深色各一套）。 */
 export function javaKindSvg(kind: JavaFileIconKind, dark: boolean): string {
   return (dark ? DARK : LIGHT)[kind];
 }
@@ -72,6 +82,7 @@ export function invalidateJavaIcons(paths: string[]) {
   }
 }
 
+/** 泵：在并发上限内从队列取任务读盘识别；完成时通知并续泵。 */
 function pump() {
   while (active < MAX_CONCURRENT && pending.length > 0) {
     const job = pending.shift();
@@ -97,6 +108,7 @@ function pump() {
   }
 }
 
+/** 把一个 .java 路径排入识别队列；已缓存/已排队/不在白名单的直接跳过。 */
 function queue(path: string, fileName: string, byteSize?: number) {
   if (cache.has(path) || queued.has(path) || !isJavaIconPath(path)) return;
   if (byteSize !== undefined && byteSize > MAX_BYTES) {
@@ -109,6 +121,7 @@ function queue(path: string, fileName: string, byteSize?: number) {
   pump();
 }
 
+/** React 入口：订阅某 .java 文件的图标识别结果，未识别时顺手入队。 */
 export function useJavaFileIcon(
   path: string | undefined,
   fileName: string,

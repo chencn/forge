@@ -18,6 +18,7 @@ import {
   type BuiltinThemeId,
 } from "../../../themes/themeManager";
 
+/** 主题模式候选。 */
 const THEME_OPTIONS: ThemeMode[] = [
   "system",
   "dark",
@@ -25,6 +26,7 @@ const THEME_OPTIONS: ThemeMode[] = [
   "dark-hc",
 ];
 
+/** 主题模式的展示文案（此页不走 i18n，主题名保持品牌写法）。 */
 const THEME_LABEL: Record<ThemeMode, string> = {
   system: "跟随系统 (Auto)",
   dark: "Islands Dark (暗色)",
@@ -32,31 +34,40 @@ const THEME_LABEL: Record<ThemeMode, string> = {
   "dark-hc": "High Contrast (高对比度)",
 };
 
+/** 界面语言候选。 */
 const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: "zh", label: "简体中文" },
   { value: "en", label: "English" },
   { value: "zh-TW", label: "繁體中文" },
 ];
 
+/** 关窗行为候选与其文案键。 */
 const CLOSE_BEHAVIORS: CloseBehavior[] = ["quit", "tray"];
+/** {@link CLOSE_BEHAVIORS} 的 i18n 文案键。 */
 const CLOSE_LABEL: Record<CloseBehavior, "closeBehavior.quit" | "closeBehavior.tray"> = {
   quit: "closeBehavior.quit",
   tray: "closeBehavior.tray",
 };
 
+/** 工作区模式候选。 */
 const WORKSPACE_MODES: WorkspaceMode[] = ["single", "multi"];
+/** {@link WORKSPACE_MODES} 的 i18n 文案键。 */
 const WORKSPACE_MODE_LABEL: Record<WorkspaceMode, "workspaceMode.single" | "workspaceMode.multi"> = {
   single: "workspaceMode.single",
   multi: "workspaceMode.multi",
 };
 
+/** HTTP 响应区布局候选。 */
 const HTTP_LAYOUTS: HttpResponseLayout[] = ["bottom", "tab"];
+/** {@link HTTP_LAYOUTS} 的 i18n 文案键。 */
 const HTTP_LAYOUT_LABEL: Record<HttpResponseLayout, "httpResponse.bottom" | "httpResponse.tab"> = {
   bottom: "httpResponse.bottom",
   tab: "httpResponse.tab",
 };
 
+/** 通用是/否开关候选。 */
 const SWITCHES = ["yes", "no"] as const;
+/** {@link SWITCHES} 的 i18n 文案键。 */
 const SWITCH_LABEL: Record<"yes" | "no", "common.yes" | "common.no"> = {
   yes: "common.yes",
   no: "common.no",

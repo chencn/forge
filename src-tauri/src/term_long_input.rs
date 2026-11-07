@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// 比 cmd 的 8191 留出余量，给调用那一句自己的长度。
 const INPUT_LIMIT: usize = 7_000;
 
+/// 长输入需要改道的两种 shell。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LongInputShell {
     Cmd,
@@ -107,6 +108,7 @@ pub fn prepare(
     Ok(Some((invocation, path)))
 }
 
+/// 生成临时文件名的唯一后缀：`<pid>-<纳秒>-<序号>`，并发间也几乎不撞。
 fn unique_suffix() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let nanos = std::time::SystemTime::now()
@@ -160,6 +162,7 @@ fn encode_cmd_script(input: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+/// 非 Windows 平台原样透传正文字节，不做编码转换。
 #[cfg(not(windows))]
 fn encode_cmd_script(input: &str) -> Result<Vec<u8>, String> {
     Ok(input.as_bytes().to_vec())

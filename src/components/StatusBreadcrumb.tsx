@@ -12,6 +12,7 @@ import SymbolIcon from "./SymbolIcon";
 import EntryIcon from "./EntryIcon";
 import Popover from "./Popover";
 
+/** 面包屑的一段（目录或文件）。 */
 interface Crumb {
   name: string;
   path: string;
@@ -19,6 +20,7 @@ interface Crumb {
   collapsed?: boolean;
 }
 
+/** 打开中的目录段弹出菜单（列出该目录的子项供跳转）。 */
 interface CrumbMenu {
   anchor: HTMLElement;
   segmentIndex: number;
@@ -29,6 +31,7 @@ interface CrumbMenu {
   ready: boolean;
 }
 
+/** 打开中的符号段弹出菜单（列出同级符号供跳转）。 */
 interface SymbolMenu {
   anchor: HTMLElement;
   item?: OutlineSymbol;

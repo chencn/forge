@@ -9,9 +9,12 @@ import { createPortal } from "react-dom";
 import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import styles from "./Tooltip.module.css";
 
+/** 悬浮多久后展示提示。 */
 export const TOOLTIP_DELAY = 600;
+/** 位置测量（warm）到真正展示的过渡时长。 */
 const WARM_MS = 400;
 
+/** 生成 `data-tooltip` 属性组（text 为空返回空对象，方便展开到元素上）。 */
 export function tooltipAttrs(text: string | undefined, shortcut?: string): Record<string, string> {
   if (!text) return {};
   const attrs: Record<string, string> = { "data-tooltip": text };
@@ -19,6 +22,7 @@ export function tooltipAttrs(text: string | undefined, shortcut?: string): Recor
   return attrs;
 }
 
+/** {@link Tooltip} 的入参。 */
 export interface TooltipProps {
   content: string;
   shortcut?: string;
@@ -31,6 +35,7 @@ export function Tooltip({ content, shortcut, children }: TooltipProps) {
   return cloneElement(children, tooltipAttrs(content, shortcut));
 }
 
+/** 当前展示中的提示（`placed` 为 false 时还在测量定位，先透明摆出来）。 */
 interface Shown {
   text: string;
   shortcut?: string;

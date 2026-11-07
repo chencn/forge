@@ -1,5 +1,5 @@
 /**
- * Sticky scroll（IDEA 2023+ 默认开启）：首个可视行所在作用域的头部行钉在编辑区顶部。
+ * Sticky scroll：首个可视行所在作用域的头部行钉在编辑区顶部。
  * 作用域取折叠范围（forge 的 foldedRanges），没有折叠信息时
  * 退回语法树的 Body/Block 节点。点钉住的行跳到那一行。
  */
@@ -79,6 +79,7 @@ function renderLineContent(state: EditorState, lineNo: number, target: HTMLEleme
   push(end, "");
 }
 
+/** 粘性滚动条自身：渲染视图顶部悬着的上一级作用域行，并接管那里的点击与滚轮。 */
 class StickyScroll {
   readonly dom: HTMLElement;
   private lines: number[] = [];
@@ -220,4 +221,5 @@ class StickyScroll {
   }
 }
 
+/** 粘性滚动扩展：装进编辑器即生效。 */
 export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);

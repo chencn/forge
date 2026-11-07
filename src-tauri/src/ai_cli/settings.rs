@@ -182,10 +182,16 @@ impl Default for CodexSettings {
     }
 }
 
+/// 组装一条诊断检查结果。
 fn diagnostic(id: &'static str, status: &'static str, value: Option<String>, hint: Option<String>) -> Diagnostic {
     Diagnostic { id, status, value, hint }
 }
 
+/// Forge 设置文件（settings.json）在应用配置目录下的完整路径。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回错误。
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
     Ok(dir.join(SETTINGS_FILE))
@@ -214,6 +220,11 @@ pub fn load(app: &AppHandle) -> Result<Settings, String> {
     Ok(settings)
 }
 
+/// 校验并规整用户配置的环境变量映射。
+///
+/// # Errors
+///
+/// 变量名非法、命中 [`RESERVED_ENV`]（Forge/系统保留键）或值过长含 NUL 时返回中文错误。
 fn validate_env(env: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     let mut clean = BTreeMap::new();
     for (key, value) in env {
@@ -246,6 +257,11 @@ fn validate_binding(item: &mut AgentSetting) -> Result<(), String> {
     Ok(())
 }
 
+/// 校验并落盘 Claude 设置，返回规范化后的结果。
+///
+/// # Errors
+///
+/// 环境变量或供应商绑定校验失败、文件写入失败时返回错误。
 pub(crate) fn save(app: &AppHandle, mut settings: Settings) -> Result<Settings, String> {
     normalize(&mut settings);
     for item in settings.agents.values_mut() {
@@ -280,6 +296,7 @@ pub async fn ai_cli_settings_save(app: AppHandle, settings: Settings) -> Result<
 /// 环境变量缓存：`runtime_command` 拿不到 AppHandle，启动命令时从这里读。
 static ENVIRONMENT: RwLock<Vec<(Provider, BTreeMap<String, String>)>> = RwLock::new(Vec::new());
 
+/// 把某 CLI 的环境变量写进 [`ENVIRONMENT`] 缓存，替换同 CLI 的旧条目。
 fn publish(provider: Provider, env: BTreeMap<String, String>) {
     let mut cache = ENVIRONMENT.write().unwrap_or_else(|error| error.into_inner());
     cache.retain(|(item, _)| *item != provider);
@@ -369,6 +386,9 @@ pub(crate) fn config_path(provider: Provider) -> Result<PathBuf, String> {
     }
 }
 
+/// 读取一个 CLI 的原生配置内容，组装成界面用的 [`ConfigFile`]。
+///
+/// 配置路径无法确定时以 `error` 字段带回，不整体失败。
 fn read_config(provider: Provider) -> ConfigFile {
     let path = match config_path(provider) {
         Ok(path) => path,
@@ -507,6 +527,7 @@ fn hooks_path(provider: Provider) -> Result<PathBuf, String> {
     Ok(if provider == Provider::Codex { path.with_file_name("hooks.json") } else { path })
 }
 
+/// 某个 CLI 的 hooks 配置文件视图：路径加解析后的内容。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HooksConfig {
@@ -526,6 +547,11 @@ fn read_hooks_root_at(path: &Path) -> Result<serde_json::Value, String> {
     Ok(root)
 }
 
+/// 从 Claude settings.json 根对象里取 `hooks` 子树并整体校验。
+///
+/// # Errors
+///
+/// [`validate_hooks`] 报告的形状错误原样透传。
 fn hooks_from_root(root: &serde_json::Value) -> Result<serde_json::Value, String> {
     let hooks = root.get("hooks").cloned().unwrap_or_else(|| serde_json::json!({}));
     validate_hooks(&hooks, None)?;
@@ -569,6 +595,11 @@ fn validate_hooks(hooks: &serde_json::Value, provider: Option<Provider>) -> Resu
     Ok(())
 }
 
+/// 从指定路径读取 hooks 配置；文件不存在时返回空列表。
+///
+/// # Errors
+///
+/// 文件读取或 JSON 解析失败时返回错误。
 pub(crate) fn read_hooks_at(path: &Path) -> Result<HooksConfig, String> {
     Ok(HooksConfig { path: path.display().to_string(), hooks: hooks_from_root(&read_hooks_root_at(path)?)? })
 }
@@ -647,6 +678,11 @@ fn plan_codex_auth(path: &Path, api_key: &str) -> Result<Option<String>, String>
     Ok(Some(serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?))
 }
 
+/// Codex 的 auth.json 位置（config.toml 同目录）。
+///
+/// # Errors
+///
+/// Codex 配置路径无法确定时返回错误。
 fn codex_auth_path() -> Result<PathBuf, String> {
     let path = config_path(Provider::Codex)?;
     path.parent().map(|dir| dir.join("auth.json")).ok_or_else(|| "Codex 配置目录无效".to_string())
@@ -669,6 +705,11 @@ fn read_codex_settings() -> Result<CodexSettings, String> {
     Ok(settings)
 }
 
+/// 从指定路径读取 Codex 配置；文件不存在或为空时返回默认值。
+///
+/// # Errors
+///
+/// 文件读取或 TOML 解析失败时返回错误。
 pub(crate) fn read_codex_settings_at(path: &Path) -> Result<CodexSettings, String> {
     let mut settings = CodexSettings::default();
     if !path.exists() {
@@ -757,6 +798,7 @@ pub(crate) fn read_codex_settings_at(path: &Path) -> Result<CodexSettings, Strin
     Ok(settings)
 }
 
+/// 判断一个路径字符串是不是绝对根（POSIX `/`、UNC `\\` 或 Windows 盘符）。
 fn is_absolute_root(value: &str) -> bool {
     if value.starts_with('/') || value.starts_with("\\\\") {
         return true;
@@ -828,6 +870,11 @@ fn validate_codex_settings(settings: &CodexSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// 取出（或新建）TOML 文档顶层指定键的表。
+///
+/// # Errors
+///
+/// 该键已存在但不是表时返回中文错误。
 fn table_entry<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut Table, String> {
     let item = doc.entry(key).or_insert(Item::Table(Table::new()));
     item.as_table_mut().ok_or_else(|| format!("{key} 必须是 TOML 表"))
@@ -883,6 +930,11 @@ fn patch_int_in(doc: &mut DocumentMut, segment: &str, key: &str, number: Option<
     Ok(())
 }
 
+/// 从 TOML 文档中删掉 `segment.key`；段表删空后把整段一并移除，不留空表。
+///
+/// # Errors
+///
+/// 段存在但不是表时返回中文错误。
 fn prune_key(doc: &mut DocumentMut, segment: &str, key: &str) -> Result<(), String> {
     let emptied = match doc.get_mut(segment) {
         Some(item) => {
@@ -918,6 +970,11 @@ fn save_codex_settings(settings: CodexSettings) -> Result<CodexSettings, String>
     read_codex_settings()
 }
 
+/// 校验并落盘 Codex 配置到指定路径，返回保存后的结果。
+///
+/// # Errors
+///
+/// 配置校验失败、目录创建或文件读写失败时返回错误。
 pub(crate) fn save_codex_settings_at(path: &Path, settings: CodexSettings) -> Result<CodexSettings, String> {
     validate_codex_settings(&settings)?;
     if let Some(dir) = path.parent() {
@@ -1019,8 +1076,10 @@ pub(crate) fn apply_codex_endpoint(model: &str, base_url: &str, api_key: &str) -
     save_codex_settings(config).map(|_| ())
 }
 
+/// Codex 0.50+ 在 provider http_headers 里识别的 actor 授权头名称。
 const CODEX_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
 
+/// 判断 provider 表是否自带非空的 actor 授权头；有则跳过 auth.json 注入，避免双写冲突。
 fn provider_uses_actor_authorization(table: &Table) -> bool {
     table.get("http_headers")
         .and_then(|item| item.as_table_like())
@@ -1135,6 +1194,7 @@ pub(crate) fn apply_codex_provider_route(base_url: &str, model: Option<&str>, ap
     Ok(())
 }
 
+/// 运行 `--version` 取 CLI 版本号；CLI 不存在或执行失败时返回 `None`。
 fn version_of(program: &str) -> Option<String> {
     let path = super::resolve(program).ok()?;
     checked(command(&path, &["--version"])).ok().map(|value| value.trim().to_string())

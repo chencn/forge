@@ -1,12 +1,15 @@
-/** 复用实际编辑行为，键位由方案表提供。 */
+/**
+ * 折叠动作（⌘- / ⌘= / 递归折叠等）的区间计算。
+ */
 import { StateEffect, type EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { foldEffect, foldable, foldedRanges, unfoldEffect } from "@codemirror/language";
+/** 往上扫描包住区的行数上限（防超长文档卡死）。 */
 const MAX_SCAN_LINES = 2000;
 
 /**
- * IDEA "Collapse" (⌘-): the innermost not-yet-folded region that contains the
- * caret — the caret line's own region first, then enclosing ones above it.
+ * 折叠（⌘-）：包住光标的最内层未折叠区——先看光标行自己的区，
+ * 再往上看包住它的。
  */
 export function enclosingFoldRange(state: EditorState, pos: number): { from: number; to: number } | null {
   const folded = foldedRanges(state);
@@ -28,7 +31,7 @@ export function enclosingFoldRange(state: EditorState, pos: number): { from: num
   return null;
 }
 
-/** Folds the region around each caret. */
+/** 在每个光标处折叠所在的区。 */
 export function foldAtCaret(view: EditorView): boolean {
   const effects: StateEffect<unknown>[] = [];
   for (const range of view.state.selection.ranges) {
@@ -40,8 +43,8 @@ export function foldAtCaret(view: EditorView): boolean {
 }
 
 /**
- * IDEA "Expand" (⌘=): the visible fold at the caret — the outermost fold
- * containing it (inner ones are hidden inside it), else a fold on its line.
+ * 展开（⌘=）：光标处可见的折叠——包住它的最外层折叠（内层的藏在它里面），
+ * 没有就找光标行上的折叠。
  */
 export function foldToExpand(state: EditorState, head: number): { from: number; to: number } | null {
   const line = state.doc.lineAt(head);
@@ -57,6 +60,7 @@ export function foldToExpand(state: EditorState, head: number): { from: number; 
   return containing ?? onLine;
 }
 
+/** 展开（⌘=）命令：每个光标处展开一处折叠。 */
 export function unfoldAtCaret(view: EditorView): boolean {
   const effects: StateEffect<unknown>[] = [];
   for (const range of view.state.selection.ranges) {
@@ -68,8 +72,8 @@ export function unfoldAtCaret(view: EditorView): boolean {
 }
 
 /**
- * IDEA "Fold Selection / Remove Region" (⌘.): folds each selection (without
- * a trailing line break); with no selection, toggles the region at the caret.
+ * 折叠选区 / 移除折叠区（⌘.）：折起每个选区（去掉结尾换行）；
+ * 没有选区时切换光标处的折叠区。
  */
 export function foldSelectionEffects(state: EditorState): StateEffect<unknown>[] {
   const effects: StateEffect<unknown>[] = [];
@@ -89,18 +93,20 @@ export function foldSelectionEffects(state: EditorState): StateEffect<unknown>[]
   return effects;
 }
 
+/** 折叠选区 / 移除折叠区（⌘.）命令。 */
 export function foldSelection(view: EditorView): boolean {
   const effects = foldSelectionEffects(view.state);
   if (!effects.length) return false;
   const sel = view.state.selection;
   const folded = effects.filter((e) => e.is(foldEffect)).map((e) => e.value as { from: number; to: number });
-  // The caret lands after the new fold, like IDEA.
+  // 折叠后光标落在新区之后。
   const after =
     sel.ranges.some((r) => !r.empty) && folded.length ? { anchor: folded[folded.length - 1]!.to } : undefined;
   view.dispatch({ effects, selection: after });
   return true;
 }
 
+/** 区间当前是否处于折叠状态。 */
 function isFolded(state: EditorState, r: { from: number; to: number }): boolean {
   let hit = false;
   foldedRanges(state).between(r.from, r.from, (a, b) => {
@@ -109,7 +115,7 @@ function isFolded(state: EditorState, r: { from: number; to: number }): boolean 
   return hit;
 }
 
-/** Every foldable region (nested ones included) of the lines in `[from, to]`, kept within `[from, to]`. */
+/** `[from, to]` 各行的全部可折叠区（嵌套的也算），且都要落在 `[from, to]` 内。 */
 export function foldableRegions(
   state: EditorState,
   from = 0,
@@ -126,15 +132,15 @@ export function foldableRegions(
   return out;
 }
 
-/** The selection, when it holds whole regions to work on; else the whole document. */
+/** 选区恰是可整片处理的区间时用选区；否则用整篇文档。 */
 function regionScope(state: EditorState): { from: number; to: number } | null {
   const main = state.selection.main;
   return main.empty ? null : { from: main.from, to: main.to };
 }
 
 /**
- * IDEA "Collapse All" (⌘⇧-): every region, nested ones included; with a
- * selection, the regions inside it (all of them when it holds none).
+ * 全部折叠（⌘⇧-）：每个区、嵌套的也算；有选区时只折里面的
+ * （一个都没有时折整篇）。
  */
 export function collapseAllEffects(state: EditorState): StateEffect<unknown>[] {
   const scope = regionScope(state);
@@ -143,7 +149,7 @@ export function collapseAllEffects(state: EditorState): StateEffect<unknown>[] {
   return regions.filter((r) => !isFolded(state, r)).map((r) => foldEffect.of(r));
 }
 
-/** IDEA "Expand All" (⌘⇧=): every folded region, or those inside the selection. */
+/** 全部展开（⌘⇧=）：每个已折叠区；有选区时只展开里面的。 */
 export function expandAllEffects(state: EditorState): StateEffect<unknown>[] {
   const all: Array<{ from: number; to: number }> = [];
   foldedRanges(state).between(0, state.doc.length, (from, to) => void all.push({ from, to }));
@@ -153,8 +159,8 @@ export function expandAllEffects(state: EditorState): StateEffect<unknown>[] {
 }
 
 /**
- * IDEA "Collapse Recursively" (⌘⌥-): the region at the caret line (else the
- * innermost one around the caret) and every region inside it.
+ * 递归折叠（⌘⌥-）：光标行上的区（没有就取包住光标的最内层区）
+ * 连同它里面的每个区。
  */
 export function collapseRecursivelyEffects(state: EditorState, head: number): StateEffect<unknown>[] {
   const line = state.doc.lineAt(head);
@@ -166,7 +172,7 @@ export function collapseRecursivelyEffects(state: EditorState, head: number): St
   return inner.map((r) => foldEffect.of(r));
 }
 
-/** IDEA "Expand Recursively" (⌘⌥=): the region at the caret and every folded region inside it. */
+/** 递归展开（⌘⌥=）：光标处的折叠连同它里面的每个折叠。 */
 export function expandRecursivelyEffects(state: EditorState, head: number): StateEffect<unknown>[] {
   const line = state.doc.lineAt(head);
   const root = foldToExpand(state, head) ?? foldable(state, line.from, line.to);
@@ -178,18 +184,23 @@ export function expandRecursivelyEffects(state: EditorState, head: number): Stat
   return out;
 }
 
+/** 有 effects 才 dispatch；返回是否有动作发生。 */
 function dispatchEffects(view: EditorView, effects: StateEffect<unknown>[]): boolean {
   if (effects.length) view.dispatch({ effects });
   return effects.length > 0;
 }
 
+/** 全部折叠（⌘⇧-）命令。 */
 export const collapseAll = (view: EditorView) => dispatchEffects(view, collapseAllEffects(view.state));
+/** 全部展开（⌘⇧=）命令。 */
 export const expandAll = (view: EditorView) => dispatchEffects(view, expandAllEffects(view.state));
+/** 递归折叠（⌘⌥-）命令：每个光标各折叠一次。 */
 export const collapseRecursively = (view: EditorView) =>
   dispatchEffects(
     view,
     view.state.selection.ranges.flatMap((r) => collapseRecursivelyEffects(view.state, r.head)),
   );
+/** 递归展开（⌘⌥=）命令：每个光标各展开一次。 */
 export const expandRecursively = (view: EditorView) =>
   dispatchEffects(
     view,

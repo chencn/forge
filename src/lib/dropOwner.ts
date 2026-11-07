@@ -14,8 +14,10 @@ export interface DropOwner {
   take: (paths: string[]) => void;
 }
 
+/** 投放事件的阶段，owner 按阶段收回调。 */
 export type DropPhase = "enter" | "over" | "drop" | "leave";
 
+/** 当前注册的投放目标（后注册的优先接手）。 */
 const owners: DropOwner[] = [];
 
 /** 注册一个投放目标，返回注销函数。同一个目标重复注册会各自生效，调用方只该注册一次。 */

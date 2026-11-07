@@ -23,6 +23,7 @@ import { tooltipAttrs } from "./Tooltip";
 import { registerDropTarget, startPointerDrag } from "./pointerDrag";
 import styles from "./Tabs.module.css";
 
+/** 一个标签的展示数据与状态。 */
 export interface TabItem {
   id: string;
   label: ReactNode;
@@ -58,12 +59,16 @@ export function dropIndex(x: number, rects: ReadonlyArray<{ left: number; width:
   return rects.length;
 }
 
+/** 标签条对外暴露的命令句柄。 */
 export interface TabStripHandle {
+  /** 关闭当前选中的标签；没有可关的返回 false。 */
   closeSelected(): boolean;
 }
 
+/** 标签条注册自己句柄的 Context（宿主收集后统一响应关闭快捷键）。 */
 export const TabStripRegistry = createContext<((handle: TabStripHandle) => () => void) | null>(null);
 
+/** {@link Tabs} 的入参。 */
 export interface TabsProps {
   items: TabItem[];
   activeId: string | null;
@@ -87,6 +92,7 @@ export interface TabsProps {
   orientation?: "horizontal" | "vertical";
 }
 
+/** 标签页条组件：渲染 {@link TabItem} 列表并处理选中、关闭、拖拽与键盘巡航。 */
 export function Tabs({
   items,
   activeId,

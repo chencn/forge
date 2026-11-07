@@ -5,6 +5,7 @@ import { renderChatMarkdown, repairStreamingMarkdown } from "../lib/markdown";
 import { renderChatMarkdownBlocks } from "../lib/chatMarkdownAsync";
 import { useAiOpenFile } from "./AiFileLink";
 
+/** 解析非负整数字符串；空串或非法值返回 undefined。 */
 function positive(value: string | null): number | undefined {
   if (!value) return undefined;
   const number = Number.parseInt(value, 10);

@@ -28,6 +28,11 @@ pub struct ExclusiveFileLock {
     _file: std::fs::File,
 }
 impl ExclusiveFileLock {
+    /// 打开（或创建）锁文件并加跨进程独占锁。
+    ///
+    /// # Errors
+    ///
+    /// 文件打不开或加锁失败时返回 `IO` 错误串。
     pub fn acquire(path: &std::path::Path) -> Result<Self, String> {
         let file = std::fs::OpenOptions::new().read(true).write(true).create(true).open(path)
             .map_err(|error| crate::error::err_parts("IO", &[path.display().to_string(), error.to_string()]))?;
@@ -134,6 +139,7 @@ pub fn which(name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 进程启动时的 PATH 目录快照；进程生存期内 PATH 不会再变，只解析一次。
 fn path_dirs() -> &'static [std::path::PathBuf] {
     static DIRS: OnceLock<Vec<std::path::PathBuf>> = OnceLock::new();
     DIRS.get_or_init(|| {
@@ -186,6 +192,7 @@ pub fn kill_process_group(pid: u32) -> bool {
     pid > 0 && unsafe { libc::kill(-pid, libc::SIGKILL) == 0 }
 }
 
+/// Windows 上依次尝试裸名、`.exe`、`.cmd`、`.bat` 后缀找程序；其他平台等同 [`which`]。
 fn search_program(base: &str) -> String {
     if !cfg!(windows) {
         return which(base);
@@ -420,9 +427,13 @@ pub struct ProcInfo {
     pub program: String,
 }
 
+/// 字节 → MB 的换算基数。
 const MB: u64 = 1024 * 1024;
+/// 进程树分类标签：宿主进程。
 const HOST: &str = "host";
+/// 进程树分类标签：WebView 子进程。
 const WEBVIEW: &str = "webview";
+/// 进程树分类标签：其他子进程（CLI、shell 等）。
 const CHILD: &str = "child";
 /// Tauri 的页面代码全跑在这些进程里，宿主进程那次 API 调用读不到，只能按进程名归到一档。
 const WEBVIEW_EXE: &str = "msedgewebview2.exe";
@@ -431,6 +442,7 @@ const WEBVIEW_EXE: &str = "msedgewebview2.exe";
 /// 当运行多个应用实例时，WebView2 默认共享同一套 Browser 进程树。通过它能准确定位整个 WebView 环境。
 static WEBVIEW_BROWSER_PID: AtomicU32 = AtomicU32::new(0);
 
+/// 记录本实例连接的 WebView2 Browser 进程 PID（多实例共享进程树时用它精确定位）。
 pub fn set_webview_browser_pid(pid: u32) {
     if pid != 0 {
         WEBVIEW_BROWSER_PID.store(pid, Ordering::Relaxed);
@@ -725,6 +737,7 @@ mod win {
         rows
     }
 
+    /// 读内存占用：本应用合计、系统物理内存总量与逐进程明细（Windows 实现）。
     pub fn read() -> (u64, u64, Vec<MemoryPart>) {
         let parts = group(&snapshot(), std::process::id(), private_set_of);
         let app = parts.iter().map(|part| part.mb).sum();
@@ -745,6 +758,7 @@ mod win {
 mod win {
     use super::MemoryPart;
 
+    /// 非 Windows 平台无实现，返回零值。
     pub fn read() -> (u64, u64, Vec<MemoryPart>) {
         (0, 0, Vec::new())
     }

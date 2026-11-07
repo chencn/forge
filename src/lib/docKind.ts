@@ -24,6 +24,7 @@ const IMAGE_EXTENSIONS = new Set([
   "tiff",
 ]);
 
+/** 按 Markdown 预览处理的扩展名集合。 */
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd"]);
 
 /**
@@ -54,6 +55,7 @@ function extensionOf(path: string): string {
   return dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
+/** 按扩展名判文档种类；未知扩展名返回普通文本。 */
 export function docKindOf(path: string): DocKind {
   const ext = extensionOf(path);
   if (ext === "svg") return "svg";

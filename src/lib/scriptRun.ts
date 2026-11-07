@@ -89,6 +89,7 @@ function toBackslash(path: string): string {
   return path.replace(/\//g, "\\");
 }
 
+/** 路径分隔符统一成正斜杠（脚本命令里用）。 */
 function toSlash(path: string): string {
   return path.replace(/\\/g, "/");
 }

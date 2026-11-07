@@ -12,8 +12,10 @@ use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, Manager};
 
+/// 终端页签布局在配置目录下的文件名。
 const LAYOUT_FILE: &str = "terminal-tabs.json";
 
+/// 从指定目录读布局；文件缺失或损坏时返回空对象。
 fn load_in(dir: &Path) -> Value {
     fs::read_to_string(dir.join(LAYOUT_FILE))
         .ok()
@@ -22,6 +24,11 @@ fn load_in(dir: &Path) -> Value {
         .unwrap_or_else(|| Value::Object(Default::default()))
 }
 
+/// 把布局原子写到指定目录。
+///
+/// # Errors
+///
+/// 目录创建失败、序列化或写盘失败时返回 `IO` 错误。
 fn save_in(dir: &Path, layout: &Value) -> Result<(), String> {
     fs::create_dir_all(dir)
         .map_err(|error| err_parts("IO", &[dir.display().to_string(), error.to_string()]))?;

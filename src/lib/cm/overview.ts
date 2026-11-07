@@ -1,10 +1,8 @@
 /**
- * 右侧滚动条上那条改动色带（IDEA 的「错误条」位置）：整篇按比例铺在编辑器右缘，
+ * 右侧滚动条上那条改动色带（「错误条」位置）：整篇按比例铺在编辑器右缘，
  * 每段改动画成一根小竖条，点上去跳到那一行。
  *
- * 移植自 IntelliJ IDEA 的 `src/editor/core/cm/lanes.ts`（OverviewLane）。
- *
- * 色带落在滚动条那一列，不动正文宽度；小地图开着时它压在小地图右缘，同 IDEA。
+ * 色带落在滚动条那一列，不动正文宽度；小地图开着时它压在小地图右缘。
  * 长短文档都按比例算：短到一屏放得下就按像素摆，长的按百分比——窗口改大小不用重写。
  */
 import { EditorSelection, Facet } from "@codemirror/state";
@@ -29,11 +27,13 @@ interface Row {
   pos: number;
 }
 
+/** 一次最多画的色条数：超长的改动历史截断，不无限长 DOM。 */
 const MAX_RENDERED = 4000;
 
 /** 点偏多少（px）还算点在这一条上。 */
 const MARK_TOLERANCE = 6;
 
+/** 各改动种类的色条颜色。 */
 const COLORS: Record<ChangeMark["kind"], string> = {
   added: "var(--accent-green)",
   modified: "var(--accent-blue)",
@@ -50,6 +50,7 @@ function nearestMark<M extends { top: number; bottom: number }>(marks: readonly 
   return best;
 }
 
+/** 色带视图插件：维护右缘那列色条 DOM，测量走 requestMeasure 防抖。 */
 class OverviewLane {
   dom: HTMLElement;
   private scheduled = false;
@@ -159,4 +160,5 @@ class OverviewLane {
   }
 }
 
+/** 概览色带扩展（每编辑器一份 {@link OverviewLane}）。 */
 export const overviewLane = ViewPlugin.fromClass(OverviewLane);

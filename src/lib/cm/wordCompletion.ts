@@ -1,23 +1,23 @@
-/** 复用实际编辑行为，键位由方案表提供。 */
 /**
- * Code › Code Completion › Cyclic Expand Word (⌥/) and its backward twin
- * (⌥⇧/), IDEA's "hippie" completion: completes the word prefix at the caret
- * from words in the current file (nearest first, ⌥/ searching upwards first,
- * ⌥⇧/ downwards), then from other open editors. Repeated presses cycle
- * through the candidates and back to the typed prefix.
+ * Code › Code Completion › Cyclic Expand Word（⌥/）及其反向版（⌥⇧/），即
+ * 「hippie 补全」：用当前文件里的词补光标处的词前缀（就近优先，⌥/ 先向上找，
+ * ⌥⇧/ 先向下找），找不到再从其他打开的编辑器里找。连按在候选间循环，
+ * 最后回到敲进去的前缀。
  */
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 
+/** 单个「词字符」的判定（含代理对检查）。 */
 const WORD_CHAR = /[\p{L}\p{N}_$]/u;
+/** 连续词串（全文扫候选用）。 */
 const WORD = /[\p{L}\p{N}_$]+/gu;
 
-/** Start of the word prefix ending at `caret`. */
+/** 以 `caret` 结尾的词前缀的起点。 */
 export function prefixStart(text: string, caret: number): number {
   let i = caret;
   while (i > 0) {
     const ch = text[i - 1]!;
-    // Low surrogates belong to the character before them.
+    // 低位代理项属于它前面的那个字符。
     const cp = ch >= "\udc00" && ch <= "\udfff" && i > 1 ? text.slice(i - 2, i) : ch;
     if (!WORD_CHAR.test(cp)) break;
     i -= cp.length;
@@ -56,20 +56,22 @@ export function expandCandidates(
   return [...new Set(ordered)];
 }
 
+/** 一轮补全会话的状态（文档一变就作废，见字段注释）。 */
 interface Session {
   from: number;
   prefix: string;
   candidates: string[];
-  /** Index into candidates; `candidates.length` shows the bare prefix again. */
+  /** 候选列表的下标；`candidates.length` 表示又回到裸前缀。 */
   index: number;
-  /** Document after our last expansion; any other edit ends the session. */
+  /** 上次展开后的文档快照；其他任何编辑都会终止本轮补全会话。 */
   doc: EditorView["state"]["doc"];
   end: number;
 }
 
+/** 各编辑器自己的补全会话（视图销毁随之回收）。 */
 const sessions = new WeakMap<EditorView, Session>();
 
-/** Expands (or cycles) the word at the caret. Returns a hint when there is nothing to do. */
+/** 展开（或循环）光标处的词；没得可做时返回提示原因。 */
 export function cyclicExpandWord(
   view: EditorView,
   direction: "backward" | "forward",

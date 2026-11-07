@@ -100,7 +100,9 @@ export function changeBaselineKey(spec: ChangeBaseline | null): string {
   return `${spec.head}\0${spec.allowEmpty ? "1" : "0"}\0${canonicalPath(spec.root)}\0${canonicalPath(spec.path)}`;
 }
 
+/** 缓存条数上限：一个会话改到几十个文件时，缓存不跟着无限涨。 */
 const HEAD_CACHE_LIMIT = 32;
+/** HEAD 原文缓存：键为基线身份，值为在途或已完成的取文 Promise。 */
 const headCache = new Map<string, Promise<string>>();
 
 /**
@@ -136,6 +138,7 @@ function relativeToRepo(root: string, absolute: string): string | null {
   return rest === "" ? null : rest;
 }
 
+/** 同仓库的路径比较：Windows 下大小写不敏感，其余按原样。 */
 function sameRepoPath(root: string, left: string, right: string): boolean {
   return isWindowsPath(root) ? left.toLowerCase() === right.toLowerCase() : left === right;
 }

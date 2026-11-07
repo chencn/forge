@@ -1,7 +1,7 @@
 /**
  * 通知系统核心数据结构、响应式总线与本地持久化。
  *
- * 1:1 参照 IntelliJ IDEA 通知中心设计：
+ * 通知中心设计：
  * - 每个功能模块归属独立的 NotificationGroup（如 Git, Maven, Build, AI, System）；
  * - 支持 Action 操作按钮（如查看日志、重试、解决冲突）；
  * - 气泡形态与位置已固化：右下角弹出、错误常驻、全部记入历史；「不再显示」仅当前会话静默；
@@ -10,8 +10,10 @@
  */
 import { useSyncExternalStore, type ReactNode } from "react";
 
+/** 通知级别（warn 是 warning 的别名）。 */
 export type NotificationLevel = "error" | "warn" | "warning" | "info" | "success";
 
+/** 内置通知分组。 */
 export type BuiltinNotificationGroup =
   | "git"
   | "maven"
@@ -21,15 +23,17 @@ export type BuiltinNotificationGroup =
   | "terminal"
   | "system";
 
+/** 通知上的快捷操作按钮。 */
 export interface NotificationAction {
   label: string;
   primary?: boolean;
   run: () => void;
 }
 
+/** 一条通知（气泡与历史共用）。 */
 export interface AppNotification {
   id: string;
-  /** 业务去重键：同一条件的通知（如同一类 git 错误连发）按 key 替换而非堆叠（对齐 IDEA）。 */
+  /** 业务去重键：同一条件的通知（如同一类 git 错误连发）按 key 替换而非堆叠。 */
   key?: string;
   groupId: string;
   groupTitle?: string;
@@ -52,6 +56,7 @@ export interface AppNotification {
   actions?: NotificationAction[];
 }
 
+/** 发通知的可选参数；标题必填，其余按 {@link AppNotification} 字段缺省。 */
 export interface NotifyOptions {
   groupId?: string;
   /** 业务去重键：带 key 的新通知会替换同 key 的旧通知（气泡与历史都替换）。 */
@@ -71,11 +76,12 @@ export interface NotifyOptions {
 }
 
 /**
- * 气泡淡出节奏（1:1 对齐 IDEA）：普通气泡 10 秒；错误与显式常驻 5 分钟后
+ * 气泡淡出节奏：普通气泡 10 秒；错误与显式常驻 5 分钟后
  * 淡出（前提是已记录进历史——没记录的常驻气泡只能手动关）；返回 null 表示不自动淡出。
  */
 export const STICKY_BALLOON_TIMEOUT = 5 * 60 * 1000;
 
+/** 计算气泡自动淡出的毫秒数；null 表示不自动淡出（只能手动关）。 */
 export function balloonTimeout(n: Pick<AppNotification, "level" | "sticky" | "logged">): number | null {
   if (n.sticky || n.level === "error") {
     return n.logged === false ? null : STICKY_BALLOON_TIMEOUT;
@@ -145,6 +151,7 @@ interface NotificationCenterState {
   toasts: AppNotification[];
 }
 
+/** 通知中心当前状态（单例可变状态，见 {@link notificationCenter}）。 */
 let state: NotificationCenterState = {
   projectRoot: null,
   history: [],
@@ -152,6 +159,7 @@ let state: NotificationCenterState = {
   toasts: [],
 };
 
+/** 状态订阅者（useSyncExternalStore 用）。 */
 const listeners = new Set<() => void>();
 
 /**
@@ -160,12 +168,14 @@ const listeners = new Set<() => void>();
  */
 const suppressedGroups = new Set<string>();
 
+/** 通知所有订阅者。 */
 function emitChange() {
   for (const listener of listeners) {
     listener();
   }
 }
 
+/** 替换状态并广播变更。 */
 function updateState(fn: (prev: NotificationCenterState) => NotificationCenterState) {
   state = fn(state);
   emitChange();
@@ -230,12 +240,12 @@ export const notificationCenter = {
     };
 
     updateState((prev) => {
-      // 同 key 替换而非堆叠（对齐 IDEA notify 的 key 去重）
+      // 同 key 替换而非堆叠（notify 的 key 去重）
       const rest = opts.key
         ? prev.history.filter((x) => x.key !== opts.key)
         : prev.history;
       const nextHistory = isLogged ? [notif, ...rest].slice(0, MAX_HISTORY_ITEMS) : prev.history;
-      // 气泡队列存全量：第 4 条起排队，关掉一条补位（对齐 IDEA Balloons 的 slice 语义）
+      // 气泡队列存全量：第 4 条起排队，关掉一条补位（Balloons 的 slice 语义）
       const restToasts = opts.key
         ? prev.toasts.filter((x) => x.key !== opts.key)
         : prev.toasts;
@@ -263,7 +273,7 @@ export const notificationCenter = {
     }));
   },
 
-  /** 标记全部通知已读（1:1 对齐 IDEA：面板被看过，已记录条目的浮动气泡随之撤下） */
+  /** 标记全部通知已读：面板被看过，已记录条目的浮动气泡随之撤下 */
   markAllAsRead: () => {
     updateState((prev) => {
       const nextHistory = prev.history.map((it) => ({ ...it, read: true, balloon: false }));
@@ -272,7 +282,7 @@ export const notificationCenter = {
         ...prev,
         history: nextHistory,
         items: nextHistory,
-        // 面板被看过，气泡一并收走（1:1 对齐 IDEA markAllNotificationsRead）
+        // 面板被看过，气泡一并收走（markAllNotificationsRead）
         toasts: [],
       };
     });
@@ -291,7 +301,7 @@ export const notificationCenter = {
     });
   },
 
-  /** 撤下某个业务键的气泡：条件不再成立时由调用方收掉（对齐 IDEA expireNotification）。 */
+  /** 撤下某个业务键的气泡：条件不再成立时由调用方收掉（expireNotification）。 */
   expireNotification: (key: string) => {
     updateState((prev) => ({
       ...prev,
@@ -317,7 +327,7 @@ export const notificationCenter = {
 };
 
 /**
- * 「不再显示」（对齐 IDEA suppressGroup）：本次会话内该组不再弹气泡，
+ * 「不再显示」（suppressGroup）：本次会话内该组不再弹气泡，
  * 气泡立即收下、历史照记。策略已固化，这里不写设置，重启即恢复默认。
  */
 export function suppressGroup(group: string): void {

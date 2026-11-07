@@ -17,7 +17,7 @@ import { Trace, TraceLine } from "./ui/trace";
 import { Item } from "./ui/item";
 
 /**
- * 任务清单侧栏工作区（像素级对照 6.png 的浮岛卡片 Task Dock 模式）：
+ * 任务清单侧栏工作区（浮岛卡片 Task Dock 模式）：
  * 顶栏显示纯文本进程与操作区（... 与折叠收起）；
  * 中间使用滑动折叠视窗（< 前面 N 项 折叠、→ 当前步骤、○ 待办步骤、< 待处理 M 项 折叠）；
  * 底部整合极简的「智能体」协同分区。
@@ -86,12 +86,12 @@ export function AiTaskListDockPanel({
           ) : null}
         </div>
       </header>
-      {/* Queue represents the agent's actual todo list, independently of outgoing messages. */}
+      {/* Queue 就是代理真实的待办清单，与待发出的消息各自独立。 */}
       {hasTasks ? <progress className="ai-element-plan-progress" aria-label={titleLabel} max={visible.length} value={visible.filter((item) => item.status === "complete" || item.status === "completed").length} /> : null}
 
       {hasTasks ? (
         <div className="ai-taskdock-body">
-          {/* 前置完成项折叠条（对照 6.png：向左尖角 < + 浅灰色文字） */}
+          {/* 前置完成项折叠条：向左尖角 < + 浅灰色文字 */}
           {earlierCount > 0 ? (
             <button
               type="button"
@@ -132,7 +132,7 @@ export function AiTaskListDockPanel({
             })}
           </ol>
 
-          {/* 后置待处理项折叠条（对照 6.png：向左尖角 < + 浅灰色文字） */}
+          {/* 后置待处理项折叠条：向左尖角 < + 浅灰色文字 */}
           {laterCount > 0 ? (
             <button
               type="button"
@@ -146,7 +146,7 @@ export function AiTaskListDockPanel({
         </div>
       ) : null}
 
-      {/* 底部：极简智能体协同分区（对照 6.png，名称统一使用「子代理1」「子代理2」） */}
+      {/* 底部：极简智能体协同分区（名称统一使用「子代理1」「子代理2」） */}
       {hasAgents ? (
         <div className={`ai-taskdock-agents-section${!hasTasks ? " is-primary" : ""}`}>
           {hasTasks ? (

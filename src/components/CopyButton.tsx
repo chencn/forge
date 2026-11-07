@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { useI18n } from "../i18n";
 
+/** 复制按钮的入参。 */
 interface Props {
   /** 要写进剪贴板的那段文本。 */
   text: string;

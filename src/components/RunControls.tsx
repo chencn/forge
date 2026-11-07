@@ -13,6 +13,7 @@ import type { RunConfigController } from "../hooks/useRunConfigs";
 import type { RunController } from "../hooks/useRunSessions";
 import { useI18n } from "../i18n";
 
+/** 运行控件条的入参。 */
 interface RunControlsProps {
   configs: RunConfigController;
   run: RunController;
@@ -30,7 +31,7 @@ interface RunControlsProps {
 type PendingRow = { config: RunConfiguration; x: number; y: number } | null;
 
 /**
- * IDEA 把「跑什么」当成和工程同级的上下文，所以这颗下拉和这几颗按钮住在主工具栏。
+ * 「跑什么」是和工程同级的上下文：这颗下拉和这几颗按钮住在主工具栏。
  *
  * 控件既不持有会话也不持有配置：两份状态都挂在 App 上（`useRunConfigs` 与
  * `useRunSessions`），这里只画与转。工具窗口关着也能跑，输出监听跟着 App 注册。
@@ -49,7 +50,7 @@ export default function RunControls({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const [pending, setPending] = useState<PendingRow>(null);
-  /** 多条在跑时，停止那颗先开一层列表（每条一项 + 停止全部），照 IDEA 的做法。 */
+  /** 多条在跑时，停止那颗先开一层列表（每条一项 + 停止全部）。 */
   const [stopOpen, setStopOpen] = useState(false);
   const selected = configs.selected;
 
@@ -68,7 +69,7 @@ export default function RunControls({
     [configs.tools, t]
   );
 
-  /** 这条配置有没有正在跑的会话。IDEA 的按钮状态是跟着「这一条」走的，不是跟着面板走的。 */
+  /** 这条配置有没有正在跑的会话。按钮状态跟着「这一条」走，不跟着面板走。 */
   const runningOf = useCallback(
     (config: RunConfiguration | null) =>
       config !== null &&
@@ -178,7 +179,7 @@ export default function RunControls({
     },
   ];
 
-  /** 选中配置正在跑的实例；IDEA 的按钮状态跟着「这一条配置」走。 */
+  /** 选中配置正在跑的实例；按钮状态跟着「这一条配置」走。 */
   const selectedRunCount = selected
     ? run.sessions.filter(
         (session) => session.status === "running" && session.config.id === selected.id
@@ -217,7 +218,7 @@ export default function RunControls({
           {configs.configs.length > 0 ? (
             <div className="run-filter">
               <input
-                // 弹层一开就要能打字：键位选完配置直接输入名字，是 IDEA 的手感。
+                // 弹层一开就要能打字：键位选完配置直接输入名字。
                 autoFocus
                 className="run-filter-input"
                 placeholder={t("run.filter")}
@@ -260,7 +261,7 @@ export default function RunControls({
                           title={`${configLabel(config)}\n${blocked ?? resolveCommand(config.command, configs.tools)}`}
                           onClick={() => {
                             if (blocked) return;
-                            // 点条目本身选中该配置并收起下拉面板；要直接跑就点右边那颗三角，和 IDEA 一样分两件事。
+                            // 点条目本身选中该配置并收起下拉面板；要直接跑就点右边那颗三角，两件事分开。
                             configs.select(config.id);
                             setOpen(false);
                           }}
@@ -352,7 +353,7 @@ export default function RunControls({
       ) : null}
 
       {/* 运行与重跑是同一颗：选中配置没在跑时显示「运行」，在跑时换成绿底「重跑」，
-          和 IDEA 的 ExecutorAction 一套（按有无运行实例切图标与底色）。 */}
+          按有无运行实例切图标与底色。 */}
       <button
         type="button"
         className={`icon-button is-toolbar is-run${selectedRunCount > 0 ? " is-running" : ""}`}
@@ -376,14 +377,14 @@ export default function RunControls({
         disabled={!canRun}
       >
         {selectedRunCount > 0 ? <RerunIcon size={14} /> : <RunIcon size={14} />}
-        {/* 该配置有多个运行实例时在右下角叠数字，与 IDEA 的 `IconUtil.addText` 一致。 */}
+        {/* 该配置有多个运行实例时在右下角叠数字。 */}
         {selectedRunCount >= 2 ? (
           <span className="run-badge" aria-hidden="true">
             {selectedRunCount > 9 ? "9+" : selectedRunCount}
           </span>
         ) : null}
       </button>
-      {/* 没有实例在跑时停止按钮不出现，与 IDEA 的 StopAction 一致（`isEnabledAndVisible`）。 */}
+      {/* 没有实例在跑时停止按钮不出现。 */}
       {runningSessions.length > 0 ? (
         <button
           ref={stopRef}
@@ -397,13 +398,13 @@ export default function RunControls({
                 : t("run.stop")
           }
           onClick={() => {
-            // 只有一条时直接停；多条先弹列表挑，和 IDEA 一样。
+            // 只有一条时直接停；多条先弹列表挑。
             if (runningSessions.length === 1) run.stop(runningSessions[0].id);
             else setStopOpen((value) => !value);
           }}
         >
           <StopIcon size={12} />
-          {/* 多个实例在跑时红按钮右下角显示总数，与 IDEA 的 RunWidget 一致。 */}
+          {/* 多个实例在跑时红按钮右下角显示总数。 */}
           {runningSessions.length >= 2 ? (
             <span className="run-badge is-on-solid" aria-hidden="true">
               {runningSessions.length > 9 ? "9+" : runningSessions.length}

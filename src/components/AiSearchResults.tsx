@@ -4,6 +4,7 @@ import type { AiSearchState } from "../hooks/useAiSessionSearch";
 import { groupAiSearchHits, normalizeSearchQuery, splitAiSearchSnippet } from "../lib/aiSearch";
 import AiProviderIcon from "./AiProviderIcon";
 
+/** 会话搜索结果列表的入参。 */
 interface AiSearchResultsProps {
   /** 搜索状态；`query`/`archived` 与当前输入不一致时这里什么都不会显示。 */
   state: AiSearchState;

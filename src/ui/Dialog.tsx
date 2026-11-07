@@ -12,8 +12,10 @@ import { Button, IconButton } from "./Button";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import styles from "./Dialog.module.css";
 
+/** 按钮角色：default 主操作、cancel 取消、extra 其它。 */
 export type DialogButtonRole = "default" | "cancel" | "extra";
 
+/** 模态对话框底部的一个按钮。 */
 export interface DialogButton {
   label: string;
   onClick?: () => void;
@@ -23,8 +25,13 @@ export interface DialogButton {
   title?: string;
 }
 
+/** 按钮排序口径：mac 反转主次（主按钮在右），其余平台主按钮在左。 */
 export type DialogPlatform = "mac" | "other";
 
+/**
+ * 按平台规则排按钮顺序：mac 取消在最左、主操作最右；Windows/Linux
+ * 主操作最左，其余按传入顺序。稳定排序，同角色保持原相对次序。
+ */
 export function orderDialogButtons<T extends { role?: DialogButtonRole }>(
   buttons: readonly T[],
   platform: DialogPlatform
@@ -43,6 +50,7 @@ export function orderDialogButtons<T extends { role?: DialogButtonRole }>(
   ];
 }
 
+/** 渲染一排对话框按钮（自动按平台排序、缺省 onClick 落到 onCancel）。 */
 export function DialogButtons({
   buttons,
   onCancel,
@@ -71,6 +79,7 @@ export function DialogButtons({
   );
 }
 
+/** {@link Dialog} 的入参。 */
 export interface DialogProps {
   open: boolean;
   onClose: () => void;
@@ -88,14 +97,17 @@ export interface DialogProps {
   platform?: DialogPlatform;
 }
 
+/** Enter 键这些元素自己消化，不冒泡成对话框的确认。 */
 const ENTER_OWNERS =
   'textarea, button, a[href], select, form, [contenteditable=""], [contenteditable="true"]';
 
+/** 模态对话框入口：open 为 false 时不挂载内部实现。 */
 export function Dialog(props: DialogProps) {
   if (!props.open) return null;
   return <DialogInner {...props} />;
 }
 
+/** 对话框内部实现：Portal、焦点圈、Enter/Escape 键与拖拽定位。 */
 function DialogInner({
   onClose,
   title,

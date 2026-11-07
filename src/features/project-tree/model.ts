@@ -11,8 +11,10 @@ import type { FsEntry } from "../../lib/fs";
 import type { ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
 import { nativeSeparators, relativePathFrom } from "../../lib/format";
 
+/** 项目树的三个根域：主工程 / 外部依赖库 / 临时文件。 */
 export type ProjectNodeDomain = "project" | "libraries" | "scratches";
 
+/** 项目树的一个节点：标识、归属域、文件条目与展示元数据。 */
 export interface ProjectTreeNode {
   /** 节点唯一标识键（正斜杠小写规范） */
   readonly key: string;
@@ -44,7 +46,7 @@ export interface ProjectTreeNode {
   readonly isGroup?: boolean;
   /** 是否为 JVM 包节点（如 com.example） */
   readonly isPackage?: boolean;
-  /** 自定义特定图标名称 (1:1 对齐 IntelliJ IDEA node.icon) */
+  /** 自定义特定图标名称 */
   readonly icon?: string;
   /** 是否为归档文件节点 (如 .jar / .zip) */
   readonly isArchive?: boolean;
@@ -56,7 +58,7 @@ export function normalizePathKey(path: string): string {
 }
 
 /**
- * 将用户家目录前缀缩写为 `~`（1:1 对标 IntelliJ IDEA 路径规范）
+ * 将用户家目录前缀缩写为 `~`。
  */
 export function tildify(path: string, home: string | null | undefined): string {
   if (!home || home === "/") return path.replaceAll("\\", "/");
@@ -68,15 +70,19 @@ export function tildify(path: string, home: string | null | undefined): string {
 }
 
 /**
- * 命名空间前缀与规整契约（1:1 对标 IntelliJ IDEA）
+ * 命名空间前缀与规整契约。
  * GROUP_PREFIX: 虚拟组根节点或虚拟分类
  * LIB_PREFIX: 外部依赖库独立命名空间，杜绝与项目工程同名物理路径冲突
  */
 export const GROUP_PREFIX = "\u0000group:";
+/** 外部依赖库节点的键前缀。 */
 export const LIB_PREFIX = "\u0000lib:";
+/** 库键里组名与路径的分隔符。 */
 export const LIB_SEP = "\u0000";
 
+/** 键是否为虚拟分组节点。 */
 export const isGroupKey = (key: string): boolean => key.startsWith(GROUP_PREFIX);
+/** 键是否为外部依赖库节点。 */
 export const isLibKey = (key: string): boolean => key.startsWith(LIB_PREFIX);
 
 /** 虚拟分组不对应磁盘路径，不能交给原生文件系统或系统文件管理器。 */
@@ -100,6 +106,7 @@ export function projectPathClipboardText(
   }).join("\n");
 }
 
+/** 造一个库节点的键：`lib:组名\u0000路径键`。 */
 export const libKey = (group: string, path: string): string =>
   `${LIB_PREFIX}${group}${LIB_SEP}${normalizePathKey(path)}`;
 
@@ -136,8 +143,8 @@ export function isPathEqualOrChild(child: string, parent: string): boolean {
 }
 
 /**
- * 1:1 对标 JetBrains 的系统忽略文件规则
- * 注意：点开头文件（如 .github, .config, .env, .gitignore）在 IDEA 中默认完全可见！
+ * 系统忽略文件规则。
+ * 注意：点开头文件（如 .github, .config, .env, .gitignore）默认完全可见！
  * 只有系统隐藏名单中的特殊项（如 .git, .DS_Store）才受 showHidden 限制。
  */
 export const DEFAULT_IGNORED_NAMES = new Set([
@@ -155,6 +162,7 @@ export const DEFAULT_IGNORED_NAMES = new Set([
   "vssver2.scc",
 ]);
 
+/** 名字是否命中系统忽略规则（特殊隐藏名 + 编译产物后缀）。 */
 export function isIgnoredName(name: string): boolean {
   const lower = name.toLowerCase();
   if (DEFAULT_IGNORED_NAMES.has(lower)) return true;
@@ -164,7 +172,7 @@ export function isIgnoredName(name: string): boolean {
 }
 
 /**
- * 1:1 对标 JetBrains 的 Excluded 排除目录规则
+ * Excluded 排除目录规则。
  * node_modules, dist, target 等构建输出或依赖包目录默认为排除目录，
  * 在树中赋予专属橙色文件夹高亮。
  */
@@ -180,6 +188,7 @@ export const DEFAULT_EXCLUDED_FOLDERS = new Set([
   ".cache",
 ]);
 
+/** 名字是否为默认排除目录（构建输出/依赖包，树中橙色高亮）。 */
 export function isExcludedFolder(name: string): boolean {
   return DEFAULT_EXCLUDED_FOLDERS.has(name.toLowerCase());
 }
@@ -191,6 +200,7 @@ export function splitExtension(name: string): [string, string] {
   return [name.slice(0, i), name.slice(i)];
 }
 
+/** 行内重命名校验的结果：错误描述与可选警告。 */
 export interface NameCheck {
   /** 错误描述，为 null 时表示合法 */
   error: string | null;
@@ -198,6 +208,7 @@ export interface NameCheck {
   warning?: string;
 }
 
+/** {@link validateName} 的校验选项。 */
 export interface ValidateOptions {
   /** 当前父目录下已存在的文件/目录名列表 */
   siblings: Iterable<string>;
@@ -209,10 +220,12 @@ export interface ValidateOptions {
   windows?: boolean;
 }
 
+/** Windows 文件名非法字符。 */
 const WINDOWS_INVALID = /[<>:"|?*\\]/;
+/** Windows 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，可带扩展名）。 */
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i;
 
-/** 1:1 对标 IntelliJ IDEA 校验行内编辑输入的文件/目录名 */
+/** 校验行内编辑输入的文件/目录名。 */
 export function validateName(raw: string, opts: ValidateOptions): NameCheck {
   const name = raw.trim();
   if (!name) return { error: "Name cannot be empty" };

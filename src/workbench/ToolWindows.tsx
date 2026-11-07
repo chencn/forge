@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { Icon, IconButton, tooltipAttrs, type LucideIconType } from "../ui";
 import styles from "./ToolWindows.module.css";
 
+/** 工具窗口切换按钮的入参。 */
 export interface ToolWindowButtonProps {
   id: string;
   title: string;
@@ -14,6 +15,7 @@ export interface ToolWindowButtonProps {
   className?: string;
 }
 
+/** 工具窗口切换按钮（带徽标与快捷键提示）。 */
 export function ToolWindowButton({
   id,
   title,
@@ -44,6 +46,7 @@ export function ToolWindowButton({
   );
 }
 
+/** {@link ToolWindowStripe} 的入参。 */
 export interface ToolWindowStripeProps {
   children?: ReactNode;
   bottomChildren?: ReactNode;
@@ -67,6 +70,7 @@ export function ToolWindowStripe({
   );
 }
 
+/** 工具窗口标题栏的入参。 */
 export interface ToolWindowHeaderProps {
   title: ReactNode;
   actions?: ReactNode;
@@ -75,6 +79,7 @@ export interface ToolWindowHeaderProps {
   className?: string;
 }
 
+/** 工具窗口标题栏（标题 + 动作 + 最小化/关闭）。 */
 export function ToolWindowHeader({
   title,
   actions,
@@ -108,6 +113,7 @@ export function ToolWindowHeader({
   );
 }
 
+/** {@link ToolWindowPanel} 的入参。 */
 export interface ToolWindowPanelProps {
   title?: ReactNode;
   actions?: ReactNode;

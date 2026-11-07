@@ -7,7 +7,7 @@ import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigg
 import { CodeBlock } from "./ui/code-block";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 
-/** AI Elements Sources/Inline Citation, Test Results and Stack Trace, backed only by reported tool facts. */
+/** 工具结果区：引用来源、测试结果与失败堆栈，只呈现工具上报的真实事实。 */
 export default function AiToolResults({ entry, suites }: { entry: AiEntry; suites: AiTestSuite[] }) {
   const { t } = useI18n();
   const sources = aiToolSources(entry);

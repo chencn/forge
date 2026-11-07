@@ -10,6 +10,7 @@ import { Icon, type LucideIconType } from "./Icon";
 import { IconButton } from "./Button";
 import styles from "./Input.module.css";
 
+/** {@link Input} 的入参。 */
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
   invalid?: boolean;
   mono?: boolean;
@@ -55,6 +56,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   );
 });
 
+/** 搜索框后缀的一颗切换按钮（Match Case / Words / Regex 这类）。 */
 export interface SearchToggle {
   id: string;
   icon: string | LucideIconType | ReactNode;
@@ -64,6 +66,7 @@ export interface SearchToggle {
   onToggle: (pressed: boolean) => void;
 }
 
+/** {@link SearchField} 的入参。 */
 export interface SearchFieldProps
   extends Omit<InputHTMLAttributes<HTMLInputElement>, "onChange" | "value" | "size"> {
   value: string;
@@ -81,6 +84,7 @@ export interface SearchFieldProps
   multiline?: boolean;
 }
 
+/** 多行展开的组合键：Shift+Ctrl/Cmd+Enter。 */
 const isNewLineKey = (e: KeyboardEvent) =>
   e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey;
 

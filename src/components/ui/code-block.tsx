@@ -3,9 +3,7 @@ import { Check, Copy } from "lucide-react";
 import { useI18n } from "../../i18n";
 import "./ai-elements.css";
 
-/** AI Elements Code Block / Terminal composition; keep Forge's existing syntax renderer.
- * https://ui.shadcn.com/docs/ai-elements/base/terminal (MIT)
- */
+/** 代码块：复制按钮 + 自定义语法渲染插槽；`terminal` 时按终端配色呈现。 */
 export function CodeBlock({ text, language, children, terminal = false }: { text: string; language?: string; children?: ReactNode; terminal?: boolean }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);

@@ -30,14 +30,15 @@ import type { TranslationKey } from "../i18n/lang/zh";
 import MavenIcon from "../components/MavenIcon";
 import SpringIcon from "../components/SpringIcon";
 
+/** 运行类型图标组件的形状（lucide 兼容）。 */
 type KindIcon = React.ComponentType<{ size?: number; className?: string }>;
 
 /**
  * 每种运行配置的图标与分组名。
  *
- * IDEA 的运行配置下拉里，图标就是「这条是什么类型」的第一层信息：Spring 一片叶、
+ * 运行配置下拉里，图标就是「这条是什么类型」的第一层信息：Spring 一片叶、
  * Java 一杯咖啡、Maven 那枚 M、Gradle 一团火。这里用形状接近的矢量图标顶替，
- * 分组名照 IDEA 的类型显示名。色只有六档，长尾那十几族靠形状分：Ruby 一颗宝石、
+ * 分组名照各类型的显示名。色只有六档，长尾那十几族靠形状分：Ruby 一颗宝石、
  * Swift 一只鸟、Lua 一弯月、Zig 一道电、Deno 一层浪、Haskell 一卷轴、C/C++ 一枚芯片。
  */
 const ICONS: Record<RunKind, { icon: KindIcon; label: TranslationKey }> = {
@@ -95,6 +96,7 @@ export const RUN_KIND_ORDER: RunKind[] = [
   "shell",
 ];
 
+/** 一种运行类型的图标（色阶与形状见 {@link ICONS}）。 */
 export function RunKindIcon({ kind, size = 13 }: { kind: RunKind; size?: number }) {
   const entry = ICONS[kind];
   const Icon = entry.icon;
@@ -109,6 +111,7 @@ function javaSourcePath(root: string | null, config: RunConfiguration): string |
   return nativeSeparators(resolvePath(root, file));
 }
 
+/** 一条运行配置的图标：Java 配置优先用源文件的种类图标，否则回落到类型图标。 */
 export function RunConfigIcon({
   config,
   root,
@@ -134,6 +137,7 @@ export function RunConfigIcon({
   return <RunKindIcon kind={config.kind} size={size} />;
 }
 
+/** 运行类型的分组显示名（i18n 键）。 */
 export function runKindLabel(kind: RunKind): TranslationKey {
   return ICONS[kind].label;
 }

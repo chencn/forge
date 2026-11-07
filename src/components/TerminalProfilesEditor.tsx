@@ -5,6 +5,7 @@ import type { TerminalProfile } from "../lib/settings";
 import { formatArgs, formatEnvLines, parseArgs, parseEnvLines } from "../lib/termProfiles";
 import { useI18n } from "../i18n";
 
+/** 终端配置档编辑器的入参。 */
 interface TerminalProfilesEditorProps {
   profiles: TerminalProfile[];
   shells: ShellInfo[];

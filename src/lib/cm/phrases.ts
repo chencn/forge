@@ -55,6 +55,7 @@ const NUMBERED: Record<string, [TranslationKey, string]> = {
   "$ unchanged lines": ["editor.cm.mergeUnchanged", "count"],
 };
 
+/** 查 CodeMirror 内置短语（带 $ 占位的走参数翻译），查不到原样返回。 */
 function phraseFor(source: string): string {
   const numbered = NUMBERED[source];
   if (numbered) return translate(numbered[0], { [numbered[1]]: "$" });
@@ -62,6 +63,7 @@ function phraseFor(source: string): string {
   return key ? translate(key) : source;
 }
 
+/** CodeMirror phrase() 的短语表：源文案到翻译文案，惰性求值保持引用稳定。 */
 const map: Record<string, string> = {};
 for (const source of [...Object.keys(PLAIN), ...Object.keys(NUMBERED)]) {
   Object.defineProperty(map, source, {

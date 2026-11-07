@@ -1,11 +1,15 @@
 /**
- * 项目色和两字头像，对照 Lithe 的 Islands 配色。
+ * 项目色和两字头像，按 Islands 配色生成。
  * 颜色由路径的 FNV-1a 决定，同一个工程每次都是同一档。
  */
 
+/** 渐变色档数（头像与顶栏晕染共用同一档位）。 */
 const PROJECT_GRADIENT_COLOR_COUNT = 9;
+/** FNV-1a 64 位偏移基数。 */
 const FNV_OFFSET_BASIS = 14_695_981_039_346_656_037n;
+/** FNV-1a 64 位质数。 */
 const FNV_PRIME = 1_099_511_628_211n;
+/** 64 位掩码（BigInt 乘法后截断）。 */
 const UINT64_MASK = (1n << 64n) - 1n;
 
 /** 浅色顶栏晕染色，对应 RecentProject.ColorN.MainToolbarGradientStart。 */
@@ -57,11 +61,13 @@ export function getProjectGradientColorIndex(projectPath: string): number {
   return Number(hash % BigInt(PROJECT_GRADIENT_COLOR_COUNT)) + 1;
 }
 
+/** 项目头像的两色渐变背景（档位与顶栏晕染一致）。 */
 export function getProjectAvatarBackground(projectPath: string): string {
   const [start, end] = PROJECT_AVATAR_GRADIENTS[getProjectGradientColorIndex(projectPath) - 1];
   return `linear-gradient(to top right, ${end}, ${start})`;
 }
 
+/** 字母或数字（取首字母用，跳过符号）。 */
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 /** 两个字：驼峰取大写，否则用分隔符切开的首尾两词。 */
@@ -83,6 +89,7 @@ export function getProjectAvatarInitials(name: string): string {
   return camelCase;
 }
 
+/** 从驼峰名里取前两个大写起头字母；凑不齐两个返回空或单字。 */
 function camelCaseInitials(text: string): string {
   const characters = Array.from(text);
   const start = characters.findIndex((character) => /\p{L}/u.test(character));

@@ -4,6 +4,7 @@ import { useI18n } from "../i18n";
 import { BROWSER_DEVICES, BROWSER_NETWORKS, browserDeviceId, browserDeviceOptions, browserNetworkId } from "../lib/browser";
 import type { BrowserEmulation, BrowserEmulationPatch } from "../lib/browser";
 
+/** 浏览器模拟设置面板的入参。 */
 interface Props { value: BrowserEmulation; busy: boolean; disabled: boolean; onApply: (options: BrowserEmulationPatch) => Promise<unknown> }
 
 /** 表单草稿与已应用状态分开；AI 更改模拟设置时，同一面板显示引擎的最新状态。 */

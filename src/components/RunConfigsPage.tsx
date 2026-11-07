@@ -9,6 +9,7 @@ import type { RunConfigController } from "../hooks/useRunConfigs";
 import { basenameOf, relativePathFrom, resolvePath } from "../lib/format";
 import { useI18n } from "../i18n";
 
+/** 运行配置设置页的入参。 */
 interface RunConfigsPageProps {
   configs: RunConfigController;
 }
@@ -215,6 +216,7 @@ export default function RunConfigsPage({ configs }: RunConfigsPageProps) {
   );
 }
 
+/** 设置页里一组同类型的运行配置行。 */
 function RunConfigGroup({
   title,
   items,
@@ -248,7 +250,7 @@ function RunConfigGroup({
   );
 }
 
-/** 环境变量：一行一条，名字空的行不算数。IDEA 那侧是「名字 = 值; 名字 = 值」一栏，这里拆成行更好改。 */
+/** 环境变量：一行一条，名字空的行不算数；比「名字 = 值; 名字 = 值」一栏更好改。 */
 function RunEnvRows({
   env,
   disabled,

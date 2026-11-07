@@ -7,6 +7,7 @@ import type { AiEntry } from "../lib/aiRuntime";
 import { AiExploreGroup, isExploreEntry } from "./AiToolDetails";
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceLine, TraceTitle } from "./ui/trace";
 
+/** 过程折叠段的入参。 */
 interface AiProcessGroupProps {
   /** 一段连续的工具调用与想法。 */
   entries: AiEntry[];
@@ -113,7 +114,7 @@ export default memo(function AiProcessGroup({ entries, active, render }: AiProce
           {durationLabel ? <TraceDescription className="ai-process-elapsed" aria-label={t("ai.tool.duration")}>{durationLabel}</TraceDescription> : null}
         </TraceLine>
       </TraceCollapsibleTrigger>
-      {/* Failure navigation is a separate button, never an interactive child of the trigger. */}
+      {/* 失败跳转是独立的按钮，不能做成触发器的交互子元素。 */}
       {failedCount ? <button type="button" className="ai-process-failed"
         title={t("ai.chat.jumpToFailure")} aria-label={t("ai.chat.jumpToFailure")}
         onClick={jumpToFailure}>

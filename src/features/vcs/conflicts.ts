@@ -15,11 +15,16 @@ interface ConflictBlock {
   theirsLabel: string;
 }
 
+/** 冲突块起始标记。 */
 const START = "<<<<<<<";
+/** diff3 基线段标记。 */
 const BASE = "|||||||";
+/** ours 与 theirs 的分隔标记。 */
 const SEP = "=======";
+/** 冲突块结束标记。 */
 const END = ">>>>>>>";
 
+/** 这行是不是指定的冲突标记（标记后可跟 ` 标签` 或行尾符）。 */
 const isMarker = (line: string, marker: string) =>
   line.startsWith(marker) && (line.length === 7 || line[7] === " " || line[7] === "\r" || line[7] === "\n");
 
@@ -101,7 +106,7 @@ export interface ResultConflict {
 }
 
 /**
- * 三栏合并编辑器的起始结果，同 IDEA：合并文本里每个冲突块先填 base 段——
+ * 三栏合并编辑器的起始结果：合并文本里每个冲突块先填 base 段——
  * 界面上不出现标记，块的位置由 ResultConflict 记着，编辑过程中随文档改动平移。
  * `reversed`：变基/恢复 stash 撞出的冲突 git 把上游写进 stage 2，两侧对调
  * ours/theirs 存的是对调后的「你的/对方的」正文。

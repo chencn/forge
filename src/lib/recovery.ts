@@ -20,6 +20,7 @@ export const RECOVERY_CONTINUE: Record<Recovery, TranslationKey> = {
   revert: "git.continueRevert",
 };
 
+/** 中止那一颗的文案键。 */
 export const RECOVERY_ABORT: Record<Recovery, TranslationKey> = {
   rebase: "git.abortRebase",
   merge: "git.abortMerge",

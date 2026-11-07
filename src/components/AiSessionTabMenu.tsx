@@ -7,6 +7,7 @@ import ContextMenu, { flatMenu } from "./ContextMenu";
 import type { MenuAnchor, MenuItem } from "./ContextMenu";
 import AiActionDialog from "./AiActionDialog";
 
+/** 会话页签右键菜单的入参。 */
 export interface AiSessionTabMenuProps {
   session: AiSession;
   onAction?: (action: AiSessionAction) => void;
@@ -17,8 +18,8 @@ export interface AiSessionTabMenuProps {
 /**
  * 标签栏右侧 AI 会话操作菜单（⋮）。
  *
- * 对应将原本会话面板顶部的三点菜单提升到标签栏最右侧操作区，
- * 包含新建会话、重命名、归档、管理 CLI 和删除。
+ * 收纳会话级动作：新建会话、重命名、归档/恢复、管理 CLI 与删除，
+ * 使会话面板顶部不再需要常驻的三点菜单。
  */
 export default function AiSessionTabMenu({
   session,

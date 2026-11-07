@@ -35,7 +35,9 @@ mod windows;
 #[cfg(not(windows))]
 mod unix;
 
+/// 目录遍历与搜索实现（见 `search` 模块）。
 mod search;
+/// 文件符号链接与特殊路径的识别（见 `symbols` 模块）。
 mod symbols;
 
 pub use search::*;
@@ -50,8 +52,10 @@ use crate::offload::{block, block_value};
 
 /// 编辑器一次读入的上限，超过就拒绝打开，避免把大文件灌进 webview。
 const EDITOR_CEILING: u64 = 8 * 1024 * 1024;
+/// UTF-8 BOM 字节序列；写回时原样保留，读入时按有无 BOM 判断编码。
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
+/// 目录项的种类。
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryKind {
@@ -60,12 +64,14 @@ pub enum EntryKind {
     Other,
 }
 
+/// 平台相关的目录项标志（平台实现负责填充）。
 pub struct EntryFlags {
     pub hidden: bool,
     pub readonly: bool,
     pub reparse: bool,
 }
 
+/// 一个目录项的完整视图（项目树与文件面板共用）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FsEntry {
@@ -84,6 +90,7 @@ pub struct FsEntry {
     pub is_readonly: bool,
 }
 
+/// 一次目录列举的结果：条目与读不了的路径。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryListing {
@@ -123,6 +130,7 @@ fn modified_ms(meta: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+/// 路径转字符串；非 UTF-8 字节用替换符，展示用途足够。
 fn lossy(value: &Path) -> String {
     value.to_string_lossy().into_owned()
 }
@@ -174,6 +182,7 @@ fn already_normalized(text: &str, crlf: bool) -> bool {
     true
 }
 
+/// 把一个路径组装成界面用的 [`FsEntry`]：目录/链接/权限等平台标志一并带上。
 fn assemble(full: &Path, target: Option<fs::Metadata>, link_is_symlink: bool) -> FsEntry {
     let target = target.or_else(|| fs::metadata(full).ok());
     // 属性尽量从手上这份 `Metadata` 里读；读不到（改名竞态之类）才按路径再查一次。
@@ -233,6 +242,11 @@ pub(crate) fn is_default_excluded(name: &str, is_dir: bool) -> bool {
         )
 }
 
+/// 读取单个路径的条目元数据（类型、大小、链接目标等）。
+///
+/// # Errors
+///
+/// 路径不存在时返回 `PATH_GONE`；符号链接目标无法解析时按链接自身返回。
 pub(crate) fn entry_at(path: &Path) -> Result<FsEntry, String> {
     if !path.exists() {
         return Err(err("PATH_GONE", lossy(path)));
@@ -254,8 +268,8 @@ const CHAIN_MAX_DEPTH: usize = 24;
 
 /// 一次带回「从 path 往下的单子目录链」所有层：链合并（Compact Directories）的
 /// 树在恢复展开状态时只能拿到链首 key，逐层补加载会形成「渲染 → 缺一层 → 补请求 →
-/// 再渲染」的串行瀑布（每层一次 IPC + 一次 check-ignore 子进程）。对齐 IDEA
-/// 「数据先于 UI」的思路：请求粒度预取，一次往返把整条链交给树一次构建。
+/// 再渲染」的串行瀑布（每层一次 IPC + 一次 check-ignore 子进程）。按「数据先于
+/// UI」的思路：请求粒度预取，一次往返把整条链交给树一次构建。
 ///
 /// 延伸条件与前端 compact 判定同源（过滤 hidden 与 ignored 后恰好 1 个目录子项）；
 /// 前端开了 showHidden/showExcluded 时可见项只会更多、链更短，这里多拉的层只是
@@ -265,6 +279,11 @@ pub async fn list_directory_chain(path: String) -> Result<Vec<DirectoryListing>,
     block(move || list_directory_chain_impl(path)).await
 }
 
+/// [`list_directory_chain`] 的同步体：沿「唯一可见子目录」链逐层收集目录列表。
+///
+/// # Errors
+///
+/// 首层目录读取失败时返回错误；链中后续层失败则截断返回已收集部分。
 fn list_directory_chain_impl(path: String) -> Result<Vec<DirectoryListing>, String> {
     let mut chain = Vec::with_capacity(4);
     let mut current = path;
@@ -292,6 +311,11 @@ fn list_directory_chain_impl(path: String) -> Result<Vec<DirectoryListing>, Stri
     Ok(chain)
 }
 
+/// [`list_directory`] 的同步体：读目录、标注隐藏/忽略属性并组装 [`DirectoryListing`]。
+///
+/// # Errors
+///
+/// 目录不存在或读取失败时返回带路径的 IO 错误。
 fn list_directory_impl(path: String) -> Result<DirectoryListing, String> {
     let dir = PathBuf::from(&path);
     let read = fs::read_dir(&dir).map_err(|e| io_err(&path, e))?;
@@ -354,6 +378,11 @@ pub async fn read_file(path: String) -> Result<FileContent, String> {
     block(move || read_file_impl(path)).await
 }
 
+/// 读取文件内容供编辑器打开；目录与超限文件分别报 `IS_DIR`/`TOO_LARGE`。
+///
+/// # Errors
+///
+/// 元数据或内容读取失败时返回带路径的 IO 错误。
 pub(crate) fn read_file_impl(path: String) -> Result<FileContent, String> {
     let meta = fs::metadata(&path).map_err(|e| io_err(&path, e))?;
     if meta.is_dir() {
@@ -552,8 +581,13 @@ pub async fn create_folder(path: String) -> Result<FsEntry, String> {
     .await
 }
 
+/// [`create_folder`] 的同步体：查重后按嵌套口径建目录，返回新条目。
+///
+/// # Errors
+///
+/// 目标已存在（`TARGET_EXISTS`）或创建失败时返回错误。
 fn create_folder_impl(path: String) -> Result<FsEntry, String> {
-    // 对齐 IDEA ide-vfs：先查重报 TARGET_EXISTS（报裸 IO 错前端没法走「换名重试」），
+    // VFS 口径：先查重报 TARGET_EXISTS（报裸 IO 错前端没法走「换名重试」），
     // 再 create_dir_all——行内编辑允许输入 `a/b/c` 这类嵌套名，单层 create_dir 直接失败。
     let target = Path::new(&path);
     if target.exists() {
@@ -572,8 +606,13 @@ pub async fn create_file(path: String) -> Result<FsEntry, String> {
     .await
 }
 
+/// [`create_file`] 的同步体：查重后新建空文件，返回新条目。
+///
+/// # Errors
+///
+/// 目标已存在（`TARGET_EXISTS`）或创建失败时返回错误。
 fn create_file_impl(path: String) -> Result<FsEntry, String> {
-    // ensure_parent（对齐 IDEA ops.rs:29-36）：新建 `a/b/c.ts` 时父目录一并建出来，
+    // ensure_parent：新建 `a/b/c.ts` 时父目录一并建出来，
     // 不用让用户先手动建一层。
     if let Some(parent) = Path::new(&path).parent() {
         if !parent.as_os_str().is_empty() {
@@ -608,6 +647,11 @@ fn is_same_file(from: &Path, to: &Path) -> bool {
     }
 }
 
+/// [`rename_entry`] 的同步体：改名或移动条目，必要时处理跨盘与大小写重命名。
+///
+/// # Errors
+///
+/// 源不存在、目标已存在（`TARGET_EXISTS`）或系统调用失败时返回错误。
 fn rename_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     let from_path = Path::new(&from);
     let to_path = Path::new(&to);
@@ -678,11 +722,16 @@ pub async fn copy_entry(from: String, to: String) -> Result<FsEntry, String> {
     .await
 }
 
+/// [`copy_entry`] 的同步体：复制文件/链接/目录树到新路径。
+///
+/// # Errors
+///
+/// 目标已存在（`TARGET_EXISTS`）、复制进自身或系统调用失败时返回错误。
 fn copy_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     if Path::new(&to).exists() {
         return Err(err("TARGET_EXISTS", &to));
     }
-    // 「复制进自身」防护（对齐 IDEA ops.rs:133-147）：把目录粘到它自己的子目录里，
+    // 「复制进自身」防护：把目录粘到它自己的子目录里，
     // 递归复制会随层级加深无限循环，直到路径超长才炸——必须复制前拒绝。
     if let (Ok(src_canon), Ok(dst_canon)) = (Path::new(&from).canonicalize(), Path::new(&to).canonicalize()) {
         if dst_canon.starts_with(&src_canon) {
@@ -704,6 +753,13 @@ pub async fn move_entry(from: String, to: String) -> Result<FsEntry, String> {
     .await
 }
 
+/// [`move_entry`] 的同步体：优先原子 rename，跨盘退回复制后删源。
+///
+/// 复制成功但源删不掉时报 `MOVED_WITH_SOURCE`，目标内容已就位。
+///
+/// # Errors
+///
+/// 目标已存在（`TARGET_EXISTS`）、复制失败或源删除失败时返回错误。
 fn move_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     if Path::new(&to).exists() {
         return Err(err("TARGET_EXISTS", &to));
@@ -716,7 +772,7 @@ fn move_entry_impl(from: String, to: String) -> Result<FsEntry, String> {
     entry_at(Path::new(&to))
 }
 
-/// 删除进度事件载荷：对齐 IDEA `DeleteHandlerHelper.kt` + `LocalFileSystem.DELETE_CALLBACK`，
+/// 删除进度事件载荷（delete callback 契约）：
 /// 递归删除每删掉一个底层文件或目录就递增 `count`，按 50ms（20 FPS）节流推给前端模态进度框。
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -792,11 +848,16 @@ pub async fn delete_entry(app: tauri::AppHandle, path: String) -> Result<(), Str
     .await
 }
 
+/// [`delete_entry`] 的同步体，无进度回调。
+///
+/// # Errors
+///
+/// 目标删除失败时返回错误。
 fn delete_entry_impl(path: String) -> Result<(), String> {
     delete_entry_with_progress(&path, &mut |_| {})
 }
 
-/// 递归删除文件或目录，每删掉一个底层文件或子目录就回调 `on_deleted`（对应 IDEA `NioFiles.deleteRecursively`）。
+/// 递归删除文件或目录，每删掉一个底层文件或子目录就回调 `on_deleted`。
 fn delete_entry_with_progress(
     path: &str,
     on_deleted: &mut dyn FnMut(&Path),
@@ -840,6 +901,7 @@ fn remove_single_file_or_symlink(target: &Path) -> std::io::Result<()> {
     fs::remove_file(target)
 }
 
+/// [`remove_dir_recursive`] 的递归体：先删子项再删目录本身；目录软链/链接不深入。
 fn remove_dir_recursive(
     dir: &Path,
     on_deleted: &mut dyn FnMut(&Path),
@@ -865,6 +927,11 @@ pub async fn reveal_entry(path: String) -> Result<(), String> {
     block(move || reveal_entry_impl(path)).await
 }
 
+/// [`reveal_entry`] 的同步体：交给平台实现（资源管理器/Finder）。
+///
+/// # Errors
+///
+/// 平台打开失败时返回错误。
 fn reveal_entry_impl(path: String) -> Result<(), String> {
     platform::reveal(Path::new(&path))
 }
@@ -891,6 +958,7 @@ pub struct PathKind {
     pub kind: EntryKind,
 }
 
+/// 批量判定路径种类：不存在的路径不回，正好当「装没装」用。
 pub fn stat_entries_impl(paths: Vec<String>) -> Vec<PathKind> {
     let mut out = Vec::with_capacity(paths.len());
     for path in paths {
@@ -910,6 +978,11 @@ pub async fn stat_entries(paths: Vec<String>) -> Vec<PathKind> {
     block_value(move || stat_entries_impl(paths), Vec::new).await
 }
 
+/// [`file_stamp`] 的同步体：取文件的体积与修改时间指纹。
+///
+/// # Errors
+///
+/// 路径不存在或元数据读取失败、目标是目录（`IS_DIR`）时返回错误。
 fn file_stamp_impl(path: String) -> Result<FileStamp, String> {
     let meta = fs::metadata(&path).map_err(|e| io_err(&path, e))?;
     if meta.is_dir() {
@@ -930,6 +1003,11 @@ pub async fn fs_allow_asset(app: tauri::AppHandle, root: String) -> Result<(), S
     block(move || fs_allow_asset_impl(app, root)).await
 }
 
+/// [`fs_allow_asset`] 的同步体：把目录加进 Tauri asset 协议的白名单范围。
+///
+/// # Errors
+///
+/// 授权失败时返回错误。
 fn fs_allow_asset_impl(app: tauri::AppHandle, root: String) -> Result<(), String> {
     app.asset_protocol_scope()
         .allow_directory(Path::new(&root), true)
@@ -951,6 +1029,11 @@ pub async fn clipboard_files() -> Result<Vec<String>, String> {
     block(platform::clipboard_files).await
 }
 
+/// [`open_external`] 的同步体：先过 [`external_allowed`] 安全检查再交给平台打开。
+///
+/// # Errors
+///
+/// 链接不在允许范围或平台打开失败时返回错误。
 fn open_external_impl(url: String) -> Result<(), String> {
     external_allowed(&url)?;
     platform::open_external(&url)

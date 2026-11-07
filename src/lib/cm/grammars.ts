@@ -20,7 +20,7 @@ import { extraGrammar } from "./extraGrammars";
 /** 显式声明"这就是纯文本"的围栏标记：不去猜语法，也别浪费一次加载。 */
 
 /**
- * 注释符补全（对齐 IDEA 的后端 commentTokens 注入）：官方 lang-* 包多数自带
+ * 注释符补全（后端 commentTokens 注入）：官方 lang-* 包多数自带
  * commentTokens，但 language-data 里那批 legacy 模式（shell/lua/perl/erlang…）
  * 和 extraGrammars 的 simpleMode 全都没有——缺了它们 Ctrl+/ 就是死键。
  * 表只列「确认官方没带」的；官方已带的（js/ts/css/html/python/rust/java/c…）不要重复注入。
@@ -51,17 +51,18 @@ const COMMENT_TOKENS: Record<string, { line?: string; block?: [string, string] }
 };
 
 /**
- * 语法配色补丁（1:1 抄 IDEA cm/languages.ts EXTRA_TAGS/patchSupport）：
- * Java 注解、CSS/SCSS/Sass 的 tag↔attribute 互换、YAML 键染关键字——官方语法包的
- * 缺口，IntelliJ 里这些是别的颜色。键是 LanguageDescription.name，走 LRLanguage.configure。
+ * 语法配色补丁（EXTRA_TAGS/patchSupport）：Java 注解、CSS/SCSS/Sass 的 tag↔attribute 互换、
+ * YAML 键染关键字——官方语法包的缺口。键是 LanguageDescription.name，走 LRLanguage.configure。
  */
 import { styleTags, tags as t } from "@lezer/highlight";
 import { LRLanguage } from "@codemirror/language";
+/** CSS/SCSS/Sass 的 tag↔attribute 配色互换。 */
 const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "FeatureName PropertyName": t.attributeName,
   "ValueName FontName Unit": t.attributeValue,
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
+/** 各语言的配色补丁（键是 LanguageDescription.name）。 */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   Java: { "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation },
   CSS: CSS_TAGS,
@@ -81,13 +82,14 @@ function withCommentTokens(support: LanguageSupport, lang: string): LanguageSupp
   ]);
 }
 
-/** 配色补丁：只对 LR 语法生效（对齐 IDEA patchSupport）。键用 LanguageDescription.name。 */
+/** 配色补丁：只对 LR 语法生效。键用 LanguageDescription.name。 */
 function patchSyntaxTags(support: LanguageSupport, name: string): LanguageSupport {
   const extra = EXTRA_TAGS[name];
   if (!extra || !(support.language instanceof LRLanguage)) return support;
   return new LanguageSupport(support.language.configure({ props: [styleTags(extra)] }), support.support);
 }
 
+/** 这些 id 一律当素文本处理（不猜语言）。 */
 const PLAIN = new Set(["", "text", "txt", "plaintext", "plain", "none", "log", "output", "console"]);
 
 /**
@@ -101,10 +103,10 @@ const WRONG = new Set<string>();
 const SPELLINGS: Record<string, string> = {
   proto: "protobuf",
   gradle: "groovy",
-  // 语言目录把 JSX 算成独立语言（对标 IDE 的 id），语法上它们就是 TSX/JSX 两套。
+  // 语言目录把 JSX 算成独立语言，语法上它们就是 TSX/JSX 两套。
   typescriptreact: "TSX",
   javascriptreact: "JSX",
-  // 语言目录改用对标 IDE 的 id 后，这几门在 CM 里叫别的名字（或走最近的亲戚染色）。
+  // 语言目录改用各自的 id 后，这几门在 CM 里叫别的名字（或走最近的亲戚染色）。
   shellscript: "shell",
   "ocaml-interface": "ocaml",
   "objective-cpp": "objective-c",
@@ -176,6 +178,7 @@ const SPELLINGS: Record<string, string> = {
  */
 const BY_EXTENSION: Record<string, string> = { tsx: "TSX", jsx: "JSX" };
 
+/** 语言名 → 语法描述的解析缓存（null 也缓存，拼错的名字不反复查表）。 */
 const descriptions = new Map<string, LanguageDescription | null>();
 
 /** 路径最后一段的后缀（不含点）；`Makefile`、`.gitignore` 这类给出空串。 */
@@ -209,7 +212,9 @@ export function describeGrammar(lang: string, fileExt = ""): LanguageDescription
   return found ?? null;
 }
 
+/** 已装载语法的缓存（null 表示装载失败）。 */
 const loaded = new Map<string, LanguageSupport | null>();
+/** 装载中的语法（同一语言并发请求合并）。 */
 const inFlight = new Map<string, Promise<LanguageSupport | null>>();
 
 /**
@@ -279,6 +284,7 @@ export function fenceLanguages(source: string): string[] {
   return out;
 }
 
+/** HTML 转义五个保留字符（& < > " '）。 */
 export function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")

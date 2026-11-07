@@ -33,6 +33,7 @@ import type { TerminalSettings } from "../lib/settings";
 import { DEFAULT_SETTINGS, TERMINAL_FONT_SIZE_RANGE } from "../lib/settings";
 import { useSettings } from "../hooks/useSettings";
 
+/** {@link RunPane} 的入参。 */
 interface RunPaneProps {
   /** 会话状态在 App 上，这里只画输出。 */
   run: RunController;
@@ -47,10 +48,12 @@ function fileSafe(name: string): string {
   return name.replace(/[\\/:*?"<>|\s]+/gu, "_").replace(/^_+|_+$/gu, "") || "run";
 }
 
+/** 运行窗口的字体栈（与终端同口径，见 {@link monoFont}）。 */
 function fontFamilyOf(options: TerminalSettings): string {
   return options.fontFamily ? `${options.fontFamily}, ${monoFont()}` : monoFont();
 }
 
+/** 运行窗口主体：xterm 画输出、字体缩放、查找与导出。 */
 export default function RunPane({ run, dark, onOpenFile }: RunPaneProps) {
   const { settings, patch } = useSettings();
   const { t } = useI18n();
@@ -383,7 +386,7 @@ export default function RunPane({ run, dark, onOpenFile }: RunPaneProps) {
     setMenu({
       x: event.clientX,
       y: event.clientY,
-      // 分组顺序照 IDEA 的 ConsoleView.PopupMenu：编辑动作（复制/全选）在前，
+      // 分组顺序：编辑动作（复制/全选）在前，
       // 分隔线之后是清空与会话动作。
       items: [
         ...(selectedUrl
@@ -401,7 +404,7 @@ export default function RunPane({ run, dark, onOpenFile }: RunPaneProps) {
           : []),
         {
           label: t("run.copyOutput"),
-          // IDEA 空选中时复制光标所在整行；这里没有行光标，退一步复制全部输出。
+          // 没有行光标时退一步复制全部输出。
           disabled: !hasOutput,
           onSelect: () => {
             if (rawSelection.length > 0) {

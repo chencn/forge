@@ -1,9 +1,11 @@
 /** 标题里混进半截控制序列时的样子：转义被切断，只剩下 `[?25h` 或 `]0;` 这样的尾巴。 */
 const LEAKED_CSI = /\[(?:\?[0-9;]*|[0-9;]*)[JKhlm]/u;
+/** 半截的 OSC 标题序列（`]0;` 这类），也是不可用的标题。 */
 const LEAKED_OSC = /\](?:0|1|2);/u;
 /** ConPTY 把控制台标题报成可执行文件的全路径，cmd 跑命令时还会在后面接「 - 命令」。 */
 const LEADING_EXE = /^(?:[A-Za-z]:)?[\\/](?:[^\\/]+[\\/])*([^\\/]+?)\.exe\b/iu;
 
+/** 含 C0/C1 控制字符的标题一律不可用。 */
 function hasControlCharacter(value: string): boolean {
   for (const character of value) {
     const code = character.charCodeAt(0);
@@ -31,6 +33,7 @@ export function normalizeTermTitle(raw: string): string | null {
   return title.replace(LEADING_EXE, "$1");
 }
 
+/** 页签标题的长度上限，超长退回 shell 名。 */
 const TAB_TITLE_LIMIT = 32;
 
 /**

@@ -5,6 +5,7 @@ import { tooltipAttrs } from "../ui/Tooltip";
 import { useI18n } from "../i18n";
 import SymbolIcon from "./SymbolIcon";
 
+/** 当前文档的符号链面包屑数据：大纲快照加当前位置所在的符号链。 */
 export function useCodeOutline(path: string) {
   const subscribe = useCallback((notify: () => void) => subscribeOutline(path, notify), [path]);
   const snapshot = useCallback(() => outlineSnapshot(path), [path]);

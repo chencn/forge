@@ -64,6 +64,7 @@ export function sameAiWorkspace(a: string, b: string): boolean {
  */
 const NATIVE_PURGE_KEY = "forge:ai-native-purge:v1";
 
+/** 读取「同时删除 CLI 原生记录」的记住值；没存过或解析失败时按默认不勾。 */
 export function loadNativePurgeDefault(provider: AiProvider): boolean {
   try {
     const raw = localStorage.getItem(NATIVE_PURGE_KEY);
@@ -74,6 +75,7 @@ export function loadNativePurgeDefault(provider: AiProvider): boolean {
   }
 }
 
+/** 记住「同时删除 CLI 原生记录」的选择，按 CLI 分开存；写失败不拦截删除本身。 */
 export function saveNativePurgeDefault(provider: AiProvider, value: boolean): void {
   try {
     const current = JSON.parse(localStorage.getItem(NATIVE_PURGE_KEY) ?? "{}") as Partial<Record<AiProvider, boolean>>;
@@ -173,6 +175,7 @@ export function subagentOrdinal(
   return (at >= 0 ? at : siblings.length) + 1;
 }
 
+/** 某会话及其全部子孙的 id 集合（广度优先收集），供删除会话时一并清理。 */
 export function sessionSubtree(sessions: AiSession[], id: string): string[] {
   const ids = [id];
   for (let cursor = 0; cursor < ids.length; cursor++) {

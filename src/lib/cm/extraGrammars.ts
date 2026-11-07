@@ -10,7 +10,7 @@
  */
 import { LanguageSupport, StreamLanguage, type StreamParser } from "@codemirror/language";
 import { simpleMode } from "@codemirror/legacy-modes/mode/simple-mode";
-// 官方 legacy 模式里现成的几门：直接包一层补齐 IDEA 有而 language-data 没有的语言。
+// 官方 legacy 模式里现成的几门：直接包一层复用，language-data 没有的语言就补齐了。
 import { diff } from "@codemirror/legacy-modes/mode/diff";
 import { erlang } from "@codemirror/legacy-modes/mode/erlang";
 import { haskell } from "@codemirror/legacy-modes/mode/haskell";
@@ -18,6 +18,7 @@ import { oCaml } from "@codemirror/legacy-modes/mode/mllike";
 import { sass } from "@codemirror/legacy-modes/mode/sass";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 
+/** {@link simpleMode} 状态表入参的简写。 */
 type States = Parameters<typeof simpleMode>[0];
 
 /** C 系注释：`//` 与跨行的 `/* *\/`。几门语言共用。 */
@@ -28,10 +29,12 @@ const cComments = {
   ],
 };
 
+/** 把 simpleMode 状态表包成 CodeMirror 的 {@link LanguageSupport}，本文件各语言共用。 */
 function stream(states: States): LanguageSupport {
   return new LanguageSupport(StreamLanguage.define(simpleMode(states)));
 }
 
+/** Windows 批处理（.bat/.cmd）。 */
 const BATCH = stream({
   start: [
     { regex: /\bREM\b.*|::.*/i, token: "comment" },
@@ -46,6 +49,7 @@ const BATCH = stream({
   ],
 });
 
+/** Go module（go.mod/go.work）。 */
 const GOMOD = stream({
   start: [
     { regex: /\/\/.*/, token: "comment" },
@@ -58,6 +62,7 @@ const GOMOD = stream({
   ],
 });
 
+/** pip requirements（requirements.txt）。 */
 const PIP_REQUIREMENTS = stream({
   start: [
     { regex: /#.*/, token: "comment" },
@@ -70,6 +75,7 @@ const PIP_REQUIREMENTS = stream({
   ],
 });
 
+/** Makefile。 */
 const MAKEFILE = stream({
   start: [
     { regex: /#.*/, token: "comment" },
@@ -87,6 +93,7 @@ const MAKEFILE = stream({
   ],
 });
 
+/** HCL（Terraform 等配置语言）。 */
 const HCL = stream({
   start: [
     { regex: /#.*|\/\/.*/, token: "comment" },
@@ -110,6 +117,7 @@ const HCL = stream({
   ],
 });
 
+/** Bicep（Azure 基础设施即代码）。 */
 const BICEP = stream({
   start: [
     { regex: /\/\/.*/, token: "comment" },
@@ -125,6 +133,7 @@ const BICEP = stream({
   ],
 });
 
+/** GraphQL（SDL 与操作文档）。 */
 const GRAPHQL = stream({
   start: [
     { regex: /#[^\n]*/, token: "comment" },
@@ -145,6 +154,7 @@ const GRAPHQL = stream({
   ],
 });
 
+/** Elixir。 */
 const ELIXIR = stream({
   start: [
     { regex: /#[^\n]*/, token: "comment" },
@@ -167,6 +177,7 @@ const ELIXIR = stream({
   ],
 });
 
+/** IEC 61131-3 结构化文本（PLC）。 */
 const STRUCTURED_TEXT = stream({
   start: [
     { regex: /\(\*/, token: "comment", push: "blockComment" },
@@ -189,6 +200,7 @@ const STRUCTURED_TEXT = stream({
   ],
 });
 
+/** DAX（Power BI/SSAS 度量值语言）。 */
 const MSDAX = stream({
   start: [
     { regex: /\/\/.*|--.*/, token: "comment" },
@@ -206,6 +218,7 @@ const MSDAX = stream({
   blockComment: cComments.block,
 });
 
+/** Power Query M 公式语言。 */
 const POWERQUERY = stream({
   start: [
     { regex: /\/\/.*/, token: "comment" },
@@ -223,6 +236,7 @@ const POWERQUERY = stream({
   blockComment: cComments.block,
 });
 
+/** Solidity（以太坊智能合约）。 */
 const SOLIDITY = stream({
   start: [
     { regex: /\/\/.*/, token: "comment" },
@@ -239,6 +253,7 @@ const SOLIDITY = stream({
   blockComment: cComments.block,
 });
 
+/** WGSL（WebGPU 着色器语言）。 */
 const WGSL = stream({
   start: [
     { regex: /\/\/.*/, token: "comment" },
@@ -259,6 +274,7 @@ const WGSL = stream({
   blockComment: cComments.block,
 });
 
+/** TypeSpec（API 描述语言）。 */
 const TYPESPEC = stream({
   start: [
     { regex: /\/\/.*/, token: "comment" },
@@ -294,8 +310,10 @@ interface HttpState {
   part: "start" | "url" | "headerValue" | "rest";
 }
 
+/** 请求行里认的方法名，用于关键字着色。 */
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
 
+/** 消费一个 `{{变量}}`；不是变量时返回 null 让主循环继续。 */
 function httpVariable(stream: Parameters<StreamParser<HttpState>["token"]>[0]): string | null {
   if (stream.match("{{")) {
     stream.match(/^[^}]*/);
@@ -305,6 +323,7 @@ function httpVariable(stream: Parameters<StreamParser<HttpState>["token"]>[0]): 
   return null;
 }
 
+/** `.http` 语言的 StreamParser 实例（跨行状态机，见 {@link HttpState}）。 */
 const httpParser: StreamParser<HttpState> = {
   name: "http",
   startState: () => ({ phase: "preamble", handler: false, part: "start" }),
@@ -423,6 +442,7 @@ const httpParser: StreamParser<HttpState> = {
   languageData: { commentTokens: { line: "#" } },
 };
 
+/** `.http` 的 LanguageSupport 单例。 */
 const HTTP = new LanguageSupport(StreamLanguage.define(httpParser));
 
 /**
@@ -432,6 +452,7 @@ const HTTP = new LanguageSupport(StreamLanguage.define(httpParser));
 const legacy = (mode: Parameters<typeof StreamLanguage.define>[0]) =>
   new LanguageSupport(StreamLanguage.define(mode));
 
+/** 自制/自制包装语法的注册表：键为 {@link extraGrammar} 的入参名。 */
 const EXTRA: Record<string, () => LanguageSupport> = {
   http: () => HTTP,
   batch: () => BATCH,

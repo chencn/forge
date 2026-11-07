@@ -3,6 +3,7 @@
  * 纯前端函数，从 parents 客户端算出，分页可延续——state 传出下一页接着用。
  */
 
+/** 一段连线：起点/终点 lane、颜色、虚线折叠与箭头标记。 */
 export interface GraphSegment {
   /** 段起点 lane（up 是顶边，down 是节点高度）。 */
   from: number;
@@ -15,6 +16,7 @@ export interface GraphSegment {
   arrow?: "up" | "down";
 }
 
+/** 图的一行：节点 lane、上下连线段与总宽度。 */
 export interface GraphRow {
   /** 提交节点所在的 lane。 */
   lane: number;
@@ -27,17 +29,20 @@ export interface GraphRow {
   width: number;
 }
 
+/** 一条存活中的 lane：它的提交 id 与颜色。 */
 interface Lane {
   id: string;
   color: number;
   dashed?: true;
 }
 
+/** 状态机的跨页状态：存活 lane 表与下一个颜色序号。 */
 export interface GraphState {
   lanes: Array<Lane | null>;
   nextColor: number;
 }
 
+/** 状态机处理的提交：id、父提交与折叠虚线标记。 */
 export interface GraphCommit {
   id: string;
   parents: readonly string[];
@@ -45,16 +50,20 @@ export interface GraphCommit {
   dashed?: readonly boolean[];
 }
 
+/** 状态机初始状态。 */
 export const emptyGraphState = (): GraphState => ({ lanes: [], nextColor: 0 });
 
+/** 第一个空 lane 槽位（没有就追加到末尾）。 */
 const firstFree = (lanes: Array<Lane | null>) => {
   const i = lanes.indexOf(null);
   return i < 0 ? lanes.length : i;
 };
 
+/** 造一条连线段（虚线折叠标记可选）。 */
 const seg = (from: number, to: number, color: number, dashed?: boolean): GraphSegment =>
   dashed ? { from, to, color, dashed: true } : { from, to, color };
 
+/** 造一条存活 lane（虚线折叠标记可选）。 */
 const laneOf = (id: string, color: number, dashed: boolean): Lane =>
   dashed ? { id, color, dashed: true } : { id, color };
 
@@ -183,11 +192,13 @@ export function reachableFrom(
 
 /** 一条边笔直穿过这么多行以上就是「长边」。 */
 export const LONG_EDGE = 30;
-/** 藏掉的长边仍紧贴两端各画几行，末端带箭头（IDEA 的 long-edge arrows）。 */
+/** 藏掉的长边仍紧贴两端各画几行，末端带箭头（long-edge arrows）。 */
 const LONG_EDGE_STUB = 2;
 
+/** 段是否是 lane i 上的一条竖直线（from == to == i）。 */
 const onLane = (i: number) => (s: GraphSegment) => s.from === i && s.to === i;
 
+/** 一行里 lane i 是否被笔直穿过（节点不在 i 上，上下都有竖线）。 */
 const passes = (row: GraphRow, i: number) =>
   row.lane !== i && row.up.some(onLane(i)) && row.down.some(onLane(i));
 
@@ -243,4 +254,5 @@ export const LANE_COLORS = [
   "var(--danger)",
 ];
 
+/** 取第 i 档 lane 颜色（超出循环）。 */
 export const laneColor = (i: number) => LANE_COLORS[i % LANE_COLORS.length]!;

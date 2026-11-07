@@ -2,6 +2,7 @@ import { shortcutHints } from "../lib/keymapHints";
 import type { KeymapScheme } from "../lib/settings";
 import { useI18n } from "../i18n";
 
+/** 欢迎页/告示页的入参。 */
 interface WelcomeScreenProps {
   /** 告示页只宣传当前方案里真绑着的键位。 */
   keymap: KeymapScheme;

@@ -2,8 +2,10 @@ import type { TermSessionId } from "./term";
 
 /** 面板插槽。终端实例不跟着面板拆，只把画面节点挪进挪出。 */
 const slots = new Map<TermSessionId, HTMLElement>();
+/** 插槽变化订阅者（面板挂载/卸载时触发重渲染）。 */
 const slotWatchers = new Set<() => void>();
 
+/** 通知所有插槽订阅者。 */
 function notifySlots() {
   for (const watch of slotWatchers) watch();
 }
@@ -19,10 +21,12 @@ export function registerTermSlot(id: TermSessionId, element: HTMLElement): () =>
   };
 }
 
+/** 取会话当前所在的面板插槽；不在任何面板返回 null。 */
 export function termSlot(id: TermSessionId): HTMLElement | null {
   return slots.get(id) ?? null;
 }
 
+/** 订阅插槽变化；返回退订函数。 */
 export function watchTermSlots(watch: () => void): () => void {
   slotWatchers.add(watch);
   return () => {
@@ -42,6 +46,7 @@ export function termPark(): HTMLElement {
   return park;
 }
 
+/** 终端查找的匹配选项。 */
 export interface TermFindOptions {
   caseSensitive: boolean;
   wholeWord: boolean;
@@ -72,8 +77,10 @@ export interface TermControl {
   text: () => string;
 }
 
+/** 各会话已注册的控制句柄（会话销毁时注销）。 */
 const controls = new Map<TermSessionId, TermControl>();
 
+/** 注册会话的控制句柄；返回注销函数。 */
 export function registerTermControl(id: TermSessionId, control: TermControl): () => void {
   controls.set(id, control);
   return () => {
@@ -81,6 +88,7 @@ export function registerTermControl(id: TermSessionId, control: TermControl): ()
   };
 }
 
+/** 取会话的控制句柄；未注册返回 null。 */
 export function termControl(id: TermSessionId): TermControl | null {
   return controls.get(id) ?? null;
 }
@@ -88,10 +96,12 @@ export function termControl(id: TermSessionId): TermControl | null {
 /** 页签栏上的放大镜和面板里的 Ctrl+F 是两个组件，靠这个通知面板打开查找框。 */
 const findRequests = new Set<() => void>();
 
+/** 广播「打开终端查找框」的请求。 */
 export function requestTermFind(): void {
   for (const open of findRequests) open();
 }
 
+/** 订阅查找框打开请求；返回退订函数。 */
 export function watchTermFindRequests(open: () => void): () => void {
   findRequests.add(open);
   return () => {

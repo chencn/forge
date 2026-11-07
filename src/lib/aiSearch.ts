@@ -47,6 +47,7 @@ export interface AiSearchResult {
   truncated: boolean;
 }
 
+/** 空结果单例（查询词为空或没有后端时直接回）。 */
 const EMPTY_RESULT: AiSearchResult = { hits: [], scanned: 0, skipped: 0, bytes: 0, truncated: false };
 
 /** 查询词只做首尾清理：后端按子串匹配，中间的空格是用户要打的内容的一部分。 */
@@ -59,6 +60,7 @@ export function isSearchQueryActive(query: string) {
   return normalizeSearchQuery(query).length >= AI_SEARCH_MIN_QUERY;
 }
 
+/** 收敛成非负整数；不是返回 0。 */
 function count(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
@@ -91,6 +93,7 @@ function toSearchHit(value: unknown): AiSearchHit | null {
   };
 }
 
+/** 把后端原始 JSON 收敛成 {@link AiSearchResult}（按不可信输入处理）。 */
 export function parseSearchResult(raw: unknown): AiSearchResult {
   const data = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const items = Array.isArray(data.hits) ? data.hits : [];
@@ -117,6 +120,7 @@ export interface AiSearchSnippet {
   trailing: boolean;
 }
 
+/** 把一条命中拆成 before/match/after 三段（match 是要高亮的部分）。 */
 export function splitAiSearchSnippet(hit: AiSearchHit): AiSearchSnippet {
   const start = Math.min(hit.start, hit.text.length);
   const end = Math.min(start + hit.length, hit.text.length);
@@ -138,6 +142,7 @@ export interface AiSearchGroup {
   hits: AiSearchHit[];
 }
 
+/** 按会话把命中分组（保持后端的时间倒序，不重排）。 */
 export function groupAiSearchHits(hits: AiSearchHit[]): AiSearchGroup[] {
   const groups: AiSearchGroup[] = [];
   const index = new Map<string, AiSearchGroup>();
@@ -177,6 +182,7 @@ export interface AiSearchTracker {
   pending(): string | null;
 }
 
+/** 造一个令牌守门器（每次搜索开始时建，整轮共用）。 */
 export function createAiSearchTracker(): AiSearchTracker {
   let seq = 0;
   let latest = 0;

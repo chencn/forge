@@ -1,6 +1,7 @@
-/** 复用实际编辑行为，键位由方案表提供。 */
 /**
- * IDEA editing commands on top of @codemirror/commands.
+ * 编辑器的实际编辑行为（复用 @codemirror/commands 的命令原语），键位由方案表提供。
+ *
+ * @remarks 命令不含键位绑定——绑定走方案表
  */
 import {
   EditorSelection,
@@ -31,13 +32,13 @@ import {
 } from "@codemirror/commands";
 import { SearchCursor } from "@codemirror/search";
 
+/** 语法树节点类型（SyntaxNode）的简写。 */
 type Node = ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]>;
 
-// --- lines / selections -------------------------------------------------------
+// --- 行 / 选区 ---------------------------------------------------------------
 
 /**
- * The whole lines `[from, to]` touches, grown to the visual lines they are
- * part of: a folded region's lines go together with the line it is shown on.
+ * `[from, to]` 触及的整行，扩到它们所在的可见行：折叠区里的行连同展示它的那一行一起算。
  */
 export function visualLineSpan(state: EditorState, from: number, to: number): { from: number; to: number } {
   let a = state.doc.lineAt(from).from;
@@ -58,7 +59,7 @@ export function visualLineSpan(state: EditorState, from: number, to: number): { 
   return { from: a, to: b };
 }
 
-/** Visual line spans of the selection ranges, merged; `null` when no fold is involved. */
+/** 选区各范围的可见行跨度，合并相邻；不涉及折叠时返回 `null`（调用方直接走库命令）。 */
 function foldedLineSpans(state: EditorState): Array<{ from: number; to: number }> | null {
   const spans: Array<{ from: number; to: number }> = [];
   let folds = false;
@@ -73,14 +74,14 @@ function foldedLineSpans(state: EditorState): Array<{ from: number; to: number }
   return folds ? spans : null;
 }
 
-/** ⌘D: duplicate the line (caret moves to the copy) or the selection (copy selected). */
+/** ⌘D：复制行（光标落到副本上）或复制选区（副本贴在选中内容后）。 */
 export const duplicateLineOrSelection: Command = (view) => {
   const { state } = view;
   if (state.readOnly) return false;
   if (state.selection.ranges.every((r) => r.empty)) {
     const spans = foldedLineSpans(state);
     if (!spans) return copyLineDown(view);
-    // On a folded region's line the whole folded block is duplicated.
+    // 折叠区所在行被复制时，整个折叠块一起复制。
     const changes = state.changes(
       spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
     );
@@ -114,7 +115,7 @@ export const duplicateLineOrSelection: Command = (view) => {
   return true;
 };
 
-/** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
+/** ⌘⌫：删除行——折叠区所在行被删时，折叠块里每一行都删。 */
 export const deleteLine: Command = (view) => {
   const { state } = view;
   if (state.readOnly) return false;
@@ -139,18 +140,19 @@ export const deleteLine: Command = (view) => {
   return true;
 };
 
-// --- occurrences --------------------------------------------------------------
+// --- 出现处 -------------------------------------------------------------------
 
 interface OccurrenceSearch {
-  /** The sequence started from a bare caret: occurrences match whole words only. */
+  /** 这轮从空光标起步：出现处只按整词匹配。 */
   wholeWords: boolean;
-  /** The last search found nothing: the next one starts from the top. */
+  /** 上一次没找到：下一次从头开始找。 */
   notFound: boolean;
 }
 
+/** 设置出现处连选轮次的事务效果。 */
 const setOccurrenceSearch = StateEffect.define<OccurrenceSearch>();
 
-/** State of a run of Add Selection for Next Occurrence; any other selection change or edit ends it. */
+/** 「添加下一处出现」连选的状态；任何其他选区变化或编辑都会终止这一轮。 */
 export const occurrenceSearch = StateField.define<OccurrenceSearch | null>({
   create: () => null,
   update(value, tr) {
@@ -159,11 +161,13 @@ export const occurrenceSearch = StateField.define<OccurrenceSearch | null>({
   },
 });
 
+/** 标识符字符类（字母/数字/下划线/美元）。 */
 const IDENT = /[\p{L}\p{N}_$]/u;
+/** `pos` 处是否为标识符字符（越界为 false）。 */
 const identAt = (state: EditorState, pos: number) =>
   pos >= 0 && pos < state.doc.length && IDENT.test(state.sliceDoc(pos, pos + 1));
 
-/** The identifier at or right before `pos`. */
+/** `pos` 处或紧邻其前的标识符；不在标识符上返回 `null`。 */
 export function identifierAt(state: EditorState, pos: number): { from: number; to: number } | null {
   let from = pos;
   let to = pos;
@@ -172,12 +176,13 @@ export function identifierAt(state: EditorState, pos: number): { from: number; t
   return from < to ? { from, to } : null;
 }
 
+/** `[from, to)` 是否落在整词边界内（两侧都不紧贴标识符字符）。 */
 function isWholeWord(state: EditorState, from: number, to: number): boolean {
   if (identAt(state, from - 1) && identAt(state, from)) return false;
   return !(identAt(state, to) && identAt(state, to - 1));
 }
 
-/** Case-sensitive matches of `text` from `from` on (whole words only when asked). */
+/** 从 `from` 起按原文大小写找 `text` 的匹配（按需只认整词）。 */
 function* matches(state: EditorState, text: string, from: number, wholeWords: boolean) {
   const cursor = new SearchCursor(state.doc, text, from);
   for (cursor.next(); !cursor.done; cursor.next()) {
@@ -186,17 +191,16 @@ function* matches(state: EditorState, text: string, from: number, wholeWords: bo
   }
 }
 
-/** A selection of `m` with the head on the same side as in `like`. */
+/** 照 `like` 的头在哪一侧生成 `m` 的选区（反向选区的方向保持）。 */
 const rangeLike = (like: SelectionRange, m: { from: number; to: number }) =>
   like.head === like.from && like.from !== like.to
     ? EditorSelection.range(m.to, m.from)
     : EditorSelection.range(m.from, m.to);
 
 /**
- * ⌃G: Add Selection for Next Occurrence. From a bare caret it selects the
- * word (and the run then matches whole words); with a selection it adds the
- * next match after the last added one. Nothing found reports `notFound` (the
- * caller hints); the next invocation then searches from the top.
+ * ⌃G：添加下一处出现的选区。空光标时先选中所在词（这轮随之为整词匹配）；
+ * 已有选区时在上一个添加处之后追加下一个匹配。找不到回报 `notFound`
+ * （由调用方提示），下一次调用改从头找。
  */
 export function nextOccurrence(view: EditorView): "selected" | "added" | "notFound" | "none" {
   const { state } = view;
@@ -232,9 +236,10 @@ export function nextOccurrence(view: EditorView): "selected" | "added" | "notFou
   return "added";
 }
 
+/** ⌃D：添加下一处出现；找不到返回 false 不吃按键。 */
 export const addCaretNextOccurrence: Command = (view) => nextOccurrence(view) !== "none";
 
-/** ⌃⌘G: select every occurrence of the selection, or of the word at the caret (whole words). */
+/** ⌃⌘G：选中选区（或光标所在整词）的全部出现处。 */
 export const selectAllOccurrences: Command = (view) => {
   const { state } = view;
   let main = state.selection.main;
@@ -258,30 +263,34 @@ export const selectAllOccurrences: Command = (view) => {
   return true;
 };
 
-// --- move statement -----------------------------------------------------------
+// --- 语句移动 -------------------------------------------------------------------
 
 interface LineSpan {
-  from: number; // line start
-  to: number; // line end (excl. break)
+  from: number; // 行首
+  to: number; // 行尾（不含换行）
 }
 
-/** Nodes whose children are statements / members (plus the top node). */
+/** 子节点是语句 / 成员的节点（外加顶层节点）。 */
 const CONTAINER =
   /^(Program|Script|Module|SourceFile|Chunk|Document|StyleSheet|JsonText|Object|Array|BlockMapping|BlockSequence|Suite|CompoundStatement|DeclarationList|FieldDeclarationList|StatementList)$|Block$|Body$/;
-/** Function / class-like nodes: Move Statement never carries code into or out of them. */
+/** 函数 / 类族节点：语句移动绝不把代码带进或带出它们。 */
 const GUARD = /Function|Method|Class|Interface|Constructor|Enum|Struct|Trait|Impl|Lambda|Arrow|Closure|Func/;
+/** 函数/类族节点名里放行的普通词（排除 GUARD 误伤 Block/Body 之类）。 */
 const NOT_GUARD = /Body|Block|Call|Name|Type|Keyword|Modifier|List|Param|Signature|Invocation|Reference|Access/;
 
+/** 是可容纳语句的节点（顶层或语句列表类节点）。 */
 const isContainer = (n: Node | null) => !n || !n.parent || CONTAINER.test(n.type.name);
+/** 是函数/类族节点（语句移动的硬边界）。 */
 const isGuard = (n: Node) => GUARD.test(n.type.name) && !NOT_GUARD.test(n.type.name);
 
+/** 某行第一个非空白字符的位置；整行空白返回 null。 */
 function firstToken(state: EditorState, lineNo: number): number | null {
   const line = state.doc.line(lineNo);
   const indent = /^\s*/.exec(line.text)![0].length;
   return indent === line.length ? null : line.from + indent;
 }
 
-/** The statement (or member, comment, block-closing brace) that starts at the first token of a line. */
+/** 以某行第一个 token 起头的语句（或成员、注释、块的收括号）。 */
 function statementStartingAt(state: EditorState, lineNo: number): Node | null {
   const pos = firstToken(state, lineNo);
   if (pos === null) return null;
@@ -292,11 +301,11 @@ function statementStartingAt(state: EditorState, lineNo: number): Node | null {
   return null;
 }
 
-/** Lines a moved statement stops at: blank lines, statement starts and closing braces of blocks. */
+/** 移动的语句停下的行：空行、语句起点、块的收括号。 */
 const isStopLine = (state: EditorState, lineNo: number) =>
   firstToken(state, lineNo) === null || !!statementStartingAt(state, lineNo);
 
-/** The statement containing the first token of the caret line. */
+/** 包住光标行第一个 token 的语句。 */
 function statementAround(state: EditorState, pos: number): Node | null {
   const start = firstToken(state, state.doc.lineAt(pos).number);
   if (start === null) return null;
@@ -305,7 +314,7 @@ function statementAround(state: EditorState, pos: number): Node | null {
   return null;
 }
 
-/** The statement ending on a line (at its last token). */
+/** 以某行收尾（在它最后一个 token 上）的语句。 */
 function statementEndingOn(state: EditorState, lineNo: number): Node | null {
   const line = state.doc.line(lineNo);
   const end = line.from + line.text.trimEnd().length;
@@ -316,14 +325,14 @@ function statementEndingOn(state: EditorState, lineNo: number): Node | null {
   return null;
 }
 
-/** A function / class (or a statement holding one, e.g. a call with a callback) moves as one unit. */
+/** 函数 / 类（或持有其一的语句，如带回调的调用）作为一个整体移动。 */
 function holdsGuard(n: Node): boolean {
   if (isGuard(n)) return true;
   for (let c = n.firstChild; c; c = c.nextSibling) if (!CONTAINER.test(c.type.name) && holdsGuard(c)) return true;
   return false;
 }
 
-/** Moving `cur` across lines `[s, e]` would carry it into or out of a function / class. */
+/** 把 `cur` 挪过行 `[s, e]` 会把它带进或带出某个函数 / 类。 */
 function crossesGuard(state: EditorState, cur: Node, s: number, e: number): boolean {
   const from = state.doc.line(s).from;
   const to = state.doc.line(e).to;
@@ -344,7 +353,7 @@ function crossesGuard(state: EditorState, cur: Node, s: number, e: number): bool
   return crosses;
 }
 
-/** Comment lines directly above line `a` (a declaration's doc comment moves with it). */
+/** 行 `a` 上面紧贴的注释行（声明的文档注释跟着声明走）。 */
 function leadingCommentStart(state: EditorState, a: number): number {
   while (a > 1) {
     const n = statementStartingAt(state, a - 1);
@@ -354,15 +363,13 @@ function leadingCommentStart(state: EditorState, a: number): number {
   return a;
 }
 
+/** {@link planStatementMove} 的结果：一次事务、不动（仍吃按键）或退回普通整行移动。 */
 export type StatementMove = { spec: TransactionSpec } | "noop" | "line";
 
 /**
- * Move Statement as in IDEA: the statement around the caret (whole lines)
- * moves past the next statement; into a block when the neighbour is a block
- * header or closing brace, but never into or out of a function or class (then
- * nothing happens). A neighbouring function / class (or a statement holding
- * one) is passed as a unit. The moved lines take the indentation of their new
- * place. `line` when there is no statement at the caret (move the line).
+ * 语句移动：光标所在的语句（整行）越过下一条语句；邻居是块头或收括号时进块，
+ * 但绝不进出一个函数或类（那时不动）。相邻的函数 / 类（或持有其一的语句）
+ * 作为整体越过。挪过去的行按新位置的缩进重排。光标处没有语句时返回 `line`（走普通整行移动）。
  */
 export function planStatementMove(state: EditorState, up: boolean): StatementMove {
   const head = state.selection.main.head;
@@ -423,7 +430,7 @@ export function planStatementMove(state: EditorState, up: boolean): StatementMov
   };
 }
 
-/** Shifts the lines of `[from, to]` so the first one gets the indentation the language computes for it. */
+/** 把 `[from, to]` 触及的行整体平移缩进，让第一行拿到语言为它算出的缩进。 */
 function shiftToIndentation(state: EditorState, from: number, to: number) {
   if (!syntaxTree(state).length) return null;
   const first = state.doc.lineAt(from);
@@ -443,11 +450,12 @@ function shiftToIndentation(state: EditorState, from: number, to: number) {
   return state.changes(changes);
 }
 
+/** ⌃⌥↑/⌃⌥↓ 的实现工厂：先试语句移动，光标处无语句时退回普通整行移动。 */
 function moveStatement(up: boolean): Command {
   return (view) => {
     if (view.state.readOnly) return false;
     if (view.state.selection.ranges.length === 1 && view.state.selection.main.empty) {
-      // The statement and its neighbours need a parsed tree around the caret.
+      // 语句与其邻居需要光标附近有解析树。
       forceParsing(view, Math.min(view.state.doc.length, view.state.selection.main.head + 20_000), 100);
       const plan = planStatementMove(view.state, up);
       if (plan === "noop") return true;
@@ -460,10 +468,12 @@ function moveStatement(up: boolean): Command {
   };
 }
 
+/** ⌃⌥↑：把当前语句往上挪一条。 */
 export const moveStatementUp = moveStatement(true);
+/** ⌃⌥↓：把当前语句往下挪一条。 */
 export const moveStatementDown = moveStatement(false);
 
-// --- complete statement -------------------------------------------------------
+// --- 语句补全 -----------------------------------------------------------------------
 
 export const SEMICOLON_LANGS = new Set([
   "java",
@@ -482,7 +492,7 @@ export const SEMICOLON_LANGS = new Set([
   "groovy",
   "zig",
 ]);
-/** Blocks close with a keyword (`end`) or by indentation: never complete them with braces. */
+/** 块用关键字（`end`）或缩进收尾：绝不用花括号补全它们。 */
 export const KEYWORD_BLOCK_LANGS = new Set([
   "python",
   "ruby",
@@ -508,13 +518,14 @@ export const KEYWORD_BLOCK_LANGS = new Set([
   "perl",
   "powershell",
 ]);
-/** A line opening an indented body in `end` / layout languages (Ruby, Lua, Elixir, Haskell…). */
+/** `end` / 缩进语言（Ruby、Lua、Elixir、Haskell…）里打开缩进体的行。 */
 const KEYWORD_HEAD =
   /\b(do(\s*\|[^|]*\|)?|then|where|of)$|^\s*(def|defp|defmodule|class|module|function|local function|if|unless|elsif|elseif|else|while|until|for|case|begin)\b/;
+/** 块头关键字开头的行（补 `{ }` 用）；Python 的 `def`/`elif` 在 completeStatementSpec 里单独折算。 */
 const BLOCK_HEAD =
   /^\s*(if|else|for|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
 
-/** Offset in `text` where a trailing line comment starts (outside string literals), else `text.length`. */
+/** 行内尾注释（不在字符串字面量里）的起点偏移；没有注释时为 `text.length`。 */
 export function codeEnd(text: string, lineComment: string | undefined): number {
   if (!lineComment) return text.length;
   let quote: string | null = null;
@@ -529,15 +540,15 @@ export function codeEnd(text: string, lineComment: string | undefined): number {
   return text.length;
 }
 
+/** 某位置语言的行注释符（来自语言的 commentTokens）；没有为 undefined。 */
 export function lineCommentToken(state: EditorState, pos: number): string | undefined {
   const tokens = state.languageDataAt<{ line?: string }>("commentTokens", pos)[0];
   return tokens?.line;
 }
 
 /**
- * The text-based Complete Current Statement (⌘⇧↵) on the caret line: a `;`
- * (before a trailing comment), a `{ }` block after a block header, `:` in
- * Python, then a new line. `null` on an empty line.
+ * 基于文本的补全当前语句（⌘⇧↵）：在光标行上补 `;`（尾注释之前）、
+ * 块头后的 `{ }`、Python 的 `:`，然后换行。空行返回 `null`。
  */
 export function completeStatementSpec(state: EditorState, language: string): TransactionSpec | null {
   const line = state.doc.lineAt(state.selection.main.head);
@@ -554,7 +565,7 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}`;
     const from = line.from + text.length;
     return {
-      // A trailing comment moves to the end of the header line.
+      // 尾注释挪到块头行的行尾。
       changes: {
         from,
         to: line.from + full.length,
@@ -588,7 +599,7 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
   };
 }
 
-/** ⌘⇧↵: finish the current line (closing `;` or a `{ }` block) and move to the next line. */
+/** ⌘⇧↵：收完当前行（补 `;` 或 `{ }` 块）并跳到下一行。 */
 export function completeStatement(language: string): Command {
   return (view) => {
     if (view.state.readOnly) return false;
@@ -599,7 +610,7 @@ export function completeStatement(language: string): Command {
   };
 }
 
-// --- helpers -------------------------------------------------------------------
+// --- 辅助 -------------------------------------------------------------------
 
 export function selectRange(view: EditorView, range: SelectionRange | { from: number; to: number }, center = true) {
   view.dispatch({
@@ -613,19 +624,19 @@ export function selectRange(view: EditorView, range: SelectionRange | { from: nu
 // --- comments ------------------------------------------------------------------------
 
 
-// --- smart keys ------------------------------------------------------------------
+// --- 智能按键 ------------------------------------------------------------------
 
 function newLineCommand(before: boolean): Command {
   return (view) => {
     const { state } = view;
     if (state.readOnly) return false;
     if (before) {
-      // A new line above each caret line, indented like that line (one level deeper above a closing bracket).
+      // 在每个光标行上方插一行，缩进与该行一致（收括号上方深一级）。
       const unit = indentString(state, getIndentUnit(state));
       const tr = state.changeByRange((r) => {
         const line = state.doc.lineAt(r.head);
         const own = /^[ \t]*/.exec(line.text)![0];
-        // Without a parsed language there's nothing to compute from: keep the line's indent.
+        // 没有解析出的语言就无从计算：沿用该行自己的缩进。
         const computed = syntaxTree(state).length ? getIndentation(state, line.from) : null;
         let indent = computed !== null ? indentString(state, computed) : own;
         if (/^\s*[)\]}]/.test(line.text) && indent.length <= own.length) indent = own + unit;
@@ -637,7 +648,7 @@ function newLineCommand(before: boolean): Command {
       view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input" }));
       return true;
     }
-    // Put each caret at the end of its line, then break and indent there.
+    // 把每个光标挪到所在行行尾，再在那里换行并缩进。
     const atEnd = state.update({
       selection: EditorSelection.create(
         state.selection.ranges.map((r) => EditorSelection.cursor(state.doc.lineAt(r.head).to)),
@@ -653,12 +664,12 @@ function newLineCommand(before: boolean): Command {
   };
 }
 
-/** ⇧↵: Start New Line (below the caret line, whatever the caret column). */
+/** ⇧↵：开新行（在光标行下方，不管光标在哪一列）。 */
 export const startNewLine = newLineCommand(false);
-/** ⌘⌥↵: Start New Line Before Current. */
+/** ⌘⌥↵：在当前行上方开新行。 */
 export const startNewLineBefore = newLineCommand(true);
 
-/** ⌃⇧J: Join Lines — the next line (or the selected lines) joined with single spaces. */
+/** ⌃⇧J：合并行——下一行（或选中的各行）以单个空格接上。 */
 export const joinLines: Command = (view) => {
   const { state } = view;
   if (state.readOnly) return false;
@@ -679,7 +690,7 @@ export const joinLines: Command = (view) => {
       const trail = /[ \t]*$/.exec(cur.text)![0].length;
       const lead = /^[ \t]*/.exec(next.text)![0].length;
       const nextText = next.text.slice(lead);
-      // Drop the comment marker of a joined line comment (`// a` + `// b` → `// a b`).
+      // 合并行注释时丢掉后一行的注释符（`// a` + `// b` → `// a b`）。
       const comment = /^(\/\/+|#+|--)\s?/.exec(nextText);
       const curTrim = cur.text.slice(0, cur.length - trail);
       const skip =
@@ -703,7 +714,7 @@ export const joinLines: Command = (view) => {
   return true;
 };
 
-/** Escape sequences keep their case: `\n` must not become `\N`. */
+/** 转义序列保持原样：`\n` 不能变成 `\N`。 */
 function caseOf(state: EditorState, from: number, to: number, lower: boolean): string {
   const text = state.sliceDoc(from, to);
   const conv = (t: string) => (lower ? t.toLowerCase() : t.toUpperCase());
@@ -727,8 +738,8 @@ function caseOf(state: EditorState, from: number, to: number, lower: boolean): s
 }
 
 /**
- * ⌘⇧U: Toggle Case of the selections (the word at a caret, which stays
- * selected): lower case when any of them has an upper-case letter, else upper.
+ * ⌘⇧U：切换选区（空光标时取所在词，保持选中）的大小写：
+ * 任一含大写字母就全转小写，否则全转大写。
  */
 export const toggleCase: Command = (view) => {
   const { state } = view;
@@ -748,7 +759,7 @@ export const toggleCase: Command = (view) => {
   return true;
 };
 
-/** ⌥⇧G: Add Carets to Ends of Selected Lines. */
+/** ⌥⇧G：在选中各行的行尾加光标。 */
 export const addCaretsToLineEnds: Command = (view) => {
   const { state } = view;
   const ranges: SelectionRange[] = [];
@@ -771,7 +782,7 @@ export const addCaretsToLineEnds: Command = (view) => {
   return true;
 };
 
-/** ⌃⇧G: Unselect Occurrence — drops the most recently added selection; a single one collapses to its caret. */
+/** ⌃⇧G：取消一处选择——撤掉最近添加的选区；只剩一个时坍缩为光标。 */
 export const unselectOccurrence: Command = (view) => {
   const { state } = view;
   const sel = state.selection;
@@ -783,7 +794,7 @@ export const unselectOccurrence: Command = (view) => {
     return true;
   }
   const ranges = sel.ranges.filter((_, i) => i !== sel.mainIndex);
-  // The previous occurrence becomes main: the one closest before the removed one, else the last.
+  // 撤掉的那处之前最近的一个变回主选区；其前没有就用最后一个。
   const removed = sel.main.from;
   let main = ranges.length - 1;
   for (let i = ranges.length - 1; i >= 0; i--)

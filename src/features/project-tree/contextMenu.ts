@@ -1,7 +1,7 @@
 /**
- * 项目侧边栏 1:1 复刻上下文右键菜单系统
+ * 项目侧边栏右键菜单系统
  *
- * 对标 IntelliJ IDEA ProjectViewPopupMenu / IntelliJ IDEA 规范：
+ * 菜单分组：
  * 1. New › (File, Directory/Package, Scratch File, 常用语言模板)
  * 2. Cut / Copy / Copy Path/Reference… › / Paste
  * 3. Find in Files… / Replace in Files…
@@ -16,7 +16,7 @@
  * 12. 外部依赖库专用只读菜单 (External Libraries)
  * 13. Scratches 临时文件专属菜单
  *
- * 国际化规范：所有展示标签必须 100% 经由 t() 解析。
+ * 国际化：所有展示标签必须经由 t() 解析。
  */
 
 import type { MenuItem } from "../../components/ContextMenu";
@@ -29,6 +29,7 @@ import { isVirtualPath, type ProjectTreeNode } from "./model";
 import type { ProjectDirectoryRole } from "../../lib/projectDirectoryRoles";
 import { parentPath } from "../../lib/format";
 
+/** 项目树 Git 菜单所需的动作句柄。 */
 export interface GitMenuHandlers {
   readonly root: string | null;
   readonly changes: readonly GitChange[];
@@ -45,6 +46,7 @@ export interface GitMenuHandlers {
   readonly branches?: () => void;
 }
 
+/** 构建项目树右键菜单所需的上下文。 */
 export interface ProjectMenuContext {
   /** 选中的树节点 */
   readonly selection: readonly ProjectTreeNode[];
@@ -94,7 +96,7 @@ function resolveTargetDirectory(nodes: readonly ProjectTreeNode[], fallbackRoot:
 }
 
 /**
- * 构建 1:1 项目树右键菜单
+ * 构建项目树右键菜单。
  */
 export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
   const {
@@ -128,7 +130,7 @@ export function buildProjectContextMenu(ctx: ProjectMenuContext): MenuItem[] {
     return buildScratchesContextMenu(ctx);
   }
 
-  // 3. 主工程源码树完整 1:1 右键菜单
+  // 3. 主工程源码树完整右键菜单
   const groups: MenuItem[][] = [];
 
   // Group 1: New ›

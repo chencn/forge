@@ -47,6 +47,7 @@ export interface TermSession {
   group: number;
 }
 
+/** 分屏组内会话的排列方向：row 左右排，column 上下排。 */
 export type SplitDirection = "row" | "column";
 
 /** 起一条会话要的东西。`dir` 为空就落在工作区根。 */
@@ -59,10 +60,14 @@ export interface TermSpec {
   command?: string;
 }
 
+/** 状态变化观察者。 */
 type Watcher = () => void;
+/** 画面数据入口：收到一段输出字节。 */
 type TermSink = (data: Uint8Array) => void;
 
+/** 全部存活的终端会话（各工作区根共用一张表）。 */
 let sessions: TermSession[] = [];
+/** 后备激活会话（没有工作区根上下文时用）。 */
 let activeId: TermSessionId | null = null;
 /** 每个工作区根各自记住当前选中的终端标签 id。 */
 const activeIdByRoot = new Map<string, TermSessionId>();
@@ -74,6 +79,7 @@ const tabWatchers = new Set<Watcher>();
 const sinks = new Map<TermSessionId, TermSink>();
 /** 分屏组的排列方向；没登记的是左右排。 */
 const directions = new Map<number, SplitDirection>();
+/** 下一个可分配的分屏组号。 */
 let nextGroup = 1;
 /** 等 shell 第一次出声再敲的启动命令。 */
 const startupCommands = new Map<TermSessionId, string>();
@@ -82,6 +88,7 @@ const startupCommands = new Map<TermSessionId, string>();
  * 表顺序就是「最近有输出」的顺序：每次追加把该会话挪到表尾，挤预算时从表头开始。
  */
 const history = new Map<TermSessionId, Uint8Array[]>();
+/** 每条会话历史占用的字节数；与合计账本 {@link historyTotal} 对账用。 */
 const historyBytes = new Map<TermSessionId, number>();
 /** 擦滚屏序列被切在两包之间时，记住没判断完的前缀。 */
 const eraseCarry = new Map<TermSessionId, Uint8Array>();
@@ -116,6 +123,7 @@ function trimHistoryTotal() {
   }
 }
 
+/** 追加一段输出到会话历史；超单条预算时丢最老的块，并触发合计预算轮转。 */
 function pushHistory(id: TermSessionId, data: Uint8Array) {
   const queued = history.get(id) ?? [];
   // 挪到表尾：Map 的顺序即「最近有输出」的顺序，挤预算时从表头那条开始。
@@ -137,6 +145,7 @@ export function termHistoryBytes(): number {
   return historyTotal;
 }
 
+/** 分发一段输出：剥擦滚屏序列、记历史、推给画面入口、标记未读、补发启动命令。 */
 function deliver(id: TermSessionId, data: Uint8Array) {
   const stripped = stripEraseScrollback(eraseCarry.get(id) ?? new Uint8Array(0), data);
   eraseCarry.set(id, stripped.carry);
@@ -159,6 +168,7 @@ function sendStartupCommand(id: TermSessionId, delay: number) {
   }, delay);
 }
 
+/** 非激活且未标记的会话挂上未读点；已退出或正在前台的不标。 */
 function markUnread(id: TermSessionId) {
   const target = sessions.find((item) => item.id === id);
   if (!target || target.unread || target.exited) return;
@@ -167,6 +177,7 @@ function markUnread(id: TermSessionId) {
   notifyTabs();
 }
 
+/** 清掉未读点与铃铛；返回是否有变化（调用方据此决定是否通知）。 */
 function markRead(id: TermSessionId): boolean {
   const target = sessions.find((item) => item.id === id);
   if (!target || (!target.unread && !target.bell)) return false;
@@ -175,6 +186,7 @@ function markRead(id: TermSessionId): boolean {
   return true;
 }
 
+/** 会话退出时清掉画面入口、启动命令与全部回放历史。 */
 function forgetOutput(id: TermSessionId) {
   sinks.delete(id);
   startupCommands.delete(id);
@@ -254,15 +266,18 @@ function sameCwd(a: string | null, b: string | null): boolean {
   return samePath(a, b);
 }
 
+/** 通知画面观察者（数据追加、会话切换）。 */
 function notifySession() {
   for (const watch of sessionWatchers) watch();
 }
 
+/** 通知页签栏观察者，并顺手排一次布局存盘。 */
 function notifyTabs() {
   for (const watch of tabWatchers) watch();
   schedulePersist();
 }
 
+/** 通知全部观察者。 */
 function notifyAll() {
   notifySession();
   notifyTabs();
@@ -448,11 +463,13 @@ function rootTabs(id: TermSessionId): TermSession[] {
   return target ? termSessionsFor(target.cwd).sessions : [];
 }
 
+/** 关闭同根下除指定页签外的全部未固定页签。 */
 export async function closeOtherTerms(id: TermSessionId): Promise<void> {
   const doomed = rootTabs(id).filter((item) => item.id !== id && !item.pinned);
   await Promise.all(doomed.map((item) => closeTerm(item.id)));
 }
 
+/** 关闭指定页签右侧的全部未固定页签。 */
 export async function closeTermsToRight(id: TermSessionId): Promise<void> {
   const tabs = rootTabs(id);
   const doomed = tabs.slice(tabs.findIndex((item) => item.id === id) + 1).filter((item) => !item.pinned);
@@ -511,6 +528,7 @@ export function unsplitTerm(id: TermSessionId): void {
   notifyAll();
 }
 
+/** 设置一个分屏组的排列方向并通知界面。 */
 export function setSplitDirection(id: TermSessionId, direction: SplitDirection): void {
   const target = sessions.find((item) => item.id === id);
   if (!target || directions.get(target.group) === direction) return;
@@ -539,6 +557,7 @@ const opening = new Map<string, Promise<TermSession>>();
  * 解绑函数收不回来」那类竞态也随之消失——查不到会话的事件直接丢掉就是了。
  */
 let wired = false;
+/** 挂全局事件订阅（输出与退出）；只挂一次。 */
 function wire(): void {
   if (wired) return;
   wired = true;
@@ -630,6 +649,7 @@ export async function openTerm(
 
 /** 起终端的初始尺寸；面板挂上来之后会自己 fit 成真实尺寸。 */
 const DEFAULT_COLS = 80;
+/** 起终端的初始行数；面板挂上来之后会自己 fit 成真实尺寸。 */
 const DEFAULT_ROWS = 24;
 
 /**
@@ -798,6 +818,7 @@ interface SavedTab {
   profile: string | null;
 }
 
+/** 一个工作区根存下来的页签布局。 */
 interface SavedRoot {
   /** 原始的根路径，键是归一化过的。 */
   cwd: string | null;
@@ -808,8 +829,10 @@ interface SavedRoot {
 
 /** 配置档改过之后，恢复出来的页签按最新的配置档起；配置档删了就只按 shell 起。 */
 type ProfileResolver = (profile: string) => Omit<TermSpec, "command" | "dir"> | null;
+/** 配置档解析器；面板设置它，布局恢复时查配置档起法。 */
 let resolveProfile: ProfileResolver = () => null;
 
+/** 注册配置档解析器；恢复布局时按最新配置档起页签。 */
 export function setTermProfileResolver(resolver: ProfileResolver): void {
   resolveProfile = resolver;
 }
@@ -818,10 +841,14 @@ export function setTermProfileResolver(resolver: ProfileResolver): void {
 const restored = new Set<string>();
 /** 页签全被用户关掉的根：存盘时把它的布局也删掉。 */
 const forgottenRoots = new Set<string>();
+/** 存盘布局的内存缓存；首次访问时从后端读一次。 */
 let savedLayouts: Promise<Record<string, SavedRoot>> | null = null;
+/** 防抖存盘定时器；页签变化频繁时合并成一次写。 */
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+/** 布局存盘的防抖间隔（毫秒）。 */
 const PERSIST_DELAY = 600;
 
+/** 校验并归一一条存盘布局；结构不对返回 null（该条被丢弃）。 */
 function asSavedRoot(raw: unknown): SavedRoot | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Partial<SavedRoot>;
@@ -849,6 +876,7 @@ function asSavedRoot(raw: unknown): SavedRoot | null {
   };
 }
 
+/** 读取全部工作区根的存盘布局（带缓存）。 */
 function layouts(): Promise<Record<string, SavedRoot>> {
   savedLayouts ??= termLayoutLoad().then((raw) => {
     const out: Record<string, SavedRoot> = {};
@@ -863,6 +891,7 @@ function layouts(): Promise<Record<string, SavedRoot>> {
   return savedLayouts;
 }
 
+/** 把一个工作区根的当前页签状态抽成可存盘的布局。 */
 function snapshotRoot(cwd: string | null): SavedRoot {
   const { sessions: list, activeId: active } = termSessionsFor(cwd);
   const groupIndex = new Map<number, number>();
@@ -890,6 +919,7 @@ function snapshotRoot(cwd: string | null): SavedRoot {
   };
 }
 
+/** 立即把当前页签布局写进持久化存储（防抖的立即执行点）。 */
 async function persistNow(): Promise<void> {
   const current = await layouts();
   const next: Record<string, SavedRoot> = { ...current };
@@ -902,6 +932,7 @@ async function persistNow(): Promise<void> {
   await termLayoutSave(next as unknown as Record<string, unknown>);
 }
 
+/** 防抖 600ms 后写一次布局存盘。 */
 function schedulePersist() {
   if (persistTimer !== null) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {

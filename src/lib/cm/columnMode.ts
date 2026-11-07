@@ -23,15 +23,19 @@ interface Block {
   headCol: number;
 }
 
+/** 列选择模式的状态：开关 + ⇧+方向键正在扩展的块。 */
 interface ColumnState {
   on: boolean;
   /** The block ⇧+arrows extend; reset by any other selection change. */
   block: Block | null;
 }
 
+/** 切换列选择模式的效果（true 开 / false 关）。 */
 export const setColumnMode = StateEffect.define<boolean>();
+/** 更新正在扩展的块。 */
 const setBlock = StateEffect.define<Block>();
 
+/** 列选择模式的状态字段。 */
 export const columnModeField = StateField.define<ColumnState>({
   create: () => ({ on: false, block: null }),
   update(value, tr) {
@@ -45,10 +49,12 @@ export const columnModeField = StateField.define<ColumnState>({
   },
 });
 
+/** 列选择模式是否开着。 */
 export function isColumnMode(state: EditorState): boolean {
   return state.field(columnModeField, false)?.on ?? false;
 }
 
+/** 切换列选择模式（⇧⌘8）。 */
 export function toggleColumnMode(view: EditorView): boolean {
   view.dispatch({ effects: setColumnMode.of(!isColumnMode(view.state)) });
   return true;
@@ -107,10 +113,12 @@ export function extendBlock(view: EditorView, dLine: number, dCol: number): bool
   return true;
 }
 
+/** 从事件目标反查编辑器实例。 */
 function viewOf(e: MouseEvent): EditorView | null {
   return e.target instanceof HTMLElement ? EditorView.findFromDOM(e.target) : null;
 }
 
+/** 列选择模式扩展：状态字段 + 拖拽矩形选择 + ⇧+方向键扩展块。 */
 export const columnModeExtension: Extension = [
   columnModeField,
   rectangularSelection({

@@ -12,6 +12,7 @@ export interface AiFilePreview {
   patches?: ToolPatch[];
 }
 
+/** 从一条工具条目提炼可预览的文件（补丁优先，没有就列读取动作）。 */
 export function toolFilePreviews(entry: AiEntry, details = true): AiFilePreview[] {
   const view = describeAiTool(entry, details);
   if (view.patches.length) return view.patches.filter((patch) => patch.path).map((patch, index) => ({
@@ -24,6 +25,7 @@ export function toolFilePreviews(entry: AiEntry, details = true): AiFilePreview[
   }));
 }
 
+/** 把「本次会话改过的文件」汇总成一条变更预览（diff/全文/片段三路并收）。 */
 export function editedFilePreview(file: AiEditedFile, id: string): AiFilePreview {
   return { id: `${id}:${file.path}`, path: file.path, kind: "change", patches: [
     ...(file.diff ? [{ path: file.path, kind: file.kind ?? "edit", diff: file.diff, proposed: false } as ToolPatch] : []),
@@ -32,6 +34,7 @@ export function editedFilePreview(file: AiEditedFile, id: string): AiFilePreview
   ] };
 }
 
+/** 一个标准 unified diff hunk（解析后的行级内容）。 */
 interface Hunk { oldStart: number; newStart: number; oldLines: string[]; newLines: string[] }
 
 /** 只接受完整且计数一致的标准 hunk，缺数字行号的补丁另走唯一上下文匹配。 */
@@ -57,6 +60,7 @@ function hunksOf(diff: string): Hunk[] | null {
   return hunks;
 }
 
+/** 把 hunks 按行号从后往前套到全文上（`reverse` 表示补丁是反向的）；任何一处对不上返回 null。 */
 function applyHunks(text: string, hunks: Hunk[], reverse: boolean): string | null {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   let previousStart = Infinity;
@@ -90,6 +94,7 @@ function rawPatchSides(diff: string): Array<{ oldLines: string[]; newLines: stri
   return chunks.length ? chunks : null;
 }
 
+/** 用唯一上下文匹配套 {@link rawPatchSides} 解出的补丁块；命中不唯一或对不上返回 null。 */
 function applyRawPatch(text: string, chunks: NonNullable<ReturnType<typeof rawPatchSides>>, reverse: boolean): string | null {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   let previousStart = Infinity;

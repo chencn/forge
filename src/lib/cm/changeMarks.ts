@@ -14,6 +14,7 @@ export interface ChangeMark {
   edge?: "before" | "after" | "line";
 }
 
+/** 把一批改动标记送进编辑器状态的 Effect。 */
 const setChangeMarks = StateEffect.define<ChangeMark[]>();
 
 /**
@@ -49,6 +50,7 @@ class LaneMark extends GutterMarker {
   }
 }
 
+/** 色带扩展持有的标记状态：概览条数据与逐行 gutter 标记各一份。 */
 interface ChangeMarkState {
   /** 原样的改动列表：右侧概览条按它算位置。 */
   marks: readonly ChangeMark[];

@@ -40,17 +40,23 @@ const CODEX_MATCHER_EVENTS: readonly string[] = [
   "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
   "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop",
 ];
+/** 两家 CLI 事件名的联合类型。 */
 type HookEvent = (typeof CLAUDE_EVENTS)[number] | (typeof CODEX_EVENTS)[number];
+/** 原生 JSON 树里的对象形态。 */
 type Json = Record<string, unknown>;
+/** 读回的 hooks 配置：文件路径 + 原 JSON 树。 */
 interface HooksConfig { path: string; hooks: Json }
+/** RPC 返回的一条 hook（camelCase 视图，不回写）。 */
 interface NativeHook {
   key: string; eventName: string; handlerType: string; command?: string;
   sourcePath: string; trustStatus: string; enabled: boolean;
 }
+/** hooks/list 的返回结构（按目录分组）。 */
 interface HooksStatus {
   data: { cwd: string; hooks: NativeHook[]; errors: { path: string; message: string }[]; warnings: string[] }[];
 }
 
+/** 面板里一行可编辑 hook 的状态。 */
 interface HookRow {
   /** 规则在树里的定位：事件名 + 规则下标 + hook 条目下标。 */
   event: HookEvent;
@@ -62,6 +68,7 @@ interface HookRow {
   async: boolean;
 }
 
+/** 事件名的展示译名。 */
 const EVENT_LABEL: Record<HookEvent, TranslationKey> = {
   PreToolUse: "hooks.event.preToolUse",
   PostToolUse: "hooks.event.postToolUse",
@@ -80,6 +87,7 @@ const EVENT_LABEL: Record<HookEvent, TranslationKey> = {
   Interrupt: "hooks.event.interrupt",
 };
 
+/** 事件语义的说明文案。 */
 const EVENT_HINT: Record<HookEvent, TranslationKey> = {
   PreToolUse: "hooks.hint.preToolUse",
   PostToolUse: "hooks.hint.postToolUse",
@@ -98,7 +106,9 @@ const EVENT_HINT: Record<HookEvent, TranslationKey> = {
   Interrupt: "hooks.hint.interrupt",
 };
 
+/** 读字符串字段；非字符串回空串。 */
 const readString = (value: unknown): string => (typeof value === "string" ? value : "");
+/** 读对象字段；数组与非对象回 null。 */
 const readObject = (value: unknown): Json | null => (value && typeof value === "object" && !Array.isArray(value) ? value as Json : null);
 
 /** 从 JSON 树里摘出可编辑的 command 型 hook 行；prompt 型等条目不进面板但也绝不丢。 */
@@ -188,6 +198,7 @@ function appendRow(doc: Json, event: HookEvent, draft: { matcher: string; comman
   return next;
 }
 
+/** 新增 hook 的对话框：matcher / 命令 / 超时 / 异步。 */
 function HookAddDialog({
   event,
   provider,
@@ -254,7 +265,8 @@ function HookAddDialog({
   );
 }
 
-export default function HooksSettingsPanel() {
+export default /** 设置页的 Hooks 管理面板（Claude settings.json / Codex hooks.json）。 */
+function HooksSettingsPanel() {
   const { t } = useI18n();
   const desktop = isTauri();
   const [provider, setProvider] = useState<AiProvider>("claude");

@@ -10,7 +10,7 @@ import { indentOverrideOf, indentRevision, setIndentOverride, subscribeIndent } 
 import { Popup } from "../ui/Popup";
 import { useI18n } from "../i18n";
 
-/** Line:Column 段：选中多行/多字符时附在后面；点击打开 Go to Line（IDEA 的口径）。 */
+/** Line:Column 段：选中多行/多字符时附在后面；点击打开 Go to Line。 */
 export function CaretStatus({
   path,
   onJump,
@@ -34,6 +34,7 @@ export function CaretStatus({
   );
 }
 
+/** 缩进宽度的候选档位。 */
 const INDENT_CHOICES = [2, 4, 8] as const;
 
 /**

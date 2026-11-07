@@ -5,7 +5,9 @@ import { Tabs } from "../ui/Tabs";
 import GitLogPane from "./GitLogPane";
 import styles from "./GitHistoryTabs.module.css";
 
+/** {@link GitLogPane} 的入参类型。 */
 type LogProps = ComponentProps<typeof GitLogPane>;
+/** {@link GitHistoryTabs} 的入参（主 Log 之外加上文件历史页签的状态）。 */
 interface Props extends LogProps {
   historyPaths: string[];
   activeHistory: string;
@@ -13,6 +15,7 @@ interface Props extends LogProps {
   onCloseHistory: (path: string) => void;
 }
 
+/** 一个文件历史页签：引用与路径筛选锁死在这份文件上，不与主 Log 互通。 */
 function FileHistory({ path, ...props }: Omit<LogProps, "reference" | "setReference" | "compareRef" | "setCompareRef" | "pathFilter" | "setPathFilter"> & { path: string }) {
   const [reference, setReference] = useState("");
   const [compareRef, setCompareRef] = useState<string | null>(null);

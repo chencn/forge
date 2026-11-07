@@ -8,6 +8,7 @@ import { Popup } from "../../ui/Popup";
 import { useI18n } from "../../i18n";
 import styles from "./CommitView.module.css";
 
+/** 提交选项的持久化状态。 */
 export interface CommitOptionsState {
   author: string;
   signOff: boolean;
@@ -15,8 +16,10 @@ export interface CommitOptionsState {
   checkTodo: boolean;
 }
 
+/** localStorage 键（v1：结构变更时升版本）。 */
 const STORAGE_KEY = "forge:vcs:commitOptions:v1";
 
+/** 出厂默认：不指定作者、跑钩子、其余关。 */
 export const DEFAULT_COMMIT_OPTIONS: CommitOptionsState = {
   author: "",
   signOff: false,
@@ -24,6 +27,7 @@ export const DEFAULT_COMMIT_OPTIONS: CommitOptionsState = {
   checkTodo: false,
 };
 
+/** 读回提交选项；缺键/解析失败/字段类型不符逐项回退默认值。 */
 export function loadCommitOptions(): CommitOptionsState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -41,6 +45,7 @@ export function loadCommitOptions(): CommitOptionsState {
   }
 }
 
+/** 持久化提交选项；存储不可用时静默忽略。 */
 export function saveCommitOptions(options: CommitOptionsState): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(options));
@@ -49,6 +54,7 @@ export function saveCommitOptions(options: CommitOptionsState): void {
   }
 }
 
+/** 弹层里的一个分组小节。 */
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className={styles.optSection}>
@@ -60,11 +66,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+/** {@link CommitOptionsBody} 的入参。 */
 export interface CommitOptionsBodyProps {
   options: CommitOptionsState;
   onChange: (options: CommitOptionsState) => void;
 }
 
+/** 选项表单体：改动即回传 onChange 并落盘。 */
 export function CommitOptionsBody({ options, onChange }: CommitOptionsBodyProps) {
   const { t } = useI18n();
 
@@ -114,6 +122,7 @@ export function CommitOptionsBody({ options, onChange }: CommitOptionsBodyProps)
   );
 }
 
+/** {@link CommitOptionsPopup} 的入参。 */
 export interface CommitOptionsPopupProps {
   anchor: RefObject<HTMLElement | null> | HTMLElement | null;
   open: boolean;
@@ -122,6 +131,7 @@ export interface CommitOptionsPopupProps {
   onChange: (options: CommitOptionsState) => void;
 }
 
+/** 锚定在提交按钮上方的选项弹层。 */
 export function CommitOptionsPopup({
   anchor,
   open,

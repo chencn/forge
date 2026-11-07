@@ -2,8 +2,10 @@ import { useEffect, useSyncExternalStore } from "react";
 import { mavenScan } from "../lib/maven";
 import type { MavenProject } from "../lib/maven";
 
+/** Maven 工程探测的当前阶段：未开始 / 扫描中 / 就绪 / 非 Maven 工程 / 扫描失败。 */
 export type MavenStatus = "idle" | "loading" | "ready" | "absent" | "failed";
 
+/** Maven 探测的外部 store 状态。 */
 interface MavenStore {
   root: string | null;
   status: MavenStatus;
@@ -12,6 +14,7 @@ interface MavenStore {
   open: boolean;
 }
 
+/** 空状态：未选工作区时的初始/复位值。 */
 const EMPTY: MavenStore = {
   root: null,
   status: "idle",
@@ -20,19 +23,27 @@ const EMPTY: MavenStore = {
   open: false,
 };
 
+/** 当前 store（模块级单例）。 */
 let store: MavenStore = EMPTY;
+/** useSyncExternalStore 订阅者集合。 */
 const listeners = new Set<() => void>();
+/** 扫描票号：换工作区或重扫时递增，旧扫描的迟到结果按票丢弃。 */
 let seq = 0;
+/** 首屏让位用的 setTimeout 句柄。 */
 let timer = 0;
+/** 空闲回调句柄（浏览器不支持 requestIdleCallback 时为 0）。 */
 let idleId = 0;
 
+/** 视为「工程真的扫坏了」的错误码集合；命令不在等环境问题归为 absent。 */
 const SCAN_ERRORS = new Set(["MAVEN_READ", "MAVEN_POM", "MAVEN_TOO_LARGE", "MAVEN_CYCLE"]);
 
+/** 提交新状态并通知订阅者。 */
 function emit(next: MavenStore) {
   store = next;
   for (const listener of listeners) listener();
 }
 
+/** 取消还没触发的延迟扫描（timer 与 idle 回调一起清）。 */
 function cancelPending() {
   window.clearTimeout(timer);
   timer = 0;
@@ -42,15 +53,18 @@ function cancelPending() {
   idleId = 0;
 }
 
+/** useSyncExternalStore 的订阅入口。 */
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
+/** useSyncExternalStore 的快照。 */
 function snapshot() {
   return store;
 }
 
+/** 执行一次 Maven 项目扫描；ticket 过期时丢弃结果。 */
 async function runScan(root: string, ticket: number) {
   try {
     const project = await mavenScan(root);
@@ -119,6 +133,7 @@ export function watchMaven(root: string | null): () => void {
   return cancelPending;
 }
 
+/** 重新扫一遍当前工作区（pom 或依赖变了时手动/自动触发）。 */
 export function reloadMaven() {
   const root = store.root;
   if (!root) return;
@@ -128,16 +143,19 @@ export function reloadMaven() {
   void runScan(root, ticket);
 }
 
+/** 展开/收起 Maven 面板；探测没出结果时开关无效。 */
 export function toggleMavenOpen() {
   if (!store.project && store.status !== "failed") return;
   emit({ ...store, open: !store.open });
 }
 
+/** 收起 Maven 面板（不丢扫描结果）。 */
 export function closeMaven() {
   if (!store.open) return;
   emit({ ...store, open: false });
 }
 
+/** 订阅 Maven 探测状态的 React 入口。 */
 export function useMavenProject() {
   return useSyncExternalStore(subscribe, snapshot);
 }

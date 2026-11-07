@@ -12,11 +12,17 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// 供应商清单在应用配置目录下的文件名。
 const STORE_FILE: &str = "ai-providers.json";
+/// 供应商数量上限。
 const MAX_PROVIDERS: usize = 64;
+/// 显示名称的字符数上限。
 const MAX_NAME: usize = 80;
+/// API 地址的长度上限。
 const MAX_URL: usize = 2048;
+/// API Key 的长度上限。
 const MAX_KEY: usize = 4096;
+/// 常规模型名的长度上限。
 const MAX_MODEL: usize = 200;
 /// Codex 的 `model` 字段存储整份自定义模型意图 JSON，放宽到 256 KB。
 const MAX_CODEX_MODEL: usize = 262_144;
@@ -35,6 +41,7 @@ const CLAUDE_MODEL_KEYS: [(&str, &str); 9] = [
     ("customOptionDescription", "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
 ];
 
+/// 一个自定义模型供应商的完整配置。
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelProvider {
@@ -49,6 +56,7 @@ pub struct ModelProvider {
     pub models: BTreeMap<String, String>,
 }
 
+/// ai-providers.json 的磁盘结构：版本号加供应商清单。
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct Store {
@@ -56,21 +64,35 @@ struct Store {
     providers: Vec<ModelProvider>,
 }
 
+/// 供应商存储文件（`ai-providers.json`）在应用配置目录下的完整路径。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回错误。
 fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
     Ok(dir.join(STORE_FILE))
 }
 
+/// 校验供应商 ID：非空、不超过 64 字节、只含字母数字和 `-`/`_`。
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64
         && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
+/// 校验 API 地址：允许为空（由 [`validate`] 统一要求非空），
+/// 非空时必须是 http(s) URL、不超过 [`MAX_URL`] 且不含空白与 NUL。
 fn valid_url(value: &str) -> bool {
     value.is_empty() || ((value.starts_with("https://") || value.starts_with("http://"))
         && value.len() <= MAX_URL && !value.chars().any(|ch| ch.is_whitespace() || ch == '\0'))
 }
 
+/// 校验单个供应商条目的全部字段。
+///
+/// # Errors
+///
+/// ID、名称、类型、URL、Key、模型名或模型槽位任一不合法时返回对应中文错误；
+/// 端点与密钥留空直接拒绝——空条目一旦应用会清掉 CLI 里原本可用的配置。
 fn validate(provider: &ModelProvider) -> Result<(), String> {
     if !valid_id(&provider.id) {
         return Err("供应商 ID 只能包含字母、数字、- 和 _".into());
@@ -110,6 +132,11 @@ fn validate(provider: &ModelProvider) -> Result<(), String> {
     Ok(())
 }
 
+/// 从磁盘读供应商清单；文件不存在或不可读时返回空清单。
+///
+/// # Errors
+///
+/// 文件存在但 JSON 解析失败时返回中文错误。
 fn load(app: &AppHandle) -> Result<Vec<ModelProvider>, String> {
     let path = store_path(app)?;
     let Ok(text) = fs::read_to_string(&path) else { return Ok(Vec::new()) };
@@ -160,6 +187,12 @@ fn keep_keys(previous: &[ModelProvider], providers: &mut [ModelProvider]) {
     }
 }
 
+/// 全量保存供应商清单：规整字段、逐条校验后原子写盘。
+///
+/// # Errors
+///
+/// 超过 [`MAX_PROVIDERS`]、结构检查（[`structural`]）或字段校验（[`validate`]）失败、
+/// ID 重复、目录创建失败或写盘失败时返回中文错误。
 fn save(app: &AppHandle, mut providers: Vec<ModelProvider>) -> Result<Vec<ModelProvider>, String> {
     if providers.len() > MAX_PROVIDERS {
         return Err(format!("最多保存 {MAX_PROVIDERS} 个供应商"));
@@ -192,6 +225,9 @@ fn save(app: &AppHandle, mut providers: Vec<ModelProvider>) -> Result<Vec<ModelP
     Ok(providers)
 }
 
+/// 把供应商端点/密钥/模型写进 Claude 的 Forge 覆盖层 env 映射。
+///
+/// 空值即删除对应键；顺手清掉 `ANTHROPIC_API_KEY`，残留的旧键会让用户误以为还在生效。
 fn apply_claude(env: &mut BTreeMap<String, String>, provider: &ModelProvider) {
     let set = |env: &mut BTreeMap<String, String>, key: &str, value: &str| {
         if value.is_empty() { env.remove(key); } else { env.insert(key.to_string(), value.to_string()); }
@@ -227,6 +263,14 @@ fn claude_native_env(provider: &ModelProvider) -> BTreeMap<String, String> {
     env
 }
 
+/// 把供应商端点/密钥/模型应用到对应 CLI。
+///
+/// Claude 走 Forge 覆盖层加原生 settings.json（原生 env 会压过启动注入，
+/// 只写覆盖层等于没应用）；Codex 写覆盖层 env 并同步 config.toml 的 provider 表与 auth.json。
+///
+/// # Errors
+///
+/// 供应商不存在、校验失败、CLI 设置缺失或底层写盘失败时返回中文错误。
 fn apply(app: &AppHandle, id: &str) -> Result<(), String> {
     let provider = load(app)?.into_iter().find(|item| item.id == id).ok_or("供应商不存在")?;
     validate(&provider)?;

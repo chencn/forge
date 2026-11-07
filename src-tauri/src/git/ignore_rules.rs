@@ -68,6 +68,7 @@ fn file_stamp(path: &Path) -> u64 {
     hasher.finish()
 }
 
+/// 对一个 ignore 规则层级（本级 .gitignore 加共享文件）取内容指纹，用于失效判断。
 fn level_fingerprint(level: &Path, shared: &[PathBuf]) -> u64 {
     let mut hasher = DefaultHasher::new();
     file_stamp(&level.join(".gitignore")).hash(&mut hasher);
@@ -294,6 +295,7 @@ fn global_excludes_file() -> Option<PathBuf> {
         .clone()
 }
 
+/// 判断一个路径是不是空设备（`/dev/null` 或 Windows 的 `NUL`）。
 fn is_null_device(path: &Path) -> bool {
     path == Path::new("/dev/null")
         || path
@@ -302,6 +304,7 @@ fn is_null_device(path: &Path) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case("nul"))
 }
 
+/// 用户主目录：`HOME` 优先，回退 `USERPROFILE`。
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -343,6 +346,7 @@ fn excludes_file_in(config: &Path, relative_to: Option<&Path>) -> Option<PathBuf
     None
 }
 
+/// 解析 `core.excludesFile` 的值：`~/` 展开到主目录，相对路径按仓库根锚定。
 fn resolve_config_path(value: &str, relative_to: Option<&Path>) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
         if let Some(home) = home_dir() {

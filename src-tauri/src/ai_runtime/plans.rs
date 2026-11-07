@@ -15,11 +15,16 @@ use std::sync::Mutex;
 
 /// 串行化 plans.json 的读改写。只做本地小文件操作，不在锁内启动 CLI。
 static PLAN_LOCK: Mutex<()> = Mutex::new(());
+/// 计划记录文件名。
 const FILE: &str = "plans.json";
+/// 文件锁名（写串行化）。
 const LOCK_FILE: &str = "plans.lock";
+/// 决策抢占锁名（CAS 语义）。
 const CLAIM_LOCK_FILE: &str = "plan-claim.lock";
+/// plans.json 的大小上限，写端与读端必须守同一口径。
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 
+/// 计划审批的状态机。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -32,9 +37,11 @@ pub enum Status {
     Superseded,
 }
 impl Status {
+    /// 当前状态是否还允许提交审批（等待审阅或暂缓）。
     pub fn accepts_submission(self) -> bool {
         matches!(self, Self::AwaitingReview | Self::Deferred)
     }
+    /// 状态的 snake_case 串（写盘与前端契约）。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AwaitingReview => "awaiting_review",
@@ -52,6 +59,7 @@ impl Status {
     }
 }
 
+/// 计划批准后的执行进度。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Execution {
@@ -62,6 +70,7 @@ pub enum Execution {
     Unknown,
 }
 
+/// 用户对一份计划的决定。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Decision {
@@ -70,6 +79,7 @@ pub enum Decision {
     Defer,
 }
 impl Decision {
+    /// 决定落地后的状态。
     pub fn settled(self) -> Status {
         match self {
             Self::Approve => Status::Approved,
@@ -77,6 +87,7 @@ impl Decision {
             Self::Defer => Status::Deferred,
         }
     }
+    /// 决定的串值（写盘契约）。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Approve => "approve",
@@ -113,6 +124,7 @@ pub struct PlanReview {
     pub superseded_by: Option<i64>,
 }
 
+/// 当前 UNIX 时间毫秒；系统时钟早于纪元时取 0。
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -129,6 +141,11 @@ pub fn content_hash(content: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// 读全部计划记录；文件缺失视为空清单。
+///
+/// # Errors
+///
+/// 文件超限或 JSON 损坏时返回错误串。
 pub fn load(dir: &Path) -> Result<Vec<PlanReview>, String> {
     let path = dir.join(FILE);
     match fs::metadata(&path) {
@@ -141,6 +158,11 @@ pub fn load(dir: &Path) -> Result<Vec<PlanReview>, String> {
     serde_json::from_slice(&bytes).map_err(|error| format!("计划记录损坏：{error}"))
 }
 
+/// 全量保存计划记录；写前检查不超 [`MAX_FILE`]，否则下次就读不回来了。
+///
+/// # Errors
+///
+/// 目录创建失败、序列化失败、超限或写盘失败时返回错误。
 fn save(dir: &Path, plans: &[PlanReview]) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let text = serde_json::to_string_pretty(plans).map_err(|error| error.to_string())?;
@@ -149,6 +171,11 @@ fn save(dir: &Path, plans: &[PlanReview]) -> Result<(), String> {
     crate::sys::write_atomic(&dir.join(FILE), &text)
 }
 
+/// 取会话目录下的文件锁（[`LOCK_FILE`]）。
+///
+/// # Errors
+///
+/// 目录创建失败或锁获取失败时返回错误。
 fn update_lock(dir: &Path) -> Result<crate::sys::ExclusiveFileLock, String> {
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     crate::sys::ExclusiveFileLock::acquire(&dir.join(LOCK_FILE))
@@ -213,11 +240,17 @@ pub fn plan_id_for(native_id: &str) -> String {
     format!("{native_id}/plan")
 }
 
+/// 取一份指定修订的计划；不存在返回 None。
+///
+/// # Errors
+///
+/// 记录读取失败时返回错误串。
 pub fn get(dir: &Path, plan_id: &str, revision: i64) -> Result<Option<PlanReview>, String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
     Ok(load(dir)?.into_iter().find(|plan| plan.plan_id == plan_id && plan.revision == revision))
 }
 
+/// 原子抢占的结果：拿到提交权，或撞上别人的决策。
 pub enum Submit {
     /// 抢占成功；`previous` 用于写管道失败时原样退回。
     Claimed { review: PlanReview, previous: Status },
@@ -314,6 +347,11 @@ pub fn expire(dir: &Path, plan_id: &str, revision: i64) -> Result<Option<PlanRev
     Ok(Some(record))
 }
 
+/// 只更新一条计划的执行进度；找不到该修订时静默返回。
+///
+/// # Errors
+///
+/// 记录读取或写回失败时返回错误串。
 pub fn mark_execution(dir: &Path, plan_id: &str, revision: i64, execution: Execution) -> Result<(), String> {
     let _guard = PLAN_LOCK.lock().map_err(|error| error.to_string())?;
     let _file_guard = update_lock(dir)?;

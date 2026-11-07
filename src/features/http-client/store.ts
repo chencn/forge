@@ -2,8 +2,8 @@
  * HTTP 客户端状态：环境、历史、当前选中的一次交换、正在跑的请求。
  *
  * 解析与变量替换在前端 `src/lib/httpFile.ts`（那边是 `.http` 的语言模型），
- * 环境文件、发送与历史在 Rust 的 `src-tauri/src/http`。状态走外部 store（参照
- * `caretStatus.ts` / `notificationStore.ts`），因为工具窗口之外的编辑器装订线也会
+ * 环境文件、发送与历史在 Rust 的 `src-tauri/src/http`。状态走外部 store（同
+ * `caretStatus.ts` / `notificationStore.ts` 一套做法），因为工具窗口之外的编辑器装订线也会
  * 触发请求，不必牵动 App 的渲染树。
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -29,6 +29,7 @@ export type { HttpExchange, HttpHistoryEntry } from "../../lib/httpFile";
 /** 工具窗口在 App 面板块编排里的 id。 */
 export const HTTP_CLIENT_VIEW = "httpClient";
 
+/** HTTP 客户端的完整外部 store 状态，字段语义见各成员注释。 */
 export interface HttpClientState {
   /** 每个文件可用的环境名（按路径，分屏同时开两个 `.http` 时各认各的）。 */
   environments: Record<string, string[]>;
@@ -54,6 +55,7 @@ const ENV_KEY = "forge:http-client:environments";
 /** 当前工作区根；命令需要它来定位环境文件与历史分桶。 */
 let root: string | null = null;
 
+/** 从 localStorage 读回环境选择；存坏了当没选过。 */
 function readEnvChoices(): Record<string, string | null> {
   try {
     const text = localStorage.getItem(ENV_KEY);
@@ -65,6 +67,7 @@ function readEnvChoices(): Record<string, string | null> {
   return {};
 }
 
+/** 持久化环境选择；写不进去（隐私模式等）只丢偏好，不挡界面。 */
 function writeEnvChoices(choices: Record<string, string | null>): void {
   try {
     localStorage.setItem(ENV_KEY, JSON.stringify(choices));
@@ -73,6 +76,7 @@ function writeEnvChoices(choices: Record<string, string | null>): void {
   }
 }
 
+/** 当前 store 状态（模块级单例）。 */
 let state: HttpClientState = {
   environments: {},
   envByFile: readEnvChoices(),
@@ -84,12 +88,15 @@ let state: HttpClientState = {
   rootEpoch: 0,
 };
 
+/** useSyncExternalStore 的订阅者集合。 */
 const listeners = new Set<() => void>();
 
+/** 通知全部订阅者。 */
 function changed(): void {
   for (const notify of listeners) notify();
 }
 
+/** 合并局部状态并通知订阅者，是本模块所有写操作的唯一出口。 */
 function patch(next: Partial<HttpClientState>): void {
   state = { ...state, ...next };
   changed();
@@ -110,11 +117,13 @@ export function httpClientSnapshot(): HttpClientState {
 
 /** 作废还在飞的历史读取。环境按文件各记一号，换工作区时整表作废。 */
 let rootEpoch = 0;
+/** 历史读取的流水号：清空历史或换工作区时作废在途读取。 */
 let historySeq = 0;
 /** 清空历史或换工作区后，已经发出的详情读取也必须失效。 */
 let historyEpoch = 0;
 /** 删除后的延迟详情不能重新进入缓存；历史 ID 不会复用。 */
 const removedHistoryIds = new Set<string>();
+/** 每个文件的环境读取流水号（按路径键），防旧响应盖新响应。 */
 const envSeq = new Map<string, number>();
 
 /** 工作区根变化时由 App 调用；换根要清掉上一个工作区的运行态，并重拉历史。 */
@@ -139,6 +148,7 @@ export function effectiveEnvironment(path: string | null): string | null {
   return chosen;
 }
 
+/** 记下某文件选中的环境并持久化。 */
 export function setEnvironment(path: string, env: string | null): void {
   const envByFile = { ...state.envByFile, [path]: env };
   writeEnvChoices(envByFile);
@@ -148,6 +158,7 @@ export function setEnvironment(path: string, env: string | null): void {
 /** 快照里读某个文件的环境名；没有就返回同一个空数组，别让 getSnapshot 每次换新引用。 */
 const NO_ENVIRONMENTS: string[] = [];
 
+/** 读某文件已取回的环境名列表；稳定空数组兜底，避免 getSnapshot 换引用。 */
 export function environmentsFor(path: string | null): string[] {
   return (path && state.environments[path]) || NO_ENVIRONMENTS;
 }
@@ -201,6 +212,7 @@ export async function refreshHistory(): Promise<void> {
 /** 没人 await 的历史刷新（换工作区、请求结束）失败时交给界面报出来，避免变成未处理的拒绝。 */
 const historyErrors = new Set<(cause: unknown) => void>();
 
+/** 订阅无人 await 的历史刷新失败，交给界面报出来。 */
 export function subscribeHttpHistoryError(listener: (cause: unknown) => void): () => void {
   historyErrors.add(listener);
   return () => {
@@ -208,6 +220,7 @@ export function subscribeHttpHistoryError(listener: (cause: unknown) => void): (
   };
 }
 
+/** 发起不阻塞调用方的历史刷新；失败分发给 {@link subscribeHttpHistoryError} 的订阅者。 */
 function refreshHistorySoon(): void {
   void refreshHistory().catch((cause) => {
     for (const listener of historyErrors) listener(cause);
@@ -254,6 +267,7 @@ export async function selectEntry(id: string): Promise<void> {
   }
 }
 
+/** 清空 HTTP 历史并同步重置当前选中项。 */
 export async function clearHistory(): Promise<void> {
   if (!root) return;
   const epoch = rootEpoch;
@@ -283,12 +297,14 @@ export async function removeHistoryEntry(id: string): Promise<void> {
   });
 }
 
+/** 在途请求的 id；没有请求在跑时为 null。 */
 let runningId: string | null = null;
 /** 批次覆盖整轮运行，包括两次发送和结束清理之间的异步间隙。 */
 let activeBatch: HttpRunSession | null = null;
 /** 已经点过停止的请求 id。读环境或两条依赖之间，后端通道还没建起来，停在这里挡住下一次发送。 */
 const cancelledIds = new Set<string>();
 
+/** 生成一次请求的唯一 id（时间戳 + 随机串，base36）。 */
 function nextRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -303,6 +319,7 @@ async function loadEnvVars(path: string | null): Promise<Record<string, string> 
   return invoke<Record<string, string>>("http_env_variables", { path, root, env });
 }
 
+/** {@link runRequest} 的调用参数，字段语义见成员注释。 */
 export interface RunArgs {
   /** `.http` 文件路径（未保存的缓冲传 null）。 */
   path: string | null;
@@ -454,11 +471,13 @@ export async function runAll(path: string | null, text: string): Promise<void> {
   }
 }
 
+/** 停止整个「运行全部」批次及当前请求。 */
 export function cancelRunning(): void {
   activeBatch = null;
   cancelCurrentRequest();
 }
 
+/** 登记取消当前在途请求；后端通道建起来之前的发送由 cancelledIds 挡下。 */
 function cancelCurrentRequest(): void {
   const id = runningId;
   if (!id) return;
@@ -496,6 +515,7 @@ export function resetHttpClient(): void {
 /** 请求有了结果时通知 App 把 HTTP 客户端弄到眼前。已经开着就保持用户摆好的位置。 */
 const revealListeners = new Set<() => void>();
 
+/** 订阅请求结果通知（App 收到后把 HTTP 客户端面板弄到眼前）。 */
 export function subscribeHttpClientReveal(listener: () => void): () => void {
   revealListeners.add(listener);
   return () => {
@@ -503,6 +523,7 @@ export function subscribeHttpClientReveal(listener: () => void): () => void {
   };
 }
 
+/** 分发「请求有了结果」的通知。 */
 function revealHttpClient(): void {
   for (const listener of revealListeners) listener();
 }
@@ -521,8 +542,10 @@ export interface HttpEditorEvent {
   error?: string;
 }
 
+/** 编辑器响应事件的订阅者集合。 */
 const editorListeners = new Set<(event: HttpEditorEvent) => void>();
 
+/** 订阅编辑器里的响应事件（分栏/页签据此展示发送进度与结果）。 */
 export function subscribeHttpEditor(listener: (event: HttpEditorEvent) => void): () => void {
   editorListeners.add(listener);
   return () => {
@@ -530,6 +553,7 @@ export function subscribeHttpEditor(listener: (event: HttpEditorEvent) => void):
   };
 }
 
+/** 向编辑器分发一次响应事件；未保存的缓冲（path 为 null）不分发。 */
 function presentEditor(event: {
   id: string;
   path: string | null;

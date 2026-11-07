@@ -72,6 +72,7 @@ pub struct SentRequest {
     pub body_base64: Option<String>,
 }
 
+/// 一次 HTTP 请求的完整响应（含实际发送的头与请求体记录）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpResponse {
@@ -214,6 +215,11 @@ fn resolve_body_file(raw: &str, base_dir: Option<&Path>) -> Result<PathBuf, Stri
     }
 }
 
+/// 进程级共享的 reqwest 客户端（带连接/总超时与 Forge UA），只构建一次。
+///
+/// # Errors
+///
+/// 客户端构建失败时返回 `HTTP_NETWORK` 错误。
 fn client() -> Result<reqwest::Client, String> {
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     CLIENT
@@ -228,6 +234,7 @@ fn client() -> Result<reqwest::Client, String> {
         .clone()
 }
 
+/// 判断响应是否适合按文本预览：Content-Type 或字节探测。
 fn looks_textual(content_type: Option<&str>, bytes: &[u8]) -> bool {
     if let Some(ct) = content_type {
         let ct = ct.to_ascii_lowercase();

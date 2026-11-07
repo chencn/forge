@@ -1,5 +1,5 @@
 /**
- * 桌面右键守卫（1:1 抄 IDEA browserGuards 语义）：
+ * 桌面右键守卫（browserGuards 语义）：
  * - WebView2 原生右键菜单（刷新/打印/检查）在桌面应用里一律禁用；
  * - 组件自己接手的右键（弹了自绘菜单）不重复兜底；
  * - 未接手的右键落在可读文本（显式放开选中的区域，如通知标题/正文）上时，
@@ -7,8 +7,10 @@
  */
 import type { MenuItem } from "../components/ContextMenu";
 
+/** 可编辑元素选择器：这些落点交给组件自己处理，不兜底。 */
 const EDITABLE = "input, textarea, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']";
 
+/** 选区是否覆盖了 target（可交互式判定「复制」是否可用）。 */
 function selectionCovers(sel: Selection | null, target: Node): boolean {
   if (!sel || sel.isCollapsed || !sel.toString()) return false;
   for (let i = 0; i < sel.rangeCount; i++) {
@@ -57,19 +59,24 @@ export async function copyText(text: string): Promise<void> {
   document.execCommand("copy");
 }
 
+/** 守卫当前弹出的兜底菜单（位置 + 菜单项）。 */
 interface GuardMenu {
   x: number;
   y: number;
   items: MenuItem[];
 }
 
+/** 当前兜底菜单单例。 */
 let guardMenu: GuardMenu | null = null;
+/** 菜单开关订阅者。 */
 const listeners = new Set<() => void>();
 
+/** 广播菜单开关。 */
 function emit() {
   for (const listener of listeners) listener();
 }
 
+/** 兜底菜单的响应式单例总线（读/开/关/订阅）。 */
 export const contextMenuGuard = {
   get: () => guardMenu,
   show: (menu: GuardMenu) => {
@@ -87,14 +94,15 @@ export const contextMenuGuard = {
   },
 };
 
-/** 浏览器专属快捷键：桌面应用里没有意义，拦掉（对齐 IDEA BLOCKED）。 */
+/** 浏览器专属快捷键：桌面应用里没有意义，拦掉。 */
 const BLOCKED = new Set([
   "Meta+P", "Ctrl+P", "Meta+S", "Meta+Shift+S", "Meta+O", "Meta+G", "Meta+Shift+G",
   "Meta+[", "Meta+]", "Meta+Alt+I", "Meta+U",
 ]);
-/** 刷新/硬刷新：WebView2 的 F5 会重载整个应用（对齐 IDEA RELOAD，PROD 拦截）。 */
+/** 刷新/硬刷新：WebView2 的 F5 会重载整个应用，生产环境拦截。 */
 const RELOAD = new Set(["Meta+R", "Meta+Shift+R", "Ctrl+R", "Ctrl+Shift+R", "F5", "Shift+F5"]);
 
+/** 把键盘事件归一成 `Ctrl+Shift+R` 形态的快捷键串。 */
 function keyId(e: KeyboardEvent): string {
   const key = e.code.startsWith("Key")
     ? e.code.slice(3)
@@ -108,6 +116,11 @@ function keyId(e: KeyboardEvent): string {
     .join("+");
 }
 
+/**
+ * 安装全局守卫：右键兜底菜单、浏览器快捷键拦截、文件拖入导航拦截。
+ *
+ * @returns 卸载函数，移除全部监听
+ */
 export function installContextMenuGuard(opts: { blockReload?: boolean } = {}): () => void {
   const blockReload = opts.blockReload ?? import.meta.env.PROD;
   let menuBefore: unknown = null;

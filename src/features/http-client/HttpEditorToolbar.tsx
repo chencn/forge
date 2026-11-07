@@ -25,7 +25,7 @@ import {
 } from "./store";
 import styles from "./HttpClient.module.css";
 
-/** IDEA 的「运行全部」：两枚播放三角。 */
+/** 「运行全部」：两枚播放三角。 */
 export function RunAllIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -36,6 +36,7 @@ export function RunAllIcon() {
   );
 }
 
+/** .http 编辑器工具栏：运行按钮与请求内动作。 */
 export default function HttpEditorToolbar({
   path,
   getContents,

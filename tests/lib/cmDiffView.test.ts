@@ -253,7 +253,7 @@ describe("createDiffView 换排法与收摊", () => {
   });
 });
 
-describe("对标 IntelliJ IDEA 比对视图连线带与块提交复选框", () => {
+describe("比对视图连线带与块提交复选框", () => {
   it("并排模式下左右两栏之间挂载连线分栏区与 SVG 梯形色带（左右高度严格一致）", async () => {
     const { host } = mount({
       original: ORIGINAL,
@@ -310,7 +310,7 @@ describe("对标 IntelliJ IDEA 比对视图连线带与块提交复选框", () =
     const checkboxes = host.querySelectorAll<HTMLElement>(".cm-diff-chunk-checkbox");
     expect(checkboxes.length).toBe(2);
 
-    // 默认全选（与 IntelliJ IDEA 一致）
+    // 默认全选
     expect(checkboxes[0].classList.contains("is-checked")).toBe(true);
     expect(checkboxes[1].classList.contains("is-checked")).toBe(true);
 

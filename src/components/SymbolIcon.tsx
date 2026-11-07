@@ -3,7 +3,7 @@ import { javaKindSvg } from "../lib/javaKindIcons";
 import { useSettings } from "../hooks/useSettings";
 
 /**
- * 1:1 对标 IntelliJ IDEA 的各类符号徽章（16x16）
+ * 各类符号徽章（16x16，JetBrains expui 风格）。
  * 浅色与深色主题分别调教了对比度与发光效果。
  */
 const SYMBOL_SVGS_LIGHT: Record<string, string> = {
@@ -39,6 +39,7 @@ const SYMBOL_SVGS_LIGHT: Record<string, string> = {
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2L13.5 5.2V11.5L8 14.8L2.5 11.5V5.2L8 2Z" fill="#F1F5F9" stroke="#64748B"/><path d="M8 2V8.5M8 8.5L13.5 11.5M8 8.5L2.5 11.5" stroke="#64748B"/></svg>',
 };
 
+/** 暗色主题下的内联 SVG 符号图标表。 */
 const SYMBOL_SVGS_DARK: Record<string, string> = {
   struct:
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6.5" fill="#432617" stroke="#FB923C"/><path d="M6 10.5C6.5 11 7.2 11.3 8 11.3C9.1 11.3 9.8 10.7 9.8 9.9C9.8 9.1 9.2 8.7 8.2 8.4L7.5 8.1C6.2 7.7 5.5 7.1 5.5 5.9C5.5 4.7 6.6 3.8 8 3.8C8.8 3.8 9.5 4.1 10 4.5L9.4 5.4C9 5.1 8.5 4.8 8 4.8C7.2 4.8 6.6 5.3 6.6 6C6.6 6.7 7.2 7.1 8.2 7.4L8.9 7.7C10.3 8.1 11 8.8 11 10C11 11.3 9.8 12.3 8 12.3C7 12.3 6.2 11.9 5.5 11.3L6 10.5Z" fill="#FB923C"/></svg>',
@@ -64,6 +65,7 @@ const SYMBOL_SVGS_DARK: Record<string, string> = {
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2L13.5 5.2V11.5L8 14.8L2.5 11.5V5.2L8 2Z" fill="#243042" stroke="#94A3B8"/><path d="M8 2V8.5M8 8.5L13.5 11.5M8 8.5L2.5 11.5" stroke="#94A3B8"/></svg>',
 };
 
+/** 符号图标的入参。 */
 export interface SymbolIconProps {
   kind: string;
   size?: number;

@@ -1,39 +1,46 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { RunConfiguration, RunKind } from "./runConfigs";
 
-/** 后端 `dep_sync_probe` 返回的单个构建单元依赖快照。 */
+/** 后端 `dep_sync_probe` 返回的单个构建单元依赖快照 */
 export interface DepSyncItem {
-  /** 稳定单元标识，如 `"npm::package.json"`、`"maven::sub/pom.xml"`。 */
+  /** 稳定单元标识，如 `"npm::package.json"`、`"maven::sub/pom.xml"` */
   id: string;
-  /** 构建工具类型，供界面复用 `RunKindIcon`。 */
+  /** 构建工具类型，供界面复用 `RunKindIcon` */
   kind: RunKind;
-  /** 展示用的主构建文件相对路径（以 `/` 分隔）。 */
+  /** 展示用的主构建文件相对路径（以 `/` 分隔） */
   manifest: string;
-  /** 该单元关联的所有受控构建文件（相对路径 -> 语义 CRC32）。 */
+  /** 该单元关联的所有受控构建文件（相对路径 -> 语义 CRC32） */
   filesCrc: Record<string, number>;
-  /** 本地依赖目录是否缺失（如 `node_modules` 不存在或为空）。 */
+  /** 本地依赖目录是否缺失（如 `node_modules` 不存在或为空） */
   missingInstalled: boolean;
-  /** 预生成的标准运行配置，可直接传给 `run.start(item.installConfig, root)` 运行。 */
+  /** 预生成的标准运行配置，可直接传给 `run.start(item.installConfig, root)` 运行 */
   installConfig: RunConfiguration;
 }
 
-/** 触发依赖同步提示的原因：首次打开缺失本地依赖目录，或受控构建清单发生了语义修改。 */
+/** 触发依赖同步提示的原因：首次打开缺失本地依赖目录，或受控构建清单发生了语义修改 */
 export type DepSyncReason = "missing" | "modified";
 
-/** 前端挂在当前工作区待显示的依赖同步提示项。 */
+/** 前端挂在当前工作区待显示的依赖同步提示项 */
 export interface DepSyncPrompt extends DepSyncItem {
-  /** 所属工作区根路径。 */
+  /** 所属工作区根路径 */
   root: string;
+  /** 提示触发原因 */
   reason: DepSyncReason;
+  /** 由 `crcSignature` 生成的签名串，用于比对与忽略记忆 */
   signature: string;
 }
 
-/** 扫描指定工作区根目录下的构建依赖状态与语义 CRC32。 */
+/**
+ * 扫描指定工作区根目录下各构建单元的依赖状态与语义 CRC32。
+ *
+ * @param root - 工作区根路径
+ * @returns 各构建单元的依赖快照列表
+ */
 export function depSyncProbe(root: string): Promise<DepSyncItem[]> {
   return invoke<DepSyncItem[]>("dep_sync_probe", { root });
 }
 
-/** 受控构建声明与包锁文件名集合（统一小写匹配；排除 `Cargo.lock` 与 `go.sum` 等编译期自动改写的副产物以避免误报）。 */
+/** 受控构建声明与包锁文件名集合（统一小写匹配）；排除 `Cargo.lock` 与 `go.sum` 等编译期自动改写的副产物以避免误报 */
 const WATCH_BUILD_FILES = new Set([
   "package.json",
   "package-lock.json",
@@ -71,7 +78,7 @@ const WATCH_BUILD_FILES = new Set([
   "directory.packages.props",
 ]);
 
-/** 产物目录内部深层文件不应被误判为工程构建清单（如 `node_modules/foo/package.json`）。 */
+/** 产物目录内部深层文件不应被误判为工程构建清单（如 `node_modules/foo/package.json`） */
 const IGNORED_ANCESTOR_DIRS = new Set([
   "node_modules",
   ".git",
@@ -90,10 +97,10 @@ const IGNORED_ANCESTOR_DIRS = new Set([
   ".dart_tool",
 ]);
 
-/** 本地依赖安装完成/移除时的生态分类。 */
+/** 本地依赖安装完成/移除时的生态分类 */
 export type InstalledEcosystem = "npm" | "python" | "php" | "dart";
 
-/** Node 包管理器安装就绪标志文件名（npm / pnpm / yarn v1 / yarn berry / bun）。 */
+/** Node 包管理器安装就绪标志文件名（npm / pnpm / yarn v1 / yarn berry / bun） */
 const NODE_INSTALL_MARKERS = new Set([
   "node_modules",
   ".modules.yaml",
@@ -103,7 +110,14 @@ const NODE_INSTALL_MARKERS = new Set([
   ".bun",
 ]);
 
-/** 将绝对路径归一化为相对于 `root` 的路径段数组；若路径不落在指定 `root` 下则返回空数组。 */
+/**
+ * 将绝对路径归一化为相对 {@link root} 的路径段数组。
+ *
+ * @param path - 磁盘变更路径；分隔符 `\` 会先归一为 `/`
+ * @param root - 工作区根路径；省略时只做分隔符切分
+ * @returns 路径段数组（去空段）；路径不落在指定 `root` 下时返回空数组
+ * @remarks 严禁把非当前工作区根的路径切成相对路径，防止后台跨工程事件误判
+ */
 function toRelativeSegments(path: string, root?: string): string[] {
   const normPath = path.replaceAll("\\", "/").replace(/\/+$/, "");
   if (!normPath) return [];
@@ -120,11 +134,14 @@ function toRelativeSegments(path: string, root?: string): string[] {
 }
 
 /**
- * 识别一条变更路径是否代表某类包管理器完成了本地依赖目录安装或清理，
- * 并返回其所属生态（`"npm" | "python" | "php" | "dart"`）；非安装标志路径返回 `null`。
+ * 识别一条变更路径是否代表某类包管理器完成了本地依赖目录的安装或清理。
  *
- * 排除 `node_modules/.vite/...`、`node_modules/.cache/...` 等开发期缓存写入，
- * 同时确保混合工程（如 Tauri 的 `npm` + `rust`）中外部执行 `npm install` 只晋升 `npm` 基线，不误清 `Cargo.toml` 提示。
+ * @param path - 磁盘变更路径
+ * @param root - 工作区根路径；省略时按裸路径段匹配
+ * @returns 所属生态；非安装标志路径返回 null
+ * @remarks 排除 `node_modules/.vite/...`、`node_modules/.cache/...` 等开发期缓存写入；
+ * 混合工程（如 Tauri 的 `npm` + `rust`）里外部执行 `npm install` 只晋升 `npm` 基线，
+ * 不会误清 `Cargo.toml` 的提示
  */
 export function detectInstalledEcosystem(
   path: string,
@@ -181,14 +198,22 @@ export function detectInstalledEcosystem(
 
 /**
  * 判断单个路径是否为顶层或子模块下的依赖安装就绪标记。
+ *
+ * @param path - 磁盘变更路径
+ * @param root - 工作区根路径
+ * @returns 是安装标记返回 true
  */
 export function isInstallMarkerPath(path: string, root?: string): boolean {
   return detectInstalledEcosystem(path, root) !== null;
 }
 
 /**
- * 判断单个路径是否为工程自身的构建声明文件（不含 `node_modules` 等产物目录安装标记）。
- * 供顶栏运行配置自动重扫与依赖变更检测共用。
+ * 判断单个路径是否为工程自身的构建声明文件。
+ *
+ * @param path - 磁盘变更路径
+ * @param root - 工作区根路径
+ * @returns 是受控构建声明返回 true
+ * @remarks 不含 `node_modules` 等产物目录安装标记；供顶栏运行配置自动重扫与依赖变更检测共用
  */
 export function isManifestDeclarationFile(path: string, root?: string): boolean {
   const segments = toRelativeSegments(path, root);
@@ -213,17 +238,26 @@ export function isManifestDeclarationFile(path: string, root?: string): boolean 
 }
 
 /**
- * 纯内存 $O(1)$ 判断一条磁盘变更路径是否可能影响构建依赖状态。
+ * 纯内存 O(1) 判断一条磁盘变更路径是否可能影响构建依赖状态。
  *
- * 99.9% 的普通源码文件（`.ts`、`.rs`、`.java` 等）在此直接短路返回 `false`，不产生任何后端 IPC 调用；
- * 同时排除 `node_modules/pkg/package.json`、`target/.../Cargo.toml` 等第三方包内部文件，
- * 但放行顶层依赖目录（如 `node_modules/.modules.yaml`、`vendor/autoload.php`）以便外部终端装完依赖后自动消隐提示。
+ * @param path - 磁盘变更路径
+ * @param root - 工作区根路径
+ * @returns 可能影响依赖状态返回 true
+ * @remarks 99.9% 的普通源码文件（`.ts`、`.rs`、`.java` 等）在此直接短路返回 false，
+ * 不产生任何后端 IPC 调用；排除 `node_modules/pkg/package.json`、`target/.../Cargo.toml`
+ * 等第三方包内部文件，但放行顶层依赖目录（如 `node_modules/.modules.yaml`、
+ * `vendor/autoload.php`），以便外部终端装完依赖后提示自动消隐
  */
 export function isBuildWatchFile(path: string, root?: string): boolean {
   return isInstallMarkerPath(path, root) || isManifestDeclarationFile(path, root);
 }
 
-/** 计算 `filesCrc` 字典的确定性签名串，用于比对与忽略记忆。 */
+/**
+ * 计算 {@link DepSyncItem.filesCrc} 字典的确定性签名串。
+ *
+ * @param filesCrc - 受控构建文件到语义 CRC32 的映射
+ * @returns 按文件名排序后拼成的 `file:crc|file:crc` 文本；用于比对与忽略记忆
+ */
 export function crcSignature(filesCrc: Record<string, number>): string {
   return Object.entries(filesCrc)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -231,7 +265,13 @@ export function crcSignature(filesCrc: Record<string, number>): string {
     .join("|");
 }
 
-/** 判断两份语义 CRC32 字典是否完全一致。 */
+/**
+ * 判断两份语义 CRC32 字典是否完全一致。
+ *
+ * @param a - 一侧字典
+ * @param b - 另一侧字典
+ * @returns 键集与全部值都相等返回 true；任一侧 undefined 视为不一致
+ */
 export function sameFilesCrc(
   a: Record<string, number> | undefined,
   b: Record<string, number> | undefined
@@ -246,7 +286,12 @@ export function sameFilesCrc(
   return true;
 }
 
-/** 将运行配置里的工具占位（`${mvn}` 等）格式化为按钮上可读的简洁命令。 */
+/**
+ * 把运行配置里的工具占位格式化为按钮上可读的简洁命令。
+ *
+ * @param command - 含 `${mvn}` 等占位的原始命令
+ * @returns 占位替换为工具名、去掉尾部 ` help` 后的简洁文本
+ */
 export function formatSyncCommand(command: string): string {
   return command
     .replaceAll("${mvn}", "mvn")

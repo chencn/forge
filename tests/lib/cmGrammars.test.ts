@@ -15,7 +15,7 @@ describe("语法判定", () => {
   });
 
   it("语言目录把 JSX 算成独立语言后，这两个 id 直接认到 TSX / JSX", () => {
-    // 新目录对标 IDE：.tsx → typescriptreact、.jsx → javascriptreact。
+    // 新目录口径：.tsx → typescriptreact、.jsx → javascriptreact。
     // 映射断了会整门掉高亮（matchLanguageName 会把 react 认成 Java）。
     expect(describeGrammar("typescriptreact")?.name).toBe("TSX");
     expect(describeGrammar("javascriptreact")?.name).toBe("JSX");

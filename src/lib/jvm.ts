@@ -1,7 +1,7 @@
 /**
- * JVM 项目的包路径压缩，照 IntelliJ 项目视图的「Compact Middle Packages」。
+ * JVM 项目的包路径压缩（「Compact Middle Packages」）。
  *
- * JVM 不只有 Java：Kotlin、Groovy、Scala 同样按包组织。IDEA 里只有 JVM 源码根之下的层级
+ * JVM 不只有 Java：Kotlin、Groovy、Scala 同样按包组织。只有 JVM 源码根之下的层级
  * 才把目录链显示成包名（`com/example/demo` → `com.example.demo`），其它语言照常按目录显示。
  *
  * 这里没有 PSI，按约定判：路径里出现 `src/main/<jvm语言>` 或 `src/test/<jvm语言>` 这样的片段，

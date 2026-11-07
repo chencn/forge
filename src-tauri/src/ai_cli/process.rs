@@ -11,6 +11,7 @@ const OUTPUT_LIMIT: usize = 32 * 1024;
 /// 需要完整解析的 stdout 也必须有硬上限；超过后继续排空管道，但拒绝解析截断数据。
 const FULL_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 
+/// 子进程输出的收集器：累积缓冲与溢出标记，reader 线程与主线程共享。
 struct Capture {
     bytes: Arc<Mutex<Vec<u8>>>,
     overflow: Arc<AtomicBool>,
@@ -75,8 +76,14 @@ fn capture(pipe: impl Read + Send + 'static, done: mpsc::Sender<()>, mode: Trunc
 /// 「关句柄」这一个动作，Drop 里不需要再枚举进程。
 #[cfg(windows)]
 pub(crate) struct ProcessTree(windows::Win32::Foundation::HANDLE);
+/// 创建 Job Object 并把子进程挂入；KILL_ON_JOB_CLOSE 保证句柄关闭时整棵树退出。
+///
+/// # Errors
+///
+/// Job 创建、限位设置、进程挂入或线程恢复失败时返回错误。
 #[cfg(windows)]
 impl ProcessTree {
+    /// 创建 Job Object 并把子进程挂入；调用方负责持有返回值直到子进程树结束。
     pub(crate) fn new(child: &Child) -> Result<Self, String> {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Foundation::HANDLE;
@@ -94,6 +101,11 @@ impl ProcessTree {
         }
     }
 }
+/// Windows 版恢复进程：快照全部线程并对目标进程的线程逐个 ResumeThread。
+///
+/// # Errors
+///
+/// 快照创建或线程遍历失败时返回错误。
 #[cfg(windows)]
 fn resume_process(pid: u32) -> Result<(), String> {
     use windows::Win32::{Foundation::CloseHandle, System::{Diagnostics::ToolHelp::*, Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME}}};
@@ -117,12 +129,14 @@ fn resume_process(pid: u32) -> Result<(), String> {
     let _ = unsafe { CloseHandle(snapshot) };
     result
 }
+/// Windows：让子进程以挂起状态启动，加入 Job 前一条指令都不能执行。
 #[cfg(windows)]
 pub(crate) fn prepare_isolated(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     // 子进程在加入 Job 前一条指令都不能执行；否则包装器可在窗口期生成逃逸后代。
     command.creation_flags(0x0000_0004 | 0x0800_0000); // CREATE_SUSPENDED | CREATE_NO_WINDOW
 }
+/// 非 Windows 无挂起启动需求，空实现。
 #[cfg(not(windows))]
 pub(crate) fn prepare_isolated(_command: &mut Command) {}
 #[cfg(windows)]
@@ -134,6 +148,7 @@ impl Drop for ProcessTree {
 pub(crate) struct ProcessTree(u32);
 #[cfg(unix)]
 impl ProcessTree {
+    /// 记下子进程 PID（即新进程组组长的 PID），Drop 时按组 SIGKILL。
     pub(crate) fn new(child: &Child) -> Result<Self, String> { Ok(Self(child.id())) }
 }
 #[cfg(unix)]
@@ -155,6 +170,11 @@ pub fn run(command: Command, timeout: Duration) -> Result<Output, String> {
 #[derive(Clone, Copy)]
 pub enum Truncation { Tail, Full }
 
+/// 按截断策略跑一条命令并收集输出；超时杀进程并返回超时错误串。
+///
+/// # Errors
+///
+/// 进程启动失败或超时被杀时返回原因串。
 pub fn run_with(mut command: Command, timeout: Duration, mode: Truncation) -> Result<Output, String> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     command.env("PATH", crate::sys::augmented_path());

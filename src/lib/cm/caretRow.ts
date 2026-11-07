@@ -1,12 +1,14 @@
 /**
- * 当前行高亮（1:1 抄 IDEA cm/caretRow.ts）：`highlightActiveLine` 的替代品，
- * 只标记**空光标**所在行——有选区时整行不透明底色会盖住选区色（IDEA 同款行为）。
+ * 当前行高亮：`highlightActiveLine` 的替代品，
+ * 只标记**空光标**所在行——有选区时整行不透明底色会盖住选区色。
  */
 import type { Extension, Range } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 
+/** 当前行整行装饰：只挂空光标所在行。 */
 const caretRow = Decoration.line({ class: "cm-activeLine" });
 
+/** 收集空光标所在行的整行装饰。 */
 function rows(view: EditorView): DecorationSet {
   const out: Range<Decoration>[] = [];
   let last = -1;

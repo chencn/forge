@@ -117,7 +117,7 @@ describe('日志快捷键的焦点与方案边界', () => {
     expect(props.onEditSource).toHaveBeenCalledWith(h.file.path);
   });
 
-  it('切换 Eclipse 后打开源文件用 F12，旧 IDEA 的 F4 立即失效', async () => {
+  it('切换 Eclipse 后打开源文件用 F12，旧 IntelliJ IDEA 方案的 F4 立即失效', async () => {
     await render();
     h.scheme = 'eclipse';
     // memo 组件需要一次 props 更新；生产中的 Context 更新同样会重新渲染。

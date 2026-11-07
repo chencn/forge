@@ -1,27 +1,36 @@
 import type { AiEntry } from "./aiRuntime";
 
+/** 工具调用的归类（列表着色与摘要措辞用）。 */
 export type ToolKind = "command" | "read" | "search" | "list" | "edit" | "add" | "delete" | "move" | "tool";
+/** 一次工具动作（读/搜/列）：对象与行号区间。 */
 export interface ToolAction { kind: ToolKind; target: string; detail?: string; start?: number; end?: number }
+/** 一个文件补丁：路径、改动类型与 diff/前后片段。 */
 export interface ToolPatch { path: string; kind: ToolKind; destination?: string; diff?: string; before?: string; after?: string; proposed: boolean; start?: number; counts?: { additions: number; deletions: number } }
+/** 一次工具调用的完整视图：摘要、动作、补丁与可选的命令/退出码/源片段。 */
 export interface ToolView {
   kind: ToolKind; summary: string; actions: ToolAction[]; patches: ToolPatch[];
   command?: string; cwd?: string; exitCode?: number; durationMs?: number;
   source?: { path: string; content: string; start: number; end: number; total?: number; truncated: boolean };
 }
+/** 把工具的 input/result 折成对象；字符串先尝试 JSON.parse，其余回空对象。 */
 export function toolObject(value: unknown): Record<string, unknown> {
   if (typeof value === "string") { try { return toolObject(JSON.parse(value)); } catch { return {}; } }
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+/** 取字符串字段；非字符串为 undefined。 */
 const string = (value: unknown) => typeof value === "string" ? value : undefined;
+/** 取有限数字字段；非数字为 undefined。 */
 const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 /** 工具条目是否为已执行生效的状态（实时完成 completed 或历史已落盘 recorded）。 */
 export const isExecutedToolStatus = (status?: string) => status === "completed" || status === "recorded";
+/** 把工具返回值折成展示文本：字符串原样、文本块数组拼接、其余 JSON 化。 */
 export function toolText(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((v) => toolObject(v).type === "text")) return value.map((v) => String(toolObject(v).text ?? "")).join("\n");
   return JSON.stringify(value, null, 2) ?? "";
 }
 
+/** 从 unified diff 的第一个 hunk 头提取新文件起始行号；没有为 undefined。 */
 function hunkStart(diff?: string): number | undefined {
   const raw = diff ? /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(diff)?.[1] : undefined;
   return raw ? Number(raw) : undefined;
@@ -124,6 +133,7 @@ export function describeAiTool(entry: AiEntry, details = true): ToolView {
   return view;
 }
 
+/** 解析后的一行 diff：类型、原文与可选的两侧行号。 */
 export interface DiffLine { kind: "add" | "delete" | "context" | "header"; text: string; oldLine?: number; newLine?: number }
 /** unified diff 的 hunk 提供真实起点；文件头与元信息不占源文件行号。 */
 export function parseToolDiff(diff: string): DiffLine[] {
@@ -143,6 +153,7 @@ export function parseToolDiff(diff: string): DiffLine[] {
   });
 }
 
+/** 汇总卡里的一个被改文件：行数统计与预览素材（diff/内容/替换片段）。 */
 export interface AiEditedFile {
   path: string;
   additions?: number;
@@ -155,6 +166,7 @@ export interface AiEditedFile {
   /** 无结构化补丁时保留执行成功的替换片段，不推算文件行号。 */
   fragments?: Array<{ before?: string; after?: string }>;
 }
+/** 一次会话（或一轮）里 AI 改动文件的汇总。 */
 export interface AiEditSummary { files: AiEditedFile[]; fileCount: number; additions?: number; deletions?: number }
 
 /**
@@ -164,6 +176,7 @@ export interface AiEditSummary { files: AiEditedFile[]; fileCount: number; addit
  */
 export interface CommandIntent { key: string; subject?: string }
 
+/** 把一条命令折成语义标题（key 为 i18n 键、subject 为宾语）；认不出返回 null。 */
 export function commandIntent(command: string): CommandIntent | null {
   const tokens = command.trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
@@ -282,7 +295,7 @@ export function toolReadLines(entry: AiEntry, view: ToolView): number | undefine
   return undefined;
 }
 
-/** 行尾的 `+N −N` 计数（对照 DiffFigure）；任何补丁缺 diff 就整个不显示，不报半个数。 */
+/** 行尾的 `+N −N` 计数；任何补丁缺 diff 就整个不显示，不报半个数。 */
 export function toolDiffCounts(view: ToolView): { additions: number; deletions: number } | undefined {
   if (!view.patches.length) return undefined;
   let additions = 0;

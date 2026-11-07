@@ -55,6 +55,7 @@ pub struct Snippet {
     pub trailing: bool,
 }
 
+/// 一段字符的 UTF-16 长度（JS 侧字符串下标口径）。
 fn units(value: &[char]) -> usize {
     value.iter().map(|c| c.len_utf16()).sum()
 }
@@ -222,6 +223,7 @@ fn session(dir: &Path, meta: &store::Metadata, needle: &str, limit: usize, max_b
     Some(json!({"hits": hits, "bytes": read, "truncated": truncated}))
 }
 
+/// 单次搜索的资源上限（会话数、单会话字节、总字节）；测试可注入更小值。
 #[derive(Clone, Copy)]
 struct SearchLimits {
     sessions: usize,
@@ -229,6 +231,7 @@ struct SearchLimits {
     total_bytes: u64,
 }
 
+/// 生产环境的默认上限，取 [`MAX_SESSIONS`] 等常量。
 const DEFAULT_LIMITS: SearchLimits = SearchLimits {
     sessions: MAX_SESSIONS,
     session_bytes: MAX_SESSION_BYTES,
@@ -247,6 +250,7 @@ pub fn search(
     search_with_limits(base, root, query, limit, include_archived, DEFAULT_LIMITS)
 }
 
+/// [`search`] 的实际执行体；`limits` 参数化是为了测试注入更小的预算。
 fn search_with_limits(
     base: &Path,
     root: &str,

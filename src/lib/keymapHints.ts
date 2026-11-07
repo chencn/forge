@@ -10,6 +10,7 @@ import { presetKeys } from "./keymaps/idea";
 import { formatShortcut } from "./shortcuts";
 import { IS_MAC } from "./sys";
 
+/** 快捷键提示表的一行：文案键、键位串与可选动作。 */
 export interface ShortcutHint {
   label: TranslationKey;
   /** 有键位才画右列。拖放那一行没有键。 */
@@ -32,7 +33,7 @@ function schemeChord(scheme: KeymapScheme, action: string): string | undefined {
 
 /**
  * 空编辑区列五行。最近文件和导航栏这边没有动作，只显示、不能点。
- * VS Code 没有「最近文件」的默认键，这一行不写键，避免把 IDEA 的 Ctrl+E 漏过去。
+ * VS Code 没有「最近文件」的默认键，这一行不写键，避免把 IDEA 方案的 Ctrl+E 漏过去。
  */
 export function shortcutHints(scheme: KeymapScheme): ShortcutHint[] {
   const gotoFile = formatShortcut("search.gotoFile", scheme);

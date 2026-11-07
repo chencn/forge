@@ -27,13 +27,16 @@ struct Running {
     stop: mpsc::Sender<()>,
 }
 
+/// 全部运行中进程表：id → 运行句柄。
 type Table = Mutex<HashMap<String, Arc<Running>>>;
 
+/// 进程表的懒初始化入口。
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| Table::new(HashMap::new()))
 }
 
+/// 对进程表/输出缓冲上毒时也照样拿到锁；进程管理不能因一次 panic 整体卡死。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -55,6 +58,7 @@ pub struct ProcExit {
     pub code: Option<i32>,
 }
 
+/// 进程 ID 发号器。
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 用系统 shell 跑一行命令：Windows 走 cmd /C，其余走 sh -c。
@@ -110,7 +114,7 @@ fn flush(app: &AppHandle, id: &str, pending: &mut Vec<u8>, encoded: &mut String)
 
 /// 跑一行命令，返回进程会话 id；输出走 proc://output，退出走 proc://exit。
 ///
-/// `env` 是这条配置自带的变量，叠在本进程的环境之上（IDEA 里 pass-parent-envs 默认开着，
+/// `env` 是这条配置自带的变量，叠在本进程的环境之上（默认继承父进程环境，
 /// 这里同样不清空父环境）。同名变量以这一份为准。
 #[tauri::command]
 pub async fn proc_start(
@@ -122,6 +126,11 @@ pub async fn proc_start(
     block(move || proc_start_impl(app, cwd, line, env)).await
 }
 
+/// [`proc_start`] 的同步体：起进程、登记进 [`table`] 并返回进程 id。
+///
+/// # Errors
+///
+/// 命令解析或进程启动失败时返回错误。
 fn proc_start_impl(
     app: AppHandle,
     cwd: String,

@@ -1,5 +1,6 @@
 import { FileWarning } from "lucide-react";
 
+/** 正文区说明的入参。 */
 interface PaneNoticeProps {
   /** 说明文字，通常是 describeError 翻好的那句。 */
   text: string;

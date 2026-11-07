@@ -134,7 +134,7 @@
   line-height: 14px;
 }
 
-/* 【保留项】目录聚合状态圆点：固定 16px 状态槽居中画 6px 圆，跟字母列同宽，
+/* 目录聚合状态圆点：固定 16px 状态槽居中画 6px 圆，跟字母列同宽，
    图标列才能在文件行/目录行/组行落在同一条竖线上 */
 .changeDot {
   flex: none;
@@ -154,7 +154,7 @@
   opacity: 0.4;
 }
 
-/* 【保留项】行尾单字母状态标记：固定 16px 状态槽 */
+/* 行尾单字母状态标记：固定 16px 状态槽 */
 .changeMark {
   flex: none;
   width: 16px;
@@ -420,7 +420,7 @@
   margin-left: auto;
 }
 
-/* 主提交按钮（1:1 对齐 IntelliJ IDEA / IDEA 实心蓝底白字） */
+/* 主提交按钮（实心蓝底白字） */
 .commitButton {
   background: var(--bg-button-primary, var(--button-solid, var(--accent, #3574f0))) !important;
   color: var(--fg-button-primary, var(--button-solid-text, #ffffff)) !important;

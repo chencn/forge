@@ -39,6 +39,7 @@ function ReadEditor({ preview, text, firstLine = 1 }: { preview: AiFilePreview; 
   return <div className="ai-file-preview-editor" ref={host} />;
 }
 
+/** 文件改动预览窗格：按当前差异视图模式渲染工具改动的文件。 */
 export default function AiFilePreviewPane({ preview, documentText }: { preview: AiFilePreview; documentText?: string }) {
   const { t } = useI18n();
   const [mode] = useAiDiffViewMode();

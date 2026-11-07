@@ -412,7 +412,7 @@ describe("键位方案", () => {
     expect(view.state.doc.toString()).toBe("alpha\nbeta");
   });
 
-  it("IDEA 的方法导航只移动光标，不移动代码", async () => {
+  it("IntelliJ IDEA 方案的方法导航只移动光标，不移动代码", async () => {
     await loadLanguage("javascript");
     const doc = "function first() {}\nfunction second() {}";
     const view = mount(doc, "idea", 0, false, "javascript");

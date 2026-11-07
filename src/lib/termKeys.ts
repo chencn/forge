@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 
+/** 终端快捷键要用到的宿主动作，按能力注入，缺省的组合键直接放行。 */
 export interface TermKeyActions {
   /** 读剪贴板并粘贴进终端（要不要先确认由它决定）。只读面板不给。 */
   paste?: () => void;

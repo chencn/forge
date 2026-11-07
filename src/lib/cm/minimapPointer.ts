@@ -11,6 +11,7 @@
  */
 import type { EditorView } from "@codemirror/view";
 
+/** 一次拖拽的现场：指针设备 id、起点 y、视口框顶与比例尺。 */
 interface Drag {
   id: number;
   y: number;
@@ -30,6 +31,7 @@ interface Thumb {
 /** 库把正文按 1/8 画进画布（PixelMultiplier × SizeRatio）。视口框高度对不上时退回这个数。 */
 const MINIMAP_SCALE = 8;
 
+/** 在小地图宿主上挂指针事件：按下拖视口框、按住滚轮区滚动正文。 */
 export function attachMinimapPointer(host: HTMLElement, view: EditorView): void {
   let drag: Drag | null = null;
   let thumbFrame = 0;

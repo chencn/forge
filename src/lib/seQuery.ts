@@ -1,8 +1,8 @@
 /**
  * 弹窗输入的地点解析：`File.kt:42`、`File.kt:42:5`、贴进来的绝对路径、
- * `file://` 链接与 Windows 反斜杠路径都认（抄 IntelliJ IDEA 的 common/query.ts）。
+ * `file://` 链接与 Windows 反斜杠路径都认。
  * 输入的行列号 1 起；这边编辑器与后端命令同样吃 1 起，所以原样保留，
- * 只在交给 IntelliJ IDEA 那套 0 起口径的地方时注意换算。
+ * 只在交给 0 起口径的外部接口时注意换算。
  */
 
 export interface ParsedQuery {
@@ -14,8 +14,16 @@ export interface ParsedQuery {
   col: number | null;
 }
 
+/** 地点后缀匹配：`名字:行:列` 与 `名字(行,列)` 两种写法都吃。 */
 const LOCATION = /^(.*?)(?::(\d+)(?::(\d+))?|\((\d+)(?:[,:](\d+))?\)):?$/;
 
+/**
+ * 把弹窗输入拆成查询文本与可选的行列地点，并支持剥离 `file://` 前缀与项目根前缀。
+ *
+ * @param raw - 原始输入，可带引号、`file://` 链接或 Windows 反斜杠路径
+ * @param root - 当前项目根；给出的绝对路径落在根下时剥成相对路径
+ * @returns 拆解结果；行列号 1 起，没给为 null
+ */
 export function parseLocationQuery(raw: string, root?: string | null): ParsedQuery {
   let text = raw.trim();
   if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {

@@ -7,7 +7,9 @@ export interface FileLinkTarget {
   column?: number;
 }
 
+/** Windows 绝对路径（盘符开头）。 */
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+/** 带 URI scheme 的地址（http:、mailto:…）。 */
 const URI_SCHEME = /^[A-Za-z][A-Za-z\d+.-]*:/;
 
 /**
@@ -20,6 +22,7 @@ const WEB_SUFFIXES = new Set([
   "info", "edu", "gov", "uk", "de", "jp", "kr", "tw", "hk",
 ]);
 
+/** 首段是否是 web 主机名（用于排除网址被当路径）。 */
 function isWebHost(segment: string): boolean {
   const host = segment.toLowerCase();
   if (host === "localhost" || host.startsWith("www.")) return true;
@@ -43,6 +46,7 @@ export function isFileName(name: string): boolean {
   );
 }
 
+/** decodeURIComponent；非法序列原样返回。 */
 function decodeSafely(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -51,12 +55,14 @@ function decodeSafely(value: string): string {
   }
 }
 
+/** 解析正整数；不是返回 undefined。 */
 function positive(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const number = Number.parseInt(value, 10);
   return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
+/** 从 URL hash 解析起始行号（`#L10` / `#L10-L25` / `#line=10` / `#10`）。 */
 function parseHashLine(hash: string): number | undefined {
   const normalized = hash.replace(/^#/, "");
   if (!normalized) return undefined;
@@ -81,6 +87,7 @@ function splitPosition(rawPath: string): { path: string; line?: number; column?:
   return line === undefined ? { path: rawPath } : { path: withLine[1], line };
 }
 
+/** 形状上像本地路径（绝对、相对、UNC、或像文件名的单词）。 */
 function isLocalPathLike(path: string): boolean {
   if (!path) return false;
   if (WINDOWS_ABSOLUTE.test(path) || path.startsWith("\\\\") || path.startsWith("//")) return true;

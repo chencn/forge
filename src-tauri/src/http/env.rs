@@ -15,8 +15,11 @@ use crate::error::err;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// 公开环境文件名（可入库）。
 pub const PUBLIC_FILE: &str = "http-client.env.json";
+/// 私有环境文件名（.gitignore 挡住，放密钥）。
 pub const PRIVATE_FILE: &str = "http-client.private.env.json";
+/// 请求文件私有环境的共享段键名（`$shared`）。
 const SHARED: &str = "$shared";
 
 type EnvMap = BTreeMap<String, BTreeMap<String, String>>;
@@ -47,6 +50,7 @@ fn path_key(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// 目录等价比较（Windows 大小写不敏感、统一斜杠）。
 fn same_dir(a: &Path, b: &Path) -> bool {
     path_key(a) == path_key(b)
 }
@@ -107,7 +111,7 @@ fn parse_env(text: &str) -> Result<EnvMap, String> {
                 serde_json::Value::String(s) => s.clone(),
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::Bool(b) => b.to_string(),
-                // 对象在 IDEA 里配置 SSL / auth，不当变量。
+                // 对象走专用的 SSL / auth 配置，不当变量。
                 _ => continue,
             };
             map.insert(k.clone(), s);
@@ -117,6 +121,11 @@ fn parse_env(text: &str) -> Result<EnvMap, String> {
     Ok(out)
 }
 
+/// 沿目录链向上找第一份存在的环境文件并解析；都不存在返回空表。
+///
+/// # Errors
+///
+/// 找到的文件解析失败时返回错误。
 fn read_first(dirs: &[PathBuf], name: &str) -> Result<EnvMap, String> {
     for d in dirs {
         let p = d.join(name);
@@ -129,6 +138,11 @@ fn read_first(dirs: &[PathBuf], name: &str) -> Result<EnvMap, String> {
 }
 
 impl Environments {
+    /// 按搜索目录顺序加载公开与私有环境文件；文件缺失视为空。
+    ///
+    /// # Errors
+    ///
+    /// 环境文件解析失败时返回 `HTTP_ENV` 错误串。
     pub fn load(file: Option<&Path>, root: Option<&Path>) -> Result<Self, String> {
         let dirs = search_dirs(file, root);
         Ok(Self {
@@ -137,6 +151,11 @@ impl Environments {
         })
     }
 
+    /// 从 JSON 字符串构造（仅测试用）。
+    ///
+    /// # Errors
+    ///
+    /// 解析失败时返回 `HTTP_ENV` 错误串。
     #[cfg(test)]
     pub fn from_json(public: &str, private: &str) -> Result<Self, String> {
         let p = |s: &str| -> Result<EnvMap, String> {

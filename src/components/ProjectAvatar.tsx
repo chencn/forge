@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { getProjectAvatarBackground, getProjectAvatarInitials, getProjectGradientColorIndex } from "../lib/projectAvatar";
 
+/** 项目头像的入参。 */
 interface ProjectAvatarProps {
   name: string;
   path: string;

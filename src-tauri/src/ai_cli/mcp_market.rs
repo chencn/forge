@@ -9,17 +9,26 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+/// 市场来源标识：MCP 官方 registry。
 const OFFICIAL: &str = "official_registry";
+/// 市场来源标识：Smithery。
 const SMITHERY: &str = "smithery";
+/// MCP 官方 registry 的服务器列表端点。
 const OFFICIAL_SERVERS: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
+/// Smithery 的服务器列表端点。
 const SMITHERY_SERVERS: &str = "https://api.smithery.ai/servers";
+/// 单页返回的服务器数量上限。
 const LIMIT: u32 = 30;
+/// 搜索关键词的最大长度。
 const MAX_QUERY: usize = 120;
+/// 服务器 ID 的最大长度。
 const MAX_SERVER_ID: usize = 512;
 // 官方 registry 首包实测要 40 秒以上，慢的时候更久。
 const OFFICIAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Smithery 请求超时。
 const SMITHERY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// MCP 市场的一个来源目录。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketProvider {
@@ -28,6 +37,7 @@ pub struct MarketProvider {
     pub description: String,
 }
 
+/// 市场目录里的一条 MCP 服务器。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketServer {
@@ -49,6 +59,7 @@ pub struct MarketServer {
     pub is_deployed: Option<bool>,
 }
 
+/// 安装一个服务器需要填的一个参数。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketParameter {
@@ -64,6 +75,7 @@ pub struct MarketParameter {
     pub location: Option<String>,
 }
 
+/// 一种可选的安装方式（stdio / http 等）及其参数表。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketOption {
@@ -75,6 +87,7 @@ pub struct MarketOption {
     pub parameters: Vec<MarketParameter>,
 }
 
+/// 服务器详情：完整元数据加全部安装方式。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketDetail {
@@ -99,6 +112,7 @@ pub struct MarketDetail {
     pub spec: Option<Value>,
 }
 
+/// 列出可用的 MCP 市场来源目录。
 #[tauri::command]
 pub fn ai_mcp_market_providers() -> Vec<MarketProvider> {
     vec![
@@ -127,6 +141,7 @@ fn encode(value: &str) -> String {
     out
 }
 
+/// 官方 registry 的列表 URL，可选 `search` 关键词。
 fn official_url(query: &str) -> String {
     let mut url = format!("{OFFICIAL_SERVERS}?version=latest&limit={LIMIT}");
     let query = query.trim();
@@ -137,30 +152,37 @@ fn official_url(query: &str) -> String {
     url
 }
 
+/// Smithery 的列表 URL。
 fn smithery_url(query: &str) -> String {
     format!("{SMITHERY_SERVERS}?limit={LIMIT}&q={}", encode(query.trim()))
 }
 
+/// 取 JSON 字符串值并去首尾空白；空串视为缺失。
 fn text(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).map(str::trim).filter(|item| !item.is_empty()).map(str::to_string)
 }
 
+/// [`text`] 的对象取值形式。
 fn field(object: &Map<String, Value>, key: &str) -> Option<String> {
     text(object.get(key))
 }
 
+/// [`field`] 缺失时给空串的变体。
 fn string_field(object: &Map<String, Value>, key: &str) -> String {
     field(object, key).unwrap_or_default()
 }
 
+/// 取对象的布尔字段。
 fn bool_field(object: &Map<String, Value>, key: &str) -> Option<bool> {
     object.get(key).and_then(Value::as_bool)
 }
 
+/// 取对象的无符号整数字段。
 fn number_field(object: &Map<String, Value>, key: &str) -> Option<u64> {
     object.get(key).and_then(Value::as_u64)
 }
 
+/// 取对象的浮点字段。
 fn score_field(object: &Map<String, Value>, key: &str) -> Option<f64> {
     object.get(key).and_then(Value::as_f64)
 }
@@ -178,10 +200,12 @@ fn protocol(raw: &str) -> Option<&'static str> {
     }
 }
 
+/// 传输协议归一；认不出的按 http 处理。
 fn protocol_or_http(raw: &str) -> String {
     protocol(raw).unwrap_or("http").to_string()
 }
 
+/// 安装方式的缺省排序权值：stdio 优先于 http，sse 最后。
 fn protocol_priority(protocol: &str) -> u8 {
     match protocol {
         "stdio" => 0,
@@ -191,6 +215,7 @@ fn protocol_priority(protocol: &str) -> u8 {
     }
 }
 
+/// 汇总官方条目的全部传输协议（remotes + packages 去重）。
 fn official_protocols(server: &Map<String, Value>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     for remote in server.get("remotes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object) {
@@ -207,6 +232,7 @@ fn official_protocols(server: &Map<String, Value>) -> Vec<String> {
     seen.into_iter().collect()
 }
 
+/// 把官方 registry 的一条 server JSON 映射成 [`MarketServer`]；缺 `name` 时返回 `None`。
 fn official_item(server: &Map<String, Value>, meta: Option<&Value>) -> Option<MarketServer> {
     let server_id = field(server, "name")?;
     let verified = meta
@@ -235,6 +261,7 @@ fn official_item(server: &Map<String, Value>, meta: Option<&Value>) -> Option<Ma
     })
 }
 
+/// 把 Smithery 的一条 server JSON 映射成 [`MarketServer`]；缺 `qualifiedName` 时返回 `None`。
 fn smithery_item(server: &Map<String, Value>) -> Option<MarketServer> {
     let server_id = field(server, "qualifiedName")?;
     let remote = bool_field(server, "remote").unwrap_or(false);
@@ -257,6 +284,11 @@ fn smithery_item(server: &Map<String, Value>) -> Option<MarketServer> {
     })
 }
 
+/// 解析官方 registry 的列表响应。
+///
+/// # Errors
+///
+/// 缺少 `servers` 数组或条目超过 200 时返回错误。
 fn parse_official_list(body: &Value) -> Result<Vec<MarketServer>, String> {
     let items = body.get("servers").and_then(Value::as_array)
         .ok_or("市场返回内容格式错误：缺少 servers 数组")?;
@@ -267,6 +299,11 @@ fn parse_official_list(body: &Value) -> Result<Vec<MarketServer>, String> {
         .collect())
 }
 
+/// 解析 Smithery 的列表响应。
+///
+/// # Errors
+///
+/// 缺少 `servers` 数组或条目超过 200 时返回错误。
 fn parse_smithery_list(body: &Value) -> Result<Vec<MarketServer>, String> {
     let items = body.get("servers").and_then(Value::as_array)
         .ok_or("市场返回内容格式错误：缺少 servers 数组")?;
@@ -274,15 +311,30 @@ fn parse_smithery_list(body: &Value) -> Result<Vec<MarketServer>, String> {
     Ok(items.iter().filter_map(Value::as_object).filter_map(smithery_item).collect())
 }
 
+/// 拉取并解析一个市场 URL 的 JSON。
+///
+/// # Errors
+///
+/// 请求失败或响应不是合法 JSON 时返回带 `label` 前缀的错误。
 async fn fetch_json(url: &str, timeout: Duration, label: &str) -> Result<Value, String> {
     let body = fetch_text_with(url, timeout).await.map_err(|error| format!("{label}：{error}"))?;
     serde_json::from_str(&body).map_err(|error| format!("{label}返回格式错误：{error}"))
 }
 
+/// 校验市场来源 id 只能是内置的两个。
+///
+/// # Errors
+///
+/// 未知的来源返回错误。
 fn valid_market(market: &str) -> Result<(), String> {
     if market == OFFICIAL || market == SMITHERY { Ok(()) } else { Err("未知的 MCP 市场来源".into()) }
 }
 
+/// 校验服务器标识：非空、长度受限、无控制字符。
+///
+/// # Errors
+///
+/// 任一条件不满足返回错误。
 fn valid_server_id(server_id: &str) -> Result<(), String> {
     if server_id.trim().is_empty() || server_id.chars().count() > MAX_SERVER_ID || server_id.chars().any(char::is_control) {
         Err("服务器标识无效".into())
@@ -358,6 +410,7 @@ pub async fn ai_mcp_market_resolve(
 
 // ---------- 官方 registry：包 / 远程 ----------
 
+/// 官方 registry 的一个命名键值项（请求头 / 环境变量 / URL 变量）。
 #[derive(Clone, Default)]
 struct KeyValue {
     name: String,
@@ -370,6 +423,7 @@ struct KeyValue {
     hint: Option<String>,
 }
 
+/// 从 registry 的对象写法解析 [`KeyValue`]。
 fn key_value_from_object(name: &str, object: &Map<String, Value>) -> KeyValue {
     KeyValue {
         name: name.to_string(),
@@ -405,6 +459,7 @@ fn key_values(value: Option<&Value>) -> Vec<KeyValue> {
     }).collect()
 }
 
+/// registry 的一个命令行参数（positional 或 named）。
 #[derive(Clone, Default)]
 struct Argument {
     name: Option<String>,
@@ -417,6 +472,7 @@ struct Argument {
     hint: Option<String>,
 }
 
+/// 解析 registry 的 `*Arguments` 数组。
 fn arguments(value: Option<&Value>) -> Vec<Argument> {
     value.and_then(Value::as_array).map(|items| items.iter().filter_map(Value::as_object).map(|object| Argument {
         name: field(object, "name"),
@@ -430,6 +486,7 @@ fn arguments(value: Option<&Value>) -> Vec<Argument> {
     }).collect()).unwrap_or_default()
 }
 
+/// 官方 registry 的一个远程传输条目。
 #[derive(Clone)]
 struct Transport {
     protocol: String,
@@ -438,6 +495,7 @@ struct Transport {
     variables: Vec<KeyValue>,
 }
 
+/// 解析一个远程传输条目；协议认不出时返回 `None`。
 fn transport(value: Option<&Value>) -> Option<Transport> {
     let object = value?.as_object()?;
     let protocol = protocol(object.get("type").and_then(Value::as_str)?)?;
@@ -449,6 +507,7 @@ fn transport(value: Option<&Value>) -> Option<Transport> {
     })
 }
 
+/// 官方 registry 的一个安装包（npm/pypi 等）。
 #[derive(Clone)]
 struct Package {
     registry_type: String,
@@ -461,6 +520,7 @@ struct Package {
     transport: Option<Transport>,
 }
 
+/// 解析一个安装包条目；缺 `identifier` 时返回 `None`。
 fn package(value: &Value) -> Option<Package> {
     let object = value.as_object()?;
     Some(Package {
@@ -475,17 +535,20 @@ fn package(value: &Value) -> Option<Package> {
     })
 }
 
+/// 判断值是否是 `{placeholder}` 式的未解析占位符（不能原样写进配置）。
 fn unresolved(value: &str) -> bool {
     // registry 用 `Bearer {smithery_api_key}` 这种占位符表示「必须自己填」；
     // 任何同时含花括号的默认值都不能原样写进配置。
     value.contains('{') && value.contains('}')
 }
 
+/// [`KeyValue`] 的有效默认值；无值或含未解析占位符时为 `None`。
 fn key_value_default(item: &KeyValue) -> Option<String> {
     let value = item.value.as_deref().or(item.default.as_deref())?.trim();
     (!value.is_empty() && !unresolved(value)).then(|| value.to_string())
 }
 
+/// [`KeyValue`] 是否必填：显式标记、含占位符或缺有效默认值都算。
 fn key_value_required(item: &KeyValue) -> bool {
     item.required
         || item.value.as_deref().is_some_and(unresolved)
@@ -493,6 +556,7 @@ fn key_value_required(item: &KeyValue) -> bool {
         || key_value_default(item).is_none()
 }
 
+/// 把任意 JSON 值转成可展示/写配置的文本；`null` 返回 `None`。
 fn value_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => {
@@ -506,15 +570,18 @@ fn value_text(value: &Value) -> Option<String> {
     }
 }
 
+/// 从用户填写的值表里读一项（已转文本）。
 fn read_value(values: &Map<String, Value>, key: &str) -> Option<String> {
     values.get(key).and_then(value_text)
 }
 
+/// [`Argument`] 的有效默认值；无值或含占位符时为 `None`。
 fn argument_default(argument: &Argument) -> Option<String> {
     let value = argument.value.as_deref().or(argument.default.as_deref())?.trim();
     (!value.is_empty() && !unresolved(value)).then(|| value.to_string())
 }
 
+/// [`Argument`] 的表单类型（string/boolean/number/integer/json）。
 fn argument_kind(argument: &Argument) -> String {
     match argument.format.as_deref().unwrap_or("string") {
         "boolean" => "boolean",
@@ -525,6 +592,11 @@ fn argument_kind(argument: &Argument) -> String {
     }.into()
 }
 
+/// 把一个参数拼进命令行；`enforce` 且必填缺值时报错。
+///
+/// # Errors
+///
+/// 必填参数没有用户值也没有默认值时返回带参数名的错误。
 fn append_argument(
     target: &mut Vec<String>,
     argument: &Argument,
@@ -557,6 +629,7 @@ fn append_argument(
     Ok(())
 }
 
+/// 包的运行时命令：`runtimeHint` 优先，否则按 registryType 推 npx/uvx。
 fn runtime_of(item: &Package) -> Option<String> {
     item.runtime_hint.clone().or_else(|| match item.registry_type.trim() {
         "npm" => Some("npx".into()),
@@ -565,6 +638,7 @@ fn runtime_of(item: &Package) -> Option<String> {
     })
 }
 
+/// 拼安装目标：npx 加 `@version`，uvx 的 pypi 包用 `==version`。
 fn package_target(item: &Package, runtime: &str) -> String {
     let identifier = item.identifier.trim();
     let Some(version) = item.version.as_deref().map(str::trim).filter(|version| !version.is_empty() && *version != "latest") else {
@@ -585,6 +659,11 @@ fn package_target(item: &Package, runtime: &str) -> String {
     identifier.to_string()
 }
 
+/// 生成 stdio 安装 spec（command/args/env）。
+///
+/// # Errors
+///
+/// 无可用运行方式，或 `enforce` 时必填参数/环境变量缺值。
 fn stdio_spec(item: &Package, values: &Map<String, Value>, enforce: bool) -> Result<Value, String> {
     let runtime = runtime_of(item).ok_or_else(|| format!("包「{}」没有可用的运行方式", item.identifier))?;
     let mut args = Vec::new();
@@ -617,6 +696,7 @@ fn stdio_spec(item: &Package, values: &Map<String, Value>, enforce: bool) -> Res
     Ok(Value::Object(spec))
 }
 
+/// 往 URL 追加一个编码过的查询参数。
 fn append_query(url: &mut String, key: &str, value: &str) {
     url.push(if url.contains('?') { '&' } else { '?' });
     url.push_str(&encode(key));
@@ -624,6 +704,11 @@ fn append_query(url: &mut String, key: &str, value: &str) {
     url.push_str(&encode(value));
 }
 
+/// 生成远程安装 spec（url + headers）；URL 模板变量替换后残余的落查询串。
+///
+/// # Errors
+///
+/// 缺 http(s) 地址，或 `enforce` 时必填变量/请求头缺值。
 fn remote_spec(item: &Transport, values: &Map<String, Value>, enforce: bool) -> Result<Value, String> {
     let base = item.url.as_deref().map(str::trim)
         .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
@@ -669,6 +754,7 @@ fn remote_spec(item: &Transport, values: &Map<String, Value>, enforce: bool) -> 
     Ok(Value::Object(spec))
 }
 
+/// 构造一个 [`MarketParameter`]（各来源共用的组装点）。
 fn parameter(key: String, label: String, description: Option<String>, required: bool, secret: bool, kind: String, default_value: Option<String>, placeholder: Option<String>, location: &str) -> MarketParameter {
     MarketParameter {
         key,
@@ -684,6 +770,7 @@ fn parameter(key: String, label: String, description: Option<String>, required: 
     }
 }
 
+/// stdio 安装方式的参数表：运行时参数 + 包参数 + 环境变量。
 fn stdio_parameters(item: &Package) -> Vec<MarketParameter> {
     let mut out = Vec::new();
     for (index, argument) in item.runtime_arguments.iter().enumerate() {
@@ -702,6 +789,7 @@ fn stdio_parameters(item: &Package) -> Vec<MarketParameter> {
     out
 }
 
+/// 远程安装方式的参数表：请求头 + URL 变量。
 fn remote_parameters(item: &Transport) -> Vec<MarketParameter> {
     let mut out = Vec::new();
     for header in &item.headers {
@@ -717,6 +805,7 @@ fn remote_parameters(item: &Transport) -> Vec<MarketParameter> {
     out
 }
 
+/// registry/Smithery 的 format 字段归一成表单类型。
 fn format_kind(format: &str) -> String {
     match format {
         "boolean" => "boolean",
@@ -727,11 +816,13 @@ fn format_kind(format: &str) -> String {
     }.into()
 }
 
+/// 按名字猜测参数是否敏感（token/secret/password/key 等关键词）。
 fn key_looks_secret(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name.contains("token") || name.contains("secret") || name.contains("password") || name.contains("api_key") || name.ends_with("key")
 }
 
+/// 官方服务器的全部安装方式（packages 的 stdio/远程 + remotes）。
 fn official_options(provider: Provider, server: &Map<String, Value>) -> Vec<MarketOption> {
     let mut options = Vec::new();
     for (index, item) in server.get("packages").and_then(Value::as_array).into_iter().flatten().enumerate() {
@@ -779,6 +870,11 @@ fn official_options(provider: Provider, server: &Map<String, Value>) -> Vec<Mark
     options
 }
 
+/// 官方服务器的详情：元数据 + 安装方式，缺省方式按 [`protocol_priority`] 选。
+///
+/// # Errors
+///
+/// 条目缺名称时返回错误。
 fn official_detail(provider: Provider, server: &Map<String, Value>, meta: Option<&Value>) -> Result<MarketDetail, String> {
     let item = official_item(server, meta).ok_or("服务器条目缺少名称")?;
     let install_options = official_options(provider, server);
@@ -805,6 +901,11 @@ fn official_detail(provider: Provider, server: &Map<String, Value>, meta: Option
     })
 }
 
+/// 按用户选的安装方式与填写的值生成官方 spec（`enforce=true` 强制校验必填）。
+///
+/// # Errors
+///
+/// option_id 格式非法、来源条目不存在或必填缺值时返回错误。
 fn resolve_official(provider: Provider, server: &Map<String, Value>, option_id: &str, values: &Map<String, Value>) -> Result<Value, String> {
     let mut parts = option_id.split(':');
     let market = parts.next().ok_or("安装方式无效")?;
@@ -834,6 +935,7 @@ fn resolve_official(provider: Provider, server: &Map<String, Value>, option_id: 
 
 // ---------- Smithery ----------
 
+/// Smithery configSchema 的一个字段。
 #[derive(Clone)]
 struct SchemaField {
     key: String,
@@ -846,6 +948,7 @@ struct SchemaField {
     location: String,
 }
 
+/// 从 JSON Schema 属性归一类型；联合类型跳过 `null` 分支。
 fn schema_kind(property: &Map<String, Value>) -> String {
     match property.get("type") {
         Some(Value::String(kind)) => format_kind(kind),
@@ -855,6 +958,7 @@ fn schema_kind(property: &Map<String, Value>) -> String {
     }
 }
 
+/// 展开一个 configSchema 的全部字段；敏感字段默认走请求头。
 fn schema_fields(schema: Option<&Value>) -> Vec<SchemaField> {
     let Some(root) = schema.and_then(Value::as_object) else { return Vec::new() };
     let required: BTreeSet<String> = root.get("required").and_then(Value::as_array)
@@ -889,6 +993,11 @@ fn schema_fields(schema: Option<&Value>) -> Vec<SchemaField> {
     }).collect()
 }
 
+/// 生成 Smithery 远程安装 spec（url + headers）。
+///
+/// # Errors
+///
+/// 缺部署地址、地址非 http(s)，或 `enforce` 时必填字段缺值。
 fn smithery_spec(connection: &Map<String, Value>, fallback: Option<&str>, values: &Map<String, Value>, enforce: bool) -> Result<Value, String> {
     let protocol = connection.get("type").and_then(Value::as_str).map(protocol_or_http).unwrap_or_else(|| "http".into());
     let url = field(connection, "deploymentUrl").or_else(|| fallback.map(str::to_string))
@@ -917,6 +1026,7 @@ fn smithery_spec(connection: &Map<String, Value>, fallback: Option<&str>, values
     Ok(Value::Object(spec))
 }
 
+/// Smithery 安装方式的参数表（configSchema 展开）。
 fn smithery_parameters(connection: &Map<String, Value>) -> Vec<MarketParameter> {
     schema_fields(connection.get("configSchema")).into_iter().map(|item| MarketParameter {
         key: item.key.clone(),
@@ -932,6 +1042,7 @@ fn smithery_parameters(connection: &Map<String, Value>) -> Vec<MarketParameter> 
     }).collect()
 }
 
+/// Smithery 服务器的详情；条目解析失败时用空元数据兜底，安装方式来自 connections。
 fn smithery_detail(provider: Provider, server: &Map<String, Value>) -> MarketDetail {
     let item = smithery_item(server).unwrap_or_else(|| MarketServer {
         provider_id: SMITHERY.into(),
@@ -997,6 +1108,11 @@ fn smithery_detail(provider: Provider, server: &Map<String, Value>) -> MarketDet
     }
 }
 
+/// 按用户选的连接与填写的值生成 Smithery spec（`enforce=true` 强制校验必填）。
+///
+/// # Errors
+///
+/// option_id 格式非法、连接不存在或必填缺值时返回错误。
 fn resolve_smithery(provider: Provider, server: &Map<String, Value>, option_id: &str, values: &Map<String, Value>) -> Result<Value, String> {
     let mut parts = option_id.split(':');
     let market = parts.next().ok_or("安装方式无效")?;

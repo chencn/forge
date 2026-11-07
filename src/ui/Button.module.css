@@ -82,7 +82,7 @@
   color: var(--fg-faint, #5f6269);
 }
 
-/* ActionButton / Toolbar 图标按钮（1:1 对标 IntelliJ IDEA / ExpUI 规范） */
+/* ActionButton / Toolbar 图标按钮（ExpUI 规范） */
 .iconButton {
   flex: none;
   display: inline-flex;

@@ -214,7 +214,7 @@ describe("ProjectTree 选中回归", () => {
   });
 
   it("单击文件行：选中高亮随 onPick 回流生效", { timeout: 15000 }, async () => {
-    // 默认值已对齐 IDEA（单击不开文件）；这条测的是「开着 singleClickOpen 时单击即开」的行为
+    // 默认单击不开文件；这条测的是「开着 singleClickOpen 时单击即开」的行为
     localStorage.setItem(
       "forge:tree:options:d:/proj",
       JSON.stringify({ _v: 4, singleClickOpen: true })
@@ -234,7 +234,7 @@ describe("ProjectTree 选中回归", () => {
     expect(row!.getAttribute("aria-selected")).toBe("true");
     expect(pickCalls.some((entries) => entries.some((e) => e.name === "README.md"))).toBe(true);
 
-    // 对标 IDEA：单击文件内容区域即触发 onOpenFile 打开文件，无需双击
+    // 单击文件内容区域即触发 onOpenFile 打开文件，无需双击
     const content = row!.querySelector<HTMLElement>("[data-project-path]");
     expect(content).not.toBeNull();
     await act(async () => {
@@ -245,7 +245,7 @@ describe("ProjectTree 选中回归", () => {
   });
 
   it("单击目录行：开着 singleClickExpand 时单击即展开", { timeout: 15000 }, async () => {
-    // 默认值已对齐 IDEA（单击不展开）；这条测的是「开着 singleClickExpand 时单击即展开」的行为
+    // 默认单击不展开；这条测的是「开着 singleClickExpand 时单击即展开」的行为
     localStorage.setItem(
       "forge:tree:options:d:/proj",
       JSON.stringify({ _v: 4, singleClickExpand: true })
@@ -258,7 +258,7 @@ describe("ProjectTree 选中回归", () => {
     expect(dirRow!.getAttribute("aria-expanded")).toBe("false");
     expect(findRow("App.tsx")).toBeNull();
 
-    // 对标 IDEA：单击目录内容区域即触发展开
+    // 单击目录内容区域即触发展开
     const dirContent = dirRow!.querySelector<HTMLElement>("[data-project-path]");
     expect(dirContent).not.toBeNull();
     await act(async () => {
@@ -335,7 +335,7 @@ describe('目录树的方案快捷键', () => {
     expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ path: 'D:\\proj\\README.md', kind: 'file' }));
   });
 
-  it('VS Code F2 打开所选条目的行内重命名，IDEA Shift+F6 不再串入', async () => {
+  it('VS Code 方案 F2 打开行内重命名，IntelliJ IDEA 方案 Shift+F6 不再串入', async () => {
     await mountTree({ keymapScheme: 'vscode' });
     const row = findRow('README.md')!;
     await act(async () => { row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); });

@@ -3,7 +3,7 @@
 //! 存储目录改由命令层算好（`app_config_dir()/http-history/<工作区分桶>/`，与
 //! [`crate::local_history`] 同构），`IpcPath` 换成 `String`，去 specta。
 //!
-//! IDEA 把历史放在项目的 `.idea/httpRequests`；forge 与本地历史一样放应用配置目录，
+//! 历史放在应用配置目录，
 //! 不往用户工程里写东西。
 
 use super::exec::{HttpResponse, SentRequest};
@@ -39,7 +39,9 @@ pub struct HttpExchange {
     pub response: Option<HttpResponse>,
 }
 
+/// 历史保留的条目上限（最旧的先裁）。
 pub const MAX_ENTRIES: usize = 100;
+/// 历史索引文件名。
 const INDEX: &str = "index.json";
 
 /// 每个命令都会 `History::new`，实例上的锁挡不住另一次 `http_send`。
@@ -57,6 +59,7 @@ pub struct History {
 }
 
 impl History {
+    /// 建一个指向指定目录的历史存储。
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
@@ -75,11 +78,17 @@ impl History {
         Ok(self.dir.join(format!("{id}.json")))
     }
 
+    /// 全部历史条目的索引（新在前）。
     pub fn list(&self) -> Vec<HistoryEntry> {
         let _g = history_io();
         self.read_index()
     }
 
+    /// 读一条历史 exchange；索引里不存在或文件损坏时报错。
+    ///
+    /// # Errors
+    ///
+    /// id 非法、条目已不存在或 JSON 损坏时返回错误串。
     pub fn get(&self, id: &str) -> Result<HttpExchange, String> {
         let _g = history_io();
         let path = self.file(id)?;
@@ -138,6 +147,11 @@ impl History {
         Ok(removed.len())
     }
 
+    /// 清空该工作区的全部历史（删条目文件并重置索引）。
+    ///
+    /// # Errors
+    ///
+    /// 索引写不回去时返回错误串；条目文件删不掉静默容忍。
     pub fn clear(&self) -> Result<(), String> {
         let _g = history_io();
         for e in self.read_index() {

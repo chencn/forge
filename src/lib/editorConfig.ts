@@ -10,20 +10,26 @@ export interface EditorConfig {
   lineEnding?: "lf" | "crlf";
 }
 
+/** 一个 `[pattern]` 节的匹配模式与键值。 */
 interface EditorConfigSection {
   pattern: string;
   values: Record<string, string>;
 }
 
+/** 解析结果：是否根配置 + 全部节。 */
 interface ParsedEditorConfig {
   root: boolean;
   sections: EditorConfigSection[];
 }
 
+/** 文件解析与最终结果各自的缓存有效期。 */
 const CACHE_TTL_MS = 1_000;
+/** 路径 → 解析结果缓存（含 null，避免反复读不存在的文件）。 */
 const fileCache = new Map<string, { at: number; value: ParsedEditorConfig | null }>();
+/** 路径 → 生效配置缓存。 */
 const resultCache = new Map<string, { at: number; value: EditorConfig }>();
 
+/** 去掉行内 `;`/`#` 注释（跳过转义符）。 */
 function stripComment(line: string): string {
   let escaped = false;
   for (let index = 0; index < line.length; index += 1) {
@@ -67,6 +73,7 @@ export function parseEditorConfig(text: string): ParsedEditorConfig {
   return { root, sections };
 }
 
+/** 展开 glob 里的 `{a,b}` 括号（支持嵌套）。 */
 function expandBraces(pattern: string): string[] {
   const start = pattern.indexOf("{");
   if (start < 0) return [pattern];
@@ -76,6 +83,7 @@ function expandBraces(pattern: string): string[] {
   return choices.flatMap((choice) => expandBraces(`${pattern.slice(0, start)}${choice}${pattern.slice(end + 1)}`));
 }
 
+/** 把一个 glob 折成等价的正则源码（`**`/`*`/`?`/字符类）。 */
 function globSource(pattern: string): string {
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
@@ -108,11 +116,13 @@ function globSource(pattern: string): string {
   return source.slice(1);
 }
 
+/** 造 glob 的完整正则（含括号展开后的各分支）。 */
 function globRegex(pattern: string): RegExp {
   const sources = expandBraces(pattern).map(globSource);
   return new RegExp(`^(?:${sources.join("|")})$`, "u");
 }
 
+/** 判定文件是否命中某节的模式；无 `/` 的模式只对文件名匹配。 */
 function matches(pattern: string, configDir: string, file: string): boolean {
   const relative = pathWithin(configDir, file)
     ? file.slice(configDir.length).replace(/^[\\/]+/u, "").replaceAll("\\", "/")
@@ -122,12 +132,14 @@ function matches(pattern: string, configDir: string, file: string): boolean {
   return globRegex(pattern.replaceAll("\\", "/")).test(target);
 }
 
+/** 解析布尔键值；其他取值为 undefined。 */
 function booleanValue(value: string | undefined): boolean | undefined {
   if (value === "true") return true;
   if (value === "false") return false;
   return undefined;
 }
 
+/** 解析数值键值（`tab` 与非正数为 undefined）。 */
 function numberValue(value: string | undefined): number | undefined {
   if (!value || value === "tab") return undefined;
   const number = Number(value);
@@ -165,6 +177,7 @@ export function resolveEditorConfig(
   return result;
 }
 
+/** 读取并解析 .editorconfig，带 TTL 缓存；文件不存在返回 null。 */
 async function readConfig(path: string): Promise<ParsedEditorConfig | null> {
   const key = path.toLowerCase();
   const cached = fileCache.get(key);

@@ -37,10 +37,12 @@ const PdfPreview = lazy(() => import("./PdfPreview").catch(() => ({
   },
 })));
 
+/** 订阅 http-client store 的快照。 */
 function useHttpClient() {
   return useSyncExternalStore(subscribeHttpClient, httpClientSnapshot);
 }
 
+/** 造一个把异常弹进通知中心的回调（用户主动取消不报错）。 */
 function useHttpProblem() {
   const { t } = useI18n();
   return useCallback((cause: unknown) => {
@@ -64,6 +66,7 @@ function statusTone(status: number | null): string {
   return styles.statusError;
 }
 
+/** 时间戳的时:分:秒显示。 */
 function time(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
@@ -74,6 +77,7 @@ function shownError(error: string | null, fallback: string, t: Parameters<typeof
   return describeError(error, t) || fallback;
 }
 
+/** 历史列表的一行。 */
 function EntryRow({
   entry,
   active,
@@ -102,8 +106,10 @@ function EntryRow({
   );
 }
 
+/** 详情区页签。 */
 type DetailTab = "body" | "headers" | "request";
 
+/** 正文高亮的语言类别（BodyKind 外加 http 请求原文）。 */
 type HttpCodeKind = BodyKind | "http";
 
 /** 语法按需加载；正文只经现有高亮器转义后生成 span，不能作为 HTML 执行。 */
@@ -130,6 +136,7 @@ function HighlightedBody({ text, kind }: { text: string; kind: HttpCodeKind }) {
     : <code>{text}</code>;
 }
 
+/** 头部键值对的紧凑表格；空表不渲染。 */
 function HeaderTable({ headers }: { headers: [string, string][] }) {
   if (!headers.length) return null;
   return (
@@ -146,6 +153,7 @@ function HeaderTable({ headers }: { headers: [string, string][] }) {
   );
 }
 
+/** 右侧详情：状态行 + Body/Headers/Request 页签。 */
 function ExchangeView({ exchange }: { exchange: HttpExchange }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<DetailTab>("body");
@@ -275,6 +283,7 @@ function ExchangeView({ exchange }: { exchange: HttpExchange }) {
   );
 }
 
+/** HTTP Client 工具窗口根组件（布局见文件头注释）。 */
 export function HttpClientView() {
   const { t } = useI18n();
   const { history, exchanges, running, selected, rootEpoch } = useHttpClient();

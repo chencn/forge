@@ -6,6 +6,7 @@ import type { AiRequestAnswer } from "../lib/aiApprovals";
 import type { AiRequest } from "../lib/aiRuntime";
 import { Item } from "./ui/item";
 
+/** 审批请求里的一题。 */
 type Question = AiRequest["questions"][number];
 
 /** 一题的选择：命中的选项原文、「其他」有没有点亮、以及当时手打的那句。 */
@@ -16,6 +17,7 @@ type Seed = { chosen: string[]; other: boolean; text: string };
  * 提交与回显仍按原样那份 label 走：改的是显示，不是答案的内容。
  */
 const RECOMMENDED = /\s*[（(](recommended|推荐)[)）]\s*$/i;
+/** 把推荐标记从选项正文拆出去；返回显示文本与是否推荐。 */
 function optionText(label: string) {
   const stripped = label.replace(RECOMMENDED, "").trim();
   return { text: stripped || label, recommended: stripped.length > 0 && stripped !== label };
@@ -155,7 +157,7 @@ export function AiQuestionCard({ request, readOnly = false, disabled = false, bu
         {state[item.id]?.other ? input(item) : null}
       </div>}
   </>;
-  // Questionnaire keeps the original question IDs and option labels as the submission contract.
+  // 提交契约始终是原始的问题 ID 与选项原文。
   return <Item data-element="questionnaire" className={`ai-question${readOnly ? " is-read-only" : ""}${busy ? " is-busy" : ""}${collapsed ? " is-collapsed" : ""}`} role="group" aria-label={t("ai.runtime.question")}>
     {multi && !readOnly && !collapsed ? <div className="ai-question-progress" aria-hidden="true"><span style={{ width: `${Math.round((answeredCount / questions.length) * 100)}%` }} /></div> : null}
     <header className="ai-question-head">

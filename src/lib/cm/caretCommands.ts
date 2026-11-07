@@ -27,6 +27,7 @@ export const scrollToCenter: Command = (view) => {
   return true;
 };
 
+/** 括号落在这些语法节点名里时不当作代码（字符串、注释等）。 */
 const NOT_CODE = /String|Comment|Regexp|Char|Template/;
 
 /** `{` / `}` at `pos` when it is code (not inside a string or comment, as far as the syntax tree knows). */
@@ -79,6 +80,7 @@ export function codeBlockEnd(state: EditorState, pos: number): number | null {
   return null;
 }
 
+/** 造一个「光标移到代码块边界」的 Command（目标由 `find` 算出，找不到时命令返回 false）。 */
 function moveToBlock(find: (state: EditorState, pos: number) => number | null): Command {
   return (view) => {
     const { state } = view;
@@ -89,7 +91,9 @@ function moveToBlock(find: (state: EditorState, pos: number) => number | null): 
   };
 }
 
+/** Move Caret to Code Block Start 的 {@link Command}（多光标各自移动）。 */
 export const cursorCodeBlockStart = moveToBlock(codeBlockStart);
+/** Move Caret to Code Block End 的 {@link Command}。 */
 export const cursorCodeBlockEnd = moveToBlock(codeBlockEnd);
 
 /**
@@ -116,6 +120,7 @@ export function matchBraceTarget(state: EditorState, pos: number): number | null
   return null;
 }
 
+/** Go to Matching Brace (⌃M) 的 {@link Command}：逐光标跳到 {@link matchBraceTarget}，全都动不了返回 false。 */
 export const cursorMatchBrace: Command = (view) => {
   const { state } = view;
   let moved = false;

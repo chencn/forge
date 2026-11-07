@@ -19,6 +19,7 @@ export type MergeBlock =
   | { kind: "stable"; lines: string[] }
   | { kind: "conflict"; base: string[]; ours: string[]; theirs: string[] };
 
+/** 三方合并的结果：按顺序排列的稳定/冲突块。 */
 export interface MergeResult {
   blocks: MergeBlock[];
   /** 冲突块的数量，为 0 时两侧能自动并起来。 */
@@ -105,6 +106,7 @@ function prefixSuffixMatches(a: string[], b: string[]) {
   return blocks;
 }
 
+/** 一侧带来的一处行替换。 */
 interface Edit {
   /** 被替换的 base 半开区间；start === end 表示在该位置插入。 */
   start: number;
@@ -146,6 +148,7 @@ function editsFromMatches(
   return edits;
 }
 
+/** 两序列完全相等才为真；冲突块的 ours/theirs 去重靠它。 */
 function sameLines(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   for (let k = 0; k < a.length; k += 1) if (a[k] !== b[k]) return false;

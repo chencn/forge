@@ -52,7 +52,7 @@ select {
   color: inherit;
 }
 
-/* 原生单选框在各系统尺寸不同；按 IDEA 的 16px 控件绘制全部状态。 */
+/* 原生单选框在各系统尺寸不同；按 16px 控件绘制全部状态。 */
 input[type="radio"] {
   appearance: none;
   flex: none;
@@ -266,7 +266,7 @@ input[type="radio"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
   text-overflow: ellipsis;
 }
 
-/* IDEA 的冲突微工具条：紧跟分支控件，继续那颗是运行色、中止那颗是停止色。 */
+/* 冲突微工具条：紧跟分支控件，继续那颗是运行色、中止那颗是停止色。 */
 .conflict-widget {
   flex: none;
   display: flex;
@@ -521,7 +521,7 @@ span.entry-icon > svg {
   min-width: 220px;
   padding: 6px;
   border-radius: var(--radius-popup-large);
-  /* 浮层常压在目录树或编辑区上，采用实心不透明背景与实线描边（照 IDEA）。 */
+  /* 浮层常压在目录树或编辑区上，采用实心不透明背景与实线描边。 */
   border: 1px solid var(--border-popup);
   background: var(--bg-popup);
   box-shadow: var(--shadow-popup);
@@ -1431,7 +1431,7 @@ span.entry-icon > svg {
 }
 
 .button.is-danger {
-  /* IDEA 的危险前景色用于文字；淡红色不能直接做白字实心按钮底色。 */
+  /* 危险前景色用于文字；淡红色不能直接做白字实心按钮底色。 */
   background: var(--bg-button);
   border-color: var(--border-button);
   color: var(--danger);
@@ -2669,7 +2669,7 @@ span.entry-icon > svg {
   overflow: hidden;
 }
 
-/* 参照 IDEA `ProgressDialogUI.kt` 的居中模态进度框（用于批量删除文件 / 递归删除大目录）。 */
+/* 居中模态进度框（用于批量删除文件 / 递归删除大目录）。 */
 .progress-dialog {
   width: min(450px, 100%);
   padding: 16px 18px 16px;
@@ -2785,12 +2785,12 @@ span.entry-icon > svg {
   color: var(--text-muted);
 }
 
-/* 隐藏文件/目录的图标按 50% 半透明渲染（对齐 IDEA 的 IconLoader.getTransparentIcon(icon, 0.5f)）。 */
+/* 隐藏文件/目录的图标按 50% 半透明渲染。 */
 .tree-row.is-hidden-item .entry-icon {
   opacity: 0.5;
 }
 
-/* 被 .gitignore 忽略的行：整行文字变橙棕色（对齐 IDEA 的 FILESTATUS_IDEA_FILESTATUS_IGNORED）。
+/* 被 .gitignore 忽略的行：整行文字变橙棕色（ignored 文件状态色）。
    比隐藏态更具体，两者同时命中时以它为准；选中态仍盖过它，不然选不中看不出来。 */
 .tree-row.is-ignored-item:not(.is-active):not(.is-picked) {
   color: var(--vcs-ignored);
@@ -2968,7 +2968,7 @@ span.entry-icon > svg {
 .run-controls {
   display: flex;
   align-items: center;
-  /* 间距取 IDEA 的 RunWidget.toolbarBorderDirectionalGap=2，两侧各 2 就是相邻 4px。 */
+  /* 工具条边框向间距 2px，两侧各 2 就是相邻 4px。 */
   gap: 4px;
   flex: none;
 }
@@ -2994,7 +2994,7 @@ span.entry-icon > svg {
   border-bottom: 1px solid var(--border-color);
 }
 
-/* 动作条这一排照 IDEA 的运行窗口：重跑绿、停止红，清空 / 滚动 / 更多保持灰。
+/* 动作条这一排照运行窗口：重跑绿、停止红，清空 / 滚动 / 更多保持灰。
    与主工具栏那三颗不同——那边是绿底 / 红底 + 白图标，这边是无底 + 彩色描边图标。
    重跑图标是双色的（expui/run/rerun.svg）：外圈弧线灰、箭头绿，两段分开上色。 */
 .run-pane-toolbar .icon-button.is-rerun {
@@ -3103,7 +3103,7 @@ span.entry-icon > svg {
   background: var(--run-badge-error);
 }
 
-/* 跑完（成功、失败之外的中止）不再画点，与 IDEA 的 live indicator 一致：进程没了角标就收掉。 */
+/* 跑完（成功、失败之外的中止）不再画点：进程没了角标就收掉。 */
 .run-dot.is-done,
 .run-dot.is-stopped {
   display: none;
@@ -3156,7 +3156,7 @@ span.entry-icon > svg {
   color: var(--text-primary);
 }
 
-/* 下拉里的行图标就是「这条是什么类型」，配色照 IDEA 那套类型色。 */
+/* 下拉里的行图标就是「这条是什么类型」，配色照各类型色。 */
 .run-kind {
   flex: none;
 }
@@ -3430,7 +3430,7 @@ span.entry-icon > svg {
   background: var(--bg-hover);
 }
 
-/* 运行与停止照 IDEA 的 RunWidget：跑绿、停红，圆角实心底 + 白图标。
+/* 运行与停止（RunWidget）：跑绿、停红，圆角实心底 + 白图标。
    运行那颗在选中配置没跑时是无底的绿图标（RUN_ICON_COLOR），在跑时换成绿底白图标
    （RUNNING_BACKGROUND）；停止那颗恒为红底白图标（STOP_BACKGROUND）。
    带上 .run-controls 与 .icon-button 两层，才盖得住通用那颗的 hover 换色。 */
@@ -3450,7 +3450,7 @@ span.entry-icon > svg {
   background: var(--stop-solid);
   color: #fff;
 }
-/* 实心底上的悬停：压一层比底色更暗的黑，和 IDEA 的 HOVER_BACKGROUND 同法（黑 10%）。 */
+/* 实心底上的悬停：压一层比底色更暗的黑（10%）。 */
 .run-controls .icon-button.is-run.is-running:hover:not(:disabled) {
   background: color-mix(in srgb, #000 10%, var(--run-solid));
 }
@@ -3760,7 +3760,7 @@ span.entry-icon > svg {
 }
 
 /* 光标闪烁：xterm 默认是 `step-end` 硬切（一亮一灭，看着扎眼、显得快）。
-   改成整段 opacity 平滑淡入淡出，周期仍取 1s（半周期 500ms，与 IDEA 的 caret 一致）。
+   改成整段 opacity 平滑淡入淡出，周期仍取 1s（半周期 500ms）。
    编辑器光标走同一条（CM 自带的是 `steps(1)` 1.2s 硬切，一样扎眼）。 */
 .term-host .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar,
 .term-live .xterm .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar,
@@ -4075,7 +4075,7 @@ body .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
   }
 }
 
-/* 终端页签栏：照 IDEA，一页签一条会话，激活那条浅蓝底 + 蓝边框；后面跟 `+` 与 `⌄`。 */
+/* 终端页签栏：一页签一条会话，激活那条浅蓝底 + 蓝边框；后面跟 `+` 与 `⌄`。 */
 .term-tabs {
   flex: 1;
   min-width: 0;
@@ -4513,7 +4513,7 @@ body.is-editor-tab-dragging * {
 }
 
 
-/* Sticky scroll（IDEA 2023+ 默认开启）：作用域头部行钉在编辑区顶部（见 lib/cm/stickyScroll.ts）。 */
+/* Sticky scroll：作用域头部行钉在编辑区顶部（见 lib/cm/stickyScroll.ts）。 */
 .cm-forge-sticky {
   position: absolute;
   top: 0;
@@ -4547,7 +4547,7 @@ body.is-editor-tab-dragging * {
   will-change: transform;
 }
 
-/* 空白符显示（IDEA 的 Show Whitespaces）：空格画中点、制表符画箭头（见 lib/cmEditor.ts）。 */
+/* 空白符显示（Show Whitespaces）：空格画中点、制表符画箭头（见 lib/cmEditor.ts）。 */
 .cm-highlightSpace {
   background-image: radial-gradient(circle at 50% 55%, var(--text-muted) 11%, transparent 12%);
   background-position: center;
@@ -4645,7 +4645,7 @@ body.is-editor-tab-dragging * {
 }
 
 /*
- * 视图切换是编辑区右上角那组浮动图标（照 IDEA）：浮在内容之上，不占正文一条高。
+ * 视图切换是编辑区右上角那组浮动图标：浮在内容之上，不占正文一条高。
  * 只有 markdown / svg 才画。
  */
 .doc-view-bar {
@@ -5118,7 +5118,7 @@ body.is-editor-tab-dragging * {
   border: 0;
 }
 
-/* 行内代码：IDEA 的预览不给它单独上色，就是正文色配一块浅底。 */
+/* 行内代码：预览不给它单独上色，就是正文色配一块浅底。 */
 :is(.markdown-body, .ai-message-markdown) code:not(pre code) {
   font-family: var(--font-mono), monospace;
   font-size: 12.5px;
@@ -6041,7 +6041,7 @@ body.is-editor-tab-dragging * {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  /* 比对正文 13px / 22px（IDEA 的比对行距比编辑器松一档）。 */
+  /* 比对正文 13px / 22px（比对行距比编辑器松一档）。 */
   --editor-line-height: 22px;
   position: relative;
 }
@@ -6133,7 +6133,7 @@ body.is-editor-tab-dragging * {
   display: none !important;
 }
 
-/* 比对窗口中间的分栏连线区（1:1 对标 IntelliJ IDEA Splitter Ribbon，左右高度一致） */
+/* 比对窗口中间的分栏连线区（Splitter Ribbon，左右高度一致） */
 .forge-diff-splitter {
   width: 30px;
   min-width: 30px;
@@ -6157,7 +6157,7 @@ body.is-editor-tab-dragging * {
   overflow: visible;
 }
 
-/* 连线带填充色：左右严格等高，对标 IntelliJ IDEA ExpUI 浅蓝半透明 */
+/* 连线带填充色：左右严格等高，浅蓝半透明 */
 .forge-diff-ribbon-path {
   fill: var(--diff-ribbon-fill, rgba(186, 218, 253, 0.42));
   stroke: none;
@@ -6178,7 +6178,7 @@ body.is-editor-tab-dragging * {
   stroke: var(--diff-ribbon-stroke, rgba(72, 115, 170, 0.85));
 }
 
-/* 块回退按钮：位于中间连线区左侧，1:1 对标 IntelliJ IDEA 白底微立体阴影卡片 > 按钮 */
+/* 块回退按钮：位于中间连线区左侧，白底微立体阴影卡片 > 按钮 */
 .forge-diff-buttons {
   position: absolute;
   top: 0;
@@ -6233,7 +6233,7 @@ body.is-editor-tab-dragging * {
   color: #ffffff;
 }
 
-/* 块级勾选框装订槽（对标 IntelliJ IDEA Commit Checkbox Gutter） */
+/* 块级勾选框装订槽（Commit Checkbox Gutter） */
 .cm-diff-checkbox-gutter {
   width: 22px;
   min-width: 22px;
@@ -6393,7 +6393,7 @@ body.is-editor-tab-dragging * {
   background: var(--bg-hover);
 }
 
-/* 行号左边那条 3px 竖标：左栏灰蓝、右栏蓝，单栏删块也留一条（IDEA 的 gutter 色组）。 */
+/* 行号左边那条 3px 竖标：左栏灰蓝、右栏蓝，单栏删块也留一条。 */
 .cm-editor.cm-merge-a.forge-diff .cm-changedLineGutter,
 .cm-editor.forge-diff .cm-deletedLineGutter {
   background: var(--gutter-deleted);
@@ -6428,14 +6428,14 @@ body.is-editor-tab-dragging * {
   flex-direction: column;
 }
 
-/* 变更树在上、提交区在下，两边各自滚动，比例照 IDEA 的 Commit 窗口。 */
+/* 变更树在上、提交区在下，两边各自滚动，比例照提交窗口的惯例。 */
 .commit-tree {
   flex: 1 1 52%;
   min-height: 0;
   overflow-y: auto;
 }
 
-/* IDEA 的分支控件用叠起来的两个小箭头表同步状态：进来的蓝、要推的绿，不放数字。 */
+/* 分支控件用叠起来的两个小箭头表同步状态：进来的蓝、要推的绿，不放数字。 */
 .branch-sync {
   flex: none;
   display: flex;
@@ -6457,7 +6457,7 @@ body.is-editor-tab-dragging * {
   color: var(--accent-green);
 }
 
-/* IDEA 的 Commit 窗口：动作排成变更树上方的图标条。 */
+/* 提交窗口：动作排成变更树上方的图标条。 */
 .commit-actions {
   flex: none;
   display: flex;
@@ -6631,7 +6631,7 @@ body.is-editor-tab-dragging * {
   color: var(--text-muted);
 }
 
-/* 模块行（仓库根）比普通目录行重一档，对应 IDEA 的项目节点。 */
+/* 模块行（仓库根）比普通目录行重一档，对应项目根节点。 */
 .change-row.is-module .change-name {
   color: var(--text-primary);
 }
@@ -6834,7 +6834,7 @@ body.is-editor-tab-dragging * {
   font-size: 11px;
 }
 
-/* 预览标签：斜体，IDEA 的单预览槽那一档。 */
+/* 预览标签：斜体，单预览槽那一档。 */
 .editor-tab.is-preview .tab-label {
   font-style: italic;
 }
@@ -7109,7 +7109,7 @@ body.is-editor-tab-dragging * {
 }
 
 /* 右下角/角落浮动通知气泡宿主 (Notification Balloon / Toast Host)
- * 1:1 对标 IntelliJ IDEA Islands 规范：
+ * Islands 视觉规范：
  * - 默认位于状态栏上方 12px，距离窗口右边框 20px；
  * - 堆叠模式：最新气泡置于最贴近底部的底层，旧气泡垂直向上平推；
  * - 采用 var(--z-toast, 1100) 确保独立于普通对话框之上的浮动层级。
@@ -7339,7 +7339,7 @@ body.is-editor-tab-dragging * {
 }
 
 /* 通知历史面板与工具窗口 (Notifications Tool Window / Panel)
- * 1:1 对标 IntelliJ IDEA Notifications 面板规范
+ * Notifications 面板规范
  */
 .notifications-tool-window {
   display: flex;
@@ -8035,7 +8035,7 @@ body.is-editor-tab-dragging * {
 }
 
 .search-pop {
-  /* 页签行与页脚共用那一层底色：IDEA 的弹层头和尾都是框架色，正文层更亮。 */
+  /* 页签行与页脚共用那一层底色：弹层头和尾都是框架色，正文层更亮。 */
   --se-bg-header: var(--bg-frame);
   display: flex;
   flex-direction: column;
@@ -8053,7 +8053,7 @@ body.is-editor-tab-dragging * {
   animation: pop-in 190ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* 页签、可见性那颗勾、预览与漏斗与查找窗口那几颗：IDEA 的弹层头只有这一行。 */
+/* 页签、可见性那颗勾、预览与漏斗与查找窗口那几颗：弹层头只有这一行。 */
 .search-head {
   flex: none;
   display: flex;
@@ -8261,7 +8261,7 @@ body.is-editor-tab-dragging * {
   font-size: var(--fs-small);
 }
 
-/* 符号种类那颗字母章：底色由种类色自己兑出来，IDEA 的图标也是这个分工。 */
+/* 符号种类那颗字母章：底色由种类色自己兑出来。 */
 .search-badge {
   display: flex;
   align-items: center;
@@ -8328,7 +8328,7 @@ body.is-editor-tab-dragging * {
   background: var(--bg-tree-hover);
 }
 
-/* 选中那颗是 IDEA 的树选底色（浅色主题下是淡蓝），不是一层灰。 */
+/* 选中那颗用树选底色（浅色主题下是淡蓝），不是一层灰。 */
 .search-row.is-active,
 .search-row.is-active:hover {
   background: var(--bg-tree-selected);
@@ -8779,10 +8779,10 @@ body.is-editor-tab-dragging * {
 /* 构建依赖自动检测与同步提示卡片 (IDEA Auto-Import Notification Balloon) */
 .dep-sync-card {
   pointer-events: auto;
-  /* 对齐 IDEA BalloonLayoutConfiguration.FixedWidth = 360px 与 NotificationBalloonRoundShadowBorderProvider.CORNER_RADIUS = 12px */
+  /* 气泡定宽 360px、圆角 12px */
   width: 360px;
   max-width: calc(100vw - 32px);
-  /* 对齐 IDEA Notification.borderInsets(4,4,6,0) + 三行布局 topSpaceHeight=7, bottomSpaceHeight=8 */
+  /* 边距 4,4,6,0；三行布局上下留白 7px / 8px */
   padding: 11px 14px 14px 14px;
   border-radius: 12px;
   background: var(--idea-notification-bg);
@@ -8795,7 +8795,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-card-lead {
-  /* 对齐 IDEA BalloonLayoutConfiguration: iconPanelWidth = 32px (16px icon + 右侧 12px 间距), 顶对齐第一行标题 */
+  /* 图标面板宽 32px（16px 图标 + 12px 间距），顶对齐第一行标题 */
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -8817,7 +8817,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-card-title {
-  /* 对齐 IDEA NotificationsUtil.buildHtml 标题单行加粗与 closeOffset=28px 留白 */
+  /* 标题单行加粗，关闭按钮右侧留白 28px */
   font-size: 13px;
   font-weight: 600;
   color: var(--idea-notification-fg);
@@ -8830,7 +8830,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-card-desc {
-  /* 对齐 IDEA PackageJsonUpdateNotifier "来自 <a href>package.json</a>" 正文行 */
+  /* 「来自 package.json」正文行（链接可点） */
   font-size: 13px;
   color: var(--idea-notification-fg);
   line-height: 18px;
@@ -8853,7 +8853,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-card-actions {
-  /* 对齐 IDEA CenteredLayoutWithActions: contentActionsSpaceHeight=7px, HorizontalLayout(actionGap=16px, CENTER) */
+  /* 动作区上留白 7px，动作按钮间距 16px、垂直居中 */
   margin-top: 9px;
   display: flex;
   flex-wrap: wrap;
@@ -8862,7 +8862,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-action-btn {
-  /* 对齐 IDEA NotificationsManagerImpl.createActionPanel (isSuggestionType=true) 的描边 JButton (Notification.Button) */
+  /* 建议型通知的描边动作按钮 */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8889,7 +8889,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-action-link {
-  /* 对齐 IDEA NotificationsManagerImpl.createAction 的 LinkLabel (Notification.linkForeground) */
+  /* 链接型动作（linkForeground 配色） */
   display: inline-flex;
   align-items: center;
   padding: 0;
@@ -8907,7 +8907,7 @@ body.is-editor-tab-dragging * {
 }
 
 .dep-sync-card-close {
-  /* 对齐 IDEA NotificationBalloonActionProvider: 右上角关闭按钮，悬停气泡时显示，悬停按钮自身时绘 6px 圆角浅底 */
+  /* 右上角关闭按钮：悬停气泡时显示，悬停按钮自身时绘 6px 圆角浅底 */
   position: absolute;
   top: 9px;
   right: 9px;

@@ -1,12 +1,12 @@
 /**
- * 随处搜索的取数编排（抄 IntelliJ IDEA 的 everywhere/controller.ts）。
+ * 随处搜索的取数编排。
  *
  * 每个数据分节各查各的、各自收口：任何一节先答上来就先进列表，不等别人。
  * 新一轮查询把旧的顶掉——这边的后端命令是一次性 Promise，没有「取消」这回事，
  * 所以只靠代号（gen）认账：回来的那份结果对不上自己那节的现行代号就整份丢掉。
  * 输入没变的分节不重查，比如某一节点「更多」时，别节的结果原样留着。
  *
- * 少了 IntelliJ IDEA 那侧的三样：漏斗过滤器、按根算的范围选择、语言服务的符号合并——
+ * 比完整版少了三样：漏斗过滤器、按根算的范围选择、语言服务的符号合并——
  * 这边都没有等价的数据源。
  */
 import type { FileHit, ScanFilter, SearchOptions, SymbolHit, TextPage } from "./fs";
@@ -57,6 +57,7 @@ export interface SeDeps {
   now(): number;
 }
 
+/** 一次随处搜索的入参：查询词、页签与各档过滤配置。 */
 export interface SeRequest {
   query: string;
   tab: SeTab;
@@ -70,6 +71,7 @@ export interface SeRequest {
   extra: Partial<Record<SectionId, number>>;
 }
 
+/** 一轮查询的界面快照：各分节状态、耗时与失败原因，供 React 渲染。 */
 export interface SeSnapshot {
   gen: number;
   sections: ReadonlyMap<SectionId, SectionState>;
@@ -86,6 +88,11 @@ export interface SeSnapshot {
   failed: string | null;
 }
 
+/**
+ * 随处搜索的编排器：接收 {@link SeRequest}，按分节发起取数并汇总成 {@link SeSnapshot}。
+ *
+ * @remarks 用代号（gen）丢弃过期结果，同输入的分节不重查；结果经微任务合并后统一回调 onChange
+ */
 export class SeController {
   private gen = 0;
   private sections = new Map<SectionId, SectionState>();

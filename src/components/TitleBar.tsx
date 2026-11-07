@@ -4,6 +4,7 @@ import { useWindowControls } from "../lib/window";
 import { useI18n } from "../i18n";
 import appMark from "../../src-tauri/icons/icon.svg";
 
+/** 自定义标题栏的入参。 */
 interface TitleBarProps {
   /** 侧栏开关状态，按钮显示对应方向箭头。 */
   sidebarOpen: boolean;
@@ -150,6 +151,7 @@ export default function TitleBar({
   );
 }
 
+/** Windows 窗口按钮的 Segoe MDL2 字形码位。 */
 const WINDOW_GLYPHS = {
   minimize: "\uE921",
   maximize: "\uE922",

@@ -1,4 +1,4 @@
-//! HTTP 客户端：IDEA 风格的 `.http` / `.rest` 请求文件。
+//! HTTP 客户端：`.http` / `.rest` 请求文件。
 //!
 //! 分层：[`env`] 读 `http-client(.private).env.json`，
 //! [`exec`] 发送请求（可取消、计时、文本/二进制判定），[`history`] 保留响应。
@@ -7,8 +7,11 @@
 //! 分工：`.http` 的解析、变量替换、依赖链、cURL 导入留在前端 `src/lib/httpFile.ts`；
 //! 这边负责环境文件、发送与历史。理由见 [`exec`] 的模块注释。
 
+/// 环境文件（公开/私有/$shared）的读取与变量解析。
 pub mod env;
+/// 请求发送：实际发送头记录、计时与二进制判定。
 pub mod exec;
+/// 发送历史的按工作区存储。
 pub mod history;
 
 use crate::error::err;
@@ -21,6 +24,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 use tokio::sync::watch;
 
+/// 当前 Unix 毫秒时间戳（浮点）；时钟异常时取 0。
 fn now_ms() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -45,8 +49,10 @@ struct Cancels {
     pending: HashSet<String>,
 }
 
+/// 取消令牌表本体：进行中请求的取消信号与待登记集合。
 static CANCELS: OnceLock<Mutex<Cancels>> = OnceLock::new();
 
+/// 取消令牌表的懒初始化入口。
 fn cancels() -> &'static Mutex<Cancels> {
     CANCELS.get_or_init(|| {
         Mutex::new(Cancels {
@@ -90,6 +96,11 @@ fn history_dir(app: &AppHandle, root: &str) -> Result<PathBuf, String> {
         .join(crate::local_history::bucket_name(Path::new(root))))
 }
 
+/// 一个工作区的 HTTP 历史实例。
+///
+/// # Errors
+///
+/// 历史目录定位失败时返回错误。
 fn history_for(app: &AppHandle, root: &str) -> Result<History, String> {
     Ok(History::new(history_dir(app, root)?))
 }
@@ -262,6 +273,7 @@ pub fn http_env(name: String) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// 校验环境变量名：字母或下划线开头，其余为字母数字、下划线或连字符。
 fn is_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {

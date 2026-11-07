@@ -53,7 +53,13 @@ pub struct Process {
     threads: Vec<JoinHandle<()>>,
 }
 impl Process {
+    /// 子进程的系统 pid。
     pub fn id(&self) -> u32 { self.child.id() }
+    /// 启动 CLI 子进程并接好三条管道；进程树已隔离（独立进程组/Job）。
+    ///
+    /// # Errors
+    ///
+    /// 启动失败或无法隔离进程树时返回错误串（后者会先杀掉已出生的子进程）。
     pub fn spawn(mut command: Command, cwd: &str) -> Result<Self, String> {
         command
             .current_dir(cwd)
@@ -144,6 +150,11 @@ impl Process {
             threads: vec![write_thread, read_thread, err_thread],
         })
     }
+    /// 向 CLI 发一帧 JSON 消息；非阻塞，队列满或已关闭即报错。
+    ///
+    /// # Errors
+    ///
+    /// 序列化失败、消息超过大小上限或输入通道不可用时返回错误串。
     pub fn write(&self, value: &Value) -> Result<(), String> {
         let mut bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
         if bytes.len() as u64 > MAX_WRITE {
@@ -156,15 +167,23 @@ impl Process {
             .try_send(bytes)
             .map_err(|_| "CLI 输入阻塞或已关闭，停止本轮执行".into())
     }
+    /// 关闭 stdin 写端；EOF 会让 CLI 自然收尾。
     pub fn close_input(&mut self) {
         self.writer.take();
     }
+    /// 非阻塞试收子进程退出状态；还没退出返回 None。
+    ///
+    /// # Errors
+    ///
+    /// 系统调用失败时返回错误串。
     pub fn status(&mut self) -> Result<Option<ExitStatus>, String> {
         self.child.try_wait().map_err(|e| e.to_string())
     }
+    /// stderr 尾部内容（最多 32KB），失败时拼进错误信息。
     pub fn diagnostics(&self) -> String {
         String::from_utf8_lossy(&self.stderr.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
     }
+    /// 终止整个进程树并等待收尾；Drop 也会兜底调用。
     pub fn terminate(&mut self) {
         self.writer.take();
         self.tree.take();
@@ -192,6 +211,11 @@ impl Drop for Process {
         self.terminate();
     }
 }
+/// 从 JSON-RPC 流读一条消息；读到 EOF 返回 `None`，超 [`MAX_READ`] 的行报错。
+///
+/// # Errors
+///
+/// 读取失败、行超限或 JSON 损坏时返回错误。
 fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
     loop {
         let mut bytes = vec![];

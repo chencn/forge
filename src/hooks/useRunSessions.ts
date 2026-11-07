@@ -14,9 +14,10 @@ import { useSettings } from "./useSettings";
 import { codedError, describeError } from "../lib/errors";
 import type { RunConfigController } from "./useRunConfigs";
 
-/** 跑完的会话也留在列表里，直到手动关掉，跟 IDEA 一样。 */
+/** 跑完的会话也留在列表里，直到手动关掉。 */
 export type SessionStatus = "running" | "done" | "failed" | "stopped";
 
+/** 一次运行会话：一条配置跑起来的进程及其输出、状态。 */
 export interface RunSession {
   id: ProcSessionId;
   /** 所属的工作区根目录。 */
@@ -38,6 +39,7 @@ export interface RunSession {
 /** 输出订阅：控制台只在被看着的那一个会话上写字。 */
 export type AppendListener = (id: ProcSessionId, chunk: Uint8Array) => void;
 
+/** UTF-8 编码器单例，发送 stdin 时复用。 */
 const ENCODER = new TextEncoder();
 
 /**
@@ -307,7 +309,7 @@ export function useRunSessions(configs: RunConfigController) {
   /**
    * 重开一条会话：先停掉它，再在同一位置起一条新的。
    *
-   * 与 IDEA 的 `performRestart` 一致——复用原来的那个运行槽位（标签页），不是新开一个。
+   * 复用原来的那个运行槽位（标签页），不是新开一个。
    */
   const restartSession = useCallback(
     (id: ProcSessionId) => {
@@ -376,7 +378,7 @@ export function useRunSessions(configs: RunConfigController) {
   }, [closeSessionsForRoot, cwd]);
 
   /**
-   * 清空某条会话已经攒下的输出，会话本身留着继续跑（照 IDEA 的「Clear run output」）。
+   * 清空某条会话已经攒下的输出，会话本身留着继续跑。
    * 缓冲整个丢掉，下一条输出来了从头记；面板订阅 `onClear` 把画面上那份也擦掉。
    */
   const clearOutput = useCallback(
@@ -487,4 +489,5 @@ export function useRunSessions(configs: RunConfigController) {
   );
 }
 
+/** {@link useRunSessions} 的返回值类型，供运行面板等外部控件直接取整个控制器。 */
 export type RunController = ReturnType<typeof useRunSessions>;

@@ -4,10 +4,15 @@ use std::os::windows::fs::MetadataExt;
 use std::path::Path;
 use std::process::Command;
 
+/// Windows 文件属性：只读。
 const FILE_ATTRIBUTE_READONLY: u32 = 0x0000_0001;
+/// Windows 文件属性：隐藏。
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
+/// Windows 文件属性：系统。
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x0000_0004;
+/// Windows 文件属性：重解析点（符号链接/junction）。
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+/// `GetFileAttributesW` 的失败返回值。
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 
 #[link(name = "kernel32")]
@@ -38,15 +43,21 @@ extern "system" {
     fn CloseClipboard() -> i32;
 }
 
+/// 剪贴板文件列表格式（CF_HDROP）的注册格式号。
 const CF_HDROP: u32 = 15;
 
 /// SHFileOperationW 操作常量与标志位
 const FO_DELETE: u32 = 0x0003;
+/// SHFileOperationW 标志：静默执行。
 const FOF_SILENT: u16 = 0x0004;
+/// SHFileOperationW 标志：不弹确认框。
 const FOF_NOCONFIRMATION: u16 = 0x0010;
+/// SHFileOperationW 标志：可撤销（进回收站）。
 const FOF_ALLOWUNDO: u16 = 0x0040;
+/// SHFileOperationW 标志：出错不弹 UI。
 const FOF_NOERRORUI: u16 = 0x0400;
 
+/// SHFileOperationW 的参数结构（含操作码、来源/目标与标志位）。
 #[repr(C)]
 #[cfg_attr(target_arch = "x86", repr(packed))]
 #[allow(non_snake_case)]
@@ -64,6 +75,7 @@ struct SHFILEOPSTRUCTW {
 /// ShellExecuteW 的显示方式：正常窗口。
 const SW_SHOWNORMAL: i32 = 1;
 
+/// 路径转以 NUL 结尾的 UTF-16 序列。
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str()
         .encode_wide()
@@ -76,6 +88,7 @@ fn wide_str(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 取一条路径的目录项标志（单独查一轮文件属性）。
 pub fn flags(path: &Path) -> EntryFlags {
     let raw = wide(path);
     let attrs = unsafe { GetFileAttributesW(raw.as_ptr()) };
@@ -98,6 +111,7 @@ pub fn hidden(_path: &Path, meta: Option<&std::fs::Metadata>) -> bool {
     }
 }
 
+/// 把原始文件属性位收敛成 `Some`（`INVALID` 置 `None`）。
 fn entry_attrs(attrs: u32) -> Option<u32> {
     if attrs == INVALID_FILE_ATTRIBUTES {
         None
@@ -106,6 +120,7 @@ fn entry_attrs(attrs: u32) -> Option<u32> {
     }
 }
 
+/// 把 Windows 文件属性位解码成 [`EntryFlags`]；属性未知按全假处理。
 fn decode(attrs: Option<u32>) -> EntryFlags {
     let Some(attrs) = attrs else {
         return EntryFlags {
@@ -121,6 +136,11 @@ fn decode(attrs: Option<u32>) -> EntryFlags {
     }
 }
 
+/// 在资源管理器里定位该路径（保留链接路径，归一 Win32 前缀与分隔符）。
+///
+/// # Errors
+///
+/// 元数据读取或命令启动失败时返回错误串。
 pub fn reveal(path: &Path) -> Result<(), String> {
     let metadata = path.metadata().map_err(|e| io_err(&path.to_string_lossy(), e))?;
     // Explorer 不识别混合分隔符和扩展路径前缀；保留链接路径，不解析为链接目标。

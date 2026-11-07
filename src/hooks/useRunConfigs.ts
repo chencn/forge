@@ -16,13 +16,13 @@ interface RunPrefs {
   pinned: string[];
 }
 
+/** 工具路径的空配置：还没探测过任何工具时用。 */
 const EMPTY_TOOLS: RunTools = { maven: "", gradle: "", java: "", javaFeature: 0 };
 
 /**
  * 运行配置这一层：有哪些可跑的、当前选哪条、钉选了哪几条。
  *
- * 与执行分开是照 IDEA：那侧是 RunManager，这侧是 ExecutionManager。会话状态在
- * `useRunSessions`，那里只管跑与不跑。
+ * 配置（有哪些可跑、选哪条）与执行（会话状态）分开持有；执行在 `useRunSessions`。
  */
 export function useRunConfigs(root: string | null) {
   const { t } = useI18n();
@@ -255,4 +255,5 @@ export function useRunConfigs(root: string | null) {
   );
 }
 
+/** {@link useRunConfigs} 的返回值类型，供设置页与运行控件共用。 */
 export type RunConfigController = ReturnType<typeof useRunConfigs>;

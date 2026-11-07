@@ -1,7 +1,7 @@
 /**
  * 为复制操作生成一个不覆盖现有条目的名称。
  *
- * 名称比较按 Windows/IDEA 文件树的大小写不敏感口径处理；扩展名保持在副本后缀之后，
+ * 名称比较按 Windows 文件树的大小写不敏感口径处理；扩展名保持在副本后缀之后，
  * `.env` 这类点开头文件不把首个点误当扩展名。
  */
 export function uniqueName(name: string, siblings: Iterable<string>): string {

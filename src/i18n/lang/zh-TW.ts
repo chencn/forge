@@ -1,5 +1,6 @@
 import type { TranslationKey } from "./zh";
 
+/** 繁体中文词表：键集必须与简体中文词表完全一致。 */
 export const zhTW: Record<TranslationKey, string> = {
   "app.name": "Forge",
   // AI Elements 僅展示工具實際回報的結果。
@@ -950,7 +951,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "git.revHead": "HEAD",
   "git.revIndex": "暫存區 (index)",
   "git.revWorktree": "你的版本",
-  /* 比对顶栏：IDEA 的组序是 差异上下 / 跳到源码 / 文件左右 / 关闭，右端是差异条数与布局。 */
+  /* 比对顶栏组序：差异上下 / 跳到源码 / 文件左右 / 关闭，右端是差异条数与布局。 */
   "diff.workingCopy": "工作副本",
   "diff.highlighting": "高亮",
   "diff.highlightWords": "詞級高亮",

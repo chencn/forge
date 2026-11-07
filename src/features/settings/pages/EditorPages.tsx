@@ -3,15 +3,20 @@ import { useI18n } from "../../../i18n";
 import Select from "../../../components/Select";
 import type { SavePolicy } from "../../../lib/settings";
 
+/** 布尔下拉的候选值与其文案键（AppearancePages 同款）。 */
 const SWITCHES = ["yes", "no"] as const;
+/** {@link SWITCHES} 各候选的 i18n 键。 */
 const SWITCH_LABEL: Record<"yes" | "no", "common.yes" | "common.no"> = {
   yes: "common.yes",
   no: "common.no",
 };
 
+/** 缩进宽度的候选值。 */
 const TAB_SIZES = [2, 4, 8];
 
+/** 保存策略候选值与其文案键。 */
 const SAVE_POLICIES: SavePolicy[] = ["manual", "blur"];
+/** {@link SAVE_POLICIES} 各候选的 i18n 键。 */
 const SAVE_POLICY_LABEL: Record<SavePolicy, "savePolicy.manual" | "savePolicy.blur"> = {
   manual: "savePolicy.manual",
   blur: "savePolicy.blur",

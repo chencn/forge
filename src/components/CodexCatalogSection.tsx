@@ -43,7 +43,9 @@ const FLAG_LABEL: Record<string, TranslationKey> = {
   supports_reasoning_summary_parameter: "ai.catalog.flagSummaryParam",
 };
 
+/** 目录条目的 slug（后端用它做覆盖项的键）。 */
 const slugOf = (model: Record<string, unknown>) => String(model.slug ?? "");
+/** 目录条目的显示名（没有就退回 slug）。 */
 const nameOf = (model: Record<string, unknown>) => String(model.display_name ?? "") || slugOf(model);
 /** Codex 的目录里本来就有不进菜单的条目（0.164：daybreak 两个与 codex-auto-review）。
  *  它们不该出现在可排除的名单里——把它们排除掉，等于悄悄把 Codex 自己在用的内部模型删了。 */
@@ -91,6 +93,7 @@ function NumberField({ label, invalidHint, value, placeholder, onCommit }: {
   );
 }
 
+/** {@link CodexCatalogSection} 的入参。 */
 interface CodexCatalogSectionProps {
   view: CodexCatalogView | null;
   draft: CodexCatalogIntent;

@@ -13,6 +13,7 @@ const CHAT_SANITIZE_CONFIG = {
   FORBID_ATTR: ["style", "src", "srcset", "autofocus", "background", "poster", "ping"],
 };
 
+/** 清洗聊天 HTML：白名单协议 + 禁媒体/表单/样式标签与事件类属性。 */
 export function sanitizeChatHtml(html: string): string {
   return DOMPurify.sanitize(html, CHAT_SANITIZE_CONFIG);
 }

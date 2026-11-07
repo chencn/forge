@@ -6,6 +6,7 @@ import type { History } from "../lib/history";
 /** 那三份「最近」列表的键；`lastFolder` 是单值，不走 `remember`。 */
 export type RecentKey = "recentFolders" | "recentBranches" | "commitMessages";
 
+/** 历史记录 Context 的值（读 + 增删改）。 */
 interface HistoryValue {
   /** 当前生效的历史记录。 */
   history: History;
@@ -17,6 +18,7 @@ interface HistoryValue {
   forget: (key: RecentKey, value: string) => void;
 }
 
+/** 历史记录 Context；没挂 Provider 时为 null。 */
 const HistoryContext = createContext<HistoryValue | null>(null);
 
 /** 读历史记录；提供者拿不到就直接报错，历史是渲染工作区的前提。 */
@@ -26,12 +28,14 @@ export function useHistory(): HistoryValue {
   return value;
 }
 
+/** {@link HistoryProvider} 的入参。 */
 interface HistoryProviderProps {
   /** 入口在渲染前读好的那份记录，工作区根的第一帧就要用它。 */
   initial: History;
   children: ReactNode;
 }
 
+/** 历史记录提供者：持有三份「最近」列表，任何改动整份落盘。 */
 export function HistoryProvider({ initial, children }: HistoryProviderProps) {
   const [history, setHistory] = useState<History>(initial);
 

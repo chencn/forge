@@ -1,12 +1,13 @@
 /**
- * 每文件缩进覆盖（对齐 IDEA 状态栏缩进段的 per-file 切换）：
+ * 每文件缩进覆盖（状态栏缩进段的 per-file 切换）：
  * forge 的缩进默认是全工程一把尺（空格 × tabSize，.editorconfig 可按目录覆盖），
  * 这里提供单文件一档覆盖——状态栏缩进段点开的菜单写进来，编辑器装配时优先读。
  *
- * 会话内改动存 localStorage：IDEA 的对应物是 .idea/indent.xml，持久化是它的本意。
+ * 会话内改动存 localStorage，持久化是它的本意。
  */
 import { canonicalPath } from "./format";
 
+/** 单文件的缩进覆盖（字段可缺省，缺省项回落工程默认）。 */
 export interface IndentOverride {
   /** 用几个空格缩进。 */
   spaces?: number;
@@ -14,13 +15,17 @@ export interface IndentOverride {
   useTabs?: boolean;
 }
 
+/** localStorage 键。 */
 const STORAGE_KEY = "forge.indentOverrides";
 
+/** 路径 → 覆盖（模块级单例，启动时从 localStorage 装载）。 */
 const overrides = new Map<string, IndentOverride>();
+/** 覆盖变化订阅者。 */
 const listeners = new Set<() => void>();
 /** 外部存储的版本号：useSyncExternalStore 的快照，写一次跳一格。 */
 let revision = 0;
 
+/** 模块加载时从 localStorage 装载（坏数据当没有）。 */
 function load(): void {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -36,6 +41,7 @@ function load(): void {
   }
 }
 
+/** 把覆盖表写回 localStorage（写不进就只留在本会话）。 */
 function persist(): void {
   try {
     const raw: Record<string, IndentOverride> = {};

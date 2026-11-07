@@ -17,8 +17,11 @@ interface FileIconData {
   ICONS_DARK: Record<string, string>;
 }
 
+/** 已装入的图标数据；null 表示懒加载还没回来。 */
 let data: FileIconData | null = null;
+/** 在飞的懒加载（并发调用共享）。 */
 let loading: Promise<void> | null = null;
+/** 数据装入后的重渲染订阅者。 */
 const listeners = new Set<() => void>();
 /**
  * 后缀键按长度降序排好一次。每次解析都 `Object.keys` 一遍再逐个 `endsWith` 的话，
@@ -58,10 +61,10 @@ export function fileIconsReady(): boolean {
   return data !== null;
 }
 
-/** JVM 包节点用的图标（对齐 IDEA 的 package.svg）。 */
+/** JVM 包节点用的图标（expui package.svg）。 */
 export const PACKAGE_ICON = "expui/nodes/package.svg";
 
-/** *ignore 忽略规则文件的图标（对齐 IDEA 的 ignored file type）。 */
+/** *ignore 忽略规则文件的图标（expui ignored file type）。 */
 export const IGNORED_FILE = "expui/fileTypes/ignored.svg";
 
 /**
@@ -113,17 +116,18 @@ export function resolveIconPath(name: string, isDirectory: boolean, isPackage = 
   return path;
 }
 
+/** {@link resolveIconPath} 的无缓存实现（解析顺序见它的注释）。 */
 function resolveIconPathInner(name: string, isDirectory: boolean, isPackage: boolean): string {
   if (!data) return "";
   const lower = name.toLowerCase();
   if (isDirectory || isPackage) {
-    // 包节点是合并出来的目录，用 IDEA 的包图标；普通目录按其名查文件夹图标。
+    // 包节点是合并出来的目录，用包图标；普通目录按其名查文件夹图标。
     if (isPackage) return data.ICONS_LIGHT[PACKAGE_ICON] ? PACKAGE_ICON : data.DEFAULT_FOLDER;
     return data.FOLDER_ICONS[lower] ?? data.DEFAULT_FOLDER;
   }
 
   // 忽略规则文件最先判：.npmignore 这类在 material 表里挂着工具 logo，
-  // IDEA 的语义是 ignored file type 优先，统一走「灰圆加斜杠」。
+  // ignored file type 优先，统一走「灰圆加斜杠」。
   if (IGNORED_FILE_NAMES.has(lower)) return IGNORED_FILE;
 
   const byName = data.FILE_NAME_ICONS[lower];
@@ -142,7 +146,7 @@ function resolveIconPathInner(name: string, isDirectory: boolean, isPackage: boo
   }
 
   // 单段扩展名：普通文件取最后一个点之后；点开头且无其它点（.gitignore）时取点之后；
-  // 完全无点（Dockerfile / Makefile）时退回整个文件名——对齐 IntelliJ 的 `extension ?: name`。
+  // 完全无点（Dockerfile / Makefile）时退回整个文件名（`extension ?: name` 口径）。
   const dot = lower.lastIndexOf(".");
   const ext = dot > 0 ? lower.slice(dot + 1) : dot === 0 ? lower.slice(1) : "";
   const key = ext || lower;

@@ -1,6 +1,7 @@
 import { Component } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 
+/** 错误边界的入参。 */
 interface ErrorBoundaryProps {
   children: ReactNode;
   /**
@@ -12,6 +13,7 @@ interface ErrorBoundaryProps {
   onError?: (message: string) => void;
 }
 
+/** 错误边界的内部状态：捕获到的那个错误。 */
 interface ErrorBoundaryState {
   error: Error | null;
 }

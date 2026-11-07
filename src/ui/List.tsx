@@ -16,11 +16,13 @@ import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import styles from "./List.module.css";
 
+/** 渲染一行时拿到的状态。 */
 export interface ListRowState {
   active: boolean;
   index: number;
 }
 
+/** {@link List} 的入参。 */
 export interface ListProps<T> {
   items: readonly T[];
   getKey: (item: T, index: number) => string;
@@ -49,6 +51,7 @@ export interface ListProps<T> {
   overscan?: number;
 }
 
+/** 该索引可选（在范围内且不是 section 分组行）。 */
 const isSelectable = <T,>(items: readonly T[], i: number, isSection?: (item: T) => boolean) =>
   i >= 0 && i < items.length && !(isSection?.(items[i]!) ?? false);
 
@@ -104,11 +107,13 @@ export function listNavigate<T>(
   return next < 0 ? active : next;
 }
 
+/** 第一个可选行的索引；全不可选返回 -1。 */
 export function firstSelectable<T>(items: readonly T[], isSection?: (item: T) => boolean): number {
   for (let i = 0; i < items.length; i++) if (isSelectable(items, i, isSection)) return i;
   return -1;
 }
 
+/** 虚拟化列表组件：渲染 {@link ListProps.items} 并托管键盘导航、hover 选中与 section 分组。 */
 export function List<T>({
   items,
   getKey,

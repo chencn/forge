@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import clsx from "clsx";
 import styles from "./SourcePreview.module.css";
 
+/** 一行内的高亮区间（UTF-16 列）。 */
 export interface SourceHighlight {
   line: number;
   /** 行内 UTF-16 列区间 [startCol, endCol] */
@@ -16,6 +17,7 @@ export interface SourceHighlight {
 /** 当前行上下窗口渲染缓冲行数 */
 const WINDOW = 300;
 
+/** {@link SourcePreview} 的入参。 */
 export interface SourcePreviewProps {
   path: string | null;
   /** 0-based 目标行号，自动居中并作为当前高亮行展示 */
@@ -29,6 +31,7 @@ export interface SourcePreviewProps {
   emptyText?: string;
 }
 
+/** 只读代码切片预览：加载文本、按 {@link WINDOW} 渲染窗口、目标行居中。 */
 export function SourcePreview({
   path,
   line,
@@ -119,6 +122,7 @@ export function SourcePreview({
   );
 }
 
+/** 按高亮区间把一行正文切成普通与高亮片段（区间重叠按起点排序后顺排）。 */
 function highlight(
   text: string,
   ranges: ReadonlyArray<readonly [number, number]>

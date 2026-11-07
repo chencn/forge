@@ -10,8 +10,10 @@ export interface AiDockSlots {
   agents: HTMLElement | null;
 }
 
+/** 侧栏挂载点的 Context，缺省全空。 */
 export const AiDockSlotContext = createContext<AiDockSlots>({ agents: null });
 
+/** 取侧栏当前提供的挂载点。 */
 export function useAiDockSlots(): AiDockSlots {
   return useContext(AiDockSlotContext);
 }

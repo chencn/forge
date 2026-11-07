@@ -6,8 +6,11 @@ use std::future::Future;
 // Claude 用 npm 的 `stable` 标签（`latest` 可能指向预发布），Codex 的正式版本就发在 `latest` 上。
 // 镜像只用于「查版本号」：安装与更新始终走官方 registry，避免引入镜像的下载地址。
 const CLAUDE_STABLE: &str = "https://registry.npmjs.org/@anthropic-ai/claude-code/stable";
+/// Codex 官方 registry 的 latest 标签端点。
 const CODEX_LATEST: &str = "https://registry.npmjs.org/@openai/codex/latest";
+/// Claude 版本查询用的 npmmirror 镜像端点。
 const CLAUDE_MIRROR: &str = "https://registry.npmmirror.com/@anthropic-ai/claude-code/stable";
+/// Codex 版本查询用的 npmmirror 镜像端点。
 const CODEX_MIRROR: &str = "https://registry.npmmirror.com/@openai/codex/latest";
 
 /// 版本号是从哪个源拿到的。界面要如实标注，避免把镜像的滞后版本当成官方最新。

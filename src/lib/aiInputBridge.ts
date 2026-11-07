@@ -6,6 +6,7 @@ import type { MenuItem } from "../components/ContextMenu";
 import { loadAdditionalDirs, loadDraft, loadDraftImages, saveAdditionalDirs, saveDraft, updateDraftImages } from "./aiDrafts";
 import { aiSessionStorageKey } from "./aiSessions";
 
+/** 一个可接收输入投递的目标会话（id + 标题）。 */
 export interface AiInputTarget {
   id: string;
   title: string;
@@ -24,6 +25,7 @@ export function buildCopySessionIdMenuItem(
   };
 }
 
+/** 可作为会话 ID 投递目标的「进行中会话」候选。 */
 export interface AiOngoingTargetCandidate {
   id: string;
   title: string;
@@ -86,6 +88,7 @@ export async function deliverAiSessionId(
   onOpen?.(target.id);
 }
 
+/** {@link buildSendSessionIdMenuItem} 的入参集合。 */
 export interface BuildSendSessionIdMenuOptions<T extends AiOngoingTargetCandidate> {
   sourceSession: T;
   sessions: readonly T[];
@@ -152,11 +155,13 @@ export function buildSendSessionIdMenuItem<T extends AiOngoingTargetCandidate>({
   };
 }
 
+/** 投递到输入框的载荷：纯文本 / 图片（dataUrl）/ 文件引用（路径+行号）。 */
 export type AiInputPayload =
   | { kind: "text"; text: string; source?: string }
   | { kind: "image"; dataUrl: string; name: string; text?: string }
   | { kind: "file"; path: string; startLine: number; endLine?: number };
 
+/** 跨组件投递一条输入的完整信息（挂到目标会话的草稿上）。 */
 export interface AiInputDelivery {
   workspaceKey: string;
   sessionId: string;
@@ -164,38 +169,46 @@ export interface AiInputDelivery {
   additionalDir?: string;
 }
 
+/** 目标路由结果：无目标 / 唯一目标直投 / 多目标待选择。 */
 export type AiTargetRoute =
   | { kind: "disabled" }
   | { kind: "direct"; target: AiInputTarget }
   | { kind: "choose"; targets: AiInputTarget[] };
 
+/** 超长文本落盘后的附件记录（路径 + 所在目录，随会话授权目录一起清）。 */
 interface SavedTextAttachment {
   path: string;
   directory: string;
 }
 
+/** 投递通知的 window 自定义事件名。 */
 const DELIVERY_EVENT = "forge:ai-input-delivery";
+/** 投递暂存区：事件还没被输入框组件消费前先放在这里。 */
 const pendingDeliveries = new Map<string, AiInputDelivery>();
 /** 普通文本再长就不塞进草稿/localStorage；文件引用始终只传路径与行号。 */
 export const INLINE_AI_TEXT_LIMIT = 12_000;
 
+/** 按目标数量决定路由形态（禁用/直投/选择）。 */
 export function routeAiTargets(targets: readonly AiInputTarget[]): AiTargetRoute {
   if (targets.length === 0) return { kind: "disabled" };
   if (targets.length === 1) return { kind: "direct", target: targets[0] };
   return { kind: "choose", targets: [...targets] };
 }
 
+/** 把文件引用折成投递文本（路径 + 行区间说明）。 */
 export function formatAiFileReference(path: string, startLine: number, endLine: number): string {
   const start = Math.max(1, Math.trunc(startLine));
   const end = Math.max(start, Math.trunc(endLine));
   return `${path}\n第 ${start} 行到第 ${end} 行`;
 }
 
+/** 把投递文本接到现有草稿后面（空行分隔；空投递原样返回）。 */
 export function appendAiInputText(current: string, incoming: string): string {
   if (!incoming.trim()) return current;
   return current ? `${current}${current.endsWith("\n") ? "\n" : "\n\n"}${incoming}` : incoming;
 }
 
+/** 把各类投递载荷规整成 AI 文本输入；文件转为引用格式，超限文本转存附加目录。 */
 async function prepareAiInput(payload: Exclude<AiInputPayload, { kind: "image" }>, inlineLimit = INLINE_AI_TEXT_LIMIT): Promise<{ text: string; additionalDir?: string }> {
   if (payload.kind === "file") {
     const endLine = payload.endLine ?? await invoke<number>("ai_runtime_file_line_count", { path: payload.path });
@@ -263,6 +276,7 @@ export async function deliverAiInput(
   window.dispatchEvent(new CustomEvent<AiInputDelivery>(DELIVERY_EVENT, { detail: delivery }));
 }
 
+/** 订阅发往某会话的投递（事件 + 待消费缓存回放）；返回注销函数。 */
 export function watchAiInputDelivery(workspace: string | null, sessionId: string, listener: (delivery: AiInputDelivery) => void): () => void {
   // 新对话统一叫 draft；事件与待消费缓存必须同时按工作区隔离。
   const workspaceKey = aiSessionStorageKey(workspace);

@@ -131,14 +131,17 @@ pub struct AiCommitFileInput {
     pub diff: String,
 }
 
-/// 生成操作的取消令牌注册表。
+/// 生成操作的取消令牌注册表：operation_id → 取消信号发送端。
 type Cancellations = Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>;
+/// 取消令牌注册表本体（见 [`Cancellations`] 类型别名）。
 static CANCELLATIONS: OnceLock<Cancellations> = OnceLock::new();
 
+/// 取消令牌注册表的懒初始化入口。
 fn cancellations() -> &'static Cancellations {
     CANCELLATIONS.get_or_init(Default::default)
 }
 
+/// 一次生成操作的登记句柄；Drop 时从 [`cancellations`] 表里摘掉自己。
 struct OperationGuard(String);
 impl Drop for OperationGuard {
     fn drop(&mut self) {
@@ -148,6 +151,11 @@ impl Drop for OperationGuard {
     }
 }
 
+/// AI 提交配置文件在应用配置目录下的完整路径。
+///
+/// # Errors
+///
+/// 应用配置目录无法确定时返回 `CONFIG_DIR` 错误。
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -156,6 +164,7 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(AI_COMMIT_FILE))
 }
 
+/// 读取 AI 提交说明生成配置；文件缺失或损坏时回默认值，不报错。
 pub fn read_config(app: &AppHandle) -> AiCommitConfig {
     config_path(app)
         .ok()
@@ -165,6 +174,8 @@ pub fn read_config(app: &AppHandle) -> AiCommitConfig {
         .unwrap_or_default()
 }
 
+/// 修正配置里的历史遗留与非法值：清理旧预置供应商、修正失效的激活 ID、
+/// 钳制数值上限并把语言/格式/推理档位收敛到合法取值域。
 fn normalize_config(mut config: AiCommitConfig) -> AiCommitConfig {
     // 过滤掉旧版本自动预制的 default-deepseek（仅当未填写 apiKey 时清理）
     config.providers.retain(|p| {
@@ -231,6 +242,11 @@ pub async fn ai_commit_config_load(app: AppHandle) -> AiCommitConfig {
     }, AiCommitConfig::default).await
 }
 
+/// 原子保存 AI 提交配置。
+///
+/// # Errors
+///
+/// 目录创建失败、序列化或写盘失败时返回错误。
 fn save_config(app: &AppHandle, config: &AiCommitConfig) -> Result<(), String> {
     let path = config_path(app)?;
     if let Some(dir) = path.parent() {
@@ -275,11 +291,17 @@ pub fn is_sensitive_path(path: &str) -> bool {
         || name.ends_with(".pfx")
 }
 
+/// 一次 AI 提交请求的既定形态：目标 URL 与请求体，发送前不再变动。
 struct RequestPlan {
     url: String,
     body: Value,
 }
 
+/// 根据供应商与配置组装请求计划；敏感文件拦截在调用方完成。
+///
+/// # Errors
+///
+/// 模型为空或端点非法（`AI_COMMIT_INVALID_PROVIDER`）、diff 超限（`AI_COMMIT_DIFF_TOO_LARGE`）时返回静态错误码。
 fn build_request_plan(
     provider: &AiCommitProvider,
     options: &AiCommitConfig,
@@ -436,6 +458,11 @@ fn build_request_plan(
     })
 }
 
+/// 从供应商响应 JSON 中提取回复正文，并识别「输出 token 耗尽」的截断信号。
+///
+/// # Errors
+///
+/// 响应结构不符合所选协议（`AI_COMMIT_BAD_RESPONSE`）时返回静态错误码。
 fn decode_response(protocol: &str, resp: &Value, include_body: bool) -> Result<String, &'static str> {
     let exhausted = match protocol {
         "responses" => {

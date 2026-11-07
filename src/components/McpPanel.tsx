@@ -32,6 +32,7 @@ import { openExternal } from "../lib/fs";
 import Select from "./Select";
 import AiActionDialog from "./AiActionDialog";
 
+/** 换一个 AI 引擎（面板按引擎分别存配置）。 */
 const other = (provider: AiProvider): AiProvider => provider === "claude" ? "codex" : "claude";
 
 /** 市场协议徽标；stdio 用小写，其余按 CLI 的通行写法显示。 */
@@ -43,6 +44,7 @@ function protocolLabel(protocol: string): string {
   return protocol;
 }
 
+/** 市场参数的说明文案（带位置前缀；没有说明返回空串）。 */
 function parameterText(field: McpMarketParameter): string {
   if (!field.description) return "";
   return field.location ? `${field.location} · ${field.description}` : field.description;
@@ -622,6 +624,7 @@ export default function McpPanel() {
   );
 }
 
+/** 市场安装参数的一格输入（字符串 / 布尔下拉，必填项带星标）。 */
 function MarketParameterField({ field, value, onChange }: {
   field: McpMarketParameter;
   value: string;

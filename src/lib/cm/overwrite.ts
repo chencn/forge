@@ -1,22 +1,25 @@
-/** 复用实际编辑行为，键位由方案表提供。 */
 /**
- * Overwrite mode (Insert key, as in IDEA): typed characters replace the ones
- * after the caret (never the line break) and the caret is drawn as a block.
+ * 改写模式（Insert 键切换）：输入的字符替换光标之后的字符（换行除外），
+ * 光标画成方块。
  */
 import { EditorSelection, Prec, StateEffect, StateField, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 
+/** 切换改写模式的 effect（true 为开）。 */
 export const setOverwrite = StateEffect.define<boolean>();
 
+/** 当前编辑器是否处于改写模式（未装配字段时为 false）。 */
 export function isOverwrite(state: EditorState): boolean {
   return state.field(overwriteField, false) ?? false;
 }
 
+/** 切换改写模式。 */
 export function toggleOverwrite(view: EditorView): boolean {
   view.dispatch({ effects: setOverwrite.of(!isOverwrite(view.state)) });
   return true;
 }
 
+/** 改写模式的输入拦截：输入的字符替换光标之后的字符（含换行的文本不拦）。 */
 const overwriteInput = EditorView.inputHandler.of((view, _from, _to, text) => {
   const { state } = view;
   if (!isOverwrite(state) || state.readOnly || /[\r\n]/.test(text)) return false;
@@ -34,6 +37,7 @@ const overwriteInput = EditorView.inputHandler.of((view, _from, _to, text) => {
   return true;
 });
 
+/** 改写模式字段：状态本体 + 装配输入拦截与块光标样式。 */
 export const overwriteField = StateField.define<boolean>({
   create: () => false,
   update: (on, tr) => tr.effects.reduce((acc, e) => (e.is(setOverwrite) ? e.value : acc), on),

@@ -4,15 +4,20 @@ import type { AiFilePreview } from "../lib/aiFilePreview";
 /** AI 回复里点开文件：路径是消息里写的原样，由上层按工程根还原。 */
 export type AiOpenFile = (path: string, line?: number, column?: number) => void;
 
+/** 「点开 AI 回复里的文件」回调的 Context；没挂 Provider 时为 null。 */
 const AiOpenFileContext = createContext<AiOpenFile | null>(null);
+/** 「请求预览 AI 提及的文件」回调的 Context；没挂 Provider 时为 null。 */
 const AiFilePreviewContext = createContext<((preview: AiFilePreview) => void) | null>(null);
 
+/** 挂上点开/预览回调；上层不提供时对应能力退化为 null。 */
 export function AiOpenFileProvider({ onOpen, onPreview, children }: { onOpen?: AiOpenFile; onPreview?: (preview: AiFilePreview) => void; children: ReactNode }) {
   return <AiOpenFileContext.Provider value={onOpen ?? null}><AiFilePreviewContext.Provider value={onPreview ?? null}>{children}</AiFilePreviewContext.Provider></AiOpenFileContext.Provider>;
 }
 
+/** 取「请求预览」回调；没挂 Provider 时为 null。 */
 export const useAiFilePreview = () => useContext(AiFilePreviewContext);
 
+/** 取「点开文件」回调；没挂 Provider 时为 null。 */
 export function useAiOpenFile(): AiOpenFile | null {
   return useContext(AiOpenFileContext);
 }

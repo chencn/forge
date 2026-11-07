@@ -29,6 +29,7 @@ import type { TermPlacement } from "./TerminalTabs";
 import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
 
+/** {@link TerminalPane} 的入参。 */
 interface TerminalPaneProps {
   /** 新会话的起始目录；换工作区时重开一个 shell。 */
   cwd: string | null;
@@ -40,6 +41,7 @@ interface TerminalPaneProps {
 
 /** 竖排页签那一列的宽度，拖过之后这一轮运行里都记着。 */
 let sideWidth = 180;
+/** 竖排页签那一列的宽度可拖范围（像素）。 */
 const SIDE_RANGE = { min: 120, max: 420 };
 /** 分屏里每一格的最小像素，再小就看不清了。 */
 const PANE_MIN = 80;
@@ -50,6 +52,7 @@ export interface TerminalPaneHandle {
   restart: () => void;
 }
 
+/** 会让画面重渲染的会话状态快照。 */
 interface ActiveView {
   id: string;
   exited: boolean;
@@ -72,6 +75,7 @@ function snapshot(session: TermSession | null): ActiveView | null {
   };
 }
 
+/** 两份快照的值全相等（成员表按顺序逐项比）。 */
 function sameView(a: ActiveView | null, b: ActiveView | null): boolean {
   if (!a || !b) return a === b;
   return (
@@ -405,6 +409,7 @@ export default forwardRef<TerminalPaneHandle, TerminalPaneProps>(function Termin
   );
 });
 
+/** 画面插槽：把 DOM 节点登记给 {@link registerTermSlot}，xterm 的停靠区按它挂载。 */
 function TerminalSlot({ sessionId }: { sessionId: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {

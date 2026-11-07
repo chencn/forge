@@ -1,8 +1,11 @@
 import type { AiEntry } from "./aiRuntime";
 import { toolObject } from "./aiTools";
 
+/** 一条联网搜索结果的来源。 */
 export interface AiSource { url: string; title: string }
+/** 一个测试用例的执行结果。 */
 export interface AiTestCase { name: string; status: "passed" | "failed" | "pending" | "skipped" | "todo"; errors: string[] }
+/** 一个测试套件及其用例。 */
 export interface AiTestSuite { name: string; tests: AiTestCase[] }
 
 /** Only structured web-search results are sources; ordinary response links establish no citation relationship. */
@@ -28,7 +31,7 @@ export function aiToolTestSuites(entry: AiEntry): AiTestSuite[] {
   const result = toolObject(entry.result);
   const nested = toolObject(result.result);
   const output = toolObject(entry.output);
-  // Codex wraps MCP output in result.result; Claude may retain it directly as output.
+  // Codex 把 MCP 输出包在 result.result 里；Claude 可能直接放在 output。
   const candidates = [result, toolObject(result.structuredContent), nested, toolObject(nested.structuredContent), output, toolObject(output.structuredContent)];
   for (const candidate of candidates) {
     if (!Array.isArray(candidate.testResults)) continue;

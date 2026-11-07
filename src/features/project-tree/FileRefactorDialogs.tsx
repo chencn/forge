@@ -5,6 +5,7 @@ import { useI18n } from "../../i18n";
 import type { FsEntry } from "../../lib/fs";
 import styles from "./FileRefactor.module.css";
 
+/** 文件重构对话框的状态（重命名 / 移动 / 安全删除；null 表示没开着）。 */
 export type RefactorDialogState =
   | {
       kind: "rename";
@@ -24,11 +25,13 @@ export type RefactorDialogState =
     }
   | null;
 
+/** {@link FileRefactorDialogs} 的入参。 */
 export interface FileRefactorDialogsProps {
   state: RefactorDialogState;
   onClose: () => void;
 }
 
+/** 文件重构三件套弹窗：重命名 / 移动 / 安全删除（含「在注释与字符串中搜索」开关）。 */
 export function FileRefactorDialogs({ state, onClose }: FileRefactorDialogsProps) {
   const { t } = useI18n();
 
@@ -47,7 +50,7 @@ export function FileRefactorDialogs({ state, onClose }: FileRefactorDialogsProps
         const input = inputRef.current;
         if (!input) return;
         input.focus();
-        // 对标 IDEA：重命名文件时仅选中文件名主体，不包含后缀扩展名
+        // 重命名时仅选中文件名主体，不包含后缀扩展名
         const dotIndex = state.entry.name.lastIndexOf(".");
         if (state.entry.kind === "file" && dotIndex > 0) {
           input.setSelectionRange(0, dotIndex);

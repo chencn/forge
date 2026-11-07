@@ -13,6 +13,7 @@ import { MOD_LABEL } from "./sys";
 import type { KeymapScheme } from "./settings";
 import { ideaKeys, presetKeys } from "./keymaps/idea";
 
+/** 一条应用级快捷键定义：动作 id 与各方案下的组合键。 */
 export interface ShortcutDef {
   /** 稳定 id，与命令面板的动作 id 一致。 */
   id: string;
@@ -43,7 +44,7 @@ export function formatContextShortcut(action: string, scheme: KeymapScheme): str
   return (presetKeys(scheme, action)[0] ?? '').replace(/\bCtrl\+/g, `${MOD_LABEL}+`);
 }
 
-/** 官方动作 id 与应用动作的桥接，不再在这里手抄 IDEA 按键。 */
+/** 官方动作 id 与应用动作的桥接，不在这里手抄按键。 */
 export const IDEA_APPLICATION_ACTIONS: Readonly<Record<string, string>> = {
   'search.actions': 'GotoAction',
   'search.gotoClass': 'GotoClass',
@@ -77,7 +78,7 @@ export const IDEA_APPLICATION_ACTIONS: Readonly<Record<string, string>> = {
 /**
  * 应用级快捷键；只给已有动作绑定对应方案的默认键。
  *
- * IDEA 沿用 IDEA 默认键位；VS Code / Eclipse 只收各编辑器里公认有默认键的动作：
+ * IntelliJ IDEA 方案沿用其默认键位；VS Code / Eclipse 只收各编辑器里公认有默认键的动作：
  * Eclipse 没有「选择运行配置」与「切换运行工具窗口」的默认键，这两条在该方案下留空。
  */
 const APPLICATION_BINDINGS: ShortcutDef[] = [
@@ -126,6 +127,7 @@ const APPLICATION_BINDINGS: ShortcutDef[] = [
   { id: "view.decreaseEditorFont", keys: {} },
 ];
 
+/** 全部应用级快捷键：内置键位合并 IDEA 方案的官方默认键后的最终注册表。 */
 export const SHORTCUT_DEFS: ShortcutDef[] = APPLICATION_BINDINGS.map((definition) => {
   const action = IDEA_APPLICATION_ACTIONS[definition.id];
   if (!action) return definition;
@@ -133,6 +135,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = APPLICATION_BINDINGS.map((definition
   return { ...definition, keys: { ...definition.keys, idea: primary }, aliases: { ...definition.aliases, idea: aliases } };
 });
 
+/** 某动作在指定方案下的主键与全部别名；没绑返回空数组。 */
 export function effectiveShortcuts(id: string, scheme: KeymapScheme): string[] {
   const definition = SHORTCUT_DEFS.find((item) => item.id === id);
   const primary = definition?.keys[scheme];
@@ -150,6 +153,7 @@ export function formatShortcut(id: string, scheme: KeymapScheme): string {
   return combo ? combo.replace(/Mod/g, MOD_LABEL) : "";
 }
 
+/** 解析后的组合键：各修饰键是否按下与主键的规范形。 */
 interface ParsedCombo {
   mod: boolean;
   alt: boolean;
@@ -187,6 +191,7 @@ export function parseCombo(combo: string): ParsedCombo | null {
   return parsed.key ? parsed : null;
 }
 
+/** 主键规范形：单字符转大写，`Space` 转空格、`Esc` 转 `Escape`，其余原样。 */
 function normalizeKey(key: string): string {
   if (key.length === 1) return key.toUpperCase();
   const lower = key.toLowerCase();

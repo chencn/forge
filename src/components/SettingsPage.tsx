@@ -56,6 +56,7 @@ export type SettingsModule =
   | "hooks"
   | "about";
 
+/** 设置页模块的展示顺序。 */
 const MODULES: SettingsModule[] = [
   "general",
   "editor",
@@ -72,6 +73,7 @@ const MODULES: SettingsModule[] = [
   "about",
 ];
 
+/** 各模块侧栏标题的 i18n 键。 */
 const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   general: "settings.general",
   editor: "settings.editor",
@@ -98,6 +100,7 @@ const AI_MODULES = new Set<SettingsModule>([
   "hooks",
 ]);
 
+/** {@link SettingsPage} 的入参。 */
 interface Props {
   /** 当前项目根；「版本控制」页探测 git 与归档会话面板都要用。 */
   workspace: string | null;
@@ -111,6 +114,7 @@ interface Section {
   content: ReactNode;
 }
 
+/** 设置页：左侧模块导航 + 右侧模块内容。 */
 export default function SettingsPage({ workspace, initialModule }: Props) {
   const { t } = useI18n();
   const { settings, patch } = useSettings();

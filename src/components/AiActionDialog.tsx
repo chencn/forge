@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 
+/** 通用 AI 动作确认对话框（重命名、删除等小表单）。 */
 interface AiActionDialogProps {
   /** 对话框标题，通常是「重命名」「删除会话」这类动作名。 */
   title: string;

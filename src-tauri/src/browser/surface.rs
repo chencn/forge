@@ -67,6 +67,7 @@ mod native {
         static CONTEXTS: RefCell<HashMap<(String,String,bool),WebContext>> = RefCell::new(HashMap::new());
         static PRESENTED: RefCell<Option<String>> = const { RefCell::new(None) };
     }
+    /// 当前正呈现的页面 id；切换侧栏内容时要先收回旧页面。
     pub fn presented() -> Option<String> { PRESENTED.with(|p|p.borrow().clone()) }
     fn rect(b: Bounds) -> Rect {
         Rect {
@@ -106,7 +107,7 @@ mod native {
                 profile_root
             };
             std::fs::create_dir_all(&profile_root).map_err(|e| e.to_string())?;
-            // A persistent random directory is mapped by exact workspace/session keys.
+            // 持久化的随机目录按工作区/会话键精确映射。
             let index_path = profile_root.join("profiles.json");
             let mut profiles: HashMap<String, String> = match std::fs::read(&index_path) {
                 Ok(bytes) => serde_json::from_slice(&bytes)
@@ -143,8 +144,8 @@ mod native {
                     .entry((tab.workspace.clone(), tab.session_id.clone(), tab.managed))
                     .or_insert_with(|| WebContext::new(Some(profile_root.join(directory))));
                 WebViewBuilder::new_with_web_context(context)
-                    // WebView2 ignores input when IsVisible=false. Background pages render
-                    // outside the parent client area so CDP input and screenshots still work.
+                    // IsVisible=false 时 WebView2 不吃输入。后台页渲染在父客户区之外，
+                    // CDP 输入与截图照常工作。
                     .with_bounds(rect(Bounds {
                         x: -10000.0,
                         y: -10000.0,
@@ -182,7 +183,7 @@ mod native {
                     })
                     .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
                     .with_download_started_handler(|_, _| false)
-                    // No IPC handler, host objects, custom protocols or Tauri registration.
+                    // 不注册 IPC handler、宿主对象、自定义协议或 Tauri 接线。
                     .build_as_child(&parent)
                     .map_err(|e| e.to_string())
             })?;
@@ -307,7 +308,7 @@ mod native {
         let app2 = app.clone();
         let id = id.to_string();
         let method = method.to_string();
-        // Only schedule the COM call here; never block/pump the UI event loop waiting for it.
+        // 这里只排程 COM 调用；绝不阻塞/泵 UI 事件循环等它。
         ui(app, move || {
             if let Some(ticket) = ticket {
                 ticket.check_dispatch(&app2, document)?;
@@ -385,7 +386,7 @@ mod native {
     pub async fn show(app: &AppHandle, id: Option<String>, bounds: Bounds) -> Result<(), String> {
         let app2 = app.clone();
         ui(app, move || {
-            // A queued presentation must not reveal a page after the master switch was disabled.
+            // 总开关关掉后，排队中的呈现不得再亮出页面。
             // 有效能力读内存镜像：这里在 UI 线程，不能为一次呈现去读 settings.json。
             let allowed = {
                 let state = super::super::host(&app2).lock();
@@ -394,7 +395,7 @@ mod native {
             let id = if allowed { id } else { None };
             let previous = PRESENTED.with(|p| p.replace(id.clone()));
             if previous.is_some() && previous != id {
-                // A moved-away native child must not retain the user's keyboard focus.
+                // 被挪走的原生子视图不得留住用户的键盘焦点。
                 if let Some(parent) = app2.get_webview_window("main") {
                     let _ = parent.with_webview(|p| unsafe {
                         let _ = p
@@ -522,6 +523,7 @@ mod native {
         DefSubclassProc(hwnd, msg, w, l)
     }
 }
+/// Windows 平台的原生浏览器窗口实现（见 `native` 模块）。
 #[cfg(windows)]
 pub use native::*;
 

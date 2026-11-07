@@ -2,11 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { joinPath, separator } from "./format";
 import type { RunConfiguration } from "./runConfigs";
 
+/** 模块下的一个源码根及其类别。 */
 export interface MavenSourceRoot {
   path: string;
   kind: "mainJava" | "mainResources" | "testJava" | "testResources";
 }
 
+/** 一条依赖（坐标 + scope）。 */
 export interface MavenDependency {
   groupId: string;
   artifactId: string;
@@ -14,11 +16,13 @@ export interface MavenDependency {
   scope: string;
 }
 
+/** 一个 POM profile。 */
 export interface MavenProfile {
   id: string;
   activeByDefault: boolean;
 }
 
+/** 一个 Maven 模块（反应堆模块树上的一层，可嵌套）。 */
 export interface MavenModule {
   relativePath: string;
   artifactId: string;
@@ -30,6 +34,7 @@ export interface MavenModule {
   modules: MavenModule[];
 }
 
+/** 扫描出的整个工程：反应堆根模块 + 运行入口信息。 */
 export interface MavenProject extends MavenModule {
   /** 反应堆相对工作区的位置。打开的文件夹自己就是反应堆时为 "."。 */
   invoke: string;
@@ -42,9 +47,12 @@ export function mavenScan(root: string): Promise<MavenProject | null> {
   return invoke<MavenProject | null>("maven_scan", { root });
 }
 
+/** goal / phase 的白名单字符集。 */
 const GOAL = /^[A-Za-z0-9_.:@=,\-/]+$/;
+/** profile id 与模块路径段的白名单字符集。 */
 const PROFILE = /^[A-Za-z0-9_.-]+$/;
 
+/** 含 shell 特殊字符时加引号（Windows cmd 约定）。 */
 function quoteArg(value: string): string {
   return /[\s&()%^<>|]/.test(value) ? `"${value}"` : value;
 }
@@ -78,6 +86,7 @@ export function mavenCommand(
   return parts.join(" ");
 }
 
+/** Maven 命令的工作目录：反应堆子目录时给相对段，工程根本身给空串。 */
 export function mavenWorkingDir(root: string, project: MavenProject): string {
   if (project.relativePath === ".") return "";
   return project.relativePath.replaceAll("/", separator(root));
@@ -92,6 +101,10 @@ export function mavenPomPath(root: string, project: MavenProject, module: string
   return joinPath(root, parts.join("/").replaceAll("/", separator(root)));
 }
 
+/**
+ * 把一次 Maven 执行包装成运行配置；命令过不了白名单返回 null。
+ * id 由工作目录、模块与 goals 组成，同参数复用同一条配置。
+ */
 export function mavenRunConfig(
   project: MavenProject,
   module: string | null,

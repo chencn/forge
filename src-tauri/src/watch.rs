@@ -198,6 +198,7 @@ fn ignorable_git_internal(path: &Path) -> bool {
     true
 }
 
+/// 判断一个文件名是不是 `.git` 目录里的状态指示文件（HEAD/index/refs 等）。
 fn is_git_indicator_name(name: &str) -> bool {
     matches!(
         name,
@@ -240,6 +241,11 @@ fn allow_stop_for_root(active: Option<(&str, u64)>, root: &str, generation: u64)
     active.is_some_and(|(active_root, active_gen)| active_root == root && active_gen == generation)
 }
 
+/// [`fs_watch_start`] 的同步体：建 watcher 并登记进状态槽。
+///
+/// # Errors
+///
+/// 根不是目录（`NOT_DIR`）或监听建立失败时返回错误。
 fn fs_watch_start_impl(app: AppHandle, root: String, generation: u64) -> Result<(), String> {
     let dir = Path::new(&root);
     if !dir.is_dir() {
@@ -328,6 +334,7 @@ pub async fn fs_watch_stop(app: AppHandle, root: String, generation: u64) {
     .await
 }
 
+/// [`fs_watch_stop`] 的同步体：代号匹配才摘除监听，防旧轮请求误杀新监听。
 fn fs_watch_stop_impl(app: AppHandle, root: String, generation: u64) {
     let slot = app.state::<WatchSlot>();
     let mut guard = slot.inner.lock().expect("监听槽位锁");
@@ -404,6 +411,7 @@ fn wait_duration(first_pending_at: Option<Instant>, now: Instant) -> Duration {
     }
 }
 
+/// 把一批变更路径并入待发缓冲；只去重不设上限丢弃，超限靠 flush 拆批消化。
 fn soak(pending: &mut Pending, paths: Vec<std::path::PathBuf>, structural: bool) {
     for path in paths {
         // 不设提前 return：满了就丢等于把用户刚保存的那条路径丢掉，前端从此认不出
@@ -418,6 +426,7 @@ fn soak(pending: &mut Pending, paths: Vec<std::path::PathBuf>, structural: bool)
     }
 }
 
+/// 把待发缓冲按 [`BATCH_CAP`] 拆批广播 `fs://change` 事件并清空缓冲。
 fn flush(app: &AppHandle, root: &str, pending: &mut Pending) {
     if pending.all.is_empty() {
         return;

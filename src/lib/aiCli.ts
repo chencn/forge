@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 
 /** 受支持的两个 CLI，顺序即界面兜底展示顺序；用户排序后会覆盖。 */
 export const AI_PROVIDERS = ["claude", "codex"] as const;
+/** AI CLI 供应商标识的字面量联合。 */
 export type AiProvider = (typeof AI_PROVIDERS)[number];
 /** 由 Forge 或系统掌管、设置页不允许覆盖的变量，与后端白名单一致。 */
 export const RESERVED_AI_CLI_ENV = ["PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"];
@@ -19,7 +20,7 @@ export interface AiCliStatus {
   installed: boolean;
   /** 解析出的正式版本；探测失败或输出无法解析时为 null。 */
   version: string | null;
-  /** 实际使用的启动器路径，直接展示给用户，方便对照自己装在哪。 */
+  /** 实际使用的启动器路径，直接展示给用户，方便核对自己装在哪。 */
   path: string | null;
   /** 安装来源；只有 npm 归 Forge 管，原生与外部安装只读。 */
   source: "native" | "npm" | "external" | null;
@@ -61,6 +62,7 @@ export interface AiCliAgentSettings {
   provider: string;
 }
 
+/** 两个 CLI 的会话入口启停与启动环境变量（持久化在后端设置里）。 */
 export interface AiCliSettings {
   version: number;
   agents: Record<AiProvider, AiCliAgentSettings>;
@@ -140,8 +142,10 @@ export interface AiCliClaudeSettings {
 
 /** 认证方式由界面显式保存：只看环境变量会让「切过去」立刻被推导回原值。 */
 export type ClaudeAuthMode = "official" | "custom" | "provider";
+/** Codex 的认证方式：订阅登录、API Key 或供应商端点。 */
 export type CodexAuthMode = "subscription" | "api_key" | "provider";
 
+/** 推导 Claude 认证方式时检查的三个环境变量键。 */
 const CLAUDE_AUTH_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
 
 /** 从本地生效配置推导 Claude 认证方式；仅在加载/保存后播种，之后以用户选择为准。 */
@@ -156,20 +160,30 @@ export function codexAuthModeOf(settings: Pick<AiCliCodexSettings, "apiKey">): C
 
 /** 枚举一律取自 `codex -c <键>=__probe__` 的报错，不猜；界面会额外补一个「不设置」选项。 */
 export const CODEX_APPROVAL_POLICIES = ["", "on-request", "on-failure", "untrusted", "never", "granular"] as const;
+/** 兜底枚举：沙箱模式。 */
 export const CODEX_SANDBOX_MODES = ["", "read-only", "workspace-write", "danger-full-access"] as const;
+/** 兜底枚举：推理摘要粒度。 */
 export const CODEX_SUMMARY_VALUES = ["auto", "concise", "detailed", "none"] as const;
+/** 兜底枚举：回答详略程度。 */
 export const CODEX_VERBOSITY_VALUES = ["low", "medium", "high"] as const;
+/** 兜底枚举：web_search 档位。 */
 export const CODEX_WEB_SEARCH_VALUES = ["disabled", "cached", "indexed", "live"] as const;
+/** 兜底枚举：历史持久化策略。 */
 export const CODEX_PERSISTENCE_VALUES = ["save-all", "none"] as const;
+/** 兜底枚举：shell 环境继承范围。 */
 export const CODEX_INHERIT_VALUES = ["core", "all", "none"] as const;
+/** 兜底枚举：仅 Windows 的沙箱实现。 */
 export const CODEX_WINDOWS_SANDBOX_VALUES = ["elevated", "unelevated", "mxc"] as const;
 
+/** 生成一份默认启用的 agent 设置。 */
 const defaultAgent = (sortOrder: number): AiCliAgentSettings => ({ enabled: true, sortOrder, env: {}, provider: "" });
+/** 设置的出厂默认值：两个 CLI 都启用，按内置顺序排。 */
 export const DEFAULT_AI_CLI_SETTINGS: AiCliSettings = {
   version: 1,
   agents: { claude: defaultAgent(0), codex: defaultAgent(1) },
 };
 
+/** 设置 store 的快照形状：数据 + 加载/保存状态。 */
 interface CliSettingsSnapshot {
   settings: AiCliSettings;
   loaded: boolean;
@@ -178,14 +192,18 @@ interface CliSettingsSnapshot {
   error: string | null;
 }
 
+/** 当前设置快照（模块级单例）。 */
 let settingsSnapshot: CliSettingsSnapshot = {
   settings: DEFAULT_AI_CLI_SETTINGS, loaded: false, loading: false, saving: false, error: null,
 };
+/** 设置 store 的订阅者。 */
 const settingsListeners = new Set<() => void>();
+/** 合并补丁并通知设置订阅者。 */
 function publishSettings(patch: Partial<CliSettingsSnapshot>) {
   settingsSnapshot = { ...settingsSnapshot, ...patch };
   settingsListeners.forEach((listener) => listener());
 }
+/** 订阅设置快照变化；返回取消订阅函数。 */
 function subscribeSettings(listener: () => void) {
   settingsListeners.add(listener);
   return () => { settingsListeners.delete(listener); };
@@ -207,6 +225,7 @@ function normalizeSettings(value: Partial<AiCliSettings> | null | undefined): Ai
   };
 }
 
+/** 在途的设置加载请求；并发调用共享同一个 Promise。 */
 let settingsRequest: Promise<void> | null = null;
 /** 首次进入设置页或会话工具条时读一次；并发调用共享同一个请求。 */
 export function refreshAiCliSettings(force = false): Promise<void> {
@@ -295,6 +314,7 @@ export function parseAiCliEnvText(text: string): Record<string, string> {
   return env;
 }
 
+/** 环境变量映射序列化回 `KEY=VALUE` 多行文本。 */
 export function aiCliEnvText(env: Record<string, string>): string {
   return Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n");
 }
@@ -365,6 +385,7 @@ export function readAiCliCodexSettings(): Promise<AiCliCodexSettings> {
   return invoke<AiCliCodexSettings>("ai_cli_codex_settings_read");
 }
 
+/** 结构化保存 Codex config.toml 的托管字段，返回保存后的视图。 */
 export function saveAiCliCodexSettings(settings: AiCliCodexSettings): Promise<AiCliCodexSettings> {
   return invoke<AiCliCodexSettings>("ai_cli_codex_settings_save", { settings });
 }
@@ -414,6 +435,7 @@ interface CliSnapshot {
 let snapshot: CliSnapshot = {
   statuses: {}, checking: false, operation: null, results: {}, error: null, checked: false,
 };
+/** 探测/安装快照 store 的订阅者。 */
 const listeners = new Set<() => void>();
 /** 合并补丁后通知所有订阅者。快照整体替换，便于 useSyncExternalStore 判等。 */
 function publish(patch: Partial<CliSnapshot>) {
@@ -451,7 +473,9 @@ export async function refreshAiCli(force = false) {
   await probe(force);
 }
 
+/** 在途的更新查询；并发调用共享同一个 Promise。 */
 let updateRequest: Promise<void> | null = null;
+/** 快照代次；管理动作会让在途的更新查询作废。 */
 let generation = 0;
 /** 更新查询只补充管理信息；失败或迟到的响应都不能撤销安装状态。 */
 export function refreshAiCliUpdates(): Promise<void> {

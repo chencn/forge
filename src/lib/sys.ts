@@ -33,6 +33,7 @@ export interface Memory {
   parts: MemoryPart[];
 }
 
+/** 从后端取本应用及其派生进程的内存读数。 */
 export function sysMemory(): Promise<Memory> {
   return invoke<Memory>("sys_memory");
 }

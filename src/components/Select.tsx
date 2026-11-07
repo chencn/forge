@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import clsx from "clsx";
 import { Select as UiSelect, type SelectOption as UiSelectOption } from "../ui/Select";
 
+/** 下拉选择的一项（带图标与次级文案的增强版）。 */
 export interface SelectOption<T extends string | number> {
   /** 实际写回设置/命令的值。 */
   value: T;
@@ -14,6 +15,7 @@ export interface SelectOption<T extends string | number> {
   disabled?: boolean;
 }
 
+/** 增强下拉的入参。 */
 export interface SelectProps<T extends string | number> {
   /** 当前选中值；null 表示没有可选项。 */
   value: T | null;

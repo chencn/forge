@@ -24,8 +24,10 @@ export const PROCESS_PAGE = 8;
 /** 一屏最多铺这么多时间线项。配合折叠段，需要渲染的块数才有上界。 */
 export const TIMELINE_WINDOW = 120;
 
+/** 会归入过程折叠段的条目种类。 */
 const PROCESS_KINDS: ReadonlyArray<AiEntry["kind"]> = ["tool", "reasoning"];
 
+/** 时间线的一项：单条条目，或折叠成段的过程（同一 runId 连续的工具/思考）。 */
 export type AiTimelineItem =
   | { kind: "entry"; key: string; entry: AiEntry }
   | { kind: "process"; key: string; runId: string; entries: AiEntry[]; active: boolean };
@@ -45,6 +47,7 @@ export function liveThinking(entries: readonly AiEntry[], running: boolean): AiE
   return last && last.kind === "reasoning" ? last : null;
 }
 
+/** 把条目序列切成时间线：够长的连续过程折成一段，散条与消息正文原样保留。 */
 export function groupAiTimeline(entries: readonly AiEntry[], runningRunId?: string | null): AiTimelineItem[] {
   const live = liveThinking(entries, Boolean(runningRunId && entries.at(-1)?.runId === runningRunId));
   const rows = entries.filter((entry) => entry.kind !== "reasoning" || entry.text.trim().length > 0 || entry === live);

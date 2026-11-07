@@ -20,7 +20,7 @@ function percentLabel(percent: number | undefined): string {
 }
 
 /**
- * 上下文用量芯片（保留 forge 的 Claude 上下文构成）：
+ * 上下文用量芯片：
  * 环形进度 + 百分比，点开向上弹出紧凑用量卡——标题行 + 进度条 + 已用/窗口 +
  * token 明细行；压缩建议只在真的值得做（或正在压缩）时出现，不常驻占版面；
  * 构成明细收在同一弹层的滚动区里。

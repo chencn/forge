@@ -72,7 +72,9 @@ import type {
 /** 状态还没回来时的空清单：每次给同一个数组，派生表的记忆才不会每帧失效。 */
 const EMPTY_CHANGES: GitChange[] = [];
 
+/** 一条 Git 操作的种类。 */
 export type GitOperationKind = "fetch" | "pull" | "push" | "checkout" | "createBranch" | "createTag" | "merge" | "rebase";
+/** 一条 Git 操作的进行时状态（跑完留在历史上供回放）。 */
 export interface GitOperation {
   id: number;
   root: string;
@@ -83,6 +85,7 @@ export interface GitOperation {
   fraction?: number;
 }
 
+/** 调用方注入的工作流钩子（更新前的确认、更新策略与推送被拒时的自动更新）。 */
 interface GitWorkflow {
   beforeUpdate?: () => Promise<unknown>;
   updateMethod?: "merge" | "rebase";
@@ -100,6 +103,7 @@ export function isWorktreeChange(change: GitChange): boolean {
   return change.untracked || change.workStatus.trim() !== "";
 }
 
+/** Git 面板的状态中枢：状态/分支/日志拉取 + fetch/pull/push/建分支建标签等操作。 */
 export function useGitState(
   workspaceRoot: string | null,
   reportError: (message: string, title?: string) => void,
@@ -792,7 +796,7 @@ export function useGitState(
   const changes = status?.changes ?? EMPTY_CHANGES;
   const worktreeChanges = useMemo(() => changes.filter(isWorktreeChange), [changes]);
   const stagedChanges = useMemo(() => changes.filter(isIndexChange), [changes]);
-  /** IDEA 把「已修改」和「未进行版本控制」分成两组摆。 */
+  /** 「已修改」和「未进行版本控制」分成两组摆。 */
   const trackedChanges = useMemo(
     () => worktreeChanges.filter((change) => !change.untracked),
     [worktreeChanges]
@@ -801,7 +805,7 @@ export function useGitState(
     () => worktreeChanges.filter((change) => change.untracked),
     [worktreeChanges]
   );
-  /** IDEA 的 Unmerged 一节：排在已暂存之上，且这些文件不出现在其它两组里。 */
+  /** 未合并（Unmerged）一组：排在已暂存之上，且这些文件不出现在其它两组里。 */
   const conflictChanges = useMemo(
     () => changes.filter((change) => change.conflicted),
     [changes]
@@ -945,4 +949,5 @@ export function useGitState(
   );
 }
 
+/** {@link useGitState} 的返回值类型（Git 面板与各对话框共用的状态接口）。 */
 export type GitState = ReturnType<typeof useGitState>;

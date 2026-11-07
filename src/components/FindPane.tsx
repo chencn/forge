@@ -16,6 +16,7 @@ interface FileGroup {
   hits: TextHit[];
 }
 
+/** 全局搜索窗格的入参。 */
 interface FindPaneProps {
   /** 工作区根；替换时按它重扫全量命中。没有工程时替换不可用。 */
   root: string | null;
@@ -39,13 +40,13 @@ interface FindPaneProps {
 const REPLACE_SCAN_LIMIT = 200_000;
 
 /**
- * 命中行唯一键：行粒度（一行多命中一起 Replace/Skip，与 IDEA 的行预览一致）。
+ * 命中行唯一键：行粒度（一行多命中一起 Replace/Skip）。
  */
 const hitKey = (path: string, line: number) => `${path}|${line}`;
 
 /**
  * Preserve Case：按命中词的形态调整替换词——全大写命中给全大写替换，
- * 首字母大写命中给首字母大写替换，其余原样。IDEA 替换栏里那颗「保留大小写」。
+ * 首字母大写命中给首字母大写替换，其余原样。
  */
 function applyCase(replacement: string, matched: string): string {
   if (!replacement) return replacement;
@@ -92,7 +93,7 @@ interface PreviewFile {
 /**
  * 底部「查找」工具窗口：按文件分组的正文命中。
  *
- * IDEA 的 Find 窗口就是这个形状——文件名一行，底下每条命中带着行号和那一行的预览，
+ * 命中按文件分组：文件名一行，底下每条命中带着行号和那一行的预览，
  * 命中的片段涂亮；双击落进编辑器。替换模式（Replace in Files）下多一条替换栏：
  * 「全部替换」先开受影响文件预览（可按文件排除），确认后按后端算好的命中区间逐文件
  * 改写——区间口径天然兼容大小写/整词/正则；每条命中行可逐处 Replace/Skip。

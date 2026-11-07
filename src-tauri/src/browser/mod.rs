@@ -1,5 +1,7 @@
 //! Rust owns grants and run identity; a web page is never an authority.
+/// companion 进程的启动与注入参数。
 pub mod launch;
+/// 冒烟测试入口（feature `browser-smoke`）。
 #[cfg(feature = "browser-smoke")]
 pub mod smoke;
 mod surface;
@@ -15,6 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
+/// 浏览器功能的总开关与子权限，持久化在应用设置里。
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrowserSettings {
@@ -25,6 +28,7 @@ pub struct BrowserSettings {
     /// 用户元素标记的交付偏好，独立于 AI 的额外权限。
     pub element_content: ElementContent,
 }
+/// 用户元素标记的交付偏好。
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ElementContent { Code, Screenshot, #[default] Both }
@@ -39,6 +43,7 @@ impl Default for BrowserSettings {
         }
     }
 }
+/// 一次 AI 运行的身份与授权范围（工作区、会话、run、只读）。
 #[derive(Clone)]
 pub struct Scope {
     pub workspace: String,
@@ -46,6 +51,7 @@ pub struct Scope {
     pub run: String,
     pub read_only: bool,
 }
+/// 页面对一次运行的授权档位。
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Grant {
@@ -53,6 +59,7 @@ pub enum Grant {
     Read,
     Control,
 }
+/// 浏览器面板的一个页签：身份、状态与运行期现场。
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tab {
@@ -91,6 +98,7 @@ pub struct Tab {
     #[serde(skip)]
     pub queue: Arc<tokio::sync::Mutex<()>>,
 }
+/// 快照里的一个节点引用：CDP backendNodeId 加拍快照时的版本信息。
 #[derive(Clone)]
 pub struct NodeRef {
     pub backend: i64,
@@ -100,6 +108,7 @@ pub struct NodeRef {
     pub role: String,
     pub name: String,
 }
+/// 浏览器宿主的全局状态：各工作区的作用域、页签、进行中的操作票与停机标记。
 #[derive(Default)]
 struct State {
     scopes: HashMap<String, Scope>,
@@ -121,6 +130,7 @@ struct State {
     /// 不能为了这两个字段去读磁盘；写入只发生在 `sync_capability` 与设置保存。
     appearance: (String, String),
 }
+/// 浏览器宿主：全部页签与授权状态的唯一持有者（Tauri managed state）。
 pub struct Host {
     state: Mutex<State>,
 }
@@ -129,6 +139,7 @@ impl Host {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
+/// 取挂载在应用上的浏览器宿主。
 pub fn host(app: &AppHandle) -> &Host {
     app.state::<Host>().inner()
 }
@@ -143,6 +154,11 @@ pub fn init(app: &AppHandle) {
     }
 }
 
+/// Windows 版宿主启动：版本一致性检查后建命名管道端点。
+///
+/// # Errors
+///
+/// 版本不匹配或管道/密钥创建失败时返回错误。
 #[cfg(windows)]
 fn start(app: &AppHandle) -> Result<(), String> {
     if VERSION != env!("CARGO_PKG_VERSION") {
@@ -150,7 +166,7 @@ fn start(app: &AppHandle) -> Result<(), String> {
     }
     let nonce = forge_browser::secret()?;
     let endpoint = format!(r"\\.\pipe\forge-browser-{}-{}", std::process::id(), &nonce[..24]);
-    // Create before publishing the endpoint: startup errors cannot look like a healthy service.
+    // 先建服务再发布端点：启动报错不能伪装成健康服务。
     let mut listener = {
         // setup runs on the UI thread, outside Tokio's reactor context.
         let runtime = tauri::async_runtime::handle();
@@ -216,7 +232,7 @@ fn start(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// RAII revocation covers every early return, failed spawn and reconnect.
+/// RAII 撤销覆盖所有早退、拉起失败与重连。
 pub struct Lease {
     app: AppHandle,
     pub token: String,
@@ -227,6 +243,11 @@ impl Drop for Lease {
         changed(&self.app);
     }
 }
+/// 为一次 AI 运行登记授权范围并生成令牌；浏览器不可用时返回 None（不注入）。
+///
+/// # Errors
+///
+/// 随机密钥生成失败时返回错误串。
 pub fn attach(app: &AppHandle, scope: Scope) -> Result<Option<Lease>, String> {
     // broker 没能起来时不注入：会话照常跑，只是没有浏览器工具，不能让每条消息都失败。
     if !cfg!(windows) || host(app).lock().stopped || !sync_capability(app) {
@@ -240,9 +261,11 @@ pub fn attach(app: &AppHandle, scope: Scope) -> Result<Option<Lease>, String> {
         token,
     }))
 }
+/// 吊销全部授权范围并通知前端刷新。
 pub fn revoke_all(app: &AppHandle) {
     permissions_changed(app, true);
 }
+/// 能力开关变化后的统一处置：清范围、降授权、重置元素选择器。
 pub fn permissions_changed(app: &AppHandle, disabled: bool) {
     let mut state = host(app).lock();
     let mut reset_pickers = Vec::new();
@@ -265,10 +288,12 @@ pub fn permissions_changed(app: &AppHandle, disabled: bool) {
     for id in reset_pickers { picker::reset_overlay(app, &id); }
     changed(app);
 }
+/// 应用退出时吊销授权并停掉 broker。
 pub fn shutdown(app: &AppHandle) {
     revoke_all(app);
     host(app).lock().stopped = true;
 }
+/// 广播页签/状态变化事件给前端。
 fn changed(app: &AppHandle) {
     let _ = app.emit("forge-browser-changed", ());
 }
@@ -293,6 +318,11 @@ pub fn settings_saved(app: &AppHandle, settings: &crate::settings::Settings) {
     state.appearance = (settings.language.clone(), settings.theme.clone());
 }
 
+/// 校验令牌并取出作用域（实时读盘口径）；见 [`scope_with`]。
+///
+/// # Errors
+///
+/// 令牌无效、已撤销或宿主停机时返回错误。
 fn scope(app: &AppHandle, token: &str) -> Result<Scope, String> {
     scope_with(app, token, true)
 }
@@ -302,6 +332,11 @@ fn scope_at_dispatch(app: &AppHandle, token: &str) -> Result<Scope, String> {
     scope_with(app, token, false)
 }
 
+/// [`scope`] 的实际执行体；`fresh` 为假时有效能力读内存镜像（派发复查路径）。
+///
+/// # Errors
+///
+/// 令牌无效、已撤销、过期或宿主停机时返回错误。
 fn scope_with(app: &AppHandle, token: &str, fresh: bool) -> Result<Scope, String> {
     let state = host(app).lock();
     if state.stopped {
@@ -326,6 +361,7 @@ fn scope_with(app: &AppHandle, token: &str, fresh: bool) -> Result<Scope, String
     }
     Ok(scope)
 }
+/// 一次工具调用的准入票据：令牌、页签、代际与写权限，短期有效。
 #[derive(Clone)]
 pub struct Ticket {
     token: String,
@@ -336,6 +372,11 @@ pub struct Ticket {
     expires: std::time::Instant,
 }
 impl Ticket {
+    /// 校验票据并取回页签状态；能力读磁盘（权威来源）。
+    ///
+    /// # Errors
+    ///
+    /// 票据过期、令牌吊销或页签不存在时返回错误串。
     pub fn check(&self, app: &AppHandle, document: bool) -> Result<Tab, String> {
         self.check_with(app, document, true)
     }
@@ -376,6 +417,11 @@ impl Ticket {
         Ok(tab.clone())
     }
 }
+/// 取（或登记）一次写操作的操作票，用于把长操作归并到同一会话。
+///
+/// # Errors
+///
+/// 令牌校验失败时透传 [`scope`] 的错误。
 fn ticket(app: &AppHandle, token: &str, write: bool) -> Result<Ticket, String> {
     let scope = scope(app, token)?;
     let state = host(app).lock();
@@ -427,7 +473,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Value {
 
 async fn create(app: &AppHandle, scope: &Scope, managed: bool) -> Result<Tab, String> {
     let id = forge_browser::secret()?[..24].to_string();
-    // Privacy is set before insertion, never as a follow-up after asynchronous WebView creation.
+    // 隐私设置在插入前完成，绝不在异步创建 WebView 之后补设。
     let mut tab = Tab {
         id: id.clone(),
         order: 0,
@@ -480,11 +526,13 @@ async fn create(app: &AppHandle, scope: &Scope, managed: bool) -> Result<Tab, St
     changed(app);
     Ok(tab)
 }
+/// 页签内容失效处理：代际递增、清快照引用与选择器缓存。
 fn invalidate(tab: &mut Tab) {
     tab.epoch += 1;
     tab.refs.clear();
     tab.picker.invalidate();
 }
+/// 取 URL 的 http(s) origin；解析失败或非 http(s) 协议返回 `None`。
 fn origin(url: &str) -> Option<String> {
     url::Url::parse(url)
         .ok()
@@ -496,6 +544,7 @@ pub(super) fn managed_private_target(app: &AppHandle, id: &str, url: &str) -> bo
     host(app).lock().tabs.get(id).is_some_and(|tab| tab.managed)
         && forge_browser::private_literal_target(url)
 }
+/// 把浏览器事件以 `browser://event/<id>` 的形式转发给前端。
 pub(super) fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
     // WebView2 只在引擎内部绘制悬停高亮，不会把 nodeHighlightRequested 交给宿主。
     // 若落到下面的 Overlay 分支，这次悬停会被当成结束选取。
@@ -653,6 +702,7 @@ pub(super) fn event(app: &AppHandle, id: &str, name: &str, value: Value) {
     if reset_picker { picker::reset_overlay(app, id); }
     changed(app);
 }
+/// 定长入队：超过 200 条丢最旧的，控制台/事件队列不无限增长。
 fn bounded_push(queue: &mut VecDeque<Value>, value: Value) {
     if queue.len() >= 200 {
         queue.pop_front();
@@ -662,6 +712,7 @@ fn bounded_push(queue: &mut VecDeque<Value>, value: Value) {
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+/// 视口内的一个矩形（屏幕坐标）。
 pub struct Bounds {
     pub x: f64,
     pub y: f64,
@@ -841,6 +892,11 @@ pub async fn browser_panel_close(app: AppHandle, tab_id: String) -> Result<(), S
     closed
 }
 
+/// 面板路径下取一个页签副本：能力开关必须在线，页签已关闭报 `TAB_CLOSED`。
+///
+/// # Errors
+///
+/// 浏览器功能被禁用（`BROWSER_DISABLED`）或页签已关闭（`TAB_CLOSED`）时返回错误。
 fn panel_tab(app: &AppHandle, id: &str) -> Result<Tab, String> {
     if !sync_capability(app) {
         return Err(crate::error::err("BROWSER_DISABLED", "AI browser disabled"));
@@ -870,6 +926,7 @@ pub async fn browser_panel_details(app: AppHandle, tab_id: String) -> Result<Val
     Ok(json!({"canGoBack":index>0,"canGoForward":index+1<count,"console":tab.console,"network":tab.network,"dialog":tab.dialog,"picker":tab.picker}))
 }
 
+/// 浏览器面板的一条操作命令（前端经 Tauri 命令派发）。
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum PanelCommand {

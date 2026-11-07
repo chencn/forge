@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import clsx from "clsx";
 import styles from "./Kbd.module.css";
 
+/** 键帽（快捷键展示）的入参。 */
 export interface KbdProps {
   /** 格式化快捷键展示串（如 "Ctrl+S" 或 "⌘O"） */
   binding?: string;

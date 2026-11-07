@@ -45,6 +45,7 @@ export function parseEnvLines(text: string): TerminalProfile["env"] {
   return out;
 }
 
+/** {@link parseEnvLines} 的逆操作：拼回编辑框里的多行文本。 */
 export function formatEnvLines(env: TerminalProfile["env"]): string {
   return env.map((entry) => `${entry.key}=${entry.value}`).join("\n");
 }
@@ -60,6 +61,7 @@ export function parseArgs(text: string): string[] {
   return out;
 }
 
+/** {@link parseArgs} 的逆操作：含空白或空串的参数加双引号，空格拼回一行。 */
 export function formatArgs(args: string[]): string {
   return args.map((arg) => (/\s/u.test(arg) || arg === "" ? `"${arg}"` : arg)).join(" ");
 }

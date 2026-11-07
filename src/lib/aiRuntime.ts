@@ -13,6 +13,7 @@ import { normalizeCommandCatalog } from "./aiCommands";
 import type { AiCommandCatalog } from "./aiCommands";
 import type { AiRequestAnswer } from "./aiApprovals";
 import { createFrameNotifier } from "./aiFrame";
+/** 一次发送可携带的 CLI 专属指令意图；后端据此执行对应命令而不是当普通正文发送。 */
 export type AiCommandIntent = "claudeSlash" | "codexCompact" | "codexReview";
 
 /** 一轮运行可选的模型与思考强度；两者都为空表示沿用 CLI 默认。 */
@@ -125,11 +126,25 @@ export interface AiProjectConfig {
   approvalPolicy?: string;
   serviceTier?: string;
 }
+/** 每个工作区一份 CLI 有效配置缓存；`pending` 用于合并并发的相同请求。 */
 const projectConfigs = new Map<string, { value?: AiProjectConfig; pending?: Promise<AiProjectConfig> }>();
+/**
+ * 计算工作区配置缓存的键：统一分隔符、去掉尾部斜杠。
+ *
+ * @remarks Windows 盘符与 UNC 路径转小写，其余路径保留原大小写
+ */
 function projectConfigKey(workspace: string) {
   const normalized = workspace.replace(/\\/g, "/").replace(/\/+$/, "");
   return /^[a-z]:\//i.test(normalized) || normalized.startsWith("//") ? normalized.toLowerCase() : normalized;
 }
+/**
+ * 读取（或合并在途的）工作区 CLI 有效配置请求。
+ *
+ * @param workspace - 工作区根路径
+ * @param force - 为真时绕过缓存强制向上游请求
+ * @returns 配置 Promise；同键并发请求合并为同一个
+ * @throws 上游请求失败时 reject；已成功的旧缓存保留，无缓存则删除占位
+ */
 function requestAiProjectConfig(workspace: string, force: boolean): Promise<AiProjectConfig> {
   const key = projectConfigKey(workspace);
   const current = projectConfigs.get(key);
@@ -148,6 +163,7 @@ function requestAiProjectConfig(workspace: string, force: boolean): Promise<AiPr
   projectConfigs.set(key, { value: current?.value, pending });
   return pending;
 }
+/** 读取工作区的 CLI 有效配置；命中缓存直接返回，不发起请求。 */
 export function loadAiProjectConfig(workspace: string): Promise<AiProjectConfig> {
   return requestAiProjectConfig(workspace, false);
 }
@@ -155,13 +171,23 @@ export function loadAiProjectConfig(workspace: string): Promise<AiProjectConfig>
 export function refreshAiProjectConfig(workspace: string): Promise<AiProjectConfig> {
   return requestAiProjectConfig(workspace, true);
 }
+/** 更新 CLI 项目配置的补丁；字段为 null 表示清除该项、回到 CLI 默认。 */
 export type AiProjectConfigPatch = { model?: string | null; effort?: string | null; permission?: Exclude<AiProjectConfig["permission"], "custom"> | null; serviceTier?: string | null };
+/**
+ * 写入工作区的 CLI 有效配置并刷新本地缓存。
+ *
+ * @param workspace - 工作区根路径
+ * @param patch - 要更新的字段；null 表示清除
+ * @returns 更新后的完整配置
+ * @throws 上游 CLI 拒绝写入时 reject，本地缓存不更新
+ */
 export function updateAiProjectConfig(workspace: string, patch: AiProjectConfigPatch): Promise<AiProjectConfig> {
   return invoke<AiProjectConfig>("ai_runtime_update_project_config", { workspace, patch }).then((value) => {
     projectConfigs.set(projectConfigKey(workspace), { value });
     return value;
   });
 }
+/** 读取 CLI 的模型能力清单；返回磁盘上的上次结果，不强制现问 CLI。 */
 export function loadAiCapabilities(provider: AiSession["provider"], workspace: string): Promise<AiCapabilities> {
   return invoke("ai_runtime_models", { provider, workspace });
 }
@@ -177,6 +203,7 @@ export function saveAiCustomModel(provider: AiSession["provider"], model: string
 export function loadAiCustomModels(provider: AiSession["provider"]): Promise<string[]> {
   return invoke("ai_runtime_custom_models", { provider });
 }
+/** 删除一个用户自定义模型 id。 */
 export function removeAiCustomModel(provider: AiSession["provider"], model: string): Promise<void> {
   return invoke("ai_runtime_remove_model", { provider, model });
 }
@@ -315,6 +342,7 @@ export interface AiAgentSummary {
   updatedAt: number;
 }
 
+/** Codex 线程 Goal 的生命周期状态。 */
 export type AiThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
 /** Codex 原生线程 Goal；它描述长期目标，不承担 Task 清单的逐步进度。 */
 export interface AiThreadGoal {
@@ -328,6 +356,7 @@ export interface AiThreadGoal {
   createdAt: number;
   updatedAt: number;
 }
+/** 携带序号的 Goal 快照；`goal` 为 null 表示 Goal 已被清除。 */
 interface AiGoalSummary { seq: number; goal: AiThreadGoal | null }
 
 /** 一个会话在前端看到的状态快照。 */
@@ -437,8 +466,11 @@ interface Page {
   /** 计划审阅记录；事件分页之外的独立事实源。 */
   plans?: AiPlanReview[];
 }
+/** 未加载会话共用的空快照；组件首帧用它保证不崩。 */
 const EMPTY: AiRuntimeSnapshot = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: false, hasOlder: false, cursor: 0, nativeId: null, plans: [], agents: [] };
+/** 会话 id 到内部状态的映射；跨组件共享同一份数据。 */
 const stores = new Map<string, State>();
+/** 已删除的会话 id；迟到事件与历史读取据此丢弃。 */
 const deleted = new Set<string>();
 /** 已关闭标签等待释放正文缓存；活动任务结束后由事件合并路径完成释放。 */
 const releaseRequested = new Set<string>();
@@ -446,17 +478,33 @@ const releaseRequested = new Set<string>();
 const pendingStreaming = new Map<string, AiRuntimeEvent[]>();
 /** 停止意图按任务归属；会话级 stopping 只投影当前真正运行的那一项。 */
 const stoppingRunIds = new Set<string>();
+/** 全局订阅者集合，供 `useSyncExternalStore` 使用。 */
 const listeners = new Set<() => void>();
+/** 会话活动状态；`external` 与 `conflict` 表示被本窗口之外的进程占用。 */
 export type AiSessionActivity = "idle" | "queued" | "running" | "external" | "conflict" | "unknown";
+/** 进程探针观察到的活动状态；一旦有值就比历史投影权威。 */
 const activities = new Map<string, AiSessionActivity>();
+/** 会话 id 到所属工作区的登记；探针轮询按它分组。 */
 const activityRoots = new Map<string, string>();
+/** 探针报出的排队数；与本地快照取较大值展示。 */
 const activityQueued = new Map<string, number>();
+/** 本窗口当前持有控制权的运行 id；历史里的 running 没有控制权。 */
 const activityRunIds = new Map<string, string>();
+/** 本窗口持有的排队运行 id 清单；顺序即队列顺序。 */
 const activityQueuedRunIds = new Map<string, readonly string[]>();
+/** 共享的空运行 id 清单；稳定引用让订阅方不至于因新数组误判变化。 */
 const NO_RUN_IDS: readonly string[] = [];
 /** 同一工程可能被多个 Hook 同时轮询；只允许最后发出的请求提交结果。 */
 const activityEpochs = new Map<string, number>();
+/** 一个工程下各状态任务的计数摘要（运行/排队/外部占用），用于工程列表角标。 */
 export interface AiProjectActivitySummary { running: number; queued: number; external: number; }
+/**
+ * 汇总一个工程下的任务活动计数。
+ *
+ * @param workspace - 工程根路径
+ * @returns 运行中、排队与外部占用的数量；全空闲时全为 0
+ * @remarks 同时统计本地快照与探针登记；外部占用不计入 running
+ */
 export function getAiProjectActivitySummary(workspace: string): AiProjectActivitySummary {
   const key = rootKey(workspace);
   let running = 0; let queued = 0; let external = 0;
@@ -482,6 +530,7 @@ export function useAiActiveProjects(): string {
       .filter((item) => item.running || item.queued || item.external).sort((a, b) => a.root.localeCompare(b.root)));
   }, () => "[]");
 }
+/** 该工程是否有任何值得展示的活动（运行、排队或外部占用）。 */
 export function hasAiProjectActivity(workspace: string): boolean {
   return hasAiRuns(workspace) || [...activityRoots].some(([id, root]) => rootKey(root) === rootKey(workspace) && ["running", "external", "conflict"].includes(getAiSessionActivity(id)));
 }
@@ -494,16 +543,19 @@ export function getAiSessionActivity(id: string): AiSessionActivity {
   if (isAiSessionRunning(id)) return "running";
   return getAiQueuedCount(id) > 0 ? "queued" : "idle";
 }
+/** 响应式读取会话活动状态；状态没变的轮询不会触发重渲染。 */
 export function useAiSessionActivity(id: string): AiSessionActivity {
   return useSyncExternalStore(subscribeAiChanges, () => getAiSessionActivity(id), () => "idle");
 }
 /** 当前桌面进程真正登记的运行 id；历史里的 running 没有控制权。 */
 export function getAiOwnedRunId(id: string): string | null { return activityRunIds.get(id) ?? null; }
+/** 响应式读取本窗口登记的运行 id。 */
 export function useAiOwnedRunId(id: string): string | null {
   return useSyncExternalStore(subscribeAiChanges, () => getAiOwnedRunId(id), () => null);
 }
 /** 当前桌面进程持有的排队项；其他进程写进共享日志的 queued 只能只读展示。 */
 export function getAiOwnedQueuedRunIds(id: string): readonly string[] { return activityQueuedRunIds.get(id) ?? NO_RUN_IDS; }
+/** 响应式读取本窗口持有的排队运行 id 清单。 */
 export function useAiOwnedQueuedRunIds(id: string): readonly string[] {
   return useSyncExternalStore(subscribeAiChanges, () => getAiOwnedQueuedRunIds(id), () => NO_RUN_IDS);
 }
@@ -600,13 +652,16 @@ export function hasLiveAiActivity(): boolean {
   for (const count of activityQueued.values()) if (count > 0) return true;
   return false;
 }
+/** 全局事件监听的挂载 Promise；失败时置回 null 以便重试。 */
 let listening: Promise<void> | null = null;
+/** 同步唤醒全部订阅者。 */
 const notify = () => { for (const listener of listeners) listener(); };
 /**
  * 流式进度把事件投影与订阅通知一起压到一帧一次，避免每个 delta 都复制完整时间线。
  * 兜底定时器保证 rAF 不来时（窗口隐藏）界面仍会追上，不会卡在旧数据上。
  */
 const frames = createFrameNotifier(() => { flushPendingStreaming(); notify(); });
+/** 立即唤醒订阅者：先取消未触发的帧通知并冲刷攒批，保证状态类事件不迟到。 */
 const changed = () => { frames.cancel(); flushPendingStreaming(); notify(); };
 /** 只推进正文、工具输出这类高频内容时用这个，攒到下一帧再通知。 */
 const changedSoon = () => frames.schedule();
@@ -618,8 +673,16 @@ function patch(id: string, change: Partial<AiRuntimeSnapshot>) { const state = s
 export function subscribeAiChanges(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
 /** 父会话子代理的出现顺序；只在序号变化时通知，避免正文流式把标签栏整页重绘。 */
 const agentOrderListeners = new Set<() => void>();
+/** 每个会话最近一次的子代理顺序签名；与当前签名不同才递增版本并通知。 */
 const agentOrderSignature = new Map<string, string>();
+/** 子代理顺序的版本号；订阅方用它做 memo 比较判断是否重渲染。 */
 let agentOrderVersion = 0;
+/**
+ * 记录一个会话的子代理顺序签名；顺序变化时递增版本号并通知订阅者。
+ *
+ * @param id - 父会话 id
+ * @param agents - 投影出的子代理列表（按首次出现顺序）
+ */
 function rememberAgentOrder(id: string, agents: readonly AiAgentSummary[]) {
   const signature = agents.map((agent) => `${agent.seq}:${agent.sessionId ?? ""}`).join("|");
   if (!signature) {
@@ -629,6 +692,7 @@ function rememberAgentOrder(id: string, agents: readonly AiAgentSummary[]) {
   agentOrderVersion += 1;
   for (const listener of agentOrderListeners) listener();
 }
+/** 清掉一个会话的顺序签名并递增版本号；会话删除时调用。 */
 function dropAgentOrder(id: string) {
   if (!agentOrderSignature.delete(id)) return;
   agentOrderVersion += 1;
@@ -638,10 +702,12 @@ function dropAgentOrder(id: string) {
 export function getAiSessionAgents(id: string): readonly AiAgentSummary[] {
   return stores.get(id)?.snapshot.agents ?? EMPTY.agents;
 }
+/** 订阅子代理出现顺序的变化；返回取消订阅函数。 */
 export function subscribeAiAgentOrder(listener: () => void) {
   agentOrderListeners.add(listener);
   return () => { agentOrderListeners.delete(listener); };
 }
+/** 读取子代理顺序的版本号；组件用它做 memo 比较。 */
 export function getAiAgentOrderVersion(): number { return agentOrderVersion; }
 /** 读取某个会话的快照；不存在的会话返回空快照，保证组件首帧不崩。 */
 export function useAiRuntime(id: string): AiRuntimeSnapshot { return useSyncExternalStore(subscribeAiChanges, () => stores.get(id)?.snapshot ?? EMPTY); }
@@ -670,6 +736,7 @@ export function getAiQueuedCount(id: string) {
   const local = stores.get(id)?.snapshot.tasks.filter((task) => isAiTaskQueued(task.status)).length ?? 0;
   return Math.max(local, activityQueued.get(id) ?? 0);
 }
+/** 响应式读取排队数；本地快照与探针登记取较大值。 */
 export function useAiQueuedCount(id: string) { return useSyncExternalStore(subscribeAiChanges, () => getAiQueuedCount(id), () => 0); }
 /** 路径归一化用于比较：去 `\\?\` 前缀、统一分隔符，Windows 与 UNC 路径转小写。 */
 function rootKey(root: string) { const key = root.replace(/^\\\\\?\\UNC\\/i, "//").replace(/^\\\\\?\\/, "").replace(/\\/g, "/").replace(/\/+$/, ""); return /^[a-z]:\//i.test(key) || key.startsWith("//") ? key.toLowerCase() : key; }
@@ -680,6 +747,7 @@ export function filterAiProjectEvents(events: AiRuntimeEvent[], workspace: strin
 /** 是否有正在运行的任务；传工作区则只统计该项目下的。 */
 export function hasAiRuns(workspace?: string) { return [...stores.values()].some((state) => state.snapshot.tasks.some((task) => isAiTaskLive(task.status)) && (!workspace || state.workspace !== null && rootKey(state.workspace) === rootKey(workspace))); }
 
+/** 单条模型任务更新；`replacesId` 表示顶替旧 id 的条目。 */
 type AiModelTaskPatch = { id: string; content?: string; replacesId?: string; status?: string; detail?: string };
 /** 把完整清单与稀疏 TaskUpdate 折成同一种会话级快照。 */
 function foldAiModelTaskList(previous: AiModelTaskList | undefined, event: AiRuntimeEvent): AiModelTaskList {
@@ -718,7 +786,15 @@ function normalizeAiModelTaskList(value: unknown): AiModelTaskList | undefined {
   return { seq: Number(snapshot.seq), runId: snapshot.runId, items };
 }
 
+/** Goal 状态词表；词表外的载荷一律拒收。 */
 const GOAL_STATUSES = new Set<AiThreadGoalStatus>(["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]);
+/**
+ * 校验并归一一条 Goal 载荷。
+ *
+ * @param value - 事件或分页携带的原始 Goal 数据
+ * @param seq - 事件序号，写入结果的 seq
+ * @returns 归一后的 Goal；字段缺失、类型不符或词表外状态返回 undefined
+ */
 function normalizeAiThreadGoal(value: unknown, seq: number): AiThreadGoal | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const goal = value as Record<string, unknown>;
@@ -739,6 +815,7 @@ function normalizeAiThreadGoal(value: unknown, seq: number): AiThreadGoal | unde
   };
 }
 
+/** 校验 Goal 摘要载荷；`goal:null` 是有效值（表示已清除），非法输入返回 undefined。 */
 function normalizeAiGoalSummary(value: unknown): AiGoalSummary | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const summary = value as Record<string, unknown>;
@@ -748,6 +825,7 @@ function normalizeAiGoalSummary(value: unknown): AiGoalSummary | undefined {
   return goal ? { seq: Number(summary.seq), goal } : undefined;
 }
 
+/** 从 goal 事件提取摘要；非 goal 事件返回 undefined。 */
 function goalSummaryFromEvent(event: AiRuntimeEvent): AiGoalSummary | undefined {
   if (event.kind !== "goal") return undefined;
   if (event.data.goal === null) return { seq: event.seq, goal: null };
@@ -1153,6 +1231,11 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
     .sort((a, b) => a.seq - b.seq);
   return { ...previous, entries, requests: [...requests.values()], tasks: taskList, taskList: modelTasks, goal, runId, status, error, nativeId, usage, context, contextUnavailable, commands, configuration, plans: [...plans.values()].sort((a, b) => a.createdAt - b.createdAt || a.revision - b.revision), agents: validAgents, background, permissionDenied, mcpServers, stopping: active ? stoppingRunIds.has(active.runId) : false };
 }
+/**
+ * 用后端摘要修正本地快照：终态回填、运行归属与请求卡失效。
+ *
+ * @remarks 本地序号已超过摘要时跳过；本地乐观提交中的占位不被旧摘要覆盖
+ */
 function applySummary(state: State) {
   const summary = state.summary;
   if (!summary || state.maxSeq > summary.seq) return;
@@ -1223,6 +1306,7 @@ function mergeTaskListSummary(state: State, summary: AiModelTaskList) {
     state.snapshot = { ...state.snapshot, taskList: source };
   }
 }
+/** 从历史分页取出模型任务清单，按序号合并进会话状态。 */
 function mergePageTaskList(state: State, page: Page) {
   const summary = normalizeAiModelTaskList(page.taskList);
   if (summary) mergeTaskListSummary(state, summary);
@@ -1235,10 +1319,12 @@ function mergeGoalSummary(state: State, summary: AiGoalSummary) {
     state.snapshot = { ...state.snapshot, goal: source.goal ?? undefined };
   }
 }
+/** 从历史分页取出 Goal 摘要，按序号合并进会话状态。 */
 function mergePageGoal(state: State, page: Page) {
   const summary = normalizeAiGoalSummary(page.goal);
   if (summary) mergeGoalSummary(state, summary);
 }
+/** 把已登记的失败写入快照：任务置 failed，当前回合展示错误并解除停止中。 */
 function applyFailure(state: State) {
   if (state.failure) {
     const task = state.snapshot.tasks.find((item) => item.runId === state.failure!.runId);
@@ -1251,6 +1337,12 @@ function applyFailure(state: State) {
 }
 /** 只推进正文与工具输出的高频事件；词表外的任何 kind 都算紧急，宁可多通知一次。 */
 const STREAMING_EVENT_KINDS = new Set(["text", "message", "reasoning", "reasoning_delta", "tool", "command_output"]);
+/**
+ * 投影一批事件到会话快照：合并 Goal 摘要、按需全量重放，并回收不活跃缓存。
+ *
+ * @param id - 会话 id
+ * @param batch - 本批事件；只有全部为新增序号时才走增量投影
+ */
 function projectBatch(id: string, batch: AiRuntimeEvent[]) {
   const state = store(id);
   const appendOnly = batch.every((event) => event.seq > state.maxSeq);
@@ -1267,6 +1359,7 @@ function projectBatch(id: string, batch: AiRuntimeEvent[]) {
   applySummary(state); applyFailure(state);
   releaseInactiveCache(id);
 }
+/** 把攒着的流式批次投影出去；`onlyId` 限定单个会话（状态事件到来时先补齐它）。 */
 function flushPendingStreaming(onlyId?: string) {
   const batches = onlyId
     ? (pendingStreaming.has(onlyId) ? [[onlyId, pendingStreaming.get(onlyId)!] as const] : [])
@@ -1276,6 +1369,13 @@ function flushPendingStreaming(onlyId?: string) {
     if (batch.length) projectBatch(id, batch);
   }
 }
+/**
+ * 合并一批事件到各会话状态并投影。
+ *
+ * @param events - 后端推送或磁盘历史读出的事件；坏载荷逐条丢弃
+ * @param owned - 为真表示来自当前桌面进程的 IPC，可据此登记任务控制权
+ * @remarks 流式正文类事件按帧攒批；状态、审批等立即投影并通知
+ */
 function merge(events: AiRuntimeEvent[], owned = false) {
   const touched = new Map<string, AiRuntimeEvent[]>();
   let ownershipTouched = false;
@@ -1524,10 +1624,15 @@ export interface AiOutlineSnapshot {
   error: string | null;
 }
 
+/** 未加载时共用的空导航索引。 */
 const EMPTY_OUTLINE: AiOutlineSnapshot = { turns: [], complete: false, loaded: false, loading: false, error: null };
+/** 会话 id 到导航索引的映射；随正文缓存一起释放。 */
 const outlines = new Map<string, AiOutlineSnapshot>();
+/** 局部更新导航索引并通知订阅者。 */
 function patchOutline(id: string, change: Partial<AiOutlineSnapshot>) { outlines.set(id, { ...(outlines.get(id) ?? EMPTY_OUTLINE), ...change }); changed(); }
+/** 读取会话的导航索引；未加载返回空索引。 */
 export function getAiOutline(id: string): AiOutlineSnapshot { return outlines.get(id) ?? EMPTY_OUTLINE; }
+/** 响应式读取会话的导航索引。 */
 export function useAiOutline(id: string): AiOutlineSnapshot { return useSyncExternalStore(subscribeAiChanges, () => getAiOutline(id), () => EMPTY_OUTLINE); }
 /**
  * 标签关闭后丢弃可从磁盘重建的正文，只保留侧栏需要的最后终态。
@@ -1552,6 +1657,11 @@ function releaseInactiveCache(sessionId: string): boolean {
   releaseRequested.delete(sessionId);
   return true;
 }
+/**
+ * 标记会话缓存可释放并尝试立即释放；加载在途时等 Promise 全部收尾后再释放。
+ *
+ * @remarks 运行中或排队中的会话不会被释放，等终态事件落地后由投影路径完成
+ */
 export function releaseAiRuntimeSessionCache(sessionId: string): void {
   releaseRequested.add(sessionId);
   const state = stores.get(sessionId);
@@ -1624,6 +1734,7 @@ export async function sendAiMessage(session: AiSession, workspace: string, promp
 
 /** 计划决策：批准会开一次执行回合，要求修改会带着反馈继续规划。 */
 export type AiPlanDecision = "approve" | "requestChanges";
+/** 向后端提交计划决策并开启后续回合；先清失败态再乐观登记运行。 */
 export async function decideAiPlan(session: AiSession, workspace: string, plan: AiPlanReview, decision: AiPlanDecision, feedback?: string, options: AiRunOptions = {}, additionalDirs: string[] = []): Promise<void> {
   await ensureAiRuntimeListener();
   releaseRequested.delete(session.id);
@@ -1713,6 +1824,7 @@ export function reconcileStaleQueuedTask(runId: string, cause: unknown): boolean
   changed();
   return true;
 }
+/** 找到登记了该排队运行 id 的会话；找不到说明这条任务不属于本窗口。 */
 function queuedTaskOwner(runId: string) {
   return [...stores].find(([id, state]) => activityQueuedRunIds.get(id)?.includes(runId)
     && state.snapshot.tasks.some((task) => task.runId === runId && isAiTaskQueued(task.status)));

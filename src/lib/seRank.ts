@@ -1,19 +1,21 @@
 /**
  * 本地打分：后端不带分的结果（动作、以及混排时对各档的相对度）都吃这条。
  * 与后端 `score_name` 的四档口径对齐：全等 > 前缀 > 连续 > 驼峰 > 逐字，短名获胜。
- * 抄 IntelliJ IDEA 的 features/search/common/rank.ts。
+ * 
  */
 import { fuzzyMatch } from "./seMatch";
 
+/** 一条本地匹配结果：总分与命中的字符下标（升序），供高亮与排序。 */
 export interface LocalMatch {
   score: number;
   indices: number[];
 }
 
+/** 本地匹配的可调选项。 */
 export interface MatchOptions {
   /**
    * 拒绝散落的逐字命中：查询的每一段都得是子串或落在词/驼峰开头
-   * （IDEA 的 Find Action 匹配器——"main" 不许命中 "sMArt step INto"）。
+   * （Find Action 匹配器——"main" 不许命中 "sMArt step INto"）。
    */
   wordAligned?: boolean;
 }
@@ -52,11 +54,13 @@ export function isWordAligned(text: string, indices: readonly number[]): boolean
   return true;
 }
 
+/** 命中下标是否连续递增（前缀/子串命中的判据）。 */
 function isContiguous(indices: readonly number[]): boolean {
   for (let i = 1; i < indices.length; i++) if (indices[i] !== indices[i - 1]! + 1) return false;
   return true;
 }
 
+/** 按四档口径给一次命中打分；详见模块头。 */
 function scoreIndices(text: string, query: string, indices: readonly number[]): number {
   const lower = text.toLowerCase();
   const q = query.toLowerCase();
@@ -79,6 +83,7 @@ function isUpper(text: string, i: number) {
   return c !== c.toLowerCase() && text[i - 1] === text[i - 1]!.toLowerCase();
 }
 
+/** 命中下标的离散程度（末位减首位再扣长度），用于惩罚散落的逐字命中。 */
 function spread(indices: readonly number[]): number {
   if (indices.length < 2) return 0;
   return Math.min(150, indices[indices.length - 1]! - indices[0]! - indices.length + 1);

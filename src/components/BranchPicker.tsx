@@ -17,6 +17,7 @@ import { useSettings } from "../hooks/useSettings";
 import { useI18n } from "../i18n";
 import "./BranchPicker.css";
 
+/** 顶部一排快捷 Git 动作（更新/提交/推送/拉取/新建分支/标签/签出修订/初始化仓库）。 */
 export type BranchAction = "update" | "commit" | "push" | "fetch" | "newBranch" | "newTag" | "checkoutRev" | "initRepo";
 
 /** JetBrains changesUpdate/changesPush@12x12（Apache-2.0），保留参考实心轮廓。 */
@@ -26,6 +27,7 @@ function BranchSyncIcon({ incoming = false, className }: { incoming?: boolean; c
       : <path fillRule="evenodd" clipRule="evenodd" d="M3.75 3.5C3.75 3.08579 4.08579 2.75 4.5 2.75H8.5C8.91421 2.75 9.25 3.08579 9.25 3.5V7.5C9.25 7.91421 8.91421 8.25 8.5 8.25C8.08579 8.25 7.75 7.91421 7.75 7.5V5.31066L4.03033 9.03033C3.73744 9.32322 3.26256 9.32322 2.96967 9.03033C2.67678 8.73744 2.67678 8.26256 2.96967 7.96967L6.68934 4.25H4.5C4.08579 4.25 3.75 3.91421 3.75 3.5Z" />}
   </svg>;
 }
+/** {@link BranchPicker} 的入参。 */
 interface BranchPickerProps {
   git: GitState;
   folder: string | null;
@@ -36,10 +38,15 @@ interface BranchPickerProps {
   options: BranchSettings;
   onOptions: (next: BranchSettings) => void;
 }
+/** 弹层列表里的一行快捷动作。 */
 interface ActionRow { type: "action"; key: BranchAction; label: string; icon: ReactNode; aliases: string; disabled?: boolean; hint?: string }
+/** 弹层列表的一行：分支行 / 动作行 / 分隔线。 */
 type Row = BranchPopupRow | ActionRow | { type: "separator"; key: string };
+/** 键盘导航跳过的行：分隔线与置灰动作。 */
 const skipped = (row: Row) => row.type === "separator" || row.type === "action" && !!row.disabled;
+/** 一行高度（px）。 */
 const ROW_HEIGHT = 24;
+/** 分隔线高度（px）。 */
 const SEPARATOR_HEIGHT = 9;
 
 /** 菜单模型沿用日志引用动作；弹窗只改变导航方式，不另写一套 Git 命令。 */
@@ -51,6 +58,7 @@ function menuItems(items: MenuItem[]): UiMenuItem[] {
   });
 }
 
+/** 状态栏上的分支弹层：搜索 + 分支树 + 快捷动作 + 引用右键菜单。 */
 export default function BranchPicker({ git, folder, recent, onAction, onRefAction, onRefInspect, options, onOptions }: BranchPickerProps) {
   const { t } = useI18n();
   const { settings } = useSettings();
@@ -198,7 +206,7 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
               if (row.type === "group") return <span className="branch-popup-row branch-popup-group" style={{ paddingLeft: row.depth * 16 }}>
                 <ChevronRight size={12} className={row.expanded ? "is-expanded" : ""} aria-hidden="true" />{row.depth > 0 && <Folder size={14} aria-hidden="true" />}<span className="branch-popup-label">{row.label}</span></span>;
               return <span data-ref-key={row.key} className={`branch-popup-row${row.current ? " is-current" : ""}`} style={{ paddingLeft: row.depth * 16 }} {...tooltipAttrs(row.target.name)}>
-                {/* 当前分支使用参考窗口的斜向引用标记，与普通标签图标区分。 */}
+                {/* 当前分支用斜向标记区分普通分支与标签图标。 */}
                 {row.current ? <svg width={14} height={14} viewBox="0 0 16 16" className="branch-popup-current-icon" fill="none" aria-hidden="true">
                   <path d="M8.6 2.5h4.9v4.9l-6.1 6.1a1 1 0 0 1-1.41 0L2.5 10.01a1 1 0 0 1 0-1.41L8.6 2.5Z" stroke="currentColor" strokeLinejoin="round" />
                   <circle cx={11} cy={5} r={1} fill="currentColor" />

@@ -22,6 +22,7 @@ export function wordMatch(text: string, query: string): number[] | null {
   return humpMatch(text, q);
 }
 
+/** 位置 i 是否是词首：行首、分隔符后，或小写接大写的驼峰脊线。 */
 function isWordStart(text: string, i: number): boolean {
   if (i === 0) return true;
   const prev = text[i - 1]!;
@@ -30,6 +31,7 @@ function isWordStart(text: string, i: number): boolean {
   return c !== c.toLowerCase() && prev === prev.toLowerCase();
 }
 
+/** 驼峰/词首匹配：查询字符逐个对上词首或紧邻前一个命中。 */
 function humpMatch(text: string, q: string): number[] | null {
   const out: number[] = [];
   const t = text.toLowerCase();
@@ -48,6 +50,7 @@ function humpMatch(text: string, q: string): number[] | null {
   return qi === q.length ? out : null;
 }
 
+/** 最宽松的子序列匹配：只要按序出现就算命中。 */
 function subsequence(t: string, q: string): number[] | null {
   const out: number[] = [];
   let qi = 0;

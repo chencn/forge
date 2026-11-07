@@ -5,8 +5,10 @@ import AiProviderIcon from "./AiProviderIcon";
 
 /** 收展时长与缓动；滑块和胶囊共用，两者才能同步走完。 */
 const REVEAL_MS = 300;
+/** 收展缓动曲线（标准 ease-in-out）。 */
 const REVEAL_EASE = "cubic-bezier(0.4, 0, 0.2, 1)";
 
+/** 侧栏里一个 AI 工具的胶囊描述。 */
 export interface AiAgentPill {
   provider: AiProvider;
   /** 可选（已安装且启用）。不可选的胶囊置灰但保留图标与名称提示。 */
@@ -94,7 +96,7 @@ export default function AiAgentPills({ pills, selected, onSelect, className }: {
               <AiProviderIcon provider={pill.provider} size={16} />
               {!pill.usable ? <span className="ai-agent-dot" aria-hidden /> : null}
             </span>
-            {/* 标签收展用 grid 0fr→1fr：宽度过渡平滑，且和参考同一条缓动曲线。 */}
+            {/* 标签收展用 grid 0fr→1fr：宽度过渡平滑，与滑块共用同一条缓动曲线。 */}
             <span className="ai-agent-label-wrap">
               <span className="ai-agent-label">{pill.label}</span>
             </span>

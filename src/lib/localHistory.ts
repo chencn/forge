@@ -63,6 +63,7 @@ export function restoreSnapshot(
   return invoke<FileContent>("local_history_restore", { root, path, savedAt, ...(expectModifiedMs === undefined ? {} : { expectModifiedMs }) });
 }
 
+/** 目录列表里的一条历史修订（快照或标签）。 */
 export interface HistoryEntry {
   path: string;
   savedAt: number;
@@ -71,16 +72,20 @@ export interface HistoryEntry {
   kind: "snapshot" | "label";
 }
 
+/** 一个目录的历史：修订列表 + 已删除的文件名。 */
 export interface DirectoryHistory { entries: HistoryEntry[]; deleted: string[] }
 
+/** 列一个目录的历史修订与已删除文件。 */
 export function listDirectoryHistory(root: string, path: string): Promise<DirectoryHistory> {
   return invoke("local_history_list_dir", { root, path });
 }
 
+/** 按事件（保存/外部改动）抓一份当前快照。 */
 export function captureHistory(root: string, path: string, event: string): Promise<void> {
   return invoke("local_history_capture", { root, path, event });
 }
 
+/** 给某次修订打标签；可附带把选中文件的同刻快照一起写进标签。 */
 export function putHistoryLabel(root: string, path: string, label: string, snapshots: (SnapshotFull & { path: string })[] = []): Promise<void> {
   return invoke("local_history_put_label", { root, path, label, ...(snapshots.length ? { snapshots } : {}) });
 }
@@ -101,6 +106,7 @@ export function snapshotsBefore(entries: HistoryEntry[], label: HistoryEntry, sc
   return [...versions.values()];
 }
 
+/** 标签时刻之前（同一目录范围内）每个文件的最后一份快照。 */
 export function revisionRange(entries: HistoryEntry[]): [HistoryEntry, HistoryEntry] | null {
   const snapshots = entries.filter((entry) => entry.kind === "snapshot").sort((a, b) => a.savedAt - b.savedAt);
   if (snapshots.length < 2 || snapshots.some((entry) => entry.path !== snapshots[0].path)) return null;

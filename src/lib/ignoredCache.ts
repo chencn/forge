@@ -16,6 +16,7 @@ const REFRESH_DEBOUNCE_MS = 800;
 /** 结果视为新鲜的时长。过期不主动重扫——下次有人要时才走一趟。 */
 const FRESH_MS = 10_000;
 
+/** 一个仓库根的缓存槽（清单 + 时效 + 在飞请求 + 防抖计时器）。 */
 interface Slot {
   list: string[] | null;
   fetchedAt: number;
@@ -25,7 +26,9 @@ interface Slot {
   dirty: boolean;
 }
 
+/** 各仓库根的缓存槽。 */
 const slots = new Map<string, Slot>();
+/** 各仓库根的结果订阅者。 */
 const listeners = new Map<string, Set<(list: string[]) => void>>();
 
 /** 同一仓库的各种写法归一个键（与 git_probe 缓存同因：D:\\ 与 d:/ 是同一个目录）。 */
@@ -33,6 +36,7 @@ function slotKey(repoRoot: string): string {
   return repoRoot.replaceAll("\\", "/").toLocaleLowerCase();
 }
 
+/** 取（或建）仓库根的缓存槽。 */
 function getSlot(key: string): Slot {
   let slot = slots.get(key);
   if (!slot) {
@@ -42,6 +46,7 @@ function getSlot(key: string): Slot {
   return slot;
 }
 
+/** 把新结果广播给该仓库根的订阅者。 */
 function notify(key: string, list: string[]): void {
   for (const listener of listeners.get(key) ?? []) listener(list);
 }
@@ -129,6 +134,7 @@ export function forgetIgnoredUnder(dir: string): void {
   }
 }
 
+/** 回收一个仓库根的槽（取消计时器、清订阅）。 */
 function drop(key: string): void {
   const slot = slots.get(key);
   if (slot?.timer !== null && slot?.timer !== undefined) {

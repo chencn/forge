@@ -3,6 +3,7 @@ import { Check, Copy, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { assetUrl } from "../lib/fs";
 import { useI18n } from "../i18n";
 
+/** 图片预览的入参。 */
 interface ImagePreviewProps {
   /** 图片的绝对路径。 */
   path: string;

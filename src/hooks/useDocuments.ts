@@ -24,7 +24,7 @@ export interface RevealTarget {
   path: string;
   line: number;
   column: number;
-  /** 命中本身有多长（按字符数）。给了就把这一段选住，IDEA 落点也是选中的。 */
+  /** 命中本身有多长（按字符数）。给了就把这一段选住。 */
   length: number;
   /** 同一个位置连点两次也要再跳一回，靠这个序号让 effect 重新走一遍。 */
   token: number;
@@ -114,6 +114,7 @@ function defaultView(kind: DocKind): DocView {
   return kind === "text" || kind === "image" ? "source" : "preview";
 }
 
+/** 路径的末段文件名。 */
 const nameOf = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /** 判定一篇文档是否归属于指定工作区根：优先按打开时记录的所属根匹配，确保外部库跳转与父级仓库虚拟文档归属正确。 */
@@ -124,11 +125,13 @@ export function belongsToRoot(doc: OpenDocument, targetRoot: string): boolean {
 /** 自己写盘之后，认这段时间内的监听回声为同一件事的尾巴，不再读一遍盘。 */
 const SELF_WRITE_WINDOW_MS = 1200;
 
+/** UTF-8 编码器单例（只喂 {@link utf8Length}）。 */
 const ENCODER = new TextEncoder();
 
 /** 一份文本按 UTF-8 占多少字节：判断磁盘上是不是就是手里这份，不用整读回来。 */
 const utf8Length = (text: string) => ENCODER.encode(text).length;
 
+/** 打开文档的状态中枢：打开/关闭/保存/改名/视图切换与监听回声压制。 */
 export function useDocuments(
   reportError: (message: string) => void,
   workspaceRoot: string | null = null
@@ -937,6 +940,7 @@ export function useDocuments(
   );
 }
 
+/** 造一份「正在加载」的占位文档（大文件后台读盘期间先给编辑器一个空壳）。 */
 function placeholder(path: string, root: string): OpenDocument {
   const kind = docKindOf(path);
   return {

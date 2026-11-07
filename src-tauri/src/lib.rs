@@ -27,9 +27,11 @@ mod watch;
 
 use tauri::Manager;
 
+/// 浏览器冒烟测试入口（feature `browser-smoke`，独立可执行体调用）。
 #[cfg(feature = "browser-smoke")]
 pub fn run_browser_smoke() { browser::smoke::run(); }
 
+/// 桌面应用入口：初始化单实例、托盘、窗口与全部命令。
 pub fn run() {
     #[cfg(windows)]
     init_app_user_model_id();

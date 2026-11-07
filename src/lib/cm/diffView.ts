@@ -51,6 +51,7 @@ export type DiffMode = "side" | "unified";
 /** 词级高亮：words 是库的词级标记，lines 只染整行，none 全部素着。 */
 export type DiffHighlight = "words" | "lines" | "none";
 
+/** 差异间跳转方向。 */
 export type DiffDir = "next" | "previous";
 
 /** 本篇的差异条数、还剩几处可走，以及光标落在第几处（1 起，0 = 不在任何一处里）。 */
@@ -61,6 +62,7 @@ export interface DiffNav {
   index: number;
 }
 
+/** {@link createDiffView} 的入参。 */
 export interface DiffViewOptions {
   keymapScheme?: KeymapScheme;
   /** 挂正文的容器；两种排法都只占这一个元素。 */
@@ -90,7 +92,7 @@ export interface DiffViewOptions {
   /** 块控件的悬停文案（调用方翻好）。 */
   chunkLabels?: { stage: string; revert: string };
   /**
-   * 块级勾选框状态变化回调（对标 IntelliJ IDEA 提交比对复选框）。
+   * 块级勾选框状态变化回调。
    * 缺省已自动在内部维护勾选状态并重绘。
    */
   onChunkCheck?: (chunkIndex: number, checked: boolean, chunk: Chunk) => void;
@@ -107,6 +109,7 @@ export interface DiffViewOptions {
   onJumpSource?: () => void;
 }
 
+/** 差异视图的命令式句柄（跳转/换排法/换档位/销毁）。 */
 export interface DiffView {
   setKeymap: (scheme: KeymapScheme) => void;
   canGo: (dir: DiffDir) => boolean;
@@ -128,10 +131,10 @@ export interface DiffView {
   destroy: () => void;
 }
 
-/** 折起来的没改区：改动上下各留 3 行，≥6 行的没改区才折（IDEA 的比对窗口口径）。 */
+/** 折起来的没改区：改动上下各留 3 行，≥6 行的没改区才折。 */
 const COLLAPSE = { margin: 3, minSize: 6 };
 
-/** 块级勾选框装订线标记：对标 IntelliJ IDEA 提交比对复选框 [✓] */
+/** 块级勾选框装订线标记：提交比对里勾选是否包含此块 [✓] */
 class ChunkCheckboxMarker extends GutterMarker {
   constructor(
     readonly chunkIndex: number,
@@ -165,8 +168,10 @@ class ChunkCheckboxMarker extends GutterMarker {
   }
 }
 
+/** 更新勾选框装订线标记的效果。 */
 const setCheckboxMarkers = StateEffect.define<RangeSet<GutterMarker>>();
 
+/** 勾选框装订线标记的状态字段。 */
 const checkboxGutterField = StateField.define<RangeSet<GutterMarker>>({
   create: () => RangeSet.empty,
   update(value, tr) {
@@ -177,6 +182,7 @@ const checkboxGutterField = StateField.define<RangeSet<GutterMarker>>({
   },
 });
 
+/** 块级勾选框装订槽（挂在修改侧栏上）。 */
 const diffCheckboxGutter = gutter({
   class: "cm-diff-checkbox-gutter",
   markers: (view) => view.state.field(checkboxGutterField, false) ?? RangeSet.empty,
@@ -200,6 +206,7 @@ function diffShortcuts(options: DiffViewOptions, step: (dir: DiffDir, view: Edit
   return [Prec.highest(keymap.of(bindings)), forgeKeymap(scheme)];
 }
 
+/** 拼一栏（并排模式单侧）的全部扩展：只读、行号、主题、键位与勾选槽。 */
 function sideExtensions(
   options: DiffViewOptions,
   shortcuts: Extension,
@@ -216,7 +223,7 @@ function sideExtensions(
     EditorView.editable.of(false),
     EditorView.editorAttributes.of({ class: "forge-diff" }),
     lineNumbers(format ? { formatNumber: (line) => format(line) } : undefined),
-    // 右栏（工作副本修改栏）挂载对标 IntelliJ IDEA 的复选框装订槽 [✓]
+    // 右栏（工作副本修改栏）挂块级勾选框装订槽 [✓]
     ...(isRightSide ? [checkboxGutterField, diffCheckboxGutter] : []),
     highlightActiveLine(),
     highlightActiveLineGutter(),
@@ -230,7 +237,7 @@ function sideExtensions(
     forgeSearch,
     diffKeymapSlot.of(shortcuts),
     forgeTheme,
-    // 改动色带：比对的每一处改动画在装订线上（同 IDEA 的比对窗口；右侧概览条比对不挂）。
+    // 改动色带：比对的每一处改动画在装订线上（右侧概览条比对不挂）。
     changeMarksField,
     // 监听视图更新（几何变动、滚动、选区等）
     EditorView.updateListener.of((update) => {
@@ -292,7 +299,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
   /** 本轮建出来的那几栏：语法包迟到时要往它们身上补发。 */
   let panes: EditorView[] = [];
   let languageSlot: Compartment | null = null;
-  /** 并排比对中间的分栏与连线色带元素（对标 IntelliJ IDEA Diff Splitter Ribbon） */
+  /** 并排比对中间的分栏与连线色带元素 */
   let splitterEl: HTMLElement | null = null;
   let svgEl: SVGSVGElement | null = null;
   let buttonsBoxEl: HTMLElement | null = null;
@@ -312,7 +319,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
     });
   }
 
-  /** 更新右栏行号旁的块级勾选框（对标 IntelliJ IDEA [✓] 复选框装订槽） */
+  /** 更新右栏行号旁的块级勾选框 [✓] */
   function updateCheckboxMarkers(): void {
     if (!read || destroyed) return;
     const builder = new RangeSetBuilder<GutterMarker>();
@@ -338,7 +345,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
     read.dispatch({ effects: setCheckboxMarkers.of(builder.finish()) });
   }
 
-  /** 在两栏中间的分栏区实时绘制平滑连线色带与 > 回退按钮（对标 IntelliJ IDEA 规范：左右高度严格一致） */
+  /** 在两栏中间的分栏区实时绘制平滑连线色带与 > 回退按钮（左右高度严格一致） */
   function renderRibbons(): void {
     if (!merge || !splitterEl || !svgEl || !buttonsBoxEl || destroyed) return;
 
@@ -407,7 +414,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
       bottomLine.setAttribute("d", dBottom);
       svgEl.appendChild(bottomLine);
 
-      // 挂载对标 IntelliJ IDEA 的白底微立体阴影卡片 > 回滚按钮（居左贴靠，垂直居中于首行中心线）
+      // 挂载白底微立体阴影卡片 > 回滚按钮（居左贴靠，垂直居中于首行中心线）
       if (options.onChunkOp) {
         const btn = document.createElement("button");
         btn.type = "button";
@@ -563,7 +570,7 @@ export function createDiffView(options: DiffViewOptions): DiffView {
       applyChangeMarks(merge.a, marksOf(chunks, "a", merge.a.state.doc));
       applyChangeMarks(merge.b, marksOf(chunks, "b", merge.b.state.doc));
 
-      // 在并排左右两栏之间挂载对标 IntelliJ IDEA 的 Splitter Gutter
+      // 在并排左右两栏之间挂载分栏槽（Splitter Gutter）
       const wrapA = merge.a.dom.parentElement;
       const wrapB = merge.b.dom.parentElement;
       const editorsParent = wrapA?.parentElement;

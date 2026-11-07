@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import type { RunConfiguration, RunTools } from "../lib/runConfigs";
 import { useMavenProject } from "../hooks/useMavenProject";
 
+/** Maven 内容按需加载的懒引用。 */
 const MavenPane = lazy(() => import("./MavenPane"));
 
 /**

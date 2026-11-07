@@ -13,6 +13,7 @@ import { Popup, type PopupAnchor } from "./Popup";
 import type { Placement } from "@floating-ui/react-dom";
 import styles from "./Menu.module.css";
 
+/** 菜单项：普通项（含子菜单）/ 分隔线 / 组头。 */
 export type MenuItem =
   | { kind: "separator" }
   | { kind: "header"; label: string }
@@ -31,6 +32,7 @@ export type MenuItem =
       submenu?: MenuItem[];
     };
 
+/** 规范化后的菜单项：key 已补齐、收尾多余分隔线已去掉。 */
 interface ResolvedItem {
   kind: "item" | "separator" | "header";
   key: string;
@@ -46,6 +48,7 @@ interface ResolvedItem {
   submenu?: MenuItem[];
 }
 
+/** 规范化菜单项：合并相邻分隔线、去首尾分隔线、补 key。 */
 export function resolveMenuItems(items: MenuItem[]): ResolvedItem[] {
   const out: ResolvedItem[] = [];
   items.forEach((item, i) => {
@@ -70,8 +73,10 @@ export function resolveMenuItems(items: MenuItem[]): ResolvedItem[] {
   return out;
 }
 
+/** 该项是否可被键盘导航选中。 */
 const selectable = (r: ResolvedItem | undefined) => !!r && r.kind === "item" && !r.disabled;
 
+/** {@link MenuList} 的入参。 */
 export interface MenuListProps {
   items: MenuItem[];
   onDone: () => void;
@@ -80,6 +85,7 @@ export interface MenuListProps {
   autoFocusFirst?: boolean;
 }
 
+/** 菜单列表本体：规范化 + 键盘导航 + 子菜单联动。 */
 export function MenuList({
   items,
   onDone,
@@ -238,6 +244,7 @@ export function MenuList({
   );
 }
 
+/** {@link Menu} 的入参。 */
 export interface MenuProps {
   open: boolean;
   onClose: () => void;

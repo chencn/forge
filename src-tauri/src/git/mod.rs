@@ -2,6 +2,7 @@ use crate::error::{err, err_parts};
 use crate::offload::block_value;
 use crate::sys::hide_console;
 
+/// 各仓库 .gitignore 规则的解析与匹配（见 `ignore_rules` 模块）。
 mod ignore_rules;
 
 pub(crate) use ignore_rules::ignored_names_in_dir;
@@ -41,6 +42,7 @@ pub struct GitProbe {
     pub remotes: Vec<String>,
 }
 
+/// 变更清单里的一条：路径与两处状态位。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitChange {
@@ -58,6 +60,7 @@ pub struct GitChange {
     pub conflicted: bool,
 }
 
+/// 仓库状态快照：分支、上游与变更清单。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatus {
@@ -75,6 +78,7 @@ pub struct GitStatus {
     pub changes: Vec<GitChange>,
 }
 
+/// 一条分支的视图信息。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranch {
@@ -145,6 +149,7 @@ pub struct GitCommitDetail {
     pub files: Vec<GitCommitFile>,
 }
 
+/// 历史列表里的一条提交摘要。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitCommit {
@@ -164,6 +169,7 @@ pub struct GitCommit {
     pub parents: Vec<String>,
 }
 
+/// 一条 git 命令的执行结果；`ok` 为退出码是否成功。
 struct GitOutput {
     ok: bool,
     stdout: String,
@@ -208,6 +214,11 @@ fn git_write_lock() -> MutexGuard<'static, ()> {
     lock(LOCK.get_or_init(|| Mutex::new(())))
 }
 
+/// 在仓库根跑一条 git 命令，不带 stdin。
+///
+/// # Errors
+///
+/// 进程启动失败或输出超过 [`GIT_OUTPUT_CEILING`] 时返回错误；git 非 0 退出不算错（看 [`GitOutput::ok`]）。
 fn run_git(root: &Path, args: &[&str]) -> Result<GitOutput, String> {
     run_git_raw(root, args, None)
 }
@@ -267,6 +278,7 @@ fn read_capped_output(reader: &mut impl std::io::Read, ceiling: usize, on_line: 
     (bytes, overflow)
 }
 
+/// [`run_git`] 带 stdin 的变体，供 `--pathspec-from-file=-` 等场景。
 fn run_git_raw(root: &Path, args: &[&str], stdin: Option<&str>) -> Result<GitOutput, String> {
     run_git_raw_env(root, args, stdin, &[])
 }
@@ -281,6 +293,11 @@ fn run_git_raw_env(
     run_git_raw_env_output(root, args, stdin, extra_envs, None)
 }
 
+/// git 执行的最底层入口：写命令按 [`mutates_repo`] 排队，输出可选经 Channel 流给前端。
+///
+/// # Errors
+///
+/// 进程启动失败、管道读线程 panic 或输出超限时返回错误。
 fn run_git_raw_env_output(
     root: &Path,
     args: &[&str],
@@ -386,10 +403,16 @@ fn fail(output: &GitOutput) -> String {
     err("GIT", output.stdout.trim())
 }
 
+/// 去掉行尾的 CR/LF（git 在 Windows 上输出 CRLF）。
 fn trim_line(value: &str) -> String {
     value.trim_end_matches(['\r', '\n']).to_string()
 }
 
+/// 把前端传来的仓库根转成 `PathBuf` 并确认是目录。
+///
+/// # Errors
+///
+/// 目录不存在时返回 `NO_REPO`。
 fn ensure_root(root: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(root);
     if !path.is_dir() {
@@ -446,6 +469,7 @@ pub async fn git_probe(path: String) -> GitProbe {
     block_value(move || git_probe_cached(path), GitProbe::unavailable).await
 }
 
+/// [`git_probe`] 的同步体：读 TTL 缓存，未命中才起进程探测。
 fn git_probe_cached(path: String) -> GitProbe {
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, GitProbe)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -557,6 +581,7 @@ fn in_progress(root: &Path) -> (bool, bool, bool, bool) {
     )
 }
 
+/// 真正起进程探测仓库根与远端；`rev-parse` 与 `remote` 两条并行。
 fn git_probe_impl(path: &str) -> GitProbe {
     let start = PathBuf::from(path);
     // remote 不依赖仓库根：`git -C <子目录> remote` 与在根上跑结果一致。
@@ -746,6 +771,11 @@ pub async fn git_config_get(root: String, key: String) -> Result<String, String>
     .await
 }
 
+/// 状态面板的同步体：一趟 `status` 同时取回变更与忽略清单。
+///
+/// # Errors
+///
+/// 目录不存在返回 `NO_REPO`；git 失败时返回其原文。
 fn git_status_impl(root: String) -> Result<GitStatus, String> {
     let root = ensure_root(&root)?;
     let output = run_git(
@@ -777,6 +807,11 @@ pub async fn git_show(root: String, revision: String, path: String) -> Result<St
     block(move || git_show_impl(root, revision, path)).await
 }
 
+/// [`git_show`] 的同步体；二进制内容按 NUL 探测并回 `BINARY`，基线里不存在的文件给空串。
+///
+/// # Errors
+///
+/// 引用非法返回 `BAD_REV`；git 失败且文件确实存在时返回其原文。
 fn git_show_impl(root: String, revision: String, path: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_rev(&revision) {
@@ -813,6 +848,11 @@ pub async fn git_index_show(root: String, path: String) -> Result<String, String
     block(move || git_index_show_impl(root, path)).await
 }
 
+/// [`git_index_show`] 的同步体；索引里没有该文件时给空串。
+///
+/// # Errors
+///
+/// git 失败且索引项存在时返回其原文；二进制回 `BINARY`。
 fn git_index_show_impl(root: String, path: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let relative = relative_path(&root, &path)?;
@@ -839,6 +879,11 @@ fn git_index_show_impl(root: String, path: String) -> Result<String, String> {
 /// 「暂存全部」遇上几千个未跟踪文件会直接 spawn 失败。
 const PATHSPEC_ARGV_LIMIT: usize = 100;
 
+/// 暂存/取消暂存一批路径的共用体；大清单走 stdin pathspec 文件绕开命令行长度上限。
+///
+/// # Errors
+///
+/// 目录不存在、路径不在仓库内或 git 失败时返回错误。
 fn stage_paths(root: String, paths: &[String], unstage: bool) -> Result<(), String> {
     let root = ensure_root(&root)?;
     if paths.is_empty() {
@@ -885,6 +930,11 @@ pub async fn git_stage(root: String, paths: Vec<String>) -> Result<(), String> {
     block(move || git_stage_impl(root, paths)).await
 }
 
+/// [`git_stage`] 的同步体。
+///
+/// # Errors
+///
+/// 同 [`stage_paths`]。
 fn git_stage_impl(root: String, paths: Vec<String>) -> Result<(), String> {
     stage_paths(root, &paths, false)
 }
@@ -894,14 +944,21 @@ pub async fn git_unstage(root: String, paths: Vec<String>) -> Result<(), String>
     block(move || git_unstage_impl(root, paths)).await
 }
 
+/// [`git_unstage`] 的同步体。
+///
+/// # Errors
+///
+/// 同 [`stage_paths`]。
 fn git_unstage_impl(root: String, paths: Vec<String>) -> Result<(), String> {
     stage_paths(root, &paths, true)
 }
 
+/// 差异取自哪一层：暂存区、工作区，或仅工作区（对 HEAD）。
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CommitSource { Index, Worktree, WorktreeOnly }
 
+/// 选中的一处变更：路径与来源层。
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitSelection {
@@ -936,6 +993,11 @@ pub async fn git_commit(
     .await
 }
 
+/// 提交的同步体：组装 commit 参数；带 `selections` 时走 [`commit_selected`] 的部分提交事务。
+///
+/// # Errors
+///
+/// 说明为空、paths 与 selections 同给、路径不在仓库内或 git 失败时返回错误。
 fn git_commit_impl(
     root: String,
     message: String,
@@ -1021,6 +1083,11 @@ fn selected_git(root: &Path, args: &[&str], input: Option<&str>, index: Option<&
     Ok(output.stdout)
 }
 
+/// 查真实索引文件的路径（`rev-parse --git-path index`），相对结果按仓库根补全。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn real_index_path(root: &Path) -> Result<PathBuf, String> {
     let path = selected_git(root, &["rev-parse", "--git-path", "index"], None, None)?;
     let path = PathBuf::from(path.trim());
@@ -1146,6 +1213,11 @@ impl Drop for CommitIndexLock {
     }
 }
 
+/// 部分提交事务：用两个临时索引构造「只含所选内容」的提交索引与「保留其余」的恢复索引。
+///
+/// # Errors
+///
+/// 路径重复、不在仓库内、临时索引操作失败或合并驱动不允许部分提交时返回错误。
 fn commit_selected(root: &Path, args: &[String], selections: &[CommitSelection]) -> Result<String, String> {
     let _queued = git_write_lock();
     let index_path = real_index_path(root)?;
@@ -1185,6 +1257,11 @@ pub async fn git_apply_patch(
     block(move || git_apply_patch_impl(root, patch, cached, reverse)).await
 }
 
+/// [`git_apply_patch`] 的同步体；零上下文补丁需 `--unidiff-zero` 才能定位。
+///
+/// # Errors
+///
+/// 补丁为空直接成功；git 应用失败时返回其原文。
 fn git_apply_patch_impl(root: String, patch: String, cached: bool, reverse: bool) -> Result<(), String> {
     let root = ensure_root(&root)?;
     if patch.trim().is_empty() {
@@ -1212,6 +1289,11 @@ fn remote_op(root: &Path, args: &[&str]) -> Result<String, String> {
     remote_op_output(root, args, None)
 }
 
+/// [`remote_op`] 带输出流的变体：优先回 stderr（进度文案在那），stderr 空时回 stdout。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn remote_op_output(root: &Path, args: &[&str], on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let output = run_git_raw_env_output(root, args, None, &[], on_output)?;
     if !output.ok {
@@ -1232,9 +1314,14 @@ pub async fn git_fetch(webview: tauri::Webview, root: String, on_output: Option<
     block(move || git_fetch_impl(root, on_output)).await
 }
 
+/// [`git_fetch`] 的同步体：全远端 `fetch --prune --progress`。
+///
+/// # Errors
+///
+/// 目录不存在或 git 失败时返回错误。
 fn git_fetch_impl(root: String, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
-    // IDEA 的抓取也是每个远端一次并带 --prune；标签不单独强拉，跟着 git 的默认走。
+    // 抓取也是每个远端一次并带 --prune；标签不单独强拉，跟着 git 的默认走。
     remote_op_output(&root, &["fetch", "--all", "--prune", "--progress"], on_output)
 }
 
@@ -1245,11 +1332,17 @@ pub async fn git_pull(webview: tauri::Webview, root: String, method: Option<Stri
     block(move || git_pull_output(root, method.as_deref().unwrap_or("merge"), on_output)).await
 }
 
+/// [`git_pull_output`] 不带输出流的版本（测试用）。
 #[cfg(test)]
 fn git_pull_impl(root: String, method: &str) -> Result<String, String> {
     git_pull_output(root, method, None)
 }
 
+/// 拉取的共用体：策略限 `merge`/`ff-only`/`rebase` 三种，先校验再抓取。
+///
+/// # Errors
+///
+/// 目录不存在、策略非法或 git 失败时返回错误。
 fn git_pull_output(root: String, method: &str, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     // 只允许表单公开的三种策略；先校验再抓取，非法参数不能产生远端副作用。
@@ -1283,6 +1376,11 @@ pub async fn git_update_branch(webview: tauri::Webview, root: String, branch: St
     block(move || git_update_branch_impl(root, branch, on_output)).await
 }
 
+/// 从上游刷新指定分支（fetch 落到远程跟踪引用，不动本地分支）。
+///
+/// # Errors
+///
+/// 分支名非法、无跟踪分支或 git 失败时返回错误。
 fn git_update_branch_impl(root: String, branch: String, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&branch) { return Err(err("BAD_BRANCH", &branch)); }
@@ -1292,6 +1390,7 @@ fn git_update_branch_impl(root: String, branch: String, on_output: Option<tauri:
     remote_op_output(&root, &["fetch", "--progress", "--", &destination.remote, &refspec], on_output)
 }
 
+/// 推送参数（前端弹窗提交）。
 #[derive(Default, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct GitPushOptions {
@@ -1304,10 +1403,12 @@ pub struct GitPushOptions {
     tags: Option<PushTags>,
 }
 
+/// 标签推送策略：全部标签，或只跟当前分支的标签（`--follow-tags`）。
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 enum PushTags { All, CurrentBranch }
 
+/// 一次推送的落点解析：分支、远端、目标与是否已跟踪。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitPushTarget {
@@ -1323,6 +1424,12 @@ pub async fn git_push_target(root: String, branch: Option<String>) -> Result<Git
     block(move || resolve_push_target(&ensure_root(&root)?, branch.as_deref())).await
 }
 
+/// 解析某分支的推送落点：远端与目标分支取自 `branch.*.remote/merge` 配置，
+/// 未跟踪时退回 `origin`（或第一个远端）。
+///
+/// # Errors
+///
+/// DETACHED HEAD、分支不存在或没有任何远端时返回错误。
 fn resolve_push_target(root: &Path, branch: Option<&str>) -> Result<GitPushTarget, String> {
     let head = run_git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
     let branch = branch.map(str::to_string).unwrap_or_else(|| trim_line(&head.stdout));
@@ -1355,10 +1462,16 @@ pub async fn git_push(webview: tauri::Webview, root: String, options: GitPushOpt
     block(move || git_push_output(root, options, on_output)).await
 }
 
+/// [`git_push_output`] 不带输出流的版本（`git_push_up_to` 复用）。
 fn git_push_impl(root: String, options: GitPushOptions) -> Result<String, String> {
     git_push_output(root, options, None)
 }
 
+/// 推送的共用体：落点解析、refspec 校验、可选 revision 部分推送与标签推送。
+///
+/// # Errors
+///
+/// 无远端、分支名非法、revision 不是当前分支祖先或 git 失败时返回错误。
 fn git_push_output(root: String, options: GitPushOptions, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let destination = resolve_push_target(&root, options.branch.as_deref())?;
@@ -1408,6 +1521,11 @@ pub async fn git_create_tag(
     block(move || git_create_tag_impl(root, name, message, revision)).await
 }
 
+/// [`git_create_tag`] 的同步体；annotated 消息为空时退回轻量标签。
+///
+/// # Errors
+///
+/// 标签名非法或 git 失败时返回错误。
 fn git_create_tag_impl(
     root: String,
     name: String,
@@ -1536,6 +1654,11 @@ pub async fn git_refs(root: String) -> Result<GitRefs, String> {
     block(move || git_refs_impl(root)).await
 }
 
+/// [`git_refs`] 的同步体：分支、远程与标签共用一趟 `for-each-ref`。
+///
+/// # Errors
+///
+/// 目录不存在或 git 失败时返回错误。
 fn git_refs_impl(root: String) -> Result<GitRefs, String> {
     let root = ensure_root(&root)?;
     // for-each-ref 没有 -z；ref 名不会含换行。字段之间用 %1F 分隔，
@@ -1563,6 +1686,11 @@ pub async fn git_remotes(root: String) -> Result<Vec<String>, String> {
     block(move || git_remotes_impl(root)).await
 }
 
+/// [`git_remotes`] 的同步体。
+///
+/// # Errors
+///
+/// 目录不存在或 git 失败时返回错误。
 fn git_remotes_impl(root: String) -> Result<Vec<String>, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["remote"])?;
@@ -1581,6 +1709,7 @@ fn git_remotes_impl(root: String) -> Result<Vec<String>, String> {
 /// 万一那次作废没送到（前端没起来、调用失败），最多陈旧这么久。
 const IGNORED_TTL: Duration = Duration::from_secs(10);
 
+/// 忽略清单缓存的全局单例，键是归一化的仓库根。
 fn ignored_cache() -> &'static Mutex<HashMap<String, (Instant, Vec<String>)>> {
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Vec<String>)>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -1615,6 +1744,11 @@ pub async fn git_ignored(root: String) -> Result<Vec<String>, String> {
     block(move || git_ignored_impl(root)).await
 }
 
+/// [`git_ignored`] 的同步体：优先吃 `git_status` 顺带带回的缓存。
+///
+/// # Errors
+///
+/// 目录不存在或 git 失败时返回错误。
 fn git_ignored_impl(root: String) -> Result<Vec<String>, String> {
     let root = ensure_root(&root)?;
     // 刚刷过的 git_status 已经把清单带回来了，别再起一个进程走第二趟遍历。
@@ -1659,6 +1793,11 @@ pub async fn git_checkout(root: String, branch: String) -> Result<String, String
     block(move || git_checkout_impl(root, branch)).await
 }
 
+/// [`git_checkout`] 的同步体；分支名与版本引用（hash/标签/相对引用）均可。
+///
+/// # Errors
+///
+/// 名字非法或 git 失败时返回错误。
 fn git_checkout_impl(root: String, branch: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     // 分支名或版本引用（commit hash / 标签 / 相对引用）均可检出
@@ -1683,6 +1822,11 @@ pub async fn git_create_branch(
     block(move || git_create_branch_impl(root, name, from, checkout)).await
 }
 
+/// [`git_create_branch`] 的同步体。
+///
+/// # Errors
+///
+/// 名字或起点引用非法、git 失败时返回错误。
 fn git_create_branch_impl(
     root: String,
     name: String,
@@ -1716,6 +1860,11 @@ pub async fn git_merge(root: String, name: String) -> Result<String, String> {
     block(move || git_merge_impl(root, name)).await
 }
 
+/// [`git_merge`] 的同步体。
+///
+/// # Errors
+///
+/// 名字非法或 git 失败时返回错误。
 fn git_merge_impl(root: String, name: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&name) {
@@ -1734,6 +1883,11 @@ pub async fn git_rebase(root: String, onto: String) -> Result<String, String> {
     block(move || git_rebase_impl(root, onto)).await
 }
 
+/// [`git_rebase`] 的同步体。
+///
+/// # Errors
+///
+/// 名字非法或 git 失败时返回错误。
 fn git_rebase_impl(root: String, onto: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&onto) {
@@ -1759,6 +1913,11 @@ pub struct GitStash {
     pub time_ms: i64,
 }
 
+/// [`git_stash_list`] 的同步体：一趟 reflog 拆出序号、消息与时间。
+///
+/// # Errors
+///
+/// 目录不存在或 git 失败时返回错误。
 fn git_stash_list_impl(root: String) -> Result<Vec<GitStash>, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["stash", "list", "--format=%gd%x1f%gs%x1f%ct"])?;
@@ -1894,7 +2053,7 @@ pub async fn git_stash_drop(root: String, index: u32) -> Result<String, String> 
 
 // ---------------------------------------------------------------- shelf（搁置区）
 
-/// 搁置区（Shelf，对齐 IDEA 的 Shelve Changes / Unshelve）：把选中文件的未提交改动
+/// 搁置区（Shelve Changes / Unshelve）：把选中文件的未提交改动
 /// 存成命名补丁并把工作区恢复到 HEAD；随时可以 unshelve 放回来（有冲突就留标记）。
 /// 存储在 `<repo>/.git/forge-shelf/<id>/`：`shelved.patch` + `shelf.json`，跟仓库走、
 /// 永不进版本控制。
@@ -1933,9 +2092,12 @@ pub struct GitShelfApplyOutcome {
     pub conflicts: Vec<String>,
 }
 
+/// 搁置区补丁文件名。
 const SHELF_PATCH: &str = "shelved.patch";
+/// 搁置区元数据文件名。
 const SHELF_INFO: &str = "shelf.json";
 
+/// 搁置区根目录（`.git/forge-shelf`）。
 fn shelf_dir(root: &Path) -> PathBuf {
     root.join(".git").join("forge-shelf")
 }
@@ -1952,6 +2114,7 @@ fn shelf_entry(shelf: &Path, id: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// 搁置条目的持久化元数据（shelf.json）。
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShelfInfo {
@@ -1963,6 +2126,7 @@ struct ShelfInfo {
     files: Vec<GitShelfFile>,
 }
 
+/// 当前时间（Unix 毫秒）；系统时钟早于 epoch 时给 0。
 fn shelf_now_ms() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2009,6 +2173,11 @@ impl Drop for TempIndex {
     }
 }
 
+/// 仓库是否已有首个提交（`rev-parse --verify -q HEAD` 的退出码）。
+///
+/// # Errors
+///
+/// git 启动失败时返回错误。
 fn has_head(root: &Path) -> Result<bool, String> {
     Ok(run_git(root, &["rev-parse", "--verify", "-q", "HEAD"])?.ok)
 }
@@ -2240,12 +2409,22 @@ fn git_unshelve_impl(root: String, id: String, remove: bool) -> Result<GitShelfA
     Ok(GitShelfApplyOutcome { applied, conflicts })
 }
 
+/// [`git_shelf_delete`] 的同步体：删除整个条目目录。
+///
+/// # Errors
+///
+/// 条目不存在或目录删除失败时返回错误。
 fn git_shelf_delete_impl(root: String, id: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     std::fs::remove_dir_all(shelf_entry(&shelf_dir(&root), &id)?).map_err(|e| err("FS", e.to_string()))?;
     Ok(String::new())
 }
 
+/// [`git_shelf_rename`] 的同步体：只改 shelf.json 里的显示名。
+///
+/// # Errors
+///
+/// 名字为空、条目不存在或元数据写入失败时返回错误。
 fn git_shelf_rename_impl(root: String, id: String, name: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let name = name.trim().to_string();
@@ -2283,6 +2462,11 @@ pub struct GitConflictVersions {
     pub reversed: bool,
 }
 
+/// 读取冲突文件某个 stage 的内容；stage 不存在（如新增文件没有 base）返回 `None`。
+///
+/// # Errors
+///
+/// git 失败且 stage 存在时返回其原文；二进制回 `BINARY`。
 fn show_conflict_stage(root: &Path, relative: &str, stage: u32, path: &str) -> Result<Option<String>, String> {
     let spec = format!(":{stage}:{relative}");
     let output = run_git(root, &["show", spec.as_str()])?;
@@ -2303,6 +2487,11 @@ fn show_conflict_stage(root: &Path, relative: &str, stage: u32, path: &str) -> R
     Ok(Some(output.stdout))
 }
 
+/// [`git_conflict_versions`] 的同步体；变基等场景按 [`in_progress`] 对调两侧语义。
+///
+/// # Errors
+///
+/// 路径不在仓库内或文件未处于冲突状态时返回 `NOT_CONFLICTED`。
 fn git_conflict_versions_impl(root: String, path: String) -> Result<GitConflictVersions, String> {
     let root = ensure_root(&root)?;
     let relative = relative_path(&root, &path)?;
@@ -2358,6 +2547,11 @@ pub async fn git_rename_branch(root: String, name: String, to: String) -> Result
     block(move || git_rename_branch_impl(root, name, to)).await
 }
 
+/// [`git_rename_branch`] 的同步体。
+///
+/// # Errors
+///
+/// 新旧名字任一非法或 git 失败时返回错误。
 fn git_rename_branch_impl(root: String, name: String, to: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&name) || !valid_branch_name(&to) {
@@ -2376,6 +2570,11 @@ pub async fn git_delete_branch(root: String, name: String) -> Result<String, Str
     block(move || git_delete_branch_impl(root, name)).await
 }
 
+/// [`git_delete_branch`] 的同步体。
+///
+/// # Errors
+///
+/// 名字非法或 git 失败（含未合并被 git 拒）时返回错误。
 fn git_delete_branch_impl(root: String, name: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&name) {
@@ -2394,6 +2593,11 @@ pub async fn git_delete_tag(root: String, name: String) -> Result<String, String
     block(move || git_delete_tag_impl(root, name)).await
 }
 
+/// [`git_delete_tag`] 的同步体。
+///
+/// # Errors
+///
+/// 名字非法或 git 失败时返回错误。
 fn git_delete_tag_impl(root: String, name: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_branch_name(&name) {
@@ -2440,11 +2644,17 @@ pub async fn git_push_ref(webview: tauri::Webview, root: String, name: String, o
     block(move || git_push_ref_output(root, name, on_output)).await
 }
 
+/// [`git_push_ref_output`] 不带输出流的版本（测试用）。
 #[cfg(test)]
 fn git_push_ref_impl(root: String, name: String) -> Result<String, String> {
     git_push_ref_output(root, name, None)
 }
 
+/// 推送指定分支或标签的共用体：本地分支走 [`git_push_output`]，其余按名字直推。
+///
+/// # Errors
+///
+/// 名字非法、找不到落点远端或 git 失败时返回错误。
 fn git_push_ref_output(root: String, name: String, on_output: Option<tauri::ipc::Channel<String>>) -> Result<String, String> {
     let root = ensure_root(&root)?;
     // 分支名或标签版本引用均可推送到远端
@@ -2464,6 +2674,11 @@ pub async fn git_delete_remote_branch(root: String, name: String) -> Result<Stri
     block(move || git_delete_remote_branch_impl(root, name)).await
 }
 
+/// [`git_delete_remote_branch`] 的同步体：`push <remote> --delete <branch>`。
+///
+/// # Errors
+///
+/// 名字不含远端前缀、分支名非法或 git 失败时返回错误。
 fn git_delete_remote_branch_impl(root: String, name: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let (remote, branch) = name
@@ -2483,6 +2698,11 @@ pub async fn git_init(root: String) -> Result<String, String> {
     block(move || git_init_impl(root)).await
 }
 
+/// [`git_init`] 的同步体；`git init` 在已有仓库内是幂等的。
+///
+/// # Errors
+///
+/// 目录不存在或 git 失败时返回错误。
 fn git_init_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["init"])?;
@@ -2505,6 +2725,11 @@ pub async fn git_worktree_add(
     block(move || git_worktree_add_impl(root, path, branch, new_branch)).await
 }
 
+/// [`git_worktree_add`] 的同步体；`new_branch` 非空时先建分支再签出。
+///
+/// # Errors
+///
+/// 分支名、路径非法或 git 失败时返回错误。
 fn git_worktree_add_impl(
     root: String,
     path: String,
@@ -2547,6 +2772,11 @@ pub async fn git_ignore_rule(root: String, path: String) -> Result<String, Strin
     block(move || git_ignore_rule_impl(root, path)).await
 }
 
+/// [`git_ignore_rule`] 的同步体；`--no-index` 让已跟踪文件也能问出覆盖规则。
+///
+/// # Errors
+///
+/// 目录不存在、git 失败（git 退 1 且无输出表示未命中规则，返回空串）。
 fn git_ignore_rule_impl(root: String, path: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let relative = relative_path(&root, &path)?;
@@ -2567,6 +2797,11 @@ pub async fn git_restore_file(root: String, revision: String, path: String) -> R
     block(move || git_restore_file_impl(root, revision, path)).await
 }
 
+/// [`git_restore_file`] 的同步体；revision 空时从暂存区恢复工作区。
+///
+/// # Errors
+///
+/// 路径不在仓库内、引用非法或 git 失败时返回错误。
 fn git_restore_file_impl(root: String, revision: String, path: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let relative = relative_path(&root, &path)?;
@@ -2618,6 +2853,11 @@ pub async fn git_diff_text(
     }).await
 }
 
+/// [`git_diff_text`] 的同步体；`left`/`right` 任一为空表示工作区或 HEAD 侧。
+///
+/// # Errors
+///
+/// 引用非法或 git 失败时返回错误。
 fn git_diff_text_impl(
     root: String,
     left: String,
@@ -2688,6 +2928,11 @@ pub async fn git_diff_names(root: String, revision: String) -> Result<Vec<GitNam
     block(move || git_diff_names_impl(root, revision)).await
 }
 
+/// [`git_diff_names`] 的同步体：`diff --name-status -z` 的 NUL token 流解析。
+///
+/// # Errors
+///
+/// 引用非法或 git 失败时返回错误。
 fn git_diff_names_impl(root: String, revision: String) -> Result<Vec<GitNameStatus>, String> {
     let root = ensure_root(&root)?;
     if !valid_rev(&revision) {
@@ -2724,6 +2969,11 @@ pub async fn git_rebase_continue(root: String) -> Result<String, String> {
     block(move || git_rebase_continue_impl(root)).await
 }
 
+/// [`git_rebase_continue`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_rebase_continue_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["-c", "core.editor=true", "rebase", "--continue"])?;
@@ -2738,6 +2988,11 @@ pub async fn git_rebase_abort(root: String) -> Result<String, String> {
     block(move || git_rebase_abort_impl(root)).await
 }
 
+/// [`git_rebase_abort`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_rebase_abort_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["rebase", "--abort"])?;
@@ -2752,6 +3007,11 @@ pub async fn git_merge_continue(root: String) -> Result<String, String> {
     block(move || git_merge_continue_impl(root)).await
 }
 
+/// [`git_merge_continue`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_merge_continue_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["-c", "core.editor=true", "merge", "--continue"])?;
@@ -2766,6 +3026,11 @@ pub async fn git_merge_abort(root: String) -> Result<String, String> {
     block(move || git_merge_abort_impl(root)).await
 }
 
+/// [`git_merge_abort`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_merge_abort_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["merge", "--abort"])?;
@@ -2781,6 +3046,11 @@ pub async fn git_cherry_pick(root: String, revision: String) -> Result<String, S
     block(move || git_cherry_pick_impl(root, revision)).await
 }
 
+/// [`git_cherry_pick`] 的同步体。
+///
+/// # Errors
+///
+/// 引用非法或 git 失败时返回错误；撞冲突时 git 停在 CHERRY_PICK_HEAD，错误体带说明。
 fn git_cherry_pick_impl(root: String, revision: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_rev(&revision) {
@@ -2801,6 +3071,11 @@ pub async fn git_cherry_pick_continue(root: String) -> Result<String, String> {
     block(move || git_cherry_pick_continue_impl(root)).await
 }
 
+/// [`git_cherry_pick_continue`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_cherry_pick_continue_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["-c", "core.editor=true", "cherry-pick", "--continue"])?;
@@ -2815,6 +3090,11 @@ pub async fn git_cherry_pick_abort(root: String) -> Result<String, String> {
     block(move || git_cherry_pick_abort_impl(root)).await
 }
 
+/// [`git_cherry_pick_abort`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_cherry_pick_abort_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["cherry-pick", "--abort"])?;
@@ -2830,6 +3110,11 @@ pub async fn git_revert(root: String, revision: String) -> Result<String, String
     block(move || git_revert_impl(root, revision)).await
 }
 
+/// [`git_revert`] 的同步体。
+///
+/// # Errors
+///
+/// 引用非法或 git 失败时返回错误。
 fn git_revert_impl(root: String, revision: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_rev(&revision) {
@@ -2856,6 +3141,11 @@ pub async fn git_revert_continue(root: String) -> Result<String, String> {
     block(move || git_revert_continue_impl(root)).await
 }
 
+/// [`git_revert_continue`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_revert_continue_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["-c", "core.editor=true", "revert", "--continue"])?;
@@ -2870,6 +3160,11 @@ pub async fn git_revert_abort(root: String) -> Result<String, String> {
     block(move || git_revert_abort_impl(root)).await
 }
 
+/// [`git_revert_abort`] 的同步体。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_revert_abort_impl(root: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     let output = run_git(&root, &["revert", "--abort"])?;
@@ -2886,6 +3181,11 @@ pub async fn git_reset(root: String, revision: String, mode: String) -> Result<S
     block(move || git_reset_impl(root, revision, mode)).await
 }
 
+/// [`git_reset`] 的同步体；mode 限 soft/mixed/hard。
+///
+/// # Errors
+///
+/// 引用非法、mode 非法（`BAD_MODE`）或 git 失败时返回错误。
 fn git_reset_impl(root: String, revision: String, mode: String) -> Result<String, String> {
     let root = ensure_root(&root)?;
     if !valid_rev(&revision) {
@@ -2911,6 +3211,7 @@ pub async fn git_push_up_to(root: String, branch: String, revision: String) -> R
     block(move || git_push_up_to_impl(root, branch, revision)).await
 }
 
+/// [`git_push_up_to`] 的同步体；复用 [`git_push_impl`] 的完整校验链。
 fn git_push_up_to_impl(root: String, branch: String, revision: String) -> Result<String, String> {
     // 与完整推送共享上游解析和 refspec 校验，避免忽略上游的实际分支名。
     git_push_impl(root, GitPushOptions { branch: Some(branch), revision: Some(revision), ..Default::default() })
@@ -2923,6 +3224,11 @@ pub async fn git_resolve_conflict(root: String, path: String, side: String) -> R
     block(move || git_resolve_conflict_impl(root, path, side)).await
 }
 
+/// [`git_resolve_conflict`] 的同步体；被选侧已删除文件时用 `git rm -f` 了结。
+///
+/// # Errors
+///
+/// side 非 ours/theirs（`BAD_SIDE`）、路径不在仓库内或 git 失败时返回错误。
 fn git_resolve_conflict_impl(root: String, path: String, side: String) -> Result<String, String> {
     let (flag, stage) = match side.as_str() {
         "ours" => ("--ours", "2"),
@@ -3018,6 +3324,11 @@ pub async fn git_log(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>,
     block(move || git_log_impl(root, query)).await
 }
 
+/// [`git_log`] 的同步体：组装过滤参数并解析单元分隔符格式串。
+///
+/// # Errors
+///
+/// 引用非法或 git 失败（HEAD 不存在时空列表）时返回错误。
 fn git_log_impl(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>, String> {
     let root = ensure_root(&root)?;
     if !query.reference.is_empty() && !valid_range(&query.reference) {
@@ -3073,12 +3384,17 @@ fn git_log_impl(root: String, query: GitLogQuery) -> Result<Vec<GitCommit>, Stri
 }
 
 /// 可以拿去修正的提交：HEAD 往下、还没推到任何远端分支的那几条，遇到合并提交就停。
-/// IDEA 的 amend 下拉列的就是这一份（GitAmendCommitService，limit 20）。
+/// amend 下拉列的就是这一份（limit 20）。
 #[tauri::command]
 pub async fn git_amend_targets(root: String) -> Result<Vec<GitCommit>, String> {
     block(move || git_amend_targets_impl(root)).await
 }
 
+/// [`git_amend_targets`] 的同步体：`HEAD --not --remotes`，遇合并提交截断。
+///
+/// # Errors
+///
+/// git 失败时返回其原文。
 fn git_amend_targets_impl(root: String) -> Result<Vec<GitCommit>, String> {
     let root = ensure_root(&root)?;
     let output = run_git(
@@ -3105,7 +3421,7 @@ fn git_amend_targets_impl(root: String) -> Result<Vec<GitCommit>, String> {
         if fields.len() < 7 || fields[0].is_empty() {
             continue;
         }
-        // 遇到第一个合并提交就停：那要改写的不止一条历史，IDEA 也是这么截断的。
+        // 遇到第一个合并提交就停：那要改写的不止一条历史，到这里就截断。
         if fields[6].split_whitespace().count() > 1 {
             break;
         }
@@ -3168,6 +3484,11 @@ pub async fn git_authors(root: String, limit: u32) -> Result<Vec<String>, String
     block(move || git_authors_impl(root, limit)).await
 }
 
+/// [`git_authors`] 的同步体：最近 N 条提交的作者去重，按首次出现排序。
+///
+/// # Errors
+///
+/// git 失败（HEAD 不存在时空列表）时返回错误。
 fn git_authors_impl(root: String, limit: u32) -> Result<Vec<String>, String> {
     let root = ensure_root(&root)?;
     let count = limit.clamp(1, 2000);
@@ -3196,6 +3517,11 @@ pub async fn git_commit_detail(root: String, revision: String) -> Result<GitComm
     block(move || git_commit_detail_impl(root, revision)).await
 }
 
+/// [`git_commit_detail`] 的同步体：头部信息与 numstat 并成一条 `show`，另跑 name-status。
+///
+/// # Errors
+///
+/// 引用非法或 git 失败时返回错误。
 fn git_commit_detail_impl(root: String, revision: String) -> Result<GitCommitDetail, String> {
     if !valid_rev(&revision) {
         return Err(err("BAD_REV", &revision));
@@ -3205,7 +3531,7 @@ fn git_commit_detail_impl(root: String, revision: String) -> Result<GitCommitDet
     // 的 NUL token 流（-z 下 format 的终止符 \0\n 也落在那段开头，解析前剥掉）。
     // 少一次进程 spawn（Windows 上每次几十毫秒）；合并提交按第一父取差异
     // （diff-tree 默认不给 merge 出差异，`git show` 默认的 combined diff 在
-    // 干净合并时是空的——右栏会整片空白），与 IDEA 一致。
+    // 干净合并时是空的——右栏会整片空白）。
     // 参数顺序有讲究：--no-patch 会取消它前面出现的 diff 输出选项，--numstat
     // 必须排在 --no-patch 之后才出清单，两条谁都不许挪。
     let combined = run_git(
@@ -3391,6 +3717,11 @@ pub async fn git_commit_file(
     block(move || git_commit_file_impl(root, revision, path, old_path)).await
 }
 
+/// [`git_commit_file`] 的同步体：取父版本与提交版本两个 blob 的文本内容。
+///
+/// # Errors
+///
+/// 引用或仓库相对路径非法时返回错误；blob 取不到时给空串。
 fn git_commit_file_impl(
     root: String,
     revision: String,

@@ -3,6 +3,11 @@
 use super::*;
 use std::time::Duration;
 
+/// 跑一遍真实 WebView2 工作流验证；结果写到 `FORGE_BROWSER_SMOKE_RESULT` 指定的文件。
+///
+/// # Panics
+///
+/// 隔离环境缺失、工作流断言失败时 panic（进程退出码即测试结果）。
 pub fn run() {
     let output = std::env::var("FORGE_BROWSER_SMOKE_RESULT").expect("smoke result path required");
     let isolated = std::env::var("FORGE_BROWSER_SMOKE_ROOT").expect("isolated temp root required");
@@ -453,7 +458,7 @@ async fn verify(app: &AppHandle) -> Result<Vec<String>, String> {
         json!({"expression":"history.pushState({},'', '#B');history.pushState({},'', '#A');true"}),
     )
     .await?;
-    // A script can navigate before its result returns. Never retry that dispatched expression.
+    // 脚本可能在结果返回前就导航走。已派发的表达式绝不重试。
     if navigation["isError"] == true && navigation["structuredContent"]["code"] != "STALE_DOCUMENT"
     {
         ok(navigation)?;

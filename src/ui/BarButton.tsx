@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { tooltipAttrs } from "./Tooltip";
 import styles from "./BarButton.module.css";
 
+/** 栏内小按钮（状态栏/工具栏微件）的入参。 */
 export interface BarButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "title"> {
   /** `status`: 状态栏微件; `title`: 主工具栏微件 */
   variant?: "status" | "title";

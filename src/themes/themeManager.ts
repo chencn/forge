@@ -8,6 +8,7 @@
  * 4. 跟随操作系统深浅模式 (system)
  */
 
+/** 一款内置主题的元信息。 */
 export interface BuiltinThemeInfo {
   readonly id: BuiltinThemeId;
   readonly label: string;
@@ -15,28 +16,34 @@ export interface BuiltinThemeInfo {
   readonly description?: string;
 }
 
+/** 全部内置主题。 */
 export const BUILTIN_THEMES: readonly BuiltinThemeInfo[] = [
-  { id: "dark", label: "Islands Dark", kind: "dark", description: "IntelliJ IDEA 新一代经典暗色主题" },
-  { id: "light", label: "Islands Light", kind: "light", description: "IntelliJ IDEA 新一代素雅浅色主题" },
+  { id: "dark", label: "Islands Dark", kind: "dark", description: "经典暗色主题" },
+  { id: "light", label: "Islands Light", kind: "light", description: "素雅浅色主题" },
   { id: "dark-hc", label: "High Contrast", kind: "dark", description: "高对比度无障碍暗色主题" },
 ] as const;
 
+/** 内置主题 id。 */
 export type BuiltinThemeId = "dark" | "light" | "dark-hc";
 
+/** 用户的主题偏好：内置主题或跟随系统。 */
 export type ThemePreference = BuiltinThemeId | "system";
 
+/** 内置主题 id 列表（从 {@link BUILTIN_THEMES} 投影）。 */
 export const BUILTIN_THEME_IDS: readonly BuiltinThemeId[] = BUILTIN_THEMES.map((t) => t.id);
 
+/** 值是否是合法的内置主题 id。 */
 export function isBuiltinTheme(value: unknown): value is BuiltinThemeId {
   return typeof value === "string" && (BUILTIN_THEME_IDS as readonly string[]).includes(value as BuiltinThemeId);
 }
 
+/** 主题的深浅归属。 */
 export function themeKind(id: BuiltinThemeId): "light" | "dark" {
   if (id === "light") return "light";
   return "dark";
 }
 
-/** 默认强调色（PyCharm/IDEA 经典蓝） */
+/** 默认强调色（经典蓝） */
 export const DEFAULT_ACCENT = "#3871e1";
 
 /** 预设强调色板 */
@@ -49,6 +56,7 @@ export const ACCENT_PRESETS = [
   { value: "#e55765", label: "赤红 (Red)" },
 ] as const;
 
+/** 强调色合法性（#RGB–#RRGGBBAA）。 */
 const ACCENT_RE = /^#[0-9a-f]{3,8}$/i;
 
 /**
