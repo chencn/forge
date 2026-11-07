@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 # 主程序和浏览器 MCP 的握手版本必须来自同一处，避免本地打包后静默禁用浏览器。
-version = "1.1.3"
+version = "1.1.4"
 
 [package]
 name = "forge"
