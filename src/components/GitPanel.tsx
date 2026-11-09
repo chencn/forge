@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowDownToLine,
   ArrowRightLeft,
+  ArrowUpFromLine,
   Check,
   ChevronDown,
   ChevronRight,
@@ -14,10 +15,12 @@ import {
   Eye,
   FileDiff,
   FolderOpen,
+  GitBranchPlus,
   GitMerge,
   History,
   Loader2,
   Minus,
+  Pencil,
   Plus,
   Sparkles,
   Undo2,
@@ -38,6 +41,7 @@ import {
   markClass,
 } from "../lib/git";
 import { commitDraft, setCommitDraft, subscribeCommitDraft } from "../lib/commitDraft";
+import { commitStamp } from "../lib/format";
 import { readFile } from "../lib/fs";
 import { badCommitNames, isNewCommitPath } from "../features/vcs/commitChecks";
 import {
@@ -98,9 +102,16 @@ export type CommitFileAction =
   | "rollback"
   | "ignore";
 
+/** 工具窗口头部那两个视图页签选中的视图。 */
+export type GitView = "commit" | "stash";
+
 /** {@link GitPanel} 的入参。 */
 interface GitPanelProps {
   git: GitState;
+  /** 当前视图；页签画在工具窗口头部，面板只按它切换内容。 */
+  view: GitView;
+  /** 切视图的回调，日志「编辑提交消息」等入口也要能把面板拉回提交页。 */
+  onViewChange: (view: GitView) => void;
   /** 网络动作交给 App 的统一窗口和任务流程。 */
   onUpdate: () => void;
   onPush: (root: string, branch: string) => void;
@@ -223,6 +234,8 @@ function CheckMark({
 /** Git 工具窗口主体：改动清单、changelist、暂存区与历史页签。 */
 function GitPanel({
   git,
+  view,
+  onViewChange,
   onUpdate,
   onPush,
   workspaceRoot,
@@ -248,7 +261,7 @@ function GitPanel({
   onOpenCommitFile,
   onOpenAiSettings,
 }: GitPanelProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
 
   // 视图选项 Popover 状态
   const viewRef = useRef<HTMLButtonElement>(null);
@@ -320,6 +333,9 @@ function GitPanel({
   // 右键菜单
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
 
+  // 待确认丢弃的贮藏；非 null 时弹出二次确认框。index 是 git stash 的序号（0 为最新）。
+  const [stashToDrop, setStashToDrop] = useState<{ index: number; message: string } | null>(null);
+
   // 变更列表数据（支持按 Changelist 分组）
   const [changelists, setChangelists] = useState<ChangelistsState>(() =>
     git.root ? loadChangelists(git.root) : { lists: [], moves: {}, activeId: "default" }
@@ -330,6 +346,16 @@ function GitPanel({
       setChangelists(loadChangelists(git.root));
     }
   }, [git.root]);
+
+  /**
+   * 页签切到贮藏时，树专属按钮随之卸载；锚点没了的弹层先收掉，别留在半空。
+   * 面板本身不卸载，说明框草稿与 AI 生成中的任务都还在。
+   */
+  useEffect(() => {
+    setViewAnchor(null);
+    setHistoryAnchor(null);
+    setCommitOptionsOpen(false);
+  }, [view]);
 
   // 勾选状态：按侧独立存储（`s:<path>` 管已暂存那条，`w:<path>` 管未暂存那条），
   // 同一文件（部分暂存的）在两组的复选框互不联动
@@ -376,6 +402,7 @@ function GitPanel({
   // 聚焦信号：非模态直接进说明框；模态先打开对话框，下一帧再聚焦。
   useEffect(() => {
     if (focusSignal <= 0) return;
+    onViewChange("commit");
     if (!vcs.nonModalCommit) {
       setCommitCollapsed(false);
       setCommitDialog(true);
@@ -407,6 +434,7 @@ function GitPanel({
   // 日志里「编辑提交消息」：模态时先打开对话框，再把 HEAD 摊进说明框。
   useEffect(() => {
     if (rewordSignal <= 0) return;
+    onViewChange("commit");
     if (!vcs.nonModalCommit) {
       setCommitCollapsed(false);
       if (commitDialogRef.current) {
@@ -708,6 +736,28 @@ function GitPanel({
   const openContextMenu = (event: ReactMouseEvent, items: MenuItem[]) => {
     event.preventDefault();
     setMenu({ x: event.clientX, y: event.clientY, items });
+  };
+
+  /** 单条贮藏的右键菜单；与行尾那四个图标走同一套动作。 */
+  const stashMenu = (entry: { index: number; message: string }): MenuItem[] => [
+    { label: t("git.stashApply"), icon: ArrowDownToLine, onSelect: () => void git.stashApply(entry.index, false) },
+    { label: t("git.stashPop"), icon: ArrowUpFromLine, onSelect: () => void git.stashApply(entry.index, true) },
+    { label: t("git.stashBranch"), icon: GitBranchPlus, onSelect: () => stashToBranch(entry.index) },
+    { separator: true },
+    { label: t("git.stashDrop"), icon: "trash", danger: true, onSelect: () => setStashToDrop(entry) },
+  ];
+
+  /** 从某条贮藏切出新分支并恢复；用户取消或留空则什么都不做。 */
+  const stashToBranch = (index: number) => {
+    const name = window.prompt(t("git.stashBranchPrompt"));
+    if (name && name.trim()) void git.stashBranch(index, name.trim());
+  };
+
+  /** 真正执行丢弃；二次确认框确认后才会走到这里。 */
+  const confirmStashDrop = () => {
+    if (!stashToDrop) return;
+    void git.stashDrop(stashToDrop.index);
+    setStashToDrop(null);
   };
 
   /**
@@ -1332,82 +1382,84 @@ function GitPanel({
         </button>
       </Popover>
 
-      {/* 32px 规范工具栏 */}
-      <div className={styles.toolbar} role="toolbar" aria-label={t("git.changes")}>
-        <IconButton
-          icon="refresh"
-          title={t("git.refresh")}
-          size="small"
-          onClick={() => void git.refresh()}
-        />
-        <IconButton
-          icon="undo"
-          title={t("git.rollback")}
-          size="small"
-          disabled={rawChanges.length === 0}
-          onClick={() => onFileAction("rollback", "", false, true)}
-        />
-        <IconButton
-          icon="stash"
-          title={t("git.stash")}
-          size="small"
-          disabled={rawChanges.length === 0}
-          onClick={() => setStashDialog(true)}
-        />
-        <IconButton
-          icon="archive"
-          title={t("git.shelve")}
-          size="small"
-          disabled={rawChanges.length === 0}
-          onClick={() => {
-            setShelfName("");
-            setShelfNotice(null);
-            setShelfDialog(true);
-          }}
-        />
-        <IconButton
-          icon="git-pull"
-          title={t("git.updateProject")}
-          size="small"
-          disabled={git.operation?.phase === "running" || !git.status?.upstream || !!git.recovery}
-          onClick={onUpdate}
-        />
-        <IconButton
-          ref={viewRef}
-          icon="eye"
-          title={t("git.viewOptions")}
-          size="small"
-          aria-haspopup="menu"
-          aria-expanded={viewAnchor !== null}
-          onClick={() => setViewAnchor((current) => (current ? null : viewRef.current))}
-        />
-        <span className={styles.sep} />
-        <IconButton
-          icon="locate"
-          title={t("git.locateOpened")}
-          size="small"
-          onClick={selectOpenedFile}
-        />
-        <IconButton
-          icon="expand-all"
-          title={t("tool.expandAll")}
-          size="small"
-          disabled={rawChanges.length === 0}
-          onClick={expandAll}
-        />
-        <IconButton
-          icon="collapse-all"
-          title={t("tool.collapseAll")}
-          size="small"
-          disabled={rawChanges.length === 0}
-          onClick={collapseAll}
-        />
-        {!vcs.nonModalCommit && (
-          <Button size="small" onClick={() => { setCommitCollapsed(false); setCommitDialog(true); }}>
-            {t("git.commit")}
-          </Button>
-        )}
-      </div>
+      {/* 32px 规范工具栏：只在提交页展示，贮藏页不显示该工具栏 */}
+      {view === "commit" && (
+        <div className={styles.toolbar} role="toolbar" aria-label={t("git.changes")}>
+          <IconButton
+            icon="refresh"
+            title={t("git.refresh")}
+            size="small"
+            onClick={() => void git.refresh()}
+          />
+          <IconButton
+            icon="undo"
+            title={t("git.rollback")}
+            size="small"
+            disabled={rawChanges.length === 0}
+            onClick={() => onFileAction("rollback", "", false, true)}
+          />
+          <IconButton
+            icon="stash"
+            title={t("git.stash")}
+            size="small"
+            disabled={rawChanges.length === 0}
+            onClick={() => setStashDialog(true)}
+          />
+          <IconButton
+            icon="archive"
+            title={t("git.shelve")}
+            size="small"
+            disabled={rawChanges.length === 0}
+            onClick={() => {
+              setShelfName("");
+              setShelfNotice(null);
+              setShelfDialog(true);
+            }}
+          />
+          <IconButton
+            icon="git-pull"
+            title={t("git.updateProject")}
+            size="small"
+            disabled={git.operation?.phase === "running" || !git.status?.upstream || !!git.recovery}
+            onClick={onUpdate}
+          />
+          <IconButton
+            ref={viewRef}
+            icon="eye"
+            title={t("git.viewOptions")}
+            size="small"
+            aria-haspopup="menu"
+            aria-expanded={viewAnchor !== null}
+            onClick={() => setViewAnchor((current) => (current ? null : viewRef.current))}
+          />
+          <span className={styles.sep} />
+          <IconButton
+            icon="locate"
+            title={t("git.locateOpened")}
+            size="small"
+            onClick={selectOpenedFile}
+          />
+          <IconButton
+            icon="expand-all"
+            title={t("tool.expandAll")}
+            size="small"
+            disabled={rawChanges.length === 0}
+            onClick={expandAll}
+          />
+          <IconButton
+            icon="collapse-all"
+            title={t("tool.collapseAll")}
+            size="small"
+            disabled={rawChanges.length === 0}
+            onClick={collapseAll}
+          />
+          {!vcs.nonModalCommit && (
+            <Button size="small" onClick={() => { setCommitCollapsed(false); setCommitDialog(true); }}>
+              {t("git.commit")}
+            </Button>
+          )}
+        </div>
+      )}
 
       {/* 恢复状态横幅（变基/合并中间） */}
       {recovery && (
@@ -1433,7 +1485,7 @@ function GitPanel({
       )}
 
       {/* 变更树主体 */}
-      <div className={styles.changes}>
+      <div className={styles.changes} hidden={view !== "commit"}>
         <div
           className={styles.treeWrap}
           tabIndex={0}
@@ -1459,140 +1511,111 @@ function GitPanel({
         </div>
       </div>
 
-      {/* Stash 列表：有贮藏才占地方，空仓库不留一行标题。操作为 Apply / Pop / Drop。 */}
-      {git.stashes.length > 0 && (
-        <div className={styles.stashBox}>
-          <div className={styles.stashHead}>
-            <span>{t("git.stashTitle")}</span>
-            <span className={styles.stashCount}>{git.stashes.length}</span>
-          </div>
+      {/* 贮藏页签：列表占满整页高度，四个动作只画图标，文字在 hover 提示里。 */}
+      <div className={styles.stashPane} hidden={view !== "stash"}>
+        {git.stashes.length > 0 ? (
           <div className={styles.stashList}>
             {git.stashes.map((entry) => (
-              <div key={entry.index} className={styles.stashRow}>
+              <div
+                key={entry.index}
+                className={styles.stashRow}
+                onContextMenu={(event) => openContextMenu(event, stashMenu(entry))}
+              >
                 <span className={styles.stashMsg} title={entry.message}>
                   {entry.message}
                 </span>
-                <span className={styles.stashTime}>
-                  {new Date(entry.timeMs).toLocaleString([], {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                <span className={styles.stashTime} title={new Date(entry.timeMs).toLocaleString()}>
+                  {commitStamp(entry.timeMs, locale, t("time.today"), t("time.yesterday"))}
                 </span>
-                <button
-                  type="button"
-                  className={styles.stashAction}
-                  onClick={() => void git.stashApply(entry.index, false)}
-                >
-                  {t("git.stashApply")}
-                </button>
-                <button
-                  type="button"
-                  className={styles.stashAction}
-                  onClick={() => void git.stashApply(entry.index, true)}
-                >
-                  {t("git.stashPop")}
-                </button>
-                <button
-                  type="button"
-                  className={styles.stashAction}
-                  onClick={() => {
-                    const name = window.prompt(t("git.stashBranchPrompt"));
-                    if (name && name.trim()) void git.stashBranch(entry.index, name.trim());
-                  }}
-                >
-                  {t("git.stashBranch")}
-                </button>
-                <button
-                  type="button"
-                  className={clsx(styles.stashAction, styles.stashDrop)}
-                  onClick={() => {
-                    if (window.confirm(t("git.stashDropConfirm"))) {
-                      void git.stashDrop(entry.index);
-                    }
-                  }}
-                >
-                  {t("git.stashDrop")}
-                </button>
+                <span className={styles.stashActions}>
+                  <IconButton
+                    icon="trash"
+                    iconSize={13}
+                    size="small"
+                    className={clsx(styles.stashAction, styles.stashDrop)}
+                    title={t("git.stashDrop")}
+                    onClick={() => setStashToDrop(entry)}
+                  />
+                </span>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        ) : git.shelves.length === 0 ? (
+          /* 一条都没有才留一行空态；下面接着搁置列表时不抢这句。 */
+          <p className={styles.stashEmpty}>{t("git.stashEmpty")}</p>
+        ) : null}
 
-      {git.shelves.length > 0 && (
-        <div className={styles.stashBox}>
-          <div className={styles.stashHead}>
-            <span>{t("git.shelfTitle")}</span>
-            <span className={styles.stashCount}>{git.shelves.length}</span>
+        {git.shelves.length > 0 && (
+          <div className={styles.stashBox}>
+            <div className={styles.stashHead}>
+              <span>{t("git.shelfTitle")}</span>
+              <span className={styles.stashCount}>{git.shelves.length}</span>
+            </div>
+            {shelfNotice ? (
+              <p className={styles.stashMsg} role="status">
+                {shelfNotice}
+              </p>
+            ) : null}
+            <div className={styles.stashList}>
+              {git.shelves.map((entry) => (
+                <div key={entry.id} className={styles.stashRow}>
+                  <span className={styles.stashMsg} title={`${entry.name} · ${entry.files.length}`}>
+                    {entry.name}
+                  </span>
+                  <span className={styles.stashTime} title={new Date(entry.timeMs).toLocaleString()}>
+                    {commitStamp(entry.timeMs, locale, t("time.today"), t("time.yesterday"))}
+                  </span>
+                  <span className={styles.stashActions}>
+                    <IconButton
+                      icon={ArrowDownToLine}
+                      iconSize={13}
+                      size="small"
+                      className={styles.stashAction}
+                      title={t("git.unshelve")}
+                      onClick={() => {
+                        setShelfNotice(null);
+                        void git.unshelve(entry.id, false).then((outcome) => {
+                          if (outcome && outcome.conflicts.length > 0) {
+                            setShelfNotice(t("git.unshelveConflicts").replace("{n}", String(outcome.conflicts.length)));
+                          }
+                        });
+                      }}
+                    />
+                    <IconButton
+                      icon={Pencil}
+                      iconSize={13}
+                      size="small"
+                      className={styles.stashAction}
+                      title={t("git.shelfRename")}
+                      onClick={() => {
+                        const next = window.prompt(t("git.shelfRename"), entry.name);
+                        if (next && next.trim() && next.trim() !== entry.name) {
+                          void git.shelfRename(entry.id, next.trim());
+                        }
+                      }}
+                    />
+                    <IconButton
+                      icon="trash"
+                      iconSize={13}
+                      size="small"
+                      className={clsx(styles.stashAction, styles.stashDrop)}
+                      title={t("git.shelfDelete")}
+                      onClick={() => {
+                        if (window.confirm(t("git.shelfDeleteConfirm"))) {
+                          void git.shelfDelete(entry.id);
+                        }
+                      }}
+                    />
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-          {shelfNotice ? (
-            <p className={styles.stashMsg} role="status">
-              {shelfNotice}
-            </p>
-          ) : null}
-          <div className={styles.stashList}>
-            {git.shelves.map((entry) => (
-              <div key={entry.id} className={styles.stashRow}>
-                <span className={styles.stashMsg} title={`${entry.name} · ${entry.files.length}`}>
-                  {entry.name}
-                </span>
-                <span className={styles.stashTime}>
-                  {new Date(entry.timeMs).toLocaleString([], {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-                <button
-                  type="button"
-                  className={styles.stashAction}
-                  onClick={() => {
-                    setShelfNotice(null);
-                    void git.unshelve(entry.id, false).then((outcome) => {
-                      if (outcome && outcome.conflicts.length > 0) {
-                        setShelfNotice(t("git.unshelveConflicts").replace("{n}", String(outcome.conflicts.length)));
-                      }
-                    });
-                  }}
-                >
-                  {t("git.unshelve")}
-                </button>
-                <button
-                  type="button"
-                  className={styles.stashAction}
-                  onClick={() => {
-                    const next = window.prompt(t("git.shelfRename"), entry.name);
-                    if (next && next.trim() && next.trim() !== entry.name) {
-                      void git.shelfRename(entry.id, next.trim());
-                    }
-                  }}
-                >
-                  {t("git.shelfRename")}
-                </button>
-                <button
-                  type="button"
-                  className={clsx(styles.stashAction, styles.stashDrop)}
-                  onClick={() => {
-                    if (window.confirm(t("git.shelfDeleteConfirm"))) {
-                      void git.shelfDelete(entry.id);
-                    }
-                  }}
-                >
-                  {t("git.shelfDelete")}
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* 提交区可拖拽自定义高度分隔条。模态提交时改由对话框承载。 */}
-      {vcs.nonModalCommit && !commitCollapsed && (
+      {view === "commit" && vcs.nonModalCommit && !commitCollapsed && (
         <div
           role="separator"
           aria-orientation="horizontal"
@@ -1617,13 +1640,14 @@ function GitPanel({
         />
       )}
 
-      {!vcs.nonModalCommit && commitDialog && (
+      {view === "commit" && !vcs.nonModalCommit && commitDialog && (
         <div className="dialog-backdrop" onMouseDown={() => { if (committingAction === null) setCommitDialog(false); }} />
       )}
 
       {/* 提交面板区。非模态贴在变更列表下方；关掉后同一块改成对话框。 */}
       <div
         ref={commitBoxRef}
+        hidden={view !== "commit"}
         className={clsx(
           styles.commit,
           !vcs.nonModalCommit && styles.isDialog,
@@ -1891,6 +1915,38 @@ function GitPanel({
                 }}
               >
                 {t("git.stashPushAction")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 丢弃贮藏的二次确认：行尾垃圾桶与右键菜单都走这里，不用 window.confirm。 */}
+      {stashToDrop && (
+        <div className="dialog-backdrop" onClick={() => setStashToDrop(null)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <h3 className="dialog-title">{t("git.stashDrop")}</h3>
+            <div className="dialog-body">
+              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>{t("git.stashDropConfirm")}</p>
+              <p
+                style={{
+                  margin: "8px 0 0",
+                  fontSize: 13,
+                  color: "var(--text-muted)",
+                  wordBreak: "break-word",
+                }}
+                title={stashToDrop.message}
+              >
+                {stashToDrop.message}
+              </p>
+            </div>
+            <div className="dialog-actions">
+              {/* 焦点落在取消上：危险动作不该被一个回车直接触发。 */}
+              <button type="button" className="button" autoFocus onClick={() => setStashToDrop(null)}>
+                {t("dialog.cancel")}
+              </button>
+              <button type="button" className="button is-danger" onClick={confirmStashDrop}>
+                {t("dialog.delete")}
               </button>
             </div>
           </div>

@@ -523,11 +523,38 @@
   min-width: 0;
 }
 
-/* ---- Stash 列表区（变更树与提交区之间，有贮藏才显示） ---- */
+/* ---- 贮藏页签（整页高度给 stash 列表，搁置列表非空时接在下面） ---- */
+
+.stashPane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 100%;
+  /* 行内宽度做容器查询：侧栏多窄都由这一页自己判，不拿视口宽度凑。 */
+  container-type: inline-size;
+  container-name: stash-view;
+}
+
+/* 一条 stash 都没有时的居中空态 */
+.stashEmpty {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--fg-subtle, var(--text-muted));
+  font-size: 12.5px;
+}
 
 .stashBox {
-  flex: none;
-  max-height: 35%;
+  /* 搁置列表在贮藏页里是次要那半：能长，但最多占一半，别把 stash 列表压没。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 50%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -595,27 +622,58 @@
   color: var(--fg-dim, var(--text-secondary));
 }
 
-.stashAction {
+/* 行尾动作：只有图标，文字进 hover 提示；整排平时隐身，指针进来了才出现。 */
+.stashActions {
   flex: none;
-  border: none;
-  background: none;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  color: var(--fg-dim, var(--text-secondary));
-  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   visibility: hidden;
 }
 
-.stashRow:hover .stashAction {
+.stashRow:hover .stashActions,
+.stashActions:focus-within {
   visibility: visible;
 }
 
-.stashAction:hover {
+/* 两级 class 压过 Button 模块的 `.iconButton.is-small`，把按钮收成 18px 方块。 */
+.stashRow .stashAction {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  color: var(--fg-dim, var(--text-secondary));
+  visibility: visible;
+}
+
+.stashRow .stashAction:hover:not(:disabled) {
   background: var(--bg-tertiary, var(--bg-secondary));
   color: var(--fg, var(--text-primary));
 }
 
-.stashDrop:hover {
+.stashRow .stashDrop:hover:not(:disabled) {
   color: var(--danger, #e05555);
+}
+
+/* 默认 330px 的侧栏要留得下时间；先给最宽的侧栏，窄下来才收起。 */
+@container stash-view (max-width: 280px) {
+  .stashTime {
+    display: none;
+  }
+}
+
+/* 最窄一档连行内边距也收，图标排贴在一起，消息还能留出十几个字。 */
+@container stash-view (max-width: 210px) {
+  .stashRow {
+    gap: 6px;
+    padding: 0 6px;
+  }
+
+  .stashActions {
+    gap: 0;
+  }
 }

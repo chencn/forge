@@ -57,7 +57,7 @@ import AiSessionTabMenu from "./components/AiSessionTabMenu";
 import { createEditorSplit, partitionEditorTabs, relocateEditorTab, replaceEditorSplitTab, type EditorSplitState } from "./lib/editorSplit";
 import type { AiFilePreview } from "./lib/aiFilePreview";
 import { CaretStatus, IndentStatus } from "./workbench/StatusWidgets";
-import type { CommitFileAction } from "./components/GitPanel";
+import type { CommitFileAction, GitView } from "./components/GitPanel";
 import type { CommitAction, FileAction, RefAction, RefTarget } from "./components/GitLogPane";
 import type { TerminalPaneHandle } from "./components/TerminalPane";
 import type { DiffGroup } from "./components/DiffPane";
@@ -69,6 +69,8 @@ import ProjectPicker from "./components/ProjectPicker";
 import type { FolderStatusItem } from "./components/ProjectPicker";
 import BranchPicker from "./components/BranchPicker";
 import GitActionDialog, { type GitActionRequest, type GitActionValues } from "./components/GitActionDialog";
+/** 提交工具窗口头部的「提交 / 贮藏」页签：头部先于面板加载，所以静态引入。 */
+import GitViewTabs from "./components/GitViewTabs";
 import GitOperationStatus from "./components/GitOperationStatus";
 import type { BranchAction } from "./components/BranchPicker";
 import ConflictWidget from "./components/ConflictWidget";
@@ -1062,6 +1064,8 @@ export default function App() {
   const [historyWriteRequest, setHistoryWriteRequest] = useState<{ path: string; run: () => Promise<void> } | null>(null);
   const [historyWriteBusy, setHistoryWriteBusy] = useState(false);
   const [gitHistoryTabs, setGitHistoryTabs] = useState<Record<string, { paths: string[]; active: string }>>({});
+  /** 提交工具窗口头部的视图页签；页签画在头部，内容归 GitPanel 按它切换。 */
+  const [gitView, setGitView] = useState<GitView>("commit");
   const fileHistories = gitHistoryTabs[rootKey] ?? { paths: [], active: "" };
   /**
    * 日志的两处筛选状态提在这一层：分支弹层里的「与当前比较」和「显示与工作树的差异」
@@ -5815,6 +5819,24 @@ export default function App() {
   const sidePanelTitle = (tool: Panel) => tool === "explorer" ? t("panel.project")
     : tool === "maven" && maven.project ? `${t("maven.title")} · ${maven.project.artifactId}`
     : t(RAIL_LABEL[tool]);
+  /**
+   * 工具窗口头部左端的标题位。
+   *
+   * 提交工具窗口不放标题：「提交 / 贮藏」两个视图页签就是标题，再写一遍「提交」是重复标签。
+   *
+   * @param tool - 当前工具窗口
+   * @param width - 该侧栏当前的像素宽；侧栏能拖到 180px 而头部右端还有三颗按钮，放不下计数时只留文字
+   */
+  const sidePanelHeadTitle = (tool: Panel, width: number) => tool === "git" && git.root ? (
+    <GitViewTabs
+      view={gitView}
+      onChange={setGitView}
+      stashCount={git.stashes.length + git.shelves.length}
+      showCount={width >= 260}
+    />
+  ) : (
+    <span className="tool-window-title" title={tool === "ai" ? t("ai.title") : undefined}>{sidePanelTitle(tool)}</span>
+  );
   const sidePanelActions = (tool: Panel) => <>
     {tool === "ai" ? <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} /> : null}
     {tool === "explorer" && workspaceRoot ? <>
@@ -5924,7 +5946,7 @@ export default function App() {
         onAction={(action) => void aiLifecycle.act(action, workspaceRoot, dispatchAiSession)}
       /> : null
       : workspaceRoot ? <Suspense fallback={null}><GitPanel
-        key={workspaceRoot} git={git} workspaceRoot={workspaceRoot} onOpenChange={panelOpenChangeFromTree} onOpenFile={panelOpenFile}
+        key={workspaceRoot} git={git} view={gitView} onViewChange={setGitView} workspaceRoot={workspaceRoot} onOpenChange={panelOpenChangeFromTree} onOpenFile={panelOpenFile}
         onUpdate={() => void updateProject()} onPush={pushCommitted}
         focusSignal={commitFocus} rewordSignal={rewordSignal} history={history.commitMessages} onCommitted={panelCommitted}
         groupByDir={commitView.byDir} groupByModule={commitView.byModule} showIgnored={commitView.ignored}
@@ -6056,9 +6078,7 @@ export default function App() {
             >
               {panel !== "explorer" ? (
                 <header className={`tool-window-head${panel === "ai" ? " ai-sessions-head" : ""}`}>
-                  <span className="tool-window-title" title={panel === "ai" ? t("ai.title") : undefined}>
-                    {sidePanelTitle(panel)}
-                  </span>
+                  {sidePanelHeadTitle(panel, sidebarWidth)}
                   <span className="status-spacer" />
                   {panel === "ai" && settings.aiAssistantsEnabled ? (
                     <AiSessionsToolbar key={rootKey} onSettings={() => openSettingsTab("aiCli")} />
@@ -6205,6 +6225,8 @@ export default function App() {
                       onUpdate={() => void updateProject()} onPush={pushCommitted}
                       key={workspaceRoot}
                       git={git}
+                      view={gitView}
+                      onViewChange={setGitView}
                       workspaceRoot={workspaceRoot}
                       onOpenChange={panelOpenChangeFromTree}
                       onOpenFile={panelOpenFile}
@@ -6459,9 +6481,7 @@ export default function App() {
                     if (e.target === e.currentTarget) setRightPanelExpanded((expanded) => !expanded);
                   }}
                 >
-                  <span className="tool-window-title">
-                    {sidePanelTitle(activeRightPanel)}
-                  </span>
+                  {sidePanelHeadTitle(activeRightPanel, rightPanelExpanded ? Number.MAX_SAFE_INTEGER : rightSidebarWidth)}
                   <span className="status-spacer" />
                   {sidePanelActions(activeRightPanel)}
                   <button
