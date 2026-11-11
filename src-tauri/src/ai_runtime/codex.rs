@@ -58,6 +58,8 @@ pub struct Codex {
     stopped: bool,
     /// 用户选择的模型；为空则沿用 CLI 默认。
     model: Option<String>,
+    /// 本轮显式供应商，恢复已有线程也必须覆盖旧端点。
+    model_provider: Option<String>,
     /// 用户选择的思考强度；为空则沿用 CLI 默认。是否支持由模型列表决定。
     effort: Option<String>,
     permission: super::options::PermissionMode,
@@ -250,6 +252,7 @@ impl Codex {
             pending: HashMap::new(),
             stopped: false,
             model: None,
+            model_provider: None,
             effort: None,
             permission: Default::default(),
             service_tier: "default".into(),
@@ -285,6 +288,11 @@ impl Codex {
     pub fn with_options(mut self, model: Option<String>, effort: Option<String>) -> Self {
         self.model = model;
         self.effort = effort;
+        self
+    }
+    /// 指定本轮供应商；None 保留原有调用方的线程行为。
+    pub fn with_provider(mut self, provider: Option<String>) -> Self {
+        self.model_provider = provider;
         self
     }
     /// 随首条消息附带的图片路径。
@@ -536,6 +544,7 @@ impl Codex {
     fn open_thread(&mut self, existing: &str) -> Vec<Action> {
         self.phase = 2;
         let mut params = json!({"cwd":self.cwd});
+        if let Some(provider) = &self.model_provider { params["modelProvider"] = json!(provider); }
         if self.browser {
             // Preserve effective user/project instructions; never replace baseInstructions.
             params["developerInstructions"] = json!(format!("{existing}\n\n{}",forge_browser::INSTRUCTIONS));
@@ -1098,6 +1107,9 @@ impl Protocol for Codex {
                 result["config"]["developer_instructions"].as_str().unwrap_or(""),
             )),
             (2, 2) => {
+                if self.model_provider.as_ref().is_some_and(|provider| result["modelProvider"].as_str() != Some(provider.as_str())) {
+                    return Err("Codex 未确认所选供应商，未发送消息".into());
+                }
                 if self.permission != super::options::PermissionMode::Inherit && (result["approvalPolicy"] != self.permission.codex_policy()
                     || result["approvalsReviewer"] != "user"
                     || result["sandbox"]["type"] != self.permission.codex_sandbox_type())
@@ -1857,6 +1869,24 @@ mod tests {
             matches!(&out[1],Action::Write(v) if v["method"]=="thread/resume"&&v["params"]["sandbox"]=="workspace-write"&&v["params"]["approvalPolicy"]=="on-request")
         );
         assert!(p.receive(json!({"id":2,"result":{"thread":{"id":"different"},"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}}})).is_err());
+    }
+    /// 新建和恢复线程都使用本轮显式供应商，切回 Agent 配置也不能保留旧渠道。
+    #[test]
+    fn session_provider_is_explicit_on_start_and_resume() {
+        for native in [None, Some("existing-thread".to_owned())] {
+            for provider in ["forge_session", "openai", "agent-gateway"] {
+                let mut protocol = Codex::new("root".into(), "hello".into(), native.clone()).with_provider(Some(provider.into()));
+                protocol.start().unwrap();
+                let actions = protocol.receive(json!({"id":1,"result":{}})).unwrap();
+                let request = actions.iter().find_map(|action| match action {
+                    Action::Write(value) if value["id"] == 2 => Some(value),
+                    _ => None,
+                }).unwrap();
+                assert_eq!(request["method"], if native.is_some() { "thread/resume" } else { "thread/start" });
+                assert_eq!(request["params"]["modelProvider"], provider);
+                assert!(protocol.receive(json!({"id":2,"result":{"thread":{"id":"existing-thread"},"modelProvider":"unexpected-provider"}})).is_err());
+            }
+        }
     }
     #[test]
     fn unexpected_sandbox_or_automatic_reviewer_prevents_turn_start() {

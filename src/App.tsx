@@ -214,7 +214,7 @@ import { useAiRunLifecycle } from "./hooks/useAiRunLifecycle";
 import { ensureAiRuntimeListener, filterAiProjectEvents, getAiAgentOrderVersion, getAiNativeSessionId, getAiProjectActivitySummary, getAiSessionActivity, getAiSessionAgents, hasAiRuns, hasAiProjectActivity, refreshAiProjectConfig, subscribeAiAgentOrder, useAiActiveProjects } from "./lib/aiRuntime";
 import type { AiRuntimeEvent } from "./lib/aiRuntime";
 import { AI_NAMES } from "./lib/aiCli";
-import { seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
+import { initializeAiDraftOptions, seedAiSessionOptions, setAiDraftHandoff } from "./lib/aiDraftSession";
 import type { AiProvider } from "./lib/aiCli";
 import { subagentOrdinal, type AiSession } from "./lib/aiSessions";
 import { buildCopySessionIdMenuItem, buildSendSessionIdMenuItem, deliverAiInput, routeAiTargets, type AiInputPayload, type AiInputTarget } from "./lib/aiInputBridge";
@@ -930,10 +930,12 @@ export default function App() {
   }, [dispatchAiSession, rootKey]);
   /** 「新建会话」草稿标签是否打开，按根隔离；真正的会话在首条消息发出时才创建。 */
   const [aiDraftOpen, setAiDraftOpen] = useState<Record<string, boolean>>({});
+  /** 打开新草稿时复制最新默认值；切回已打开的草稿保留它自己的选择。 */
   const openAiDraft = useCallback(() => {
+    if (!aiDraftOpen[rootKeyRef.current]) initializeAiDraftOptions(workspaceRoot);
     setAiDraftOpen((current) => ({ ...current, [rootKeyRef.current]: true }));
     setActiveTab("ai|draft");
-  }, [setActiveTab]);
+  }, [setActiveTab, aiDraftOpen, workspaceRoot]);
   // 浏览器留在侧栏时，优先投递正在编辑的会话，其次是最近活动会话。
   const browserChatId = activeTab === "ai|draft" ? "draft"
     : aiInputTargets.find((target) => activeTab === `ai|${target.id}`)?.id
@@ -5244,7 +5246,7 @@ export default function App() {
       ) : id === "ai|draft" ? (
         // 新建会话草稿页：会话还不存在，首条消息发出时才创建并切到会话页。
         <Suspense fallback={null}>
-          <AiWelcomePane workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
+          <AiWelcomePane key={rootKey} workspace={workspaceRoot} beforeSend={beforeAiSend} onLaunch={launchAiDraft} onSettings={() => openSettingsTab("aiCli")} />
         </Suspense>
       ) : activeAiSession ? (
         // key 绑会话 id：切到另一个会话时必须整块重建，否则输入框草稿、

@@ -33,6 +33,7 @@ export function readAiOptions(key: string): AiRunOptions {
     const mode = typeof value?.mode === "string" && MODE_ID.test(value.mode) ? value.mode
       : value?.planMode === true ? "plan" : undefined;
     return {
+      providerId: typeof value?.providerId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value.providerId) ? value.providerId : undefined,
       model: typeof value?.model === "string" ? value.model.slice(0, 200) : undefined,
       effort: typeof value?.effort === "string" ? value.effort : undefined,
       fast: typeof value?.fast === "boolean" ? value.fast : undefined,
@@ -41,31 +42,29 @@ export function readAiOptions(key: string): AiRunOptions {
     };
   } catch { return {}; }
 }
-/** 读某会话键的运行选项；会话里缺权限/模式时回落到该引擎的全局默认。 */
-export function loadAiOptions(key: string, provider: AiProvider): AiRunOptions {
-  let value: AiRunOptions;
-  let own = false;
-  try {
-    own = localStorage.getItem(key) !== null;
-    value = own ? readAiOptions(key) : readAiOptions(defaultsKey(provider));
-  } catch { return {}; }
-  // 旧版本把完全访问写成了「无权限」，会话键里缺值时回落到该引擎上次的普通模式。
-  if (own && value.permission === undefined) {
-    const fallback = readAiOptions(defaultsKey(provider)).permission;
-    if (fallback) value = { ...value, permission: fallback };
-  }
-  // 同理，升级前存下的会话没有 mode：沿用上次的模式，新会话首屏也按这份记忆选中。
-  if (own && value.mode === undefined) {
-    const fallback = readAiOptions(defaultsKey(provider)).mode;
-    if (fallback) value = { ...value, mode: fallback };
-  }
-  return value;
+/**
+ * 读取已有会话自己的选项；缺省字段沿用 CLI，不读取其他会话更新的默认值。
+ * @param key - 会话或草稿的独立存储键
+ * @param _provider - 会话所属引擎；只读独立键，不再用它补默认值
+ * @returns 已保存选项；没有记录时为空对象
+ */
+export function loadAiOptions(key: string, _provider: AiProvider): AiRunOptions {
+  return readAiOptions(key);
+}
+/**
+ * 读取未来新会话的初始选项；调用方须在创建草稿时复制为独立快照。
+ * @param provider - 新会话所属引擎
+ * @returns 该引擎最后一次选择；未选择过时为空对象
+ */
+export function loadAiDefaultOptions(provider: AiProvider): AiRunOptions {
+  return readAiOptions(defaultsKey(provider));
 }
 /** 保存运行选项：当前会话键一份 + 按引擎的全局默认一份（不写 CLI 原生配置）。 */
 export function saveAiOptions(key: string, provider: AiProvider, value: AiRunOptions): void {
   // 选择记在 Forge 自己的存储里（当前会话一份 + 按引擎的全局默认一份），
   // 不写 CLI 的原生配置：记住上次选择不等于替用户改 config。
-  const saved = JSON.stringify({ model: value.model, effort: value.effort, fast: value.fast, permission: value.permission, mode: value.mode });
+  /** 当前会话和未来新会话共享这次选择的值，不共享后续可变状态。 */
+  const saved = JSON.stringify({ providerId: value.providerId, model: value.model, effort: value.effort, fast: value.fast, permission: value.permission, mode: value.mode });
   localStorage.setItem(key, saved);
   localStorage.setItem(defaultsKey(provider), saved);
 }

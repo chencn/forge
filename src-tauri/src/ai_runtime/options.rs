@@ -291,11 +291,11 @@ fn apply_claude_custom_option(catalog: &mut Value, mappings: &Value) {
     models.push(model);
 }
 /// 把用户配置的环境变量映射（ANTHROPIC_MODEL 等）反映射到目录项的 configuredModel 字段。
-fn apply_claude_mappings(catalog: &mut Value, mappings: &Value) {
+pub(super) fn apply_claude_mappings(catalog: &mut Value, mappings: &Value) {
     if let Some(models) = catalog["models"].as_array_mut() {
         for model in models {
             if model["id"] == "default" {
-                if let Some(target) = mappings["ANTHROPIC_MODEL"].as_str() { model["configuredModel"] = json!(target); }
+                if let Some(target) = mappings["ANTHROPIC_MODEL"].as_str().map(str::trim).filter(|value| !value.is_empty()) { model["configuredModel"] = json!(target); }
                 continue;
             }
             for (alias, key) in CLAUDE_MODELS {
@@ -651,7 +651,17 @@ pub fn codex_set_goal_status(cwd: &str, thread_id: &str, status: &str) -> Result
 }
 /// 官方负责项目层/profile/系统层优先级；前端只获得展示所需的白名单字段。
 pub fn codex_project_config(cwd: &str) -> Result<Value, String> {
-    let (command, _) = ai_cli::runtime_command(Provider::Codex, &["app-server"])?;
+    codex_project_config_for_route(cwd, None)
+}
+/// 读取本轮供应商进程里的有效配置，排队与实际执行使用同一条路由。
+///
+/// # Errors
+///
+/// CLI 启动、配置解析或协议读取失败时返回错误。
+pub(super) fn codex_project_config_for_route(cwd: &str, route: Option<&super::routes::Route>) -> Result<Value, String> {
+    // 每次配置探测都有自己的命令环境，不改变父进程环境变量。
+    let (mut command, _) = ai_cli::runtime_command(Provider::Codex, &["app-server"])?;
+    if let Some(route) = route { route.apply(&mut command); }
     let mut process = Process::spawn(command, cwd)?;
     let deadline = Instant::now() + Duration::from_secs(15);
     process.write(&json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"forge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}}}))?;
@@ -675,6 +685,7 @@ fn project_config_fields(result: &Value) -> Value {
         _ => "custom",
     };
     json!({
+        "modelProvider":config["model_provider"].as_str().unwrap_or("openai"),
         "model":config["model"], "effort":config["model_reasoning_effort"], "serviceTier":config["service_tier"],
         "permission":permission, "sandboxMode":config["sandbox_mode"], "approvalPolicy":config["approval_policy"],
         // 附加目录要并进生效策略而不是替换它，所以这几项也得读回来。
@@ -892,7 +903,7 @@ mod tests {
         assert_eq!(project_trust(&missing, "D:/missing"), None);
         // 只投影沙箱设置，凭据一律不带出：api_key 与 env 必须继续缺席。
         assert_eq!(project_config_fields(&json!({"config":{"model":"chosen","model_reasoning_effort":"high","sandbox_mode":"read-only","approval_policy":"on-request","api_key":"never-return","env":{"TOKEN":"secret"}}})),
-            json!({"model":"chosen","effort":"high","serviceTier":null,"permission":"read","sandboxMode":"read-only","approvalPolicy":"on-request",
+            json!({"modelProvider":"openai","model":"chosen","effort":"high","serviceTier":null,"permission":"read","sandboxMode":"read-only","approvalPolicy":"on-request",
                 "sandboxWritableRoots":null,"sandboxNetworkAccess":null,"sandboxExcludeTmpdir":null,"sandboxExcludeSlashTmp":null}));
         assert_eq!(project_config_fields(&json!({"config":{"sandbox_mode":"custom-sandbox","approval_policy":"custom-policy"}}))["permission"], "custom");
     }
@@ -1019,6 +1030,9 @@ mod tests {
         }
         assert!(catalog.get("env").is_none());
         assert!(catalog.get("ANTHROPIC_API_KEY").is_none());
+        let mut no_main = defaults(Provider::Claude);
+        apply_claude_mappings(&mut no_main, &json!({"ANTHROPIC_MODEL":"  "}));
+        assert_eq!(configured_model(&no_main, "default"), "default");
     }
     #[test]
     fn fast_uses_catalog_id_and_missing_capability_fails_closed() {

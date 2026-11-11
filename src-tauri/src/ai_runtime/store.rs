@@ -302,6 +302,9 @@ pub struct Metadata {
     pub session_id: String,
     /// 该会话由哪个 CLI 驱动。
     pub provider: Provider,
+    /// 最近实际运行的供应商，供子代理转发恢复父会话路由；不包含凭据。
+    #[serde(default)]
+    pub provider_id: Option<String>,
     /// 规范化后的工作区根；历史列表按它过滤当前项目。
     pub workspace: String,
     /// 会话标题，用户可重命名。
@@ -458,6 +461,7 @@ impl Store {
                 format_version: 1,
                 session_id: id.into(),
                 provider,
+                provider_id: None,
                 workspace: root.into(),
                 title: title.into(),
                 title_locked: false,

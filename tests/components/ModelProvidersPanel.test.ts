@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import ModelProvidersPanel from "../../src/components/ModelProvidersPanel";
 import AiCliSettingsPanel from "../../src/components/AiCliSettingsPanel";
+import AiComposerOptions from "../../src/components/AiComposerOptions";
+import type { AiRunOptions } from "../../src/lib/aiRuntime";
 import type { AiCliCodexSettings } from "../../src/lib/aiCli";
 import { CLAUDE_MODEL_SLOTS, emptyCodexCatalogIntent, parseCodexCatalogIntent, type CodexCatalogView, type ModelProvider } from "../../src/lib/aiManage";
 
@@ -183,6 +185,100 @@ async function type(input: HTMLInputElement, value: string) {
 }
 
 describe("供应商模型编辑行为", () => {
+  it.each([
+    { efforts: ["medium", "high"], expectedEffort: "medium" },
+    { efforts: ["high"], expectedEffort: undefined },
+  ])("Codex 切换供应商设置默认强度与编辑权限，并从本地目录保留或回落模型（$efforts）", async ({ efforts, expectedEffort }) => {
+    /** 保存的两个 Codex 来源以及不可跨引擎选择的 Claude 来源。 */
+    const providers = [
+      { id: "a", kind: "codex", name: "供应商 A" }, { id: "b", kind: "codex", name: "供应商 B" },
+      { id: "c", kind: "claude", name: "Claude 来源" },
+    ];
+    /** 验证组件提交给当前会话的完整选项。 */
+    const changed = vi.fn();
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "ai_providers_load") return providers;
+      if (command === "ai_runtime_models" || command === "ai_runtime_refresh_models") {
+        /** 模型目录由 IPC 的供应商 ID 决定，空 ID 使用 Agent 配置。 */
+        const source = (args as { providerId?: string }).providerId;
+        return { models: [{ id: source === "b" ? "b-default" : "shared", name: source === "b" ? "B model" : "Shared model", isDefault: true, efforts }], efforts: [], customModel: true };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    /** 通过真实 React 状态接收会话选项，验证切换后默认回到模型 Tab。 */
+    function Composer() {
+      /** 当前会话已有的供应商与模型。 */
+      const [options, setOptions] = useState<AiRunOptions>({ providerId: "a", model: "shared", effort: "high", permission: "read" });
+      return createElement(AiComposerOptions, { provider: "codex", workspace: "D:/fixture", value: options,
+        onChange: (next) => { changed(next); setOptions(next); } });
+    }
+    await act(async () => root.render(createElement(Composer)));
+    await click(host.querySelector("button")!);
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("供应商 A");
+    await click(document.querySelector('[role="tab"][data-tab="providers"]')!);
+    expect(document.querySelector('[role="tabpanel"]')?.textContent).not.toContain("Claude 来源");
+    await click([...document.querySelectorAll('[role="tabpanel"] button')].find((item) => item.textContent === "供应商 B")!);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "b", model: "b-default", effort: expectedEffort, permission: "auto" }));
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("供应商 B");
+    expect(document.querySelector('[role="listbox"]')?.textContent).toContain("B model");
+    await click(document.querySelector('[role="tab"][data-tab="providers"]')!);
+    await click([...document.querySelectorAll('[role="tabpanel"] button')].find((item) => item.textContent === "ai.chat.agentConfig")!);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: undefined, model: "shared", effort: expectedEffort, permission: "auto" }));
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "ai_providers_apply" || command === "http_send")).toBe(false);
+  });
+
+  it("Claude 切换供应商默认使用中等强度与自动权限，并清除旧计划模式", async () => {
+    /** 切换必须一次提交模型、强度与权限，避免残留旧会话的只读限制。 */
+    const changed = vi.fn();
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "ai_providers_load") return [{ id: "a", kind: "claude", name: "A" }, { id: "b", kind: "claude", name: "B" }];
+      if (command === "ai_runtime_models") return {
+        models: [{ id: "sonnet", name: "Sonnet", isDefault: true, efforts: [] }],
+        efforts: ["low", "medium", "high"], modes: ["manual", "plan", "auto"], modesAuthoritative: true,
+      };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    /** 真实会话状态用于验证提交后公开控件显示的选中档位。 */
+    function Composer() {
+      /** 从旧计划模式和只读权限切换，确保新默认同时生效。 */
+      const [options, setOptions] = useState<AiRunOptions>({ providerId: "a", model: "sonnet", effort: "high", mode: "plan", planMode: true, permission: "read" });
+      return createElement(AiComposerOptions, { provider: "claude", workspace: "D:/fixture", value: options,
+        onChange: (next) => { changed(next); setOptions(next); } });
+    }
+    await act(async () => root.render(createElement(Composer)));
+    await click(host.querySelector("button")!);
+    await click(document.querySelector('[role="tab"][data-tab="providers"]')!);
+    await click([...document.querySelectorAll('[role="tabpanel"] button')].find((item) => item.textContent === "B")!);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "b", model: "sonnet", effort: "medium", mode: "auto", permission: "auto", planMode: undefined }));
+    expect([...document.querySelectorAll('[role="group"] button[aria-pressed="true"]')].map((item) => item.textContent)).toEqual(["ai.chat.effort.medium", "ai.chat.modeAuto"]);
+  });
+
+  it("切换供应商时禁止并发改档位，读取失败保留原会话选择", async () => {
+    /** 可控失败用于模拟本地目录读取尚未完成。 */
+    let rejectSwitch!: (error: Error) => void;
+    /** 保留失败前的在途请求，以验证禁用与失败状态。 */
+    const pending = new Promise((_, reject) => { rejectSwitch = reject; });
+    /** 失败不得发布任何新的会话选项。 */
+    const changed = vi.fn();
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "ai_providers_load") return [{ id: "a", kind: "codex", name: "A" }, { id: "b", kind: "codex", name: "B" }];
+      if (command === "ai_runtime_models") {
+        if ((args as { providerId?: string }).providerId === "b") return pending;
+        return { models: [{ id: "a-model", name: "A model", efforts: ["high"], isDefault: true }], efforts: [], customModel: true };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    await act(async () => root.render(createElement(AiComposerOptions, { provider: "codex", workspace: "D:/fixture", value: { providerId: "a", model: "a-model" }, onChange: changed })));
+    await click(host.querySelector("button")!);
+    await click(document.querySelector('[role="tab"][data-tab="providers"]')!);
+    await click([...document.querySelectorAll('[role="tabpanel"] button')].find((item) => item.textContent === "B")!);
+    expect((document.querySelector('[role="tab"][data-tab="models"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(document.querySelector('[role="tabpanel"]')?.getAttribute("aria-busy")).toBe("true");
+    await act(async () => rejectSwitch(new Error("目录不可用")));
+    expect(changed).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("目录不可用");
+    expect((document.querySelector('[role="tab"][data-tab="models"]') as HTMLButtonElement).disabled).toBe(false);
+  });
   it("八项响应完整进入下拉，带前缀和不带前缀的 DeepSeek ID 可分别选择和保存", async () => {
     /** 两个 DeepSeek ID 是不同模型，不能按名称尾部去重或过滤。 */
     const ids = ["auto/deepseek-v4.1-flash", "deepseek-v4.1-flash", "gemini-3.8-flash-high",

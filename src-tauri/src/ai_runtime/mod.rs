@@ -16,6 +16,7 @@ mod plans;
 mod process;
 mod protocol;
 mod registry;
+mod routes;
 mod search;
 // `ai_cli::codex_catalog` 要用这条通道现问 Codex 字段取值域（它起 app-server 的那套
 // 进程与超时逻辑在这里，不再抄第二份），所以这个模块要对 crate 内可见。
@@ -55,6 +56,15 @@ pub struct SendRequest {
     run_id: String,
     /// 用哪个 CLI 跑这一轮。
     provider: Provider,
+    /// 当前会话选择的供应商；None 使用 Agent 配置。
+    #[serde(default)]
+    provider_id: Option<String>,
+    /// 入队时冻结的供应商配置，凭据永不参与反序列化或日志输出。
+    #[serde(skip)]
+    route: Option<routes::Route>,
+    /// Codex 启动和恢复线程时显式传入的供应商 ID。
+    #[serde(skip)]
+    codex_provider: Option<String>,
     /// 工作区根路径；后端会规范化并校验它确实存在。
     workspace: String,
     /// 用户本轮输入。
@@ -263,6 +273,7 @@ fn spawn_runtime_process(request: &SendRequest, claude_mode: &str, native: Optio
     if browser.is_some() { args.extend(crate::browser::launch::arguments(request.provider)?); }
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let (mut command, version) = ai_cli::runtime_command(request.provider, &refs)?;
+    if let Some(route) = &request.route { route.apply(&mut command); }
     if let Some(lease) = browser { crate::browser::launch::environment(&mut command,lease); }
     else { command.env_remove("FORGE_BROWSER_ENDPOINT").env_remove("FORGE_BROWSER_TOKEN"); }
     Ok((Process::spawn(command, &request.workspace)?, version))
@@ -287,6 +298,7 @@ fn runtime_protocol(
                 .with_browser(browser)
                 .with_images(if recovering { vec![] } else { request.images.clone() })
                 .with_options(request.model.clone(), request.effort.clone())
+                .with_provider(request.codex_provider.clone())
                 .with_policy(request.permission, service_tier.to_owned())
                 .with_sandbox_policy(codex_policy.clone())
                 .with_command(if recovering { None } else { request.command })
@@ -682,6 +694,7 @@ fn validate(request: &SendRequest) -> Result<(), String> {
 
 /// 入队时固定本轮选项：显式选择优先，项目配置只补未选择的默认值。
 fn freeze_codex_config(request: &mut SendRequest, config: &Value) {
+    request.codex_provider = config["modelProvider"].as_str().map(str::to_owned);
     if request.model.is_none() { request.model = config["model"].as_str().map(str::to_owned); }
     if request.effort.is_none() { request.effort = config["effort"].as_str().map(str::to_owned); }
     if request.fast.is_none() { request.service_tier = config["serviceTier"].as_str().map(str::to_owned); }
@@ -901,9 +914,11 @@ pub async fn ai_runtime_models(
     app: AppHandle,
     provider: Provider,
     workspace: String,
+    provider_id: Option<String>,
 ) -> Result<Value, String> {
     block(move || {
         let catalog = options::cached_models(&models_path(&app)?, provider);
+        if let Some(route) = routes::resolve(&app, provider, provider_id.as_deref(), catalog.clone())? { return Ok(route.catalog); }
         if provider == Provider::Claude {
             return Ok(options::claude_configured_models(catalog, &store::workspace(&workspace)?));
         }
@@ -946,7 +961,7 @@ pub async fn ai_runtime_refresh_models(app: AppHandle, provider: Provider, works
         let mut attempted = MODEL_REFRESH.lock().await;
         if current || attempted.contains(&key) {
             drop(attempted);
-            return ai_runtime_models(app, provider, workspace).await;
+            return ai_runtime_models(app, provider, workspace, None).await;
         }
         attempted.push(key.clone());
     }
@@ -1050,10 +1065,13 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
         if ai_cli::management_busy() { return Err("CLI 管理进行中，请稍后发送".into()); }
         let root = store::workspace(&request.workspace)?;
         request.additional_dirs = validated_dirs(&request, &root)?;
+        // 在入队前读取供应商并冻结；后续选择、编辑或删除不会把已排队消息送到其他端点。
+        request.route = routes::resolve(&app, request.provider, request.provider_id.as_deref(), options::cached_models(&models_path(&app)?, request.provider))?;
+        if request.model.is_none() { request.model = request.route.as_ref().and_then(routes::Route::default_model); }
         // 进入队列前冻结规范化路径；后续切换工程或页面刷新不会丢失附件。
         if request.provider == Provider::Codex {
             // 队列必须冻结发送当刻的项目有效配置；执行时再读会被后续 UI 修改串改。
-            let config = options::codex_project_config(&root)?;
+            let config = options::codex_project_config_for_route(&root, request.route.as_ref())?;
             freeze_codex_config(&mut request, &config);
             // 附加目录同样在入队时定档：本轮到底能不能收下这些目录，取决于此刻生效的沙箱，
             // 而不是执行时才飘忽的项目配置。
@@ -1064,7 +1082,10 @@ pub async fn ai_runtime_send(app: AppHandle, mut request: SendRequest) -> Result
         // 模型和模式都在入队这一刻对着「这版 CLI 报过的取值」定稿：执行时缓存可能已经
         // 被升级刷掉，而用户在界面上选的、界面上看到的就是按下发送时的档位。
         let cached = options::cached_models(&models_path(&app)?, request.provider);
-        let catalog = if request.provider == Provider::Claude { options::claude_configured_models(cached, &root) } else { cached };
+        // 本轮能力必须来自同一供应商，不能用全局目录解释另一端点的别名。
+        let catalog = request.route.as_ref().map(|route| route.catalog.clone()).unwrap_or_else(|| {
+            if request.provider == Provider::Claude { options::claude_configured_models(cached, &root) } else { cached }
+        });
         if let Some(model) = request.model.as_deref() {
             let canonical = options::canonical_model(&catalog, model);
             request.model = Some(if request.provider == Provider::Claude { options::configured_model(&catalog, &canonical) } else { canonical });
@@ -1896,7 +1917,10 @@ impl Worker {
         let service_tier = if let Some(tier) = request.service_tier.clone() {
             tier
         } else if request.fast == Some(true) && request.command.is_none() {
-            let catalog = options::cached_models(&models_path(&self.app)?, Provider::Codex);
+            let catalog = match &request.route {
+                Some(route) => route.catalog.clone(),
+                None => options::cached_models(&models_path(&self.app)?, Provider::Codex),
+            };
             let (model, tier) = options::fast_tier(&catalog, request.model.as_deref())?;
             request.model = Some(model);
             tier
@@ -1948,6 +1972,7 @@ impl Worker {
         {
             let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
             self.store.meta.cli_version = version;
+            self.store.meta.provider_id = request.provider_id.clone();
             self.store.save()?;
         }
         if self.run.cancelled.load(Ordering::Acquire) {
@@ -2432,7 +2457,7 @@ pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, worksp
             let events = child.append("relay", vec![("user".into(), json!({"text": prompt, "relay": true}))])?;
             let _ = app.emit(CHANNEL, &events);
         }
-        let request = SendRequest {
+        let mut request = SendRequest {
             session_id: parent_id,
             run_id: format!("fwd-{}-{}", now_ms(), FORWARD_SEQ.fetch_add(1, Ordering::Relaxed)),
             provider: parent.provider,
@@ -2446,6 +2471,9 @@ pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, worksp
             permission: options::PermissionMode::Inherit,
             fast: None,
             service_tier: None,
+            provider_id: None,
+            route: None,
+            codex_provider: None,
             codex_grant: None,
             command: None,
             plan_mode: false,
@@ -2454,6 +2482,13 @@ pub async fn ai_runtime_agent_forward(app: AppHandle, session_id: String, worksp
             additional_dirs: vec![],
             plan_turn: None,
         };
+        request.provider_id = parent.provider_id;
+        request.route = routes::resolve(&app, request.provider, request.provider_id.as_deref(), options::cached_models(&models_path(&app)?, request.provider))?;
+        if request.provider == Provider::Codex {
+            // 转发也必须显式恢复父会话端点，不能受其他会话选择影响。
+            let config = options::codex_project_config_for_route(&request.workspace, request.route.as_ref())?;
+            request.codex_provider = config["modelProvider"].as_str().map(str::to_owned);
+        }
         dispatch_task(&app, &request, &request.workspace, &base)
     })
     .await
@@ -3415,6 +3450,9 @@ mod tests {
             permission: Default::default(),
             fast: None,
             service_tier: None,
+            provider_id: None,
+            route: None,
+            codex_provider: None,
             codex_grant: None,
             command: None,
             plan_mode: false,
@@ -3449,6 +3487,9 @@ mod tests {
             permission: Default::default(),
             fast: None,
             service_tier: None,
+            provider_id: None,
+            route: None,
+            codex_provider: None,
             codex_grant: None,
             command: None,
             plan_mode: false,

@@ -14,6 +14,7 @@ vi.mock("../../src/lib/aiRuntime", () => ({ useAiRuntime: () => h.state, useAiOu
 vi.mock("../../src/lib/fs", () => ({ openExternal: vi.fn(), assetUrl: (path: string) => `asset://${path}` }));
 vi.mock("dompurify", () => ({ default: { sanitize: h.sanitize } }));
 import AiSessionPane from "../../src/components/AiSessionPane";
+import { aiSessionStorageKey } from "../../src/lib/aiSessions";
 import { AiTaskListDockPanel } from "../../src/components/AiDockPanels";
 import { buildNavRows, navCount } from "../../src/lib/aiMessageNav";
 
@@ -167,8 +168,18 @@ describe("AI conversation pane", () => {
     textarea(render().pane).props.onChange({ target: { value: "开始新会话" } });
     textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
     await vi.waitFor(() => expect(h.send).toHaveBeenCalled());
-    expect(h.models).toHaveBeenCalledWith("codex", "D:/project");
+    expect(h.models).toHaveBeenCalledWith("codex", "D:/project", undefined);
     expect(h.send.mock.calls[0][4]).toMatchObject({ model: "catalog-default" });
+  });
+  it("清空显式模型后使用所选供应商的默认模型，不沿用旧路由的实际模型", async () => {
+    storage.set(`${aiSessionStorageKey("D:/project")}:options:${sessionId}`, JSON.stringify({ providerId: "selected-supplier" }));
+    h.state.usage = { model: "previous-provider-model" };
+    h.models.mockResolvedValue({ models: [{ id: "supplier-default", isDefault: true }] });
+    textarea(render().pane).props.onChange({ target: { value: "hello" } });
+    textarea(render().pane).props.onKeyDown({ key: "Enter", nativeEvent: {}, preventDefault: vi.fn() });
+    await vi.waitFor(() => expect(h.send).toHaveBeenCalled());
+    expect(h.models).toHaveBeenCalledWith("codex", "D:/project", "selected-supplier");
+    expect(h.send.mock.calls[0][4]).toMatchObject({ providerId: "selected-supplier", model: "supplier-default" });
   });
   it("keeps controls in one composer and hides settings and usage details until requested", () => {
     const { html } = render();

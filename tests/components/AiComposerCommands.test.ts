@@ -186,7 +186,7 @@ describe("composer slash parameter execution", () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "plan" }));
     await expect(render().execute("permissions", "bypass")).rejects.toThrow();
     // 校验用的是磁盘上那份已发现的目录，不为一次切换去现问 CLI。
-    expect(h.load).toHaveBeenCalledWith("codex", "D:/fixture");
+    expect(h.load).toHaveBeenCalledWith("codex", "D:/fixture", undefined);
   });
   it("takes mode arguments from the CLI-reported list, not from Forge's own vocabulary", async () => {
     h.states = [];

@@ -70,7 +70,8 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
   /** 选中的工具按工作区记忆；记住的已不可用时回落到第一个可用项。 */
   const [preferred, setPreferred] = useState<AiProvider | null>(() => loadAiDraftProvider(workspace));
   const provider = preferred && available.includes(preferred) ? preferred : available[0] ?? null;
-  const optionsKey = aiDraftOptionsKey(provider ?? "claude");
+  /** 草稿选项按工作区与引擎隔离。 */
+  const optionsKey = aiDraftOptionsKey(provider ?? "claude", workspace);
   const [options, setOptions] = useState<AiRunOptions>(() => loadAiOptions(optionsKey, provider ?? "claude"));
   // 两个引擎的档位不相同（Codex 只读、Fast、模型 id）；切工具必须换成那份配置，
   // 否则 Codex 的只读会被带进 Claude 并变成 plan 权限。
@@ -304,7 +305,7 @@ export default function AiWelcomePane({ workspace, beforeSend, onLaunch, onSetti
                 <button type="button" className="ai-add-button" aria-label={t("ai.chat.attach")} title={t("ai.chat.attach")}
                   disabled={!desktop || !provider || images.length + pendingImages.current >= imageLimit}
                   onClick={() => void pickImages()}><Plus size={16} /></button>
-                <AiComposerOptions commandRef={composer} key={provider ?? "none"} provider={provider ?? "claude"} workspace={workspace}
+                <AiComposerOptions commandRef={composer} key={optionsKey} provider={provider ?? "claude"} workspace={workspace}
                   value={options} onChange={changeOptions} disabled={!provider} />
               </>}
               toolbarRight={<button type="button" className="ai-send-button" aria-label={t("ai.send")} title={t("ai.send")}

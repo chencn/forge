@@ -1,6 +1,6 @@
 import type { AiProvider } from "./aiCli";
 import { aiSessionStorageKey } from "./aiSessions";
-import { loadAiOptions, saveAiOptions } from "./aiOptions";
+import { loadAiDefaultOptions, loadAiOptions, saveAiOptions } from "./aiOptions";
 import { loadAdditionalDirs, saveAdditionalDirs } from "./aiDrafts";
 
 /**
@@ -20,9 +20,25 @@ export interface AiDraftHandoff {
 /** 各会话待移交的首条消息，键为会话 id。 */
 const handoffs = new Map<string, AiDraftHandoff>();
 
-/** 草稿页没有会话 id，只按引擎保存；创建会话时必须从同一个键复制，不能回退到其他会话改写的全局默认。 */
-export function aiDraftOptionsKey(provider: AiProvider) {
-  return `forge:ai-draft-options:v1:${provider}`;
+/**
+ * 定位工作区内某引擎的草稿选项，避免不同草稿互相覆盖。
+ * @param provider - 草稿所属引擎
+ * @param root - 草稿工作区；null 表示未打开工作区
+ * @returns 草稿的独立存储键
+ */
+export function aiDraftOptionsKey(provider: AiProvider, root: string | null) {
+  return `${aiSessionStorageKey(root)}:draft-options:${provider}`;
+}
+
+/**
+ * 新开草稿时快照两个引擎的最新默认值；已打开草稿不得重复初始化。
+ * @param root - 新草稿的工作区
+ * @returns void；只写草稿快照，不改新会话默认值
+ */
+export function initializeAiDraftOptions(root: string | null): void {
+  for (const provider of ["claude", "codex"] as const) {
+    localStorage.setItem(aiDraftOptionsKey(provider, root), JSON.stringify(loadAiDefaultOptions(provider)));
+  }
 }
 
 /** 登记待移交载荷；会话页挂载后由 {@link takeAiDraftHandoff} 取走。 */
@@ -54,7 +70,8 @@ export function saveAiDraftProvider(root: string | null, provider: AiProvider) {
 
 /** 草稿页配置的模型/强度/权限跟着会话走：创建时原样种到新会话的选项键下。 */
 export function seedAiSessionOptions(root: string | null, sessionId: string, provider: AiProvider) {
-  const draft = loadAiOptions(aiDraftOptionsKey(provider), provider);
+  /** 首条消息沿用草稿冻结的配置，不重新读取新会话默认值。 */
+  const draft = loadAiOptions(aiDraftOptionsKey(provider, root), provider);
   saveAiOptions(`${aiSessionStorageKey(root)}:options:${sessionId}`, provider, draft);
   // 长元素上下文会转为临时附件；首条消息必须继承草稿的附件目录授权。
   saveAdditionalDirs(root, sessionId, loadAdditionalDirs(root, "draft"));

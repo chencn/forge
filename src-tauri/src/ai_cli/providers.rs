@@ -144,6 +144,19 @@ fn load(app: &AppHandle) -> Result<Vec<ModelProvider>, String> {
     Ok(store.providers)
 }
 
+/// 读取并校验本轮选定的供应商，不修改任何全局绑定或 CLI 文件。
+///
+/// # Errors
+///
+/// 供应商已删除、类型不匹配或配置不合法时返回错误，禁止静默切回其他端点。
+pub(crate) fn runtime_provider(app: &AppHandle, kind: Provider, id: &str) -> Result<ModelProvider, String> {
+    // 从当前保存列表取得完整配置，凭据只留在后端内存。
+    let provider = load(app)?.into_iter().find(|item| item.id == id).ok_or("所选供应商已不存在，请重新选择")?;
+    if provider.kind != kind.key() { return Err("供应商与当前会话引擎不匹配".into()); }
+    validate(&provider)?;
+    Ok(provider)
+}
+
 /// 保存前的结构性检查：类型创建后不能改，仍被 CLI 绑定的不能删。
 /// 这两条规则的原因：改类型会把一种 CLI 的模型写法解释成另一种的，
 /// 删掉被绑定的条目只会让绑定那一栏变成「绑定的供应商已不存在」。
@@ -247,7 +260,7 @@ fn apply_claude(env: &mut BTreeMap<String, String>, provider: &ModelProvider) {
 }
 
 /// 写进原生 settings.json 的完整托管集合：带上空值，才能把供应商里没填的旧模型键一并清掉。
-fn claude_native_env(provider: &ModelProvider) -> BTreeMap<String, String> {
+pub(crate) fn claude_native_env(provider: &ModelProvider) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert("ANTHROPIC_BASE_URL".into(), provider.api_url.trim().to_string());
     env.insert("ANTHROPIC_AUTH_TOKEN".into(), provider.api_key.trim().to_string());

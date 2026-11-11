@@ -18,6 +18,8 @@ export type AiCommandIntent = "claudeSlash" | "codexCompact" | "codexReview";
 
 /** 一轮运行可选的模型与思考强度；两者都为空表示沿用 CLI 默认。 */
 export interface AiRunOptions {
+  /** 已保存供应商 ID；未指定时使用该引擎的 Agent 配置，仅影响本会话。 */
+  providerId?: string;
   /** 模型 id；必须在 `AiCapabilities.models` 里或由用户自定义输入。 */
   model?: string;
   /** 思考强度；只有该模型声明支持的档位才可传。 */
@@ -118,6 +120,8 @@ export interface AiCapabilities {
 }
 /** Codex 通过 app-server config/read 返回的当前项目有效配置。 */
 export interface AiProjectConfig {
+  /** Codex 当前有效供应商标识，不包含端点凭据。 */
+  modelProvider?: string;
   model?: string;
   effort?: string;
   /** 仅精确匹配的官方组合使用快捷名；custom 时由下面两个原始字段说明真实配置。 */
@@ -187,9 +191,16 @@ export function updateAiProjectConfig(workspace: string, patch: AiProjectConfigP
     return value;
   });
 }
-/** 读取 CLI 的模型能力清单；返回磁盘上的上次结果，不强制现问 CLI。 */
-export function loadAiCapabilities(provider: AiSession["provider"], workspace: string): Promise<AiCapabilities> {
-  return invoke("ai_runtime_models", { provider, workspace });
+/**
+ * 读取所选供应商的本地模型能力，未指定供应商时读取 Agent 配置目录。
+ * @param provider - 会话引擎
+ * @param workspace - 当前工作区
+ * @param providerId - 已保存供应商 ID；缺省使用 Agent 配置
+ * @returns 该路由的模型能力，不请求远程模型接口
+ * @throws 配置或目录读取失败时 reject
+ */
+export function loadAiCapabilities(provider: AiSession["provider"], workspace: string, providerId?: string): Promise<AiCapabilities> {
+  return invoke("ai_runtime_models", { provider, workspace, providerId: providerId ?? null });
 }
 /** 后台发现与读取磁盘分开，刷新失败不丢弃已有目录。 */
 export function refreshAiCapabilities(provider: AiSession["provider"], workspace: string, force = false): Promise<AiCapabilities> {
@@ -1756,7 +1767,7 @@ export async function sendAiMessage(session: AiSession, workspace: string, promp
   updateTask(session.id, { runId, status: "submitting", prompt, seq });
   try {
     // Fast 是二态开关；未开启就明确关闭，不能暗中继承配置中的服务等级。
-    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, workspace, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), mode: options.mode ?? (options.planMode ? "plan" : null), fast: options.fast ?? false, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
+    const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: { sessionId: session.id, runId, provider: session.provider, providerId: options.providerId ?? null, workspace, prompt, images, trusted, model: options.model || null, effort: options.effort || null, permission: options.permission ?? (session.provider === "codex" ? "inherit" : "ask"), mode: options.mode ?? (options.planMode ? "plan" : null), fast: options.fast ?? false, planMode: options.planMode === true, additionalDirs, ...(command ? { command } : {}) } });
     const current = store(session.id).snapshot.tasks.find((task) => task.runId === runId);
     const accepted = result?.status;
     // 只接受「后端说这一轮还没结束」的返回值：排队/等待外部/立即运行。
@@ -1785,7 +1796,7 @@ export async function decideAiPlan(session: AiSession, workspace: string, plan: 
   updateTask(session.id, { runId, status: "submitting", prompt: decision === "approve" ? "" : feedback?.trim() ?? "", seq });
   try {
     const result = await invoke<{ status: AiTaskStatus }>("ai_runtime_send", { request: {
-      sessionId: session.id, runId, provider: session.provider, workspace,
+      sessionId: session.id, runId, provider: session.provider, providerId: options.providerId ?? null, workspace,
       // 计划决策只替换执行正文，模型、强度、权限和授权目录仍使用用户当前选择。
       prompt: "", images: [], trusted: true, model: options.model || null, effort: options.effort || null,
       permission: options.permission ?? "inherit", fast: options.fast ?? false, additionalDirs,

@@ -1005,6 +1005,34 @@ pub fn default_slug(intent: &CatalogIntent, base: Option<&Value>) -> Option<Stri
     })
 }
 
+/// 从本机官方模板生成会话独立的完整目录和选择器数据，不写全局 Codex 配置。
+///
+/// # Errors
+///
+/// 官方模板不可用、模型意图不合法或生成目录失败时返回错误。
+pub(crate) fn session_catalog(app: &AppHandle, intent: &CatalogIntent) -> Result<(Value, Value), String> {
+    validate_intent(intent)?;
+    // 优先使用已保存模板；缺失时只调用本机 CLI 读取，不请求远程模型接口。
+    let source = base_path(app).ok().and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .or_else(|| load_base(app).0).ok_or("无法读取 Codex 官方模型模板，请先在配置管理中加载模型目录")?;
+    // 字段取值域与供应商管理使用同一份本机缓存。
+    let (domains, _, _, _) = resolve_domains(app, Some(&source));
+    // 运行目录保留隐藏条目与完整模板字段。
+    let models = generate(&source, intent, &domains)?;
+    // 默认模型必须在这份供应商目录内。
+    let default_model = default_slug(intent, Some(&source));
+    // 选择器只投影实际生成条目的能力，覆盖设置与运行目录保持一致。
+    let choices: Vec<Value> = models.iter().filter(|model| is_listable_model(model)).map(|model| {
+        // 条目 slug 是提交给 Codex 的真实模型参数。
+        let slug = model_slug(model).unwrap_or_default();
+        json!({"id":slug,"name":model["display_name"].as_str().filter(|name| !name.is_empty()).unwrap_or(slug),
+            "efforts":supported_efforts(model),"defaultEffort":model["default_reasoning_level"],
+            "isDefault":default_model.as_deref() == Some(slug),"serviceTiers":model["service_tiers"]})
+    }).collect();
+    Ok((json!({"models":models}), json!(choices)))
+}
+
 /// 供供应商「应用」调用：
 /// - 若 effectively empty：清理 catalog 文件，删除 config.toml 的 model_catalog_json 键，
 ///   清空意图文件以同步 picker_patch，返回 Ok(None)（告知调用方清掉根 model）。

@@ -971,12 +971,14 @@ export default function AiSessionPane({
   const optionsKey = `${aiSessionStorageKey(workspace)}:options:${session.id}`;
   const [options, setOptions] = useState<AiRunOptions>(() => loadAiOptions(optionsKey, session.provider));
   // 设置芯片用历史实际模型补空选择；发送必须复用同一结果，不能显示 5.6 却让后端另选默认模型。
-  const selectedModel = options.model?.trim() || runtime.usage?.model?.trim() || runtime.configuration?.model?.trim() || undefined;
+  /** 自定义供应商清空显式模型时回到其默认项，不沿用旧路由上报的历史模型。 */
+  const selectedModel = options.model?.trim() || (!options.providerId ? runtime.usage?.model?.trim() || runtime.configuration?.model?.trim() : undefined) || undefined;
   const selectedRunOptions = async (): Promise<AiRunOptions> => {
     if (selectedModel) return { ...options, model: selectedModel };
     if (!workspace) throw new Error(t("ai.noWorkspace"));
     // 全新会话显示的是本地目录默认项；发送前把这项解析成明确 ID，禁止后端再次猜默认值。
-    const catalog = await loadAiCapabilities(session.provider, workspace);
+    /** 默认模型与本轮供应商保持一致，不能从 Agent 全局目录借模型。 */
+    const catalog = await loadAiCapabilities(session.provider, workspace, options.providerId);
     const model = catalog.models.find((item) => item.isDefault)?.id.trim();
     if (!model) throw new Error(t("ai.chat.noModels"));
     return { ...options, model };

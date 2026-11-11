@@ -342,8 +342,8 @@ describe("AI runtime event store", () => {
   });
   it("passes selected model and effort to the backend", async () => {
     const runtime = await import("../../src/lib/aiRuntime");
-    await runtime.sendAiMessage(session, "D:/project", "hello", true, { model: "test-model", effort: "high", permission: "auto", fast: true });
-    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_send", expect.objectContaining({ request: expect.objectContaining({ model: "test-model", effort: "high", permission: "auto", fast: true }) }));
+    await runtime.sendAiMessage(session, "D:/project", "hello", true, { providerId: "chosen-provider", model: "test-model", effort: "high", permission: "auto", fast: true });
+    expect(h.invoke).toHaveBeenCalledWith("ai_runtime_send", expect.objectContaining({ request: expect.objectContaining({ providerId: "chosen-provider", model: "test-model", effort: "high", permission: "auto", fast: true }) }));
   });
   it("将无模型字段的 Codex 用量关联已报告配置，切换配置后等待新占用", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");

@@ -1,4 +1,4 @@
-import { useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import type { LocalCommand } from "../lib/aiCommands";
 /** 输入框命令执行句柄（`/` 命令选中后由外层调）。 */
@@ -13,6 +13,7 @@ import { aiNormalMode, resolveAiModel } from "../lib/aiOptions";
 import AiProviderIcon from "./AiProviderIcon";
 import Popover from "./Popover";
 import AiActionDialog from "./AiActionDialog";
+import { loadModelProviders, type ModelProvider } from "../lib/aiManage";
 import { Item, ItemContent } from "./ui/item";
 export { readAiOptions } from "../lib/aiOptions";
 
@@ -83,11 +84,24 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<AiRunOptions | null>(null);
   const [open, setOpen] = useState(false);
+  /** 弹层默认展示所选供应商的模型，第二个 Tab 列出可切换来源。 */
+  const [tab, setTab] = useState<"models" | "providers">("models");
+  /** 只保留当前引擎的已保存供应商。 */
+  const [suppliers, setSuppliers] = useState<ModelProvider[]>([]);
+  /** 首次读取完成前不把尚未加载的供应商误报为已删除。 */
+  const [suppliersLoaded, setSuppliersLoaded] = useState(false);
+  /** 切换完成前不发布新选择，失败时保留原路由与模型。 */
+  const [switching, setSwitching] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [highlightedModel, setHighlightedModel] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const chip = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    /** 每次打开只测量一次自然高度，Tab 和目录变化共用此高度；关闭后节点销毁。 */
+    const panel = popover.current;
+    if (open && panel) panel.style.height = `${panel.offsetHeight}px`;
+  }, [open]);
   const alive = useRef(true);
   // 用户保存优先于更早发出的后台刷新，避免迟到结果暂时隐藏自定义模型。
   const catalogRevision = useRef(0);
@@ -95,7 +109,8 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
   // 记忆上一次选择：两个引擎都读写 Forge 的会话选项（随会话持久化），不碰 CLI 原生配置。
   const configuredValue = value;
   const selectedModelId = resolveAiModel(capabilities, configuredValue?.model);
-  const actualModelId = resolveAiModel(capabilities, actualModel);
+  /** 历史实际模型属于上一轮，不能用它覆盖当前供应商的默认选择。 */
+  const actualModelId = value.providerId ? undefined : resolveAiModel(capabilities, actualModel);
   const effectiveModelId = selectedModelId || actualModelId;
   const model = capabilities?.models.find((item) => effectiveModelId ? item.id === effectiveModelId : item.isDefault);
   // 修正已保存的显示名/大小写变体；不重置强度、权限或未知自定义 ID。
@@ -122,9 +137,10 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     // 先发布本地目录，后台探测再写回；两步都不禁用模型输入或发送。
     void (async () => {
       try {
-        const data = await loadAiCapabilities(provider, workspace);
+        const data = await loadAiCapabilities(provider, workspace, value.providerId);
         if (cancelled || revision !== catalogRevision.current) return;
         setCapabilities(data); setError(null);
+        if (value.providerId) { setLoading(false); return; }
       } catch (cause) {
         if (!cancelled && revision === catalogRevision.current) {
           setError(t("ai.catalog.loadFailed", { message: cause instanceof Error ? cause.message : String(cause) }));
@@ -139,21 +155,28 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [provider, workspace]);
+  }, [provider, workspace, value.providerId]);
   const rememberModel = async (target: string) => {
     if (!target || capabilities?.models.some((item) => item.id === target)) return;
     const revision = ++catalogRevision.current;
     await saveAiCustomModel(provider, target);
-    const data = workspace ? await loadAiCapabilities(provider, workspace) : null;
+    const data = workspace ? await loadAiCapabilities(provider, workspace, value.providerId) : null;
     if (alive.current && revision === catalogRevision.current && data) setCapabilities(data);
   };
   useEffect(() => {
-    if (!open) { setModelQuery(""); setHighlightedModel(null); return; }
+    if (!open) {
+      setModelQuery(""); setHighlightedModel(null); setTab("models");
+      if (switching) { ++catalogRevision.current; setSwitching(false); setLoading(false); }
+      return;
+    }
     // 设置页随时可能增删自定义模型：每次打开都从 Forge 的目录缓存重读一次，
     // 只读磁盘、不探测 CLI，因此不会因为少了刷新按钮而看不到新模型。
     const revision = catalogRevision.current;
     let cancelled = false;
-    if (workspace) void loadAiCapabilities(provider, workspace)
+    void loadModelProviders().then((items) => {
+      if (!cancelled) { setSuppliers(items.filter((item) => item.kind === provider)); setSuppliersLoaded(true); }
+    }).catch((cause) => { if (!cancelled) setError(String(cause)); });
+    if (workspace) void loadAiCapabilities(provider, workspace, value.providerId)
       .then((data) => {
         if (!cancelled && revision === catalogRevision.current) { setCapabilities(data); setError(null); }
       })
@@ -172,7 +195,45 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     window.addEventListener("pointerdown", dismiss, true);
     window.addEventListener("keydown", escape);
     return () => { cancelled = true; window.removeEventListener("pointerdown", dismiss, true); window.removeEventListener("keydown", escape); };
-  }, [open, provider, workspace]);
+  }, [open, provider, workspace, value.providerId]);
+
+  /** Agent 配置作为明确的来源选项，保持与独立供应商并列。 */
+  const agentConfigName = t("ai.chat.agentConfig", { provider: provider === "codex" ? "Codex" : "Claude" });
+  /** 第一项 Tab 始终显示当前选择，删除的供应商不伪装成 Agent 配置。 */
+  const supplierName = value.providerId ? suppliers.find((item) => item.id === value.providerId)?.name ?? t(suppliersLoaded ? "ai.chat.missingProvider" : "ai.chat.loading") : agentConfigName;
+  /**
+   * 加载目标目录成功后原子切换供应商和模型，并设置该引擎的默认强度与权限。
+   * @param providerId - 目标供应商 ID；undefined 表示 Agent 配置
+   * @returns Promise<void>；失败显示错误并保留原选择，过期请求不更新界面
+   */
+  const pickSupplier = async (providerId?: string): Promise<void> => {
+    if (disabled || switching || pending || !workspace) return;
+    if (providerId === value.providerId) { setTab("models"); return; }
+    /** 迟到的目录读取不能覆盖用户这次显式选择。 */
+    const revision = ++catalogRevision.current;
+    setSwitching(true); setError(null);
+    try {
+      /** 只读已保存目录，不触发远程 /v1/models 请求。 */
+      const next = await loadAiCapabilities(provider, workspace, providerId);
+      if (!alive.current || revision !== catalogRevision.current) return;
+      /** 按实际调用模型匹配，Claude 的同名别名不代表相同供应商模型。 */
+      const currentModel = model?.configuredModel ?? selectedModelId;
+      /** 原模型不存在时回到新供应商默认，最后才取其第一项。 */
+      const selected = next.models.find((item) => (item.configuredModel ?? item.id) === currentModel)
+        ?? next.models.find((item) => item.isDefault || item.id === "default") ?? next.models[0];
+      onChange({ ...value, providerId, model: selected?.id,
+        // Codex 只能提交目录声明的档位；Claude 的强度属于会话，不受模型别名限制。
+        effort: provider === "claude" || selected?.efforts.includes("medium") ? "medium" : undefined,
+        permission: "auto",
+        mode: provider === "claude" ? "auto" : value.mode,
+        planMode: provider === "claude" ? undefined : value.planMode,
+        fast: !!value.fast && !!selected?.serviceTiers?.some((tier) => tier.name.toLowerCase() === "fast"),
+      });
+      setCapabilities(next); setModelQuery(""); setHighlightedModel(null); setTab("models");
+    } catch (cause) {
+      if (alive.current && revision === catalogRevision.current) setError(String(cause));
+    } finally { if (alive.current && revision === catalogRevision.current) { setSwitching(false); setLoading(false); } }
+  };
 
   const pickModel = async (nextId: string | undefined, targetModel = capabilities?.models.find((item) => nextId ? item.id === nextId : item.isDefault)) => {
     // 选完即收起面板；斜杠命令路径弹层没开，不抢焦点。
@@ -254,7 +315,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       if (disabled) throw new Error(t("ai.commands.busy"));
       setOpen(true); return;
     }
-    if (disabled) throw new Error(t("ai.commands.busy"));
+    if (disabled || switching) throw new Error(t("ai.commands.busy"));
     if (!arg && (command === "model" || command === "effort" || command === "permissions")) { setOpen(true); return; }
     if (command === "fast" && (provider !== "codex" || !["", "on", "off"].includes(arg))) throw invalid();
     if (command === "fast" && (arg === "off" || !arg && fastEnabled)) {
@@ -262,7 +323,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       return;
     }
     if (!workspace) throw new Error(t("ai.noWorkspace"));
-    const catalog = capabilities ?? await loadAiCapabilities(provider, workspace);
+    const catalog = capabilities ?? await loadAiCapabilities(provider, workspace, value.providerId);
     if (!alive.current) throw new Error(t("ai.commands.busy"));
     setCapabilities(catalog);
     const selectedId = resolveAiModel(catalog, configuredValue?.model || actualModel);
@@ -291,7 +352,7 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       if (!tier) throw invalid();
       onChange({ ...value, fast: true });
     } else throw invalid();
-  } }), [provider, workspace, value, configuredValue, capabilities, actualModel, disabled, fastEnabled]);
+  } }), [provider, workspace, value, configuredValue, capabilities, actualModel, disabled, switching, fastEnabled]);
 
   return <div ref={root} className="ai-options">
     <button
@@ -311,6 +372,27 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
     {open ? (
       <Popover anchor={chip.current} onClose={close} maxWidth={352} role="dialog" aria-label={t("ai.chat.settings")} autoFocus modal={false} className="ai-settings-popup">
         <div ref={popover} className="ai-settings-popover">
+          <div className="ai-provider-tabs" role="tablist" aria-label={t("ai.chat.switchProvider")}
+            onKeyDown={(event) => {
+              if (disabled || switching || pending) return;
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              setTab(tab === "models" ? "providers" : "models");
+              (event.currentTarget.querySelector(`[data-tab="${tab === "models" ? "providers" : "models"}"]`) as HTMLButtonElement | null)?.focus();
+            }}>
+            <button type="button" role="tab" disabled={disabled || switching || !!pending} data-tab="models" id={`${id}-models-tab`} aria-controls={`${id}-models-panel`} aria-selected={tab === "models"} tabIndex={tab === "models" ? 0 : -1} title={supplierName} onClick={() => setTab("models")}>{supplierName}</button>
+            <button type="button" role="tab" disabled={disabled || switching || !!pending} data-tab="providers" id={`${id}-providers-tab`} aria-controls={`${id}-providers-panel`} aria-selected={tab === "providers"} tabIndex={tab === "providers" ? 0 : -1} onClick={() => setTab("providers")}>{t("ai.chat.switchProvider")}</button>
+          </div>
+          {tab === "providers" ? <div className="ai-provider-list" role="tabpanel" id={`${id}-providers-panel`} aria-labelledby={`${id}-providers-tab`} aria-busy={switching}>
+            {[{ id: undefined, name: agentConfigName }, ...suppliers].map((item) => (
+              <button key={item.id ?? "agent-config"} type="button" className={`ai-model-option${value.providerId === item.id ? " is-selected" : ""}`} aria-pressed={value.providerId === item.id} disabled={disabled || switching}
+                onClick={() => void pickSupplier(item.id)}>
+                <span className="ai-option-title">{item.name}</span>
+                <span className="ai-option-check" aria-hidden>{value.providerId === item.id ? <Check size={14} /> : null}</span>
+              </button>
+            ))}
+            {switching ? <p className="ai-model-status" role="status">{t("ai.chat.loading")}</p> : null}
+          </div> : <div className="ai-provider-models" role="tabpanel" id={`${id}-models-panel`} aria-labelledby={`${id}-models-tab`}>
             <label className="ai-model-search">
               <Search size={14} aria-hidden />
               <input data-autofocus value={modelQuery} disabled={disabled} onChange={(event) => { setModelQuery(event.target.value); setHighlightedModel(null); }} role="combobox"
@@ -418,9 +500,10 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
               </button>
             </label>
           </> : null}
-          {error ? <p className="ai-error" role="alert">{error}</p> : null}
           <p className="ai-settings-source" title={catalogSource ?? undefined}>{catalogSource}</p>
           </div>
+          </div>}
+          {error ? <p className="ai-error" role="alert">{error}</p> : null}
         </div>
       </Popover>
     ) : null}
