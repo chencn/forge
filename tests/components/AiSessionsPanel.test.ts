@@ -87,7 +87,7 @@ describe("AI 功能总开关", () => {
     const panel = renderToStaticMarkup(createElement(AiCliSettingsPanel));
     expect(panel).toContain("ai.cfg.title");
     expect(panel).toContain("ai.cfg.claudeAuthMode");
-    expect(panel).toContain("ai.cfg.claudeMain");
+    expect(panel).toContain("providers.claudeMainModel");
     expect(panel).toContain("ai.cfg.sendAttribution");
   });
 

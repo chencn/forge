@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Plus, RefreshCw, Save, Star, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Plus, RefreshCw, RotateCcw, Save, Star, Trash2 } from "lucide-react";
 import { useI18n } from "../i18n";
 import Select from "./Select";
 import type { TranslationKey } from "../i18n/lang/zh";
@@ -105,12 +105,18 @@ interface CodexCatalogSectionProps {
   notice?: { error: boolean; text: string } | null;
   /** 嵌入在供应商抽屉模式：隐藏独立保存/清退按钮与外层独立标题。 */
   embedded?: boolean;
+  /** 供应商端点的模型 ID；传入时仅展示该来源及手填条目，官方目录仍用于参数模板。 */
+  endpointModels?: readonly string[];
   readOnly?: boolean;
   onChange: (next: CodexCatalogIntent) => void;
   onPickDefault?: (slug: string) => void;
   onSave?: () => void;
   onClear?: () => void;
   onReload?: () => void;
+  /** 重新获取供应商远程模型并增量添加；未提供时不显示按钮。 */
+  onRefreshEndpoint?: () => void;
+  /** 重新获取供应商远程模型并替换当前清单；未提供时不显示按钮。 */
+  onResetEndpoint?: () => void;
 }
 
 /**
@@ -118,14 +124,20 @@ interface CodexCatalogSectionProps {
  * 列表展示的是合并之后 Codex 实际会看到的值，而不是用户填的原始值。
  */
 export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
-  const { view, draft, loading = false, busy = false, dirty = false, currentModel = "", notice = null, embedded = false, readOnly = false } = props;
+  const { view, draft, loading = false, busy = false, dirty = false, currentModel = "", notice = null, embedded = false, readOnly = false, endpointModels } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState<string | null>(null);
   const customSlugs = new Set(draft.customs.map((item) => item.slug).filter((slug) => slug !== ""));
   const models = view?.models ?? [];
   // 可克隆的模板是全部官方条目；但只有会进菜单的那些才列出来供排除。
-  const officials = models.filter((model) => !customSlugs.has(slugOf(model)));
-  const listableOfficials = officials.filter(isListable);
+  /** 供应商端点可能重新提供当前 CLI 已排除的模型，其参数仍可从 hidden 恢复。 */
+  const officials = (endpointModels === undefined ? models : [...models, ...(view?.hidden ?? [])])
+    .filter((model) => !customSlugs.has(slugOf(model)));
+  /** 供应商只展示端点提供的官方模型；独立 CLI 配置页仍展示整个目录。 */
+  const listableOfficials = officials.filter((model) => isListable(model) && (endpointModels === undefined || endpointModels.includes(slugOf(model))));
+  /** 每次加载均显示骨架，沿用当前模型行数占位；空清单使用四行。 */
+  const skeletonRowCount = (listableOfficials.length + draft.customs.length
+    + (endpointModels === undefined ? view?.hidden.length ?? 0 : 0)) || 4;
   /** 开关列表由后端实测；探不到时它给的是整张候选表，界面另加一句「未核实」。 */
   const flags = view?.flags?.length ? view.flags : [];
   const [instructions, setInstructions] = useState<Record<string, { text: string; loaded: boolean }>>({});
@@ -329,6 +341,8 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
 
   const renderCustomRow = (item: CodexCustomModel, index: number) => {
     const key = `custom:${index}`;
+    /** 端点自动导入项默认收起字段，手动添加项继续直接编辑模型 ID。 */
+    const fromEndpoint = endpointModels?.includes(item.slug) === true;
     // 自定义模型的参数来自模板条目：合并后的结果在 view 里，编辑覆盖项时要拿同一份做参照。
     const template = officials.find((model) => slugOf(model) === item.base);
     const merged = models.find((model) => slugOf(model) === item.slug) ?? template ?? {};
@@ -347,11 +361,11 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
           <div className="ai-catalog-row-name">
             <strong>{item.displayName.trim() || item.slug.trim() || t("ai.catalog.newCustom")}</strong>
             <code>{item.slug.trim() || "—"}</code>
-            <span className="ai-cli-badge is-idle">{t("ai.catalog.custom")}</span>
+            {!fromEndpoint ? <span className="ai-cli-badge is-idle">{t("ai.catalog.custom")}</span> : null}
             {isDefault ? <span className="ai-cli-badge is-default">{t("ai.catalog.default")}</span> : null}
-            {compat ? <span className="ai-cli-badge is-idle">{t("ai.catalog.presetCompat")}</span> : null}
+            {compat && !fromEndpoint ? <span className="ai-cli-badge is-idle">{t("ai.catalog.presetCompat")}</span> : null}
             {item.contextWindow ? <span className="ai-cli-badge is-idle">{item.contextWindow} tok</span> : null}
-            {item.base ? <em className="ai-cli-hint">{t("ai.catalog.baseOf", { name: item.base })}</em> : null}
+            {item.base && !fromEndpoint ? <em className="ai-cli-hint">{t("ai.catalog.baseOf", { name: item.base })}</em> : null}
           </div>
           <div className="ai-catalog-row-actions">
             <button type="button" className="panel-action" disabled={busy || readOnly}
@@ -369,7 +383,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             </button>
           </div>
         </div>
-        <div className="ai-cli-grid ai-catalog-custom-grid">
+        {!fromEndpoint || open === key ? <div className="ai-cli-grid ai-catalog-custom-grid">
           <label className="ai-cli-field">
             <span>{t("ai.catalog.slug")}</span>
             <input className="text-input" spellCheck={false} value={item.slug} maxLength={64} placeholder="my-gateway/claude-opus"
@@ -396,7 +410,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
                 updateCustom(index, { contextWindow: val !== "" && Number.isFinite(n) && n > 0 ? n : undefined });
               }} />
           </label>
-        </div>
+        </div> : null}
         {open === key ? (
           <>
             <div className="ai-cli-grid">
@@ -442,7 +456,7 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
   };
 
   return (
-    <section className={`ai-cli-section${embedded ? " is-embedded" : ""}`} aria-label={t("ai.catalog.title")}>
+    <section className={`ai-cli-section${embedded ? " is-embedded" : ""}`} aria-label={t("ai.catalog.title")} aria-busy={loading}>
       {!embedded ? (
         <div className="ai-cli-section-head">
           <div>
@@ -450,29 +464,49 @@ export default function CodexCatalogSection(props: CodexCatalogSectionProps) {
             <span className="ai-muted">{t(view?.active ? "ai.catalog.active" : "ai.catalog.inactive")}</span>
             {dirty ? <span className="ai-cli-badge is-warn">{t("ai.unsaved")}</span> : null}
           </div>
-          <button type="button" className="panel-action ai-cli-icon-action" disabled={loading || busy} title={t("ai.catalog.reload")}
+          {endpointModels === undefined ? <button type="button" className="panel-action ai-cli-icon-action" disabled={loading || busy} title={t("ai.catalog.reload")}
             aria-label={t("ai.catalog.reload")} onClick={props.onReload}>
             <RefreshCw size={13} className={loading ? "is-spinning" : undefined} />
-          </button>
+          </button> : null}
         </div>
       ) : null}
 
-      <p className="ai-cli-hint">{t("ai.catalog.hint")}</p>
+      {endpointModels === undefined ? <p className="ai-cli-hint">{t("ai.catalog.hint")}</p> : null}
       {view?.error ? <p className="ai-cli-warning" role="alert">{t("ai.catalog.stale", { message: view.error })}</p> : null}
       {!embedded && view ? <p className="ai-cli-hint"><code>{view.path}</code></p> : null}
+      {notice && (props.onRefreshEndpoint || props.onResetEndpoint) ? (
+        <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p>
+      ) : null}
 
-      {loading && !view ? (
-        <p className="ai-cli-hint" role="status">{t("ai.catalog.loading")}</p>
+      {loading ? (
+        <div className="ai-catalog-list" role="status" aria-label={t("ai.catalog.loading")}>
+          {Array.from({ length: skeletonRowCount }, (_, index) => (
+            <div className="ai-catalog-row ai-catalog-skeleton-row" key={index} aria-hidden="true">
+              <span className="ai-catalog-skeleton-icon" />
+              <span className="ai-catalog-skeleton-name" />
+              <span className="ai-catalog-skeleton-action" />
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="ai-catalog-list">
           {listableOfficials.map((model) => renderModelRow(model, draft.excluded.includes(slugOf(model))))}
-          {(view?.hidden ?? []).map((model) => renderModelRow(model, true))}
+          {endpointModels === undefined ? (view?.hidden ?? []).map((model) => renderModelRow(model, true)) : null}
           {draft.customs.map(renderCustomRow)}
         </div>
       )}
 
       <div className="ai-cli-section-foot">
-        {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
+        {props.onRefreshEndpoint || props.onResetEndpoint ? (
+          <div className="ai-cli-actions">
+            {props.onRefreshEndpoint ? <button type="button" className="panel-action" disabled={busy || loading || readOnly} onClick={props.onRefreshEndpoint}>
+              <RefreshCw size={13} className={loading ? "is-spinning" : undefined} />{t("tool.refresh")}
+            </button> : null}
+            {props.onResetEndpoint ? <button type="button" className="panel-action" disabled={busy || loading || readOnly} onClick={props.onResetEndpoint}>
+              <RotateCcw size={13} />{t("providers.resetModels")}
+            </button> : null}
+          </div>
+        ) : notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
         <div className="ai-cli-actions">
           <button type="button" className="panel-action" disabled={busy || readOnly} onClick={() => addCustom(false)}>
             <Plus size={13} />{t("ai.catalog.addGpt")}

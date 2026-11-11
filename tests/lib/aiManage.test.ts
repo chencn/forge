@@ -73,6 +73,30 @@ describe("模型供应商 / Skills / MCP 辅助函数", () => {
     expect(codexModelEfforts({})).toEqual([]);
   });
 
+  it("端点目录合并隐藏模板，保留手填参数，且不混入其他供应商的自定义模型", async () => {
+    const { codexCatalogFromEndpoint, codexCatalogModelIds, emptyCodexCatalogIntent } = await import("../../src/lib/aiManage");
+    /** 自定义覆盖项必须原样保留，端点同名不能覆盖用户配置。 */
+    const manual = { slug: "manual", displayName: "My Model", description: "", base: "official", overrides: { flags: { support_verbosity: true } } };
+    /** 当前 CLI 已应用其他供应商，并排除了一个现在端点提供的官方模型。 */
+    const view = { path: "", active: true, error: null, domains: {}, flags: [], flagsVerified: false,
+      intent: { ...emptyCodexCatalogIntent(), customs: [{ ...manual, slug: "other-provider" }] },
+      models: [{ slug: "official", visibility: "list" }, { slug: "internal", visibility: "hide" }, { slug: "other-provider", visibility: "list" }],
+      hidden: [{ slug: "returning", visibility: "list" }],
+    };
+    const intent = { ...emptyCodexCatalogIntent(), customs: [manual], default: "official", overrides: { returning: { flags: { support_verbosity: true } } } };
+    const merged = codexCatalogFromEndpoint(intent, ["returning", "auto/deepseek-v4.1-flash", "deepseek-v4.1-flash", "manual", "other-provider"], view);
+    expect(merged.excluded).toEqual(["official"]);
+    expect(merged.customs.map((item) => item.slug)).toEqual(["manual", "auto/deepseek-v4.1-flash", "deepseek-v4.1-flash", "other-provider"]);
+    expect(merged.customs[0]).toEqual(manual);
+    expect(merged.overrides).toEqual(intent.overrides);
+    expect(merged.default).toBe("returning");
+    expect(merged.customs[1].overrides.flags.use_responses_lite).toBe(false);
+    expect(codexCatalogFromEndpoint(merged, ["returning", "manual"], view).customs).toEqual(merged.customs);
+    expect(codexCatalogModelIds(intent, view)).toEqual(["official", "returning", "manual"]);
+    expect(codexCatalogModelIds(merged, view)).toEqual(["returning", "manual", "auto/deepseek-v4.1-flash", "deepseek-v4.1-flash", "other-provider"]);
+    expect(codexCatalogModelIds(intent, null)).toEqual(["manual"]);
+  });
+
   it("下拉取值取自后端实测的取值域，兜底表只在问不到时用", async () => {
     const { codexFieldDomain } = await import("../../src/lib/aiManage");
     const view = { domains: { shell_type: { values: ["default", "local", "unified_exec", "disabled", "shell_command"], nullable: false, verified: true } } } as never;

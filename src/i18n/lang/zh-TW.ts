@@ -2424,6 +2424,7 @@ export const zhTW: Record<TranslationKey, string> = {
   "providers.fetchModelsSearch": "搜尋模型 ID…",
   "providers.fetchModelsFailed": "取得模型清單失敗：{message}",
   "providers.fetchModelsEmpty": "端點沒有回傳任何模型",
+  "providers.resetModels": "重設",
   "providers.fetchModelsFill": "填入槽位…",
   "providers.fetchModelsAdd": "新增",
   "providers.fetchModelsNeedUrl": "先填寫 API 位址才能拉取模型清單",

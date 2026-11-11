@@ -2453,6 +2453,7 @@ export const zh = {
   "providers.fetchModelsSearch": "搜索模型 ID…",
   "providers.fetchModelsFailed": "获取模型列表失败：{message}",
   "providers.fetchModelsEmpty": "端点没有返回任何模型",
+  "providers.resetModels": "重置",
   "providers.fetchModelsFill": "填入槽位…",
   "providers.fetchModelsAdd": "添加",
   "providers.fetchModelsNeedUrl": "先填写 API 地址才能拉取模型列表",

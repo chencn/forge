@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Eye, EyeOff, ListPlus, Loader2, Plus, Save, Send, Server, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Eye, EyeOff, Loader2, Plus, Save, Send, Server, Trash2 } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useUnsavedGuard } from "../hooks/useUnsavedGuard";
 import { refreshAiCliSettings } from "../lib/aiCli";
@@ -8,62 +8,26 @@ import {
   CLAUDE_MODEL_SLOTS,
   applyModelProvider,
   cliAdminAvailable,
-  codexCustomFromEndpoint,
+  codexCatalogFromEndpoint,
+  codexCatalogModelIds,
+  emptyCodexCatalogIntent,
   emptyModelProvider,
   loadModelProviders,
+  listProviderModels,
   normalizeCodexCatalogIntent,
   parseCodexCatalogIntent,
   readAiCliCodexCatalog,
   saveModelProviders,
   serializeCodexCatalogIntent,
 } from "../lib/aiManage";
-import type { ClaudeCustomSlot, ClaudeModelSlot, CodexCatalogView, ModelProvider } from "../lib/aiManage";
+import type { ClaudeModelSlot, CodexCatalogView, ModelProvider } from "../lib/aiManage";
 import { AI_NAMES } from "../lib/aiCli";
 import type { AiProvider } from "../lib/aiCli";
 import Select from "./Select";
 import AiActionDialog from "./AiActionDialog";
-import ProviderModelPickerDialog from "./ProviderModelPickerDialog";
 import CodexCatalogSection from "./CodexCatalogSection";
+import ClaudeProviderModels from "./ClaudeProviderModels";
 import type { TranslationKey } from "../i18n/lang/zh";
-
-/** Claude 各模型槽位的表单标签（i18n 键）。 */
-const SLOT_LABEL: Record<ClaudeModelSlot, TranslationKey> = {
-  main: "providers.claudeMainModel",
-  reasoning: "providers.claudeReasoningModel",
-  haiku: "providers.claudeHaikuDefaultModel",
-  sonnet: "providers.claudeSonnetDefaultModel",
-  opus: "providers.claudeOpusDefaultModel",
-  fable: "providers.claudeFableDefaultModel",
-};
-
-/** Claude 各模型槽位留空时的占位示例。 */
-const SLOT_PLACEHOLDER: Record<ClaudeModelSlot, string> = {
-  main: "claude-sonnet-5-5",
-  reasoning: "claude-opus-5-5",
-  haiku: "claude-haiku-5-5",
-  sonnet: "claude-sonnet-5-5",
-  opus: "claude-opus-5-5",
-  fable: "claude-fable-5-1",
-};
-
-/** 自定义选项三个字段的表单标签（i18n 键）。 */
-const CUSTOM_LABEL: Record<ClaudeCustomSlot, TranslationKey> = {
-  customOption: "providers.customOption",
-  customOptionName: "providers.customOptionName",
-  customOptionDescription: "providers.customOptionDescription",
-};
-
-/** 自定义选项三个字段的占位示例。 */
-const CUSTOM_PLACEHOLDER: Record<ClaudeCustomSlot, string> = {
-  customOption: "my-gateway/claude-opus-5-5",
-  customOptionName: "Gateway Opus",
-  customOptionDescription: "Routed via custom gateway",
-};
-
-/** 「从端点获取」对话框里每行的填入目标：六个模型槽位 + 自定义选项的 ID。 */
-const FILL_TARGETS: string[] = [...CLAUDE_MODEL_SLOTS, "customOption"];
-/** 「从端点获取」对话框每行的填入目标标签（模型槽位 + 自定义选项，i18n 键）。 */
-const FILL_LABEL: Record<string, TranslationKey> = { ...SLOT_LABEL, customOption: "providers.customOption" };
 
 /**
  * 比较用的快照：后端保存时会 trim 并丢掉空槽位，这里先归一化，
@@ -102,7 +66,7 @@ const missingField = (item: ModelProvider, isNew: boolean): TranslationKey | nul
 
 /**
  * 模型供应商：名称、API 地址、API 密钥、智能体类型，
- * 然后按类型给模型：Claude 六个槽位加「自定义模型选项」三项，Codex 一个模型。
+ * 然后按类型给模型：Claude 六个可选或手填的槽位，Codex 模型清单。
  * 应用时写进 CLI 真正读取的位置：Claude 的 settings.json env、Codex 的 auth.json/config.toml。
  */
 export default function ModelProvidersPanel() {
@@ -118,8 +82,20 @@ export default function ModelProvidersPanel() {
   /** 非空表示有一个「放弃未保存修改」确认框，确认后才执行挂起的切换动作。 */
   const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null);
   const [baseline, setBaseline] = useState("");
-  /** Codex 的模型清单：只用来给模型输入框做候选，读不到就退回手填。 */
+  /** Codex 官方目录只提供参数模板，供应商可用模型来自自己的端点。 */
   const [catalog, setCatalog] = useState<CodexCatalogView | null | undefined>(undefined);
+  /** 本机目录只用于恢复已保存模型及参数模板，不触发远程模型请求。 */
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  /** 当前端点已加载的模型 ID；刷新累积，重置替换，null 表示尚未成功获取。 */
+  const [endpointModels, setEndpointModels] = useState<string[] | null>(null);
+  /** 端点请求和模板读取的共同状态。 */
+  const [modelsLoading, setModelsLoading] = useState(false);
+  /** 端点失败只显示错误，不把官方目录伪装成端点结果。 */
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  /** 用户主动刷新或重置时重新请求同一端点。 */
+  const [modelsVersion, setModelsVersion] = useState(0);
+  /** 下一次请求的操作类型，启动时消费，避免重置影响后续端点切换。 */
+  const pendingModelsAction = useRef<"refresh" | "reset" | null>(null);
   const dirty = draft !== null && snapshot(draft) !== baseline;
   const guard = (action: () => void) => {
     if (dirty) setPendingLeave(() => action);
@@ -154,32 +130,81 @@ export default function ModelProvidersPanel() {
 
   const edit = (patch: Partial<ModelProvider>) => setDraft((current) => current ? { ...current, ...patch } : current);
 
-  /** 「从端点获取模型」选择器：两个渠道共用一个对话框，行尾动作随 draft.kind 分叉。 */
-  const [picking, setPicking] = useState(false);
-  /** Claude：把选中的模型 ID 填进槽位。main 走 model 快捷字段，其余写 models 表。 */
-  const fillSlot = (slot: string, modelId: string) => {
-    if (!draft) return;
-    if (slot === "main") edit({ model: modelId });
-    else edit({ models: { ...draft.models, [slot]: modelId } });
-  };
-  /** Codex：端点模型追加为 OpenAI 兼容自定义条目；同 slug 已存在时不重复加。 */
-  const addEndpointCustom = (modelId: string) => {
-    if (!draft) return;
-    const current = parseCodexCatalogIntent(draft.model);
-    if (current.customs.some((item) => item.slug === modelId)) return;
-    const item = codexCustomFromEndpoint(modelId, catalog?.models?.[0]);
-    edit({ model: serializeCodexCatalogIntent({ ...current, customs: [...current.customs, item] }) });
-  };
-
-  // Codex 的模型清单来自 CLI 自己的模型清单，只在编辑 Codex 供应商时按需读取。
+  /** 拉取时遵循保存的密钥语义：编辑框留空则沿用该供应商已保存的密钥。 */
+  const modelApiKey = draft?.apiKey.trim() || providers.find((item) => item.id === draft?.id)?.apiKey || "";
+  /** 未手动刷新时从已保存意图恢复清单；新建空配置不导入本机官方模型。 */
+  const visibleEndpointModels = endpointModels ?? (draft?.model ? codexCatalogModelIds(parseCodexCatalogIntent(draft.model), catalog ?? null) : []);
+  // 页面进入只读取本机模板，保持供应商模型草稿原样。
   useEffect(() => {
-    if (!desktop || draft?.kind !== "codex" || catalog !== undefined) return;
+    if (!desktop || draft?.kind !== "codex") return;
+    /** 切换供应商后忽略旧本机目录响应。 */
     let active = true;
-    readAiCliCodexCatalog()
+    setCatalogLoading(true);
+    void readAiCliCodexCatalog()
       .then((view) => { if (active) setCatalog(view); })
-      .catch(() => { if (active) setCatalog(null); });
+      .catch(() => { if (active) setCatalog(null); })
+      .finally(() => { if (active) setCatalogLoading(false); });
     return () => { active = false; };
-  }, [desktop, draft?.kind, catalog]);
+  }, [desktop, draft?.id, draft?.kind]);
+  /**
+   * 重新获取远程模型，在请求成功后增量合并或替换草稿。
+   * @param action - refresh 保留现有配置；reset 恢复为远程清单
+   * @returns 触发请求；忙碌、未选中 Codex 或端点为空时不操作
+   */
+  const reloadModels = (action: "refresh" | "reset") => {
+    if (busy || catalogLoading || modelsLoading || draft?.kind !== "codex" || !draft.apiUrl.trim()) return;
+    pendingModelsAction.current = action;
+    setModelsVersion((value) => value + 1);
+  };
+  /**
+   * 更新 Claude 模型槽位，主模型写入快捷字段。
+   * @param slot - 要修改的模型槽位
+   * @param modelId - 模型 ID，可带上下文后缀；空字符串表示清除
+   * @returns 更新草稿；未选中供应商时不执行操作
+   */
+  const fillSlot = (slot: ClaudeModelSlot, modelId: string) => {
+    setDraft((current) => current ? slot === "main"
+      ? { ...current, model: modelId }
+      : { ...current, models: { ...current.models, [slot]: modelId } }
+      : current);
+  };
+  // 端点变化只取消旧结果；仅按钮产生的操作允许发起远程请求。
+  useEffect(() => {
+    /** 显式操作只作用于本轮请求，页面进入或配置变化不联网。 */
+    const action = pendingModelsAction.current;
+    pendingModelsAction.current = null;
+    setModelsError(null);
+    if (!action || !desktop || draft?.kind !== "codex") {
+      setEndpointModels(null);
+      setModelsLoading(false);
+      return;
+    }
+    /** 此轮请求是否仍属于当前供应商及端点。 */
+    let active = true;
+    /** 保留已展示来源，使刷新不会移除远程此次未返回的旧模型。 */
+    const previousIds = visibleEndpointModels;
+    setModelsLoading(Boolean(draft.apiUrl.trim()));
+    if (!draft.apiUrl.trim()) return;
+    void Promise.all([listProviderModels("codex", draft.apiUrl, modelApiKey), readAiCliCodexCatalog().catch(() => null)])
+      .then(([ids, view]) => {
+        if (!active) return;
+        /** 重置仅使用本轮远程结果；刷新对来源 ID 去重并保留原顺序。 */
+        const nextIds = action === "refresh" ? [...new Set([...previousIds, ...ids])] : ids;
+        setCatalog(view);
+        setEndpointModels(nextIds);
+        setDraft((current) => {
+          if (!current) return current;
+          /** 重置清除手填和参数覆盖；刷新保留已有模型的编辑意图。 */
+          const intent = action === "reset" ? emptyCodexCatalogIntent() : parseCodexCatalogIntent(current.model);
+          // 新出现的官方模型可能因之前不在端点中被自动排除，需要随刷新恢复。
+          if (action === "refresh") intent.excluded = intent.excluded.filter((id) => previousIds.includes(id) || !ids.includes(id));
+          return { ...current, model: serializeCodexCatalogIntent(codexCatalogFromEndpoint(intent, nextIds, view)) };
+        });
+      })
+      .catch((error) => { if (active) setModelsError(String(error)); })
+      .finally(() => { if (active) setModelsLoading(false); });
+    return () => { active = false; };
+  }, [desktop, draft?.id, draft?.kind, draft?.apiUrl, modelApiKey, modelsVersion]);
 
   const save = async () => {
     if (!draft || busy) return;
@@ -321,64 +346,25 @@ export default function ModelProvidersPanel() {
               </div>
 
               {draft.kind === "claude" ? (
-                <>
-                  <button type="button" className="panel-action" disabled={busy || !draft.apiUrl.trim()}
-                    title={draft.apiUrl.trim() ? t("providers.fetchModels") : t("providers.fetchModelsNeedUrl")}
-                    onClick={() => setPicking(true)}>
-                    <ListPlus size={13} />{t("providers.fetchModels")}
-                  </button>
-                  <div className="ai-cli-grid">
-                    {CLAUDE_MODEL_SLOTS.map((slot) => (
-                      <label className="ai-cli-field" key={slot}>
-                        <span>{t(SLOT_LABEL[slot])}</span>
-                        <input className="text-input" spellCheck={false}
-                          value={slot === "main" ? draft.model : draft.models[slot] ?? ""}
-                          placeholder={SLOT_PLACEHOLDER[slot]}
-                          onChange={(event) => edit(slot === "main"
-                            ? { model: event.target.value }
-                            : { models: { ...draft.models, [slot]: event.target.value } })} />
-                      </label>
-                    ))}
-                  </div>
-                  <div className="ai-cli-grid is-triplet">
-                    <label className="ai-cli-field">
-                      <span>{t(CUSTOM_LABEL.customOption)}</span>
-                      <input className="text-input" spellCheck={false} value={draft.models.customOption ?? ""}
-                        placeholder={CUSTOM_PLACEHOLDER.customOption}
-                        onChange={(event) => edit({ models: { ...draft.models, customOption: event.target.value } })} />
-                    </label>
-                    <label className="ai-cli-field">
-                      <span>{t(CUSTOM_LABEL.customOptionName)}</span>
-                      <input className="text-input" spellCheck={false} value={draft.models.customOptionName ?? ""}
-                        placeholder={CUSTOM_PLACEHOLDER.customOptionName}
-                        onChange={(event) => edit({ models: { ...draft.models, customOptionName: event.target.value } })} />
-                    </label>
-                    <label className="ai-cli-field">
-                      <span>{t(CUSTOM_LABEL.customOptionDescription)}</span>
-                      <input className="text-input" spellCheck={false} value={draft.models.customOptionDescription ?? ""}
-                        placeholder={CUSTOM_PLACEHOLDER.customOptionDescription}
-                        onChange={(event) => edit({ models: { ...draft.models, customOptionDescription: event.target.value } })} />
-                    </label>
-                  </div>
-                  <em className="ai-cli-hint">{t("providers.customOptionHint")}</em>
-                </>
+                <ClaudeProviderModels key={draft.id} apiUrl={draft.apiUrl} apiKey={modelApiKey}
+                  values={{ ...draft.models, main: draft.model }}
+                  busy={busy} onChange={fillSlot} />
               ) : (
                 <div className="ai-cli-field">
-                  <button type="button" className="panel-action" disabled={busy || !draft.apiUrl.trim()}
-                    title={draft.apiUrl.trim() ? t("providers.fetchModels") : t("providers.fetchModelsNeedUrl")}
-                    onClick={() => setPicking(true)}>
-                    <ListPlus size={13} />{t("providers.fetchModels")}
-                  </button>
+                  {modelsError ? <div role="alert" className="ai-error">
+                    {t("providers.fetchModelsFailed", { message: modelsError })}
+                  </div> : null}
+                  {endpointModels?.length === 0 ? <p className="ai-cli-hint">{t("providers.fetchModelsEmpty")}</p> : null}
                   <CodexCatalogSection
                     embedded
                     view={catalog ?? null}
+                    endpointModels={visibleEndpointModels}
                     draft={parseCodexCatalogIntent(draft.model)}
-                    loading={catalog === undefined}
-                    busy={busy}
+                    loading={catalogLoading || modelsLoading}
+                    busy={busy || catalogLoading || modelsLoading}
+                    onRefreshEndpoint={draft.apiUrl.trim() ? () => reloadModels("refresh") : undefined}
+                    onResetEndpoint={draft.apiUrl.trim() ? () => reloadModels("reset") : undefined}
                     onChange={(nextIntent) => edit({ model: serializeCodexCatalogIntent(nextIntent) })}
-                    onReload={() => {
-                      setCatalog(undefined);
-                    }}
                   />
                 </div>
               )}
@@ -387,13 +373,13 @@ export default function ModelProvidersPanel() {
           <div className="ai-manage-foot">
             {notice ? <p className={notice.error ? "ai-error" : "ai-success"} role="status">{notice.text}</p> : <span />}
             <div className="ai-cli-actions">
-              {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void apply()}>
+              {!isNew ? <button type="button" className="panel-action" disabled={!desktop || busy || (draft.kind === "codex" && modelsLoading)} onClick={() => void apply()}>
                 <Send size={13} />{t("providers.apply", { name: AI_NAMES[draft.kind] })}
               </button> : null}
               {!isNew ? <button type="button" className="panel-action is-danger" disabled={!desktop || busy} onClick={() => setPendingDelete(draft)}>
                 <Trash2 size={13} />{t("providers.delete")}
               </button> : null}
-              <button type="button" className="panel-action" disabled={!desktop || busy} onClick={() => void save()}>
+              <button type="button" className="panel-action" disabled={!desktop || busy || (draft.kind === "codex" && modelsLoading)} onClick={() => void save()}>
                 {busy ? <Loader2 size={13} className="is-spinning" /> : <Save size={13} />}
                 {busy ? t("ai.saving") : t("providers.save")}
               </button>
@@ -401,22 +387,6 @@ export default function ModelProvidersPanel() {
           </div>
         </> : <p className="ai-cli-empty">{desktop ? (busy ? t("ai.cfg.loading") : notice?.error ? notice.text : t("providers.selectHint")) : t("ai.desktopOnly")}</p>}
       </section>
-
-      {picking && draft ? (
-        <ProviderModelPickerDialog kind={draft.kind} apiUrl={draft.apiUrl} apiKey={draft.apiKey}
-          onClose={() => setPicking(false)}
-          renderAction={(modelId) => draft.kind === "claude" ? (
-            <span className="provider-model-fill">
-              <Select value="" label={t("providers.fetchModelsFill")} placeholder={t("providers.fetchModelsFill")}
-                options={FILL_TARGETS.map((slot) => ({ value: slot, label: t(FILL_LABEL[slot]) }))}
-                onChange={(slot) => fillSlot(slot, modelId)} />
-            </span>
-          ) : (
-            <button type="button" className="panel-action" onClick={() => addEndpointCustom(modelId)}>
-              {t("providers.fetchModelsAdd")}
-            </button>
-          )} />
-      ) : null}
 
       {pendingDelete ? <AiActionDialog title={t("providers.deleteConfirmTitle")} confirm={t("dialog.delete")} danger
         onCancel={() => setPendingDelete(null)} onConfirm={() => void remove(pendingDelete)}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -9,7 +9,6 @@ import {
   EyeOff,
   GripVertical,
   Loader2,
-  Plus,
   RefreshCw,
   Save,
   Send,
@@ -17,7 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useI18n } from "../i18n";
-import { loadAiCustomModels, removeAiCustomModel, saveAiCustomModel } from "../lib/aiRuntime";
+import { loadAiCustomModels, removeAiCustomModel } from "../lib/aiRuntime";
 import { IS_WINDOWS } from "../lib/sys";
 import { useUnsavedGuard } from "../hooks/useUnsavedGuard";
 import { useSettings } from "../hooks/useSettings";
@@ -68,16 +67,20 @@ import type {
   ClaudeAuthMode,
   CodexAuthMode,
 } from "../lib/aiCli";
-import { applyModelProvider, loadModelProviders } from "../lib/aiManage";
+import { applyModelProvider, loadModelProviders, type ClaudeModelSlot } from "../lib/aiManage";
 import {
+  codexCatalogFromEndpoint,
+  codexCatalogModelIds,
   codexModelEfforts,
   emptyCodexCatalogIntent,
+  listProviderModels,
   normalizeCodexCatalogIntent,
   readAiCliCodexCatalog,
   saveAiCliCodexCatalog,
 } from "../lib/aiManage";
 import type { CodexCatalogIntent, CodexCatalogView, ModelProvider } from "../lib/aiManage";
 import CodexCatalogSection from "./CodexCatalogSection";
+import ClaudeProviderModels from "./ClaudeProviderModels";
 import Select from "./Select";
 import AiActionDialog from "./AiActionDialog";
 import AiProviderIcon from "./AiProviderIcon";
@@ -137,20 +140,20 @@ const CHECK_LABEL: Record<string, TranslationKey> = {
 };
 
 /** Claude Code 的模型环境变量；留空即使用 CLI 自己的默认模型。 */
-const CLAUDE_MODEL_FIELDS: { key: string; label: TranslationKey; placeholder: string }[] = [
-  { key: "ANTHROPIC_MODEL", label: "ai.cfg.claudeMain", placeholder: "claude-sonnet-4-5" },
-  { key: "ANTHROPIC_REASONING_MODEL", label: "ai.cfg.claudeReasoning", placeholder: "claude-opus-4-1" },
-  { key: "ANTHROPIC_DEFAULT_HAIKU_MODEL", label: "ai.cfg.claudeHaiku", placeholder: "claude-haiku-4-5" },
-  { key: "ANTHROPIC_DEFAULT_SONNET_MODEL", label: "ai.cfg.claudeSonnet", placeholder: "claude-sonnet-4-5" },
-  { key: "ANTHROPIC_DEFAULT_OPUS_MODEL", label: "ai.cfg.claudeOpus", placeholder: "claude-opus-4-1" },
-  { key: "ANTHROPIC_DEFAULT_FABLE_MODEL", label: "ai.cfg.claudeFable", placeholder: "claude-fable-5-1" },
-];
+const CLAUDE_MODEL_FIELDS: Record<ClaudeModelSlot, string> = {
+  main: "ANTHROPIC_MODEL",
+  reasoning: "ANTHROPIC_REASONING_MODEL",
+  haiku: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  sonnet: "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  opus: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  fable: "ANTHROPIC_DEFAULT_FABLE_MODEL",
+};
 
-/** Claude 自定义模型选项的三个环境变量字段。 */
-const CLAUDE_CUSTOM_MODEL_FIELDS: { key: string; label: TranslationKey; placeholder: string }[] = [
-  { key: "ANTHROPIC_CUSTOM_MODEL_OPTION", label: "ai.cfg.customOptionId", placeholder: "my-gateway/claude-opus-4-1" },
-  { key: "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", label: "ai.cfg.customOptionName", placeholder: "Gateway Opus" },
-  { key: "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", label: "ai.cfg.customOptionDescription", placeholder: "Routed via custom gateway" },
+/** 保存时保留已有自定义模型配置，并迁移同名覆盖层变量到原生文件。 */
+const CLAUDE_CUSTOM_MODEL_KEYS = [
+  "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
 ];
 
 /** 配置管理块托管的变量：保存时写回原生 settings.json，并从 Forge 覆盖层移除同名键，避免两处各说一套。 */
@@ -160,8 +163,8 @@ const CLAUDE_MANAGED_KEYS = [
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_ATTRIBUTION_HEADER",
   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-  ...CLAUDE_MODEL_FIELDS.map((field) => field.key),
-  ...CLAUDE_CUSTOM_MODEL_FIELDS.map((field) => field.key),
+  ...Object.values(CLAUDE_MODEL_FIELDS),
+  ...CLAUDE_CUSTOM_MODEL_KEYS,
 ];
 
 /** 三档认证方式的标签与说明；第三档共用「绑定模型供应商」。 */
@@ -373,9 +376,16 @@ function EnabledAiCliSettingsPanel() {
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [catalogNotice, setCatalogNotice] = useState<{ error: boolean; text: string } | null>(null);
   const [catalogToken, setCatalogToken] = useState(0);
-  /** 会话模型列表里的自定义 ID：全局存储，和自动发现的 CLI 目录分开。 */
+  /** API Key 模式下已加载的远程模型，刷新累积、重置替换。 */
+  const [endpointModels, setEndpointModels] = useState<string[] | null>(null);
+  /** 远程请求期间禁止保存或修改目录，避免保存未完成的合并结果。 */
+  const [endpointLoading, setEndpointLoading] = useState(false);
+  /** 主动刷新或重置的请求序号，不触发本机目录草稿重载。 */
+  const [endpointToken, setEndpointToken] = useState(0);
+  /** 操作在请求启动时消费，防止后续端点变化重复执行重置。 */
+  const pendingEndpointAction = useRef<"refresh" | "reset" | null>(null);
+  /** Codex 遗留自定义 ID，仅保留读取和清理入口。 */
   const [customModels, setCustomModels] = useState<Partial<Record<AiProvider, string[]>>>({});
-  const [customDraft, setCustomDraft] = useState("");
   const [customBusy, setCustomBusy] = useState(false);
   const [customNotice, setCustomNotice] = useState<{ provider: AiProvider; error: boolean; text: string } | null>(null);
 
@@ -425,6 +435,8 @@ function EnabledAiCliSettingsPanel() {
     readAiCliCodexSettings()
       .then((value) => {
         if (!active) return;
+        // 草稿更新会清理当前 effect，加载标记必须一起结束，不能留给已失效的 finally。
+        setCodexLoading(false);
         setCodexDraft(value);
         setCodexBaseline(JSON.stringify(value));
         setCodexMode(codexAuthModeOf(value));
@@ -476,14 +488,24 @@ function EnabledAiCliSettingsPanel() {
     return () => { active = false; };
   }, [current, catalogToken, t]);
 
+  /**
+   * 保存 Codex 目录并同步原生编辑器，将默认选择同步到配置草稿。
+   * @param intent - 要写入原生目录的模型意图
+   * @returns 保存完成或显示错误；目录请求或保存进行中时不操作
+   */
   const runCatalogSave = async (intent: CodexCatalogIntent) => {
-    if (catalogBusy) return;
+    if (catalogBusy || endpointLoading) return;
     setCatalogBusy(true); setCatalogNotice(null);
     try {
       const next = await saveAiCliCodexCatalog(intent);
       setCatalog(next);
       setCatalogDraft(next.intent);
       setCatalogBaseline(normalizeCodexCatalogIntent(next.intent));
+      /** 目录保存不写 config.toml 的 model，默认选择仍需通过配置保存落盘。 */
+      const savedModel = next.intent.default;
+      if (savedModel) {
+        setCodexDraft((previous) => previous ? { ...previous, model: savedModel } : previous);
+      }
       // 清单落盘会给 config.toml 加/删一行，原生配置编辑器里的那份快照已经过时。
       if (fileOpen.codex) {
         const loaded = files.codex?.content;
@@ -501,9 +523,9 @@ function EnabledAiCliSettingsPanel() {
     } finally { setCatalogBusy(false); }
   };
 
-  // 自定义模型只读 Forge 自己的存储；切回已读过的引擎直接复用，不重复探测 CLI。
+  // Claude 的模型直接配置在六个槽位中；这里只加载 Codex 的遗留条目。
   useEffect(() => {
-    if (!current || customModels[current] !== undefined || !cliDesktopAvailable()) return;
+    if (current !== "codex" || customModels[current] !== undefined || !cliDesktopAvailable()) return;
     let active = true;
     loadAiCustomModels(current)
       .then((list) => { if (active) setCustomModels((value) => ({ ...value, [current]: list })); })
@@ -512,25 +534,13 @@ function EnabledAiCliSettingsPanel() {
     return () => { active = false; };
   }, [current, customModels]);
 
-  // 切换引擎时清空输入框：上一个引擎的 ID 不该被顺手加到另一个引擎。
-  useEffect(() => { setCustomDraft(""); }, [current]);
-
-  const addCustomModel = async () => {
-    const target = customDraft.trim();
-    if (!current || !target || customBusy) return;
-    setCustomBusy(true); setCustomNotice(null);
-    try {
-      const catalog = await saveAiCustomModel(current, target);
-      setCustomModels((value) => ({ ...value, [current]: catalog.customModels ?? [] }));
-      setCustomDraft("");
-      setCustomNotice({ provider: current, error: false, text: t("ai.custom.added", { model: target }) });
-    } catch (error) {
-      setCustomNotice({ provider: current, error: true, text: String(error) });
-    } finally { setCustomBusy(false); }
-  };
-
+  /**
+   * 清理 Codex 遗留自定义模型并更新列表。
+   * @param model - 要移除的完整模型 ID
+   * @returns 完成清理或显示错误；非 Codex 页面或操作中时提前返回
+   */
   const dropCustomModel = async (model: string) => {
-    if (!current || customBusy) return;
+    if (current !== "codex" || customBusy) return;
     setCustomBusy(true); setCustomNotice(null);
     try {
       await removeAiCustomModel(current, model);
@@ -733,6 +743,57 @@ function EnabledAiCliSettingsPanel() {
   const codexBinding = store.settings.agents.codex.provider;
   const currentClaudeMode: ClaudeAuthMode = claudeBinding ? "provider" : claudeMode ?? claudeAuthModeOf(claudeEnv);
   const currentCodexMode: CodexAuthMode = codexBinding ? "provider" : codexMode ?? (codexDraft ? codexAuthModeOf(codexDraft) : "subscription");
+  /** 手动获取远程模型需等待本机目录加载完成，避免磁盘结果覆盖草稿。 */
+  const endpointReady = catalog !== null && !catalogLoading;
+  /** 未手动刷新时显示本机保存的目录，不用空远程结果隐藏已配置模型。 */
+  const visibleEndpointModels = endpointModels ?? codexCatalogModelIds(catalogDraft, catalog);
+  // 页面进入、端点或密钥变化只取消旧请求，远程读取必须由按钮触发。
+  useEffect(() => {
+    /** 显式操作仅作用于本轮请求。 */
+    const action = pendingEndpointAction.current;
+    pendingEndpointAction.current = null;
+    if (!action || current !== "codex" || currentCodexMode !== "api_key" || !endpointReady || !cliDesktopAvailable()) {
+      setEndpointLoading(false);
+      setEndpointModels(null);
+      return;
+    }
+    /** 当前请求是否仍属于正在编辑的 Codex 端点。 */
+    let active = true;
+    /** 增量刷新保留本地模型，重置只采用本轮远程来源。 */
+    const previousIds = visibleEndpointModels;
+    setEndpointLoading(Boolean(codexDraft?.apiBaseUrl.trim()));
+    setCatalogNotice(null);
+    if (!codexDraft?.apiBaseUrl.trim()) return;
+    void listProviderModels("codex", codexDraft.apiBaseUrl, codexDraft.apiKey)
+      .then((ids) => {
+        if (!active) return;
+        /** 去重并保留原顺序，使刷新不会删除此次远程未返回的模型。 */
+        const nextIds = action === "refresh" ? [...new Set([...previousIds, ...ids])] : ids;
+        setEndpointModels(nextIds);
+        setCatalogDraft((previous) => {
+          /** 重置丢弃手填、排除和参数覆盖；其余操作保留当前编辑。 */
+          const intent = action === "reset" ? emptyCodexCatalogIntent() : { ...previous };
+          // 新出现的官方模型可能曾因不在端点清单中被自动排除。
+          if (action === "refresh") intent.excluded = intent.excluded.filter((id) => previousIds.includes(id) || !ids.includes(id));
+          return codexCatalogFromEndpoint(intent, nextIds, catalog);
+        });
+      })
+      .catch((error) => {
+        if (active) setCatalogNotice({ error: true, text: t("providers.fetchModelsFailed", { message: String(error) }) });
+      })
+      .finally(() => { if (active) setEndpointLoading(false); });
+    return () => { active = false; };
+  }, [current, currentCodexMode, endpointReady, codexDraft?.apiBaseUrl, codexDraft?.apiKey, endpointToken, t]);
+  /**
+   * 重新请求当前 Codex API 端点，成功后合并或替换目录草稿。
+   * @param action - refresh 增量添加；reset 重置为远程清单
+   * @returns 触发请求；目录忙碌、只读或没有端点时不操作
+   */
+  const reloadEndpointModels = (action: "refresh" | "reset") => {
+    if (busy || codexSaving || catalogBusy || catalogLoading || endpointLoading || currentCodexMode !== "api_key" || !codexDraft?.apiBaseUrl.trim()) return;
+    pendingEndpointAction.current = action;
+    setEndpointToken((value) => value + 1);
+  };
   const providerChoices = (kind: AiProvider) => providerOptions.filter((item) => item.kind === kind);
   const boundIdOf = (kind: AiProvider) => kind === "claude" ? claudeBinding : codexBinding;
   const codexRelativeRoot = codexDraft?.writableRoots
@@ -1150,30 +1211,11 @@ function EnabledAiCliSettingsPanel() {
 
                   <div className="ai-cli-field">
                     <span>{t("ai.cfg.claudeModels")}</span>
-                    <div className="ai-cli-grid">
-                      {CLAUDE_MODEL_FIELDS.map((field) => (
-                        <label key={field.key} className="ai-cli-field">
-                          <span>{t(field.label)}</span>
-                          <input className="text-input" spellCheck={false} value={claudeEnvValue(field.key)} placeholder={field.placeholder}
-                            onChange={(event) => patchClaudeEnv({ [field.key]: event.target.value })} />
-                        </label>
-                      ))}
-                    </div>
+                    <ClaudeProviderModels apiUrl={claudeEnvValue("ANTHROPIC_BASE_URL")}
+                      apiKey={claudeEnvValue(claudeKeyName)} busy={busy || managedBusy}
+                      values={Object.fromEntries(Object.entries(CLAUDE_MODEL_FIELDS).map(([slot, key]) => [slot, claudeEnvValue(key)]))}
+                      onChange={(slot, value) => patchClaudeEnv({ [CLAUDE_MODEL_FIELDS[slot]]: value })} />
                     <em className="ai-cli-hint">{t("ai.cfg.claudeModelHint")}</em>
-                  </div>
-
-                  <div className="ai-cli-field">
-                    <span>{t("ai.cfg.customOption")}</span>
-                    <div className="ai-cli-grid">
-                      {CLAUDE_CUSTOM_MODEL_FIELDS.map((field) => (
-                        <label key={field.key} className="ai-cli-field">
-                          <span>{t(field.label)}</span>
-                          <input className="text-input" spellCheck={false} value={claudeEnvValue(field.key)} placeholder={field.placeholder}
-                            onChange={(event) => patchClaudeEnv({ [field.key]: event.target.value })} />
-                        </label>
-                      ))}
-                    </div>
-                    <em className="ai-cli-hint">{t("ai.cfg.customOptionHint")}</em>
                   </div>
 
                   <div className="ai-cli-row-switch">
@@ -1465,12 +1507,12 @@ function EnabledAiCliSettingsPanel() {
               </div>
             </section>
 
-            {current && (current === "claude" || (customModels[current] ?? []).length > 0) ? (
+            {current === "codex" && (customModels[current] ?? []).length > 0 ? (
               <section className="ai-cli-section" aria-label={t("ai.custom.title")}>
                 <div className="ai-cli-section-head">
                   <div>
                     <strong>{t("ai.custom.title")}</strong>
-                    <span className="ai-muted">{t(current === "claude" ? "ai.custom.hint" : "ai.custom.codexRetired")}</span>
+                    <span className="ai-muted">{t("ai.custom.codexRetired")}</span>
                   </div>
                 </div>
                 {(customModels[current] ?? []).length ? (
@@ -1489,20 +1531,6 @@ function EnabledAiCliSettingsPanel() {
                   {customNotice?.provider === current
                     ? <p className={customNotice.error ? "ai-error" : "ai-success"} role="status">{customNotice.text}</p>
                     : <span />}
-                  <div className="ai-cli-actions">
-                    {current === "claude" ? (
-                      <>
-                        <input className="text-input ai-custom-model-input" value={customDraft} maxLength={200} spellCheck={false}
-                          placeholder={t("ai.custom.placeholder")} aria-label={t("ai.custom.placeholder")}
-                          onChange={(event) => setCustomDraft(event.target.value)}
-                          onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void addCustomModel(); } }} />
-                        <button type="button" className="panel-action" disabled={customBusy || !customDraft.trim()} onClick={() => void addCustomModel()}>
-                          {customBusy ? <Loader2 size={13} className="is-spinning" /> : <Plus size={13} />}
-                          {t("ai.custom.add")}
-                        </button>
-                      </>
-                    ) : null}
-                  </div>
                 </div>
               </section>
             ) : null}
@@ -1511,8 +1539,11 @@ function EnabledAiCliSettingsPanel() {
               <CodexCatalogSection
                 view={catalog}
                 draft={catalogDraft}
-                loading={catalogLoading}
-                busy={catalogBusy}
+                loading={catalogLoading || endpointLoading}
+                busy={busy || managedBusy || catalogBusy || endpointLoading}
+                endpointModels={currentCodexMode === "api_key" ? visibleEndpointModels : undefined}
+                onRefreshEndpoint={currentCodexMode === "api_key" && codexDraft?.apiBaseUrl.trim() ? () => reloadEndpointModels("refresh") : undefined}
+                onResetEndpoint={currentCodexMode === "api_key" && codexDraft?.apiBaseUrl.trim() ? () => reloadEndpointModels("reset") : undefined}
                 dirty={catalogDirty}
                 currentModel={codexDraft?.model ?? ""}
                 readOnly={currentCodexMode === "provider"}

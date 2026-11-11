@@ -1045,6 +1045,12 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 /* ===== Codex 模型清单 ===== */.ai-catalog-list { display: grid; gap: 6px; }
 .ai-catalog-row { display: grid; gap: 6px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); }
 .ai-catalog-row.is-excluded { opacity: .62; }
+.ai-catalog-skeleton-row { display: flex; align-items: center; gap: 10px; min-height: 38px; box-sizing: border-box; }
+.ai-catalog-skeleton-row > span { background: var(--border-color); border-radius: 4px; }
+.ai-catalog-skeleton-icon { flex: none; width: 16px; height: 16px; }
+.ai-catalog-skeleton-name { width: 42%; max-width: 260px; height: 12px; }
+.ai-catalog-skeleton-row:nth-child(even) .ai-catalog-skeleton-name { width: 32%; }
+.ai-catalog-skeleton-action { flex: none; width: 56px; height: 20px; margin-left: auto; }
 .ai-catalog-row-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ai-catalog-row-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
 .ai-catalog-row-name strong { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

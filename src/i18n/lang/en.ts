@@ -2454,6 +2454,7 @@ export const en: Record<TranslationKey, string> = {
   "providers.fetchModelsSearch": "Search model IDs…",
   "providers.fetchModelsFailed": "Failed to fetch the model list: {message}",
   "providers.fetchModelsEmpty": "The endpoint returned no models",
+  "providers.resetModels": "Reset",
   "providers.fetchModelsFill": "Fill slot…",
   "providers.fetchModelsAdd": "Add",
   "providers.fetchModelsNeedUrl": "Enter the API URL first to fetch the model list",

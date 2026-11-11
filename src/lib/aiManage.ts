@@ -407,6 +407,54 @@ export function codexCustomFromEndpoint(id: string, baseModel: Record<string, un
 }
 
 /**
+ * 将端点模型合入供应商目录，保留手填条目与覆盖项，并排除端点未提供的内置可见模型。
+ * @param intent - 当前供应商的编辑意图
+ * @param ids - 端点完整返回的模型 ID
+ * @param view - CLI 模板及已应用目录；为空时新增条目由后端选择模板
+ * @returns 可直接保存和应用的目录意图；已有自定义条目不会因端点变化被删除
+ */
+export function codexCatalogFromEndpoint(intent: CodexCatalogIntent, ids: string[], view: CodexCatalogView | null): CodexCatalogIntent {
+  /** 当前 CLI 中其他供应商的自定义条目不能当作官方模板。 */
+  const appliedCustoms = new Set(view?.intent.customs.map((item) => item.slug) ?? []);
+  /** 被排除的官方条目仍需参与本供应商的目录计算。 */
+  const officials = [...new Map([...(view?.models ?? []), ...(view?.hidden ?? [])]
+    .filter((model) => !appliedCustoms.has(String(model.slug)))
+    .map((model) => [String(model.slug), model] as const)).values()];
+  /** 隐藏内部模型不用于端点列表，也不从 CLI 目录中排除。 */
+  const listable = officials.filter((model) => (model.visibility ?? "list") === "list");
+  /** 完整 ID 匹配保留前缀不同的独立模型。 */
+  const offered = new Set(ids);
+  /** 原有排除由用户决定；端点以外的官方模型不能继续作为可用模型出现。 */
+  const excluded = [...new Set([...intent.excluded, ...listable.filter((model) => !offered.has(String(model.slug))).map((model) => String(model.slug))])];
+  /** 自定义模型与官方同名时仍保留用户自己的参数。 */
+  const customs = [...intent.customs];
+  for (const id of ids) {
+    if (excluded.includes(id) || customs.some((item) => item.slug === id) || listable.some((model) => model.slug === id)) continue;
+    customs.push(codexCustomFromEndpoint(id, listable[0] ?? officials[0]));
+  }
+  /** 默认模型必须仍在最终目录中，失效时优先采用端点第一个可用模型。 */
+  const available = [...ids.filter((id) => !excluded.includes(id)), ...customs.map((item) => item.slug)].filter(Boolean);
+  return { ...intent, excluded, customs, default: intent.default && available.includes(intent.default) ? intent.default : available[0] };
+}
+
+/**
+ * 从本地目录意图恢复可用模型 ID，无需请求供应商端点。
+ * @param intent - 已保存或正在编辑的目录意图
+ * @param view - 本机目录模板；为空时只返回自定义模型
+ * @returns 去重后的可见官方模型和自定义模型 ID；没有可用模型时为空数组
+ */
+export function codexCatalogModelIds(intent: CodexCatalogIntent, view: CodexCatalogView | null): string[] {
+  /** 已应用目录中的自定义模型由当前意图决定，不能混入其他供应商的模型。 */
+  const appliedCustoms = new Set(view?.intent.customs.map((item) => item.slug) ?? []);
+  return [...new Set([
+    ...[...(view?.models ?? []), ...(view?.hidden ?? [])]
+      .filter((model) => (model.visibility ?? "list") === "list" && !appliedCustoms.has(String(model.slug)) && !intent.excluded.includes(String(model.slug)))
+      .map((model) => String(model.slug)),
+    ...intent.customs.map((item) => item.slug),
+  ])].filter(Boolean);
+}
+
+/**
  * 拉取供应商端点的可用模型清单（`GET {base}/v1/models`）。
  * Claude 走 Anthropic 鉴权头，Codex 走标准 Bearer；两家响应都是 `data[].id`。
  * 页面 CSP 只放行自家地址，浏览器 fetch 到不了任意端点，所以请求交给后端 `http_send`。
