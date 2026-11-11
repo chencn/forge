@@ -5,16 +5,21 @@
 use crate::error::{err, err_parts};
 use crate::offload::block;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 /// 每个文件的有界修订数量。
 const KEEP_PER_FILE: usize = 50;
 /// 单条快照正文的大小上限；正文超过它的记录直接丢弃。
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
-/// 全局串行写锁；所有 JSONL 的读-改-写都持它，防并发交错。
+/// 跨进程桶锁的最长等待；历史写入是毫秒级操作，2 秒还没轮到说明对方卡住了。
+const BUCKET_LOCK_WAIT: Duration = Duration::from_secs(2);
+/// 跨进程桶锁文件名；与快照同目录，列举时因扩展名不是 `jsonl` 被跳过。
+const BUCKET_LOCK_FILE: &str = ".write.lock";
+/// 进程内串行写锁；同一进程内所有 JSONL 的读-改-写都持它。跨进程互斥见 [`lock_snapshots`]。
 static HISTORY_WRITE: Mutex<()> = Mutex::new(());
 
 /// 一条历史快照：保存那一刻的正文与写盘所需的全部元信息。
@@ -103,6 +108,40 @@ fn snapshot_file(history_dir: &Path, root: &Path, file: &Path) -> PathBuf {
         .join(format!("{key:016x}.jsonl"))
 }
 
+/// 取快照所属桶的跨进程写锁，最多等 [`BUCKET_LOCK_WAIT`]。
+///
+/// 锁文件与快照同目录（`files/.write.lock`），一个桶的全部 JSONL 和 `labels.json`
+/// 共用一把；返回的句柄 drop 即释放。进程内的 [`HISTORY_WRITE`] 管不到另一个
+/// Forge 实例——两个实例打开同一工程时，靠这把锁把读-改-写真正串行化。
+///
+/// # Errors
+///
+/// - 目录或锁文件创建失败：`"IO"` 前缀
+/// - 等待超时：返回「另一个实例正在写入」的提示文本
+fn lock_snapshots(snapshot: &Path) -> Result<File, String> {
+    let lock_path = snapshot.with_file_name(BUCKET_LOCK_FILE);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| err_parts("IO", &[parent.display().to_string(), error.to_string()]))?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .map_err(|error| err_parts("IO", &[lock_path.display().to_string(), error.to_string()]))?;
+    let deadline = Instant::now() + BUCKET_LOCK_WAIT;
+    loop {
+        if crate::lock::try_lock_exclusive(&file)? {
+            return Ok(file);
+        }
+        if Instant::now() >= deadline {
+            return Err("本地历史正被另一个 Forge 实例写入，请稍后重试".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// 读回一个文件的全部快照（最新在前）。文件不在就是空表，不是错误。
 ///
 /// 落盘时就是「最新在前」整份重写的（见 [`append_snapshot`]），读回来照这个顺序收集即可，不再反。
@@ -135,15 +174,17 @@ fn read_snapshots_checked(path: &Path) -> Result<Vec<Snapshot>, String> {
 
 /// 追加一条快照并把超出条数的旧条目裁掉。裁的时候整份重写——JSONL 没有原地删头的操作。
 ///
-/// 与 [`restore_snapshot`] 共用 [`HISTORY_WRITE`] 串行锁。
+/// 先取进程内 [`HISTORY_WRITE`] 再取桶的跨进程锁（[`lock_snapshots`]），与
+/// [`restore_snapshot`] 的加锁顺序一致，读-改-写不会与另一个 Forge 实例交错。
 ///
 /// # Errors
 ///
-/// [`append_snapshot_unlocked`] 透传目录创建、读取或原子写失败。
+/// 锁等待超时，或 [`append_snapshot_unlocked`] 的目录创建、读取、原子写失败。
 fn append_snapshot(path: &Path, snapshot: &Snapshot) -> Result<(), String> {
     let _guard = HISTORY_WRITE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    let _bucket = lock_snapshots(path)?;
     append_snapshot_unlocked(path, snapshot)
 }
 
@@ -342,6 +383,7 @@ fn restore_snapshot(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let file_path = snapshot_file(dir, Path::new(root), Path::new(&path));
+    let _bucket = lock_snapshots(&file_path)?;
     let Some(snapshot) = read_snapshots_checked(&file_path)?
         .into_iter()
         .find(|item| item.saved_at == saved_at)
@@ -625,6 +667,7 @@ fn put_label(
     let _guard = HISTORY_WRITE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    let _bucket = lock_snapshots(&snapshot_file(dir, Path::new(root), Path::new(&path)))?;
     // 标签捕获编辑器缓冲区，但不把未保存修改悄悄写进工作区。
     for snapshot in snapshots {
         if under(&path, &snapshot.path) {

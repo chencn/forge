@@ -23,30 +23,22 @@ fn cli_home(variable: &str, fallback: &str) -> Result<PathBuf, String> {
     }).ok_or("无法确定 CLI 配置目录".into())
 }
 
-/// 原生写锁使用字节锁，不是 Forge 租约的 Windows share-mode 锁。
+/// 探测 CLI 会话的写锁是否被占用；锁文件不存在视为没有写者。
+///
+/// # Errors
+///
+/// 打开锁文件或加锁失败时返回错误原文。
 fn writer_lock(path: &Path) -> Result<(bool, Option<File>), String> {
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((false, None)),
         Err(error) => return Err(error.to_string()),
     };
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::{Foundation::{HANDLE, ERROR_LOCK_VIOLATION}, Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY}, System::IO::OVERLAPPED};
-        let mut overlapped = OVERLAPPED::default();
-        match unsafe { LockFileEx(HANDLE(file.as_raw_handle()), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, Some(0), u32::MAX, u32::MAX, &mut overlapped) } {
-            Ok(()) => Ok((false, Some(file))), // 句柄关闭即释放，不改变锁文件内容。
-            Err(error) if error.code() == ERROR_LOCK_VIOLATION.to_hresult() => Ok((true, None)),
-            Err(error) => Err(error.to_string()),
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 { return Ok((false, Some(file))); }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::WouldBlock { Ok((true, None)) } else { Err(error.to_string()) }
+    // 句柄关闭即释放，不改变锁文件内容。
+    if crate::lock::try_lock_exclusive(&file)? {
+        Ok((false, Some(file)))
+    } else {
+        Ok((true, None))
     }
 }
 

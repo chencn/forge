@@ -9,6 +9,7 @@ mod git;
 mod history;
 mod maven;
 mod local_history;
+mod lock;
 mod offload;
 mod proc;
 mod run;

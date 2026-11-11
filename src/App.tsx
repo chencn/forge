@@ -1652,9 +1652,12 @@ export default function App() {
         void (async () => {
           for (const path of workspacePaths.slice(0, 500)) {
             if (path.replace(/\\/g, "/").split("/").some((part) => ["node_modules", "target", ".git"].includes(part))) continue;
-            await captureHistory(changedRoot, path, "external");
+            // 历史是兜底：单个文件写失败只留日志，不打断其余文件，也不弹全局错误。
+            await captureHistory(changedRoot, path, "external").catch((cause) =>
+              console.warn("[forge] 记录外部变更历史失败", path, cause)
+            );
           }
-        })().catch((cause) => reportError(errorText(cause)));
+        })();
         void docsRef.current.noteExternalChange(workspacePaths);
         // 构建脚本或顶层依赖目录变动时，通知依赖同步检测器（内部先经 O(1) 白名单过滤 + 600ms 防抖）。
         depSyncRef.current?.noteDiskChange(changedRoot, workspacePaths);
@@ -2976,12 +2979,12 @@ export default function App() {
     async (revision: string, absolute: string) => {
       setHistoryWriteRequest({ path: absolute, run: async () => {
         await preserveHistoryEditors([absolute]);
-        if (git.root) await captureHistory(workspaceRoot ?? git.root, absolute, "beforeRestore");
+        if (git.root) await captureHistory(workspaceRoot ?? git.root, absolute, "beforeRestore").catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
         const done = await git.restoreFile(revision, absolute);
         if (!done) throw new Error(t("history.restoreFailed"));
         if (hasTextContent(docKindOf(absolute))) docsRef.current.applyDiskVersion(absolute, await readFile(absolute));
         else await docsRef.current.noteExternalChange([absolute]);
-        if (git.root) await captureHistory(workspaceRoot ?? git.root, absolute, "restored");
+        if (git.root) await captureHistory(workspaceRoot ?? git.root, absolute, "restored").catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
         refreshTree();
       } });
     },
@@ -3128,11 +3131,11 @@ export default function App() {
           setHistoryWriteRequest({ path: absolute, run: async () => {
             await preserveHistoryEditors([absolute]);
             if (docsRef.current.dirty(absolute) && !await docsRef.current.save(absolute)) throw new Error(t("history.restoreFailed"));
-            await captureHistory(workspaceRoot ?? root, absolute, "beforeRestore");
+            await captureHistory(workspaceRoot ?? root, absolute, "beforeRestore").catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
             const patch = await gitDiffText(root, parent || EMPTY_TREE_HASH, commit.hash, file.path, file.oldPath);
             if (patch) await gitApplyPatch(root, patch, false, true);
             if (hasTextContent(docKindOf(absolute))) await docsRef.current.noteExternalChange([absolute]);
-            await captureHistory(workspaceRoot ?? root, absolute, "restored");
+            await captureHistory(workspaceRoot ?? root, absolute, "restored").catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
             refreshTree(); void git.refreshChanges();
           } });
           break;
@@ -4016,7 +4019,7 @@ export default function App() {
           // 删除前保存目录内的文本；恢复不再依赖原路径仍然存在。
           if (workspaceRoot) {
             await preserveHistoryEditors(docsRef.current.documents.filter((doc) => samePath(target, doc.path) || pathWithin(target, doc.path)).map((doc) => doc.path));
-            await captureHistory(workspaceRoot, target, "deleted");
+            await captureHistory(workspaceRoot, target, "deleted").catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
           }
           await deleteEntry(target);
           deleteBaseCountRef.current += Math.max(1, deleteCurrentTargetCountRef.current);

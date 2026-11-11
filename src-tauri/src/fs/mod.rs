@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -532,40 +533,52 @@ pub(crate) fn write_file_impl(
     })
 }
 
+/// 原子写临时文件的进程内序号，保证同一进程的并发写也不会重名。
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 /// 落盘走「同目录临时文件 + 改名」：原地 `fs::write` 是截断重写，写一半崩溃或断电就
-/// 留半截文件；同目录 rename 在 Windows 和类 unix 上都是原子替换。临时文件带自己的
-/// 标记，写坏也只伤它一个，正文不受牵连。调用方已持 `fs_write_lock`，同一目标不会
-/// 并发写，固定临时名不会互相踩。
+/// 留半截文件；同目录 rename 在 Windows 和类 unix 上都是原子替换。临时文件写坏也只
+/// 伤它一个，正文不受牵连。
 ///
-/// 临时文件必须 `create_new`：固定临时名是可预知的路径，`File::create` 会跟随已存在的
-/// 符号链接——恶意仓库预置 `.foo.txt.forge-tmp → ~/.ssh/id_rsa` 一类的链接，保存就把
-/// 用户文件写了进去。类 unix 上还把原文件的权限位抄给临时文件，rename 替换后
-/// 可执行位（`deploy.sh`、带 shebang 的脚本）不静默丢失。
+/// [`fs_write_lock`] 只串行化本进程，另一个 Forge 实例或别的写者仍可能同时写同一目标。
+/// 所以临时名带 pid 和进程内序号：谁都不会撞上别人的临时文件，失败清理也只删自己
+/// 刚创建的那个。固定名字下「撞名后删掉对方正在写的临时文件」会把两边一起拖崩。
+///
+/// 临时文件必须 `create_new`：即便临时名被猜到，`File::create` 会跟随已存在的符号
+/// 链接——恶意仓库预置指向 `~/.ssh/id_rsa` 一类的链接，保存就把用户文件写了进去。
+/// 类 unix 上还把原文件的权限位抄给临时文件，rename 替换后（`deploy.sh`、带 shebang
+/// 的脚本）可执行位不静默丢失。
 pub(crate) fn write_bytes_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
-    let temp = target.with_file_name(format!(".{name}.forge-tmp"));
+    let temp = target.with_file_name(format!(
+        ".{name}.{}-{}.forge-tmp",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     #[cfg(unix)]
     let prior_mode = target.metadata().ok().map(|meta| meta.permissions().mode());
-    let result = fs::OpenOptions::new()
+    // 创建失败时什么都没建，直接返回，绝不碰同目录里别人的临时文件。
+    let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&temp)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            // flush + sync_all 把字节真正压到盘上，改名之后元数据才不会指着一块空数据。
-            file.flush()?;
-            file.sync_all()?;
-            drop(file);
-            #[cfg(unix)]
-            if let Some(mode) = prior_mode {
-                let _ = fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode));
-            }
-            fs::rename(&temp, target)
-        });
-    match result {
+        .map_err(|error| io_err(&lossy(target), error))?;
+    let written = file
+        .write_all(bytes)
+        // flush + sync_all 把字节真正压到盘上，改名之后元数据才不会指着一块空数据。
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    #[cfg(unix)]
+    if written.is_ok() {
+        if let Some(mode) = prior_mode {
+            let _ = fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    match written.and_then(|()| fs::rename(&temp, target)) {
         Ok(()) => Ok(()),
         Err(e) => {
-            // 尽力清掉临时文件再报原始错误；清不掉就算了，不能把真正的失败盖住。
+            // 只删自己刚创建的那个；清不掉就算了，不能把真正的失败盖住。
             let _ = fs::remove_file(&temp);
             Err(io_err(&lossy(target), e))
         }
@@ -1105,6 +1118,44 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, body).expect("写测试文件失败");
         path
+    }
+
+    #[test]
+    fn atomic_write_only_cleans_up_its_own_temp_file() {
+        let dir = sandbox("atomic-temp");
+        // 目标占成目录：改名必然失败，从而走到清理分支。
+        let target = dir.join("occupied");
+        fs::create_dir_all(&target).unwrap();
+        let foreign = touch(&dir, ".occupied.forge-tmp", b"someone else");
+        assert!(write_bytes_atomic(&target, b"data").is_err());
+        assert_eq!(
+            fs::read(&foreign).unwrap(),
+            b"someone else",
+            "清理只能碰自己创建的临时文件"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_to_one_target_all_succeed() {
+        let dir = sandbox("atomic-concurrent");
+        let target = dir.join("shared.txt");
+        let writers: Vec<_> = (0..4)
+            .map(|index| {
+                let target = target.clone();
+                std::thread::spawn(move || {
+                    write_bytes_atomic(&target, format!("writer-{index}").as_bytes())
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer
+                .join()
+                .unwrap()
+                .expect("并发写同一目标不该因为临时文件撞名而失败");
+        }
+        assert!(target.exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

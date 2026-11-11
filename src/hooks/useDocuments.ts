@@ -265,8 +265,9 @@ export function useDocuments(
         }
         const content = await readFile(targetPath);
         // 第一次修改之前就保留原版，否则首次保存后没有可回退的内容。
+        // 历史是兜底，写不进去只留日志，不打断打开文档这条主路。
         await recordSnapshot(ownerRoot, targetPath, { ...content, savedAt: Date.now(), event: "opened" })
-          .catch((cause) => reportError(errorText(cause)));
+          .catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
         const editorConfig = await loadEditorConfig(ownerRoot, targetPath);
         // svg 两样都要：正文给源码视图，指纹给图片视图做缓存失效。
         const stamp = previewsFromDisk(kind)
@@ -469,8 +470,10 @@ export function useDocuments(
       const task = (async () => {
         try {
           if (doc.onDisk) {
+            // 历史是兜底：这里写不进去不能让整次保存失败。
             await recordSnapshot(doc.root, path, { savedAt: Date.now(), contents: doc.baseline,
-              lineEnding: doc.lineEnding, hasBom: doc.hasBom, encoding: doc.encoding, event: "beforeSave" });
+              lineEnding: doc.lineEnding, hasBom: doc.hasBom, encoding: doc.encoding, event: "beforeSave" })
+              .catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
           }
           // 乐观锁：把打开时认下的 mtime 交给后端，写之前一比。对不上就拒写、报 CONFLICT_ON_WRITE，
           // 交回三向合并，而不是静默覆盖磁盘上别处（AI 工具 / 别的编辑器 / git）改的那一份。
@@ -509,7 +512,7 @@ export function useDocuments(
             lineEnding: written.lineEnding,
             hasBom: written.hasBom,
             encoding: written.encoding,
-          }).catch((cause) => reportError(errorText(cause)));
+          }).catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
           return true;
         } catch (cause) {
           const conflictInfo = parseSaveConflict(errorText(cause));
@@ -609,7 +612,7 @@ export function useDocuments(
           lineEnding: written.lineEnding,
           hasBom: written.hasBom,
           encoding: written.encoding,
-        }).catch((cause) => reportError(errorText(cause)));
+        }).catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
         setConflict(null);
         return true;
       } catch (cause) {
@@ -716,7 +719,7 @@ export function useDocuments(
           }
           const content = await readFile(doc.path);
           await recordSnapshot(doc.root, doc.path, { ...content, savedAt: Date.now(), event: "external" })
-            .catch((cause) => reportError(errorText(cause)));
+            .catch((cause) => console.warn("[forge] 记录本地历史失败", cause));
           // 读盘要跨一次 IPC，期间用户可能已经开始编辑：重读当前条目，
           // 不再干净（contents 与 baseline 有出入）就跳过重载，磁盘版本
           // 不能盖掉用户手里那份——快照时干净不代表此刻还干净。
