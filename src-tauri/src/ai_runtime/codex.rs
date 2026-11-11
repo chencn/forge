@@ -45,6 +45,8 @@ pub struct Codex {
     turn: Option<String>,
     /// 断线恢复只附着这一个既有回合；设置后禁止发送新的 `turn/start`。
     recovery_turn: Option<String>,
+    /// 启动响应确认回合 ID 前到达的终态，确认后仅消费本轮对应的通知。
+    pending_turn_completions: HashMap<String, Value>,
     /// 握手进度：0 未初始化、1 已发 initialize、2 已开线程、3 已开回合。
     /// 用它挡住乱序与重复的初始化请求。
     phase: u8,
@@ -242,6 +244,7 @@ impl Codex {
             thread: native_id,
             turn: None,
             recovery_turn: None,
+            pending_turn_completions: HashMap::new(),
             phase: 0,
             browser: false,
             pending: HashMap::new(),
@@ -563,6 +566,21 @@ impl Codex {
         actions.push(Action::Write(json!({"id":2,"method":method,"params":params})));
         actions
     }
+
+    /// 回合身份确认后重放本轮暂存的终态，并丢弃其他回合的通知。
+    ///
+    /// # Errors
+    ///
+    /// 本轮通知的终态无效时返回协议错误；未确认回合时保留暂存内容。
+    fn drain_turn_completion(&mut self) -> Result<Vec<Action>, String> {
+        let Some(turn) = self.turn.as_ref() else { return Ok(vec![]); };
+        let completion = self.pending_turn_completions.remove(turn);
+        self.pending_turn_completions.clear();
+        match completion {
+            Some(message) => self.receive(message),
+            None => Ok(vec![]),
+        }
+    }
 }
 impl Protocol for Codex {
     fn start(&mut self) -> Result<Vec<Action>, String> {
@@ -590,6 +608,25 @@ impl Protocol for Codex {
             {
                 return Ok(vec![]);
             }
+            if matches!(method, "turn/started" | "turn/completed") {
+                let id = p["turn"]["id"].as_str().ok_or("Codex 回合通知缺少 turn ID")?;
+                if self.turn.as_deref().or(self.recovery_turn.as_deref()).is_some_and(|expected| expected != id) {
+                    return Ok(vec![]);
+                }
+                if self.turn.is_none() {
+                    if method == "turn/completed" {
+                        // 恢复时旧回合也会发终态；只有启动响应才能证明它是否属于这条新消息。
+                        if matches!(self.phase, 3 | 5 | 6) {
+                            self.pending_turn_completions.insert(id.to_owned(), message);
+                        }
+                        return Ok(vec![]);
+                    }
+                    // 压缩确认没有回合 ID，仍由原生通知关联；普通消息必须等启动响应。
+                    if self.phase != 3 || self.command != Some(super::commands::CommandIntent::CodexCompact) {
+                        return Ok(vec![]);
+                    }
+                }
+            }
             let mut out = vec![];
             if self.phase == 3 && self.command == Some(super::commands::CommandIntent::CodexCompact)
                 && self.turn.is_none() && method == "item/started" && p["item"]["type"] == "contextCompaction"
@@ -603,6 +640,7 @@ impl Protocol for Codex {
                 "turn/started" => {
                     if let Some(id) = p["turn"]["id"].as_str() {
                         self.turn = Some(id.into());
+                        if self.stopped { out.extend(self.interrupt()); }
                     }
                 }
                 "item/agentMessage/delta" => {
@@ -923,16 +961,6 @@ impl Protocol for Codex {
                     }
                 }
                 "turn/completed" => {
-                    if self.phase < 3 {
-                        return Err("Codex 在发送前报告回合完成".into());
-                    }
-                    if self
-                        .turn
-                        .as_deref()
-                        .is_some_and(|id| p["turn"]["id"].as_str() != Some(id))
-                    {
-                        return Ok(vec![]);
-                    }
                     // 回合结束后异步提问的会话已不存在；卡片必须立刻失效。
                     for key in self.async_questions.keys() {
                         out.push(Action::Invalidate(key.clone()));
@@ -969,6 +997,9 @@ impl Protocol for Codex {
                     });
                 }
                 _ => {}
+            }
+            if self.command == Some(super::commands::CommandIntent::CodexCompact) {
+                out.extend(self.drain_turn_completion()?);
             }
             return Ok(out);
         }
@@ -1216,7 +1247,7 @@ impl Protocol for Codex {
                     }}))?);
                 }
                 match recovered_turn["status"].as_str() {
-                    Some("inProgress") => {}
+                    Some("inProgress") => out.extend(self.drain_turn_completion()?),
                     Some("completed") => out.push(Action::Finish { status: task_status::COMPLETED, error: None }),
                     Some("interrupted") => out.push(Action::Finish { status: task_status::CANCELLED, error: None }),
                     Some("failed") => out.push(Action::Finish { status: task_status::FAILED, error: Some(
@@ -1239,10 +1270,13 @@ impl Protocol for Codex {
                         .ok_or("Codex 未返回 turn ID")?
                         .into(),
                 );
-                Ok(vec![Action::Emit {
+                let mut out = vec![Action::Emit {
                     kind: "turn",
                     data: json!({"nativeTurnId":self.turn}),
-                }])
+                }];
+                if self.stopped { out.extend(self.interrupt()); }
+                out.extend(self.drain_turn_completion()?);
+                Ok(out)
             }
             (_, 4) => Ok(vec![]),
             _ => Err("Codex 响应顺序或 ID 不匹配".into()),
@@ -1418,6 +1452,7 @@ mod tests {
         assert!(unnamed.iter().any(|a| matches!(a, Action::Emit{kind:"agent",data}
             if data["key"] == "01a1-unnamed" && data["title"] == "子代理" && data.get("agentType").is_none())));
     }
+    /// 恢复会话后，旧回合的终态不能吞掉尚待 CLI 确认的新消息。
     #[test]
     fn turn_is_started_only_after_codex_accepts_the_native_turn() {
         let mut protocol = Codex::new("root".into(), "hi".into(), Some("native".into()));
@@ -1426,10 +1461,88 @@ mod tests {
         // initialize 和 thread/resume 只证明进程可用，不能把消息提前标成 running。
         protocol.receive(json!({"id":1,"result":{}})).unwrap();
         assert!(!protocol.turn_started());
+        assert!(protocol.receive(json!({"method":"turn/completed","params":{
+            "threadId":"native","turn":{"id":"previous-turn","status":"interrupted"}
+        }})).unwrap().is_empty());
         protocol.receive(json!({"id":2,"result":{"thread":{"id":"native"},"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}}})).unwrap();
+        assert!(!protocol.turn_started());
+        protocol.receive(json!({"method":"turn/started","params":{
+            "threadId":"native","turn":{"id":"previous-turn"}
+        }})).unwrap();
+        assert!(protocol.receive(json!({"method":"turn/completed","params":{
+            "threadId":"native","turn":{"id":"previous-turn","status":"interrupted"}
+        }})).unwrap().iter().all(|action| !matches!(action, Action::Finish { .. })));
         assert!(!protocol.turn_started());
         protocol.receive(json!({"id":3,"result":{"turn":{"id":"turn-1"}}})).unwrap();
         assert!(protocol.turn_started());
+        protocol.receive(json!({"method":"turn/started","params":{
+            "threadId":"native","turn":{"id":"previous-turn"}
+        }})).unwrap();
+        assert!(protocol.receive(json!({"method":"turn/completed","params":{
+            "threadId":"native","turn":{"id":"previous-turn","status":"interrupted"}
+        }})).unwrap().is_empty());
+        assert!(protocol.receive(json!({"method":"turn/completed","params":{
+            "threadId":"native","turn":{"id":"turn-1","status":"completed"}
+        }})).unwrap().iter().any(|action| matches!(action, Action::Finish { status: "completed", error: None })));
+    }
+    /// 普通消息与审查快速完成时，先到的终态仍须在启动确认后交付一次。
+    #[test]
+    fn completion_before_start_response_belongs_only_to_the_accepted_turn() {
+        for command in [None, Some(super::super::commands::CommandIntent::CodexReview)] {
+            let mut protocol = Codex::new("root".into(), "/review".into(), Some("native".into()))
+                .with_command(command).with_policy(super::super::options::PermissionMode::Inherit, String::new());
+            protocol.start().unwrap();
+            protocol.receive(json!({"id":1,"result":{}})).unwrap();
+            protocol.receive(json!({"id":2,"result":{"thread":{"id":"native"}}})).unwrap();
+            for (id, status) in [("previous-turn", "interrupted"), ("turn-1", "completed")] {
+                protocol.receive(json!({"method":"turn/started","params":{"threadId":"native","turn":{"id":id}}})).unwrap();
+                assert!(protocol.receive(json!({"method":"turn/completed","params":{
+                    "threadId":"native","turn":{"id":id,"status":status}
+                }})).unwrap().is_empty());
+            }
+            assert!(!protocol.turn_started());
+            let actions = protocol.receive(json!({"id":3,"result":{"reviewThreadId":"native","turn":{"id":"turn-1"}}})).unwrap();
+            assert!(protocol.turn_started());
+            assert_eq!(actions.iter().filter(|action| matches!(action, Action::Finish { .. })).count(), 1);
+            assert!(actions.iter().any(|action| matches!(action, Action::Finish { status: "completed", error: None })));
+        }
+    }
+    /// 恢复期间先到的本轮终态不丢失，历史回放与实时通知只交付一次结束。
+    #[test]
+    fn recovery_completion_before_history_response_finishes_once() {
+        for status in ["inProgress", "completed"] {
+            let mut protocol = Codex::new("root".into(), String::new(), Some("native".into()))
+                .with_recovery_turn("turn-1".into())
+                .with_policy(super::super::options::PermissionMode::Inherit, String::new());
+            protocol.start().unwrap();
+            protocol.receive(json!({"id":1,"result":{}})).unwrap();
+            protocol.receive(json!({"id":2,"result":{"thread":{"id":"native"}}})).unwrap();
+            for id in ["previous-turn", "turn-1"] {
+                assert!(protocol.receive(json!({"method":"turn/completed","params":{
+                    "threadId":"native","turn":{"id":id,"status":"completed"}
+                }})).unwrap().is_empty());
+            }
+            let actions = protocol.receive(json!({"id":3,"result":{"data":[{
+                "id":"turn-1","status":status,"items":[{"id":"answer","type":"agentMessage","text":"恢复的回复"}]
+            }]}})).unwrap();
+            assert_eq!(actions.iter().filter(|action| matches!(action, Action::Finish { .. })).count(), 1);
+            assert!(actions.iter().any(|action| matches!(action, Action::Finish { status: "completed", error: None })));
+            assert!(actions.iter().any(|action| matches!(action, Action::Emit { kind: "message", data } if data["text"] == "恢复的回复")));
+        }
+    }
+    /// 启动在途时停止，只能在响应确认后中断这条新消息的回合。
+    #[test]
+    fn stop_before_start_response_interrupts_the_accepted_turn() {
+        let mut protocol = Codex::new("root".into(), "hi".into(), Some("native".into()))
+            .with_policy(super::super::options::PermissionMode::Inherit, String::new());
+        protocol.start().unwrap();
+        protocol.receive(json!({"id":1,"result":{}})).unwrap();
+        protocol.receive(json!({"id":2,"result":{"thread":{"id":"native"}}})).unwrap();
+        assert!(protocol.interrupt().is_empty());
+        assert!(protocol.receive(json!({"method":"turn/started","params":{"threadId":"native","turn":{"id":"previous-turn"}}})).unwrap().is_empty());
+        let actions = protocol.receive(json!({"id":3,"result":{"turn":{"id":"turn-1"}}})).unwrap();
+        assert!(actions.iter().any(|action| matches!(action, Action::Write(value)
+            if value["method"] == "turn/interrupt" && value["params"]["turnId"] == "turn-1")));
     }
     #[test]
     fn pasted_images_use_native_local_image_inputs() {

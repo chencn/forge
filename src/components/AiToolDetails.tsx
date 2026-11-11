@@ -33,7 +33,7 @@ function summaryTarget(view: ToolView): { path: string; line?: number } | null {
 }
 
 /** Claude Code 的子代理工具名；它的调用按「委派」卡片渲染而不是普通工具行。 */
-const DELEGATION_TOOL = /^task$/i;
+const DELEGATION_TOOL = /^(agent|task)$/i;
 /** 提问工具；历史里它只是一条工具记录，按只读问答卡渲染而不是裸 JSON。 */
 const QUESTION_TOOL = /^askuserquestion$/i;
 
@@ -112,25 +112,30 @@ function AiQuestionRecord({ entry }: { entry: AiEntry }) {
 }
 
 /**
- * 子代理（Task 工具）的委派卡片：
- * 一行「代理名 + 任务一句话 + 当前动作 + 状态 + 时钟」，展开是它自己的迷你时间线——
- * 子代理的正文、思考与工具调用（事件带 parent 归属）全部收在这里，不再平铺主对话。
- * 历史里 CLI 原生文件不带这些过程（子代理记录在独立的 subagents 目录，forge 不导入），
- * 那些旧会话的卡片就只有任务原文与最终结果，如实少显示。
+ * 展示委派任务、生命周期及独立会话入口，启动回执不会提前结算代理。
+ *
+ * @param props - 委派工具、可用的子过程、独立会话状态及打开回调
+ * @returns 可展开的委派详情；未补采的过程保持缺省
  */
-function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
+function AiDelegationCard({ entry, subagents, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; agent?: { /** 独立子会话标识。 */ sessionId: string; /** 子代理生命周期，优先于启动工具状态。 */ status: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
-  const phase = entry.status ?? "pending";
+  /** 启动工具回执只说明委派已发出，生命周期以子代理报告为准。 */
+  const phase = agent?.status ?? entry.status ?? "pending";
   const [disclosure, setDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
-  const input = entry.input && typeof entry.input === "object" && !Array.isArray(entry.input) ? entry.input as Record<string, unknown> : {};
+  /** 原生日志的工具参数可能是 JSON 字符串。 */
+  const input = toolObject(entry.input);
   const agentName = String(input.subagent_type ?? input.agent_type ?? t("ai.tool.delegation"));
   const description = typeof input.description === "string" ? input.description : "";
-  const prompt = typeof input.prompt === "string" ? input.prompt : "";
-  const running = entry.status === "running";
-  const failed = entry.status === "failed";
+  /** 两种 CLI 各自使用 prompt 和 message 表示委派正文。 */
+  const prompt = typeof input.prompt === "string" ? input.prompt : typeof input.message === "string" ? input.message : "";
+  /** 启动中同样属于尚未结算的委派。 */
+  const running = phase === "running" || phase === "starting";
+  /** 仅明确失败的生命周期显示失败态。 */
+  const failed = phase === "failed";
   const elapsed = useAiElapsed(running, entry.id);
+  /** 未识别的生命周期保持空文案，避免误显示为完成。 */
   const status = running ? t("ai.runtime.running") : failed ? t("ai.runtime.failed")
-    : entry.status === "completed" ? t("ai.runtime.completed") : entry.status === "cancelled" ? t("ai.runtime.cancelled") : "";
+    : phase === "completed" ? t("ai.runtime.completed") : phase === "cancelled" || phase === "stopped" ? t("ai.runtime.cancelled") : "";
   // 手动选择只属于当前阶段；子代理结束后恢复收起，与普通工具保持一致。
   const expanded = disclosure?.phase === phase ? disclosure.open : running;
   // 当前动作：优先在跑的工具摘要，其次最新一段正文的首行。
@@ -213,8 +218,13 @@ function AiToolFigure({ entry, view }: { entry: AiEntry; view: ToolView }) {
   return null;
 }
 
-/** 折叠时不构造文件 diff 和完整 JSON，避免每个流式事件重做大文件工作。 */
-export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean; agent?: { sessionId: string }; onOpenAgent?: (id: string) => void }) {
+/**
+ * 根据工具与委派身份展示详情，仅在展开后构造文件差异及完整输出。
+ *
+ * @param props - 工具条目、子过程、请求归属及可选的独立会话入口
+ * @returns 工具或委派详情；已由实时请求卡展示的提问返回 null
+ */
+export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasRequest, agent, onOpenAgent }: { entry: AiEntry; subagents?: AiEntry[]; hasRequest?: boolean; agent?: { /** 独立子会话标识。 */ sessionId: string; /** 子代理生命周期，优先于启动工具状态。 */ status: string }; onOpenAgent?: (id: string) => void }) {
   const { t } = useI18n();
   const view = describeAiTool(entry, false);
   const openPreview = useAiFilePreview();
@@ -224,7 +234,7 @@ export const AiToolCall = memo(function AiToolCall({ entry, subagents, hasReques
   const [disclosure, setDisclosure] = useState<{ phase: string; open: boolean } | null>(null);
   // 手动开关只属于当前状态阶段；离开 running 后旧选择失效，完成项立即恢复默认折叠。
   const open = disclosure?.phase === phase ? disclosure.open : defaultOpen;
-  if (DELEGATION_TOOL.test(entry.name ?? "")) return <AiDelegationCard entry={entry} subagents={subagents} agent={agent} onOpenAgent={onOpenAgent} />;
+  if (agent || DELEGATION_TOOL.test(entry.name ?? "")) return <AiDelegationCard entry={entry} subagents={subagents} agent={agent} onOpenAgent={onOpenAgent} />;
   // 历史里的提问工具（没有请求卡的那份记录）才按问答记录渲染；实时里请求卡和工具条目
   // 是同一次提问的两条协议记录，这里再画一张就是「显示两次」——有请求卡就让位。
   if (QUESTION_TOOL.test(entry.name ?? "") && questionToolItems(entry).length) {

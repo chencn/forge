@@ -324,6 +324,8 @@ export interface AiModelTaskList { seq: number; runId: string; items: AiModelTas
 export interface AiAgentSummary {
   /** 路由 key：Claude 的 Agent tool_use id、Codex 的 agentThreadId。 */
   key: string;
+  /** 发起委派的工具调用 ID；Codex 的线程 key 与调用 ID 不同。 */
+  toolId?: string;
   /** 子会话 id；点开子代理视图就是打开它。 */
   sessionId?: string;
   title: string;
@@ -833,7 +835,14 @@ function goalSummaryFromEvent(event: AiRuntimeEvent): AiGoalSummary | undefined 
   return goal ? { seq: event.seq, goal } : undefined;
 }
 
-/** Complete messages replace deltas under the same provider item ID. */
+/**
+ * 将运行事件投影为会话快照，正文替换同一消息的增量，委派生命周期只影响子会话自身。
+ *
+ * @param events - 当前批次事件，按会话序号重放
+ * @param previous - 增量基线；未指定时使用空快照
+ * @param incremental - 为真时保留基线中未被当前批次更新的条目
+ * @returns 包含正文、任务、委派及用量的快照；无回合时 runId 为 null
+ */
 export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSnapshot = EMPTY, incremental = false): AiRuntimeSnapshot {
   // 增量投影绝不原地改写上一帧的条目。流式期间每帧都会走到这里，把条目逐条浅拷贝一遍
   // 会让所有条目的身份一起翻新，下游靠引用比较的 memo 就此全线失效，每帧重渲染整条时间线。
@@ -905,41 +914,53 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const data = event.data; const key = `${event.runId}:${typeof data.id === "string" ? data.id : event.seq}`;
     seenRuns.add(event.runId);
-    if (event.kind === "status") {
+    /** 只有子会话自身的生命周期参与运行投影；父侧委派摘要不代表父回合状态。 */
+    const selfAgent = event.kind === "agent" && data.sessionId === event.sessionId;
+    /** 原生补采可能使用 native 回合标识，终态仍属于当前委派。 */
+    const taskRunId = selfAgent && event.runId === "native" ? [...tasks.values()].reverse().find((task) => task.status === "running")?.runId ?? event.runId : event.runId;
+    /** 自身代理状态与普通回合共用状态词表，但不产生停止控制权。 */
+    const taskState = event.kind === "status" ? data.status
+      : selfAgent
+        ? ({ starting: "running", running: "running", stopped: "cancelled", completed: "completed", failed: "failed" } as Record<string, string>)[String(data.status)]
+        : undefined;
+    if (taskState !== undefined) {
       // 词表外或前端专属（submitting）的状态一律当没发生：日志损坏时不能凭空造出一轮。
-      const rawStatus = String(data.status);
+      const rawStatus = String(taskState);
       const taskStatus = isAiTaskBackendStatus(rawStatus) ? rawStatus : null;
       if (taskStatus) {
-        const current = tasks.get(event.runId);
-        tasks.set(event.runId, { runId: event.runId, status: taskStatus,
+        if (selfAgent && taskStatus === "running") for (const task of tasks.values()) {
+          if (task.runId !== taskRunId && task.status === "running") tasks.set(task.runId, { ...task, status: "cancelled" });
+        }
+        const current = tasks.get(taskRunId);
+        tasks.set(taskRunId, { runId: taskRunId, status: taskStatus,
           started: taskStatus === "running" || taskStatus === "completed" ? true
             : current?.started ?? (isAiTaskQueued(taskStatus) ? false : undefined),
-          prompt: typeof data.prompt === "string" ? data.prompt : (current?.prompt ?? prompts.get(event.runId)),
+          prompt: typeof data.prompt === "string" ? data.prompt : (current?.prompt ?? prompts.get(taskRunId)),
           queueIndex: Number.isSafeInteger(data.queueIndex) && Number(data.queueIndex) >= 0 ? Number(data.queueIndex) : current?.queueIndex,
           error: typeof data.error === "string" ? data.error : undefined, seq: current?.seq ?? event.seq });
         // 排队期间编辑的是任务提示词；启动时正文必须使用最后确认的版本。
-        const prompt = tasks.get(event.runId)?.prompt;
+        const prompt = tasks.get(taskRunId)?.prompt;
         if (current && isAiTaskQueued(current.status) && typeof prompt === "string") for (const entry of entries) {
-          if (entry.runId === event.runId && entry.kind === "user") mut(entry).text = prompt;
+          if (entry.runId === taskRunId && entry.kind === "user") mut(entry).text = prompt;
         }
       }
       const terminal = taskStatus !== null && isAiTaskTerminal(taskStatus);
       if (taskStatus === "running") {
-        if (runId !== event.runId) mcpServers = undefined;
+        if (runId !== taskRunId) mcpServers = undefined;
         // 新请求只继承已知窗口与累计统计；旧输入和分类不能继续冒充本轮上下文。
         // 本轮报告可能先于 running 到达，按归属判断，不能把刚刷新的数据再次清掉。
-        usage = usageForRun(event.runId);
-        if (context && context.runId !== event.runId) context = undefined;
-        runId = event.runId; status = "running"; error = null; contextUnavailable = undefined; background = undefined; permissionDenied = undefined;
+        usage = usageForRun(taskRunId);
+        if (context && context.runId !== taskRunId) context = undefined;
+        runId = taskRunId; status = "running"; error = null; contextUnavailable = undefined; background = undefined; permissionDenied = undefined;
       }
-      else if (terminal && runId === event.runId && taskStatus) { status = taskStatus; error = typeof data.error === "string" ? data.error : null; background = undefined; }
-      if (terminal) for (const request of requests.values()) if (request.runId === event.runId) mutReq(request).active = false;
+      else if (terminal && runId === taskRunId && taskStatus) { status = taskStatus; error = typeof data.error === "string" ? data.error : null; background = undefined; }
+      if (terminal) for (const request of requests.values()) if (request.runId === taskRunId) mutReq(request).active = false;
       if (terminal && taskStatus) {
         for (const entry of entries) {
-          if (entry.kind === "tool" && entry.runId === event.runId && entry.status === "running") {
+          if (entry.kind === "tool" && (selfAgent || entry.runId === taskRunId) && entry.status === "running") {
             mut(entry).status = taskStatus === "completed" ? "unknown" : taskStatus;
           }
-          if (entry.kind === "notice" && entry.name === "compaction" && entry.runId === event.runId) {
+          if (entry.kind === "notice" && entry.name === "compaction" && entry.runId === taskRunId) {
             const input = entry.input && typeof entry.input === "object" ? entry.input as Record<string, unknown> : {};
             if (input.status === "compacting" || input.status === "running") {
               mut(entry).input = { ...input, status: taskStatus === "cancelled" ? "interrupted" : taskStatus };
@@ -947,7 +968,8 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
           }
         }
       }
-    } else if (event.kind === "bound" && typeof data.nativeId === "string") nativeId = data.nativeId;
+    }
+    if (event.kind === "bound" && typeof data.nativeId === "string") nativeId = data.nativeId;
     else if (event.kind === "user" && typeof data.text === "string") {
       // `user` 只说明「这一轮说过什么」，不说明「这一轮还在不在跑」。以前这里顺手造一轮
       // （没有状态就写 `submitting`），导入的原生历史几百条用户消息一条状态事件都没有，
@@ -1098,6 +1120,7 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         key,
         ...(current ?? {}),
         ...(typeof data.sessionId === "string" && data.sessionId ? { sessionId: data.sessionId } : {}),
+        ...(typeof data.toolId === "string" && data.toolId ? { toolId: current?.toolId ?? data.toolId } : {}),
         ...(typeof data.title === "string" && data.title.trim() ? { title: data.title } : { title: current?.title ?? "" }),
         ...(typeof data.agentType === "string" && data.agentType ? { agentType: data.agentType } : {}),
         ...(typeof data.model === "string" && data.model ? { model: data.model } : {}),
@@ -1109,6 +1132,9 @@ export function projectAiEvents(events: AiRuntimeEvent[], previous: AiRuntimeSna
         updatedAt: event.seq,
       };
       agents.set(key, next);
+      if (selfAgent && data.usage && typeof data.usage === "object" && !Array.isArray(data.usage)) {
+        usage = { ...normalizeAiUsage({ usage: data.usage, scope: "turn" }, usageForRun(taskRunId)), runId: taskRunId };
+      }
     } else if (["retry", "compaction", "notice", "plan"].includes(event.kind)) {
       if (event.kind === "compaction") { staleContext(); if (usage) usage = { ...usage, context: undefined }; }
       // 普通 notice 一条一格（本轮可能有多次自动允许/自动拒绝）；retry/plan 仍按类型合并。
@@ -1274,8 +1300,18 @@ function updateTask(id: string, next: AiTask) {
   changed();
 }
 
-/** 后端摘要覆盖分页之外的活动任务；已有 prompt 优先，避免刷新时任务只剩编号。 */
+/**
+ * 用后端摘要补全分页之外的活动任务，并保留比摘要更新的实时生命周期。
+ *
+ * @param state - 接收任务更新的会话存储
+ * @param summaries - 后端全日志活动任务；空数组表示该水位内没有活动任务
+ * @param latestSeq - 摘要覆盖到的会话序号
+ * @returns 更新存储中的任务与运行状态；已有更新的自身生命周期时提前返回
+ */
 function mergeActiveTasks(state: State, summaries: AiTask[], latestSeq: number) {
+  // 子会话只有一个活动委派；native 补采终态可能结算真实父回合，旧页不能按原始 ID 复活它。
+  if ([...state.events.values()].some((event) => event.seq > latestSeq && event.kind === "agent"
+    && event.data.sessionId === event.sessionId && ["starting", "running", "completed", "failed", "stopped"].includes(String(event.data.status)))) return;
   const activeIds = new Set(summaries.map((summary) => summary?.runId).filter((id): id is string => typeof id === "string"));
   // 历史请求在途时仍会收到实时状态；task.seq 是入队序号，不能拿它判定状态的新旧。
   // 摘要只覆盖其水位以内的任务状态，避免重开时把 running 改回 queued 或复活已结束的回合。
@@ -1391,6 +1427,10 @@ function merge(events: AiRuntimeEvent[], owned = false) {
     }
     const state = store(event.sessionId);
     if (state.events.has(event.seq)) continue;
+    if (owned && event.kind === "agent" && event.data.sessionId === event.sessionId) {
+      // 生命周期推送使上一次空闲探针过期，但不登记父回合的控制权。
+      activities.delete(event.sessionId);
+    }
     state.events.set(event.seq, event);
     const batch = touched.get(event.sessionId) ?? []; batch.push(event); touched.set(event.sessionId, batch);
   }

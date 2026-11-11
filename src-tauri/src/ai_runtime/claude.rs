@@ -578,19 +578,17 @@ impl Protocol for Claude {
                         self.messages.insert(scope.clone(), id.into());
                         // 首个流式信封已包含本次输入（含缓存）；无需等整条回复结束才刷新占用。
                         // 子代理的模型和窗口独立，不能覆盖主会话。
-                        if scope.is_empty() {
-                            if event["message"]["model"].is_string() {
-                                out.push(Action::Emit { kind: "configuration", data: json!({"model":event["message"]["model"]}) });
-                            }
-                            if event["message"]["usage"].is_object() {
-                                out.push(Action::Emit { kind: "usage", data: event["message"]["usage"].clone() });
-                            }
-                            // 实际模型与本轮输入已就绪后再查询，避免初始化阶段采到上轮摘要。
-                            out.extend(self.request_context());
+                        if event["message"]["model"].is_string() {
+                            out.push(Action::Emit { kind: "configuration", data: Self::scoped(json!({"model":event["message"]["model"]}), &scope) });
                         }
+                        if event["message"]["usage"].is_object() {
+                            out.push(Action::Emit { kind: "usage", data: Self::scoped(event["message"]["usage"].clone(), &scope) });
+                        }
+                        // 子代理没有独立的上下文查询通道，不能把父快照当成它的窗口。
+                        if scope.is_empty() { out.extend(self.request_context()); }
                     }
-                    "message_delta" if scope.is_empty() && event["usage"].is_object() => {
-                        out.push(Action::Emit { kind: "usage", data: event["usage"].clone() });
+                    "message_delta" if event["usage"].is_object() => {
+                        out.push(Action::Emit { kind: "usage", data: Self::scoped(event["usage"].clone(), &scope) });
                     }
                     "content_block_start" => {
                         let block = &event["content_block"];
@@ -695,13 +693,13 @@ impl Protocol for Claude {
                         data: Self::scoped(json!({"id":id,"text":text}), &scope),
                     });
                 }
-                if scope.is_empty() && message["model"].is_string() {
-                    out.push(Action::Emit { kind: "configuration", data: json!({"model":message["model"]}) });
+                if message["model"].is_string() {
+                    out.push(Action::Emit { kind: "configuration", data: Self::scoped(json!({"model":message["model"]}), &scope) });
                 }
-                if scope.is_empty() && message.get("usage").is_some() {
+                if message["usage"].is_object() {
                     out.push(Action::Emit {
                         kind: "usage",
-                        data: message["usage"].clone(),
+                        data: Self::scoped(message["usage"].clone(), &scope),
                     });
                 }
                 // 未发送流式 message_start 的 CLI 版本从完整消息边界采集。
@@ -1177,7 +1175,9 @@ mod tests {
         // 子代理有独立的窗口，不能覆盖主会话占用。
         for event in [json!({"type":"message_start","message":{"id":"child","model":"child-model","usage":{"input_tokens":999}}}), json!({"type":"message_delta","usage":{"output_tokens":999}})] {
             let actions = p.receive(json!({"type":"stream_event","parent_tool_use_id":"child-tool","event":event})).unwrap();
-            assert!(!actions.iter().any(|a| matches!(a, Action::Emit {kind:"configuration" | "usage",..})));
+            assert!(actions.iter().any(|a| matches!(a, Action::Emit {kind:"usage",data} if data["agentKey"] == "child-tool" && data["parent"] == "child-tool")));
+            assert!(!actions.iter().any(|a| matches!(a, Action::Emit {kind:"configuration" | "usage",data} if data.get("agentKey").is_none())));
+            assert!(!actions.iter().any(|a| matches!(a, Action::Write(_))));
         }
     }
     #[test]
@@ -1193,13 +1193,9 @@ mod tests {
         assert!(out.iter().any(|a| matches!(a, Action::Write(v) if v["request"]["subtype"] == "get_context_usage")));
         assert!(!format!("{out:?}").contains("secret"));
         let out=p.receive(json!({"type":"assistant","parent_tool_use_id":"child","message":{"id":"child-message","model":"child-model","content":[],"usage":{"input_tokens":999}}})).unwrap();
-        assert!(!out.iter().any(|a| matches!(
-            a,
-            Action::Emit {
-                kind: "usage" | "configuration",
-                ..
-            }
-        )));
+        assert!(out.iter().any(|a| matches!(a, Action::Emit {kind:"usage",data} if data["agentKey"] == "child" && data["input_tokens"] == 999)));
+        assert!(out.iter().any(|a| matches!(a, Action::Emit {kind:"configuration",data} if data["agentKey"] == "child" && data["model"] == "child-model")));
+        assert!(!out.iter().any(|a| matches!(a, Action::Write(_))));
     }
     #[test]
     fn agent_tool_lifecycle_becomes_agent_events_with_keys() {

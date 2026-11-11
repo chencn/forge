@@ -61,6 +61,13 @@ beforeEach(() => {
 });
 
 describe("AiApprovalCard", () => {
+  it("MCP 仅答复工具审批，不把远端路径记成本机目录规则", () => {
+    /** MCP 的路径由服务端解释，即使形似 Windows 路径也不能套本机目录规则。 */
+    const { tree } = render({ toolName: "mcp__dbx__dbx_ssh_sftp_write_file", input: { path: "D:/remote/system-auth.bak" } });
+    expect(buttons(tree).map(label)).toEqual(["ai.runtime.deny", "ai.runtime.allowOnce", "ai.runtime.allowAndRemember"]);
+    click(tree, "ai.runtime.allowOnce");
+    expect(answers).toEqual([{ allow: true }]);
+  });
   it("认不出路径时只给一次一答与整工具放行，绝不出现按目录授权", () => {
     const { tree } = render({ toolName: "exec", input: { command: "rm -rf /" } });
     expect(buttons(tree).map(label)).toEqual(["ai.runtime.deny", "ai.runtime.allowOnce", "ai.runtime.allowAndRemember"]);

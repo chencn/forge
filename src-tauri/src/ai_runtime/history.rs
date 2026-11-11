@@ -971,6 +971,8 @@ fn import_codex_subagent(
     if save_source(base, &child, &source).is_err() || target.bind(child_id.to_owned()).is_err() { return; }
     // 列表发现只能登记路径；运行中的游标由 Worker 独占并广播，避免抢先消费而漏通知。
     if super::registry::for_session(&parent_forge).is_some() { return; }
+    // 外部 Forge 的父 Worker 也独占增量游标；发现路径不能抢先消费它的事件。
+    let Ok(_lease) = super::store::Lease::acquire(&base.join(format!("{parent_forge}.lock"))) else { return; };
     // 离线发现也遵守单次扫描预算，剩余部分由下次发现/打开子会话续采。
     let Ok((start, _)) = checkpoint(base, &child) else { return; };
     while let Ok(events) = poll_codex_subagent(&mut target, &source, true) {
@@ -1045,7 +1047,10 @@ fn poll_codex_subagent(target: &mut Store, source: &Source, follow_lifecycle: bo
     }
     if offset == start { return Ok(vec![]); }
     batch.push(("history_checkpoint".into(), json!({"offset":offset,"projection":projection})));
-    let events = target.append("native", batch)?;
+    // 运行期正文、工具与用量必须和父连接的生命周期使用同一回合归属。
+    let run_id = target.meta.parent_session_id.as_deref().and_then(super::registry::for_session)
+        .map(|run| run.id.clone()).unwrap_or_else(|| "native".into());
+    let events = target.append(&run_id, batch)?;
     if let (Some(status), Some(info)) = (status, target.meta.agent.as_mut()) {
         info.status = status.into();
         info.ended_at = (status != "running").then(super::now_ms);
@@ -1976,6 +1981,22 @@ fn project_with_state(
                     "status":if item["status"] == "completed" { "completed" } else { "recorded" },
                 })));
             }
+            "event_msg" if p["type"] == "item_completed" && p["item"]["type"] == "CommandExecution" => {
+                let item = &p["item"];
+                let duration = &item["duration"];
+                let duration_ms = duration["secs"].as_f64().zip(duration["nanos"].as_f64())
+                    .map(|(secs, nanos)| secs * 1000.0 + nanos / 1_000_000.0);
+                out.push(("tool".into(), json!({
+                    "id":item["id"].as_str().unwrap_or(&id),"name":"exec",
+                    "input":{"command":item["command"],"cwd":item["cwd"],"commandActions":item["parsed_cmd"]},
+                    "output":item["aggregated_output"],
+                    "result":{"exitCode":item["exit_code"],"durationMs":duration_ms},
+                    "status":match item["status"].as_str() {
+                        Some("completed") => "completed", Some("failed") => "failed",
+                        Some("interrupted") => "cancelled", _ => "recorded",
+                    },
+                })));
+            }
             "event_msg" if p["type"] == "token_count" => {
                 let info=&p["info"]; let last=&info["last_token_usage"]; let total=&info["total_token_usage"];
                 out.push(("usage".into(), json!({"tokenUsage":{"last":{"inputTokens":last["input_tokens"],"outputTokens":last["output_tokens"],"cachedInputTokens":last["cached_input_tokens"],"reasoningOutputTokens":last["reasoning_output_tokens"],"totalTokens":last["total_tokens"]},"total":{"totalTokens":total["total_tokens"]},"modelContextWindow":info["model_context_window"]}})));
@@ -1990,6 +2011,23 @@ fn project_with_state(
 mod tests {
     use super::*;
     use super::super::store::Window;
+    /// 原生子代理命令的完成信封必须保留工具详情所需的结构化字段。
+    #[test]
+    fn codex_command_execution_preserves_execution_details() {
+        let events = project(Provider::Codex, &json!({"type":"event_msg","payload":{
+            "type":"item_completed","item":{"type":"CommandExecution","id":"cmd","command":["pwsh","-Command","exit 7"],
+                "cwd":"D:/repo","aggregated_output":"failure","exit_code":7,"status":"failed",
+                "duration":{"secs":2,"nanos":500000000},"parsed_cmd":[]}
+        }}), 1);
+        let tool = &events.iter().find(|(kind, _)| kind == "tool").unwrap().1;
+        assert_eq!(tool["name"], "exec");
+        assert_eq!(tool["input"]["command"], json!(["pwsh","-Command","exit 7"]));
+        assert_eq!(tool["input"]["cwd"], "D:/repo");
+        assert_eq!(tool["output"], "failure");
+        assert_eq!(tool["result"]["exitCode"], 7);
+        assert_eq!(tool["result"]["durationMs"], 2500.0);
+        assert_eq!(tool["status"], "failed");
+    }
     #[test]
     fn codex_file_change_projects_as_patch_tool_with_changes_array() {
         let _root = std::env::temp_dir().join("forge-history-filechange").to_string_lossy().to_string();
@@ -2685,12 +2723,18 @@ mod tests {
         let started = json!({"type":"event_msg","payload":{"type":"task_started"}}).to_string() + "\n";
         let complete = complete + &started + &late.to_string() + "\n";
         fs::write(&native, &complete).unwrap();
+        let cursor = checkpoint(&base, &child).unwrap().0;
+        let lease = super::super::store::Lease::acquire(&base.join(format!("{parent_forge}.lock"))).unwrap();
+        import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
+        assert_eq!(checkpoint(&base, &child).unwrap().0, cursor, "外部父 Worker 持租约时不能消费游标");
+        drop(lease);
         let (run, _) = super::super::registry::Run::reserve("codex-history-live".into(), parent_forge.into(), workspace.clone(), workspace.clone()).unwrap();
         // 列表发现不能抢 Worker 游标；延迟的 task_started 也不能覆盖协议已知终态。
         import_codex_subagent(&base, &native, &workspace, &known, &HashMap::new());
         let page = Store::page(&base, &child, &workspace, Window::After(0), 100, false).unwrap();
         assert!(!page.events.iter().any(|event| event.data["text"] == "迟到的正文"));
         let events = sync_codex_subagent(&base, &child, &workspace, false, false).unwrap();
+        assert!(events.iter().all(|event| event.run_id == "codex-history-live"));
         assert_eq!(events.iter().filter(|event| event.kind == "message" && event.data["text"] == "迟到的正文").count(), 1);
         assert!(!events.iter().any(|event| event.kind == "agent"));
         assert_eq!(Store::metadata(&base.join(&child), &workspace).unwrap().agent.unwrap().status, "completed");

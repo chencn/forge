@@ -206,6 +206,32 @@ function diffShortcuts(options: DiffViewOptions, step: (dir: DiffDir, view: Edit
   return [Prec.highest(keymap.of(bindings)), forgeKeymap(scheme)];
 }
 
+/**
+ * 比对视图复制事件处理器：
+ * - 用户选中文本按 Ctrl+C / Cmd+C 时，直接从 EditorState 提取纯文本写入剪贴板；
+ * - 若选区为空，复制光标所在行的整行内容（与主编辑器行为一致）；
+ * - 彻底避免只读与自绘选区（drawSelection）模式下浏览器原生复制失效。
+ */
+const diffCopyHandler = EditorView.domEventHandlers({
+  copy(event, view) {
+    if (!event.clipboardData) return false;
+    const sel = view.state.selection.main;
+    if (sel.empty) {
+      const line = view.state.doc.lineAt(sel.head);
+      if (line.text) {
+        event.clipboardData.setData("text/plain", `${line.text}\n`);
+        event.preventDefault();
+        return true;
+      }
+      return false;
+    }
+    const text = view.state.sliceDoc(sel.from, sel.to);
+    event.clipboardData.setData("text/plain", text);
+    event.preventDefault();
+    return true;
+  },
+});
+
 /** 拼一栏（并排模式单侧）的全部扩展：只读、行号、主题、键位与勾选槽。 */
 function sideExtensions(
   options: DiffViewOptions,
@@ -229,6 +255,7 @@ function sideExtensions(
     highlightActiveLineGutter(),
     highlightSpecialChars(),
     drawSelection(),
+    diffCopyHandler,
     bracketMatching(),
     indentGuides,
     rainbowBrackets(),

@@ -68,12 +68,16 @@ interface DiffPaneProps {
   onRefresh?: () => void;
 }
 
-/** 一侧表头那一行：版本名 + 可选徽章，左侧再跟上那条路径。 */
+/** 一侧表头那一行：版本名 + 可选徽章，左侧再跟上那条路径（支持右键快速复制路径）。 */
 function sideRow(label: string, path?: string, badge?: string) {
   return (
     <span className="diff-side-row">
       {label ? <span className="diff-rev">{label}</span> : null}
-      {path ? <span className="diff-path">{path}</span> : null}
+      {path ? (
+        <span className="diff-path" data-copy-text={path} title={path}>
+          {path}
+        </span>
+      ) : null}
       {badge ? <span className="diff-side-badge">{badge}</span> : null}
     </span>
   );

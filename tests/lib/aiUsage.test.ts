@@ -12,6 +12,7 @@ describe("provider usage accounting", () => {
     expect(contextPercent(normalizeAiUsage({ tokenUsage: { last: { totalTokens: 100 }, total: { totalTokens: 10000 } } }))).toBeUndefined();
     expect(contextPercent({ context: 0, window: 0 })).toBeUndefined();
     expect(normalizeAiUsage({ input_tokens: -1, output_tokens: Infinity }).input).toBeUndefined();
+    expect(normalizeAiUsage({ scope: "turn", usage: { totalTokens: 500 } })).toMatchObject({ total: 500, context: undefined, window: undefined });
   });
   it("includes Claude cache inputs without replacing context with result totals", () => {
     const message = normalizeAiUsage({ input_tokens: 10, cache_read_input_tokens: 80, cache_creation_input_tokens: 10, output_tokens: 5 });

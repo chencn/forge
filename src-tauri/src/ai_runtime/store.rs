@@ -3,6 +3,7 @@
 use super::events::{Event, Page};
 use crate::ai_cli::Provider;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -386,8 +387,9 @@ impl Store {
         let (mut store, scan) = Self::load(base, id, root, provider, title, version, create)?;
         // 调用方握着租约，就说明本进程里没有这一轮的 worker：日志停在 running
         // 必然是上一次进程被打断的。标成已取消，并且不自动重发消息，避免重复执行工具。
+        // 子会话由父租约保护，重建路由时不能按子目录的锁推断中断。
         if let Some(event) = scan.last_status {
-            if event.data["status"] == "running" {
+            if store.meta.parent_session_id.is_none() && event.data["status"] == "running" {
                 store.append(&event.run_id, vec![("status".into(), serde_json::json!({"status":"cancelled","error":"上次运行未正常结束；未自动重发消息"}))])?;
             }
         }
@@ -742,9 +744,30 @@ impl Store {
             scan_events_folded(&path, repair, window, limit, id, &fold)
         };
         let mut scan = read_page(false)?;
+        // 父回合已结束或换轮时，旧委派不再活跃；共享租约只能证明父进程还在，不能复活旧任务。
+        let parent_run = meta.parent_session_id.as_deref().filter(|parent| *parent != id && valid_id(parent)).and_then(|parent| {
+            if let Some(run) = super::registry::for_session(parent) {
+                return Some((run.id.clone(), "running".to_owned()));
+            }
+            let parent_meta = Self::metadata(&base.join(parent), root).ok()?;
+            if parent_meta.parent_session_id.is_some() { return None; }
+            let page = Self::page(base, parent, root, Window::Before(u64::MAX), 1, true).ok()?;
+            Some((page.latest_run_id?, page.status?))
+        });
+        let delegated_run = scan.last_status.as_ref().filter(|event| event.data["status"] == "running").map(|event| event.run_id.as_str());
+        if let (Some(child), Some((parent, status))) = (delegated_run, parent_run.as_ref()) {
+            if meta.agent.is_some() && (child != parent || status != "running") {
+                scan.active_tasks.clear();
+                if let Some(event) = scan.last_status.as_mut() { event.data["status"] = json!("cancelled"); }
+            }
+        }
+        let active = active || meta.parent_session_id.as_deref().and_then(super::registry::for_session)
+            .is_some_and(|run| scan.last_status.as_ref().is_some_and(|event| event.run_id == run.id));
         if !active && !scan.active_tasks.is_empty() {
             // 活动摘要可能同时含一个运行项和多个排队项；只有拿到租约才敢逐项修复。
-            if let Ok(_lease) = Lease::acquire(&base.join(format!("{id}.lock"))) {
+            // 子会话由父 Worker 写入；必须检查父租约，不能用子目录的空闲锁误判中断。
+            let owner = meta.parent_session_id.as_deref().filter(|parent| valid_id(parent)).unwrap_or(id);
+            if let Ok(_lease) = Lease::acquire(&base.join(format!("{owner}.lock"))) {
                 scan = read_page(true)?;
                 if !scan.active_tasks.is_empty() {
                     let mut interrupted: Vec<_> = scan.active_tasks.values().filter_map(|task| {
@@ -758,19 +781,22 @@ impl Store {
                         poisoned: false,
                     };
                     for (run_id, _) in interrupted {
-                        let event = store.append(
-                            &run_id,
-                            vec![(
-                                "status".into(),
-                                serde_json::json!({"status":"cancelled","error":"上次任务已中断"}),
-                            )],
-                        )?.remove(0);
+                        let value = match store.meta.agent.as_mut() {
+                            Some(agent) => {
+                                agent.status = "stopped".into();
+                                agent.ended_at = Some(now_ms());
+                                ("agent".into(), json!({"key":agent.tool_id,"sessionId":id,"status":"stopped"}))
+                            }
+                            None => ("status".into(), json!({"status":"cancelled","error":"上次任务已中断"})),
+                        };
+                        let event = store.append(&run_id, vec![value])?.remove(0);
+                        if store.meta.agent.is_some() { store.save()?; }
                         scan.seq = event.seq;
                         // 修复写下的那一条就是日志的最新一条：照常交给窗口，往前翻时它必然进页，
                         // 并把这一页原本最老的那条挤出去——那才是「还有更早的」真实含义。
                         let bytes = serde_json::to_string(&event).map(|line| line.len() as u64 + 1).unwrap_or(0);
                         scan.accept(window, limit, event.clone(), bytes);
-                        scan.last_status = Some(event);
+                        scan.last_status = task_status_event(&event, Some(&run_id));
                         scan.active_tasks.remove(&run_id);
                     }
                 }
@@ -1163,8 +1189,30 @@ pub fn compaction_fold(path: &Path) -> CompactionFold {
     pair_compactions(&mut episodes, &summaries)
 }
 
-/// 已索引到日志的哪个字节位置、每 `ANCHOR_EVERY` 条事件的一次落点。
-const INDEX_VERSION: u32 = 3;
+/// 索引布局版本；生命周期摘要规则变化后必须重建磁盘缓存。
+const INDEX_VERSION: u32 = 4;
+
+/// 将子会话自身的生命周期折叠为任务摘要，原始事件仍保持 agent 类型以隔离控制权。
+///
+/// 原生历史以 native 为回合标识；补采终态必须结算已经启动的真实委派回合。
+fn task_status_event(event: &Event, active_run: Option<&str>) -> Option<Event> {
+    if event.kind == "status" { return Some(event.clone()); }
+    if event.kind != "agent" || event.data["sessionId"].as_str() != Some(event.session_id.as_str()) { return None; }
+    let status = match event.data["status"].as_str()? {
+        "starting" | "running" => "running",
+        "completed" => "completed",
+        "failed" => "failed",
+        "stopped" => "cancelled",
+        _ => return None,
+    };
+    let mut normalized = event.clone();
+    normalized.kind = "status".into();
+    normalized.data["status"] = json!(status);
+    if event.run_id == "native" {
+        if let Some(run) = active_run { normalized.run_id = run.to_owned(); }
+    }
+    Some(normalized)
+}
 /// 每 [`ANCHOR_EVERY`] 条事件在索引里落一个锚点，供快速定位。
 const ANCHOR_EVERY: u64 = 64;
 /// 索引文件的大小上限；超了整份重建，坏索引不能拖垮读取。
@@ -1334,6 +1382,13 @@ impl LogIndex {
                 }
             }
             "status" => self.push_status(event),
+            "agent" => {
+                if let Some(status) = task_status_event(&event, self.active.last().and_then(|task| task["runId"].as_str())) {
+                    // 子会话没有独立队列，同一时刻只运行一个委派。
+                    self.active.retain(|task| task["runId"].as_str() == Some(status.run_id.as_str()));
+                    self.push_status(status);
+                }
+            }
             _ => {}
         }
     }
@@ -1478,7 +1533,9 @@ fn scan_events_folded(
                 width += text.len() as u64;
             }
         }
-        if event.kind == "status" {
+        if let Some(status_event) = task_status_event(&event, scan.active_tasks.values().next().and_then(|task| task["runId"].as_str())) {
+            if event.kind == "agent" { scan.active_tasks.retain(|run, _| run == &status_event.run_id); }
+            let event = &status_event;
             let status = event.data["status"].as_str().unwrap_or_default();
             if super::task_status::is_live(status) {
                 let pending_prompt = scan.pending_prompts.remove(&event.run_id);
@@ -1675,6 +1732,41 @@ mod tests {
     use super::*;
     use serde_json::json;
     use Provider::Codex as TestProvider;
+    /// 子会话分页与全量扫描必须以同一生命周期结算，父租约存活时不可误恢复。
+    #[test]
+    fn child_lifecycle_drives_page_summary_without_owning_a_run() {
+        let base = fixture();
+        let mut target = Store::open(&base, "child", "root", TestProvider, "child", "").unwrap();
+        target.meta.parent_session_id = Some("parent".into());
+        target.meta.agent = Some(AgentInfo { tool_id: "agent-key".into(), status: "running".into(), ..Default::default() });
+        target.save().unwrap();
+        let lease = Lease::acquire(&base.join("parent.lock")).unwrap();
+        target.append("parent-run", vec![("agent".into(), json!({"key":"agent-key","sessionId":"child","status":"starting","prompt":"inspect"}))]).unwrap();
+        let page = Store::page(&base, "child", "root", Window::Before(u64::MAX), 1, false).unwrap();
+        assert_eq!(page.status.as_deref(), Some("running"));
+        assert_eq!(page.latest_run_id.as_deref(), Some("parent-run"));
+        assert_eq!(page.active_tasks[0]["prompt"], "inspect");
+        assert_eq!(page.events[0].kind, "agent");
+        // 重开路由不能把仍由父持有的委派写成普通 cancelled。
+        let reopened = Store::open(&base, "child", "root", TestProvider, "child", "").unwrap();
+        assert_eq!(reopened.seq, 1);
+        target.append("native", vec![("agent".into(), json!({"key":"agent-key","sessionId":"child","status":"completed"}))]).unwrap();
+        let done = Store::page(&base, "child", "root", Window::After(2), 1, false).unwrap();
+        assert_eq!(done.status.as_deref(), Some("completed"));
+        assert_eq!(done.latest_run_id.as_deref(), Some("parent-run"));
+        assert!(done.active_tasks.is_empty());
+        assert!(done.events.is_empty());
+        let scan = scan_events(&base.join("child/events.jsonl"), false, Window::After(0), 500, "child").unwrap();
+        assert!(scan.active_tasks.is_empty());
+        assert_eq!(scan.last_status.unwrap().run_id, "parent-run");
+        target.append("next-run", vec![("agent".into(), json!({"key":"agent-key","sessionId":"child","status":"running"}))]).unwrap();
+        drop(lease);
+        let recovered = Store::page(&base, "child", "root", Window::Before(u64::MAX), 1, false).unwrap();
+        assert_eq!(recovered.status.as_deref(), Some("cancelled"));
+        assert!(recovered.active_tasks.is_empty());
+        assert_eq!(recovered.events[0].kind, "agent");
+        assert_eq!(Store::metadata(&base.join("child"), "root").unwrap().agent.unwrap().status, "stopped");
+    }
     fn fixture() -> PathBuf {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(

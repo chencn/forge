@@ -25,15 +25,15 @@ import { assetUrl } from "../lib/fs";
 import { aiArrival, aiArrivalOf, formatAiClock, formatAiSeconds, useAiElapsed } from "../lib/aiClock";
 import { useAiChatWidth } from "../lib/aiChatWidth";
 import { compactionFacts } from "../lib/aiCompaction";
-import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiCapabilities, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, reconcileStaleQueuedTask, respondAiRequest, runQueuedAiTaskNow, sendAiAgentMessage, sendAiMessage, setAiGoalStatus, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
-import type { AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiThreadGoal, AiPermissionDenied } from "../lib/aiRuntime";
+import { clearQueuedAiTasks, decideAiPlan, deferAiPlan, editQueuedAiTask, loadAiCapabilities, loadAiMessages, loadAiMessagesThrough, loadAiOutline, loadOlderAiMessages, moveQueuedAiTask, reconcileStaleQueuedTask, respondAiRequest, runQueuedAiTaskNow, sendAiAgentMessage, sendAiMessage, setAiGoalStatus, stopAiAgent, stopAiRun, useAiOutline, useAiOwnedQueuedRunIds, useAiOwnedRunId, useAiRuntime, useAiSessionActivity } from "../lib/aiRuntime";
+import type { AiAgentSummary, AiEntry, AiOutlineSnapshot, AiRequest, AiRunOptions, AiCommandIntent, AiThreadGoal, AiPermissionDenied } from "../lib/aiRuntime";
 import { describeError } from "../lib/errors";
 import { buildNavRows, NAV_PAGE, visibleNavRows, parseNavPrompt } from "../lib/aiMessageNav";
 import type { AiNavRow } from "../lib/aiMessageNav";
 import AiPlanApproval, { AiPlanEntry } from "./AiPlanCard";
 import { AiTaskListDockPanel } from "./AiDockPanels";
 import { openAiPlan } from "../lib/aiPlan";
-import { requestPath } from "../lib/aiApprovals";
+import { canGrantLocalDirectory, requestPath } from "../lib/aiApprovals";
 import type { AiPermissionAnswer } from "../lib/aiApprovals";
 import { commandSuggestions, completeCommand, filterCommandSuggestions, localCommand, parseSlash, resolveNativeCommand } from "../lib/aiCommands";
 import { browseCancel, browseDown, browseTyped, browseUp, caretOnFirstLine, caretOnLastLine, clearDraft, loadAdditionalDirs, loadDraft, loadPromptHistory, rememberPrompt, saveAdditionalDirs, saveDraft, saveDraftImages, updateDraftImages, useDraftImages, type DraftImageAttachment } from "../lib/aiDrafts";
@@ -784,7 +784,8 @@ interface AiChatEntryRowProps {
   artifacts?: AiEditSummary;
   streaming: boolean;
   liveThinking: boolean;
-  agentSession?: string;
+  /** 委派对应的独立会话及生命周期；不包含父回合控制权。 */
+  agentSession?: AiAgentSummary & { sessionId: string };
   subagents?: AiEntry[];
   hasRequest: boolean;
   onOpenAgent?: (id: string) => void;
@@ -878,7 +879,7 @@ const AiChatEntryRow = memo(function AiChatEntryRow({
           entry={entry}
           subagents={subagents}
           hasRequest={hasRequest}
-          agent={agentSession ? { sessionId: agentSession } : undefined}
+          agent={agentSession}
           onOpenAgent={onOpenAgent}
         />
       ) : entry.kind === "reasoning" ? (
@@ -1018,6 +1019,8 @@ export default function AiSessionPane({
   const [dropArmed, setDropArmed] = useState(false);
   const attachArea = useRef<HTMLDivElement>(null);
   const [sending, setSending] = useState(false);
+  /** 子代理停止请求独立于父回合停止和消息提交。 */
+  const [stoppingAgent, setStoppingAgent] = useState(false);
   const sendingRef = useRef(false);
   const [timelineLimit, setTimelineLimit] = useState(TIMELINE_WINDOW);
   /** 用户点过「这次不用」的那一档；跨过下一个比例档位才会重新提醒。 */
@@ -1318,8 +1321,22 @@ export default function AiSessionPane({
   const [pendingJump, setPendingJump] = useState<{ id: string; waiting: boolean } | null>(null);
   // 历史 running 可能属于另一个 Forge 进程；停止按钮必须认实时探针给出的本进程 run id。
   const running = runtime.status === "running" && activity === "running" && runtime.runId === ownedRunId;
-  // 视觉上的运行态：无论是否独占控制权，只要会话处于运行中，就必须展示底部的运行状态条与图标呼吸动画。
-  const visualRunning = running || activity === "running" || runtime.status === "running";
+  /** 展示运行状态不要求控制权；空闲探针已确认结束时，不再沿用历史 running。 */
+  const visualRunning = activity === "running" || (activity !== "idle" && runtime.status === "running");
+  /** 正文流式状态需要生命周期仍在执行；停止权限不参与展示判断。 */
+  const liveOutput = visualRunning && runtime.status === "running";
+  /**
+   * 通过父连接停止当前 Claude 子代理，不使用父回合的停止接口。
+   *
+   * @returns 请求结束后解除按钮等待；失败留在会话错误区，缺少工程时直接返回
+   */
+  const stopCurrentAgent = async () => {
+    if (!workspace || stoppingAgent) return;
+    setStoppingAgent(true);
+    try { await stopAiAgent(session.id, workspace); }
+    catch (cause) { setError(describeError(String(cause), t)); }
+    finally { setStoppingAgent(false); }
+  };
   useEffect(() => { setOptions(loadAiOptions(optionsKey, session.provider)); setDraft(loadDraft(workspace, session.id)); setEditingTask(null); setBrowse(null); setDropArmed(false); setTimelineLimit(TIMELINE_WINDOW); setCompactDismissed(null); setError(null); setAnchor(null); setAtBottom(true); setPendingJump(null); olderTop.current = null; setTaskListDisclosure(null); }, [optionsKey, session.id, workspace]);
   /**
    * 新建会话的交接：草稿欢迎页在创建会话时把首条消息（含附件）留在这里，
@@ -1764,14 +1781,14 @@ export default function AiSessionPane({
   // 按可见的运行回合默认展开过程；是否拥有停止权限不影响执行过程的展示。
   const timeline = useMemo(() => windowAiTimeline(groupAiTimeline(timelineEntries, visualRunning ? runtime.runId ?? ownedRunId : null), timelineLimit), [timelineEntries, visualRunning, runtime.runId, ownedRunId, timelineLimit]);
   // 「正在思考」只能给真正在动的那一条：本轮还在跑时它是末尾那条思考，其余都是想完的。
-  const liveThinkingId = useMemo(() => liveThinking(timelineEntries, running)?.id ?? null, [timelineEntries, running]);
+  const liveThinkingId = useMemo(() => liveThinking(timelineEntries, liveOutput)?.id ?? null, [timelineEntries, liveOutput]);
   const entryIds = useMemo(() => runtime.entries.map((entry) => entry.id), [runtime.entries]);
   // 只有露出来的那部分算「已就地渲染」；没渲染出来的待答复卡片改挂在输入框上方，不能跟着历史一起滚走。
   const inlineRequests = new Set(timeline.items.flatMap((item) => item.kind === "entry" && item.entry.kind === "request" && item.entry.requestId ? [item.entry.requestId] : []));
   const pendingCards = runtime.requests.filter((request) => request.active && !inlineRequests.has(request.requestId));
   const latestTask = runtime.tasks.at(-1);
   // 刚结束的那一轮（完成或失败）：给回合操作行用；正在跑或还有排队时不摆。
-  const finishedTask = !running && latestTask && isAiTaskTerminal(latestTask.status) ? latestTask : null;
+  const finishedTask = !visualRunning && latestTask && isAiTaskTerminal(latestTask.status) ? latestTask : null;
   /** 该轮最后一段有正文的回复，与它之前最近的一条用户消息（跳回那一条用）。 */
   const turnStats = useMemo(() => {
     if (!finishedTask) return null;
@@ -1788,7 +1805,7 @@ export default function AiSessionPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只跟这一轮的归属走，entries 变化由 runId 兜底。
   }, [finishedTask?.runId, runtime.entries]);
   /** 正在流式输出的那条回复：给它做未闭合围栏的修复，免得半截代码块吞掉后面的字。 */
-  const streamingEntryId = running ? runtime.entries.at(-1)?.id ?? null : null;
+  const streamingEntryId = liveOutput ? runtime.entries.at(-1)?.id ?? null : null;
   /** 每轮最后一条顶层条目 → 该轮的文件汇总：轮内 edits 统计同底栏口径（不含子代理的改动）。 */
   const artifactCache = useRef(new Map<string, { count: number; last: AiEntry; summary: AiEditSummary }>());
   const artifactsByLastEntry = useMemo(() => {
@@ -1796,7 +1813,7 @@ export default function AiSessionPane({
     const cache = new Map<string, { count: number; last: AiEntry; summary: AiEditSummary }>();
     for (const group of replyTurns) {
       // 正在跑的这一轮先不挂卡：改动还在往里加，挂上去就是一张数字一直跳的卡。
-      if (running && group.runId === runtime.runId) continue;
+      if (visualRunning && group.runId === runtime.runId) continue;
       // 已经收尾的轮次不会再被事件改动（投影层写时复制保证没变过的条目身份不变），
       // 条目数与最后一条都还是上次那两个，就直接取上次的汇总：diff 逐行解析比重算一遍贵得多。
       const before = artifactCache.current.get(group.last.id);
@@ -1814,7 +1831,7 @@ export default function AiSessionPane({
     }
     artifactCache.current = cache;
     return map;
-  }, [replyTurns, runtime.runId, running]);
+  }, [replyTurns, runtime.runId, visualRunning]);
   // 会话状态与任务状态共用同一批词；认不出就当 idle，让判定回到任务列表本身。
   const compact = useMemo(() => compactDecision({
     provider: session.provider,
@@ -1911,10 +1928,14 @@ export default function AiSessionPane({
     element.classList.add("is-flash");
     window.setTimeout(() => element.classList.remove("is-flash"), 1600);
   }, [pendingJump, runtime.entries, timeline, timelineLimit]);
-  /** 子代理路由 key → 子会话 id；委派卡的「打开会话」入口靠它跳转。 */
+  /** 路由 key 与工具调用 ID 共用子代理摘要，让委派入口和状态保持同源。 */
   const agentSessionsByKey = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const agent of runtime.agents) if (agent.sessionId) map.set(agent.key, agent.sessionId);
+    /** 仅可打开的代理参与工具详情映射。 */
+    const map = new Map<string, AiAgentSummary & { sessionId: string }>();
+    for (const agent of runtime.agents) if (agent.sessionId) {
+      map.set(agent.key, { ...agent, sessionId: agent.sessionId });
+      if (agent.toolId) map.set(agent.toolId, { ...agent, sessionId: agent.sessionId });
+    }
     return map;
   }, [runtime.agents]);
   const handleImageLoad = useCallback(() => {
@@ -2080,12 +2101,13 @@ export default function AiSessionPane({
       {/* 子代理刚启动时正文可能尚未落盘，状态条仍应立即显示生命周期。 */}
       {isAgentSession ? (() => {
         // 按会话 id 认领自己；万一父日志里混进别的 key，也不至于拿别人的状态。
-        const self = runtime.agents.find((agent) => agent.sessionId === session.id) ?? runtime.agents[0];
-        const status = self?.status ?? session.agent?.status ?? "";
+        const self = runtime.agents.find((agent) => agent.sessionId === session.id);
+        /** 首屏生命周期可能不在当前页，分页摘要仍提供整个会话的真实终态。 */
+        const status = runtime.status !== "idle" ? runtime.status : self?.status ?? session.agent?.status ?? "";
         const label = status === "running" || status === "starting" ? t("ai.runtime.running")
           : status === "failed" ? t("ai.runtime.failed")
-          : status === "stopped" ? t("ai.runtime.cancelled")
-          : status ? t("ai.runtime.completed") : "";
+          : status === "stopped" || status === "cancelled" ? t("ai.runtime.cancelled")
+          : status === "completed" ? t("ai.runtime.completed") : "";
         return <div className={`ai-agent-strip${status === "running" || status === "starting" ? " is-running" : ""}`} role="status">
           <Bot size={13} aria-hidden />
           <strong>{t("ai.agent.session")}</strong>
@@ -2157,6 +2179,8 @@ export default function AiSessionPane({
           taskList={taskList}
           running={running}
           agents={runtime.agents}
+          provider={session.provider}
+          workspace={workspace}
           onOpenSession={(id) => onOpenAgent?.(id)}
           onJump={(id) => jumpToEntryById(id)}
           onClose={() => setTaskListOpen(false)}
@@ -2191,7 +2215,7 @@ export default function AiSessionPane({
         denied={runtime.permissionDenied}
         sending={sending}
         stopping={runtime.stopping}
-        onGrantDirectory={runtime.permissionDenied.path ? (path) => void grantDirectory(path).then(() => setDismissedDenial(denialKey)).catch((cause) => setError(String(cause))) : undefined}
+        onGrantDirectory={canGrantLocalDirectory(runtime.permissionDenied, workspace) ? (path) => void grantDirectory(path).then(() => setDismissedDenial(denialKey)).catch((cause) => setError(String(cause))) : undefined}
         onDismiss={() => setDismissedDenial(denialKey)}
       />
     ) : null}
@@ -2366,7 +2390,9 @@ export default function AiSessionPane({
         {editingTask ? <>
           <button type="button" className="icon-button is-inline ai-queue-edit-cancel" aria-label={t("dialog.cancel")} title={t("dialog.cancel")} disabled={sending} onClick={cancelQueuedEdit}><X size={14} /></button>
           <button type="button" className="ai-send-button" aria-label={t("ai.runtime.saveQueued")} title={t("ai.runtime.saveQueued")} disabled={!draft.trim() || sending} onClick={() => void send()}><Check size={16} /></button>
-        </> : activity === "running" && ownedRunId && (running || connectingTask)
+        </> : isAgentSession && session.provider === "claude" && activity === "running" && liveOutput
+          ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.agent.stop")} title={t("ai.agent.stop")} disabled={stoppingAgent} onClick={() => void stopCurrentAgent()}><Square size={13} fill="currentColor" /></button>
+          : activity === "running" && ownedRunId && (running || connectingTask)
           ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} disabled={runtime.stopping} onClick={() => void stopAiRun(ownedRunId).catch((cause) => failQueueAction(ownedRunId, cause))}><Square size={13} fill="currentColor" /></button>
           : ownedQueuedTasks.length
             ? <button type="button" className="ai-send-button is-stop" aria-label={t("ai.runtime.stop")} title={t("ai.runtime.stop")} onClick={() => void stopAiRun(ownedQueuedTasks[0].runId).catch((cause) => failQueueAction(ownedQueuedTasks[0].runId, cause))}><Square size={13} fill="currentColor" /></button>

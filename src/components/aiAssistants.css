@@ -1487,9 +1487,10 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
   border-radius: 22px; background: var(--bg-secondary); color: var(--text-primary);
   font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-user-msg-bubble p { margin: 0; }
-.ai-user-msg-bubble.is-clipped { max-height: 240px; overflow: hidden; }
-.ai-user-msg-bubble.is-clipped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 40px;
-  background: linear-gradient(to bottom, transparent, var(--bg-secondary)); pointer-events: none; }
+/* 折叠正文与操作各占一行，渐隐只作用于正文，避免按钮和日志叠字。 */
+.ai-user-msg-bubble.is-clipped { display: grid; grid-template-rows: minmax(0, 1fr) auto; row-gap: 4px; max-height: 240px; overflow: hidden; }
+.ai-user-msg-bubble.is-clipped > p { min-height: 0; overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent); }
 /* 行首 `>` 的引用段（quote line）：左线 + 内缩，嵌在 pre-wrap 文本流里。 */
 .ai-user-quote { display: inline-block; border-left: 2px solid color-mix(in srgb, var(--text-primary) 25%, transparent);
   padding-left: 12px; margin: 2px 0; white-space: pre-wrap; max-width: 100%; }
@@ -1511,7 +1512,7 @@ button.ai-context-trigger:hover, .ai-context-trigger[aria-expanded="true"], .ai-
 .ai-mention-menu { max-width: min(520px, 90%); }
 .ai-mention-menu button span { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
 .ai-mention-menu button code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-user-msg-bubble.is-clipped .ai-user-msg-expand { position: absolute; left: 16px; bottom: 6px; z-index: 1; }
+.ai-user-msg-bubble.is-clipped .ai-user-msg-expand { justify-self: start; }
 .ai-user-msg-expand { border: 0; padding: 4px 2px; background: transparent; color: var(--text-tertiary);
   font: inherit; font-size: 11px; cursor: pointer; }
 .ai-user-msg-expand:hover { color: var(--text-primary); }

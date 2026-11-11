@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiOutlineSnapshot, AiRuntimeSnapshot } from "../../src/lib/aiRuntime";
 import { loadDraft, loadDraftImages, rememberPrompt, saveDraft, saveDraftImages } from "../../src/lib/aiDrafts";
+import { stopAiAgent, stopAiRun } from "../../src/lib/aiRuntime";
 
 const h = vi.hoisted(() => ({ state: {} as AiRuntimeSnapshot, outline: { turns: [], complete: false, loaded: false, loading: false, error: null } as AiOutlineSnapshot, activity: "idle", ownedRun: null as string | null, ownedQueued: [] as string[], desktop: true, invoke: vi.fn(), send: vi.fn(), models: vi.fn(), moveQueued: vi.fn(), runNow: vi.fn(), older: vi.fn(), outlineLoad: vi.fn(), through: vi.fn(), beforeSend: vi.fn(), openAgents: vi.fn(), sanitize: vi.fn((html: string, _config: unknown) => html) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
@@ -38,10 +39,15 @@ beforeEach(() => {
   sessionId = `pane-${++number}`; h.desktop = true; h.send.mockReset(); h.models.mockReset(); h.models.mockResolvedValue({ models: [{ id: "catalog-default", isDefault: true }] }); h.moveQueued.mockReset(); h.moveQueued.mockResolvedValue(undefined); h.runNow.mockReset(); h.runNow.mockResolvedValue(undefined); h.older.mockReset(); h.older.mockResolvedValue(undefined); h.outlineLoad.mockReset(); h.outlineLoad.mockResolvedValue(undefined); h.through.mockReset(); h.through.mockResolvedValue(true); h.beforeSend.mockReset(); h.beforeSend.mockResolvedValue(true); h.openAgents.mockReset(); h.sanitize.mockClear();
   h.state = { entries: [], requests: [], tasks: [], runId: null, status: "idle", stopping: false, error: null, loading: false, loaded: true, hasOlder: false, cursor: 0, nativeId: null, plans: [], agents: [] };
 });
-function render() {
+/**
+ * 静态挂载真实会话面板，允许验证子会话的控制边界。
+ * @param sessionOverrides - 替换会话身份及提供商；默认普通 Codex 会话
+ * @returns HTML 与可触发公开回调的元素树
+ */
+function render(sessionOverrides: Partial<Parameters<typeof AiSessionPane>[0]["session"]> = {}) {
   let pane!: ReactElement<any>;
   function Harness() {
-    pane = AiSessionPane({ session: { id: sessionId, title: "Test", provider: "codex", createdAt: 1 }, workspace: "D:/project", onSettings: vi.fn(), beforeSend: h.beforeSend, onOpenAgentDock: h.openAgents });
+    pane = AiSessionPane({ session: { id: sessionId, title: "Test", provider: "codex", createdAt: 1, ...sessionOverrides }, workspace: "D:/project", onSettings: vi.fn(), beforeSend: h.beforeSend, onOpenAgentDock: h.openAgents });
     return pane;
   }
   return { html: renderToStaticMarkup(createElement(Harness)), pane };
@@ -67,6 +73,19 @@ function findAll(pane: ReactElement<any>, type: unknown): ReactElement<any>[] {
   return [...matches, ...unwrap(pane.props).flatMap((child) => findAll(child, type))];
 }
 describe("AI conversation pane", () => {
+  it("子窗口运行时可停止 Claude 子代理，且不会停止父回合", async () => {
+    h.state.status = "running"; h.state.runId = "parent-run"; h.activity = "running";
+    vi.mocked(stopAiAgent).mockClear(); vi.mocked(stopAiRun).mockClear();
+    /** 子会话只拥有代理停止能力，不拥有父运行 ID。 */
+    const pane = render({ provider: "claude", parentSessionId: "parent" }).pane;
+    /** 输入栏使用独立代理停止协议。 */
+    const stop = findAll(pane, "button").find((button) => button.props["aria-label"] === "ai.agent.stop")!;
+    expect(stop).toBeDefined();
+    await stop.props.onClick();
+    expect(stopAiAgent).toHaveBeenCalledWith(sessionId, "D:/project");
+    expect(stopAiRun).not.toHaveBeenCalled();
+    expect(render({ provider: "codex", parentSessionId: "parent" }).html).not.toContain('aria-label="ai.agent.stop"');
+  });
   it.each(["external", "unknown"])("keeps input usable for external activity or unavailable detection: %s", async (activity) => {
     textarea(render().pane).props.onChange({ target: { value: "hello" } });
     // 共享历史仍残留 running，也不能把别的进程画成本窗口可停止的任务。
@@ -487,6 +506,19 @@ describe("AI conversation pane", () => {
     expect(html).not.toContain("ai.chat.retryTurn");
     expect(html).not.toContain('class="ai-turn-actions"');
   });
+  it.each(["/root/system-auth.bak.20261109", "D:/remote/system-auth.bak"])("远端 MCP 拒绝不能提供本机目录授权：%s", (path) => {
+    h.state.permissionDenied = { tool: "mcp__dbx__dbx_ssh_sftp_write_file", path, text: "permission denied" };
+    /** 目录授权必须作用于真实工具域，不能由路径形状决定。 */
+    const { html } = render({ provider: "claude" });
+    expect(html).toContain(path);
+    expect(html).not.toContain("ai.permission.grantDirectory");
+  });
+  it("本地文件拒绝仍可授权目录，非本机路径不能授权", () => {
+    h.state.permissionDenied = { tool: "Write", path: "D:/outside/a.ts", text: "requires approval" };
+    expect(render({ provider: "claude" }).html).toContain("ai.permission.grantDirectory");
+    h.state.permissionDenied.path = "/root/a.ts";
+    expect(render({ provider: "claude" }).html).not.toContain("ai.permission.grantDirectory");
+  });
   it("offers the deeper approval actions only when the backend can take them", () => {
     h.state.requests = [{ requestId: "a", runId: "run", kind: "permission", title: "Edit a.ts", detail: "", questions: [], active: true, toolName: "Edit", input: { file_path: "D:/project/src/a.ts" }, canEdit: true }];
     const { html } = render();
@@ -707,7 +739,7 @@ describe("AI conversation pane", () => {
 
     // 停靠化之后任务清单是右侧独立卡片（对照 6.png 浮岛卡片模式）。
     const html = renderToStaticMarkup(createElement(AiTaskListDockPanel, {
-      taskList: h.state.taskList!, running: false, onJump: vi.fn(),
+      taskList: h.state.taskList!, running: false, provider: "codex", workspace: "D:/project", onJump: vi.fn(),
     }));
     expect(html).toContain('class="ai-taskdock"');
     expect(html).toContain('class="ai-taskdock-header"');
@@ -809,7 +841,7 @@ describe("AI conversation pane", () => {
 
     // 只有子代理时的卡片专属主体渲染
     const panelHtml = renderToStaticMarkup(createElement(AiTaskListDockPanel, {
-      taskList: null, running: true, agents: h.state.agents, onOpenSession: vi.fn(), onJump: vi.fn(),
+      taskList: null, running: true, agents: h.state.agents, provider: "codex", workspace: "D:/project", onOpenSession: vi.fn(), onJump: vi.fn(),
     }));
     expect(panelHtml).toContain("ai-taskdock");
     expect(panelHtml).toContain("ai-taskdock-agents-section is-primary");

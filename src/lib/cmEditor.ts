@@ -229,29 +229,39 @@ export function primeMinimap(view: EditorView): void {
 // ---------------------------------------------------------------- 装配
 
 /**
- * 空选区按 Ctrl+C 复制整行（VS Code 等主流编辑器同款行为）：光标停在哪，
- * 那一行就是「要复制的东西」，不必先划选。有选区时原样交给浏览器。
- *
- * 走 `copy` 事件里的 `clipboardData.setData`，而不是绑 Mod-c：绑键就得拦默认行为，
- * 一拦会把有选区那次正常复制一起弄坏；而且多光标要一次复制好几行，
- * 原生那条路给不了。
+ * 编辑器剪贴板复制事件处理器：
+ * - 空选区按 Ctrl+C 复制整行（VS Code 等主流编辑器同款行为）；
+ * - 只读模式或有选区时，主动将选区正文写入 clipboardData，避免只读自绘选区被系统吞没；
+ * - 格式与换行按文档真实内容提取。
  */
 const copyLineOnEmpty = EditorView.domEventHandlers({
   copy(event, view) {
+    if (!event.clipboardData) return false;
     const ranges = view.state.selection.ranges;
-    if (!event.clipboardData || !ranges.every((range) => range.empty)) return false;
-    const lines: string[] = [];
-    let previous = 0;
-    for (const range of ranges) {
-      const line = view.state.doc.lineAt(range.head);
-      if (line.number === previous) continue;
-      previous = line.number;
-      lines.push(line.text);
+    if (ranges.every((range) => range.empty)) {
+      const lines: string[] = [];
+      let previous = 0;
+      for (const range of ranges) {
+        const line = view.state.doc.lineAt(range.head);
+        if (line.number === previous) continue;
+        previous = line.number;
+        lines.push(line.text);
+      }
+      // 末尾补一个换行：粘出去的是「一整行」，落在光标所在行的下一行之上。
+      event.clipboardData.setData("text/plain", `${lines.join("\n")}\n`);
+      event.preventDefault();
+      return true;
     }
-    // 末尾补一个换行：粘出去的是「一整行」，落在光标所在行的下一行之上。
-    event.clipboardData.setData("text/plain", `${lines.join("\n")}\n`);
-    event.preventDefault();
-    return true;
+    // 只读文档下浏览器原生选区易被自绘选区影响，主动向剪贴板写入精确切片文本；可编辑文档原样放行给浏览器。
+    if (view.state.readOnly) {
+      const sel = view.state.selection.main;
+      if (!sel.empty) {
+        event.clipboardData.setData("text/plain", view.state.sliceDoc(sel.from, sel.to));
+        event.preventDefault();
+        return true;
+      }
+    }
+    return false;
   },
 });
 

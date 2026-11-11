@@ -6,6 +6,28 @@
  * 而后端兑不了，比少画一个按钮更糟。
  */
 
+import type { AiPermissionDenied } from "./aiRuntime";
+import { isWindowsPath } from "./format";
+
+/** CLI 原生本地文件工具；MCP 和命令工具的路径不属于本机文件授权域。 */
+const LOCAL_FILE_TOOLS = ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"];
+
+/**
+ * 判断拒绝是否可以通过会话的本机附加目录处理。
+ *
+ * @param denied - 被拒绝的工具与目标路径
+ * @param workspace - 本机工作区绝对路径，用于确定宿主路径格式；未打开工作区时为 null
+ * @returns 仅已知本地文件工具且目标符合宿主绝对路径格式时返回 true
+ * @remarks MCP 路径由服务端解释，不能通过本机附加目录授权；文件是否存在仍由后端校验。
+ */
+export function canGrantLocalDirectory(denied: Pick<AiPermissionDenied, "tool" | "path">, workspace: string | null): boolean {
+  if (!workspace || !LOCAL_FILE_TOOLS.includes(denied.tool ?? "")) return false;
+  /** 路径格式必须与宿主工作区一致，不能把远端 POSIX 路径当成 Windows 本机目录。 */
+  const path = denied.path?.trim();
+  if (!path || path.length > 1024) return false;
+  return isWindowsPath(workspace) ? isWindowsPath(path) : path.startsWith("/") && !isWindowsPath(path);
+}
+
 /** 一条授权答复的形状；拒绝就是拒绝，不附带任何修改或记住。 */
 export type AiPermissionAnswer =
   | { allow: false }
@@ -78,10 +100,16 @@ export interface PermissionOffer {
   canEdit: boolean;
 }
 
-/** 从一张权限请求提炼可提出的动作（工具认不出、路径没有父目录时对应项为 null）。 */
+/**
+ * 从权限请求提炼工具答复动作，本机目录规则仅适用于已知本地文件工具。
+ *
+ * @param request - 后端待答复的工具权限请求
+ * @returns tool 为可记住的工具名，root 为本地文件工具的父目录或 null，canEdit 表示能否修改入参
+ */
 export function permissionOffer(request: { toolName?: string; input?: unknown; canEdit?: boolean }): PermissionOffer {
+  /** 保留 MCP 的整工具答复能力，但不将其路径用于本机目录规则。 */
   const tool = typeof request.toolName === "string" && request.toolName.trim() ? request.toolName.trim() : null;
-  return { tool, root: parentDirectory(requestPath(request.input)), canEdit: request.canEdit === true };
+  return { tool, root: tool && LOCAL_FILE_TOOLS.includes(tool) ? parentDirectory(requestPath(request.input)) : null, canEdit: request.canEdit === true };
 }
 
 /** 「改完再允许」的入参上限，与后端 MAX_EDITED_INPUT 同值。 */

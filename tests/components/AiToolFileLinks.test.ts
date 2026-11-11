@@ -14,6 +14,38 @@ import { AiFilePath, AiOpenFileProvider } from "../../src/components/AiFileLink"
 import { AiToolCall, AiToolSummary } from "../../src/components/AiToolDetails";
 import type { AiFilePreview } from "../../src/lib/aiFilePreview";
 import { CodeBlock } from "../../src/components/ui/code-block";
+import AiFilePreviewPane from "../../src/components/AiFilePreviewPane";
+import { EditorView } from "@codemirror/view";
+import { syntaxTree } from "@codemirror/language";
+import { stubTextLayout } from "../helpers/cmLayout";
+
+describe("agent 文件预览的语言加载", () => {
+  it("首次打开 TypeScript 文件会加载语法，并保持只读正文", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    stubTextLayout();
+    /** 独立预览使用真实编辑器，验证首次加载后的语法能力。 */
+    const host = document.createElement("div");
+    document.body.append(host);
+    /** React 根控制预览的挂载与释放。 */
+    const root = createRoot(host);
+    /** 读取范围只标记背景，不应阻止 TypeScript 语法加载。 */
+    const preview: AiFilePreview = { id: "read-router", kind: "read", path: "D:/app/router.ts", start: 2, end: 2 };
+    /** 带注释、类型和字符串的正文用于验证真实语法树。 */
+    const text = '/** 路由配置。 */\nexport const route: string = "/home";';
+    try {
+      await act(async () => root.render(createElement(AiFilePreviewPane, { preview, documentText: text })));
+      /** 从公开 DOM 接口取得实例，不依赖预览内部状态。 */
+      const view = EditorView.findFromDOM(host.querySelector<HTMLElement>(".cm-editor")!)!;
+      await vi.waitFor(() => expect(syntaxTree(view.state).resolveInner(5).name).toBe("BlockComment"));
+      expect(view.state.readOnly).toBe(true);
+      expect(view.state.doc.toString()).toBe(text);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 function entry(over: Partial<AiEntry>): AiEntry {
   return { id: "e1", runId: "r1", kind: "tool", text: "", status: "completed", ...over };
@@ -84,6 +116,24 @@ describe("AiToolSummary 的文件路径", () => {
 });
 
 describe("AiToolCall 的运行态展开", () => {
+  it("Agent 启动回执完成后继续展示子代理运行状态，并可打开独立会话", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    /** 真实 Agent 工具与独立会话生命周期分开结算。 */
+    const onOpenAgent = vi.fn();
+    /** 用浏览器交互验证委派入口及状态，避免绑定布局细节。 */
+    const container = document.createElement("div");
+    /** React 根负责切换同一委派的生命周期。 */
+    const root = createRoot(container);
+    await act(async () => root.render(createElement(AiToolCall, {
+      entry: entry({ name: "Agent", status: "completed", input: JSON.stringify({ prompt: "检查接口" }) }),
+      agent: { sessionId: "child", status: "running" }, onOpenAgent,
+    })));
+    expect(container.textContent).toContain("ai.runtime.running");
+    expect(container.textContent).toContain("检查接口");
+    await act(async () => (container.querySelector('[aria-label="ai.agent.open"]') as HTMLButtonElement)?.click());
+    expect(onOpenAgent).toHaveBeenCalledWith("child");
+    await act(async () => root.unmount());
+  });
   it.each([
     ["命令", { name: "exec", input: "npm test" }],
     ["文件修改", { name: "Edit", input: { file_path: "src/a.ts", old_string: "a", new_string: "b" } }],

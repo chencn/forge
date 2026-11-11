@@ -952,6 +952,59 @@ describe("AI runtime event store", () => {
 });
 
 describe("子代理事件的会话级投影", () => {
+  it("原生补采终态先于旧分页返回时不能复活委派", async () => {
+    /** 在途分页受控返回，以稳定复现终态与历史摘要交错。 */
+    let resolvePage!: (page: unknown) => void;
+    /** 自身生命周期属于父真实回合。 */
+    const start = event(1, "agent", { key: "child", sessionId: session.id, status: "running" }, "parent-run");
+    /** 真实事件存储负责生命周期与分页合并。 */
+    const runtime = await import("../../src/lib/aiRuntime");
+    await runtime.ensureAiRuntimeListener();
+    emit(start);
+    h.invoke.mockImplementationOnce(() => new Promise((resolve) => { resolvePage = resolve; }));
+    /** load 必须在终态到达前开始。 */
+    const loading = runtime.loadAiMessages(session.id, "D:/project", true);
+    await vi.waitFor(() => expect(resolvePage).toBeTypeOf("function"));
+    emit(event(2, "agent", { key: "child", sessionId: session.id, status: "completed" }, "native"));
+    resolvePage({ events: [start], latestSeq: 1, latestRunId: "parent-run", status: "running", activeTasks: [{ runId: "parent-run", status: "running", seq: 1 }] });
+    await loading;
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "completed", tasks: [{ status: "completed" }] });
+    expect(runtime.getAiOwnedRunId(session.id)).toBeNull();
+  });
+
+  it("子会话分页、空尾页和向前翻页保持生命周期，终态用量不污染父会话", async () => {
+    /** 最新页没有生命周期时，由全日志摘要提供运行状态。 */
+    const runtime = await import("../../src/lib/aiRuntime");
+    h.invoke.mockResolvedValueOnce({ events: [event(5, "text", { id: "m", text: "执行中" })], hasOlder: true, nextSeq: 5,
+      latestSeq: 5, latestRunId: "run", status: "running", activeTasks: [{ runId: "run", status: "running", seq: 1 }] });
+    await runtime.loadAiMessages(session.id, "D:/project");
+    h.invoke.mockResolvedValueOnce({ events: [], latestSeq: 5, latestRunId: "run", status: "running", activeTasks: [{ runId: "run", status: "running", seq: 1 }] });
+    await runtime.loadAiMessages(session.id, "D:/project", true);
+    h.invoke.mockResolvedValueOnce({ events: [event(1, "agent", { key: "child", sessionId: session.id, status: "starting" })], hasOlder: false, nextSeq: 1 });
+    await runtime.loadOlderAiMessages(session.id, "D:/project");
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "running", tasks: [{ status: "running" }] });
+    emit(event(6, "agent", { key: "child", sessionId: session.id, status: "completed", usage: { totalTokens: 500 } }));
+    expect(runtime.useAiRuntime(session.id)).toMatchObject({ status: "completed", usage: { total: 500 } });
+    expect(runtime.getAiOwnedRunId(session.id)).toBeNull();
+    expect(runtime.projectAiEvents([event(1, "agent", { key: "child", sessionId: "other", status: "completed", usage: { totalTokens: 500 } })]).usage).toBeUndefined();
+  });
+
+  it("自身生命周期驱动运行和终态，父侧委派不取得运行控制权", async () => {
+    const runtime = await import("../../src/lib/aiRuntime");
+    /** 子会话中的自身生命周期，保留父回合归属。 */
+    const start = event(1, "agent", { key: "child", sessionId: session.id, status: "starting" });
+    /** 工具完成前父进程退出，子会话必须结算为取消。 */
+    const events = [start, event(2, "tool", { id: "cmd", name: "exec", status: "running" }),
+      event(3, "agent", { key: "child", sessionId: session.id, status: "stopped" })];
+    expect(runtime.projectAiEvents([start])).toMatchObject({ status: "running", runId: "run", tasks: [{ status: "running" }] });
+    expect(runtime.projectAiEvents(events)).toMatchObject({ status: "cancelled", tasks: [{ status: "cancelled" }], entries: [{ status: "cancelled" }] });
+    expect(runtime.projectAiEvents([event(1, "agent", { key: "other", sessionId: "other-session", status: "running" })]).status).toBe("idle");
+    await runtime.ensureAiRuntimeListener();
+    emit(start);
+    expect(runtime.getAiOwnedRunId(session.id)).toBeNull();
+    expect(runtime.getAiSessionActivity(session.id)).toBe("running");
+  });
+
   it("首次收到可打开的子代理事件时立即刷新会话目录", async () => {
     const dispatchEvent = vi.fn();
     vi.stubGlobal("window", { dispatchEvent });
@@ -964,8 +1017,8 @@ describe("子代理事件的会话级投影", () => {
   it("同 key 后写覆盖字段、状态去重，首见序号稳定排序", async () => {
     const { projectAiEvents } = await import("../../src/lib/aiRuntime");
     const state = projectAiEvents([
-      event(1, "agent", { key: "toolu_a", title: "输出数字", status: "starting", prompt: "从 1 数到 100" }),
-      event(2, "agent", { key: "toolu_a", agentId: "a70f", resolvedModel: "gemini-flash", status: "running" }),
+      event(1, "agent", { key: "toolu_a", toolId: "spawn", title: "输出数字", status: "starting", prompt: "从 1 数到 100" }),
+      event(2, "agent", { key: "toolu_a", toolId: "later-activity", agentId: "a70f", resolvedModel: "gemini-flash", status: "running" }),
       event(3, "agent", { key: "toolu_b", title: "另一个代理", status: "running", sessionId: "child-b" }),
       // 同 key 同状态且没有新载荷：投影仍收敛为两条，不该复制出重复项。
       event(4, "agent", { key: "toolu_a", status: "running" }),
@@ -973,7 +1026,7 @@ describe("子代理事件的会话级投影", () => {
     ]);
     expect(state.agents).toHaveLength(2);
     expect(state.agents[0]).toMatchObject({
-      key: "toolu_a", title: "输出数字", agentId: "a70f", model: "gemini-flash",
+      key: "toolu_a", toolId: "spawn", title: "输出数字", agentId: "a70f", model: "gemini-flash",
       status: "completed", result: "Agent finished", sessionId: "child-a", seq: 1,
     });
     expect(state.agents[1]).toMatchObject({ key: "toolu_b", status: "running", sessionId: "child-b" });

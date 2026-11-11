@@ -36,6 +36,10 @@ function number(value: unknown): number | undefined { return typeof value === "n
  *
  * 两种格式：Codex 给 `tokenUsage`（last/total 分开），Claude 给 `usage` 或 `modelUsage`。
  * `previous` 兜底是必要的——有些事件只带增量字段，缺的项不能清空之前已知的值。
+ *
+ * @param data - CLI 报告；委派累计用量通过 scope=turn 标记
+ * @param previous - 已知字段的合并基线；未指定时为空
+ * @returns 规范化用量；未报告的字段保持 undefined，累计总量不冒充上下文占用
  */
 export function normalizeAiUsage(data: Record<string, unknown>, previous: AiUsage = {}): AiUsage {
   const tokenUsage = record(data.tokenUsage);
@@ -59,7 +63,8 @@ export function normalizeAiUsage(data: Record<string, unknown>, previous: AiUsag
   // 拿它当上下文会把百分比撑爆，所以这类结果不覆盖已有的 context。
   const aggregate = "modelUsage" in data || "total_cost_usd" in data || data.scope === "turn";
   const context = !aggregate && input !== undefined ? input + (cached ?? 0) + (cacheWrite ?? 0) : previous.context;
-  return { ...previous, input: input ?? previous.input, output: number(usage.output_tokens) ?? previous.output,
+  return { ...previous, total: number(usage.total_tokens) ?? number(usage.totalTokens) ?? previous.total,
+    input: input ?? previous.input, output: number(usage.output_tokens) ?? previous.output,
     cached: cached ?? previous.cached, cacheWrite: cacheWrite ?? previous.cacheWrite, context,
     window: number(model.contextWindow) ?? number(data.contextWindow) ?? previous.window,
     cost: number(data.total_cost_usd) ?? previous.cost, model: onlyModel ?? previous.model };

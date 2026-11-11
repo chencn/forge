@@ -4898,7 +4898,7 @@ body.is-editor-tab-dragging * {
 }
 
 .ai-file-preview-pane { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
-.ai-file-preview-head { display: flex; flex-wrap: wrap; gap: 12px; flex: none; padding: 8px 12px; border-bottom: 1px solid var(--border-color); font-size: 12px; overflow-wrap: anywhere; }
+.ai-file-preview-head { display: flex; flex-wrap: wrap; gap: 12px; flex: none; padding: 8px 12px; border-bottom: 1px solid var(--border-color); font-size: 12px; overflow-wrap: anywhere; user-select: text; }
 .ai-file-preview-editor, .ai-file-preview-patches { flex: 1; min-height: 0; overflow: auto; }
 .ai-file-preview-editor { height: 100%; }
 .ai-file-preview-pane > .ai-diff-editor { flex: 1; min-height: 0; }
@@ -6003,6 +6003,7 @@ body.is-editor-tab-dragging * {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
+  user-select: text;
 }
 
 /* 顶栏这颗的提示往下开：贴着活动栏那条右开的样式会盖住旁边的按钮。 */
@@ -7902,6 +7903,7 @@ body.is-editor-tab-dragging * {
   flex: none;
   padding: 9px 12px;
   border-bottom: 1px solid var(--border-color);
+  user-select: text;
 }
 
 .log-message-subject {
@@ -8024,6 +8026,7 @@ body.is-editor-tab-dragging * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: text;
 }
 
 /* ---------- 随处搜索 ---------- */

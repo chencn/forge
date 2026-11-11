@@ -5,12 +5,20 @@
  * - 未接手的右键落在可读文本（显式放开选中的区域，如通知标题/正文）上时，
  *   弹自绘「复制」菜单——选区有内容则可复制，否则菜单置灰，而不是什么都不给。
  */
+import { EditorView } from "@codemirror/view";
+import { selectAll } from "@codemirror/commands";
 import type { MenuItem } from "../components/ContextMenu";
 
 /** 可编辑元素选择器：这些落点交给组件自己处理，不兜底。 */
 const EDITABLE = "input, textarea, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']";
 
-/** 选区是否覆盖了 target（可交互式判定「复制」是否可用）。 */
+/**
+ * 判定选区是否覆盖了目标节点（可交互式判定「复制」是否可用）。
+ *
+ * @param sel - 当前窗口的原生选区对象
+ * @param target - 右键点击的 DOM 节点
+ * @returns 选区是否包含或与目标节点相交
+ */
 function selectionCovers(sel: Selection | null, target: Node): boolean {
   if (!sel || sel.isCollapsed || !sel.toString()) return false;
   for (let i = 0; i < sel.rangeCount; i++) {
@@ -20,7 +28,12 @@ function selectionCovers(sel: Selection | null, target: Node): boolean {
   return false;
 }
 
-/** 落点是否处于可读文本：祖链上任一层显式放开选中（user-select: text）即算。 */
+/**
+ * 落点是否处于可读文本：祖链上任一层显式放开选中（user-select: text）即算。
+ *
+ * @param el - 待判定的 DOM 元素
+ * @returns 元素链是否允许文本选中
+ */
 function isSelectableText(el: Element): boolean {
   let node: Element | null = el;
   while (node && node !== document.body) {
@@ -30,18 +43,103 @@ function isSelectableText(el: Element): boolean {
   return false;
 }
 
-/** 右键落点的「复制」菜单；不在可读文本上时返回 null（保持无菜单）。 */
-export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
-  const el = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
-  if (!el || el.closest(EDITABLE)) return null;
-  const sel = window.getSelection();
-  const text = selectionCovers(sel, el) ? sel!.toString() : "";
-  if (!text && !isSelectableText(el)) return null;
-  return [
+/**
+ * 为 CodeMirror 6 编辑器/比对器生成上下文菜单项。
+ *
+ * @param editorEl - CodeMirror 6 根元素（.cm-editor）
+ * @returns 包含复制、全选（及非只读时的粘贴）的菜单项列表，无法解析时返回 null
+ */
+function cmMenuFor(editorEl: HTMLElement): MenuItem[] | null {
+  const view = EditorView.findFromDOM(editorEl);
+  if (!view) return null;
+  const selection = view.state.selection.main;
+  const text = selection.empty ? "" : view.state.sliceDoc(selection.from, selection.to);
+  const readOnly = view.state.readOnly;
+  const items: MenuItem[] = [
     {
       label: "复制",
       disabled: !text,
       onSelect: () => void copyText(text),
+    },
+  ];
+  if (!readOnly) {
+    items.push({
+      label: "粘贴",
+      onSelect: () => {
+        void navigator.clipboard
+          .readText()
+          .then((val) => {
+            view.dispatch(view.state.replaceSelection(val));
+          })
+          .catch(() => {});
+      },
+    });
+  }
+  items.push({
+    label: "全选",
+    onSelect: () => {
+      selectAll(view);
+      view.focus();
+    },
+  });
+  return items;
+}
+
+/**
+ * 右键落点的「复制」菜单；不在可读文本上时返回 null（保持无菜单）。
+ *
+ * @param target - 触发 contextmenu 的事件目标
+ * @returns 匹配的右键菜单项数组，无适用的复制操作时返回 null
+ */
+export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
+  const el = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  if (!el) return null;
+
+  // 1. 若落在 CodeMirror 6 内部（比对视图、只读文件预览、未拦截的主编辑器等）：直接读取 CM6 真实状态
+  const cmEditor = el.closest<HTMLElement>(".cm-editor");
+  if (cmEditor) {
+    const cmItems = cmMenuFor(cmEditor);
+    if (cmItems) return cmItems;
+  }
+
+  // 2. 原生输入框/文本域：由它们自身原生处理或特定组件自绘处理，不在此兜底
+  if (el.closest(EDITABLE)) return null;
+
+  // 3. 检查是否有快捷复制文本声明（如文件路径栏、代码头部标签等）
+  const copyCarrier = el.closest<HTMLElement>("[data-copy-text]");
+  const copyValue = copyCarrier?.getAttribute("data-copy-text");
+
+  // 4. 原生文本选区判定
+  const sel = window.getSelection();
+  const text = selectionCovers(sel, el) ? sel!.toString() : "";
+  if (text) {
+    return [
+      {
+        label: "复制",
+        disabled: false,
+        onSelect: () => void copyText(text),
+      },
+    ];
+  }
+
+  // 若无选区但落点在声明了 data-copy-text 的容器上，提供直接复制
+  if (copyValue) {
+    return [
+      {
+        label: "复制路径",
+        disabled: false,
+        onSelect: () => void copyText(copyValue),
+      },
+    ];
+  }
+
+  // 若处于可读文本区域（如通知正文）但未选中文本，按设计提供置灰的复制项
+  if (!isSelectableText(el)) return null;
+  return [
+    {
+      label: "复制",
+      disabled: true,
+      onSelect: () => {},
     },
   ];
 }

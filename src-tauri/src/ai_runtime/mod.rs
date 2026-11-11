@@ -1376,6 +1376,22 @@ fn stop_active_agent(dir: &Path, root: &str, key: &str) -> Result<bool, String> 
     })
 }
 
+/// 结算子代理日志并返回需要同步给父会话的终态；补采已完成时也不能漏掉父侧更新。
+///
+/// # Errors
+///
+/// 子会话元数据读取、状态写盘或事件追加失败时返回错误。
+fn settle_agent_route(route: &mut AgentRoute, key: &str, run: &str) -> Result<(Vec<events::Event>, Option<Value>), String> {
+    let _io = store::IO_LOCK.lock().map_err(|error| error.to_string())?;
+    let stopped = stop_active_agent(&route.store.dir, &route.store.meta.workspace, key)?;
+    let meta = store::Store::metadata(&route.store.dir, &route.store.meta.workspace)?;
+    let Some(info) = meta.agent else { return Ok((vec![], None)); };
+    let data = json!({"key":key,"status":info.status,"sessionId":meta.session_id});
+    let child_events = if stopped { route.store.append(run, vec![("agent".into(), data.clone())])? } else { vec![] };
+    let parent_event = (route.last_status != info.status).then_some(data);
+    Ok((child_events, parent_event))
+}
+
 /// 首见 key：建子会话并落好归属元数据，把存储句柄交还给 Worker 登记。
 /// 返回 `None` 表示父会话已删除（stop 之前迟到的通知），调用方直接忽略。
 /// 失败向上传播，由调用方降级为通知——子代理簿记不该炸掉整轮主对话。
@@ -2207,25 +2223,14 @@ impl Worker {
         // CLI 进程退出后它的子代理不可能还活着：仍标 running 的子会话落一个
         // 诚实的终态，否则子代理列表永远显示「运行中」。已完成的子代理不动。
         for (key, mut route) in std::mem::take(&mut self.agents) {
-            if route.store.meta.agent.is_none() { continue; }
-            // 终态写盘同样走重读-合并：按需回填可能已把该子代理标成终态并绑定，
-            // 陈旧回写会把它打回 running 或丢掉绑定。
-            let was_running = match stop_active_agent(&route.store.dir, &route.store.meta.workspace, &key) {
-                Ok(was_running) => was_running,
+            match settle_agent_route(&mut route, &key, &self.run.id) {
+                Ok((events, parent_event)) => {
+                    if !events.is_empty() { let _ = self.app.emit(CHANNEL, &events); }
+                    if let Some(data) = parent_event { let _ = self.queue("agent", data); }
+                }
                 Err(cause) => {
                     let _ = self.app.emit("ai-runtime://errors", json!({"sessionId":route.store.meta.session_id,"runId":self.run.id,"error":cause}));
-                    false
                 }
-            };
-            if !was_running { continue; }
-            let settled = (|| {
-                let _io = store::IO_LOCK.lock().map_err(|e| e.to_string())?;
-                let events = route.store.append(&self.run.id, vec![("agent".into(), json!({"key":key,"status":"stopped","sessionId":route.store.meta.session_id}))])?;
-                let _ = self.app.emit(CHANNEL, &events);
-                Ok::<(), String>(())
-            })();
-            if let Err(cause) = settled {
-                let _ = self.app.emit("ai-runtime://errors", json!({"sessionId":route.store.meta.session_id,"runId":self.run.id,"error":cause}));
             }
         }
         let result = self.flush().and_then(|_| {
@@ -2565,7 +2570,8 @@ pub async fn ai_runtime_load(
                 .and_then(|m| m.parent_session_id.clone())
                 .is_some_and(|parent| registry::for_session(&parent).is_some());
             if needs_import && !parent_busy && !has_queued(&session_id) {
-                if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{session_id}.lock"))) {
+                let owner = meta.as_ref().and_then(|meta| meta.parent_session_id.as_deref()).filter(|parent| store::valid_id(parent)).unwrap_or(&session_id);
+                if let Ok(_lease) = store::Lease::acquire(&base.join(format!("{owner}.lock"))) {
                     if let Err(cause) = history::sync_subagent(&base, &session_id, &root) { warning = Some(cause); }
                 }
             }
@@ -3302,15 +3308,23 @@ mod tests {
         assert_eq!(routes["child"].store.meta.agent.as_ref().unwrap().native_agent_id.as_deref(), Some("native-child"));
         drop(routes);
         // 新 Worker 重建路由不改旧终态；退出只结算仍未启动完成的代理。
-        let (restored, _) = load_claude_agent_routes(&base, "parent", &root).unwrap();
+        let (mut restored, _) = load_claude_agent_routes(&base, "parent", &root).unwrap();
         assert_eq!(restored["child"].last_status, "completed");
         assert_eq!(restored["starting"].last_status, "starting");
         assert!(!stop_active_agent(&base.join("child"), &root, "child").unwrap());
         revise_agent_meta(&base.join("starting"), &root, "starting", |info| { info.status = "starting".into(); info.ended_at = None; true }).unwrap();
-        assert!(stop_active_agent(&base.join("starting"), &root, "starting").unwrap());
+        let (events, parent) = settle_agent_route(restored.get_mut("starting").unwrap(), "starting", "parent-run").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "agent");
+        assert_eq!(parent.unwrap()["status"], "stopped");
         let meta = store::Store::metadata(&base.join("starting"), &root).unwrap();
         assert_eq!(meta.agent.as_ref().unwrap().status, "stopped");
         assert!(meta.agent.unwrap().ended_at.is_some());
+        // 补采已写 completed、父路由仍为 running 时也必须补父终态。
+        restored.get_mut("child").unwrap().last_status = "running".into();
+        let (events, parent) = settle_agent_route(restored.get_mut("child").unwrap(), "child", "parent-run").unwrap();
+        assert!(events.is_empty());
+        assert_eq!(parent.unwrap()["status"], "completed");
         // 一个坏日志只影响它自己的路由，其他代理与父回合仍可恢复。
         fs::write(base.join("starting").join("events.jsonl"), "invalid-json\n").unwrap();
         let (healthy, warnings) = load_claude_agent_routes(&base, "parent", &root).unwrap();

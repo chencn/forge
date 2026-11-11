@@ -241,6 +241,25 @@ fn state_with(probe: &mut Probe, base: &Path, id: &str, root: &str) -> Result<St
     let dir = base.join(id);
     if !dir.exists() { return Ok(State::Idle); }
     let meta = store::Store::metadata(&dir, root)?;
+    if let Some(parent) = meta.parent_session_id.as_deref().filter(|_| meta.agent.is_some()) {
+        // 展示依据委派生命周期；控制权仍只属于父 registry，子会话没有独立 Run。
+        let page = store::Store::page(base, id, root, store::Window::Before(u64::MAX), 1, true)?;
+        if page.status.as_deref() != Some("running") { return Ok(State::Idle); }
+        if let Some(run) = registry::for_session(parent) {
+            if run.workspace != root { return Err("会话项目不匹配".into()); }
+            return Ok(if page.latest_run_id.as_deref() == Some(run.id.as_str()) { State::Running } else { State::Idle });
+        }
+        // 跨窗口的父租约同样代表外部活动，不向子窗口授予停止权限。
+        if parent != id && store::valid_id(parent) {
+            let parent_meta = store::Store::metadata(&base.join(parent), root)?;
+            if parent_meta.parent_session_id.is_none() {
+                match state_with(probe, base, parent, root)? {
+                    State::External | State::Conflict => return Ok(State::External),
+                    _ => {}
+                }
+            }
+        }
+    }
     // 另一个 Forge 进程遵守同一租约；不能把它当作本窗口可停止的任务。
     let lock = base.join(format!("{id}.lock"));
     if lock.exists() {
@@ -394,6 +413,37 @@ mod tests {
         drop(lease);
         assert_eq!(state(&fixture.0, "activity-session", "activity-root").unwrap(), State::Idle);
         assert!(state(&fixture.0, "activity-session", "wrong-root").is_err());
+    }
+
+    /// 子代理展示父 Worker 维护的生命周期，但旧父回合不能被新回合复活。
+    #[test]
+    fn child_activity_tracks_parent_run_and_terminal_without_child_registry() {
+        let fixture = Fixture::new();
+        let mut parent = store::Store::open(&fixture.0, "agent-parent", "agent-root", Provider::Codex, "parent", "").unwrap();
+        parent.append("agent-run", vec![("status".into(), json!({"status":"running"}))]).unwrap();
+        let mut child = store::Store::open(&fixture.0, "agent-child", "agent-root", Provider::Codex, "child", "").unwrap();
+        child.meta.parent_session_id = Some("agent-parent".into());
+        child.meta.agent = Some(store::AgentInfo { tool_id: "agent".into(), status: "running".into(), ..Default::default() });
+        child.save().unwrap();
+        child.append("agent-run", vec![("agent".into(), json!({"key":"agent","sessionId":"agent-child","status":"running"}))]).unwrap();
+        let (run, _) = registry::Run::reserve("agent-run".into(), "agent-parent".into(), "agent-root".into(), "agent-root".into()).unwrap();
+        assert_eq!(state(&fixture.0, "agent-child", "agent-root").unwrap(), State::Running);
+        assert!(registry::for_session("agent-child").is_none());
+        child.append("native", vec![("agent".into(), json!({"key":"agent","sessionId":"agent-child","status":"completed"}))]).unwrap();
+        assert_eq!(state(&fixture.0, "agent-child", "agent-root").unwrap(), State::Idle);
+        child.append("old-run", vec![("agent".into(), json!({"key":"agent","sessionId":"agent-child","status":"running"}))]).unwrap();
+        assert_eq!(state(&fixture.0, "agent-child", "agent-root").unwrap(), State::Idle);
+        run.finish();
+        parent.append("old-run", vec![("status".into(), json!({"status":"running"}))]).unwrap();
+        let lease = store::Lease::acquire(&fixture.0.join("agent-parent.lock")).unwrap();
+        assert_eq!(state(&fixture.0, "agent-child", "agent-root").unwrap(), State::External);
+        parent.append("new-run", vec![("status".into(), json!({"status":"running"}))]).unwrap();
+        assert_eq!(state(&fixture.0, "agent-child", "agent-root").unwrap(), State::Idle);
+        let page = store::Store::page(&fixture.0, "agent-child", "agent-root", store::Window::Before(u64::MAX), 1, false).unwrap();
+        assert_eq!(page.status.as_deref(), Some("cancelled"));
+        assert!(page.active_tasks.is_empty());
+        drop(lease);
+        assert_eq!(state(&fixture.0, "agent-child", "agent-root").unwrap(), State::Idle);
     }
 
     #[test]

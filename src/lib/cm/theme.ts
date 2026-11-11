@@ -41,6 +41,7 @@ export const forgeTheme = EditorView.theme({
     // 上下留白（padding top 4 / bottom 8）；lineTop 已按 documentPadding 动态取，无联动断点。
     padding: "4px 0 8px 0",
     caretColor: "var(--caret, var(--text-primary))",
+    userSelect: "text",
   },
   ".cm-line": { padding: "0 16px 0 6px" },
   // 缩进参考线：一条重复渐变铺在行的缩进区背景上，层数与步长由 lib/cm/indentGuides.ts 写在行上。

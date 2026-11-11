@@ -4,6 +4,7 @@ import {
   allowDirectory,
   allowEdited,
   allowOnce,
+  canGrantLocalDirectory,
   denyPermission,
   editedInput,
   parentDirectory,
@@ -48,6 +49,23 @@ describe("aiApprovals 的入参读取", () => {
 });
 
 describe("aiApprovals 的目录授权范围", () => {
+  it.each([
+    ["Read", "D:/outside/a.ts", "D:/project", true],
+    ["Read", "D:/outside/a.ts", null, false],
+    ["apply_patch", "D:/outside/a.ts", "D:/project", true],
+    ["Write", "/tmp/outside/a.ts", "/tmp/project", true],
+    ["Read", "\\\\server\\share\\a.ts", "D:/project", true],
+    ["Write", "/root/a.ts", "D:/project", false],
+    ["Read", "D:/outside/a.ts", "/tmp/project", false],
+    ["Write", "relative/a.ts", "D:/project", false],
+    ["Bash", "D:/outside/a.ts", "D:/project", false],
+    ["exec", "D:/outside/a.ts", "D:/project", false],
+    ["unknown", "D:/outside/a.ts", "D:/project", false],
+    ["mcp__dbx__dbx_ssh_sftp_write_file", "/root/a.ts", "/tmp/project", false],
+    ["mcp__dbx__dbx_ssh_sftp_write_file", "D:/remote/a.ts", "D:/project", false],
+  ])("本机目录授权按工具域和宿主路径判定：%s %s %s", (tool, path, workspace, allowed) => {
+    expect(canGrantLocalDirectory({ tool, path }, workspace)).toBe(allowed);
+  });
   it("给出文件所在目录，分隔符原样保留", () => {
     expect(parentDirectory("D:\\app\\forge\\src\\a.ts")).toBe("D:\\app\\forge\\src");
     expect(parentDirectory("D:/app/forge/src/a.ts")).toBe("D:/app/forge/src");

@@ -7,6 +7,7 @@
  * - 组件已接手（defaultPrevented / 自绘菜单已换）时不重复兜底。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
 import { copyMenuFor, contextMenuGuard, installContextMenuGuard, copyText } from "../../src/lib/contextMenuGuard";
 
 function el(html: string): HTMLElement {
@@ -19,6 +20,7 @@ function el(html: string): HTMLElement {
 let clipboard: string[] = [];
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   clipboard = [];
   contextMenuGuard.close();
   Object.assign(navigator, {
@@ -60,6 +62,38 @@ describe("copyMenuFor", () => {
     expect(menu![0].disabled).toBe(false);
     await menu![0].onSelect!();
     expect(clipboard).toEqual(["通知内容"]);
+  });
+
+  it("声明了 data-copy-text 的路径元素无选区也能复制路径", async () => {
+    const pathSpan = el(`<span data-copy-text="src/lib/foo.ts">src/lib/foo.ts</span>`);
+    const menu = copyMenuFor(pathSpan);
+    expect(menu).not.toBeNull();
+    expect(menu![0].label).toBe("复制路径");
+    expect(menu![0].disabled).toBe(false);
+    await menu![0].onSelect!();
+    expect(clipboard).toEqual(["src/lib/foo.ts"]);
+  });
+
+  it("落在 CodeMirror 编辑器内时提取其选区并支持复制与全选", async () => {
+    const editorHost = el(`<div class="cm-editor"><div class="cm-content">代码内容</div></div>`);
+    const mockView = {
+      state: {
+        readOnly: true,
+        selection: { main: { empty: false, from: 0, to: 2 } },
+        sliceDoc: (from: number, to: number) => "代码内容".slice(from, to),
+      },
+      dispatch: vi.fn(),
+      focus: vi.fn(),
+    };
+    vi.spyOn(EditorView, "findFromDOM").mockReturnValue(mockView as unknown as EditorView);
+
+    const content = editorHost.querySelector(".cm-content")!;
+    const menu = copyMenuFor(content);
+    expect(menu).not.toBeNull();
+    expect(menu!.map((item) => item.label)).toEqual(["复制", "全选"]);
+    expect(menu![0].disabled).toBe(false);
+    await menu![0].onSelect!();
+    expect(clipboard).toEqual(["代码"]);
   });
 });
 

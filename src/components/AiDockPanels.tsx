@@ -17,24 +17,36 @@ import { Trace, TraceLine } from "./ui/trace";
 import { Item } from "./ui/item";
 
 /**
- * 任务清单侧栏工作区（浮岛卡片 Task Dock 模式）：
- * 顶栏显示纯文本进程与操作区（... 与折叠收起）；
- * 中间使用滑动折叠视窗（< 前面 N 项 折叠、→ 当前步骤、○ 待办步骤、< 待处理 M 项 折叠）；
- * 底部整合极简的「智能体」协同分区。
+ * 展示模型任务清单与子代理列表，共用委派的状态、会话入口及停止能力。
+ *
+ * @param props - 任务、委派、提供商、工程范围及导航回调
+ * @returns 任务侧栏；无任务或代理时省略对应区域
  */
 export function AiTaskListDockPanel({
   taskList,
   running: _running,
   agents,
+  provider,
+  workspace,
   onOpenSession,
   onJump,
   onClose,
 }: {
+  /** 模型任务清单；未提供时仅展示代理。 */
   taskList?: AiModelTaskList | null;
+  /** 父会话是否运行；代理状态独立读取生命周期。 */
   running: boolean;
+  /** 按首次出现顺序传入的代理列表。 */
   agents?: AiAgentSummary[];
+  /** 决定子代理是否支持单独停止。 */
+  provider: "claude" | "codex";
+  /** 停止请求的工程范围；为空时禁止发送。 */
+  workspace: string | null;
+  /** 打开独立代理会话；未提供时点击不派发导航。 */
   onOpenSession?: (id: string) => void;
+  /** 跳转到模型任务关联的正文条目。 */
   onJump: (id: string) => void;
+  /** 收起侧栏；未提供时不展示收起入口。 */
   onClose?: () => void;
 }) {
   const { t } = useI18n();
@@ -146,7 +158,7 @@ export function AiTaskListDockPanel({
         </div>
       ) : null}
 
-      {/* 底部：极简智能体协同分区（名称统一使用「子代理1」「子代理2」） */}
+      {/* 委派列表复用同一状态与停止入口，避免集成视图丢失控制能力。 */}
       {hasAgents ? (
         <div className={`ai-taskdock-agents-section${!hasTasks ? " is-primary" : ""}`}>
           {hasTasks ? (
@@ -154,31 +166,8 @@ export function AiTaskListDockPanel({
               <span>{t("ai.task.agents")}</span>
             </div>
           ) : null}
-          <div className="ai-taskdock-agents-list">
-            {agents!.map((agent, index) => {
-              const numberedName = t("ai.agent.numbered", { index: index + 1 });
-              const titleText = agent.title ? `${numberedName} · ${agent.title}` : numberedName;
-              return (
-                <div key={agent.key || agent.sessionId || index} className="ai-taskdock-agent-row">
-                  <span className="ai-agent-subrow-dot" data-status={agent.status} aria-hidden />
-                  {onOpenSession && agent.sessionId ? (
-                    <button
-                      type="button"
-                      className="ai-taskdock-agent-btn"
-                      onClick={() => onOpenSession(agent.sessionId!)}
-                      title={titleText}
-                    >
-                      <span className="ai-taskdock-agent-title">{titleText}</span>
-                    </button>
-                  ) : (
-                    <span className="ai-taskdock-agent-title" title={titleText}>
-                      {titleText}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <AiAgentDockPanel agents={agents!} provider={provider} workspace={workspace}
+            onOpen={(id) => onOpenSession?.(id)} />
         </div>
       ) : null}
     </Trace>
@@ -195,10 +184,10 @@ function agentStatusLabel(t: ReturnType<typeof useI18n>["t"], status: string): s
 }
 
 /**
- * 右侧工具窗口里的子代理列表内容（标题栏由右侧边栏框架统一提供）：
- * 会话里 Claude Agent 工具 / Codex collaboration 派生的子代理都在这里列出
- * （状态点 + 标题 + 类型/模型），运行中置顶。点行进入该子代理的独立会话视图；
- * Claude 的运行中代理可单独停止（stop_task）。
+ * 按生命周期展示委派，运行项置顶且编号稳定，Claude 运行项提供单独停止入口。
+ *
+ * @param props - 委派列表、提供商、工程范围及打开独立会话的回调
+ * @returns 可操作的子代理列表；无代理时显示空态
  */
 export function AiAgentDockPanel({ agents, provider, workspace, onOpen }: {
   agents: AiAgentSummary[];
@@ -229,17 +218,17 @@ export function AiAgentDockPanel({ agents, provider, workspace, onOpen }: {
     {error ? <p className="ai-msgnav-note" role="alert">{error}</p> : null}
     {rows.map((agent) => (
       <Item key={agent.key} data-element="subagent" className="ai-agentdock-rowwrap">
-        <button type="button" className="ai-agentdock-row" title={agent.result ?? agent.title}
+        <button type="button" className="ai-agentdock-row" disabled={!agent.sessionId} title={agent.result ?? agent.title}
           onClick={() => agent.sessionId && onOpen(agent.sessionId)}>
           <span className="ai-agent-subrow-dot" data-status={agent.status} aria-hidden />
-          <span className="ai-agentdock-title">{agent.title || t("ai.agent.untitled")}</span>
+          <span className="ai-agentdock-title">{t("ai.agent.numbered", { index: agents.indexOf(agent) + 1 })}{agent.title ? ` · ${agent.title}` : ""}</span>
           {/* 旧 Codex 事件曾把随机 nickname 写进 agentType；无法可靠迁移，Codex 一律不展示该旧字段。 */}
           {provider === "claude" && agent.agentType ? <span className="ai-agentdock-type">{agent.agentType}</span> : null}
           {agent.model ? <span className="ai-agent-subrow-model">{agent.model}</span> : null}
           <span className="ai-agentdock-status" data-status={agent.status}>{agentStatusLabel(t, agent.status)}</span>
           <ArrowUpRight size={12} className="ai-taskchip-jump" aria-hidden />
         </button>
-        {provider === "claude" && live(agent) && agent.sessionId ? (
+        {provider === "claude" && workspace && live(agent) && agent.sessionId ? (
           <button type="button" className="ai-agentdock-stop" disabled={stoppingKey !== null}
             title={t("ai.agent.stop")} aria-label={t("ai.agent.stop")}
             onClick={() => void stop(agent)}>
