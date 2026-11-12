@@ -153,16 +153,30 @@ fn load(app: &AppHandle) -> Result<Vec<ModelProvider>, String> {
     Ok(store.providers)
 }
 
+/// 按 id 取一条已保存的供应商并校验；凭据只留在后端内存，不下发前端。
+///
+/// AI 提交说明等功能按 id 引用供应商，由调用方决定如何推导协议与模型。
+///
+/// # Errors
+///
+/// 供应商已删除或配置不合法时返回错误，禁止静默切回其他端点。
+pub(crate) fn find(app: &AppHandle, id: &str) -> Result<ModelProvider, String> {
+    let provider = load(app)?
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| "所选供应商已不存在，请重新选择".to_string())?;
+    validate(&provider)?;
+    Ok(provider)
+}
+
 /// 读取并校验本轮选定的供应商，不修改任何全局绑定或 CLI 文件。
 ///
 /// # Errors
 ///
 /// 供应商已删除、类型不匹配或配置不合法时返回错误，禁止静默切回其他端点。
 pub(crate) fn runtime_provider(app: &AppHandle, kind: Provider, id: &str) -> Result<ModelProvider, String> {
-    // 从当前保存列表取得完整配置，凭据只留在后端内存。
-    let provider = load(app)?.into_iter().find(|item| item.id == id).ok_or("所选供应商已不存在，请重新选择")?;
+    let provider = find(app, id)?;
     if provider.kind != kind.key() { return Err("供应商与当前会话引擎不匹配".into()); }
-    validate(&provider)?;
     Ok(provider)
 }
 

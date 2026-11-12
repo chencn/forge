@@ -1,66 +1,59 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  Check,
-  ChevronDown,
-  ChevronUp,
-  Eye,
-  EyeOff,
-  Plus,
-  RefreshCw,
-  Search,
-  Sparkles,
-  Trash2,
-  X,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Sparkles } from "lucide-react";
 import Select from "./Select";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n/lang/zh";
 import {
+  CODEX_PROTOCOLS,
   COMMIT_EFFORTS,
   COMMIT_FORMATS,
-  COMMIT_PROTOCOLS,
-  CHAT_TOKEN_LIMIT_FIELDS,
   DEFAULT_AI_COMMIT_CONFIG,
   getCommitFormatPreview,
   listAiCommitModels,
   loadAiCommitConfig,
-  newAiCommitProvider,
   saveAiCommitConfig,
   type AiCommitConfig,
-  type AiCommitProvider,
+  type AiCommitModel,
+  type CodexProtocol,
   type CommitEffort,
   type CommitFormat,
-  type CommitProtocol,
-  type ChatTokenLimitField,
 } from "../lib/aiCommit";
+import { AI_NAMES } from "../lib/aiCli";
+import { loadModelProviders } from "../lib/aiManage";
+import type { ModelProvider } from "../lib/aiManage";
 import { describeError } from "../lib/errors";
 
-/** 布尔下拉的候选值与其文案键（EditorPages 同款）。 */
+/** 布尔下拉的候选值。 */
 const SWITCHES = ["yes", "no"] as const;
 /** {@link SWITCHES} 的成员类型。 */
 type Switch = (typeof SWITCHES)[number];
 
-/** AI 智能提交设置页：供应商/密钥/模型参数与各上限的编辑与保存。 */
-export default function AiCommitSettingsPanel() {
+/** AI 提交设置页的入参。 */
+interface Props {
+  /** 打开设置里的「模型供应商」页；供应商为空或失效时由这里引导用户去配置 */
+  onOpenProviders: () => void;
+}
+
+/**
+ * AI 智能提交设置页：选模型供应商与模型，再调写作规则与各项上限。
+ *
+ * 地址、密钥与协议不在这里维护——它们属于设置里的模型供应商；模型可选项来自
+ * 该供应商自己的槽位（claude）或目录投影（codex），留空即沿用供应商的默认模型。
+ * 协议按供应商类型推导：claude 走 Anthropic Messages，codex 走 Responses。
+ */
+export default function AiCommitSettingsPanel({ onOpenProviders }: Props) {
   const { t } = useI18n();
   const [config, setConfig] = useState<AiCommitConfig>(DEFAULT_AI_COMMIT_CONFIG);
-  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
+  /** 供应商清单是否已加载完；加载前不显示「未配置」，免得先闪一下误导用户。 */
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [savedTip, setSavedTip] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-
-  // 模型拉取与下拉交互状态
-  const [modelsMap, setModelsMap] = useState<Record<string, string[]>>({});
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const [fetchSuccessTip, setFetchSuccessTip] = useState<string | null>(null);
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
-  const modelDropdownRef = useRef<HTMLDivElement>(null);
-  const [providerToDelete, setProviderToDelete] = useState<AiCommitProvider | null>(null);
   const [subjectMaxLenInput, setSubjectMaxLenInput] = useState(String(DEFAULT_AI_COMMIT_CONFIG.subjectMaximumLength));
   const [maxDiffCharsInput, setMaxDiffCharsInput] = useState(String(DEFAULT_AI_COMMIT_CONFIG.maximumDiffCharacters));
   const [maxOutputTokensInput, setMaxOutputTokensInput] = useState(String(DEFAULT_AI_COMMIT_CONFIG.maximumOutputTokens));
+  /** 当前供应商的候选模型；null 表示还在读取，空数组表示这个供应商没有可选模型。 */
+  const [models, setModels] = useState<AiCommitModel[] | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -68,7 +61,6 @@ export default function AiCommitSettingsPanel() {
       .then((loaded) => {
         if (!alive) return;
         setConfig(loaded);
-        setSelectedProviderId(loaded.activeProviderId ?? loaded.providers[0]?.id ?? null);
         setSubjectMaxLenInput(String(loaded.subjectMaximumLength));
         setMaxDiffCharsInput(String(loaded.maximumDiffCharacters));
         setMaxOutputTokensInput(String(loaded.maximumOutputTokens));
@@ -76,34 +68,44 @@ export default function AiCommitSettingsPanel() {
       .catch(() => {
         // 加载失败时沿用默认配置
       });
+    loadModelProviders()
+      .then((list) => {
+        if (alive) setProviders(list);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setProvidersLoaded(true);
+      });
     return () => {
       alive = false;
     };
   }, []);
 
-  // 点击外部收起模型下拉菜单
+  // 供应商换了就重取模型清单；读不到只影响这一档，不阻塞其余设置项。
   useEffect(() => {
-    if (!modelDropdownOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!modelDropdownRef.current?.contains(event.target as Node)) {
-        setModelDropdownOpen(false);
-      }
+    const providerId = config.providerId;
+    if (!providerId) {
+      setModels(null);
+      return;
+    }
+    let alive = true;
+    setModels(null);
+    listAiCommitModels(providerId)
+      .then((list) => {
+        if (alive) setModels(list);
+      })
+      .catch(() => {
+        if (alive) setModels([]);
+      });
+    return () => {
+      alive = false;
     };
-    window.addEventListener("pointerdown", onPointerDown, true);
-    return () => window.removeEventListener("pointerdown", onPointerDown, true);
-  }, [modelDropdownOpen]);
+  }, [config.providerId]);
 
-  // 按 Escape 键关闭删除确认弹窗
-  useEffect(() => {
-    if (!providerToDelete) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setProviderToDelete(null);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [providerToDelete]);
+  /** 没显式选过模型时，界面停在供应商的默认模型上。 */
+  const defaultModelId = models?.find((model) => model.isDefault)?.id ?? models?.[0]?.id ?? null;
+  /** 当前选中的供应商；只有 codex 类型才需要选接口协议。 */
+  const selectedProvider = providers.find((provider) => provider.id === config.providerId) ?? null;
 
   const persistConfig = (next: AiCommitConfig) => {
     setConfig(next);
@@ -129,77 +131,10 @@ export default function AiCommitSettingsPanel() {
     persistConfig(next);
   };
 
-  const activeProvider =
-    config.providers.find((p) => p.id === (selectedProviderId ?? config.activeProviderId)) ??
-    config.providers[0] ??
-    null;
-
-  const updateActiveProvider = (patch: Partial<AiCommitProvider>) => {
-    if (!activeProvider) return;
-    const nextProviders = config.providers.map((p) =>
-      p.id === activeProvider.id ? { ...p, ...patch } : p
-    );
-    persistConfig({ ...config, providers: nextProviders });
-  };
-
-  const handleAddProvider = () => {
-    const nextProvider = newAiCommitProvider(`Provider ${config.providers.length + 1}`);
-    const nextProviders = [...config.providers, nextProvider];
-    const nextActiveId = config.activeProviderId ?? nextProvider.id;
-    setSelectedProviderId(nextProvider.id);
-    persistConfig({
-      ...config,
-      providers: nextProviders,
-      activeProviderId: nextActiveId,
-    });
-  };
-
-  const handleRemoveProvider = (id: string) => {
-    if (config.providers.length === 0) return;
-    const nextProviders = config.providers.filter((p) => p.id !== id);
-    const nextActiveId =
-      config.activeProviderId === id ? nextProviders[0]?.id ?? null : config.activeProviderId;
-    setSelectedProviderId(nextProviders[0]?.id ?? null);
-    persistConfig({
-      ...config,
-      providers: nextProviders,
-      activeProviderId: nextActiveId,
-    });
-  };
-
-  const handleFetchModels = async () => {
-    if (!activeProvider || !activeProvider.endpoint.trim()) return;
-    setFetchingModels(true);
-    setFetchError(null);
-    setFetchSuccessTip(null);
-    const startTime = Date.now();
-    try {
-      const models = await listAiCommitModels({
-        endpoint: activeProvider.endpoint,
-        apiKey: activeProvider.apiKey,
-        allowsInsecureHttp: activeProvider.allowsInsecureHttp,
-      });
-      // 至少平滑展示 750ms，避免极快返回导致转圈太急促、一闪而过
-      const elapsed = Date.now() - startTime;
-      if (elapsed < 750) {
-        await new Promise((resolve) => setTimeout(resolve, 750 - elapsed));
-      }
-      setModelsMap((prev) => ({ ...prev, [activeProvider.id]: models }));
-      setFetchSuccessTip(
-        t("aiCommit.fetchModelsSuccess").replace("{count}", String(models.length))
-      );
-      setModelDropdownOpen(true);
-      setTimeout(() => setFetchSuccessTip(null), 3000);
-    } catch (err) {
-      const elapsed = Date.now() - startTime;
-      if (elapsed < 600) {
-        await new Promise((resolve) => setTimeout(resolve, 600 - elapsed));
-      }
-      setFetchError(String(err));
-    } finally {
-      setFetchingModels(false);
-    }
-  };
+  /** 选中的供应商已被删除；只在清单加载完后判定，避免开头误报。 */
+  const providerMissing =
+    providersLoaded && config.providerId !== null && !providers.some((provider) => provider.id === config.providerId);
+  const providersEmpty = providersLoaded && providers.length === 0;
 
   const formatLabels: Record<CommitFormat, TranslationKey> = {
     conventional: "aiCommit.format.conventional",
@@ -210,12 +145,6 @@ export default function AiCommitSettingsPanel() {
     custom: "aiCommit.format.custom",
   };
 
-  const protocolLabels: Record<CommitProtocol, TranslationKey> = {
-    chatCompletions: "aiCommit.protocol.chatCompletions",
-    anthropicMessages: "aiCommit.protocol.anthropicMessages",
-    responses: "aiCommit.protocol.responses",
-  };
-
   const effortLabels: Record<CommitEffort, TranslationKey> = {
     default: "aiCommit.reasoning.default",
     none: "aiCommit.reasoning.none",
@@ -224,16 +153,6 @@ export default function AiCommitSettingsPanel() {
     medium: "aiCommit.reasoning.medium",
     high: "aiCommit.reasoning.high",
   };
-
-  const tokenLimitLabels: Record<ChatTokenLimitField, TranslationKey> = {
-    max_completion_tokens: "aiCommit.tokenLimitField.max_completion_tokens",
-    max_tokens: "aiCommit.tokenLimitField.max_tokens",
-  };
-
-  const availableModels = activeProvider ? modelsMap[activeProvider.id] ?? [] : [];
-  const filteredModels = availableModels.filter((m) =>
-    m.toLowerCase().includes(modelSearch.toLowerCase().trim())
-  );
 
   const previewInfo = getCommitFormatPreview(
     config.format,
@@ -262,463 +181,93 @@ export default function AiCommitSettingsPanel() {
 
       <div style={{ height: 1, background: "var(--border-color)", margin: "8px 0" }} />
 
-      {/* 服务商管理板块 */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-        <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: "var(--fg-strong)" }}>{t("aiCommit.providers")}</h3>
-        <button
-          type="button"
-          className="button is-small"
-          onClick={handleAddProvider}
-          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
-        >
-          <Plus size={13} />
-          <span>{t("aiCommit.addProvider")}</span>
-        </button>
+      {/* 模型供应商：地址、密钥与模型都取自设置里的同名配置 */}
+      <h3 style={{ margin: "4px 0", fontSize: 13.5, fontWeight: 600, color: "var(--fg-strong)" }}>
+        {t("aiCommit.modelProvider")}
+      </h3>
+      <p style={{ margin: "0 0 6px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+        {t("aiCommit.modelProviderHint")}
+      </p>
+
+      <div className="settings-row">
+        <span className="settings-label">{t("aiCommit.modelProvider")}</span>
+        <Select<string>
+          className="is-wide"
+          label={t("aiCommit.modelProvider")}
+          placeholder={t("aiCommit.noProvider")}
+          value={config.providerId}
+          options={providers.map((provider) => ({
+            value: provider.id,
+            label: provider.name || t("providers.untitled"),
+            detail: `${AI_NAMES[provider.kind]} · ${provider.apiUrl}`,
+          }))}
+          onChange={(id) => updateConfig({ providerId: id, model: null })}
+        />
       </div>
 
-      {config.providers.length === 0 ? (
+      {/* 模型：候选来自供应商自身的槽位或目录投影，留空即用供应商默认 */}
+      {config.providerId && !providerMissing ? (
+        <div className="settings-row">
+          <span className="settings-label">{t("aiCommit.model")}</span>
+          {models === null ? (
+            <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{t("aiCommit.modelLoading")}</span>
+          ) : models.length === 0 ? (
+            <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{t("aiCommit.modelUnavailable")}</span>
+          ) : (
+            <Select<string>
+              className="is-wide"
+              label={t("aiCommit.model")}
+              placeholder={t("aiCommit.model")}
+              value={config.model ?? defaultModelId}
+              options={models.map((model) => ({
+                value: model.id,
+                label: model.isDefault ? t("aiCommit.modelDefault", { name: model.name }) : model.name,
+                detail: model.name === model.id ? undefined : model.id,
+              }))}
+              onChange={(id) => updateConfig({ model: id })}
+            />
+          )}
+        </div>
+      ) : null}
+
+      {/* 接口协议：只对 codex 类型可见；codex CLI 侧固定 Responses，这里的切换只影响提交请求 */}
+      {selectedProvider?.kind === "codex" ? (
+        <div className="settings-row">
+          <span className="settings-label">{t("aiCommit.codexProtocol")}</span>
+          <Select<CodexProtocol>
+            label={t("aiCommit.codexProtocol")}
+            placeholder="—"
+            value={config.codexProtocol}
+            options={CODEX_PROTOCOLS.map((protocol) => ({
+              value: protocol,
+              label: t(protocol === "chatCompletions" ? "aiCommit.codexProtocol.chatCompletions" : "aiCommit.codexProtocol.responses"),
+            }))}
+            onChange={(protocol) => updateConfig({ codexProtocol: protocol })}
+          />
+        </div>
+      ) : null}
+
+      {providersEmpty || providerMissing ? (
         <div
           style={{
             border: "1px dashed var(--border-color)",
             borderRadius: "var(--radius-sm, 6px)",
-            padding: "20px 24px",
-            textAlign: "center",
+            padding: "10px 14px",
             background: "var(--bg-secondary)",
             display: "flex",
-            flexDirection: "column",
             alignItems: "center",
-            gap: 10,
+            justifyContent: "space-between",
+            gap: 12,
           }}
         >
-          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-            {t("aiCommit.emptyProvidersTip")}
+          <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+            {t(providersEmpty ? "aiCommit.modelProviderEmpty" : "aiCommit.modelProviderMissing")}
           </span>
-          <button
-            type="button"
-            className="button is-primary is-small"
-            onClick={handleAddProvider}
-            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
-          >
-            <Plus size={13} />
-            <span>{t("aiCommit.addProvider")}</span>
+          <button type="button" className="button is-small" onClick={onOpenProviders}>
+            {t("aiCommit.manageProviders")}
           </button>
         </div>
-      ) : (
-        <>
-          {/* 当前选择与切换 */}
-          <div className="settings-row">
-            <span className="settings-label">{t("aiCommit.activeProvider")}</span>
-            <Select<string>
-              className="is-wide"
-              label={t("aiCommit.activeProvider")}
-              placeholder={t("aiCommit.noProvider")}
-              value={config.activeProviderId}
-              options={config.providers.map((p) => ({
-                value: p.id,
-                label: p.name || p.id,
-                detail: p.model || p.endpoint,
-              }))}
-              onChange={(id) => {
-                setSelectedProviderId(id);
-                updateConfig({ activeProviderId: id });
-              }}
-            />
-          </div>
-
-          {/* 服务商详情卡片 */}
-          {activeProvider ? (
-            <div
-              style={{
-                border: "1px solid var(--border-color)",
-                borderRadius: "var(--radius-sm)",
-                padding: "14px 16px",
-                background: "var(--bg-secondary)",
-                display: "flex",
-                flexDirection: "column",
-                gap: 12,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--fg-strong)" }}>
-                  {activeProvider.name}{" "}
-                  {activeProvider.id === config.activeProviderId
-                    ? `(${t("aiCommit.activeProvider")})`
-                    : ""}
-                </span>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {activeProvider.id !== config.activeProviderId ? (
-                    <button
-                      type="button"
-                      className="button is-small"
-                      onClick={() => updateConfig({ activeProviderId: activeProvider.id })}
-                    >
-                      {t("aiCommit.activeProvider")}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="icon-button ai-commit-remove"
-                    title={t("aiCommit.removeProvider")}
-                    onClick={() => setProviderToDelete(activeProvider)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="settings-row">
-                <span className="settings-label">{t("aiCommit.providerName")}</span>
-                <input
-                  type="text"
-                  className="settings-input is-wide"
-                  style={{ width: 280 }}
-                  value={activeProvider.name}
-                  onChange={(e) => updateActiveProvider({ name: e.target.value })}
-                />
-              </div>
-
-              <div className="settings-row">
-                <span className="settings-label">{t("aiCommit.protocol")}</span>
-                <Select<CommitProtocol>
-                  className="is-wide"
-                  label={t("aiCommit.protocol")}
-                  placeholder="—"
-                  value={activeProvider.apiProtocol}
-                  options={COMMIT_PROTOCOLS.map((p) => ({ value: p, label: t(protocolLabels[p]) }))}
-                  onChange={(proto) => updateActiveProvider({ apiProtocol: proto })}
-                />
-              </div>
-
-              <div className="settings-row">
-                <span className="settings-label">{t("aiCommit.endpoint")}</span>
-                <input
-                  type="text"
-                  className="settings-input is-url is-wide"
-                  style={{ width: 340 }}
-                  placeholder={t("aiCommit.endpointPlaceholder")}
-                  value={activeProvider.endpoint}
-                  onChange={(e) => updateActiveProvider({ endpoint: e.target.value })}
-                />
-              </div>
-
-              {/* 模型名称支持手动输入与 /v1/models 下拉 */}
-              <div className="settings-row" style={{ alignItems: "flex-start" }}>
-                <span className="settings-label" style={{ marginTop: 6 }}>
-                  {t("aiCommit.model")}
-                </span>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div
-                    ref={modelDropdownRef}
-                    style={{ position: "relative", display: "flex", alignItems: "center", gap: 6 }}
-                  >
-                    <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
-                      <input
-                        type="text"
-                        className="settings-input is-wide"
-                        style={{ width: 280, paddingRight: 28 }}
-                        placeholder={t("aiCommit.modelPlaceholder")}
-                        value={activeProvider.model}
-                        onChange={(e) => updateActiveProvider({ model: e.target.value })}
-                        onFocus={() => {
-                          if (availableModels.length > 0) {
-                            setModelDropdownOpen(true);
-                          }
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="icon-button ai-commit-disclosure"
-                        style={{
-                          position: "absolute",
-                          right: 4,
-                          padding: 2,
-                          height: 22,
-                          width: 22,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                        title={modelDropdownOpen ? "收起模型列表" : "展开模型列表"}
-                        onClick={() => {
-                          setModelDropdownOpen((prev) => !prev);
-                          if (!modelDropdownOpen && availableModels.length === 0 && !fetchingModels) {
-                            void handleFetchModels();
-                          }
-                        }}
-                      >
-                        {modelDropdownOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      className="button is-small"
-                      disabled={fetchingModels || !activeProvider.endpoint.trim()}
-                      title={t("aiCommit.fetchModels")}
-                      onClick={() => void handleFetchModels()}
-                      style={{ display: "inline-flex", alignItems: "center", gap: 4, height: 28 }}
-                    >
-                      <RefreshCw
-                        size={13}
-                        className={fetchingModels ? "is-spinning" : undefined}
-                        data-spin={fetchingModels ? "true" : undefined}
-                        style={{
-                          display: "inline-block",
-                          transformOrigin: "50% 50%",
-                          animation: fetchingModels ? "spin 1.4s linear infinite" : "none",
-                        }}
-                      />
-                      <span>{fetchingModels ? t("aiCommit.fetchingModels") : "拉取模型"}</span>
-                    </button>
-
-                    {/* 下拉浮层 */}
-                    {modelDropdownOpen ? (
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: "calc(100% + 4px)",
-                          left: 0,
-                          width: 320,
-                          maxHeight: 280,
-                          background: "var(--bg-primary)",
-                          border: "1px solid var(--border-color)",
-                          borderRadius: "var(--radius-sm, 6px)",
-                          boxShadow: "0 6px 16px rgba(0,0,0,0.25)",
-                          zIndex: 100,
-                          display: "flex",
-                          flexDirection: "column",
-                          overflow: "hidden",
-                        }}
-                      >
-                        {/* 过滤搜索栏 */}
-                        <div
-                          style={{
-                            padding: "6px 8px",
-                            borderBottom: "1px solid var(--border-color)",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            background: "var(--bg-secondary)",
-                          }}
-                        >
-                          <Search size={12} style={{ color: "var(--fg-muted)" }} />
-                          <input
-                            type="text"
-                            className="ai-commit-model-search"
-                            style={{
-                              flex: 1,
-                              border: "none",
-                              background: "transparent",
-                              fontSize: 12,
-                              outline: "none",
-                            }}
-                            placeholder={t("aiCommit.searchModelPlaceholder")}
-                            value={modelSearch}
-                            onChange={(e) => setModelSearch(e.target.value)}
-                            autoFocus
-                          />
-                          {modelSearch ? (
-                            <button
-                              type="button"
-                              className="icon-button"
-                              style={{ padding: 2, height: 16, width: 16 }}
-                              onClick={() => setModelSearch("")}
-                            >
-                              <X size={11} />
-                            </button>
-                          ) : null}
-                        </div>
-
-                        {/* 候选列表 */}
-                        <div style={{ flex: 1, overflowY: "auto", maxHeight: 200, padding: "4px 0" }}>
-                          {availableModels.length === 0 ? (
-                            <div
-                              style={{
-                                padding: "14px",
-                                textAlign: "center",
-                                fontSize: 12,
-                                color: "var(--text-muted)",
-                              }}
-                            >
-                              {fetchingModels ? (
-                                <span>{t("aiCommit.fetchingModels")}</span>
-                              ) : (
-                                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                  <span>未获取到模型列表</span>
-                                  <button
-                                    type="button"
-                                    className="button is-small"
-                                    onClick={() => void handleFetchModels()}
-                                  >
-                                    立即请求 /v1/models
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          ) : filteredModels.length === 0 ? (
-                            <div
-                              style={{
-                                padding: "10px 14px",
-                                textAlign: "center",
-                                fontSize: 12,
-                                color: "var(--text-muted)",
-                              }}
-                            >
-                              {t("aiCommit.noModelsFound")}
-                            </div>
-                          ) : (
-                            filteredModels.map((m) => {
-                              const isSelected = activeProvider.model === m;
-                              return (
-                                <div
-                                  key={m}
-                                  style={{
-                                    padding: "6px 12px",
-                                    fontSize: 12,
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    cursor: "pointer",
-                                    background: isSelected ? "var(--bg-active)" : "transparent",
-                                    color: isSelected ? "var(--fg-strong)" : "var(--fg)",
-                                    fontFamily: "var(--font-mono)",
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.background = "var(--bg-hover)";
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.background = isSelected
-                                      ? "var(--bg-active)"
-                                      : "transparent";
-                                  }}
-                                  onClick={() => {
-                                    updateActiveProvider({ model: m });
-                                    setModelDropdownOpen(false);
-                                    setModelSearch("");
-                                  }}
-                                >
-                                  <span
-                                    style={{
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}
-                                  >
-                                    {m}
-                                  </span>
-                                  {isSelected ? <Check size={13} /> : null}
-                                </div>
-                              );
-                            })
-                          )}
-                        </div>
-
-                        {/* 底部信息栏 */}
-                        {availableModels.length > 0 ? (
-                          <div
-                            style={{
-                              padding: "4px 10px",
-                              borderTop: "1px solid var(--border-color)",
-                              fontSize: 11,
-                              color: "var(--text-muted)",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              background: "var(--bg-secondary)",
-                            }}
-                          >
-                            <span>共 {availableModels.length} 个模型</span>
-                            <span
-                              className="ai-commit-retry"
-                              onClick={() => void handleFetchModels()}
-                            >
-                              重新获取
-                            </span>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {/* 状态提示反馈 */}
-                  {fetchSuccessTip ? (
-                    <span
-                      style={{
-                        fontSize: 11.5,
-                        color: "var(--success)",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 4,
-                      }}
-                    >
-                      <Check size={12} />
-                      {fetchSuccessTip}
-                    </span>
-                  ) : null}
-                  {fetchError ? (
-                    <span style={{ fontSize: 11.5, color: "var(--danger)" }}>
-                      {t("aiCommit.fetchModelsFailed")}: {fetchError}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="settings-row">
-                <span className="settings-label">{t("aiCommit.apiKey")}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <input
-                    type={showApiKey ? "text" : "password"}
-                    className="settings-input is-wide"
-                    style={{ width: 280, fontFamily: "var(--font-mono)", fontSize: 12 }}
-                    placeholder={t("aiCommit.apiKeyPlaceholder")}
-                    value={activeProvider.apiKey}
-                    onChange={(e) => updateActiveProvider({ apiKey: e.target.value })}
-                  />
-                  <button
-                    type="button"
-                    className="icon-button is-inline"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    title={showApiKey ? "隐藏" : "显示"}
-                  >
-                    {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-              </div>
-
-              {activeProvider.apiProtocol === "chatCompletions" ? (
-                <div className="settings-row">
-                  <span className="settings-label">{t("aiCommit.tokenLimitField")}</span>
-                  <Select<ChatTokenLimitField>
-                    className="is-wide"
-                    label={t("aiCommit.tokenLimitField")}
-                    placeholder="—"
-                    value={activeProvider.chatTokenLimitField}
-                    options={CHAT_TOKEN_LIMIT_FIELDS.map((f) => ({
-                      value: f,
-                      label: t(tokenLimitLabels[f]),
-                    }))}
-                    onChange={(field) => updateActiveProvider({ chatTokenLimitField: field })}
-                  />
-                </div>
-              ) : null}
-
-              <div className="settings-row">
-                <span className="settings-label">{t("aiCommit.allowInsecureHttp")}</span>
-                <Select<Switch>
-                  label={t("aiCommit.allowInsecureHttp")}
-                  placeholder="—"
-                  value={activeProvider.allowsInsecureHttp ? "yes" : "no"}
-                  options={[
-                    { value: "yes", label: t("common.yes") },
-                    { value: "no", label: t("common.no") },
-                  ]}
-                  onChange={(val) => updateActiveProvider({ allowsInsecureHttp: val === "yes" })}
-                />
-              </div>
-            </div>
-          ) : null}
-        </>
-      )}
+      ) : null}
 
       <div style={{ height: 1, background: "var(--border-color)", margin: "8px 0" }} />
 
@@ -934,62 +483,9 @@ export default function AiCommitSettingsPanel() {
           </span>
         ) : null}
         {saveError ? (
-          <span
-            style={{
-              fontSize: 12,
-              color: "var(--danger)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            {saveError}
-          </span>
+          <span style={{ fontSize: 12, color: "var(--danger)" }}>{saveError}</span>
         ) : null}
       </div>
-
-      {/* 删除服务商确认弹窗 */}
-      {providerToDelete ? (
-        <div
-          className="dialog-backdrop"
-          onClick={() => setProviderToDelete(null)}
-          role="presentation"
-        >
-          <div
-            className="dialog"
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 420 }}
-          >
-            <h3 className="dialog-title">{t("aiCommit.deleteConfirmTitle")}</h3>
-            <p className="dialog-body">
-              {t("aiCommit.deleteConfirmBody").replace(
-                "{name}",
-                providerToDelete.name || providerToDelete.id
-              )}
-            </p>
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="button"
-                onClick={() => setProviderToDelete(null)}
-              >
-                {t("dialog.cancel")}
-              </button>
-              <button
-                type="button"
-                className="button is-danger"
-                autoFocus
-                onClick={() => {
-                  handleRemoveProvider(providerToDelete.id);
-                  setProviderToDelete(null);
-                }}
-              >
-                {t("dialog.delete")}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       </div>
     </div>
   );

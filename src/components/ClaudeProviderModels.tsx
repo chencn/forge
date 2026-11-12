@@ -102,9 +102,9 @@ function ModelField({ label, placeholder, value, models, loading, error, onChang
           <Combobox.Positioner className={styles.positioner} sideOffset={4}>
             <Combobox.Popup className={styles.popup}>
               {loading || error ? <Combobox.Status className={styles.status}>
-                {loading ? <><Loader2 size={13} className="is-spinning" /> {t("aiCommit.fetchingModels")}</> : error}
+                {loading ? <><Loader2 size={13} className="is-spinning" /> {t("providers.fetchingModels")}</> : error}
               </Combobox.Status> : null}
-              {!loading && !error ? <Combobox.Empty className={styles.status}>{t("aiCommit.noModelsFound")}</Combobox.Empty> : null}
+              {!loading && !error ? <Combobox.Empty className={styles.status}>{t("providers.noModelsFound")}</Combobox.Empty> : null}
               <Combobox.List className={styles.list}>
                 {(id: string) => <Combobox.Item key={id} value={id} className={styles.item}>{id}</Combobox.Item>}
               </Combobox.List>

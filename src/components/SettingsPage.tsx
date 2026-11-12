@@ -40,7 +40,7 @@ import {
 } from "../features/settings/pages/VcsPages";
 import { ToolAboutPage, ToolTerminalPage } from "../features/settings/pages/ToolPages";
 
-/** 设置窗口左侧的模块，一行一个。AI 相关六页只在总开关开启后出现。 */
+/** 设置窗口左侧的模块，一行一个。依赖会话总开关的 AI 页只在开启后出现。 */
 export type SettingsModule =
   | "general"
   | "editor"
@@ -90,15 +90,29 @@ const MODULE_LABEL: Record<SettingsModule, TranslationKey> = {
   about: "settings.about",
 };
 
-/** 受 AI 总开关门控的模块；智能提交等其余 AI 页不在此列。 */
+/**
+ * 受 AI 总开关门控的模块：这些页面展示或操作 AI 会话本身，关掉总开关就没有内容可看。
+ *
+ * 「模型供应商」不在此列——它只是端点与密钥的登记处，AI 提交这条链路不经过会话总开关，
+ * 关掉开关的人照样得能进去配供应商。
+ */
 const AI_MODULES = new Set<SettingsModule>([
   "aiCli",
   "aiArchived",
-  "modelProviders",
   "skills",
   "mcp",
   "hooks",
 ]);
+
+/**
+ * 按 AI 总开关算出导航要渲染的模块。
+ *
+ * @param aiAssistantsEnabled - 应用级 AI 总开关
+ * @returns 展示顺序下的模块清单；关闭时只摘掉依赖会话的 AI 页，模型供应商保留
+ */
+export function visibleSettingsModules(aiAssistantsEnabled: boolean): SettingsModule[] {
+  return aiAssistantsEnabled ? MODULES : MODULES.filter((key) => !AI_MODULES.has(key));
+}
 
 /** {@link SettingsPage} 的入参。 */
 interface Props {
@@ -126,9 +140,7 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
   /** AI 各页有未保存草稿时，先记下想跳去的模块，等确认框决定去不去。 */
   const [pendingModule, setPendingModule] = useState<SettingsModule | null>(null);
 
-  const visibleModules = settings.aiAssistantsEnabled
-    ? MODULES
-    : MODULES.filter((key) => !AI_MODULES.has(key));
+  const visibleModules = visibleSettingsModules(settings.aiAssistantsEnabled);
 
   // 面板卸载就会丢掉草稿，所以离开前问一句；目标就是当前页时不用管。
   const navigate = (next: SettingsModule) => {
@@ -239,7 +251,7 @@ export default function SettingsPage({ workspace, initialModule }: Props) {
         ) : module === "terminal" ? (
           <ToolTerminalPage />
         ) : module === "aiCommit" ? (
-          <AiCommitSettingsPanel />
+          <AiCommitSettingsPanel onOpenProviders={() => navigate("modelProviders")} />
         ) : module === "aiCli" ? (
           <AiCliSettingsPanel />
         ) : module === "aiArchived" ? (

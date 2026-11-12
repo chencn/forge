@@ -17,38 +17,25 @@ export const COMMIT_FORMATS = [
 /** {@link COMMIT_FORMATS} 的成员类型。 */
 export type CommitFormat = (typeof COMMIT_FORMATS)[number];
 
-/** 供应商 API 协议档位。 */
-export const COMMIT_PROTOCOLS = ["chatCompletions", "anthropicMessages", "responses"] as const;
-/** {@link COMMIT_PROTOCOLS} 的成员类型。 */
-export type CommitProtocol = (typeof COMMIT_PROTOCOLS)[number];
+/** Codex 供应商的接口协议档位。 */
+export const CODEX_PROTOCOLS = ["responses", "chatCompletions"] as const;
+/** {@link CODEX_PROTOCOLS} 的成员类型。 */
+export type CodexProtocol = (typeof CODEX_PROTOCOLS)[number];
 
 /** 推理力度档位（透传 reasoning_effort）。 */
 export const COMMIT_EFFORTS = ["default", "none", "minimal", "low", "medium", "high"] as const;
 /** {@link COMMIT_EFFORTS} 的成员类型。 */
 export type CommitEffort = (typeof COMMIT_EFFORTS)[number];
 
-/** chat 协议下发 token 上限用的字段名。 */
-export const CHAT_TOKEN_LIMIT_FIELDS = ["max_completion_tokens", "max_tokens"] as const;
-/** {@link CHAT_TOKEN_LIMIT_FIELDS} 的成员类型。 */
-export type ChatTokenLimitField = (typeof CHAT_TOKEN_LIMIT_FIELDS)[number];
-
-/** 一个 AI 提交说明的供应商：OpenAI 兼容端点的地址、模型与密钥。 */
-export interface AiCommitProvider {
-  id: string;
-  name: string;
-  endpoint: string;
-  model: string;
-  apiKey: string;
-  apiProtocol: CommitProtocol;
-  chatTokenLimitField: ChatTokenLimitField;
-  allowsInsecureHttp: boolean;
-}
-
 /** AI 提交说明的完整配置（持久化在 ai-commit.json）。 */
 export interface AiCommitConfig {
   enabled: boolean;
-  activeProviderId: string | null;
-  providers: AiCommitProvider[];
+  /** 所选模型供应商的 ID；地址、密钥与协议都从它推导 */
+  providerId: string | null;
+  /** 生成用的模型；null 表示沿用供应商自己的默认模型 */
+  model: string | null;
+  /** codex 供应商的接口协议；只影响提交请求，codex CLI 与 agent 会话仍只走 Responses */
+  codexProtocol: CodexProtocol;
   language: "simplifiedChinese" | "english";
   format: CommitFormat;
   customInstructions: string;
@@ -66,11 +53,12 @@ export interface AiCommitFileInput {
   diff: string;
 }
 
-/** 配置缺省值：启用、中文、conventional、无字符/Token 限制。 */
+/** 配置缺省值：启用、未选供应商、中文、conventional、无字符/Token 限制。 */
 export const DEFAULT_AI_COMMIT_CONFIG: AiCommitConfig = {
   enabled: true,
-  activeProviderId: null,
-  providers: [],
+  providerId: null,
+  model: null,
+  codexProtocol: "responses",
   language: "simplifiedChinese",
   format: "conventional",
   customInstructions: "",
@@ -82,21 +70,6 @@ export const DEFAULT_AI_COMMIT_CONFIG: AiCommitConfig = {
   reasoningEffort: "default",
 };
 
-/** 造一个 OpenAI 兼容的默认供应商条目（id 用时间戳+随机串保证唯一）。 */
-export function newAiCommitProvider(name = "OpenAI Compatible"): AiCommitProvider {
-  const id = `provider-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  return {
-    id,
-    name,
-    endpoint: "https://api.openai.com/v1",
-    model: "",
-    apiKey: "",
-    apiProtocol: "chatCompletions",
-    chatTokenLimitField: "max_completion_tokens",
-    allowsInsecureHttp: false,
-  };
-}
-
 /** 配置保存后广播的自定义事件名（设置页与其他面板同步用）。 */
 export const AI_COMMIT_CONFIG_CHANGED_EVENT = "forge:ai-commit-config-changed";
 
@@ -106,22 +79,7 @@ let cachedAiCommitConfig: AiCommitConfig | null = null;
 /** 读取保存在 ai-commit.json 的配置 */
 export async function loadAiCommitConfig(): Promise<AiCommitConfig> {
   const loaded = await invoke<AiCommitConfig>("ai_commit_config_load");
-  // 过滤掉旧版遗留的未配置密钥的 default-deepseek
-  const filteredProviders = (loaded.providers ?? []).filter(
-    (p) => !(p.id === "default-deepseek" && !p.apiKey?.trim())
-  );
-  let activeId = loaded.activeProviderId;
-  if (activeId && !filteredProviders.some((p) => p.id === activeId)) {
-    activeId = filteredProviders[0]?.id ?? null;
-  } else if (!activeId && filteredProviders.length > 0) {
-    activeId = filteredProviders[0].id;
-  }
-  const config: AiCommitConfig = {
-    ...DEFAULT_AI_COMMIT_CONFIG,
-    ...loaded,
-    providers: filteredProviders,
-    activeProviderId: activeId,
-  };
+  const config: AiCommitConfig = { ...DEFAULT_AI_COMMIT_CONFIG, ...loaded };
   cachedAiCommitConfig = config;
   return config;
 }
@@ -173,19 +131,6 @@ export function useAiCommitEnabled(): boolean {
 /** 取消某次生成 */
 export function cancelAiCommit(operationId: string): Promise<void> {
   return invoke<void>("ai_commit_cancel", { operationId });
-}
-
-/** 获取指定服务商的可用模型列表（请求 /v1/models 等端点） */
-export function listAiCommitModels(params: {
-  endpoint: string;
-  apiKey?: string;
-  allowsInsecureHttp?: boolean;
-}): Promise<string[]> {
-  return invoke<string[]>("ai_commit_list_models", {
-    endpoint: params.endpoint,
-    apiKey: params.apiKey ?? "",
-    allowsInsecureHttp: !!params.allowsInsecureHttp,
-  });
 }
 
 /** 提交格式预览信息接口 */
@@ -295,16 +240,41 @@ export function getCommitFormatPreview(
   }
 }
 
-/** 发起 AI 提交说明生成 */
+/** AI 提交可选的一个模型。 */
+export interface AiCommitModel {
+  /** 提交给端点的模型标识 */
+  id: string;
+  /** 界面显示名 */
+  name: string;
+  /** 是否为该供应商的默认模型 */
+  isDefault: boolean;
+}
+
+/**
+ * 列出所选供应商可用于生成提交说明的模型。
+ *
+ * @param providerId - 模型供应商 ID
+ * @returns 该供应商的模型清单；claude 供应商取槽位模型，codex 供应商取目录投影
+ * @throws 供应商已删除或没有可选模型时 reject 错误码（见 {@link formatAiCommitError}）
+ */
+export function listAiCommitModels(providerId: string): Promise<AiCommitModel[]> {
+  return invoke<AiCommitModel[]>("ai_commit_list_models", { providerId });
+}
+
+/**
+ * 发起 AI 提交说明生成。
+ *
+ * @param params.operationId - 本次生成的唯一 ID，取消操作按它定位
+ * @param params.files - 已过滤敏感文件后的文件差异
+ * @returns 生成的提交说明；失败时 reject 错误码（见 {@link formatAiCommitError}）
+ */
 export async function generateAiCommitMessage(params: {
   operationId: string;
   files: AiCommitFileInput[];
-  overrideProviderId?: string;
 }): Promise<string> {
   return invoke<string>("ai_commit_generate", {
     operationId: params.operationId,
     files: params.files,
-    overrideProviderId: params.overrideProviderId ?? null,
   });
 }
 

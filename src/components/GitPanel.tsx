@@ -913,8 +913,7 @@ function GitPanel({
       return;
     }
 
-    const activeProvider = config.providers.find((p) => p.id === config.activeProviderId);
-    if (!activeProvider) {
+    if (!config.providerId) {
       setAiError(t("aiCommit.configureFirst"));
       return;
     }
@@ -946,7 +945,6 @@ function GitPanel({
       const generated = await generateAiCommitMessage({
         operationId: opId,
         files,
-        overrideProviderId: activeProvider.id,
       });
 
       // 以仓库里的说明为准：生成期间面板可能已经卸掉，晚到的结果不能盖掉切回来后新打的字。

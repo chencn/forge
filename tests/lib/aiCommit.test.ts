@@ -8,8 +8,8 @@ import {
   formatAiCommitError,
   getCommitFormatPreview,
   isSensitiveCommitFile,
+  listAiCommitModels,
   loadAiCommitConfig,
-  newAiCommitProvider,
   saveAiCommitConfig,
 } from "../../src/lib/aiCommit";
 
@@ -73,12 +73,13 @@ describe("AI 提交差异输入", () => {
 });
 
 describe("aiCommit", () => {
-  it("default config does not preset deepseek and defaults to empty providers", () => {
+  it("default config leaves the provider unset and keeps generation preferences", () => {
     expect(DEFAULT_AI_COMMIT_CONFIG.enabled).toBe(true);
     expect(DEFAULT_AI_COMMIT_CONFIG.language).toBe("simplifiedChinese");
     expect(DEFAULT_AI_COMMIT_CONFIG.format).toBe("conventional");
-    expect(DEFAULT_AI_COMMIT_CONFIG.providers).toEqual([]);
-    expect(DEFAULT_AI_COMMIT_CONFIG.activeProviderId).toBeNull();
+    expect(DEFAULT_AI_COMMIT_CONFIG.providerId).toBeNull();
+    expect(DEFAULT_AI_COMMIT_CONFIG.model).toBeNull();
+    expect(DEFAULT_AI_COMMIT_CONFIG.codexProtocol).toBe("responses");
     expect(DEFAULT_AI_COMMIT_CONFIG.includeBody).toBe(true);
     expect(DEFAULT_AI_COMMIT_CONFIG.subjectMaximumLength).toBe(0);
     expect(DEFAULT_AI_COMMIT_CONFIG.maximumDiffCharacters).toBe(0);
@@ -95,13 +96,17 @@ describe("aiCommit", () => {
     expect(invoke).toHaveBeenLastCalledWith("ai_commit_config_save", { config: next });
   });
 
-  it("newAiCommitProvider creates unique valid provider profile", () => {
-    const p1 = newAiCommitProvider("Provider 1");
-    const p2 = newAiCommitProvider("Provider 2");
-    expect(p1.id).not.toBe(p2.id);
-    expect(p1.name).toBe("Provider 1");
-    expect(p1.apiProtocol).toBe("chatCompletions");
-    expect(p1.allowsInsecureHttp).toBe(false);
+  it("模型清单按供应商读取并原样透传，默认模型带标记", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { id: "claude-sonnet-4-5", name: "claude-sonnet-4-5", isDefault: true },
+      { id: "claude-haiku-4-5", name: "claude-haiku-4-5", isDefault: false },
+    ]);
+    const models = await listAiCommitModels("p1");
+    expect(invoke).toHaveBeenCalledWith("ai_commit_list_models", { providerId: "p1" });
+    expect(models.map((model) => [model.id, model.isDefault])).toEqual([
+      ["claude-sonnet-4-5", true],
+      ["claude-haiku-4-5", false],
+    ]);
   });
 
   it("getCommitFormatPreview returns sample text and badges for formats", () => {
