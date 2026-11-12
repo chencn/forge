@@ -38,10 +38,17 @@ import {
   gitCommitDetail,
   gitConfigGet,
   gitDiffText,
+  gitCommit,
+  gitStage,
+  gitUnstage,
+  gitShelve,
+  gitStashPush,
+  gitLog,
+  recoveryOf,
   markClass,
 } from "../lib/git";
 import { commitDraft, setCommitDraft, subscribeCommitDraft } from "../lib/commitDraft";
-import { commitStamp } from "../lib/format";
+import { commitStamp, joinPath, relativePathFrom, basenameOf } from "../lib/format";
 import { readFile } from "../lib/fs";
 import { badCommitNames, isNewCommitPath } from "../features/vcs/commitChecks";
 import {
@@ -72,7 +79,9 @@ import {
 import type { ChangeNode, ChangeSide } from "../features/vcs/changes";
 import {
   aggregateCheck,
+  aggregateRepositoryCheck,
   buildChangeTree,
+  buildRepositoryChangeTree,
   checkKey,
   filesOf,
   isPartiallyStaged,
@@ -113,7 +122,7 @@ interface GitPanelProps {
   /** 切视图的回调，日志「编辑提交消息」等入口也要能把面板拉回提交页。 */
   onViewChange: (view: GitView) => void;
   /** 网络动作交给 App 的统一窗口和任务流程。 */
-  onUpdate: () => void;
+  onUpdate: (root: string) => void;
   onPush: (root: string, branch: string) => void;
   /** 工作区目录，用于在非仓库时给出上下文。 */
   workspaceRoot: string;
@@ -142,15 +151,14 @@ interface GitPanelProps {
   /** 双击变更行打开比对还是源文件。 */
   showOnDoubleClick: "preview" | "source";
   /** 一件都没暂存时，提交按钮直接提交全部已跟踪改动；默认开着。 */
-  commitAllWhenNothingStaged: boolean;
   /** 双击要打开源文件时走这条，落给 App 开编辑器标签。 */
   onOpenSource: (change: GitChange) => void;
   /** 「解决冲突」开的是同一个弹层。 */
-  onOpenResolve: () => void;
+  onOpenResolve: (repoRoot?: string) => void;
   /** 仓库根那一行显示的名字。 */
   repoName: string;
   /** 文件与目录菜单里需要动编辑器、对话框或日志的动作，落给 App。 */
-  onFileAction: (action: CommitFileAction, path: string, staged: boolean, isDirectory?: boolean) => void;
+  onFileAction: (action: CommitFileAction, path: string, staged: boolean, isDirectory?: boolean, repoRoot?: string) => void;
   /** 已忽略那一行的「从忽略列表移除」：动的是盖住它的那条规则，落给 App。 */
   onUnignore: (relative: string) => void;
   /** 修正那一节里的文件：点开看的是那次提交里这一份的差异。 */
@@ -252,7 +260,6 @@ function GitPanel({
   onToggleByDir,
   onToggleByModule,
   showOnDoubleClick,
-  commitAllWhenNothingStaged,
   onOpenSource,
   onOpenResolve,
   repoName,
@@ -283,8 +290,8 @@ function GitPanel({
     };
   });
 
-  // 提交说明按仓库留着：切走工具窗口会卸掉这个面板，不能只放在组件状态里。
-  const draftKey = git.root ?? workspaceRoot;
+  /** 提交说明属于工作区的本次选择，分支栏切换不能替换或清空它。 */
+  const draftKey = workspaceRoot;
   const [message, setMessageState] = useState(() => commitDraft(draftKey));
   const setMessage = (next: string) => {
     setCommitDraft(draftKey, next);
@@ -325,6 +332,8 @@ function GitPanel({
   const [amendDetail, setAmendDetail] = useState<GitCommitDetail | null>(null);
   const messageBeforeAmend = useRef("");
   const amendSeq = useRef(0);
+  /** 修正操作固定到用户启用时的仓库，不能随分支栏切换漂移。 */
+  const [amendRoot, setAmendRoot] = useState<string | null>(null);
 
   // 提交历史弹层
   const historyRef = useRef<HTMLButtonElement>(null);
@@ -338,14 +347,12 @@ function GitPanel({
 
   // 变更列表数据（支持按 Changelist 分组）
   const [changelists, setChangelists] = useState<ChangelistsState>(() =>
-    git.root ? loadChangelists(git.root) : { lists: [], moves: {}, activeId: "default" }
+    loadChangelists(workspaceRoot)
   );
 
   useEffect(() => {
-    if (git.root) {
-      setChangelists(loadChangelists(git.root));
-    }
-  }, [git.root]);
+    setChangelists(loadChangelists(workspaceRoot));
+  }, [workspaceRoot]);
 
   /**
    * 页签切到贮藏时，树专属按钮随之卸载；锚点没了的弹层先收掉，别留在半空。
@@ -375,18 +382,29 @@ function GitPanel({
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
   // Stash Changes… 对话框：消息默认留空走 git 的「WIP on …」，未跟踪文件默认包含。
   const [stashDialog, setStashDialog] = useState(false);
+  /** 贮藏确认冻结目标，切换分支栏不改变目标。 */
+  const [stashRoot, setStashRoot] = useState<string | null>(null);
   const [shelfDialog, setShelfDialog] = useState(false);
   const [shelfName, setShelfName] = useState("");
   /** unshelve 有冲突时的一条内联提示；下次动作或关闭清掉。 */
   const [shelfNotice, setShelfNotice] = useState<string | null>(null);
   /** 待搁置的文件相对路径；null 表示工具栏按钮（存全部变更）。 */
   const [shelfPaths, setShelfPaths] = useState<string[] | null>(null);
+  /** 搁置对话框的来源仓库，在等待输入时保持不变。 */
+  const [shelfRoot, setShelfRoot] = useState<string | null>(null);
   const [stashMessage, setStashMessage] = useState("");
   const [stashUntracked, setStashUntracked] = useState(true);
   const generationIdRef = useRef<string | null>(null);
 
   // 当前正在执行的动作
   const [committingAction, setCommittingAction] = useState<"commit" | "commitAndPush" | null>(null);
+  /** 提交前检查也持锁，避免 await 期间连续点击启动多批提交。 */
+  const commitLock = useRef(false);
+  /** 卸载后取消尚未执行的仓库提交和界面回调。 */
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  /** 每个仓库独立记录结果，部分失败时保留失败项和说明。 */
+  const [commitResults, setCommitResults] = useState<ReadonlyMap<string, boolean>>(new Map());
   /** 关掉非模态提交后，提交区改成对话框，由「提交」或 Ctrl+K 打开。 */
   const [commitDialog, setCommitDialog] = useState(false);
   const pendingCaret = useRef<number | null>(null);
@@ -478,15 +496,19 @@ function GitPanel({
       setMessage(messageBeforeAmend.current);
       setAmendDetail(null);
       setAmend(false);
+      setAmendRoot(null);
       return;
     }
-    const head = git.lastCommit;
-    if (!head || !git.root) return;
+    if (repositoryPlans.length > 1) return;
+    /** 有勾选时使用勾选仓库；纯改说明时使用分支栏的目标仓库。 */
+    const root = repositoryPlans[0]?.root ?? git.root;
+    if (!root) return;
     messageBeforeAmend.current = message;
     setAmend(true);
-    void gitCommitDetail(git.root, head.hash)
+    setAmendRoot(root);
+    void gitLog(root, { limit: 1 }).then((commits) => commits[0] ? gitCommitDetail(root, commits[0].hash) : null)
       .then((detail) => {
-        if (seq !== amendSeq.current) return;
+        if (seq !== amendSeq.current || !detail) return;
         setAmendDetail(detail);
         setMessage(detail.body ? `${detail.subject}\n\n${detail.body}` : detail.subject);
       })
@@ -495,16 +517,23 @@ function GitPanel({
       });
   };
 
-  const rawChanges = git.status?.changes ?? EMPTY_CHANGES;
+  /** 全部仓库快照；单仓库调用也使用同一提交模型。 */
+  const repositories = useMemo(() => git.repositoryStates ?? (git.root
+    ? [{ root: git.root, status: git.status, probe: git.probe, error: null }] : []),
+  [git.repositoryStates, git.root, git.status, git.probe]);
+  /** 文件身份由来源根和相对路径组成，两个 README.md 互不覆盖。 */
+  const rawChanges = useMemo(() => repositories.flatMap((repo) =>
+    (repo.status?.changes ?? EMPTY_CHANGES).map((change) => ({ ...change, repoRoot: repo.root }))), [repositories]);
 
   // 清除失效文件的勾选记录（键带侧前缀 `s:`/`w:`，截掉前两字符才是路径）
   useEffect(() => {
-    const live = new Set(rawChanges.map((c) => c.path));
+    /** 两侧键均按仓库隔离。 */
+    const live = new Set(rawChanges.flatMap((c) => [checkKey("staged", c.path, c.repoRoot), checkKey("worktree", c.path, c.repoRoot)]));
     setChecks((prev) => {
       let changed = false;
       const next = new Map(prev);
       for (const k of next.keys()) {
-        if (!live.has(k.slice(2))) {
+        if (!live.has(k)) {
           next.delete(k);
           changed = true;
         }
@@ -515,8 +544,10 @@ function GitPanel({
 
   // 构建变更树（git 暂存区那套分组：已暂存 / 未暂存分开摆，部分暂存两边各一条）
   const treeRoots = useMemo(() => {
-    return buildChangeTree(rawChanges, groupByDir);
-  }, [rawChanges, groupByDir]);
+    if (repositories.length < 2 && !groupByModule) return buildChangeTree(rawChanges, groupByDir);
+    return buildRepositoryChangeTree(repositories.map((repo) => ({ root: repo.root,
+      label: relativePathFrom(workspaceRoot, repo.root) || basenameOf(repo.root), changes: repo.status?.changes ?? [] })), groupByDir);
+  }, [rawChanges, repositories, groupByDir, groupByModule, workspaceRoot]);
 
   // 扁平化映射表与父级索引
   const [nodesByKey, parentKeyMap] = useMemo(() => {
@@ -536,6 +567,10 @@ function GitPanel({
   // 计算提交计划（纳入提交的文件）
   const plan = useMemo(() => planCommit(rawChanges, checks), [rawChanges, checks]);
   const includedCount = plan.included.length;
+  /** 每个请求只有一个根和该根下勾选的文件，空仓库不进入提交批次。 */
+  const repositoryPlans = useMemo(() => repositories.map((repo) => ({ ...repo,
+    plan: planCommit(rawChanges.filter((change) => change.repoRoot === repo.root), checks),
+  })).filter((repo) => repo.plan.included.length > 0 || amend && repo.root === amendRoot), [repositories, rawChanges, checks, amend, amendRoot]);
 
   // 切换节点的勾选状态：写入哪一侧由节点所在组决定，两组各管各的那一半
   const toggleCheck = useCallback((nodes: ChangeNode[]) => {
@@ -545,12 +580,25 @@ function GitPanel({
     const targets = filesOf(nodes);
     if (targets.length === 0) return;
     setChecks((prev) => {
+      if (first.type === "repository") {
+        /** 仓库勾选涵盖两侧，取消时不能遗留已暂存文件。 */
+        const selected = aggregateRepositoryCheck(targets, prev).checked;
+        /** 仓库级勾选只处理无冲突文件。 */
+        const eligible = targets.filter((file) => !file.conflicted);
+        /** 文件级默认行为保留，仓库全选明确包含未跟踪文件。 */
+        const next = new Map(prev);
+        for (const file of eligible) {
+          next.set(checkKey("staged", file.path, file.repoRoot), !selected);
+          next.set(checkKey("worktree", file.path, file.repoRoot), !selected);
+        }
+        return next;
+      }
       const agg = aggregateCheck(targets, side, prev);
       // 全勾点一下全清空，其余（含横线）一律全勾上
       const turnOn = !agg.checked;
       const next = new Map(prev);
       for (const f of targets) {
-        next.set(checkKey(side, f.path), turnOn);
+        next.set(checkKey(side, f.path, f.repoRoot), turnOn);
       }
       return next;
     });
@@ -600,10 +648,26 @@ function GitPanel({
     else onOpenChange(change, isStaged, siblings);
   };
 
-  const absolute = useCallback(
-    (relative: string) => git.absoluteOf(relative),
-    [git]
-  );
+  /**
+   * 将仓库相对路径解析到明确的来源根。
+   * @param relative - 仓库相对路径
+   * @param root - 来源仓库，单仓库入口默认使用活动根
+   * @returns 文件绝对路径
+   */
+  const absolute = useCallback((relative: string, root = git.root) => root ? joinPath(root, relative) : relative, [git.root]);
+  /**
+   * 修改选中文件的索引，每个仓库分别发出请求。
+   * @param files - 带仓库归属的文件
+   * @param unstage - true 时取消暂存
+   * @returns 所有仓库操作结束，错误由状态层报告
+   */
+  const changeIndex = async (files: GitChange[], unstage = false) => {
+    for (const repo of repositories) {
+      /** 只传该仓库的路径。 */
+      const paths = files.filter((file) => file.repoRoot === repo.root).map((file) => file.path);
+      if (paths.length) await git.runRepository(repo.root, () => unstage ? gitUnstage(repo.root, paths) : gitStage(repo.root, paths));
+    }
+  };
 
   // 变更列表弹窗状态（新建 / 编辑 / 移动到其他列表 / 删除确认）
   const [clDialog, setClDialog] = useState<
@@ -618,11 +682,9 @@ function GitPanel({
   const updateChangelists = useCallback(
     (next: ChangelistsState) => {
       setChangelists(next);
-      if (git.root) {
-        saveChangelists(git.root, next);
-      }
+      saveChangelists(workspaceRoot, next);
     },
-    [git.root]
+    [workspaceRoot]
   );
 
   const handleNewChangelist = useCallback(
@@ -685,7 +747,8 @@ function GitPanel({
   // 搁置选中文件：只负责开对话框记下路径，真正的存补丁在确认后走 git.shelve。
   const handleShelveFiles = useCallback(
     (files: GitChange[]) => {
-      if (!git.root || files.length === 0) return;
+      if (!files[0]?.repoRoot || files.some((file) => file.repoRoot !== files[0]?.repoRoot)) return;
+      setShelfRoot(files[0].repoRoot);
       setShelfPaths(files.map((f) => f.path));
       setShelfName("");
       setShelfNotice(null);
@@ -697,11 +760,13 @@ function GitPanel({
   // 创建补丁文件并按设置分流处理。
   const handleCreatePatchFiles = useCallback(
     async (files: GitChange[]) => {
-      if (!git.root || files.length === 0) return;
+      /** 标准补丁的相对路径只允许来自一个仓库。 */
+      const root = files[0]?.repoRoot;
+      if (!root || files.some((file) => file.repoRoot !== root)) return;
       try {
         const diffs: string[] = [];
         for (const f of files) {
-          const text = await gitDiffText(git.root, "HEAD", "", absolute(f.path));
+          const text = await gitDiffText(root, "HEAD", "", absolute(f.path, root));
           if (text) diffs.push(text);
         }
         if (diffs.length === 0) return;
@@ -711,7 +776,7 @@ function GitPanel({
           // 在项目工作区生成标准 patch 文件
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
           const patchName = `patch-${timestamp}.patch`;
-          const patchPath = `${git.root.replace(/[\\/]+$/, "")}/${patchName}`;
+          const patchPath = `${root.replace(/[\\/]+$/, "")}/${patchName}`;
           await writeFile(patchPath, patchContent, "lf", false);
 
           if (vcs.onPatchCreated === "file") {
@@ -719,7 +784,7 @@ function GitPanel({
             await revealEntry(patchPath);
           } else {
             // 在编辑器中打开该补丁源码
-            onFileAction("editSource", patchPath, false, false);
+            onOpenFile(patchPath);
           }
         } else {
           // 默认写入系统剪贴板 (clipboard)
@@ -765,8 +830,11 @@ function GitPanel({
    */
   const getNodeMenu = (node: ChangeNode): MenuItem[] => {
     const files = filesOf([node]);
-    const paths = files.map((f) => f.path);
+    /** 当前节点内的仓库相对路径，用于复制路径菜单。 */
+    const paths = files.map((file) => file.path);
     const firstChange = files[0];
+    /** 目录和分组操作使用节点来源，不能沿用分支栏的活动仓库。 */
+    const root = node.repoRoot ?? firstChange?.repoRoot ?? git.root;
     // 比对方向跟组走：已暂存组看 HEAD↔索引，未暂存组看索引↔工作区（部分暂存文件两边各一条）。
     const itemStaged = node.group === "staged";
     const isDeleted = firstChange
@@ -790,13 +858,13 @@ function GitPanel({
         icon: ExternalLink,
         shortcut: "F4",
         disabled: !firstChange.path || isDeleted,
-        onSelect: () => onFileAction("editSource", firstChange.path, itemStaged),
+        onSelect: () => onFileAction("editSource", firstChange.path, itemStaged, false, root ?? undefined),
       });
       items.push({
         label: t("menu.open") ?? "Open",
         icon: FolderOpen,
         disabled: !firstChange.path || isDeleted,
-        onSelect: () => onOpenFile(firstChange.path),
+        onSelect: () => onOpenFile(absolute(firstChange.path, root)),
       });
       items.push({ separator: true });
     }
@@ -806,7 +874,7 @@ function GitPanel({
       items.push({
         label: `${t("git.resolveConflicts") ?? "Resolve Conflicts"}…`,
         icon: GitMerge,
-        onSelect: onOpenResolve,
+        onSelect: () => onOpenResolve(root ?? undefined),
       });
       items.push({ separator: true });
     }
@@ -816,7 +884,7 @@ function GitPanel({
       label: `${t("git.rollback") ?? "Rollback"}…`,
       icon: Undo2,
       shortcut: "Ctrl+Alt+Z",
-      onSelect: () => onFileAction("rollback", node.path ?? "", itemStaged, node.type === "dir"),
+      onSelect: () => onFileAction("rollback", node.path ?? "", itemStaged, node.type !== "file", root ?? undefined),
     });
 
     // 4. 加入版本控制 (未跟踪文件专用)
@@ -824,7 +892,7 @@ function GitPanel({
       items.push({
         label: t("git.addVcs") ?? "Add to VCS",
         icon: Plus,
-        onSelect: () => void git.stage(untracked.map((f) => absolute(f.path))),
+        onSelect: () => void changeIndex(untracked),
       });
     }
 
@@ -833,13 +901,13 @@ function GitPanel({
       label: t("git.stage") ?? "Stage",
       icon: Plus,
       disabled: node.group === "staged",
-      onSelect: () => void git.stage(paths.map(absolute)),
+      onSelect: () => void changeIndex(files),
     });
     items.push({
       label: t("git.unstage") ?? "Unstage",
       icon: Minus,
       disabled: node.group !== "staged" && !files.some((f) => isStaged(f)),
-      onSelect: () => void git.unstage(paths.map(absolute)),
+      onSelect: () => void changeIndex(files, true),
     });
 
     // 6. 移动到其他变更列表 (Alt+Shift+M)
@@ -849,7 +917,7 @@ function GitPanel({
         label: `${t("git.moveToList") ?? "Move to Another Changelist"}…`,
         icon: ArrowRightLeft,
         shortcut: "Alt+Shift+M",
-        onSelect: () => setClDialog({ mode: "move", paths }),
+        onSelect: () => setClDialog({ mode: "move", paths: files.map((file) => JSON.stringify([file.repoRoot, file.path])) }),
       });
     }
 
@@ -872,13 +940,13 @@ function GitPanel({
         label: t("git.history") ?? "Show History",
         icon: History,
         disabled: !firstChange.path,
-        onSelect: () => onFileAction("history", firstChange.path, itemStaged, node.type === "dir"),
+        onSelect: () => onFileAction("history", firstChange.path, itemStaged, node.type === "dir", root ?? undefined),
       });
       items.push({
         label: t("git.annotate") ?? "Annotate with Git Blame",
         icon: Eye,
         disabled: !firstChange.path || isDeleted,
-        onSelect: () => onFileAction("editSource", firstChange.path, itemStaged),
+        onSelect: () => onFileAction("editSource", firstChange.path, itemStaged, false, root ?? undefined),
       });
     }
 
@@ -887,7 +955,7 @@ function GitPanel({
     items.push({
       label: t("menu.copyPath") ?? "Copy Path",
       icon: Copy,
-      onSelect: () => void navigator.clipboard.writeText(paths.map(absolute).join("\n")),
+      onSelect: () => void navigator.clipboard.writeText(paths.map((path) => absolute(path, root)).join("\n")),
     });
 
     return items;
@@ -919,23 +987,23 @@ function GitPanel({
     }
 
     // AI 与提交共用文件来源，区分完整工作区和仅未暂存修改。
-    const targets = plan.included.length > 0
-      ? plan.included
-      : commitAllWhenNothingStaged ? rawChanges.filter((c) => !c.untracked && !c.conflicted) : [];
-    const selections = plan.included.length > 0 ? plan.selections
-      : targets.map((c) => ({ path: c.path, oldPath: c.oldPath, source: "worktree" as const }));
+    /** AI 只读取实际勾选的文件，与提交范围一致。 */
+    const targets = plan.included;
     if (targets.length === 0) {
       setAiError(t("aiCommit.noChanges"));
       return;
     }
 
-    const root = git.root ?? workspaceRoot;
     setIsGenerating(true);
     const opId = crypto.randomUUID();
     generationIdRef.current = opId;
 
     try {
-      const files = await collectFilesDiff(root, targets, selections);
+      /** 每个仓库独立取 diff，显示路径补仓库前缀以区分同名文件。 */
+      const files = (await Promise.all(repositoryPlans.map(async (repo) =>
+        (await collectFilesDiff(repo.root, repo.plan.included, repo.plan.selections)).map((file) => ({
+          ...file, path: `${relativePathFrom(workspaceRoot, repo.root) || basenameOf(repo.root)}/${file.path}`,
+        }))))).flat();
       if (files.length === 0) {
         setAiError(t("aiCommit.AI_COMMIT_EMPTY_DIFF"));
         setIsGenerating(false);
@@ -948,7 +1016,8 @@ function GitPanel({
       });
 
       // 以仓库里的说明为准：生成期间面板可能已经卸掉，晚到的结果不能盖掉切回来后新打的字。
-      if (commitDraft(root).trim().length > 0) {
+      if (!mounted.current || generationIdRef.current !== opId) return;
+      if (commitDraft(draftKey).trim().length > 0) {
         setConfirmReplace(generated);
       } else {
         setMessage(generated);
@@ -967,11 +1036,26 @@ function GitPanel({
     }
   };
 
-  // 按文件来源提交，联动 VCS 安全策略与推送保护。
-  const executeCommit = async (andPush: boolean) => {
-    if (committingAction !== null || git.operation?.phase === "running") return;
-    const pushRoot = git.root;
-    const pushBranch = git.status?.branch ?? "";
+  /**
+   * 对单个已冻结的仓库计划执行检查和提交。
+   * @param repo - 来源仓库快照与该仓库的勾选计划
+   * @returns 成功时为 true；检查取消、卸载或 IPC 失败时为 false/undefined
+   */
+  const commitRepository = async (repo: (typeof repositoryPlans)[number]) => {
+    /** 检查与写入始终使用同一个根；局部上下文不依赖分支栏。 */
+    const root = repo.root;
+    /** 本仓库的恢复阶段。 */
+    const recovery = recoveryOf(repo.probe);
+    /** 勾选文件仅来自该仓库。 */
+    const plan = repo.plan;
+    /** 检查只读取该仓库的变更。 */
+    const rawChanges = repo.status?.changes ?? [];
+    /**
+     * 解析本批次的仓库相对路径。
+     * @param path - 相对路径
+     * @returns 来源仓库内的绝对路径
+     */
+    const absolute = (path: string) => joinPath(root, path);
     const text = message.trim();
     if (!text && !amend) {
       setEmptyError(true);
@@ -980,25 +1064,20 @@ function GitPanel({
     }
 
     // 游离 HEAD 或变基中提交。变基进行中 HEAD 不一定显示为游离。
-    if (vcs.warnDetachedHead && (git.recovery === "rebase" || git.status?.detached || git.status?.branch === "(detached)")) {
-      const confirmed = window.confirm(t(git.recovery === "rebase" ? "vcs.warnRebaseConfirm" : "vcs.warnDetachedConfirm"));
+    if (vcs.warnDetachedHead && (recovery === "rebase" || repo.status?.detached || repo.status?.branch === "(detached)")) {
+      const confirmed = window.confirm(`${root}\n${t(recovery === "rebase" ? "vcs.warnRebaseConfirm" : "vcs.warnDetachedConfirm")}`);
       if (!confirmed) return;
     }
 
     // 计算提交目标路径
-    let includedPaths = plan.included.map((f) => f.path);
-    // 「什么都没勾也要提交」时纳入全部已跟踪变更，并强制全部暂存（此路径没有部分暂存语义）。
-    let stageAll = false;
-    if (includedPaths.length === 0 && commitAllWhenNothingStaged) {
-      includedPaths = rawChanges.filter((c) => !c.untracked && !c.conflicted).map((c) => c.path);
-      stageAll = true;
-    }
-    if (includedPaths.length === 0 && !amend && git.recovery !== "merge") {
+    /** 空选择绝不扩成整个工作区或整个索引。 */
+    const includedPaths = plan.included.map((f) => f.path);
+    if (includedPaths.length === 0 && !amend) {
       return;
     }
 
     // 3. 超大文件安全拦截（warnLargeFiles & largeFilesLimitMb）
-    if (vcs.warnLargeFiles && git.root && includedPaths.length > 0) {
+    if (vcs.warnLargeFiles && includedPaths.length > 0) {
       const limitBytes = (vcs.largeFilesLimitMb || 50) * 1024 * 1024;
       const oversizedFiles: { path: string; sizeMb: number }[] = [];
       for (const p of includedPaths) {
@@ -1022,12 +1101,12 @@ function GitPanel({
 
     // 4. 提交前检查：扫描待提交文件中的 TODO/FIXME（checkTodo）
     const shouldCheckTodo = commitOptions.checkTodo || vcs.checkTodo;
-    if (shouldCheckTodo && git.root && includedPaths.length > 0) {
+    if (shouldCheckTodo && includedPaths.length > 0) {
       const filesWithTodo: string[] = [];
       try {
         // 一次拿整份 diff 再在内存里按文件切分：逐文件起 `git diff` 子进程，勾几十个文件
         // 就是几十个进程排队（Windows 上每个几十毫秒，大提交点下去要干等好几秒）。
-        const diff = await gitDiffText(git.root, "HEAD", "", "");
+        const diff = await gitDiffText(root, "HEAD", "", "");
         const wanted = new Set(includedPaths);
         let current: string | null = null;
         for (const line of diff.split("\n")) {
@@ -1051,8 +1130,8 @@ function GitPanel({
     }
 
     // CRLF：只有 core.autocrlf 不会替这次提交转换时才警告。
-    if (vcs.warnCrlf && git.root && includedPaths.length > 0) {
-      const autocrlf = (await gitConfigGet(git.root, "core.autocrlf").catch(() => "")).toLowerCase();
+    if (vcs.warnCrlf && includedPaths.length > 0) {
+      const autocrlf = (await gitConfigGet(root, "core.autocrlf").catch(() => "")).toLowerCase();
       if (autocrlf !== "true" && autocrlf !== "input") {
         const crlf: string[] = [];
         for (const path of includedPaths) {
@@ -1089,31 +1168,64 @@ function GitPanel({
       signoff: commitOptions.signOff || vcs.signOffCommit,
       author: commitOptions.author,
       noVerify: !commitOptions.runHooks,
-      selections: stageAll
-        ? rawChanges.filter((c) => includedPaths.includes(c.path)).map((c) => ({ path: c.path, oldPath: c.oldPath, source: "worktree" as const }))
-        : plan.selections,
+      selections: plan.selections,
     };
+    if (!mounted.current) return false;
+    await gitCommit(root, commitText, amend, undefined, commitOpts);
+    return true;
+  };
 
+  /**
+   * 按仓库分别执行当前勾选，部分失败不清空草稿或重复提交成功项。
+   * @param andPush - 全部提交成功后是否进入推送流程
+   * @returns 提交批次结束；空选择、忙碌或冲突时不执行
+   */
+  const executeCommit = async (andPush: boolean) => {
+    if (commitLock.current || repositoryPlans.length === 0 || isGenerating) return;
+    if (!message.trim() && !amend) { setEmptyError(true); inputRef.current?.focus(); return; }
+    if (amend && (repositoryPlans.length !== 1 || repositoryPlans[0]?.root !== amendRoot)) return;
+    if (repositoryPlans.some((repo) => !repo.status || repo.error || repo.status.changes.some((change) => change.conflicted))) return;
+    commitLock.current = true;
     setCommittingAction(andPush ? "commitAndPush" : "commit");
+    /** 固定请求清单，子模块先于包含它的父仓库提交。 */
+    const batch = [...repositoryPlans].sort((a, b) => b.root.split(/[\\/]/).length - a.root.split(/[\\/]/).length);
+    /** 每个仓库分别记录结果，失败不抹掉成功。 */
+    const results = new Map<string, boolean>();
     try {
-      // 由后端一次构造提交索引并保留其余内容，前端不提前改动真实暂存区。
-      const done = await git.commit(commitText, amend, undefined, commitOpts);
-      if (!done) return;
-
+      for (const repo of batch) {
+        if (!mounted.current) break;
+        /** 单个仓库的成功状态。 */
+        const done = await git.runRepository(repo.root, () => commitRepository(repo)) === true;
+        results.set(repo.root, done);
+        if (!mounted.current) break;
+        setCommitResults(new Map(results));
+        if (done) setChecks((current) => {
+          /** 成功文件从待提交选择移除，失败仓库保留原选择。 */
+          const next = new Map(current);
+          for (const file of repo.plan.included) {
+            next.set(checkKey("staged", file.path, repo.root), false);
+            next.set(checkKey("worktree", file.path, repo.root), false);
+          }
+          return next;
+        });
+      }
+      if (!mounted.current || results.size !== batch.length || [...results.values()].some((done) => !done)) return;
       amendSeq.current += 1;
       messageBeforeAmend.current = "";
-      onCommitted(commitText);
-      if (vcs.clearInitialCommitMessage !== false) {
+      onCommitted(message.trim());
+      if (vcs.clearInitialCommitMessage !== false && commitDraft(draftKey) === message) {
         setMessage("");
       }
       if (!vcs.nonModalCommit) setCommitDialog(false);
       setAmend(false);
+      setAmendRoot(null);
       setAmendDetail(null);
       setEmptyError(false);
       // 提交已落盘后清理说明；取消或失败的推送不会撤销这次提交。
-      if (andPush && pushRoot) onPush(pushRoot, pushBranch);
+      if (andPush) for (const repo of batch) onPush(repo.root, repo.status?.branch ?? "");
     } finally {
-      setCommittingAction(null);
+      commitLock.current = false;
+      if (mounted.current) setCommittingAction(null);
     }
   };
 
@@ -1136,7 +1248,11 @@ function GitPanel({
     const isFile = node.type === "file";
     const isCollapsed = collapsedNodes.has(node.key);
     // 复选框只看本侧：已暂存组与未暂存组各自的勾选互不相干
-    const agg = aggregateCheck(node.files, node.group === "staged" ? "staged" : "worktree", checks);
+    /** 仓库行汇总全部可提交文件，其它行保持索引与工作区两侧独立。 */
+    const agg = node.type === "repository" ? aggregateRepositoryCheck(node.files, checks)
+      : aggregateCheck(node.files, node.group === "staged" ? "staged" : "worktree", checks);
+    /** 本节点的来源根，单仓库树的文件仍自带根。 */
+    const nodeRoot = node.repoRoot ?? node.files[0]?.repoRoot ?? git.root;
 
     // 缩进：每层 18px
     const paddingLeft = 4 + depth * 18;
@@ -1207,24 +1323,24 @@ function GitPanel({
           <CheckMark
             checked={agg.checked}
             indeterminate={agg.indeterminate}
-            label={t("git.includeInCommit")}
+            label={`${t("git.includeInCommit")} ${nodeRoot ?? ""} ${node.path ?? node.label}`}
             onToggle={() => toggleCheck([node])}
           />
 
           {/* 图标：ExpUI 官方矢量文件夹与文件图标体系 */}
-          {isGroup ? null : isDir ? (
+          {isGroup ? null : isDir || node.type === "repository" ? (
             <span className={styles.icon}>
               <EntryIcon
                 name={node.label}
-                path={absolute(node.path ?? "")}
+                path={absolute(node.path ?? "", nodeRoot)}
                 isDirectory
-                isPackage={isUnderJvmSourceRoot(absolute(node.path ?? ""))}
+                isPackage={isUnderJvmSourceRoot(absolute(node.path ?? "", nodeRoot))}
                 size={14}
               />
             </span>
           ) : (
             <span className={styles.icon}>
-              <EntryIcon name={node.label} path={absolute(node.path ?? "")} size={14} />
+              <EntryIcon name={node.label} path={absolute(node.path ?? "", nodeRoot)} size={14} />
             </span>
           )}
 
@@ -1247,7 +1363,7 @@ function GitPanel({
           </span>
 
           {/* 组计数 */}
-          {isGroup && (
+          {(isGroup || node.type === "repository") && (
             <span className={styles.detail}>
               {t("git.fileCount", { count: node.files.length })}
             </span>
@@ -1266,7 +1382,6 @@ function GitPanel({
           {(() => {
             const stageHere = node.group !== "conflicts" && node.files.length > 0;
             const isStagedGroup = node.group === "staged";
-            const paths = node.files.map((f) => absolute(f.path));
             return (
               <button
                 type="button"
@@ -1285,8 +1400,7 @@ function GitPanel({
                 onClick={(e) => {
                   e.stopPropagation();
                   if (!stageHere) return;
-                  if (isStagedGroup) void git.unstage(paths);
-                  else void git.stage(paths);
+                  void changeIndex(node.files, isStagedGroup);
                 }}
                 onDoubleClick={(e) => e.stopPropagation()}
               >
@@ -1332,10 +1446,10 @@ function GitPanel({
   );
 
   // 空态检查
-  if (!git.probe?.available) {
+  if (repositories.length === 0 && !git.probe?.available) {
     return <p className="panel-note">{t("git.notInstalled")}</p>;
   }
-  if (!git.root) {
+  if (repositories.length === 0) {
     return (
       <div className="panel-note">
         <p>{t("git.notARepo")}</p>
@@ -1348,7 +1462,9 @@ function GitPanel({
 
   const recovery = git.recovery;
   const canCommit =
-    (includedCount > 0 || amend || recovery === "merge") &&
+    (includedCount > 0 || amend) &&
+    (!amend || repositoryPlans.length === 1 && repositoryPlans[0]?.root === amendRoot) &&
+    !repositoryPlans.some((repo) => repo.error || !repo.status || repo.status.changes.some((change) => change.conflicted)) &&
     committingAction === null &&
     git.operation?.phase !== "running" &&
     !isGenerating;
@@ -1356,9 +1472,19 @@ function GitPanel({
   void repoName;
   void onUnignore;
   void onOpenCommitFile;
+  /** 工具栏根据树中选中行确定目标，多仓库时不暗用分支栏仓库。 */
+  const selectedNodes = [...selectedKeys].map((key) => nodesByKey.get(key)).filter((node): node is ChangeNode => !!node);
+  /** 唯一选中节点用于回滚，避免把选中文件扩大为整个仓库。 */
+  const toolbarNode = selectedNodes.length === 1 ? selectedNodes[0] : undefined;
+  /** 单仓库可直接操作，多仓库必须有明确的树节点上下文。 */
+  const toolbarRoot = toolbarNode?.repoRoot ?? toolbarNode?.files[0]?.repoRoot ?? (repositories.length === 1 ? repositories[0]?.root : undefined);
+  /** 工具栏目标仓库的当前状态。 */
+  const toolbarRepository = repositories.find((repo) => repo.root === toolbarRoot);
 
   return (
     <div className={clsx(styles.root, "git-panel")}>
+      {repositories.filter((repo) => repo.error).map((repo) => <p key={repo.root} className="panel-note" role="alert">{repo.root}: {repo.error}</p>)}
+      {[...commitResults].map(([root, success]) => <p key={root} className="panel-note" role="status">{relativePathFrom(workspaceRoot, root) || basenameOf(root)} · {t(success ? "git.commitSucceeded" : "git.commitFailed")}</p>)}
       {/* 视图选项弹层 */}
       <Popover anchor={viewAnchor} onClose={() => setViewAnchor(null)} minWidth={230}>
         <p className="popover-label">{t("git.groupBy")}</p>
@@ -1393,22 +1519,24 @@ function GitPanel({
             icon="undo"
             title={t("git.rollback")}
             size="small"
-            disabled={rawChanges.length === 0}
-            onClick={() => onFileAction("rollback", "", false, true)}
+            disabled={!toolbarRoot || rawChanges.length === 0}
+            onClick={() => onFileAction("rollback", toolbarNode?.path ?? "", toolbarNode?.group === "staged", toolbarNode?.type !== "file", toolbarRoot)}
           />
           <IconButton
             icon="stash"
             title={t("git.stash")}
             size="small"
-            disabled={rawChanges.length === 0}
-            onClick={() => setStashDialog(true)}
+            disabled={!toolbarRoot || rawChanges.length === 0}
+            onClick={() => { setStashRoot(toolbarRoot ?? null); setStashDialog(true); }}
           />
           <IconButton
             icon="archive"
             title={t("git.shelve")}
             size="small"
-            disabled={rawChanges.length === 0}
+            disabled={!toolbarRoot || rawChanges.length === 0}
             onClick={() => {
+              setShelfRoot(toolbarRoot ?? null);
+              setShelfPaths(toolbarNode?.files.map((file) => file.path) ?? null);
               setShelfName("");
               setShelfNotice(null);
               setShelfDialog(true);
@@ -1418,8 +1546,8 @@ function GitPanel({
             icon="git-pull"
             title={t("git.updateProject")}
             size="small"
-            disabled={git.operation?.phase === "running" || !git.status?.upstream || !!git.recovery}
-            onClick={onUpdate}
+            disabled={!toolbarRoot || !toolbarRepository?.status?.upstream || !!recoveryOf(toolbarRepository?.probe ?? null)}
+            onClick={() => { if (toolbarRoot) onUpdate(toolbarRoot); }}
           />
           <IconButton
             ref={viewRef}
@@ -1658,6 +1786,7 @@ function GitPanel({
         <div className={styles.commitBar}>
           <Checkbox
             checked={amend}
+            disabled={committingAction !== null || !amend && repositoryPlans.length > 1}
             onChange={(v) => switchAmend(v)}
             label={t("git.amend")}
           />
@@ -1718,6 +1847,7 @@ function GitPanel({
 
             {/* 平铺式等宽 Mono 输入框 */}
             <textarea
+              readOnly={committingAction !== null}
               ref={inputRef}
               className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
               style={showMargin ? { ["--guide" as string]: `${Math.max(1, marginChars)}ch` } : undefined}
@@ -1909,7 +2039,7 @@ function GitPanel({
                 className="button is-primary"
                 onClick={() => {
                   setStashDialog(false);
-                  void git.stashPush(stashMessage, stashUntracked, false);
+                  if (stashRoot) void git.runRepository(stashRoot, () => gitStashPush(stashRoot, stashMessage, stashUntracked, false));
                 }}
               >
                 {t("git.stashPushAction")}
@@ -1978,10 +2108,10 @@ function GitPanel({
                 onClick={() => {
                   setShelfDialog(false);
                   // 右键菜单存选中的那几个；工具栏按钮存全部变更（相对路径，后端兼容绝对路径）。
-                  void git.shelve(
-                    shelfName.trim(),
-                    shelfPaths ?? rawChanges.map((change) => change.path)
-                  );
+                  if (shelfRoot) void git.runRepository(shelfRoot, () => gitShelve(
+                    shelfRoot, shelfName.trim(),
+                    shelfPaths ?? rawChanges.filter((change) => change.repoRoot === shelfRoot).map((change) => change.path)
+                  ));
                   setShelfPaths(null);
                 }}
               >

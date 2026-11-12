@@ -39,6 +39,16 @@ async function edit(value: string) {
 function checkbox(key: string) { return [...document.querySelectorAll<HTMLLabelElement>("label")].find((label) => label.textContent === key)!.querySelector<HTMLInputElement>("input")!; }
 
 describe("推送表单公开行为", () => {
+  it("非活动仓库的推送预览使用请求根，不借用当前仓库", async () => {
+    props.request = { kind: "push", root: "D:/other", target: { kind: "local", name: "feature/a" } };
+    props.git = { ...props.git, backgroundOperations: [], repositoryStates: [{ root: "D:/other", error: null,
+      probe: { ...props.git.probe!, repoRoot: "D:/other" }, status: props.git.status }] };
+    await render();
+    expect(invoke).toHaveBeenCalledWith("git_push_target", { root: "D:/other", branch: "feature/a" });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "git_log").every(([, args]) => (args as { root: string }).root === "D:/other")).toBe(true);
+    await click(button("git.push"));
+    expect(props.onSubmit).toHaveBeenCalledWith(expect.objectContaining({ push: expect.objectContaining({ branch: "feature/a" }) }));
+  });
   it("更新使用保存的策略，确认时提交用户选择且不直接执行 Git", async () => {
     props.request = { kind: "update" };
     await render();

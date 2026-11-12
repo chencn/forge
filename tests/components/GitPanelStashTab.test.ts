@@ -7,6 +7,7 @@ import GitPanel from "../../src/components/GitPanel";
 import GitViewTabs from "../../src/components/GitViewTabs";
 import type { GitView } from "../../src/components/GitPanel";
 import type { GitState } from "../../src/hooks/useGitState";
+import { setCommitDraft } from "../../src/lib/commitDraft";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../src/hooks/useSettings", () => ({
@@ -204,6 +205,147 @@ describe("提交面板跟着头部页签换内容", () => {
     props.focusSignal = 1;
     await render();
     expect(view).toBe("commit");
+  });
+});
+
+describe("多仓库提交范围", () => {
+  /**
+   * 安装两个同名文件的仓库快照；写操作只经过模拟 IPC。
+   * @param partial - A 是否包含部分暂存文件
+   * @returns 面板已经渲染，两个仓库共用一份提交说明
+   */
+  async function setupRepositories(partial = false) {
+    /** 两个根下都有 README.md，用于揭露按相对路径串库的问题。 */
+    const repositoryStates = ["D:/workspace/api", "D:/workspace/web"].map((repoRoot, index) => ({
+      root: repoRoot, error: null, probe: { ...git.probe!, repoRoot },
+      status: { ...git.status!, changes: [{ path: "README.md", oldPath: null,
+        indexStatus: partial && index === 0 ? "M" : " ", workStatus: "M", untracked: false, conflicted: false }] },
+    }));
+    props.workspaceRoot = "D:/workspace";
+    setCommitDraft(props.workspaceRoot, "同一项跨仓库修改");
+    await patchGit({ root: repositoryStates[0]!.root, repositoryStates,
+      status: repositoryStates[0]!.status, probe: repositoryStates[0]!.probe,
+      runRepository: async <T,>(_root: string, action: () => Promise<T>) => {
+        try { return await action(); } catch { return null; }
+      },
+    });
+  }
+  /**
+   * 通过可访问名称操作仓库勾选，覆盖真实面板选择状态。
+   * @param name - 仓库目录名
+   * @returns 鼠标操作与 React 更新结束
+   */
+  async function toggleRepository(name: string) {
+    /** 仓库行的复选框，与文件行分开识别。 */
+    const checkbox = host.querySelector(`[role="checkbox"][aria-label="git.includeInCommit D:/workspace/${name} ${name}"]`)!;
+    expect(checkbox).not.toBeNull();
+    await act(async () => checkbox.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true })));
+  }
+  /**
+   * 点击提交按钮并等待提交请求完成。
+   * @param push - 是否同时推送
+   * @returns 点击与 React 更新结束
+   */
+  async function commit(push = false) {
+    /** 选取实际提交按钮，禁用状态也经过 DOM 验证。 */
+    const button = [...host.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === (push ? "git.commitAndPush" : "git.commitButton"))!;
+    expect(button).toBeDefined();
+    await act(async () => button.click());
+  }
+  /**
+   * 读取边界上实际发出的提交请求。
+   * @returns 按调用顺序排列的根、说明及文件来源
+   */
+  function commits() {
+    return vi.mocked(invoke).mock.calls.filter(([command]) => command === "git_commit").map(([, args]) => args as {
+      /** 提交目标仓库。 */
+      root: string;
+      /** 提交说明。 */
+      message: string;
+      /** 本仓库选中的文件来源。 */
+      selections: { path: string; oldPath: string | null; source: string }[];
+    });
+  }
+  it("同名文件只提交勾选的仓库，分支栏切换不改变范围和说明", async () => {
+    await setupRepositories();
+    await toggleRepository("api");
+    await patchGit({ root: "D:/workspace/web", status: git.repositoryStates[1]!.status });
+    expect(messageBox()?.value).toBe("同一项跨仓库修改");
+    await commit();
+    expect(commits()).toEqual([expect.objectContaining({ root: "D:/workspace/web", message: "同一项跨仓库修改",
+      selections: [{ path: "README.md", oldPath: null, source: "worktree" }] })]);
+  });
+  it("两个仓库各生成一次提交并使用同一说明，推送接收两个明确根", async () => {
+    await setupRepositories();
+    await commit(true);
+    expect(commits().map(({ root, message }) => ({ root, message }))).toEqual([
+      { root: "D:/workspace/api", message: "同一项跨仓库修改" },
+      { root: "D:/workspace/web", message: "同一项跨仓库修改" },
+    ]);
+    expect(props.onPush).toHaveBeenCalledWith("D:/workspace/api", "master");
+    expect(props.onPush).toHaveBeenCalledWith("D:/workspace/web", "master");
+  });
+  it("空勾选不兜底提交全部", async () => {
+    await setupRepositories();
+    await toggleRepository("api");
+    await toggleRepository("web");
+    await commit();
+    expect(commits()).toEqual([]);
+  });
+  it("部分失败保留说明，重试不重复提交成功仓库", async () => {
+    await setupRepositories();
+    /** 首次 B 拒绝，第二次允许成功。 */
+    let rejectWeb = true;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "git_commit" && (args as { root: string }).root.endsWith("/web") && rejectWeb) throw new Error("hook failed");
+      return "done";
+    });
+    await commit(true);
+    expect(messageBox()?.value).toBe("同一项跨仓库修改");
+    expect(props.onPush).not.toHaveBeenCalled();
+    expect(props.onCommitted).not.toHaveBeenCalled();
+    rejectWeb = false;
+    await commit();
+    expect(commits().map((request) => request.root)).toEqual(["D:/workspace/api", "D:/workspace/web", "D:/workspace/web"]);
+  });
+  it("部分暂存默认只提交索引，仓库全选后才包含工作区", async () => {
+    await setupRepositories(true);
+    await toggleRepository("web");
+    expect(host.querySelector('[aria-label="git.includeInCommit D:/workspace/api api"]')?.getAttribute("aria-checked")).toBe("mixed");
+    await commit();
+    expect(commits()[0]?.selections[0]?.source).toBe("index");
+    await toggleRepository("api");
+    await commit();
+    expect(commits()[1]?.selections[0]?.source).toBe("worktree");
+  });
+  it("空说明不执行任何仓库的提交", async () => {
+    await setupRepositories();
+    await act(async () => setCommitDraft(props.workspaceRoot, ""));
+    await commit();
+    expect(commits()).toEqual([]);
+  });
+  it("读取失败再恢复不丢失用户取消的仓库", async () => {
+    await setupRepositories();
+    await toggleRepository("web");
+    /** 失败只附加错误，最后一次成功的变更仍保留。 */
+    const snapshots = git.repositoryStates;
+    await patchGit({ repositoryStates: snapshots.map((repo) => repo.root.endsWith("web") ? { ...repo, error: "read denied" } : repo) });
+    await patchGit({ repositoryStates: snapshots });
+    await commit();
+    expect(commits().map((request) => request.root)).toEqual(["D:/workspace/api"]);
+  });
+  it("连续触发提交不会重复发出正在执行的请求", async () => {
+    await setupRepositories();
+    await toggleRepository("web");
+    /** 控制第一次提交结束时刻。 */
+    let finish!: (value: string) => void;
+    /** 挂起的模拟 Git 写入。 */
+    const pending = new Promise<string>((resolve) => { finish = resolve; });
+    vi.mocked(invoke).mockImplementation(async (command) => command === "git_commit" ? pending : undefined);
+    await commit();
+    await commit();
+    expect(commits()).toHaveLength(1);
+    await act(async () => { finish("done"); await pending; });
   });
 });
 

@@ -20,7 +20,9 @@ export const GROUP_LABEL: Record<GroupId, string> = {
 /** 变更树的一个节点（分组头、目录聚合或单文件）。 */
 export interface ChangeNode {
   key: string;
-  type: "group" | "dir" | "file";
+  type: "repository" | "group" | "dir" | "file";
+  /** 多仓库树节点的来源根；单仓库旧调用可以不提供。 */
+  repoRoot?: string;
   label: string;
   group: GroupId;
   children?: ChangeNode[];
@@ -92,9 +94,15 @@ export type ChangeSide = "staged" | "worktree";
 /** 复选框状态表（键见 {@link checkKey}，值 true 为勾）。 */
 export type Checks = ReadonlyMap<string, boolean>;
 
-/** 某一侧复选框的存储键。 */
-export function checkKey(side: ChangeSide, path: string): string {
-  return `${side === "staged" ? "s" : "w"}:${path}`;
+/**
+ * 某一侧复选框的存储键，仓库与路径共同确定身份。
+ * @param side - 索引或工作区侧
+ * @param path - 仓库相对路径
+ * @param repoRoot - 汇总变更的来源根；省略时保持单仓库键
+ * @returns 不同仓库同名文件互不碰撞的键
+ */
+export function checkKey(side: ChangeSide, path: string, repoRoot?: string): string {
+  return `${side === "staged" ? "s" : "w"}:${repoRoot ? JSON.stringify([repoRoot, path]) : path}`;
 }
 
 /**
@@ -112,7 +120,7 @@ export function defaultChecked(change: GitChange, side: ChangeSide): boolean {
 
 /** 读取某一条的勾选状态；没动过就用默认值。 */
 export function isChecked(change: GitChange, side: ChangeSide, checks: Checks): boolean {
-  return checks.get(checkKey(side, change.path)) ?? defaultChecked(change, side);
+  return checks.get(checkKey(side, change.path, change.repoRoot)) ?? defaultChecked(change, side);
 }
 
 /**
@@ -136,6 +144,23 @@ export function aggregateCheck(
     indeterminate: on > 0 && on < files.length,
     on,
   };
+}
+
+/**
+ * 汇总仓库各文件实际存在的索引和工作区两侧，不把部分暂存误判为全选。
+ * @param files - 同一仓库内的变更
+ * @param checks - 按仓库、路径和侧隔离的勾选
+ * @returns 仓库复选框的选中、混合状态及选中侧数；无可提交项时均为空
+ */
+export function aggregateRepositoryCheck(files: readonly GitChange[], checks: Checks) {
+  /** 只统计真实可提交侧，冲突不能纳入提交。 */
+  const sides = files.filter((file) => !file.conflicted).flatMap((file) => [
+    ...(isStaged(file) ? [isChecked(file, "staged", checks)] : []),
+    ...(file.untracked || file.workStatus.trim() ? [isChecked(file, "worktree", checks)] : []),
+  ]);
+  /** 已选中的侧数。 */
+  const on = sides.filter(Boolean).length;
+  return { checked: sides.length > 0 && on === sides.length, indeterminate: on > 0 && on < sides.length, on };
 }
 
 /**
@@ -346,8 +371,8 @@ export function filesOf(nodes: readonly ChangeNode[]): GitChange[] {
     for (const n of ns) {
       if (n.type === "file") {
         for (const f of n.files) {
-          if (!seen.has(f.path)) {
-            seen.add(f.path);
+          if (!seen.has(checkKey("worktree", f.path, f.repoRoot))) {
+            seen.add(checkKey("worktree", f.path, f.repoRoot));
             out.push(f);
           }
         }
@@ -358,6 +383,32 @@ export function filesOf(nodes: readonly ChangeNode[]): GitChange[] {
   };
   walk(nodes);
   return out;
+}
+
+/**
+ * 构造按仓库分组的变更树，节点与文件均保留来源根。
+ * @param repositories - 每个仓库的根、显示名称和变更
+ * @param groupByDir - 是否在各仓库内按目录组织文件
+ * @returns 仓库节点，包含各自的索引与工作区子树；干净仓库保留空节点
+ */
+export function buildRepositoryChangeTree(
+  repositories: readonly { root: string; label: string; changes: GitChange[] }[],
+  groupByDir: boolean,
+): ChangeNode[] {
+  return repositories.map(({ root, label, changes }) => {
+    /** 标签来源必须和快照根一致，不能从文件路径猜测嵌套仓库归属。 */
+    const files = changes.map((change) => ({ ...change, repoRoot: root }));
+    /**
+     * 为子树节点绑定来源并隔离键。
+     * @param node - 单仓库构造器返回的节点
+     * @returns 绑定仓库的节点及后代
+     */
+    const scope = (node: ChangeNode): ChangeNode => ({
+      ...node, key: JSON.stringify([root, node.key]), repoRoot: root, children: node.children?.map(scope),
+    });
+    return { key: JSON.stringify([root]), type: "repository", label, repoRoot: root, group: "unstaged",
+      files, children: buildChangeTree(files, groupByDir).map(scope) };
+  });
 }
 
 /** 一次提交的计划：纳入的文件与每文件的操作选择。 */

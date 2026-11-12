@@ -145,7 +145,13 @@ import {
   gitShow,
   gitStatus,
   gitPushTarget,
+  gitPush,
+  gitPull,
+  gitRestoreFile,
+  gitResolveConflict,
+  gitStage,
   rollbackTargets,
+  containsRepository,
 } from "./lib/git";
 import { forgetIgnoredUnder } from "./lib/ignoredCache";
 import { lineChangeBaseline } from "./lib/lineChanges";
@@ -272,6 +278,8 @@ const AiFilePreviewPane = lazy(() => import("./components/AiFilePreviewPane"));
 
 /** 对话框除了文案，还要记住它作用在哪个条目上、新建落在哪个目录里。 */
 type PendingDialog = DialogRequest & {
+  /** Git 对话框创建时的来源仓库，确认时不能用活动仓库替代。 */
+  repoRoot?: string;
   entry: FsEntry | null;
   dir: string | null;
   /** 删除可以一次作用在一批路径上；缺省时只删 `entry` / `path` 那一条。 */
@@ -290,6 +298,8 @@ type PendingDialog = DialogRequest & {
 
 /** 标签页里的一份比对：来源可以是工作区改动，也可以是某次提交里的文件。 */
 interface DiffTab {
+  /** Git 比对的来源仓库；普通文件比对不设置，切换仓库后仍可查看原内容。 */
+  repoRoot?: string;
   /** 同一份比对只开一个标签，键由来源 + 版本 + 路径拼成。 */
   id: string;
   /** 标签上显示的文件名。 */
@@ -757,13 +767,33 @@ export default function App() {
   }, [refreshSystemClipboard]);
   const [dialog, setDialog] = useState<PendingDialog | null>(null);
   const [gitDialog, setGitDialog] = useState<GitActionRequest | null>(null);
-  const activeGitContext = useRef({ root: git.root, branch: git.status?.branch });
-  activeGitContext.current = { root: git.root, branch: git.status?.branch };
-  useEffect(() => setGitDialog(null), [workspaceRoot]);
+  /** 提交批次的推送确认按仓库排队，窗口不能被下一仓库覆盖。 */
+  const [pushQueue, setPushQueue] = useState<GitActionRequest[]>([]);
+  useEffect(() => {
+    if (gitDialog || pushQueue.length === 0) return;
+    setGitDialog(pushQueue[0]!);
+    setPushQueue((current) => current.slice(1));
+  }, [gitDialog, pushQueue]);
+  // 仓库切换后不能继续确认旧仓库的引用、冲突与更新操作。
+  useEffect(() => {
+    setGitDialog((pending) => pending?.root ? pending : null);
+    setLogReference("");
+    setLogCompareRef(null);
+    setLogPath("");
+  }, [git.root]);
+  useEffect(() => {
+    setGitDialog(null);
+    setPushQueue([]);
+    setDialog((pending) => pending?.kind === "rollback" ? null : pending);
+    setResolveOpen(false);
+    setTriMergePath(null);
+  }, [workspaceRoot]);
   // 所有更新入口共用保存、选项和默认策略，避免工具栏实际只刷新状态。
   const updateProject = useStable(async (branch: string | undefined = git.status?.branch, originRoot: string | null = git.root) => {
-    if (!originRoot || originRoot !== git.root || git.operation?.phase === "running" || git.recovery) return;
-    const matches = () => activeGitContext.current.root === originRoot;
+    if (!originRoot || !git.repositories.includes(originRoot)) return;
+    /** 更新绑定来源工作区，分支栏切换不改变目标。 */
+    const workspace = rootKeyRef.current;
+    const matches = () => rootKeyRef.current === workspace;
     const current = await gitStatus(originRoot).catch(() => null);
     if (!matches() || !current || current.detached || !current.upstream || current.branch !== branch) return;
     if (settings.vcs.showUpdateOptions) {
@@ -775,19 +805,22 @@ export default function App() {
     if (!matches()) return;
     const saved = await gitStatus(originRoot).catch(() => null);
     if (!matches() || !saved || saved.branch !== branch || saved.detached) return;
-    await git.pull(settings.vcs.updateMethod);
+    await git.runRepository(originRoot, () => gitPull(originRoot, settings.vcs.updateMethod));
   });
   // 提交并推送也使用真实推送窗口；显式推送入口始终允许检查目标。
   const pushCommitted = useStable(async (originRoot: string, branch: string) => {
     // 等待提交 hooks 时可能切换工程；旧提交的回调不能推送新工程。
-    if (originRoot !== git.root || branch !== git.status?.branch || git.status?.detached) return;
+    if (!git.repositories.includes(originRoot)) return;
+    /** 请求始终属于发起提交的工作区。 */
+    const workspace = rootKeyRef.current;
     try {
       const destination = await gitPushTarget(originRoot, branch);
-      if (activeGitContext.current.root !== originRoot || activeGitContext.current.branch !== branch) return;
+      if (rootKeyRef.current !== workspace) return;
       if (settings.vcs.showPushDialog === "always" || settings.vcs.showPushDialog === "protected" && isProtectedBranch(destination.target, settings.vcs.protectedBranches)) {
-        setGitDialog({ kind: "push", target: { kind: "local", name: branch }, root: originRoot });
-      } else void git.push({ branch, remote: destination.remote, target: destination.target });
-    } catch (cause) { if (activeGitContext.current.root === originRoot) reportError(errorText(cause)); }
+        setPushQueue((current) => [...current, { kind: "push", target: { kind: "local", name: branch }, root: originRoot }]);
+      } else if (originRoot === git.root) await git.push({ branch, remote: destination.remote, target: destination.target });
+      else await git.runRepository(originRoot, () => gitPush(originRoot, { branch, remote: destination.remote, target: destination.target }));
+    } catch (cause) { if (rootKeyRef.current === workspace) reportError(errorText(cause)); }
   });
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const { toggleMaximize } = useWindowControls();
@@ -1036,8 +1069,12 @@ export default function App() {
   const [commitGearAnchor, setCommitGearAnchor] = useState<HTMLElement | null>(null);
   /** 未合并那一节的 Resolve 链接与冲突行菜单开的是同一层弹层。 */
   const [resolveOpen, setResolveOpen] = useState(false);
+  /** 冲突窗口固定到触发该窗口的仓库。 */
+  const [resolveRoot, setResolveRoot] = useState<string | null>(null);
   /** 块级冲突解决开着的那个文件（绝对路径）；null 表示没开。 */
   const [triMergePath, setTriMergePath] = useState<string | null>(null);
+  /** 三向合并文件的工作树根，与打开的父文件夹独立。 */
+  const [triMergeRoot, setTriMergeRoot] = useState<string | null>(null);
   /** 分组按工作区隔离，切换项目后不能把另一个项目的标签挂进副栏。 */
   const [editorSplits, setEditorSplits] = useState<Record<string, EditorSplitState | null>>({});
   const editorSplit = editorSplits[rootKey] ?? null;
@@ -1068,7 +1105,10 @@ export default function App() {
   const [gitHistoryTabs, setGitHistoryTabs] = useState<Record<string, { paths: string[]; active: string }>>({});
   /** 提交工具窗口头部的视图页签；页签画在头部，内容归 GitPanel 按它切换。 */
   const [gitView, setGitView] = useState<GitView>("commit");
-  const fileHistories = gitHistoryTabs[rootKey] ?? { paths: [], active: "" };
+  /** Git 历史以仓库根隔离，工作区里的同名相对路径不共享历史页签。 */
+  const gitRootKey = git.root ?? "";
+  /** 当前仓库的历史页签与活动路径。 */
+  const fileHistories = gitHistoryTabs[gitRootKey] ?? { paths: [], active: "" };
   /**
    * 日志的两处筛选状态提在这一层：分支弹层里的「与当前比较」和「显示与工作树的差异」
    * 也要改它们，改完顺手把日志窗口叫出来。
@@ -2058,6 +2098,12 @@ export default function App() {
     []
   );
 
+  /**
+   * 关闭比对标签并回收无人使用的提交比对链。
+   * @param id - 待关闭标签的身份
+   * @param targetRootKey - 标签所属工作区；缺省使用当前工作区
+   * @returns 更新标签列表，标签不存在时不操作
+   */
   const closeDiff = useCallback((id: string, targetRootKey?: string) => {
     const key = targetRootKey ?? rootKeyRef.current;
     setDiffsByRoot((prev) => {
@@ -2069,7 +2115,7 @@ export default function App() {
       const chainId = list.find((item) => item.id === id)?.chain?.id;
       if (
         chainId &&
-        chainId.startsWith("cm|") &&
+        getDiffChains(key).get(chainId)?.kind === "commitFile" &&
         !next.some((item) => item.chain?.id === chainId)
       ) {
         getDiffChains(key).delete(chainId);
@@ -2875,17 +2921,28 @@ export default function App() {
     [docs.dirty, docs.documents]
   );
 
-  /** 工作区改动：索引位取 HEAD → 索引，工作区位取索引 → 工作区。 */
+  /**
+   * 打开当前仓库的工作区或索引差异，并冻结来源仓库。
+   * @param change - 待比较变更
+   * @param staged - 是否比较 HEAD 与索引
+   * @param siblings - 同组导航清单；为空时仅包含当前文件
+   * @param step - 原标签和差异定位；缺省打开新标签
+   * @returns 派发差异加载；没有活动仓库时不操作
+   */
   const openChange = useCallback(
     (change: GitChange, staged: boolean, siblings: GitChange[], step?: ChainStep) => {
-      const root = git.root;
+      /** 变更树携带所属仓库，导航保留同一来源。 */
+      const root = change.repoRoot ?? git.root;
       if (!root) return;
-      const absolute = git.absoluteOf(change.path);
+      const absolute = joinPath(root, change.path);
       // 重命名的基线在旧路径上；只按新路径取 HEAD / 索引，会把整份文件显示成新增。
-      const baseAbsolute = change.oldPath ? git.absoluteOf(change.oldPath) : absolute;
-      const chainId = `ws|${staged ? "hi" : "iw"}`;
+      const baseAbsolute = change.oldPath ? joinPath(root, change.oldPath) : absolute;
+      /** 仓库根参与链条身份，避免不同仓库的同名文件互相覆盖。 */
+      const chainId = `${root}|ws|${staged ? "hi" : "iw"}`;
       // 那一串就是面板上眼前这一组：一串只有一篇时计数照摆，只是不摆那两枚左右箭头。
-      const list = siblings.length > 0 ? siblings : [change];
+      /** 链条只能包含同一仓库的文件。 */
+      const owned = siblings.filter((item) => (item.repoRoot ?? git.root) === root);
+      const list = owned.length > 0 ? owned : [change];
       const index = Math.max(
         0,
         list.findIndex((item) => item.path === change.path)
@@ -2894,6 +2951,7 @@ export default function App() {
       void openDiffTab(
         {
           id: step?.tabId ?? `${chainId}|${change.path}`,
+          repoRoot: root,
           name: basenameOf(change.path),
           leftLabel: t(staged ? "git.revHead" : "git.revIndex"),
           rightLabel: t(staged ? "git.revIndex" : "git.revWorktree"),
@@ -2927,7 +2985,16 @@ export default function App() {
     [docs.dirty, docs.documents, getDiffChains, git, openDiffTab, t]
   );
 
-  /** 「与本地比较」那几项：左那一侧是某个版本下的文件，右那一侧是工作区里现在这份。 */
+  /**
+   * 比较指定版本与来源仓库的工作区文件。
+   * @param chainId - 比较入口身份；自动补齐仓库前缀
+   * @param revision - 基线修订
+   * @param leftLabel - 基线显示名称
+   * @param file - 文件及重命名前的路径
+   * @param siblings - 可选的相邻文件清单
+   * @param step - 原标签和差异定位
+   * @returns 派发差异加载；没有活动仓库时不操作
+   */
   const openAgainstWorktree = useCallback(
     (
       chainId: string,
@@ -2941,6 +3008,8 @@ export default function App() {
       if (!root) return;
       const absolute = git.absoluteOf(file.path);
       const baseAbsolute = file.oldPath ? git.absoluteOf(file.oldPath) : absolute;
+      // 入口和沿链刷新都使用同一个来源仓库前缀。
+      if (!chainId.startsWith(`${root}|`)) chainId = `${root}|${chainId}`;
       const list = siblings && siblings.length > 0 ? siblings : undefined;
       let chain: DiffTab["chain"];
       if (list) {
@@ -2958,6 +3027,7 @@ export default function App() {
         {
           // 走链时写回自己那颗标签；从入口发起的比对才是新的一颗。
           id: step?.tabId ?? `${chainId}|${file.path}`,
+          repoRoot: root,
           name: basenameOf(file.path),
           leftLabel,
           rightLabel: t("git.revWorktree"),
@@ -2994,6 +3064,15 @@ export default function App() {
   );
 
   /** 日志里双击一个文件：把这次提交前后的两份内容开到标签页里比对；`fresh` 为真时另开一个标签。 */
+  /**
+   * 打开来源仓库中单次提交的文件差异。
+   * @param commit - 提交详情
+   * @param file - 提交中的文件
+   * @param fresh - 是否强制创建独立标签
+   * @param siblings - 可选的相邻文件清单
+   * @param step - 原标签和差异定位
+   * @returns 派发差异加载；没有活动仓库时不操作
+   */
   const openCommitFile = useCallback(
     (
       commit: GitCommitDetail,
@@ -3005,7 +3084,8 @@ export default function App() {
       const root = git.root;
       if (!root) return;
       // 「在新标签页中显示差异」要的是另一条链：后缀并进编号里，两颗标签各走各的串。
-      const chainId = `cm|${commit.hash}${fresh ? `|${(diffSeq.current += 1)}` : ""}`;
+      /** 历史比对链条按仓库和提交共同定位。 */
+      const chainId = `${root}|cm|${commit.hash}${fresh ? `|${(diffSeq.current += 1)}` : ""}`;
       const list = siblings && siblings.length > 0 ? siblings : undefined;
       let chain: DiffTab["chain"];
       if (list) {
@@ -3022,6 +3102,7 @@ export default function App() {
       void openDiffTab(
         {
           id: step?.tabId ?? `${chainId}|${file.path}`,
+          repoRoot: root,
           name: basenameOf(file.path),
           // 根提交没有父版本，那一侧本来就是空的，表头也跟着不给名字。
           leftLabel: commit.parents[0] ?? "",
@@ -3037,7 +3118,15 @@ export default function App() {
     [getDiffChains, git.root, openDiffTab]
   );
 
-  /** 文件菜单里点名那两个版本：两侧都从仓库取，链上换下一篇比的还是这一对。 */
+  /**
+   * 比较来源仓库中指定的两个文件版本。
+   * @param commit - 右侧提交详情
+   * @param file - 待比较文件
+   * @param parent - 左侧修订
+   * @param siblings - 可选的相邻文件清单
+   * @param step - 原标签和差异定位
+   * @returns 派发差异加载；没有活动仓库时不操作
+   */
   const openBetweenRevisions = useCallback(
     (
       commit: GitCommitDetail,
@@ -3050,7 +3139,8 @@ export default function App() {
       if (!root) return;
       const absolute = git.absoluteOf(file.path);
       const baseAbsolute = file.oldPath ? git.absoluteOf(file.oldPath) : absolute;
-      const chainId = `dp|${commit.hash}`;
+      /** 两版本比较不能与其他仓库共享链条。 */
+      const chainId = `${root}|dp|${commit.hash}`;
       const list = siblings && siblings.length > 0 ? siblings : undefined;
       let chain: DiffTab["chain"];
       if (list) {
@@ -3067,6 +3157,7 @@ export default function App() {
       void openDiffTab(
         {
           id: step?.tabId ?? `${chainId}|${file.path}`,
+          repoRoot: root,
           name: basenameOf(file.path),
           leftLabel: parent,
           rightLabel: commit.short,
@@ -3204,9 +3295,9 @@ export default function App() {
 
   /** 往 .gitignore 末尾追加几行；仓库里还没有这个文件就从空写起。已经写过的行不再重复。 */
   const addToGitignore = useCallback(
-    async (relativePaths: string[]) => {
-      if (!git.root || relativePaths.length === 0) return;
-      const ignoreFile = joinPath(git.root, ".gitignore");
+    async (relativePaths: string[], root = git.root) => {
+      if (!root || !git.repositories.includes(root) || relativePaths.length === 0) return;
+      const ignoreFile = joinPath(root, ".gitignore");
       let text = "";
       try {
         text = (await readFile(ignoreFile)).contents;
@@ -3224,7 +3315,7 @@ export default function App() {
         reportError(errorText(cause));
       }
     },
-    [git.root, refreshTree, reportError]
+    [git.root, git.repositories, refreshTree, reportError]
   );
 
   /**
@@ -3383,25 +3474,34 @@ export default function App() {
    * 序号也从标签上现读，不靠谁记住走到哪了。写回同一颗是既定规矩：比对标签装的是整条链，
    * 走链只换里面那一篇。
    */
-  /** 比对窗口里按块打补丁：暂存此块打到索引（--cached），还原此块反打到工作区（-R）。 */
+  /**
+   * 仅向比对来源仓库应用块补丁，切换期间的迟到确认不执行。
+   * @param root - 比对标签冻结的来源仓库；undefined 时不执行
+   * @param patch - 待应用的统一补丁
+   * @param cached - 是否写索引
+   * @param reverse - 是否反向还原
+   * @returns 写入后刷新变更；失败上报错误，仓库不再活动时提前返回
+   */
   const applyDiffPatch = useCallback(
-    async (patch: string, cached: boolean, reverse: boolean) => {
-      const root = git.root;
-      if (!root) return;
-      try {
-        await gitApplyPatch(root, patch, cached, reverse);
-      } catch (cause) {
-        reportError(errorText(cause), cached ? "git.stage" : undefined);
-        return;
-      }
-      await git.refreshChanges();
+    async (root: string | undefined, patch: string, cached: boolean, reverse: boolean) => {
+      if (!root || !git.repositories.includes(root)) return;
+      await git.runRepository(root, () => gitApplyPatch(root, patch, cached, reverse));
     },
     [git, reportError]
   );
 
+  /**
+   * 在当前仓库的差异链中导航，其他仓库的标签保留只读快照。
+   * @param tabId - 差异标签身份
+   * @param delta - 相邻文件偏移；0 表示刷新
+   * @param land - 切换后定位首个或末个差异
+   * @returns 更新标签；来源仓库不同或已到边界时不操作
+   */
   const stepChain = useCallback(
     (tabId: string, delta: number, land?: "first" | "last") => {
       const tab = diffs.find((item) => item.id === tabId);
+      if (!tab?.repoRoot || !git.repositories.includes(tab.repoRoot)) return;
+      if (tab.repoRoot !== git.root && getDiffChains().get(tab.chain?.id ?? "")?.kind !== "change") return;
       const chain = tab?.chain;
       const list = chain ? getDiffChains().get(chain.id) : undefined;
       if (!chain || !list) return;
@@ -3426,7 +3526,7 @@ export default function App() {
       const next = list.items[at];
       if (next) openAgainstWorktree(list.chainId, list.revision, list.leftLabel, next, list.items, step);
     },
-    [diffs, getDiffChains, openAgainstWorktree, openBetweenRevisions, openChange, openCommitFile]
+    [diffs, getDiffChains, git.repositories, git.root, openAgainstWorktree, openBetweenRevisions, openChange, openCommitFile]
   );
 
   /**
@@ -3439,19 +3539,27 @@ export default function App() {
    * 这一篇比对能不能按块打补丁：只有「索引 ↔ 工作区」的普通文件可以。
    * 已暂存比对（HEAD ↔ 索引）的块操作要动的是索引与 HEAD 的关系，这里的补丁口径不适用；
    * 重命名（路径带箭头）两侧路径不同，补丁头也写不出来。这两类一律不给那两颗按钮。
+   * @param tab - 待检查的比对标签
+   * @returns 来源仍是活动仓库且属于未暂存普通文件时返回 true
    */
   const diffChunkOps = useCallback(
     (tab: DiffTab): boolean => {
-      if (!tab.chain || tab.path.includes(" → ")) return false;
+      if (!tab.repoRoot || !git.repositories.includes(tab.repoRoot) || !tab.chain || tab.path.includes(" → ")) return false;
       const chain = getDiffChains().get(tab.chain.id);
       return chain?.kind === "change" && !chain.staged;
     },
-    [getDiffChains]
+    [getDiffChains, git.repositories]
   );
 
+  /**
+   * 生成当前仓库差异标签的相邻文件导航。
+   * @param tab - 比对标签
+   * @returns 导航动作及位置；无链或来源仓库不活动时返回 undefined
+   */
   const diffGroupOf = useCallback(
     (tab: DiffTab): DiffGroup | undefined =>
-      tab.chain
+      tab.chain && tab.repoRoot && git.repositories.includes(tab.repoRoot)
+        && (tab.repoRoot === git.root || getDiffChains().get(tab.chain.id)?.kind === "change")
         ? {
             index: tab.chain.index,
             total: tab.chain.total,
@@ -3459,7 +3567,7 @@ export default function App() {
             onNext: (land) => stepChain(tab.id, 1, land),
           }
         : undefined,
-    [stepChain]
+    [stepChain, git.root, git.repositories, getDiffChains]
   );
 
   /** 删除确认落在整批选中上：文案报第一条的名字，真正删的是这一批的路径。 */
@@ -3512,17 +3620,24 @@ export default function App() {
     });
   }, []);
 
-  /** 文件历史独立持有筛选条件，不能污染主日志。 */
+  /**
+   * 在当前仓库的日志工具窗口打开独立文件历史。
+   * @param relative - 仓库相对路径
+   * @returns 保留已有历史页签并聚焦指定路径
+   */
   const showFileHistory = useCallback(
-    (relative: string) => {
+    (relative: string, root = git.root) => {
+      if (!root) return;
+      git.selectRepository(root);
       setGitHistoryTabs((tabs) => {
-        const current = tabs[rootKey] ?? { paths: [], active: "" };
-        return { ...tabs, [rootKey]: { paths: current.paths.includes(relative) ? current.paths : [...current.paths, relative], active: relative } };
+        /** 每个仓库独立维护相对路径历史。 */
+        const current = tabs[root] ?? { paths: [], active: "" };
+        return { ...tabs, [root]: { paths: current.paths.includes(relative) ? current.paths : [...current.paths, relative], active: relative } };
       });
       if (places.log === "hidden") dockPane("log");
       else if (places.log === "tabbed") setActiveTab("pane|log");
     },
-    [dockPane, places.log, rootKey]
+    [dockPane, places.log, git.root, git.selectRepository]
   );
 
   const showEditorGitHistory = useCallback((path: string) => {
@@ -3534,17 +3649,19 @@ export default function App() {
    * 补丁取 HEAD 到工作区这一段：暂存过的路径工作区与索引同内容，范围一致。
    */
   const commitFileAction = useCallback(
-    async (action: CommitFileAction, path: string, _staged: boolean, isDirectory = false) => {
-      if (!git.root) return;
-      const absolute = path ? git.absoluteOf(path) : "";
+    async (action: CommitFileAction, path: string, _staged: boolean, isDirectory = false, root = git.root ?? undefined) => {
+      if (!root || !git.repositories.includes(root)) return;
+      const absolute = path ? resolvePath(root, path) : "";
       switch (action) {
         case "editSource":
-          editSource(path);
+          setActiveTab(`doc|${absolute}`);
+          void docs.open(absolute);
           break;
         case "patch":
           setDialog({
             kind: "patch",
-            name: `${path ? patchStem(path) : basenameOf(git.root)}-worktree.patch`,
+            name: `${path ? patchStem(path) : basenameOf(root)}-worktree.patch`,
+            repoRoot: root,
             path,
             revision: "",
             from: "HEAD",
@@ -3555,13 +3672,13 @@ export default function App() {
           break;
         case "patchClipboard":
           try {
-            await navigator.clipboard.writeText(await gitDiffText(git.root, "HEAD", "", absolute));
+            await navigator.clipboard.writeText(await gitDiffText(root, "HEAD", "", absolute));
           } catch (cause) {
             reportError(errorText(cause));
           }
           break;
         case "history":
-          showFileHistory(path);
+          showFileHistory(path, root);
           break;
         /*
          * 回滚把两件事合到一起：已跟踪文件的改动恢复成索引内容；新建、还没进过暂存区的新文件
@@ -3569,18 +3686,21 @@ export default function App() {
          * 让用户确认一次，确认后删文件与恢复改动一起做完。
          */
         case "rollback": {
-          const targets = rollbackTargets(path, isDirectory, git.trackedChanges, git.untrackedChanges);
+          /** 回滚候选仅来自该节点的仓库。 */
+          const changes = git.repositoryStates.find((repo) => repo.root === root)?.status?.changes ?? [];
+          const targets = rollbackTargets(path, isDirectory, changes.filter((change) => !change.untracked), changes.filter((change) => change.untracked));
           // 目录节点与仓库根都是聚合出来的，交给 git 的 pathspec 用 `.` 表示整个仓库根。
           const restore = path === "" ? "." : absolute;
           if (targets.delete.length === 0) {
-            if (targets.restore) await git.restoreFile("", restore);
+            if (targets.restore) await git.runRepository(root, () => gitRestoreFile(root, "", restore));
             break;
           }
           setDialog({
             kind: "rollback",
+            repoRoot: root,
             name: basenameOf(targets.delete[0]),
             count: targets.delete.length,
-            many: targets.delete.map((relative) => git.absoluteOf(relative)),
+            many: targets.delete.map((relative) => joinPath(root, relative)),
             fileList: targets.delete,
             restoreTracked: targets.restore,
             restore: targets.restore ? restore : undefined,
@@ -3590,11 +3710,11 @@ export default function App() {
           break;
         }
         case "ignore":
-          await addToGitignore([isDirectory ? `${path.replace(/\/$/, "")}/` : path]);
+          await addToGitignore([isDirectory ? `${path.replace(/\/$/, "")}/` : path], root);
           break;
       }
     },
-    [addToGitignore, editSource, git, reportError, showFileHistory, workspaceRoot]
+    [addToGitignore, docs.open, git, reportError, showFileHistory, workspaceRoot]
   );
 
   /** 目录树 Git 菜单的回滚：只处理用户选中的文件，不误还原同目录其它改动。 */
@@ -3603,7 +3723,7 @@ export default function App() {
       if (!git.root || paths.length === 0) return;
       const selected = new Set(paths.map((path) => repoRelative(path).toLowerCase()));
       const isSelected = (path: string) => selected.has(path.toLowerCase());
-      const deleteRel = git.untrackedChanges.filter((change) => isSelected(change.path)).map((change) => change.path);
+      const deleteRel = git.untrackedChanges.filter((change) => isSelected(change.path) && !containsRepository(git.absoluteOf(change.path), git.repositories)).map((change) => change.path);
       const restoreAbs = git.trackedChanges
         .filter((change) => isSelected(change.path))
         .map((change) => git.absoluteOf(change.path));
@@ -3616,6 +3736,7 @@ export default function App() {
       }
       setDialog({
         kind: "rollback",
+        repoRoot: git.root,
         name: basenameOf(deleteRel[0]),
         count: deleteRel.length,
         many: deleteRel.map((relative) => git.absoluteOf(relative)),
@@ -3629,7 +3750,11 @@ export default function App() {
     [git, refreshTree, reportError, repoRelative]
   );
 
-  /** 右键 Compare With 固定比较 HEAD 与当前工作区（含编辑器未保存正文）。 */
+  /**
+   * 比较来源仓库的 HEAD 与文件树选中文件，包含编辑器未保存正文。
+   * @param entry - 文件树条目
+   * @returns 派发差异加载；没有活动仓库时不操作
+   */
   const compareTreeFile = useCallback(
     (entry: FsEntry) => {
       const root = git.root;
@@ -3637,7 +3762,8 @@ export default function App() {
       const relative = repoRelative(entry.path);
       void openDiffTab(
         {
-          id: `tree-head|${relative}`,
+          id: `${root}|tree-head|${relative}`,
+          repoRoot: root,
           name: basenameOf(entry.path),
           leftLabel: t("git.revHead"),
           rightLabel: t("git.revWorktree"),
@@ -4126,19 +4252,21 @@ export default function App() {
         }
         /* 补丁：from 是左、revision 是右；右端给空串就是拿工作区，提交树那侧走这条。
            path 为空表示整条提交的差异，只有提交行那侧会这么给。 */
-        if (kind === "patch" && revision !== undefined && git.root) {
+        if (kind === "patch" && revision !== undefined && (dialog.repoRoot ?? git.root)) {
+          /** 确认时沿用对话框冻结的仓库根。 */
+          const root = dialog.repoRoot ?? git.root!;
           const text = await gitDiffText(
-            git.root,
+            root,
             dialog.from ?? EMPTY_TREE_HASH,
             revision,
-            path ? git.absoluteOf(path) : ""
+            path ? resolvePath(root, path) : ""
           );
           // 未跟踪文件相对 HEAD 本来就没有差异，写一份空文件过去会被读成「补丁做好了」。
           if (text.trim() === "") {
             reportError(t("git.patchNoDiff"), t("git.patchSkipped"));
             return;
           }
-          await writeFile(resolvePath(dir ?? workspaceRoot ?? git.root, name), text, "lf", false);
+          await writeFile(resolvePath(dir ?? workspaceRoot ?? root, name), text, "lf", false);
         }
         if (kind === "deleteRef") {
           if (refKind === "tag") await git.deleteTag(currentName);
@@ -4172,12 +4300,15 @@ export default function App() {
          * 用户取消确认框的话，两件事都不做——半途恢复改动会让「取消」变得说不清。
          */
         if (kind === "rollback") {
-          await deleteTargets(dialog.many ?? []);
-          if (dialog.restoreMany) {
-            for (const restorePath of dialog.restoreMany) await git.restoreFile("", restorePath);
-          } else if (dialog.restore) {
-            await git.restoreFile("", dialog.restore);
-          }
+          /** 仓库已移出工作区时，不执行旧对话框中的删除或恢复。 */
+          const root = dialog.repoRoot ?? git.root;
+          if (!root || !git.repositories.includes(root)) return;
+          await git.runRepository(root, async () => {
+            await deleteTargets((dialog.many ?? []).filter((path) => !containsRepository(path, git.repositories)));
+            if (dialog.restoreMany) {
+              for (const restorePath of dialog.restoreMany) await gitRestoreFile(root, "", restorePath);
+            } else if (dialog.restore) await gitRestoreFile(root, "", dialog.restore);
+          });
         }
         if (kind === "discard" && path) {
           disposeModel(path);
@@ -5079,11 +5210,11 @@ export default function App() {
       <NotificationsToolWindow isOpen={places.notifications !== "hidden"} />
     ) : (
       <GitHistoryTabs
-        key={workspaceRoot ?? ""}
+        key={gitRootKey}
         historyPaths={fileHistories.paths}
         activeHistory={fileHistories.active}
-        onSelectHistory={(active) => setGitHistoryTabs((tabs) => ({ ...tabs, [rootKey]: { ...fileHistories, active } }))}
-        onCloseHistory={(path) => setGitHistoryTabs((tabs) => ({ ...tabs, [rootKey]: { paths: fileHistories.paths.filter((item) => item !== path), active: fileHistories.active === path ? "" : fileHistories.active } }))}
+        onSelectHistory={(active) => setGitHistoryTabs((tabs) => ({ ...tabs, [gitRootKey]: { ...fileHistories, active } }))}
+        onCloseHistory={(path) => setGitHistoryTabs((tabs) => ({ ...tabs, [gitRootKey]: { paths: fileHistories.paths.filter((item) => item !== path), active: fileHistories.active === path ? "" : fileHistories.active } }))}
         git={git}
         reportError={reportError}
         onFileAction={logFileAction}
@@ -5218,7 +5349,7 @@ export default function App() {
           onRefresh={() => stepChain(activeDiffTab.id, 0)}
           onStageChunk={
             diffChunkOps(activeDiffTab)
-              ? (patch) => void applyDiffPatch(patch, true, false).then(() => stepChain(activeDiffTab.id, 0))
+              ? (patch) => void applyDiffPatch(activeDiffTab.repoRoot, patch, true, false).then(() => stepChain(activeDiffTab.id, 0))
               : undefined
           }
           onRevertChunk={
@@ -5226,9 +5357,10 @@ export default function App() {
               ? (patch) =>
                   void (async () => {
                     // 还原打的是磁盘版本：编辑器里没存的改动先落盘，否则 patch 会打在旧文件上。
-                    const absolute = git.absoluteOf(activeDiffTab.path);
+                    /** 保存目标也必须来自标签，不能在 await 前后切换到另一个仓库。 */
+                    const absolute = joinPath(activeDiffTab.repoRoot!, activeDiffTab.path);
                     if (docs.dirty(absolute)) await saveDoc(absolute);
-                    await applyDiffPatch(patch, false, true);
+                    await applyDiffPatch(activeDiffTab.repoRoot, patch, false, true);
                     stepChain(activeDiffTab.id, 0);
                   })()
               : undefined
@@ -5539,17 +5671,21 @@ export default function App() {
     setGitDialog(null);
     if (request.kind !== "push") await saveAllRef.current(request.kind === "update");
     if (request.kind === "update") {
-      if (!request.root || activeGitContext.current.root !== request.root) return;
+      if (!request.root || !git.repositories.includes(request.root)) return;
       const current = await gitStatus(request.root).catch(() => null);
-      if (activeGitContext.current.root !== request.root || current?.branch !== request.target?.name || current?.detached) {
+      if (current?.branch !== request.target?.name || current?.detached) {
         reportError(t("git.updateContextChanged"));
         return;
       }
       patch({ vcs: { ...settings.vcs, updateMethod: values.method === "rebase" ? "rebase" : "merge" } });
-      await git.pull(values.method);
+      await git.runRepository(request.root, () => gitPull(request.root!, values.method));
     }
     else if (request.kind === "push") {
-      await git.push(values.push);
+      /** 确认窗口冻结来源根；切分支栏不改变推送目标。 */
+      const targetRoot = request.root ?? git.root;
+      if (!targetRoot || !git.repositories.includes(targetRoot)) return;
+      if (targetRoot === git.root) await git.push(values.push);
+      else await git.runRepository(targetRoot, () => gitPush(targetRoot, values.push));
     } else if (request.kind === "newBranch") {
       if (await git.createBranch(values.name, values.from, values.checkout) && values.checkout) remember("recentBranches", values.name);
     } else if (request.kind === "newTag") await git.createTag(values.name, values.message, values.from);
@@ -5632,7 +5768,8 @@ export default function App() {
     setActiveTab(tabId);
   });
   const panelOpenSource = useStable((change: GitChange) => {
-    const absolute = git.absoluteOf(change.path);
+    /** 源文件跟随变更归属。 */
+    const absolute = joinPath(change.repoRoot ?? git.root ?? workspaceRoot ?? "", change.path);
     setActiveTab(`doc|${absolute}`);
     void docs.open(absolute);
   });
@@ -5654,7 +5791,16 @@ export default function App() {
   const panelToggleByModule = useStable(() =>
     setCommitView((current) => ({ ...current, byModule: !current.byModule }))
   );
-  const panelOpenResolve = useStable(() => setResolveOpen(true));
+  /**
+   * 打开指定仓库的冲突清单。
+   * @param root - 变更节点来源；未传时使用分支栏仓库
+   * @returns 记录来源并展示窗口
+   */
+  const panelOpenResolve = useStable((root: string | undefined = git.root ?? undefined) => {
+    if (!root || !git.repositories.includes(root)) return;
+    setResolveRoot(root);
+    setResolveOpen(true);
+  });
   const panelOpenAiSettings = useStable(() => openSettingsTab("aiCommit"));
   const logFileAction = useStable(fileAction);
   const logCompareWork = useStable(compareWork);
@@ -5859,10 +6005,6 @@ export default function App() {
           {settings.commit.showOnDoubleClick === target ? <Check size={13} aria-hidden="true" /> : <span className="menu-icon-spacer" />}
           <span className="popover-item-label">{t(target === "preview" ? "git.doubleClickDiff" : "git.doubleClickSource")}</span>
         </button>)}
-        <button type="button" className="popover-item" onClick={() => patch({ commit: { ...settings.commit, commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged } })}>
-          {settings.commit.commitAllWhenNothingStaged ? <Check size={13} aria-hidden="true" /> : <span className="menu-icon-spacer" />}
-          <span className="popover-item-label">{t("git.commitAllWhenNothingStaged")}</span>
-        </button>
         <div className="popover-sep" />
       </Popover>
       <button type="button" ref={commitGearRef} className={`icon-button is-inline${commitGearAnchor ? " is-on" : ""}`} onClick={() => setCommitGearAnchor((current) => current ? null : commitGearRef.current)} aria-expanded={commitGearAnchor !== null} aria-haspopup="menu" title={t("git.commitOptions")}><Settings size={16} /></button>
@@ -5952,13 +6094,13 @@ export default function App() {
       /> : null
       : workspaceRoot ? <Suspense fallback={null}><GitPanel
         key={workspaceRoot} git={git} view={gitView} onViewChange={setGitView} workspaceRoot={workspaceRoot} onOpenChange={panelOpenChangeFromTree} onOpenFile={panelOpenFile}
-        onUpdate={() => void updateProject()} onPush={pushCommitted}
+        onUpdate={(root) => void updateProject(git.repositoryStates.find((repo) => repo.root === root)?.status?.branch, root)} onPush={pushCommitted}
         focusSignal={commitFocus} rewordSignal={rewordSignal} history={history.commitMessages} onCommitted={panelCommitted}
         groupByDir={commitView.byDir} groupByModule={commitView.byModule} showIgnored={commitView.ignored}
         onToggleIgnored={panelToggleIgnored} repoName={basenameOf(git.root ?? workspaceRoot)} onFileAction={panelFileAction}
         onUnignore={panelUnignore} onOpenCommitFile={panelOpenCommitFile} onToggleByDir={panelToggleByDir}
         onToggleByModule={panelToggleByModule} showOnDoubleClick={settings.commit.showOnDoubleClick}
-        commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged} onOpenSource={panelOpenSource}
+        onOpenSource={panelOpenSource}
         onOpenResolve={panelOpenResolve} onOpenAiSettings={panelOpenAiSettings}
       /></Suspense> : <p className="tool-window-empty">{t("git.noWorkspace")}</p>}
   </ErrorBoundary>;
@@ -6018,7 +6160,7 @@ export default function App() {
             onAction={branchAction}
             onRefAction={refAction}
             onRefInspect={(target, mode) => {
-              setGitHistoryTabs((tabs) => ({ ...tabs, [rootKey]: { ...(tabs[rootKey] ?? { paths: [] }), active: "" } }));
+              setGitHistoryTabs((tabs) => ({ ...tabs, [gitRootKey]: { ...(tabs[gitRootKey] ?? { paths: [] }), active: "" } }));
               /* IDEA 这两项都是把日志叫出来并落好筛选条件。 */
               const current = git.status?.branch ?? "";
               if (mode === "compare") setLogReference(`${current}..${target.name}`);
@@ -6117,27 +6259,6 @@ export default function App() {
                           </button>
                         ))}
                         <div className="popover-sep" />
-                        <button
-                          type="button"
-                          className="popover-item"
-                          onClick={() =>
-                            patch({
-                              commit: {
-                                ...settings.commit,
-                                commitAllWhenNothingStaged: !settings.commit.commitAllWhenNothingStaged,
-                              },
-                            })
-                          }
-                        >
-                          {settings.commit.commitAllWhenNothingStaged ? (
-                            <Check size={13} aria-hidden="true" />
-                          ) : (
-                            <span className="menu-icon-spacer" />
-                          )}
-                          <span className="popover-item-label">
-                            {t("git.commitAllWhenNothingStaged")}
-                          </span>
-                        </button>
                       </Popover>
                       <button
                         type="button"
@@ -6227,7 +6348,7 @@ export default function App() {
                 ) : workspaceRoot ? (
                   <Suspense fallback={null}>
                     <GitPanel
-                      onUpdate={() => void updateProject()} onPush={pushCommitted}
+                      onUpdate={(root) => void updateProject(git.repositoryStates.find((repo) => repo.root === root)?.status?.branch, root)} onPush={pushCommitted}
                       key={workspaceRoot}
                       git={git}
                       view={gitView}
@@ -6250,7 +6371,6 @@ export default function App() {
                       onToggleByDir={panelToggleByDir}
                       onToggleByModule={panelToggleByModule}
                       showOnDoubleClick={settings.commit.showOnDoubleClick}
-                      commitAllWhenNothingStaged={settings.commit.commitAllWhenNothingStaged}
                       onOpenSource={panelOpenSource}
                       onOpenResolve={panelOpenResolve}
                       onOpenAiSettings={panelOpenAiSettings}
@@ -6790,7 +6910,7 @@ export default function App() {
       ) : null}
       {menu ? <ContextMenu anchor={menu} onClose={() => setMenu(null)} /> : null}
       <ContextMenuGuardHost />
-      {gitDialog ? <GitActionDialog key={`${git.root}:${gitDialog.kind}:${gitDialog.target?.name ?? ""}`} request={gitDialog} git={git}
+      {gitDialog ? <GitActionDialog key={`${gitDialog.root ?? git.root}:${gitDialog.kind}:${gitDialog.target?.name ?? ""}`} request={gitDialog} git={git}
         onCancel={() => setGitDialog(null)} onSubmit={(values) => { void submitGitAction(values).catch((cause) => reportError(errorText(cause))); }} /> : null}
       {dialog ? (
         <PromptDialog
@@ -6838,27 +6958,28 @@ export default function App() {
           }}
         />
       ) : null}
-      {resolveOpen ? (
+      {resolveOpen && resolveRoot ? (
         <ResolveConflictsDialog
-          files={git.conflictChanges}
-          onAccept={(change, side) => void git.resolveConflict(git.absoluteOf(change.path), side)}
+          files={git.repositoryStates.find((repo) => repo.root === resolveRoot)?.status?.changes.filter((change) => change.conflicted) ?? []}
+          onAccept={(change, side) => void git.runRepository(resolveRoot, () => gitResolveConflict(resolveRoot, joinPath(resolveRoot, change.path), side))}
           onMerge={(change) => {
             setResolveOpen(false);
-            setTriMergePath(git.absoluteOf(change.path));
+            setTriMergeRoot(resolveRoot);
+            setTriMergePath(joinPath(resolveRoot, change.path));
           }}
-          onOpen={(change) => editSource(change.path)}
+          onOpen={(change) => panelOpenFile(joinPath(resolveRoot, change.path))}
           onClose={() => setResolveOpen(false)}
         />
       ) : null}
-      {triMergePath ? (
+      {triMergePath && triMergeRoot ? (
         <Suspense fallback={null}>
           <TriMergeDialog
-            root={workspaceRoot ?? ""}
+            root={triMergeRoot}
             path={triMergePath}
             onApplied={() => {
               setTriMergePath(null);
               // 写回后把文件暂存进索引，让它从未合并那一组里消失（同按一边了结的收尾）。
-              void git.stage([triMergePath]);
+              void git.runRepository(triMergeRoot, () => gitStage(triMergeRoot, [triMergePath]));
               // 编辑器里还开着这份且有未保存修改时提醒一声：磁盘这份已经解决，缓冲还是
               // 带标记的旧文——保存时 mtime 乐观锁会拦下来走三向合并，别让用户措手不及。
               const open = docs.documents.find((doc) => samePath(doc.path, triMergePath));

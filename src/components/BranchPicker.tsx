@@ -5,6 +5,8 @@ import { List, firstSelectable, listNavigate } from "../ui/List";
 import { Menu, MenuList, type MenuItem as UiMenuItem } from "../ui/Menu";
 import { tooltipAttrs } from "../ui/Tooltip";
 import { SearchField } from "../ui/Input";
+import { Select } from "../ui/Select";
+import { basenameOf, relativePathFrom } from "../lib/format";
 import { HighlightedText } from "../ui/HighlightedText";
 import { formatShortcut } from "../lib/shortcuts";
 import type { GitState } from "../hooks/useGitState";
@@ -168,6 +170,11 @@ export default function BranchPicker({ git, folder, recent, onAction, onRefActio
   const listHeight = Math.min(440, rows.reduce((height, row) => height + (row.type === "separator" ? SEPARATOR_HEIGHT : ROW_HEIGHT), 0));
 
   return <div className="toolbar-chip-host">
+    {git.repositories.length > 1 && <Select
+      variant="ghost" value={git.root} aria-label={t("git.repository")}
+      options={git.repositories.map((root) => ({ value: root, label: (folder ? relativePathFrom(folder, root) : null) || basenameOf(root) }))}
+      onChange={git.selectRepository}
+    />}
     <button ref={chipRef} type="button" className={`toolbar-chip${anchor ? " is-open" : ""}`} {...tooltipAttrs(title ?? "")}
       aria-label={t(git.root ? "panel.sourceControl" : "git.vcs")} aria-haspopup="dialog" aria-expanded={!!anchor}
       onClick={(event) => {

@@ -6,6 +6,7 @@ import { translate } from "../i18n";
 import { notificationCenter } from "../lib/notifications";
 import {
   gitAmendTargets,
+  containsRepository,
   gitCheckout,
   gitCherryPick,
   gitCherryPickAbort,
@@ -17,6 +18,7 @@ import {
   gitDeleteBranch,
   gitDeleteTag,
   gitDeleteRemoteBranch,
+  gitDiscover,
   gitFetch,
   gitInit,
   gitLog,
@@ -72,6 +74,18 @@ import type {
 /** 状态还没回来时的空清单：每次给同一个数组，派生表的记忆才不会每帧失效。 */
 const EMPTY_CHANGES: GitChange[] = [];
 
+/** 工作区内一个仓库的变更快照；读取失败保留仓库身份并显式报告错误。 */
+export interface GitRepositorySnapshot {
+  /** 仓库工作树的绝对根路径。 */
+  root: string;
+  /** 仓库操作中间态；尚未读回时为 null。 */
+  probe: GitProbe | null;
+  /** 当前分支和变更；首次读取前为 null，读取失败时保留最后成功快照。 */
+  status: GitStatus | null;
+  /** 最近读取错误；正常时为 null。 */
+  error: string | null;
+}
+
 /** 一条 Git 操作的种类。 */
 export type GitOperationKind = "fetch" | "pull" | "push" | "checkout" | "createBranch" | "createTag" | "merge" | "rebase";
 /** 一条 Git 操作的进行时状态（跑完留在历史上供回放）。 */
@@ -103,8 +117,189 @@ export function isWorktreeChange(change: GitChange): boolean {
   return change.untracked || change.workStatus.trim() !== "";
 }
 
-/** Git 面板的状态中枢：状态/分支/日志拉取 + fetch/pull/push/建分支建标签等操作。 */
+/**
+ * 发现工作区内的仓库，并将 Git 状态与操作绑定到所选仓库。
+ * @param workspaceRoot - 工作区目录；null 时清空 Git 上下文
+ * @param reportError - 发现或操作失败时的错误出口
+ * @param afterRepoWrite - 仓库写操作结束后抑制监听回声
+ * @param workflow - 更新与推送的保存策略
+ * @returns 原有活动仓库状态及操作；repositories 为全部根，repositoryStates 为全部变更快照，selectRepository 切换分支栏目标，refresh 重扫并刷新，refreshChanges 刷新全部变更，runRepository 按根锁定写入
+ */
 export function useGitState(
+  workspaceRoot: string | null,
+  reportError: (message: string, title?: string) => void,
+  afterRepoWrite?: () => void,
+  workflow: GitWorkflow = {},
+) {
+  /** 每个工作区在本次会话内保留自己的仓库选择。 */
+  const selections = useRef(new Map<string, string>());
+  /** 发现结果带来源，避免切换工作区的第一帧复用旧根。 */
+  const [discovery, setDiscovery] = useState<{
+    /** 扫描所属的工作区。 */
+    workspace: string | null;
+    /** 按默认选择顺序排列的仓库根。 */
+    roots: string[];
+    /** 所选仓库；没有仓库时为 null。 */
+    selected: string | null;
+  } | null>(null);
+  /** 当前工作区与发现序号用于丢弃迟到的扫描。 */
+  const currentWorkspace = useRef(workspaceRoot);
+  /** 工作区每次切换递增，包括离开后再返回同一路径。 */
+  const snapshotEpoch = useRef(0);
+  if (currentWorkspace.current !== workspaceRoot) snapshotEpoch.current += 1;
+  currentWorkspace.current = workspaceRoot;
+  /** 当前渲染绑定的工作区实例，用于拒绝离开后再返回时遗留的写回调。 */
+  const contextEpoch = snapshotEpoch.current;
+  /** 连续扫描仅接受最新结果。 */
+  const generation = useRef(0);
+  /** 全部仓库的变更独立于分支栏的活动仓库，根路径是状态键。 */
+  const [snapshots, setSnapshots] = useState<ReadonlyMap<string, GitRepositorySnapshot>>(new Map());
+  /** 每个根独立丢弃迟到的读取，避免一个慢仓库阻塞其它仓库。 */
+  const snapshotTickets = useRef(new Map<string, number>());
+  /** 当前已注册根用于拒绝旧工作区或已经移出的仓库操作。 */
+  const registeredRoots = useRef<readonly string[]>([]);
+  /** 仓库写入期间拒绝重复提交与同时修改索引。 */
+  const writingRoots = useRef(new Set<string>());
+  /** 分支栏当前根；异步收尾不能使用操作开始时的选择。 */
+  const selectedRoot = useRef<string | null>(null);
+  /**
+   * 刷新各仓库的分支、变更与恢复状态，逐个发布结果。
+   * @param roots - 本次需要读取的仓库根
+   * @returns 所有读取结束；失败保留仓库条目并写入 error
+   */
+  const refreshRepositories = useCallback(async (roots: readonly string[]) => {
+    /** 本轮读取所属的工作区实例。 */
+    const epoch = snapshotEpoch.current;
+    await Promise.all(roots.map(async (root) => {
+      /** 当前根的请求序号。 */
+      const ticket = (snapshotTickets.current.get(root) ?? 0) + 1;
+      snapshotTickets.current.set(root, ticket);
+      /** 本次结果；错误时不把仓库显示为干净。 */
+      let snapshot: GitRepositorySnapshot;
+      try {
+        /** Git 身份与变更并行读取。 */
+        const [probe, status] = await Promise.all([gitProbe(root), gitStatus(root)]);
+        snapshot = { root, probe, status, error: null };
+      } catch (cause) {
+        snapshot = { root, probe: null, status: null, error: errorText(cause) };
+      }
+      if (epoch !== snapshotEpoch.current || currentWorkspace.current !== workspaceRoot || !registeredRoots.current.includes(root)
+        || snapshotTickets.current.get(root) !== ticket) return;
+      setSnapshots((current) => new Map(current).set(root, snapshot.error && current.has(root)
+        ? { ...current.get(root)!, error: snapshot.error } : snapshot));
+    }));
+  }, [workspaceRoot]);
+  /**
+   * 重扫仓库列表并保留仍有效的选择。
+   * @returns 扫描结束；失败上报错误，旧工作区结果直接丢弃
+   */
+  const discover = useCallback(async () => {
+    if (!workspaceRoot || currentWorkspace.current !== workspaceRoot) return;
+    /** 本次扫描身份。 */
+    const ticket = ++generation.current;
+    try {
+      /** 后端路径转为界面统一使用的本机分隔符。 */
+      const roots = (await gitDiscover(workspaceRoot)).map(nativeSeparators);
+      if (ticket !== generation.current || currentWorkspace.current !== workspaceRoot) return;
+      registeredRoots.current = roots;
+      /** 优先保留用户选择，已移除时退到第一个仓库。 */
+      const previous = selections.current.get(workspaceRoot);
+      /** 无仓库时继续以工作区目录提供初始化入口。 */
+      const selected = previous && roots.includes(previous) ? previous : roots[0] ?? null;
+      if (selected) selections.current.set(workspaceRoot, selected);
+      else selections.current.delete(workspaceRoot);
+      setDiscovery({ workspace: workspaceRoot, roots, selected });
+      await refreshRepositories(roots.filter((root) => root !== selected));
+    } catch (cause) {
+      if (ticket !== generation.current || currentWorkspace.current !== workspaceRoot) return;
+      reportError(errorText(cause));
+    }
+  }, [workspaceRoot, reportError, refreshRepositories]);
+  useEffect(() => { void discover(); return () => { generation.current += 1; }; }, [discover]);
+  /** 只有当前工作区的发现结果可以进入仓库状态机。 */
+  const active = discovery?.workspace === workspaceRoot ? discovery : null;
+  registeredRoots.current = active?.roots ?? [];
+  selectedRoot.current = active?.selected ?? null;
+  /** 复用原有单仓库状态机，使切仓库与切工作区共享请求隔离和操作锁。 */
+  const repository = useRepositoryState(active ? active.selected ?? workspaceRoot : null, reportError, afterRepoWrite, workflow, writingRoots);
+  useEffect(() => {
+    if (!repository.root || !registeredRoots.current.includes(repository.root)) return;
+    if (!repository.status && !repository.readError) return;
+    // 活动根的新读数使此前在后台启动的旧读取作废。
+    snapshotTickets.current.set(repository.root, (snapshotTickets.current.get(repository.root) ?? 0) + 1);
+    setSnapshots((current) => new Map(current).set(repository.root!, {
+      root: repository.root!, probe: repository.probe,
+      status: repository.status ?? current.get(repository.root!)?.status ?? null, error: repository.readError,
+    }));
+  }, [repository.root, repository.probe, repository.status, repository.readError]);
+  /**
+   * 切换到发现列表中的仓库，拒绝任意外部路径。
+   * @param root - 列表中的绝对仓库根路径
+   * @returns 更新当前工作区的选择；无效路径不产生副作用
+   */
+  const selectRepository = useCallback((root: string) => {
+    if (!workspaceRoot || !active?.roots.includes(root)) return;
+    selections.current.set(workspaceRoot, root);
+    setDiscovery({ ...active, selected: root });
+  }, [workspaceRoot, active]);
+  /**
+   * 同时刷新候选仓库和当前仓库数据。
+   * @returns 两项刷新均结束，错误由各自的错误出口报告
+   */
+  const refresh = useCallback(async () => { await Promise.all([discover(), repository.refresh()]); }, [discover, repository.refresh]);
+  /**
+   * 文件监听刷新全部仓库的变更，活动仓库同时更新原有分支状态。
+   * @returns 所有刷新结束，失败信息保存在对应仓库快照
+   */
+  const refreshChanges = useCallback(async () => {
+    await Promise.all([refreshRepositories(registeredRoots.current.filter((root) => root !== selectedRoot.current)), repository.refreshChanges()]);
+  }, [refreshRepositories, repository.refreshChanges]);
+  /**
+   * 对明确指定的已注册仓库执行一次写操作，并只刷新该仓库。
+   * @param root - 目标仓库根，不能以打开的父文件夹替代
+   * @param action - 已绑定该根的 IPC 操作
+   * @returns 成功结果；失败、重复操作或仓库已移出时为 null
+   */
+  const runRepository = useCallback(async <T,>(root: string, action: () => Promise<T>): Promise<T | null> => {
+    if (contextEpoch !== snapshotEpoch.current || currentWorkspace.current !== workspaceRoot || !registeredRoots.current.includes(root) || writingRoots.current.has(root)) return null;
+    writingRoots.current.add(root);
+    try {
+      return await action();
+    } catch (cause) {
+      if (contextEpoch === snapshotEpoch.current) reportError(`${root}: ${errorText(cause)}`);
+      return null;
+    } finally {
+      try {
+        afterRepoWrite?.();
+        if (root === selectedRoot.current) await activeRefresh.current();
+        else await refreshRepositories([root]);
+      } finally { writingRoots.current.delete(root); }
+    }
+  }, [workspaceRoot, contextEpoch, reportError, afterRepoWrite, refreshRepositories, repository.root, repository.refresh]);
+  /** 异步写入收尾调用最新活动仓库的刷新，避免切换期间覆盖新状态。 */
+  const activeRefresh = useRef(repository.refresh);
+  activeRefresh.current = repository.refresh;
+  /** 所有仓库使用独立快照，切换分支栏不改变提交树。 */
+  const repositoryStates = useMemo(() => (active?.roots ?? []).map((root) => {
+    /** 未完成读取时保留占位，避免将未读取误判为没有仓库。 */
+    const snapshot = snapshots.get(root) ?? { root, probe: null, status: null, error: null };
+    return snapshot.status ? { ...snapshot, status: { ...snapshot.status, changes: snapshot.status.changes.filter((change) =>
+      !change.untracked || !containsRepository(joinPath(root, change.path), active?.roots ?? [])) } } : snapshot;
+  }), [active, snapshots, repository.root, repository.status, repository.probe]);
+  return useMemo(() => ({ ...repository, repositories: active?.roots ?? [], repositoryStates, selectRepository, refresh, refreshChanges, runRepository }),
+    [repository, active, repositoryStates, selectRepository, refresh, refreshChanges, runRepository]);
+}
+
+/**
+ * 管理单个仓库的状态、操作和异步隔离。
+ * @param workspaceRoot - 当前仓库的探测目录；null 时清空状态
+ * @param reportError - 操作失败的错误出口
+ * @param afterRepoWrite - 仓库写操作收尾回调
+ * @param workflow - 更新与推送策略
+ * @param sharedLocks - 工作区共享的每仓库写锁；未传时使用本地锁
+ * @returns probe/status/branches/tags 等仓库快照、按根隔离的操作状态与刷新及 Git 动作
+ */
+function useRepositoryState(
   workspaceRoot: string | null,
   reportError: (message: string, title?: string) => void,
   /**
@@ -113,11 +308,14 @@ export function useGitState(
    */
   afterRepoWrite?: () => void,
   workflow: GitWorkflow = {},
+  sharedLocks?: { current: Set<string> },
 ) {
   const workflowRef = useRef(workflow);
   workflowRef.current = workflow;
   const [probe, setProbe] = useState<GitProbe | null>(null);
   const [status, setStatus] = useState<GitStatus | null>(null);
+  /** 最近读取错误；保留旧状态供展示，但阻止使用旧状态提交。 */
+  const [readError, setReadError] = useState<string | null>(null);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [tags, setTags] = useState<GitTag[]>([]);
   /** HEAD 上那一条，提交框的「上次提交」用。 */
@@ -128,7 +326,9 @@ export function useGitState(
   const [operations, setOperations] = useState<ReadonlyMap<string, GitOperation>>(new Map());
   const operationTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
   // 同仓库请求在 React 重渲染前就上锁，快速连点也不会排出第二个 Git 操作。
-  const operationLocks = useRef(new Set<string>());
+  const localLocks = useRef(new Set<string>());
+  /** 工作区写入与分支栏动作共用每根锁。 */
+  const operationLocks = sharedLocks ?? localLocks;
   const operationSequence = useRef(0);
   /** 已经发起过几次刷新，用来认出「我这一轮已经被更新的刷新超过了」。 */
   const seqRef = useRef(0);
@@ -259,6 +459,7 @@ export function useGitState(
         // 若探根结果与当前根目录一致且并发查询成功，直接提交数据（99.9% 的常规场景）
         if (normalizedNextRoot === knownRoot && stateResult) {
           const [nextStatus, refs, nextLog, nextStashes, nextShelves] = stateResult;
+          setReadError(null);
           setStatus(nextStatus);
           setBranches(refs.branches);
           setTags(refs.tags);
@@ -287,6 +488,7 @@ export function useGitState(
           gitShelves(normalizedNextRoot).catch(() => [] as GitShelvedChangeList[]),
         ]);
         if (stale()) return;
+        setReadError(null);
         setStatus(nextStatus);
         setBranches(refs.branches);
         setTags(refs.tags);
@@ -324,6 +526,7 @@ export function useGitState(
         gitShelves(normalizedNextRoot).catch(() => [] as GitShelvedChangeList[]),
       ]);
       if (stale()) return;
+      setReadError(null);
       setStatus(nextStatus);
       setBranches(refs.branches);
       setTags(refs.tags);
@@ -331,7 +534,7 @@ export function useGitState(
       setStashes(nextStashes);
       setShelves(nextShelves);
     } catch (cause) {
-      if (!stale()) reportError(errorText(cause));
+      if (!stale()) { setReadError(errorText(cause)); reportError(errorText(cause)); }
     }
   }, [reportError, workspaceRoot]);
 
@@ -360,9 +563,10 @@ export function useGitState(
     try {
       const nextStatus = await gitStatus(root);
       if (stale()) return;
+      setReadError(null);
       setStatus(nextStatus);
     } catch (cause) {
-      if (!stale()) reportError(errorText(cause));
+      if (!stale()) { setReadError(errorText(cause)); reportError(errorText(cause)); }
     }
   }, [reportError, root, workspaceRoot]);
 
@@ -382,8 +586,18 @@ export function useGitState(
     [root]
   );
 
+  /**
+   * 写入与刷新共用每仓库锁，带进度操作可声明已经持有该锁。
+   * @param action - 已绑定目标根的写入
+   * @param lockHeld - 仅供 trackOperation 内部调用，表示外层管理锁
+   * @returns 写入是否成功；同根正在写入时返回 false
+   */
   const run = useCallback(
-    async (action: () => Promise<unknown>) => {
+    async (action: () => Promise<unknown>, lockHeld = false) => {
+      /** 初始化没有已发现根，仍按打开目录隔离。 */
+      const target = root ?? workspaceRoot;
+      if (!target || !lockHeld && operationLocks.current.has(target)) return false;
+      if (!lockHeld) operationLocks.current.add(target);
       let done = false;
       try {
         await action();
@@ -394,11 +608,11 @@ export function useGitState(
       // 失败不等于仓库没动：合并 / 变基 / 优选 / 还原撞冲突时正是停在了中间，
       // 不重探一遍就得等人手点刷新才看得到那条横幅。
       // 自己已经拉过这一轮，先把 watcher 那次回声压掉，免得同一个仓库被读两遍。
-      afterRepoWrite?.();
-      await refresh();
+      try { afterRepoWrite?.(); await refresh(); }
+      finally { if (!lockHeld) operationLocks.current.delete(target); }
       return done;
     },
-    [afterRepoWrite, refresh, reportError]
+    [afterRepoWrite, refresh, reportError, root, workspaceRoot, operationLocks]
   );
 
   /**
@@ -408,6 +622,8 @@ export function useGitState(
    */
   const runSilent = useCallback(
     async (action: () => Promise<unknown>) => {
+      if (!root || operationLocks.current.has(root)) return false;
+      operationLocks.current.add(root);
       try {
         await action();
         afterRepoWrite?.();
@@ -415,14 +631,16 @@ export function useGitState(
       } catch (cause) {
         reportError(errorText(cause));
         return false;
-      }
+      } finally { operationLocks.current.delete(root); }
     },
-    [afterRepoWrite, reportError]
+    [afterRepoWrite, reportError, root, operationLocks]
   );
 
   /** 暂存 / 取消暂存只动索引：失败弹错，成功只重取变更清单，不碰分支标签日志。 */
   const runIndex = useCallback(
     async (action: () => Promise<unknown>) => {
+      if (!root || operationLocks.current.has(root)) return false;
+      operationLocks.current.add(root);
       try {
         await action();
         afterRepoWrite?.();
@@ -431,9 +649,9 @@ export function useGitState(
       } catch (cause) {
         reportError(errorText(cause));
         return false;
-      }
+      } finally { operationLocks.current.delete(root); }
     },
-    [afterRepoWrite, refreshChanges, reportError]
+    [afterRepoWrite, refreshChanges, reportError, root, operationLocks]
   );
 
   /**
@@ -472,24 +690,24 @@ export function useGitState(
   );
 
   const checkout = useCallback(
-    (branch: string) => trackOperation("checkout", branch, () => root ? run(() => gitCheckout(root, branch)) : Promise.resolve(false), false),
+    (branch: string) => trackOperation("checkout", branch, () => root ? run(() => gitCheckout(root, branch), true) : Promise.resolve(false), false),
     [root, run, trackOperation]
   );
 
   /** 新建分支；`from` 非空时从那条引用起，andCheckout=true 顺带切过去。 */
   const createBranch = useCallback(
     (name: string, from: string, andCheckout: boolean) =>
-      trackOperation("createBranch", name, () => root ? run(() => gitCreateBranch(root, name, from, andCheckout)) : Promise.resolve(false), false),
+      trackOperation("createBranch", name, () => root ? run(() => gitCreateBranch(root, name, from, andCheckout), true) : Promise.resolve(false), false),
     [root, run, trackOperation]
   );
 
   /** 合并 / 变基 / 改名 / 删除都动本地历史，失败要弹错、成功要刷新。 */
   const merge = useCallback(
-    (name: string) => trackOperation("merge", name, () => root ? run(() => gitMerge(root, name)) : Promise.resolve(false), false),
+    (name: string) => trackOperation("merge", name, () => root ? run(() => gitMerge(root, name), true) : Promise.resolve(false), false),
     [root, run, trackOperation]
   );
   const rebase = useCallback(
-    (onto: string) => trackOperation("rebase", onto, () => root ? run(() => gitRebase(root, onto)) : Promise.resolve(false), false),
+    (onto: string) => trackOperation("rebase", onto, () => root ? run(() => gitRebase(root, onto), true) : Promise.resolve(false), false),
     [root, run, trackOperation]
   );
   const renameBranch = useCallback(
@@ -614,7 +832,8 @@ export function useGitState(
   // unshelve 不走 run：调用方要看 conflicts 清单（有冲突时条目保留、提示用户）。
   const unshelve = useCallback(
     async (id: string, remove: boolean): Promise<GitShelfApplyOutcome | null> => {
-      if (!root) return null;
+      if (!root || operationLocks.current.has(root)) return null;
+      operationLocks.current.add(root);
       try {
         const outcome = await gitUnshelve(root, id, remove);
         afterRepoWrite?.();
@@ -623,9 +842,9 @@ export function useGitState(
       } catch (cause) {
         reportError(errorText(cause));
         return null;
-      }
+      } finally { operationLocks.current.delete(root); }
     },
-    [root, afterRepoWrite, refresh, reportError]
+    [root, afterRepoWrite, refresh, reportError, operationLocks]
   );
   const shelfDelete = useCallback(
     (id: string) => (root ? run(() => gitShelfDelete(root, id)) : Promise.resolve(false)),
@@ -659,7 +878,7 @@ export function useGitState(
 
   const createTag = useCallback(
     (name: string, message: string, revision = "") =>
-      trackOperation("createTag", name, () => root ? run(() => gitCreateTag(root, name, message, revision)) : Promise.resolve(false), false),
+      trackOperation("createTag", name, () => root ? run(() => gitCreateTag(root, name, message, revision), true) : Promise.resolve(false), false),
     [root, run, trackOperation]
   );
 
@@ -813,6 +1032,7 @@ export function useGitState(
 
   return useMemo(
     () => ({
+      readError,
       probe,
       status,
       branches,
@@ -880,6 +1100,7 @@ export function useGitState(
       conflictChanges,
     }),
     [
+      readError,
       probe,
       status,
       branches,

@@ -130,6 +130,7 @@ pub fn run() {
             watch::fs_watch_start,
             watch::fs_watch_stop,
             git::git_probe,
+            git::git_discover,
             git::git_init,
             git::git_status,
             git::git_config_get,

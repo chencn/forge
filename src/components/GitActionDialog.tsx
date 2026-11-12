@@ -43,7 +43,13 @@ interface Props {
 
 /** 推送有独立的目标和确认状态，避免与创建/签出表单交叉覆盖。 */
 export default function GitActionDialog(props: Props) {
-  return props.request.kind === "push" ? <PushDialog {...props} /> : <ActionDialog {...props} />;
+  /** 请求携带根时，预览与实际推送必须读取同一仓库。 */
+  const repository = props.git.repositoryStates?.find((repo) => repo.root === props.request.root);
+  /** 非活动仓库不借用活动仓库的分支引用和操作状态。 */
+  const git = props.request.root && props.request.root !== props.git.root ? { ...props.git, root: props.request.root,
+    probe: repository?.probe ?? null, status: repository?.status ?? null, branches: [],
+    operation: props.git.backgroundOperations.find((operation) => operation.root === props.request.root) ?? null } : props.git;
+  return props.request.kind === "push" ? <PushDialog {...props} git={git} /> : <ActionDialog {...props} />;
 }
 
 /** 更新/建分支/建标签/签出的表单对话框。 */
@@ -181,6 +187,7 @@ function PushDialog({ request, git, onCancel, onSubmit }: Props) {
         { role: "cancel", label: t("dialog.cancel") },
       ]}>
       <div className="git-action-form is-push">
+        <div>{git.root}</div>
         <div className="git-action-route">
           {!branch ? t("git.detachedPush") : <>
             <span>{branch}{request.revision ? ` (${request.revision.slice(0, 8)})` : ""} →</span>

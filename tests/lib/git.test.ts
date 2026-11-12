@@ -17,6 +17,7 @@ import {
   markClass,
   recoveryOf,
   rollbackTargets,
+  containsRepository,
 } from "../../src/lib/git";
 import type { GitChange, GitProbe } from "../../src/lib/git";
 
@@ -213,6 +214,14 @@ describe("folderDeletePaths Git 文件夹删除范围", () => {
 });
 
 describe("rollbackTargets Git 回滚范围", () => {
+  it("嵌套仓库及其祖先目录不得按未跟踪文件删除，普通同名前缀不受影响", () => {
+    /** 已发现的父仓库与子仓库，包含 Windows 大小写和分隔符变化。 */
+    const roots = ["D:\\projects", "D:\\projects\\group\\child"];
+    expect(containsRepository("d:/projects/group/", roots)).toBe(true);
+    expect(containsRepository("d:/projects/group/child", roots)).toBe(true);
+    expect(containsRepository("d:/projects/group/child-copy", roots)).toBe(false);
+    expect(containsRepository("d:/projects/group/child/file.txt", roots)).toBe(false);
+  });
   const tracked = change({ path: "src/tracked.ts", workStatus: "M" });
   const inside = change({ path: "src/nested/new-b.ts", untracked: true, workStatus: "?" });
   const outside = change({ path: "other/outside.ts", untracked: true, workStatus: "?" });

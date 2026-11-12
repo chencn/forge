@@ -1,4 +1,15 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { pathWithin } from "./format";
+
+/**
+ * 判断路径是否包含已注册仓库，防止父仓库把嵌套仓库当未跟踪目录处理。
+ * @param path - 待处理文件或目录的绝对路径
+ * @param roots - 已发现的工作树根
+ * @returns 路径自身是仓库根或包含仓库根时为 true
+ */
+export function containsRepository(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) => pathWithin(path, root));
+}
 
 /** 空树哈希：根提交没有父提交时拿它当差异的左侧，整份文件就是新增。 */
 export const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -35,6 +46,8 @@ export function recoveryOf(probe: GitProbe | null): Recovery | null {
 
 /** 一条变更，来自 Rust `GitChange`。 */
 export interface GitChange {
+  /** 前端汇总变更时附带的来源仓库；单仓库 IPC 响应不含此字段。 */
+  repoRoot?: string;
   /** 相对仓库根的路径，正斜杠。 */
   path: string;
   /** 重命名/复制的来源路径；其余为 null。 */
@@ -179,6 +192,16 @@ export interface GitLogQuery {
 /** path 用绝对路径；Rust 侧会换算成仓库相对路径。 */
 export function gitProbe(path: string): Promise<GitProbe> {
   return invoke<GitProbe>("git_probe", { path });
+}
+
+/**
+ * 查找工作区所属仓库及子目录中的仓库。
+ * @param path - 打开的工作区目录
+ * @returns 去重的仓库绝对路径；所属仓库优先，没有仓库时为空数组
+ * @throws 后端无法读取工作区时以错误码字符串 reject
+ */
+export function gitDiscover(path: string): Promise<string[]> {
+  return invoke<string[]>("git_discover", { path });
 }
 
 /** 在打开的那个目录上建仓库；目录已经是仓库的一部分时 git 自己往上找那个根。 */

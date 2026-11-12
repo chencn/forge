@@ -469,6 +469,63 @@ pub async fn git_probe(path: String) -> GitProbe {
     block_value(move || git_probe_cached(path), GitProbe::unavailable).await
 }
 
+/// 列出工作区所属仓库及子目录仓库，所属仓库优先，其余按路径排序并去重。
+///
+/// 扫描不跟随目录链接，跳过 Git 元数据和依赖目录；只对带 `.git` 标记的目录调用 Git。
+/// `.git` 可以是目录或 worktree / 子模块使用的指向文件。
+///
+/// # Errors
+///
+/// 工作区不可读取时返回文件系统错误；阻塞任务失败时返回 `BLOCK_SPAWN`。
+#[tauri::command]
+pub async fn git_discover(path: String) -> Result<Vec<String>, String> {
+    crate::offload::block(move || git_discover_impl(&path)).await
+}
+
+/// 执行仓库发现，忽略不可读的子目录，根目录不可读时返回错误。
+///
+/// # Errors
+///
+/// 根目录读取失败时返回操作系统错误文本。
+fn git_discover_impl(path: &str) -> Result<Vec<String>, String> {
+    /// 显式验证根目录，避免把不存在或不可读的工作区报告成没有仓库。
+    let _entries = std::fs::read_dir(path).map_err(|error| error.to_string())?;
+    /// 工作区所属仓库优先，保留从仓库子目录打开项目的行为。
+    let mut roots = Vec::new();
+    /// 使用与 probe 缓存相同的 Windows 路径归一规则去重。
+    let mut seen = HashSet::new();
+    if let Ok(result) = run_git(Path::new(path), &["rev-parse", "--show-toplevel"]) {
+        if result.ok {
+            roots.push(trim_line(&result.stdout));
+            seen.insert(probe_cache_key(&roots[0]));
+        }
+    }
+    /// 不按深度截断，避免漏掉多层分组目录里的仓库。
+    let entries = walkdir::WalkDir::new(path).follow_links(false).sort_by_file_name()
+        .into_iter().filter_entry(|entry| {
+            entry.depth() == 0 || entry.file_type().is_dir() && !matches!(
+                entry.file_name().to_str(),
+                Some(".git" | ".tmp" | "node_modules" | ".venv" | "venv")
+            )
+        });
+    for entry in entries.filter_map(Result::ok) {
+        if entry.depth() == 0 || !entry.file_type().is_dir() || !entry.path().join(".git").exists() {
+            continue;
+        }
+        // Git 校验标记是否有效，空的 .git 目录不能变成可操作的仓库。
+        if let Ok(result) = run_git(entry.path(), &["rev-parse", "--show-toplevel"]) {
+            if result.ok {
+                /// Git 返回的真实工作树根，兼容 .git 指向外部元数据的情况。
+                let root = trim_line(&result.stdout);
+                if seen.insert(probe_cache_key(&root)) {
+                    roots.push(root);
+                }
+            }
+        }
+    }
+    Ok(roots)
+}
+
 /// [`git_probe`] 的同步体：读 TTL 缓存，未命中才起进程探测。
 fn git_probe_cached(path: String) -> GitProbe {
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, GitProbe)>>> = OnceLock::new();
@@ -1009,6 +1066,7 @@ fn git_commit_impl(
     selections: Option<Vec<CommitSelection>>,
 ) -> Result<String, String> {
     let root = ensure_root(&root)?;
+    validate_commit_root(&root)?;
     let message = message.trim();
     // amend 可以只改父提交不带新说明（--no-edit），所以只有非 amend 才要求非空。
     if message.is_empty() && !amend {
@@ -1073,6 +1131,23 @@ fn git_commit_impl(
         return Err(fail(&output));
     }
     Ok(trim_line(&output.stdout))
+}
+
+/// 确认提交目标仍是独立工作树的根，禁止 Git 向上回退到另一个仓库。
+///
+/// # Errors
+///
+/// 根已失效、Git 探测失败或实际仓库根不同于请求根时返回 `NO_REPO` 或 Git 原始错误。
+fn validate_commit_root(root: &Path) -> Result<(), String> {
+    /// 使用真实 Git 校验 gitfile、子模块和 worktree，避免只检查 `.git` 是否存在。
+    let output = run_git(root, &["rev-parse", "--show-toplevel"])?;
+    if !output.ok { return Err(fail(&output)); }
+    /// 标准化文件系统别名，保留 worktree 各自的工作树根身份。
+    let requested = std::fs::canonicalize(root).map_err(|error| error.to_string())?;
+    /// Git 返回的工作树路径，元数据共用不等于工作树相同。
+    let actual = std::fs::canonicalize(trim_line(&output.stdout)).map_err(|error| error.to_string())?;
+    if requested != actual { return Err(err("NO_REPO", &root.to_string_lossy())); }
+    Ok(())
 }
 
 /// 事务内部统一检查 Git 的退出码，不能把补丁失败当作空选择继续提交。
@@ -3761,6 +3836,47 @@ mod tests {
     };
     // relative_path 的用例直接拿 &Path 当根，这里补上类型导入。
     use std::path::Path;
+
+    /// 真实 Git 只读发现覆盖分组目录、嵌套仓库、gitdir 文件、无效标记与剪枝。
+    #[test]
+    fn discovery_finds_nested_repositories_and_gitdir_files() {
+        /// 测试产物仅写项目 .tmp，使用唯一目录避免覆盖已有数据。
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join(".tmp")
+            .join(format!("git-discovery-{}", uuid::Uuid::new_v4()));
+        /// 外层无效 .git 阻止 Git 向上误认项目自身，workspace 本身仍没有 .git。
+        let workspace = base.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(base.join(".git"), "gitdir: missing\n").unwrap();
+        // 不调用 git init：最小空仓库元数据足以验证真实 rev-parse 的发现契约。
+        for relative in ["group/api/.git", "group/api/nested/.git", "group/web/.git", "node_modules/ignored/.git", ".hidden/tool/.git", "build/project/.git", "out/project/.git", "metadata"] {
+            /// 待创建的空仓库元数据目录。
+            let metadata = workspace.join(relative);
+            std::fs::create_dir_all(metadata.join("objects")).unwrap();
+            std::fs::create_dir_all(metadata.join("refs")).unwrap();
+            std::fs::write(metadata.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            std::fs::write(metadata.join("config"), "[core]\nrepositoryformatversion = 0\nbare = false\n").unwrap();
+        }
+        std::fs::create_dir_all(workspace.join("worktree")).unwrap();
+        std::fs::write(workspace.join("worktree/.git"), "gitdir: ../metadata\n").unwrap();
+        std::fs::create_dir_all(workspace.join("invalid/.git")).unwrap();
+        assert!(git_probe_impl(workspace.to_str().unwrap()).repo_root.is_none());
+        /// 公共命令的同步执行体，返回路径必须是真实 Git 认可的仓库根。
+        let roots = super::git_discover_impl(workspace.to_str().unwrap()).unwrap();
+        /// 统一分隔符后比较仓库相对路径，避免平台路径形式影响断言。
+        let relative: Vec<_> = roots.iter().map(|root| {
+            Path::new(root).strip_prefix(&workspace).unwrap().to_string_lossy().replace('\\', "/")
+        }).collect();
+        assert_eq!(relative, [".hidden/tool", "build/project", "group/api", "group/api/nested", "group/web", "out/project", "worktree"]);
+        std::fs::create_dir_all(workspace.join("group/api/src")).unwrap();
+        /// 从仓库内部打开时，仍返回所属仓库，而不是只找子目录。
+        let inside = super::git_discover_impl(workspace.join("group/api/src").to_str().unwrap()).unwrap();
+        assert_eq!(inside, vec![roots[2].clone()]);
+        assert!(super::validate_commit_root(&workspace.join("group/api")).is_ok());
+        // Git 会从 src 向上找到 api，但提交入口必须拒绝这个非仓库根目录。
+        assert!(super::validate_commit_root(&workspace.join("group/api/src")).is_err());
+        assert!(super::validate_commit_root(&workspace).is_err());
+        assert!(super::git_discover_impl(workspace.join("missing").to_str().unwrap()).is_err());
+    }
 
     #[test]
     fn read_capped_keeps_all_bytes_under_the_ceiling() {
