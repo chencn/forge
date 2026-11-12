@@ -68,8 +68,11 @@ pub fn plan_shell_args(args: &[String], extras: &[String]) -> ShellPlan {
     plan
 }
 
-/// 记下这次要打开的路径，把窗口叫到前台，并通知前端来取。
+/// 唤醒主窗口，并在存在有效路径时暂存打开计划、通知前端来取。
+///
+/// 无路径的重复启动也必须恢复窗口；仅在有有效路径时派发文件打开事件。
 pub fn deliver(app: &AppHandle, args: &[String]) {
+    tray::show_main(app);
     let extras = crate::settings::read(app).shell.extra_extensions;
     let plan = plan_shell_args(args, &extras);
     if plan.folders.is_empty() && plan.files.is_empty() {
@@ -80,7 +83,6 @@ pub fn deliver(app: &AppHandle, args: &[String]) {
         guard.folders.extend(plan.folders);
         guard.files.extend(plan.files);
     }
-    tray::show_main(app);
     let _ = app.emit("shell-open", true);
 }
 
