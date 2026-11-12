@@ -222,8 +222,8 @@ export default function AiComposerOptions({ commandRef, provider, workspace, val
       const selected = next.models.find((item) => (item.configuredModel ?? item.id) === currentModel)
         ?? next.models.find((item) => item.isDefault || item.id === "default") ?? next.models[0];
       onChange({ ...value, providerId, model: selected?.id,
-        // Codex 只能提交目录声明的档位；Claude 的强度属于会话，不受模型别名限制。
-        effort: provider === "claude" || selected?.efforts.includes("medium") ? "medium" : undefined,
+        // Codex 只能提交目录声明的档位；Claude 的强度属于会话，不受模型别名限制。默认选最高常用档 high。
+        effort: provider === "claude" || selected?.efforts.includes("high") ? "high" : undefined,
         permission: "auto",
         mode: provider === "claude" ? "auto" : value.mode,
         planMode: provider === "claude" ? undefined : value.planMode,

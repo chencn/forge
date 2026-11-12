@@ -66,7 +66,7 @@ const missingField = (item: ModelProvider, isNew: boolean): TranslationKey | nul
 
 /**
  * 模型供应商：名称、API 地址、API 密钥、智能体类型，
- * 然后按类型给模型：Claude 六个可选或手填的槽位，Codex 模型清单。
+ * 然后按类型给模型：Claude 八个可选或手填的槽位（含 auto 分类器与子代理模型），Codex 模型清单。
  * 应用时写进 CLI 真正读取的位置：Claude 的 settings.json env、Codex 的 auth.json/config.toml。
  */
 export default function ModelProvidersPanel() {

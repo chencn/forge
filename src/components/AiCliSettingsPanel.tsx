@@ -147,6 +147,8 @@ const CLAUDE_MODEL_FIELDS: Record<ClaudeModelSlot, string> = {
   sonnet: "ANTHROPIC_DEFAULT_SONNET_MODEL",
   opus: "ANTHROPIC_DEFAULT_OPUS_MODEL",
   fable: "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  autoMode: "CLAUDE_CODE_AUTO_MODE_MODEL",
+  subagent: "CLAUDE_CODE_SUBAGENT_MODEL",
 };
 
 /** 保存时保留已有自定义模型配置，并迁移同名覆盖层变量到原生文件。 */
@@ -166,6 +168,12 @@ const CLAUDE_MANAGED_KEYS = [
   ...Object.values(CLAUDE_MODEL_FIELDS),
   ...CLAUDE_CUSTOM_MODEL_KEYS,
 ];
+
+/**
+ * 退出管理的模型键：没有界面入口，无论指向谁都只可能是旧供应商的模型名，
+ * 保存时一律清空（原生与覆盖层都删），与「应用供应商」的清除行为对齐。
+ */
+const CLAUDE_RETIRED_MODEL_KEYS = ["ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_MODEL"];
 
 /** 三档认证方式的标签与说明；第三档共用「绑定模型供应商」。 */
 const CLAUDE_MODE_LABEL: Record<ClaudeAuthMode, TranslationKey> = {
@@ -523,7 +531,7 @@ function EnabledAiCliSettingsPanel() {
     } finally { setCatalogBusy(false); }
   };
 
-  // Claude 的模型直接配置在六个槽位中；这里只加载 Codex 的遗留条目。
+  // Claude 的模型直接配置在槽位中；这里只加载 Codex 的遗留条目。
   useEffect(() => {
     if (current !== "codex" || customModels[current] !== undefined || !cliDesktopAvailable()) return;
     let active = true;
@@ -889,6 +897,8 @@ function EnabledAiCliSettingsPanel() {
         ? ""
         : claudeEnvValue(key);
     }
+    // 这两个键写空即删除原生键，旧供应商的模型名不会再被 CLI 读到。
+    for (const key of CLAUDE_RETIRED_MODEL_KEYS) env[key] = "";
     // 只保留一个密钥变量：AUTH_TOKEN 优先，避免旧的 API_KEY 继续被 CLI 读到。
     if (!clearAuth) {
       if (env.ANTHROPIC_AUTH_TOKEN.trim()) env.ANTHROPIC_API_KEY = "";
@@ -904,7 +914,7 @@ function EnabledAiCliSettingsPanel() {
       await saveAiCliClaudeSettings(env);
       // 这些键已改由原生文件负责；覆盖层里的同名旧值会在原生键删除后重新冒出来，直接从覆盖层删掉。
       const overlay = { ...store.settings.agents.claude.env };
-      for (const key of CLAUDE_MANAGED_KEYS) delete overlay[key];
+      for (const key of [...CLAUDE_MANAGED_KEYS, ...CLAUDE_RETIRED_MODEL_KEYS]) delete overlay[key];
       if (Object.keys(overlay).length !== Object.keys(store.settings.agents.claude.env).length) await updateAiCliAgent("claude", { env: overlay });
       const fresh = await readAiCliClaudeSettings();
       setClaudeConfig(fresh);

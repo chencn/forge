@@ -19,13 +19,19 @@ export interface ModelProvider {
   models: Record<string, string>;
 }
 
-/** Claude 六个模型槽位的键名；界面顺序即此处顺序。 */
-export const CLAUDE_MODEL_SLOTS = ["main", "reasoning", "haiku", "sonnet", "opus", "fable"] as const;
+/**
+ * Claude 八个模型槽位的键名；界面顺序即此处顺序。
+ *
+ * 前两位是主模型与推理模型，紧随其后的 `autoMode` / `subagent` 是会话级辅助模型
+ * （auto 权限模式的安全分类器、子代理默认模型）；其余四位是 Haiku~Fable 别名。
+ * 它们同样属于供应商，换端点后必须一起重写，否则会拿着旧供应商的模型 ID 发请求。
+ */
+export const CLAUDE_MODEL_SLOTS = ["main", "reasoning", "autoMode", "subagent", "haiku", "sonnet", "opus", "fable"] as const;
 /** Claude 模型槽位名的字面量联合。 */
 export type ClaudeModelSlot = (typeof CLAUDE_MODEL_SLOTS)[number];
 /**
  * 自定义模型选项：在 CLI 的 /model 选择器里多出来的那一项（值 / 显示名 / 说明），
- * 用来点名网关自己提供的模型。它和六个槽位一样属于供应商，随同一次「应用」写进 CLI。
+ * 用来点名网关自己提供的模型。它和常规槽位一样属于供应商，随同一次「应用」写进 CLI。
  */
 export const CLAUDE_CUSTOM_SLOTS = ["customOption", "customOptionName", "customOptionDescription"] as const;
 /** Claude 自定义模型选项槽位名的字面量联合。 */

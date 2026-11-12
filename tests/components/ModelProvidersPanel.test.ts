@@ -37,9 +37,10 @@ vi.mock("../../src/lib/aiCli", async (original) => ({
   refreshAiCli: vi.fn(),
 }));
 
-/** 每项模型字段的可访问标签，与六个公共配置槽位对应。 */
-const LABELS = ["providers.claudeMainModel", "providers.claudeReasoningModel", "providers.claudeHaikuDefaultModel",
-  "providers.claudeSonnetDefaultModel", "providers.claudeOpusDefaultModel", "providers.claudeFableDefaultModel"];
+/** 每项模型字段的可访问标签，与八个公共配置槽位对应。 */
+const LABELS = ["providers.claudeMainModel", "providers.claudeReasoningModel", "providers.claudeAutoModeModel",
+  "providers.claudeSubagentModel", "providers.claudeHaikuDefaultModel", "providers.claudeSonnetDefaultModel",
+  "providers.claudeOpusDefaultModel", "providers.claudeFableDefaultModel"];
 /** 当前测试的 React 挂载点。 */
 let host: HTMLDivElement;
 /** 当前测试的 React 根。 */
@@ -54,9 +55,10 @@ let nativeEnv: Record<string, string>;
 let codexView: CodexCatalogView;
 /** Codex 原生认证及结构化配置，供 Agent 目录请求和保存验证。 */
 let nativeCodex: AiCliCodexSettings;
-/** Claude CLI 实际读取的六个模型环境变量，与表单顺序对应。 */
-const MODEL_ENV_KEYS = ["ANTHROPIC_MODEL", "ANTHROPIC_REASONING_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"];
+/** Claude CLI 实际读取的八个模型环境变量，与表单顺序对应。 */
+const MODEL_ENV_KEYS = ["ANTHROPIC_MODEL", "ANTHROPIC_REASONING_MODEL", "CLAUDE_CODE_AUTO_MODE_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"];
 
 /**
  * 构造后端 HTTP 命令的成功响应。
@@ -81,7 +83,8 @@ beforeEach(() => {
     apiKey: "saved-secret", model: "manual-main", models: { opus: "manual-opus[1m]" } }];
   fetchResponse = async () => response(["endpoint-a", "endpoint-b"]);
   nativeEnv = { ANTHROPIC_BASE_URL: "https://native.test/v1", ANTHROPIC_AUTH_TOKEN: "native-secret",
-    ANTHROPIC_MODEL: "native-main[1m]", UNMANAGED_FLAG: "keep" };
+    ANTHROPIC_MODEL: "native-main[1m]", ANTHROPIC_SMALL_FAST_MODEL: "stale-fast", ANTHROPIC_DEFAULT_MODEL: "stale-default",
+    UNMANAGED_FLAG: "keep" };
   codexView = { path: "C:/fixture/catalog.json", active: false, error: null, intent: emptyCodexCatalogIntent(),
     models: [{ slug: "builtin-only", visibility: "list" }, { slug: "endpoint-a", visibility: "list" }, { slug: "internal", visibility: "hide" }],
     hidden: [], domains: {}, flags: [], flagsVerified: true };
@@ -144,7 +147,7 @@ async function render() {
 
 /**
  * 从可访问标签找到模型输入框。
- * @param index - 六模型槽位的位置
+ * @param index - 八模型槽位的位置
  * @returns 对应的可编辑 combobox
  */
 function modelInput(index: number): HTMLInputElement {
@@ -186,9 +189,9 @@ async function type(input: HTMLInputElement, value: string) {
 
 describe("供应商模型编辑行为", () => {
   it.each([
-    { efforts: ["medium", "high"], expectedEffort: "medium" },
-    { efforts: ["high"], expectedEffort: undefined },
-  ])("Codex 切换供应商设置默认强度与编辑权限，并从本地目录保留或回落模型（$efforts）", async ({ efforts, expectedEffort }) => {
+    { efforts: ["medium", "high"], expectedEffort: "high" },
+    { efforts: ["medium"], expectedEffort: undefined },
+  ])("Codex 切换供应商设置默认高强度与编辑权限，并从本地目录保留或回落模型（$efforts）", async ({ efforts, expectedEffort }) => {
     /** 保存的两个 Codex 来源以及不可跨引擎选择的 Claude 来源。 */
     const providers = [
       { id: "a", kind: "codex", name: "供应商 A" }, { id: "b", kind: "codex", name: "供应商 B" },
@@ -227,7 +230,7 @@ describe("供应商模型编辑行为", () => {
     expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "ai_providers_apply" || command === "http_send")).toBe(false);
   });
 
-  it("Claude 切换供应商默认使用中等强度与自动权限，并清除旧计划模式", async () => {
+  it("Claude 切换供应商默认使用高强度与自动权限，并清除旧计划模式", async () => {
     /** 切换必须一次提交模型、强度与权限，避免残留旧会话的只读限制。 */
     const changed = vi.fn();
     vi.mocked(invoke).mockImplementation(async (command) => {
@@ -249,8 +252,8 @@ describe("供应商模型编辑行为", () => {
     await click(host.querySelector("button")!);
     await click(document.querySelector('[role="tab"][data-tab="providers"]')!);
     await click([...document.querySelectorAll('[role="tabpanel"] button')].find((item) => item.textContent === "B")!);
-    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "b", model: "sonnet", effort: "medium", mode: "auto", permission: "auto", planMode: undefined }));
-    expect([...document.querySelectorAll('[role="group"] button[aria-pressed="true"]')].map((item) => item.textContent)).toEqual(["ai.chat.effort.medium", "ai.chat.modeAuto"]);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ providerId: "b", model: "sonnet", effort: "high", mode: "auto", permission: "auto", planMode: undefined }));
+    expect([...document.querySelectorAll('[role="group"] button[aria-pressed="true"]')].map((item) => item.textContent)).toEqual(["ai.chat.effort.high", "ai.chat.modeAuto"]);
   });
 
   it("切换供应商时禁止并发改档位，读取失败保留原会话选择", async () => {
@@ -299,12 +302,12 @@ describe("供应商模型编辑行为", () => {
     expect(saved[0].models.reasoning).toBe(ids[1]);
   });
 
-  it("六个槽位共用 /v1/models 候选，留空密钥沿用保存值，选择写入对应槽位", async () => {
+  it("八个槽位共用 /v1/models 候选，留空密钥沿用保存值，选择写入对应槽位", async () => {
     await render();
     for (let index = 0; index < LABELS.length; index += 1) {
       await click(host.querySelector(`button[aria-label="${LABELS[index]}"]`)!);
       await click([...document.querySelectorAll('[role="option"]')].find((item) => item.textContent === "endpoint-b")!);
-      expect(modelInput(index).value).toBe(index === 4 ? "endpoint-b[1m]" : "endpoint-b");
+      expect(modelInput(index).value).toBe(index === 6 ? "endpoint-b[1m]" : "endpoint-b");
     }
     /** 发起的 HTTP 命令体现实际地址和鉴权边界。 */
     const requests = vi.mocked(invoke).mock.calls.filter(([command]) => command === "http_send");
@@ -320,20 +323,20 @@ describe("供应商模型编辑行为", () => {
 
   it("手填模型可保存，1M 可恢复、切换、取消，空值不会保存孤立后缀", async () => {
     await render();
-    expect(host.querySelector<HTMLInputElement>(`input[aria-label="${LABELS[4]} 1M"]`)!.checked).toBe(true);
-    expect(modelInput(4).value).toBe("manual-opus[1m]");
-    await click(host.querySelector(`input[aria-label="${LABELS[4]} 1M"]`)!);
-    expect(modelInput(4).value).toBe("manual-opus");
+    expect(host.querySelector<HTMLInputElement>(`input[aria-label="${LABELS[6]} 1M"]`)!.checked).toBe(true);
+    expect(modelInput(6).value).toBe("manual-opus[1m]");
+    await click(host.querySelector(`input[aria-label="${LABELS[6]} 1M"]`)!);
+    expect(modelInput(6).value).toBe("manual-opus");
     await type(modelInput(0), "custom-main");
     await click(host.querySelector(`input[aria-label="${LABELS[0]} 1M"]`)!);
     expect(modelInput(0).value).toBe("custom-main[1m]");
     await type(modelInput(0), "custom-next[1m]");
     await type(modelInput(1), "custom-reasoning[1M]");
-    await type(modelInput(2), "custom-haiku");
-    await click(host.querySelector(`input[aria-label="${LABELS[2]} 1M"]`)!);
-    await type(modelInput(2), "");
-    await type(modelInput(3), "custom-sonnet");
-    await type(modelInput(5), "custom-fable");
+    await type(modelInput(4), "custom-haiku");
+    await click(host.querySelector(`input[aria-label="${LABELS[4]} 1M"]`)!);
+    await type(modelInput(4), "");
+    await type(modelInput(5), "custom-sonnet");
+    await type(modelInput(7), "custom-fable");
     await click(button("providers.save"));
     expect(saved[0].model).toBe("custom-next[1m]");
     expect(saved[0].models).toMatchObject({ reasoning: "custom-reasoning[1m]", haiku: "", sonnet: "custom-sonnet",
@@ -346,7 +349,7 @@ describe("供应商模型编辑行为", () => {
     expect(saved[0].model).toBe("custom-next");
   });
 
-  it("六个字段通过模型后缀双向同步 1M，保存并重新挂载后仍能识别", async () => {
+  it("八个字段通过模型后缀双向同步 1M，保存并重新挂载后仍能识别", { timeout: 30000 }, async () => {
     await render();
     for (let index = 0; index < LABELS.length; index += 1) {
       await type(modelInput(index), `model-${index}`);
@@ -408,7 +411,7 @@ describe("供应商模型编辑行为", () => {
 });
 
 describe("Agent 的 Claude 原生模型配置", () => {
-  it.each(["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"])("使用 %s 获取候选并保存六个模型后缀", async (keyName) => {
+  it.each(["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"])("使用 %s 获取候选并保存八个模型后缀", async (keyName) => {
     delete nativeEnv.ANTHROPIC_AUTH_TOKEN;
     nativeEnv[keyName] = "native-secret";
     await act(async () => root.render(createElement(AiCliSettingsPanel)));
@@ -428,6 +431,9 @@ describe("Agent 的 Claude 原生模型配置", () => {
     await click(button("ai.cfg.save"));
     expect(nativeEnv[keyName]).toBe("native-secret");
     expect(nativeEnv.UNMANAGED_FLAG).toBe("keep");
+    // 弃用与同义的模型键随保存一起清除，旧供应商的模型名不会继续生效。
+    expect(nativeEnv.ANTHROPIC_SMALL_FAST_MODEL).toBeUndefined();
+    expect(nativeEnv.ANTHROPIC_DEFAULT_MODEL).toBeUndefined();
     for (const [index, key] of MODEL_ENV_KEYS.entries()) {
       expect(nativeEnv[key]).toBe(index === 0 ? "endpoint-b[1m]" : `native-${index}[1m]`);
     }

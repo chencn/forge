@@ -7,7 +7,7 @@ import { CLAUDE_MODEL_SLOTS, listProviderModels, type ClaudeModelSlot } from "..
 import { Checkbox } from "../ui/Checkbox";
 import styles from "./ClaudeProviderModels.module.css";
 
-/** 六个模型槽位的标签和手填示例，按供应商配置顺序展示。 */
+/** 八个模型槽位的标签和手填示例，按供应商配置顺序展示。 */
 const FIELDS: Record<ClaudeModelSlot, {
   /** 字段名称的翻译键。 */
   label: TranslationKey;
@@ -20,6 +20,8 @@ const FIELDS: Record<ClaudeModelSlot, {
   sonnet: { label: "providers.claudeSonnetDefaultModel", placeholder: "claude-sonnet-5-5" },
   opus: { label: "providers.claudeOpusDefaultModel", placeholder: "claude-opus-5-5" },
   fable: { label: "providers.claudeFableDefaultModel", placeholder: "claude-fable-5-1" },
+  autoMode: { label: "providers.claudeAutoModeModel", placeholder: "claude-haiku-5-5" },
+  subagent: { label: "providers.claudeSubagentModel", placeholder: "claude-haiku-5-5" },
 };
 
 /** Claude CLI 的百万上下文标记；允许手填时使用大写 M。 */
@@ -118,7 +120,7 @@ function ModelField({ label, placeholder, value, models, loading, error, onChang
 interface ClaudeProviderModelsProps {
   /** 获取候选的端点；为空时只允许手填。 */
   apiUrl: string;
-  /** 六个槽位的完整模型值，缺省槽位显示为空。 */
+  /** 八个槽位的完整模型值，缺省槽位显示为空。 */
   values: Partial<Record<ClaudeModelSlot, string>>;
   /** 已处理留空回退后的有效密钥。 */
   apiKey: string;
@@ -129,9 +131,9 @@ interface ClaudeProviderModelsProps {
 }
 
 /**
- * 让六个 Claude 模型槽位共享端点候选，仍允许输入列表之外的模型。
+ * 让八个 Claude 模型槽位共享端点候选，仍允许输入列表之外的模型。
  * @param props - 端点、有效密钥、模型值及草稿更新回调
- * @returns 六个打开下拉时自动获取候选的模型输入框
+ * @returns 八个打开下拉时自动获取候选的模型输入框
  */
 export default function ClaudeProviderModels({ apiUrl, values, apiKey, busy, onChange }: ClaudeProviderModelsProps) {
   /** 界面文案随当前语言切换。 */

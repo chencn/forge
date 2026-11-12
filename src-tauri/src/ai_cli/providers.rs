@@ -28,18 +28,27 @@ const MAX_MODEL: usize = 200;
 const MAX_CODEX_MODEL: usize = 262_144;
 
 /// Claude Code 的模型槽位与对应环境变量。Codex 只用一个 `model`。
-/// 后三项是「自定义模型选项」：在 CLI 的 /model 选择器里多出一项，用来点名网关自己提供的模型。
-const CLAUDE_MODEL_KEYS: [(&str, &str); 9] = [
+/// `autoMode` / `subagent` 是会话级辅助模型（auto 模式安全分类器、子代理），
+/// 不填也必须随供应商一起清除，否则换端点后会继续拿着旧供应商的模型 ID 发请求。
+/// 末尾三项是「自定义模型选项」：在 CLI 的 /model 选择器里多出一项，用来点名网关自己提供的模型。
+const CLAUDE_MODEL_KEYS: [(&str, &str); 11] = [
     ("main", "ANTHROPIC_MODEL"),
     ("reasoning", "ANTHROPIC_REASONING_MODEL"),
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
     ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
+    ("autoMode", "CLAUDE_CODE_AUTO_MODE_MODEL"),
+    ("subagent", "CLAUDE_CODE_SUBAGENT_MODEL"),
     ("customOption", "ANTHROPIC_CUSTOM_MODEL_OPTION"),
     ("customOptionName", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
     ("customOptionDescription", "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
 ];
+
+/// 不属于任何槽位、但同样选择模型的键：换供应商后旧值会指向对端不存在的模型。
+/// `ANTHROPIC_SMALL_FAST_MODEL` 已被 `ANTHROPIC_DEFAULT_HAIKU_MODEL` 取代但仍会被读取；
+/// `ANTHROPIC_DEFAULT_MODEL` 是主模型的默认值，优先级低于 `ANTHROPIC_MODEL`。
+const INHERITED_MODEL_KEYS: [&str; 2] = ["ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_MODEL"];
 
 /// 一个自定义模型供应商的完整配置。
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -249,6 +258,8 @@ fn apply_claude(env: &mut BTreeMap<String, String>, provider: &ModelProvider) {
     set(env, "ANTHROPIC_AUTH_TOKEN", provider.api_key.trim());
     // AUTH_TOKEN 优先；残留的 API_KEY 会让用户以为旧密钥还在生效。
     env.remove("ANTHROPIC_API_KEY");
+    // 这些同义键不在槽位里，留着就等于把旧供应商的模型名带到新端点。
+    for key in INHERITED_MODEL_KEYS { env.remove(key); }
     for (slot, key) in CLAUDE_MODEL_KEYS {
         let value = if slot == "main" {
             if provider.model.is_empty() { provider.models.get("main").map(String::as_str).unwrap_or("") } else { &provider.model }
@@ -265,6 +276,7 @@ pub(crate) fn claude_native_env(provider: &ModelProvider) -> BTreeMap<String, St
     env.insert("ANTHROPIC_BASE_URL".into(), provider.api_url.trim().to_string());
     env.insert("ANTHROPIC_AUTH_TOKEN".into(), provider.api_key.trim().to_string());
     env.insert("ANTHROPIC_API_KEY".into(), String::new());
+    for key in INHERITED_MODEL_KEYS { env.insert(key.into(), String::new()); }
     for (slot, key) in CLAUDE_MODEL_KEYS {
         let value = if slot == "main" {
             if provider.model.is_empty() { provider.models.get("main").map(String::as_str).unwrap_or("") } else { &provider.model }
@@ -381,6 +393,11 @@ mod tests {
         let mut env = BTreeMap::from([
             ("KEEP".to_string(), "1".to_string()),
             ("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(), "stale".to_string()),
+            // 旧供应商留下的辅助模型与同义键必须一起清掉，否则新端点会收到不存在的模型名。
+            ("CLAUDE_CODE_AUTO_MODE_MODEL".to_string(), "stale-auto".to_string()),
+            ("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), "stale-subagent".to_string()),
+            ("ANTHROPIC_SMALL_FAST_MODEL".to_string(), "stale-fast".to_string()),
+            ("ANTHROPIC_DEFAULT_MODEL".to_string(), "stale-default".to_string()),
         ]);
         apply_claude(&mut env, &item);
         assert_eq!(env.get("KEEP").map(String::as_str), Some("1"));
@@ -388,6 +405,10 @@ mod tests {
         assert_eq!(env.get("ANTHROPIC_MODEL").map(String::as_str), Some("claude-sonnet-4-5"));
         assert_eq!(env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str), Some("claude-haiku-4-5"));
         assert_eq!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"), None);
+        assert_eq!(env.get("CLAUDE_CODE_AUTO_MODE_MODEL"), None);
+        assert_eq!(env.get("CLAUDE_CODE_SUBAGENT_MODEL"), None);
+        assert_eq!(env.get("ANTHROPIC_SMALL_FAST_MODEL"), None);
+        assert_eq!(env.get("ANTHROPIC_DEFAULT_MODEL"), None);
         let empty = ModelProvider { api_url: String::new(), api_key: String::new(), model: String::new(), models: BTreeMap::new(), ..item };
         apply_claude(&mut env, &empty);
         assert_eq!(env.get("ANTHROPIC_BASE_URL"), None);
@@ -402,6 +423,11 @@ mod tests {
         assert_eq!(env.get("ANTHROPIC_API_KEY").map(String::as_str), Some(""));
         assert_eq!(env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str), Some("claude-haiku-4-5"));
         assert_eq!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").map(String::as_str), Some(""));
+        // 带空值写入原生 settings.json，才会把上一次供应商留下的辅助模型删掉。
+        assert_eq!(env.get("CLAUDE_CODE_AUTO_MODE_MODEL").map(String::as_str), Some(""));
+        assert_eq!(env.get("CLAUDE_CODE_SUBAGENT_MODEL").map(String::as_str), Some(""));
+        assert_eq!(env.get("ANTHROPIC_SMALL_FAST_MODEL").map(String::as_str), Some(""));
+        assert_eq!(env.get("ANTHROPIC_DEFAULT_MODEL").map(String::as_str), Some(""));
     }
 
     #[test]
@@ -447,7 +473,7 @@ mod tests {
 
     #[test]
     fn claude_custom_model_option_travels_with_the_provider() {
-        // 自定义模型选项是 /model 选择器里多出来的那一项，和六个槽位一样属于供应商。
+        // 自定义模型选项是 /model 选择器里多出来的那一项，和其他槽位一样属于供应商。
         let mut item = provider();
         item.models.insert("customOption".into(), "my-gateway/claude-opus-5-5".into());
         item.models.insert("customOptionName".into(), "Gateway Opus".into());
