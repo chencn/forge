@@ -1,18 +1,6 @@
-<!-- Forge 应用标记：蓝色渐变圆角方块 + 白色大写 F。骨架数值与 scripts/make-icons.mjs 同源。 -->
-<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="forgeMarkBg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="rgb(37, 99, 235)" />
-      <stop offset="1" stop-color="rgb(49, 123, 215)" />
-    </linearGradient>
-    <radialGradient id="forgeMarkGlass" cx="0.3" cy="0.24" r="0.95">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.11" />
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
-    </radialGradient>
-  </defs>
-  <rect x="0.96" y="0.96" width="22.08" height="22.08" rx="4.8" fill="url(#forgeMarkBg)" />
-  <rect x="0.96" y="0.96" width="22.08" height="22.08" rx="4.8" fill="url(#forgeMarkGlass)" />
-  <rect x="6" y="3.6" width="3.12" height="16.8" fill="#ffffff" />
-  <rect x="6" y="3.6" width="12" height="3.12" fill="#ffffff" />
-  <rect x="6" y="10.08" width="10.08" height="3.12" fill="#ffffff" />
+<!-- Forge 分区 F：由 scripts/make-icons.mjs 的共享几何生成。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="forge-title">
+  <title id="forge-title">Forge</title>
+  <path fill="#3871e1" d="M64 8H192A56 56 0 0 1 248 64V192A56 56 0 0 1 192 248H64A56 56 0 0 1 8 192V64A56 56 0 0 1 64 8Z"/>
+  <path fill="#ffffff" d="M70 56H102L102 56V192A8 8 0 0 1 94 200H70A8 8 0 0 1 62 192V64A8 8 0 0 1 70 56Z M118 56H184A8 8 0 0 1 192 64V86A8 8 0 0 1 184 94H118L118 94V56L118 56Z M118 110H164A8 8 0 0 1 172 118V140A8 8 0 0 1 164 148H118L118 148V110L118 110Z"/>
 </svg>

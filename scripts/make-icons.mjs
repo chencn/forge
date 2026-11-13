@@ -1,7 +1,9 @@
 import { deflateSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
 
+/** Windows ICO 中包含的显示尺寸，单位为像素。 */
 const ICON_SIZES = [16, 24, 32, 48, 64, 128, 256];
+/** 应用通用 PNG 的边长，单位为像素。 */
 const PNG_SIZE = 512;
 
 const OUT_DIR = new URL("../src-tauri/icons/", import.meta.url).pathname.replace(/^\//, "");
@@ -47,79 +49,93 @@ function toPng(size, rgba) {
   ]);
 }
 
-/** 圆角方形的带符号距离，负值在内。 */
-function roundedRectDistance(x, y, half, radius) {
-  const qx = Math.abs(x) - half + radius;
-  const qy = Math.abs(y) - half + radius;
-  const outside = Math.hypot(Math.max(qx, 0), Math.max(qy, 0));
-  const inside = Math.min(Math.max(qx, qy), 0);
-  return outside + inside - radius;
-}
-
-function smooth(edge, value) {
-  const t = Math.max(0, Math.min(1, (value + edge) / (edge + edge)));
-  return t * t * (3 - 2 * t);
-}
+/** 项目默认蓝色的 RGB 通道，与工作台强调色 #3871e1 一致。 */
+const BRAND_RGB = [56, 113, 225];
+/** 256 单位画布中的底板；圆角按左上、右上、右下、左下排序。 */
+const TILE = { x: 8, y: 8, width: 240, height: 240, radii: [56, 56, 56, 56] };
+/** 分区 F 的三块实体；SVG 与位图共用此几何，防止重新生成后造型漂移。 */
+const F = [
+  { x: 62, y: 56, width: 40, height: 144, radii: [8, 0, 8, 8] },
+  { x: 118, y: 56, width: 74, height: 38, radii: [0, 8, 8, 0] },
+  { x: 118, y: 110, width: 54, height: 38, radii: [0, 8, 8, 0] },
+];
 
 /**
- * 大写字母 F 的骨架，0..1 归一化：三笔同宽，竖笔贯通上下，中横比上横短一档。
- * 标题栏那颗矢量标记用的是同一套数（乘到 24 的画框上）。
+ * 判断采样点是否位于指定圆角矩形内。
+ * @param {number} x - 画布中的横坐标
+ * @param {number} y - 画布中的纵坐标
+ * @param {typeof TILE} rect - 矩形边界与四角半径
+ * @returns {boolean} 点在边界上或内部时为 true
  */
-const F = {
-  weight: 0.13,
-  left: 0.25,
-  right: 0.75,
-  middle: 0.67,
-  top: 0.15,
-  bottom: 0.85,
-  midY: 0.42,
-};
+function contains(x, y, rect) {
+  /** 相对于矩形中心的横向距离。 */
+  const dx = x - rect.x - rect.width / 2;
+  /** 相对于矩形中心的纵向距离。 */
+  const dy = y - rect.y - rect.height / 2;
+  /** 采样点所属象限的圆角半径。 */
+  const radius = rect.radii[dy < 0 ? (dx < 0 ? 0 : 1) : (dx < 0 ? 3 : 2)];
+  /** 去掉中央直边区域后的横向距离。 */
+  const qx = Math.abs(dx) - rect.width / 2 + radius;
+  /** 去掉中央直边区域后的纵向距离。 */
+  const qy = Math.abs(dy) - rect.height / 2 + radius;
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) <= radius;
+}
 
 /**
- * 画一枚 size×size 的 RGBA。坐标用 0..1 归一化，缩到任何尺寸都是同一个图形。
- * 图形：蓝色渐变的圆角方块 + 白色大写字母 F（竖笔、上横、中横三笔同宽）。
+ * 将同一矩形几何转换为闭合 SVG 路径。
+ * @param {typeof TILE} rect - 矩形边界与四角半径
+ * @returns {string} 保留直角和圆角的实体轮廓
+ */
+function rectanglePath(rect) {
+  /** 四个圆角的顺时针半径。 */
+  const [tl, tr, br, bl] = rect.radii;
+  /** 矩形右边界。 */
+  const right = rect.x + rect.width;
+  /** 矩形下边界。 */
+  const bottom = rect.y + rect.height;
+  return `M${rect.x + tl} ${rect.y}H${right - tr}`
+    + (tr ? `A${tr} ${tr} 0 0 1 ${right} ${rect.y + tr}` : `L${right} ${rect.y}`)
+    + `V${bottom - br}`
+    + (br ? `A${br} ${br} 0 0 1 ${right - br} ${bottom}` : `L${right} ${bottom}`)
+    + `H${rect.x + bl}`
+    + (bl ? `A${bl} ${bl} 0 0 1 ${rect.x} ${bottom - bl}` : `L${rect.x} ${bottom}`)
+    + `V${rect.y + tl}`
+    + (tl ? `A${tl} ${tl} 0 0 1 ${rect.x + tl} ${rect.y}` : `L${rect.x} ${rect.y}`)
+    + 'Z';
+}
+
+/**
+ * 按每像素 4×4 次采样绘制蓝底白色分区 F。
+ * @param {number} size - 输出边长，单位为像素
+ * @returns {Buffer} RGBA 像素；透明边缘按预乘颜色累计，避免缩小后出现黑边
  */
 function raster(size) {
+  /** 当前尺寸的透明像素缓冲区。 */
   const buffer = Buffer.alloc(size * size * 4);
-  const half = 0.46;
-  const radius = 0.2;
-  const feather = 0.012;
-
   for (let py = 0; py < size; py += 1) {
     for (let px = 0; px < size; px += 1) {
-      const x = (px + 0.5) / size;
-      const y = (py + 0.5) / size;
-      const sd = roundedRectDistance(x - 0.5, y - 0.5, half, radius);
-      const cover = 1 - smooth(feather, sd);
+      /** 覆盖底板的采样数。 */
+      let coverage = 0;
+      /** 覆盖白色字形的采样数。 */
+      let white = 0;
+      for (let sy = 0; sy < 4; sy += 1) {
+        for (let sx = 0; sx < 4; sx += 1) {
+          /** 映射到矢量画布的采样横坐标。 */
+          const x = (px + (sx + 0.5) / 4) * 256 / size;
+          /** 映射到矢量画布的采样纵坐标。 */
+          const y = (py + (sy + 0.5) / 4) * 256 / size;
+          if (!contains(x, y, TILE)) continue;
+          coverage += 1;
+          if (F.some((rect) => contains(x, y, rect))) white += 1;
+        }
+      }
+      if (coverage === 0) continue;
+      /** 当前输出像素的首通道偏移量。 */
       const offset = (py * size + px) * 4;
-      if (cover <= 0.002) {
-        buffer[offset + 3] = 0;
-        continue;
+      for (let channel = 0; channel < 3; channel += 1) {
+        buffer[offset + channel] = Math.round((BRAND_RGB[channel] * (coverage - white) + 255 * white) / coverage);
       }
-
-      const t = y;
-      let r = 37 + t * 12;
-      let g = 99 + t * 24;
-      let b = 235 - t * 20;
-
-      const glass = 1 - Math.min(1, Math.hypot(x - 0.3, y - 0.24) / 0.95);
-      r += glass * 26;
-      g += glass * 26;
-      b += glass * 20;
-
-      const stem = x >= F.left && x <= F.left + F.weight && y >= F.top && y <= F.bottom;
-      const topBar = x >= F.left && x <= F.right && y >= F.top && y <= F.top + F.weight;
-      const midBar = x >= F.left && x <= F.middle && y >= F.midY && y <= F.midY + F.weight;
-      if (stem || topBar || midBar) {
-        r = 255;
-        g = 255;
-        b = 255;
-      }
-
-      buffer[offset] = Math.min(255, Math.round(r));
-      buffer[offset + 1] = Math.min(255, Math.round(g));
-      buffer[offset + 2] = Math.min(255, Math.round(b));
-      buffer[offset + 3] = Math.round(cover * 255);
+      buffer[offset + 3] = Math.round(coverage * 255 / 16);
     }
   }
   return buffer;
@@ -182,11 +198,22 @@ function toIco(images) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
+/** 标题栏直接使用的 SVG 母稿，与所有位图共用底板和三块字形。 */
+const svg = `<!-- Forge 分区 F：由 scripts/make-icons.mjs 的共享几何生成。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="forge-title">
+  <title id="forge-title">Forge</title>
+  <path fill="#3871e1" d="${rectanglePath(TILE)}"/>
+  <path fill="#ffffff" d="${F.map(rectanglePath).join(' ')}"/>
+</svg>
+`;
+writeFileSync(`${OUT_DIR}icon.svg`, svg);
+/** 保留未压缩 DIB 格式供 Windows 资源编译器读取。 */
 const images = ICON_SIZES.map((size) => ({ size, bytes: toBmpIconImage(size, raster(size)) }));
 writeFileSync(`${OUT_DIR}icon.ico`, toIco(images));
 writeFileSync(`${OUT_DIR}icon.png`, toPng(PNG_SIZE, raster(PNG_SIZE)));
 for (const size of [32, 128]) writeFileSync(`${OUT_DIR}${size}x${size}.png`, toPng(size, raster(size)));
+for (const size of [44, 50, 150]) writeFileSync(`${OUT_DIR}Square${size}x${size}Logo.png`, toPng(size, raster(size)));
 
 console.log(
-  `icons written to ${OUT_DIR}: icon.ico (${images.length} sizes), icon.png, 32x32.png, 128x128.png`
+  `icons written to ${OUT_DIR}: icon.svg, icon.ico (${images.length} sizes), icon.png, 32x32.png, 128x128.png, Square{44,50,150}x{44,50,150}Logo.png`
 );
